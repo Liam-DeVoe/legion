@@ -16,16 +16,19 @@ else
   if [ "$readable" = true ]; then
     mark
     # Every right the live steps ask, outright or limited by name: the list, the guard rights with
-    # the certificate chain's, and the admission rights. A part of the chain goes to csr_part, so
-    # a principal is a finding for the whole chain alone, as on a live cluster. Custom resources are
+    # the certificate chain's, and the admission rights, with the delete of the broker's pod fence
+    # when the renders declare it (broker-fence.sh). A part of the chain goes to csr_part, so a
+    # principal is a finding for the whole chain alone, as on a live cluster. Custom resources are
     # each cluster's own, read live from its discovery.
+    fence_declared
     code_rights="$(with_rights "$(with_rights "$(rights_json db)" "$GUARD_RIGHTS")" "$ADMISSION_CODE_RIGHTS")"
+    [ -z "$FENCE_DECLARED" ] || code_rights="$(with_rights "$code_rights" "$FENCE_WRITE_RIGHTS")"
     csr_reset
     # jq reads the renders from its stdin, so an error it prints names no file, and the rights from a
     # file, never its command line.
     printf '%s' "$code_rights" >"$WORK/code-rights.json"
     if ! cat -- "${RBAC_RENDERS[@]}" | jq -r -n --slurpfile rights "$WORK/code-rights.json" --slurpfile named_rights "$WORK/code-rights.json" \
-      --argjson live false -L "$LIB" -f "$LIB/code-rbac.jq" >"$WORK/render.rec" 2>"$WORK/render.err"; then
+      --argjson live false --argjson fence "$(fence_declared_json)" -L "$LIB" -f "$LIB/code-rbac.jq" >"$WORK/render.rec" 2>"$WORK/render.err"; then
       unknown "$step" "a render is not JSON: $(first_line "$WORK/render.err")"
     else
       declared=0
@@ -38,6 +41,13 @@ else
             [ "$SUBJECT_OK" != true ] || continue
             csr_part "$SUBJECT" "$detail" "$id" || finding "$SUBJECT" "$detail, declared by $id" "$detail" "cluster:$cluster_name" "$detail" "$id"
             ;;
+          # A grant the declared fence refuses waits on the live step's read of the cluster's fence,
+          # which credits it or finds it (fence_settle).
+          credit:*)
+            declared=$((declared + 1))
+            k8s_subject "$kind" "$ns" "$name"
+            [ "$SUBJECT_OK" = true ] || CODE_PENDING+=("$SUBJECT$US$detail$US$id$US${what#credit:}")
+            ;;
           role)
             k8s_subject "$kind" "$ns" "$name"
             [ "$SUBJECT_OK" = true ] ||
@@ -47,7 +57,8 @@ else
       done 3<"$WORK/render.rec"
       csr_chains ", declared by the renders" "cluster:$cluster_name"
       if unchanged; then
-        pass "$step" "the renders give the rights, the guard rights, the certificate chain and the admission rights, outright or by name, to no one but people, system namespaces and components, and the operator's own account ($declared grants read; custom resources are read live)"
+        code_pass="the renders give the rights, the guard rights, the certificate chain and the admission rights, outright or by name, to no one but people, system namespaces and components, and the operator's own account ($declared grants read; custom resources are read live)"
+        if [ "${#CODE_PENDING[@]}" -eq 0 ]; then pass "$step" "$code_pass"; else CODE_PASS="$code_pass"; fi
       fi
     fi
   fi

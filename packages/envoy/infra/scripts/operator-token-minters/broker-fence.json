@@ -1,0 +1,7 @@
+{
+  "namespace": "dispatch",
+  "account": "envoy-broker",
+  "prefix": "envoy-broker-",
+  "policies": ["broker-pod-connect", "broker-pod-update", "broker-pod-create", "broker-workload-create", "broker-workload-update"],
+  "digest": "sha256:4cfc1b322492c57b0854a3ae68c1c14b8e94e6fbaadec91f08ca615876a3e4d6"
+}

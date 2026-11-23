@@ -15,11 +15,11 @@
 # its label saying so. $named_rights are read by name alone; $live true drops the `role` and `empty`
 # records, which only a render's reader needs. $rights and $named_rights each come from a file
 # (--slurpfile), so each one's value is its first: a cluster's rights are more than a command line's
-# argument may hold.
+# argument may hold. A grant of a right the broker's pod fence refuses while $fence (broker-fence.jq's
+# fence_refuses) is credited, or null, is a `credit:<policy>` record instead, which each reader takes
+# for a credit, never a finding.
 include "rec";
-        def objs: if type == "array" then .[] | objs
-                  elif type == "object" and (.kind // "") == "List" then (.items // [])[] | objs
-                  elif type == "object" then . else empty end;
+include "broker-fence";
         def has_($list; $x): any(($list // [])[]; . == $x);
         def matches_but_name($r): (has_(.verbs; $r.verb) or has_(.verbs; "*"))
           and (has_(.apiGroups; $r.group) or has_(.apiGroups; "*"))
@@ -77,9 +77,10 @@ include "rec";
                  | map(select(. as $n | may_write($held; $subject; $r; "patch"; $n)
                                          or (creates_on_update($r) and may_write($held; $subject; $r; "update"; $n))))
                else [] end) as $applied
-            | if any($plain[]; . == $r.key) and any($rules[]; matches($r)) then (["grant", $id, $r.label] + $subject) | rec
-              elif ($names | length) > 0 then (["grant", $id, named_label($r; $names)] + $subject) | rec
-              elif ($applied | length) > 0 then (["grant", $id, named_label($r; $applied) + ", which its patch or update of that name makes"] + $subject) | rec
+            | ([fence_refuses($fence; $r)] | if length > 0 then "credit:\(.[0])" else "grant" end) as $what
+            | if any($plain[]; . == $r.key) and any($rules[]; matches($r)) then ([$what, $id, $r.label] + $subject) | rec
+              elif ($names | length) > 0 then ([$what, $id, named_label($r; $names)] + $subject) | rec
+              elif ($applied | length) > 0 then ([$what, $id, named_label($r; $applied) + ", which its patch or update of that name makes"] + $subject) | rec
               else empty end
             end
           end

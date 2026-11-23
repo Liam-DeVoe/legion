@@ -4720,11 +4720,27 @@ which takes no other address. Admission power
 outside the admission objects counts too: the backend of a webhook that can match a guarded
 namespace, a policy engine's cluster-scoped resources, and an admission policy's parameter objects;
 a webhook that calls a URL outside the cluster, or a Service of type ExternalName or with no
-selector, reads UNKNOWN, and so does a cluster where Backup for GKE is installed. It reads code first
+selector, reads UNKNOWN, and so does a cluster where Backup for GKE is installed. One admission
+refusal is credited: the broker's pod fence, whose `broker-pod-connect` refuses exec, attach and
+port forward to every `envoy-broker-*` pod and whose `broker-pod-update` refuses any change but
+metadata to a broker pod, each bound `Deny` with `failurePolicy: Fail` in `dispatch` and with no
+exception. When `--broker-workload` is `dispatch/envoy-broker`, and only when the renders and the
+operator's cluster each hold the five `broker-*` policies and their bindings, bound so to `dispatch`
+alone, with rules that hash to the digest `scripts/operator-token-minters/broker-fence.json` pins
+(less what the API server and GKE fill in), at least one `envoy-broker-*` pod runs as
+`envoy-broker`, and every pod of `dispatch` that runs as `envoy-broker` or takes `--db-secret` or a
+token Secret there is named `envoy-broker-*`, a grant of exec, attach or port forward, or of a pod's
+spec or ephemeral containers, in `dispatch` prints a `CREDIT` line instead of
+a finding and goes into `--report`'s `credited` with the policy, its binding and their declared and
+live versions. Everything else stays a finding: `create pods` there, every workload write, the
+token, impersonation, Secrets, every Google IAM right, the hold writers, and whoever can write or
+delete the fence. A fence missing or held otherwise prints `NO CREDIT` naming why and credits
+nothing; one that cannot be read is UNKNOWN. It reads code first
 (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing found, 1 naming
 each principal and right, or 2 naming each step it could not read, a run that stopped mid-way
-included. `--report <file>` writes the same as JSON, with each allowance the run was given
-(`--service-agent`, `--rbac-only-member`, `--fleet none`, `--credentials-arg`) under `allowances`,
+included. `--report <file>` writes the same as JSON, with each credit under `credited` and each
+allowance the run was given (`--service-agent`, `--rbac-only-member`, `--fleet none`,
+`--credentials-arg`) under `allowances`,
 and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
 (a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
 any step runs, and a value of another form is a usage error naming the flag, never the value, as is

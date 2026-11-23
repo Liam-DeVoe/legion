@@ -11,7 +11,8 @@
 #   - kubectl answers a SubjectAccessReview as the RBAC authorizer does, from the world's grants
 #     (each a subject, a verb, an API group, a resource and subresource, a namespace or none for
 #     cluster-wide, and a resource name or none), with the built-in cluster-admin binding of the
-#     group system:masters allowed everything; it lists ServiceAccounts and reads a namespace;
+#     group system:masters allowed everything; it lists ServiceAccounts, a namespace's pods and the
+#     cluster's admission policies and their bindings, and reads a namespace;
 #   - gcloud describes roles from the world's role table (roles/container.admin's list is the
 #     real role's, read with `gcloud iam roles describe roles/container.admin` on 2026-11-20, cut
 #     to the permissions the check names and a few beside them), lists the project's clusters (and
@@ -28,7 +29,7 @@
 #     Secret Manager's NotFound and PermissionDenied are printed.
 #
 # Each row resets the world (so each plant is removed after its row), plants one thing, and holds
-# the run to its exit and to the line naming what it planted. The rows are in seven files of
+# the run to its exit and to the line naming what it planted. The rows are in eight files of
 # operator-token-minters/, by concern, each sourced below after the world and its helpers, and
 # each listing its rows in its header:
 #
@@ -45,7 +46,9 @@
 #   - test-rows-admission.sh: admission power outside the admission objects: a webhook's backend,
 #     a policy engine's resources, and an admission policy's parameter objects;
 #   - test-rows-become.sh: who can become a principal with a finding through a right a live role
-#     limits by name.
+#     limits by name;
+#   - test-rows-fence.sh: the broker's pod fence, which credits what it refuses only when the
+#     renders and the cluster hold it as reviewed.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -182,6 +185,114 @@ edge_member() {
 refuse_live() {
   : >"$world/clusters/operator-cluster/refuse-sar"
   : >"$world/refuse-analyze"
+}
+# The broker's pod fence's world (broker-fence.sh), which test-rows-fence.sh's rows and the report
+# fixture's (z) run in: comment-delivery's Google account, the broker's Workload Identity member,
+# and the contract the check under test carries.
+readonly comment_delivery=comment-delivery@example-project.iam.gserviceaccount.com
+readonly fence_wi_member="serviceAccount:example-project.svc.id.goog[dispatch/envoy-broker]"
+fence_contract="$(dirname "$check")/operator-token-minters/broker-fence.json"
+readonly fence_contract
+# fence_objects: this test's own example of the fence: its five policies and their bindings, in the
+# shape the check reads (bound Deny with failurePolicy Fail to dispatch alone), with rules written
+# here. The reviewed fence's rules are pinned by their digest alone (broker-fence.json), so no world
+# here can hash to that pin, and the rows run fence_check, a copy pinned to this example; (fg) holds
+# the check itself to refusing the example.
+fence_objects() {
+  jq -n '
+    def rules($op; $res): [$res[] | {apiGroups: [.[0]], apiVersions: ["v1"], operations: [$op], resources: [.[1]]}];
+    def policy($name; $op; $res; $expression; $message): {apiVersion: "admissionregistration.k8s.io/v1", kind: "ValidatingAdmissionPolicy",
+      metadata: {name: $name}, spec: {failurePolicy: "Fail", matchConstraints: {resourceRules: rules($op; $res)},
+        validations: [{expression: $expression, message: $message}]}};
+    def binding($name): {apiVersion: "admissionregistration.k8s.io/v1", kind: "ValidatingAdmissionPolicyBinding", metadata: {name: $name},
+      spec: {matchResources: {namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "In", values: ["dispatch"]}]}},
+        policyName: $name, validationActions: ["Deny"]}};
+    [["apps", "deployments"], ["apps", "replicasets"], ["apps", "statefulsets"], ["apps", "daemonsets"], ["batch", "jobs"], ["batch", "cronjobs"]] as $workloads
+    | "request.userInfo.username == \u0027broker-ci@example-project.iam.gserviceaccount.com\u0027 || !(has(object.spec.template.spec.serviceAccountName) && object.spec.template.spec.serviceAccountName == \u0027envoy-broker\u0027)" as $workload
+    | [policy("broker-pod-connect"; "CONNECT"; [["", "pods/exec"], ["", "pods/attach"], ["", "pods/portforward"]];
+         "!request.name.startsWith(\u0027envoy-broker-\u0027)"; "no exec, attach or port forward to a broker pod"),
+       binding("broker-pod-connect"),
+       policy("broker-pod-update"; "UPDATE"; [["", "pods"], ["", "pods/ephemeralcontainers"]];
+         "!(oldObject.metadata.name.startsWith(\u0027envoy-broker-\u0027) || oldObject.spec.serviceAccountName == \u0027envoy-broker\u0027) || ((!has(request.subResource) || request.subResource == \u0027\u0027) && object.spec == oldObject.spec)";
+         "a broker pod takes metadata changes alone"),
+       binding("broker-pod-update"),
+       policy("broker-pod-create"; "CREATE"; [["", "pods"]];
+         "!has(object.spec.serviceAccountName) || object.spec.serviceAccountName != \u0027envoy-broker\u0027 || (request.userInfo.username == \u0027system:serviceaccount:kube-system:replicaset-controller\u0027 && object.metadata.name.startsWith(\u0027envoy-broker-\u0027))";
+         "only the broker'"'"'s ReplicaSets make its pods"),
+       binding("broker-pod-create"),
+       policy("broker-workload-create"; "CREATE"; $workloads; $workload; "only broker CI names the broker'"'"'s account in a workload"),
+       binding("broker-workload-create"),
+       policy("broker-workload-update"; "UPDATE"; $workloads; $workload; "only broker CI names the broker'"'"'s account in a workload"),
+       binding("broker-workload-update")]'
+}
+# fence_check: the copy of the check under test whose broker-fence.json pins fence_objects, by the
+# digest the check's own broker-fence.jq gives it.
+readonly fence_check="$temporary_dir/fence-check/operator-token-minters.sh"
+mkdir -p "$temporary_dir/fence-check"
+cp "$check" "$fence_check"
+cp -r "$(dirname "$check")/operator-token-minters" "$temporary_dir/fence-check/"
+fence_pin="sha256:$(fence_objects | jq -c -L "$(dirname "$check")/operator-token-minters" --slurpfile contract "$fence_contract" \
+  'include "broker-fence"; [objs] | fence_read($contract[0]) | if .state == "read" then fence_digest else error("the example fence is \(.state)") end' |
+  jq -S -c . | sha256sum | cut -d' ' -f1)"
+readonly fence_pin
+jq --arg pin "$fence_pin" '.digest = $pin' "$fence_contract" >"$temporary_dir/fence-check/operator-token-minters/broker-fence.json"
+
+# fence_world: the base world with the broker in dispatch: its ServiceAccount, bound to the broker's
+# Google account through Workload Identity; its pod, which takes the broker's database login, and
+# Dispatch's own, which does not; the example fence (fence_objects) in the render and on the cluster
+# as GKE returns it (each policy with GKE's selector skipping its own namespaces, and the API
+# server's matchPolicy, objectSelector and scope, which the check must read as left out); and the
+# grants the fence answers.
+fence_world() {
+  base_world
+  edit "$world/clusters/operator-cluster/serviceaccounts.json" '. + [{namespace: "dispatch", name: "envoy-broker", gsa: $b}, {namespace: "dispatch", name: "dispatch"},
+    {namespace: "legion", name: "dispatch-measure"}]' --arg b "$broker"
+  echo dispatch >>"$world/clusters/operator-cluster/namespaces"
+  unbind "$broker_res" roles/iam.workloadIdentityUser
+  iam "$broker_res" roles/iam.workloadIdentityUser "$fence_wi_member"
+  jq -n '[{metadata: {namespace: "dispatch", name: "envoy-broker-7c9d5f-abcde"},
+           spec: {serviceAccountName: "envoy-broker", containers: [{name: "broker",
+             env: [{name: "BROKER_DATABASE_URL", valueFrom: {secretKeyRef: {name: "envoy-broker-db", key: "url"}}}]}]}},
+          {metadata: {namespace: "dispatch", name: "dispatch-6b8f4c-fghij"},
+           spec: {serviceAccountName: "dispatch", containers: [{name: "dispatch", envFrom: [{secretRef: {name: "dispatch-dispatch"}}]}]}}]' \
+    >"$world/clusters/operator-cluster/pods.json"
+  fence_objects >"$world/fence.json"
+  edit "$world/render.json" '.items += $f[0]
+    + [{apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", metadata: {name: "comment-delivery", namespace: "dispatch"},
+        rules: [{apiGroups: [""], resources: ["pods/exec"], verbs: ["get", "create"]}]},
+       {apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding", metadata: {name: "comment-delivery", namespace: "dispatch"},
+        roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "Role", name: "comment-delivery"},
+        subjects: [{apiGroup: "rbac.authorization.k8s.io", kind: "User", name: $cd}]}]' \
+    --slurpfile f "$world/fence.json" --arg cd "$comment_delivery"
+  jq '[.[] | .metadata += {uid: "uid-\(.metadata.name)", resourceVersion: "7001", generation: (if .kind == "ValidatingAdmissionPolicy" then 3 else 1 end)}
+        | .spec |= (if has("matchConstraints") then
+                 .matchConstraints += {matchPolicy: "Equivalent", objectSelector: {}, namespaceSelector: {matchExpressions: [
+                   {key: "kubernetes.io/metadata.name", operator: "NotIn", values: ["kube-system", "gke-gmp-system", "gke-managed-cim"]}]}}
+                 | .matchConstraints.resourceRules |= map(. + {scope: "*"})
+               else .matchResources += {matchPolicy: "Equivalent", objectSelector: {}} end)]' \
+    "$world/fence.json" >"$world/clusters/operator-cluster/admission-policies.json"
+  subject_grant operator-cluster "$(user_subject "$comment_delivery")" create "" pods exec dispatch ""
+  subject_grant operator-cluster "$(user_subject "$comment_delivery")" get "" pods exec dispatch ""
+  subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" create "" pods exec dispatch ""
+  subject_grant operator-cluster "$(sa_subject legion dispatch-measure)" patch "" pods "" dispatch ""
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods portforward dispatch ""
+}
+# fence_edit WHERE PROGRAM [ARGS...]: rewrites each fence object of the render (WHERE declared), of
+# the cluster (live) or of both through a jq program over one object.
+fence_edit() {
+  local where="$1" program="$2"
+  shift 2
+  [ "$where" = live ] || edit "$world/render.json" ".items |= map($program)" "$@"
+  [ "$where" = declared ] || edit "$world/clusters/operator-cluster/admission-policies.json" "map($program)" "$@"
+}
+# fence_run ARGS...: fence_check with the full flags, the broker as dispatch/envoy-broker with its
+# database login there, then ARGS, against the current world; sets output and status as run does.
+fence_run() {
+  local args
+  mapfile -t args < <(full_args)
+  status=0
+  output="$(env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$fence_check" "${args[@]}" \
+    --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db "$@" 2>&1)" || status=$?
 }
 
 # The checked permissions of roles/container.admin, as `gcloud iam roles describe` lists them, with
@@ -447,6 +558,8 @@ each() {
 . "$script_dir/operator-token-minters/test-rows-admission.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-become.sh
 . "$script_dir/operator-token-minters/test-rows-become.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-fence.sh
+. "$script_dir/operator-token-minters/test-rows-fence.sh"
 
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }
 echo "all $rows rows passed"

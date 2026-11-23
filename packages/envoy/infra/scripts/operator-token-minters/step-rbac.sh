@@ -79,6 +79,11 @@ else
   rights="$(with_rights "$rights" "$(jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], n: .[1]}] | unique[]
       | {verb: "get", group: "", resource: "secrets", sub: "", ns: .ns, name: .n, label: "get secrets \(.n) in \(.ns)"}
       | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}' "$WORK/token-secrets.tsv" | jq -s -c .)")"
+  # The broker's pod fence (broker-fence.sh), read once the admission discovery and the guarded
+  # namespaces' token Secrets are: while it is credited, what it refuses is a credit, and who can
+  # delete it is asked beside who can write it.
+  fence_live "$KUBE" "$step"
+  [ -z "$CREDIT_FENCE" ] || rights="$(with_rights "$rights" "$FENCE_WRITE_RIGHTS")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
@@ -134,6 +139,7 @@ else
   # name, and update or patch each role bound to a reviewed principal.
   named_rights
   rights="$(with_rights "$rights" "$NAMED_RIGHTS")"
+  fence_credits "$rights"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list.
   [ "$accounts" -gt 0 ] ||
@@ -149,7 +155,12 @@ else
     follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER"
     remember_cluster "$KUBE" "$step" "" "cluster:$CLUSTER"
     if unchanged; then
-      pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed"
+      credits="$(credited)"
+      pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed$([ "$credits" -eq 0 ] || echo " but $credits grants the broker's pod fence refuses")"
     fi
   fi
 fi
+# The code step's grants the declared fence refuses, now that the cluster's fence was read or not;
+# then no other cluster's reviews read the fence.
+fence_settle
+CREDIT_FENCE="" CREDIT_OF=()

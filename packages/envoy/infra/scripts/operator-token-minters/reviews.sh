@@ -126,8 +126,9 @@ csr_chains() {
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
 # allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
 # SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS,
-# and the certificate signing chain's parts, which csr_part gathers for csr_chains (the caller runs
-# it after live_named, whose named approvals join the chain). Returns 1 when the witness was
+# the certificate signing chain's parts, which csr_part gathers for csr_chains (the caller runs it
+# after live_named, whose named approvals join the chain), and a right the broker's pod fence refuses
+# (CREDIT_OF, broker-fence.sh), a credit, which seeds nothing. Returns 1 when the witness was
 # refused.
 judge_reviews() {
   local principal label verdict error reason witness_refused=false
@@ -141,6 +142,10 @@ judge_reviews() {
     case "$verdict" in
       allowed)
         ! csr_part "$principal" "$label" "$reason" || continue
+        if [ -n "${CREDIT_OF[$label]:-}" ]; then
+          [[ "$principal" == seed:* ]] || fence_credit "$principal" "$label$2" "$3" "$reason" "${CREDIT_OF[$label]}"
+          continue
+        fi
         if [[ "$principal" == seed:* ]]; then
           found_sa "${principal#seed:system:serviceaccount:}" "$label"
           continue
@@ -185,7 +190,8 @@ seed_named() {
 # patch of one Deployment sets its serviceAccountName), read as live_named reads the others when it
 # read the cluster's roles. Each ServiceAccount so found is followed in turn, up to 5 steps; one
 # found in the fifth and not followed is UNKNOWN. A ServiceAccount that becomes only itself is no
-# finding.
+# finding, and a right the broker's pod fence refuses, while it is credited (broker-fence.sh), is a
+# credit, which finds no ServiceAccount.
 follow_becomes() {
   local kube="$1" step="$2" suffix="$3" resource="$4" round sa rights label targets principal verdict error reason who why
   local what id detail kind ns name
@@ -199,6 +205,7 @@ follow_becomes() {
     done < <(printf '%s\n' ${FOUND_SAS[@]+"${!FOUND_SAS[@]}"} | sed '/^$/d' | sort)
     [ -s "$WORK/become.tsv" ] || return 0
     rights="$(jq -R -s -c -L "$LIB" --argjson table "$TABLE_JSON" --rawfile names "$WORK/api-resources" -f "$LIB/become-rights.jq" "$WORK/become.tsv")"
+    fence_credits "$rights"
     targets_of=() targets_why=()
     while IFS=$'\t' read -r label targets; do targets_of[$label]="$targets"; done < <(jq -r '.[] | [.label, (.targets | join(" "))] | @tsv' <<<"$rights")
     while IFS=$'\t' read -r why targets; do targets_why[$why]="$targets"; done < <(jq -r '.[] | [.why, (.targets | join(" "))] | @tsv' <<<"$rights")
@@ -213,6 +220,10 @@ follow_becomes() {
           who="${principal#seed:}"
           who="${who#system:serviceaccount:}"
           [ "${targets_of[$label]:-}" != "$who" ] || continue
+          if [ -n "${CREDIT_OF[$label]:-}" ]; then
+            [[ "$principal" == seed:* ]] || fence_credit "$principal" "$label$suffix" "$resource" "$reason" "${CREDIT_OF[$label]}"
+            continue
+          fi
           if [[ "$principal" == seed:* ]]; then
             found_sa "$who" "$label"
             continue
@@ -228,20 +239,24 @@ follow_becomes() {
     printf '[]' >"$WORK/no-rights.json"
     printf '%s' "$rights" >"$WORK/become-rights.json"
     if ! jq -r -n --slurpfile rights "$WORK/no-rights.json" --slurpfile named_rights "$WORK/become-rights.json" --argjson live true \
-      -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/become-named.rec" 2>"$WORK/become-named.err"; then
+      --argjson fence "${CREDIT_FENCE:-null}" -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/become-named.rec" 2>"$WORK/become-named.err"; then
       unknown "$step" "the live roles could not be read for who can become a found ServiceAccount by a right limited by name: $(first_line "$WORK/become-named.err")"
       continue
     fi
     while IFS="$US" read -r -u 6 what id detail kind ns name; do
-      [ "$what" = grant ] || continue
+      case "$what" in grant | credit:*) ;; *) continue ;; esac
       k8s_subject "$kind" "$ns" "$name"
-      ! seed_named "$kind" "$ns" "$name" "$detail" || continue
+      [ "$what" != grant ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
       [ "$SUBJECT_OK" != true ] || continue
       targets=""
       for why in "${!targets_why[@]}"; do
         [[ "$detail" != *", $why" ]] || { targets="${targets_why[$why]}"; break; }
       done
       [ "$targets" != "${SUBJECT#system:serviceaccount:}" ] || continue
+      if [ "$what" != grant ]; then
+        fence_credit "$SUBJECT" "$detail$suffix" "$resource" "RBAC: $id limits it by name" "${what#credit:}"
+        continue
+      fi
       finding "$SUBJECT" "$detail$suffix" "$detail" "$resource" "$detail" "RBAC: $id limits it by name"
       [[ ! "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || found_sa "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$detail"
     done 6<"$WORK/become-named.rec"
@@ -252,9 +267,10 @@ follow_becomes() {
   done
 }
 # remember_cluster KUBECONFIG STEP SUFFIX RESOURCE: keeps what follow_becomes needs of the cluster just
-# read (its principals, its discovery's custom resources, and its bindings and roles with whether
-# live_named read them), for follow_members, which runs after the IAM steps find the Workload
-# Identity members of an RBAC finding's Google account.
+# read (its principals, its discovery's custom resources, its bindings and roles with whether
+# live_named read them, and the broker's pod fence while it is credited there), for follow_members,
+# which runs after the IAM steps find the Workload Identity members of an RBAC finding's Google
+# account.
 REMEMBERED=()
 remember_cluster() {
   local n="${#REMEMBERED[@]}" file
@@ -262,7 +278,7 @@ remember_cluster() {
   for file in api-resources bindings.json roles.json; do
     if [ -e "$WORK/$file" ]; then cp "$WORK/$file" "$WORK/remembered-$n.$file"; else : >"$WORK/remembered-$n.$file"; fi
   done
-  REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}")
+  REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}$US$CREDIT_FENCE")
 }
 # follow_members MEMBERS: on every cluster remember_cluster kept, who can become a ServiceAccount of
 # MEMBERS (a JSON object of namespace:name to the Google account it acts as through Workload
@@ -270,7 +286,7 @@ remember_cluster() {
 follow_members() {
   local n kube step suffix resource member file
   for ((n = 0; n < ${#REMEMBERED[@]}; n++)); do
-    IFS="$US" read -r kube step suffix resource ROLES_OK <<<"${REMEMBERED[$n]}"
+    IFS="$US" read -r kube step suffix resource ROLES_OK CREDIT_FENCE <<<"${REMEMBERED[$n]}"
     cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
     for file in api-resources bindings.json roles.json; do cp "$WORK/remembered-$n.$file" "$WORK/$file"; done
     FOUND_SAS=()
@@ -279,6 +295,7 @@ follow_members() {
     done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
     follow_becomes "$kube" "$step" "$suffix" "$resource"
   done
+  CREDIT_FENCE="" CREDIT_OF=()
 }
 # custom_rights KUBECONFIG STYLE: sets CUSTOM_RIGHTS, the JSON array, as rights_json writes rights,
 # of create, update and patch on each custom resource the API server's discovery lists as namespaced
@@ -333,7 +350,8 @@ admission_rights() {
 # its right followed by SUFFIX, on RESOURCE; a ServiceAccount so found is followed as judge_reviews'
 # are (FOUND_SAS). A part of the certificate chain so limited (an approval by name, whose name the
 # requester picks) goes to csr_part, so it joins the signers judge_reviews' reviews allowed; the
-# caller runs csr_chains after this. Runs after judge_reviews; a refused list is UNKNOWN naming the
+# caller runs csr_chains after this. A right the broker's pod fence refuses, while it is credited
+# (broker-fence.sh), is a credit. Runs after judge_reviews; a refused list is UNKNOWN naming the
 # permission.
 live_named() {
   local what id detail kind ns name
@@ -347,16 +365,20 @@ live_named() {
   printf '[]' >"$WORK/no-rights.json"
   printf '%s' "$5" >"$WORK/named-rights.json"
   if ! jq -r -n --slurpfile rights "$WORK/no-rights.json" --slurpfile named_rights "$WORK/named-rights.json" --argjson live true \
-    -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/named.rec" 2>"$WORK/named.err"; then
+    --argjson fence "${CREDIT_FENCE:-null}" -L "$LIB" -f "$LIB/code-rbac.jq" "$WORK/bindings.json" "$WORK/roles.json" >"$WORK/named.rec" 2>"$WORK/named.err"; then
     unknown "$2" "the API server's list of roles is not JSON: $(first_line "$WORK/named.err")"
     return 0
   fi
   ROLES_OK=true
   while IFS="$US" read -r -u 6 what id detail kind ns name; do
-    [ "$what" = grant ] || continue
+    case "$what" in grant | credit:*) ;; *) continue ;; esac
     k8s_subject "$kind" "$ns" "$name"
-    ! seed_named "$kind" "$ns" "$name" "$detail" || continue
+    [ "$what" != grant ] || ! seed_named "$kind" "$ns" "$name" "$detail" || continue
     [ "$SUBJECT_OK" != true ] || continue
+    if [ "$what" != grant ]; then
+      fence_credit "$SUBJECT" "$detail$3" "$4" "RBAC: $id limits it by name" "${what#credit:}"
+      continue
+    fi
     ! csr_part "$SUBJECT" "$detail" "RBAC: $id limits it by name" || continue
     finding "$SUBJECT" "$detail$3" "$detail" "$4" "$detail" "RBAC: $id limits it by name"
     [[ ! "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] || found_sa "${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" "$detail"

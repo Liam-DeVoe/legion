@@ -356,7 +356,14 @@ case "${args[*]}" in
     ;;
   "get "*admissionpolic*" -o json")
     # The cluster's admission policies and their bindings: the world's admission-policies.json, or none.
+    [ ! -e "$dir/refuse-policies" ] || forbidden validatingadmissionpolicies.admissionregistration.k8s.io 'list resource "validatingadmissionpolicies" in API group "admissionregistration.k8s.io"' container.thirdPartyObjects.list
     { if [ -e "$dir/admission-policies.json" ]; then cat "$dir/admission-policies.json"; else echo '[]'; fi; } | jq '{apiVersion: "v1", kind: "List", items: .}'
+    ;;
+  "get pods -n "*" -o json")
+    # A namespace's pods: the world's pods.json entries (each a Pod) there, or none.
+    [ ! -e "$dir/refuse-pods" ] || forbidden pods 'list resource "pods" in API group ""' container.pods.list
+    { if [ -e "$dir/pods.json" ]; then cat "$dir/pods.json"; else echo '[]'; fi; } |
+      jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.metadata.namespace == $ns)]}'
     ;;
   "get --raw "*)
     # Discovery of one group version: the world's raw.json, keyed by path, or the API server's 404.
