@@ -1190,9 +1190,10 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
-// head will change until the implementer merges the base forward, and the issue's move into
-// accepting is what asks for that merge (dispatch://INFRA-4374 R0, record.ConflictMergeNext). Read
-// here, the state build shows no mergeWait for the round the engine has just ended.
+// head will change until the agent of the task's implementation step merges the base forward, and
+// the issue's move into accepting is what asks for that merge (dispatch://INFRA-4374 R0,
+// record.ConflictMergeNext). Read here, the state build shows no mergeWait for the round the engine
+// has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's

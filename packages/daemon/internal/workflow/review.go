@@ -176,10 +176,11 @@ const conflictConfirmWait = time.Minute
 //
 // The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
 // base's rules for its required checks, which the confirming read carries
-// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer to merge the base
-// forward, and the issue keeps its phase (mergeForward, R1); no reason leaves the conflict
-// recorded and logged with the checks the base requires and those green on the head, and the
-// tester and the reviewer go on at that head. A CONFLICTING read of a head the record already
+// (intake.PullRequestMergeability.Rules). A reason to act asks the agent of the task's
+// implementation step to merge the base forward, and the issue keeps its phase (mergeForward,
+// R1); no reason leaves the conflict recorded and logged with the checks the base requires and
+// those green on the head, and the tester and the reviewer go on at that head. A CONFLICTING read
+// of a head the record already
 // holds conflicting decides again in the same way, since the phase the issue has reached since can
 // need what the phase before did not, and mergeForward asks nothing twice for one head.
 //
@@ -1093,10 +1094,11 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
 // An approval of a head the record holds in a confirmed conflict with its base
 // (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
-// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
-// implementer merges the base forward, and the merge is what the issue needs next once its review
-// is over, so the move into accepting asks for it (transition, mergeForwardOnEntry,
-// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
+// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the agent of
+// the task's implementation step merges the base forward, and the merge is what the issue needs
+// next once its review is over, so the move into accepting asks for it (transition,
+// mergeForwardOnEntry, record.ConflictMergeNext). While the first conflicting read of the head
+// waits for its second
 // (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
 // stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round

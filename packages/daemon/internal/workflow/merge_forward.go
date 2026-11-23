@@ -87,7 +87,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 		}
 	}
 	if at != phase.Implementing {
-		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the implementer is asked to merge %s forward, and the issue stays in %s",
+		reason := fmt.Sprintf("the head %s conflicts with %s (%s): the agent of the task's implementation step is asked to merge %s forward, and the issue stays in %s",
 			pr.HeadSHA, pr.Base, why, pr.Base, at)
 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: at, Reason: reason}); err != nil {
 			return err

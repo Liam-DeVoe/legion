@@ -1848,13 +1848,13 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
 // dispatch://INFRA-4374 R1) to the claim of the worker on one role's step, on that claim's Envoy
-// topic. The daemon
-// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer
-// to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
-// worker of the phase the issue stays in to stop writing that workspace while the merge runs
-// (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
-// the reviewer of an issue past its review whose task has a reviewer step to read the merge
-// (MergeForwardReview).
+// topic. The daemon acts on a confirmed conflict without moving the issue out of its phase: it
+// asks the agent of the task's implementation step (workflow's implementationAgent: the
+// implementer of the default steps) to merge Base forward onto Head in the issue workspace and
+// push (MergeForwardAsk), and tells the worker of the phase the issue stays in to stop writing
+// that workspace while the merge runs (MergeForwardHold). Once a new head lands it tells that
+// worker so (MergeForwardLanded), and asks the reviewer of an issue past its review whose task has
+// a reviewer step to read the merge (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
 // to). Claim is the claim the message reaches: the claim of the worker on Role's step when the
@@ -1866,8 +1866,8 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // hold state.
 //
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
-// a released claim, and a released implementer must still be woken for the merge; its executor
-// follows the merge-queue removal's (MergeQueueRemoval).
+// a released claim, and a released agent of the implementation step must still be woken for the
+// merge; its executor follows the merge-queue removal's (MergeQueueRemoval).
 type MergeForwardMessage struct {
 	Role        claim.Role       `json:"role"`
 	Claim       claim.Token      `json:"claim,omitempty"`
@@ -1908,18 +1908,19 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // instruction to a sentence, because an agent reads them (ASD-STE100).
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
-// the daemon acted, and tells the implementer to merge the base forward in the issue workspace,
-// the one workspace every role of the issue shares, as the worker skill's conflicts reference
-// says, after the working-copy check of its foreign-path reference, and to push the issue branch,
-// with no handoff and no completion for the merge. In implementing it also says that the
-// implementer's own assignment and its completion stand: the act starts no phase entry there.
+// the daemon acted, and tells the agent of the task's implementation step to merge the base
+// forward in the issue workspace, the one workspace every role of the issue shares, as the worker
+// skill's conflicts reference says, after the working-copy check of its foreign-path reference,
+// and to push the issue branch, with no handoff and no completion for the merge. In implementing
+// it also says that the implementer's own assignment and its completion stand: the act starts no
+// phase entry there.
 //
-// The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
-// the head forward in the workspace they share and that the issue stays in its phase, to stop
-// writing the workspace now (the merger also: not to merge the pull request or put it in the merge
-// queue), not to complete its phase at the old head but at the new head the daemon names, to keep
-// its session and its turn's jobs, that it is told the new head when it lands, and that a result
-// it recorded at the old head stays a result of the old head.
+// The hold gives why the daemon acted, and tells the worker that the agent of the task's
+// implementation step is asked to merge the head forward in the workspace they share and that the
+// issue stays in its phase, to stop writing the workspace now (the merger also: not to merge the
+// pull request or put it in the merge queue), not to complete its phase at the old head but at the
+// new head the daemon names, to keep its session and its turn's jobs, that it is told the new head
+// when it lands, and that a result it recorded at the old head stays a result of the old head.
 //
 // The landed names both heads and how to read what changed: `git diff` from the old head to the
 // new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
@@ -1956,7 +1957,7 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			merger = " Do not merge the pull request, and do not put it in the merge queue."
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s. %s"+
-			" The implementer is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
+			" The agent of the task's implementation step is asked to merge %s forward in the issue workspace, $LEGION_WORKSPACE, which you share with it."+
 			" The issue stays in %s. Stop writing the workspace now.%s"+
 			" Do not complete your phase at head %s. Complete it at the new head that the daemon names."+
 			" Keep your session and the jobs of your turn. The daemon tells you the new head when it lands."+

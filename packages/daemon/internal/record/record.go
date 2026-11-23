@@ -1032,13 +1032,14 @@ type PullRequest struct {
 	// withJudgement), and so does a move of the head (classify's advance): it names its own head,
 	// and a read of another head confirms nothing of it.
 	ConflictRead *ConflictRead
-	// MergeForward is the daemon's ask that the implementer merge the base forward onto a head
-	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
-	// The issue keeps its phase, and the ask is a message on the implementer's role topic rather
-	// than a phase start: it names the head and the base branch of the conflict, the phase the
-	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new head
-	// arrives, that head (MergeForward.Landed). It also keeps every merge forward that landed
-	// before it in the same stretch of work (MergeForward.Earlier).
+	// MergeForward is the daemon's ask that the agent of the task's implementation step (the
+	// implementer of the default steps) merge the base forward onto a head whose conflict was
+	// confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The issue keeps its
+	// phase, and the ask is a message on that agent's claim topic rather than a phase start: it
+	// names the head and the base branch of the conflict, the phase the issue stood in and stays
+	// in, why the act was needed, when it was asked, and, once a new head arrives, that head
+	// (MergeForward.Landed). It also keeps every merge forward that landed before it in the same
+	// stretch of work (MergeForward.Earlier).
 	//
 	// Who writes it: Engine.mergeForward, in the transaction that queues the merge_forward rows,
 	// and pullRequestSynchronized, which sets Landed on the first head that moves off
@@ -1083,9 +1084,10 @@ type ConflictRead struct {
 	At   time.Time `json:"at"`
 }
 
-// MergeForward is the daemon's ask that the implementer merge Base forward onto Head
-// (PullRequest.MergeForward). Phase is the phase the issue stood in when the daemon asked, and
-// stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
+// MergeForward is the daemon's ask that the agent of the task's implementation step merge Base
+// forward onto Head (PullRequest.MergeForward). Phase is the phase the issue stood in when the
+// daemon asked, and stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374
+// R0, ConflictWhy).
 // AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
 // until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
 // it does when the issue stands past review and its task has a reviewer step (workflow's
