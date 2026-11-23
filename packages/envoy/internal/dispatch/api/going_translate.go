@@ -980,7 +980,7 @@ func (f goingUploadedFile) told(answer agentwire.CallAnswer) agentwire.CallAnswe
 		return told
 	}
 	header := fmt.Sprintf("File %s: %s, version %d%s, %d bytes.\n\n", f.name, media, f.version, of, size)
-	told.Body, told.Cut = append(append(make([]byte, 0, len(header)+len(content)), header...), content...), answer.Cut
+	told.Body, told.Cut = append([]byte(header), content...), answer.Cut
 	return told
 }
 
