@@ -1,12 +1,18 @@
 package specstore
 
 import (
+	"context"
 	"errors"
+	"maps"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/specchange"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // A level is read from its two documents: each statement with its text and the parent a
@@ -254,6 +260,82 @@ func TestParseLevelMarksANoteFieldItCannotPlaceAsUnread(t *testing.T) {
 			t.Parallel()
 			if statement := notedLevel(t, c.notes); !reflect.DeepEqual(statement, unread) {
 				t.Errorf("the statement reads\n%+v\nwant\n%+v", statement, unread)
+			}
+		})
+	}
+}
+
+// An import writes each node of the level at an address of its id, so each id the level holds must
+// name one node and be one the approved spec can hold: an id that two nodes of the level hold - two
+// components, two statements, a statement and a component - an id that is no id, and an id longer
+// than an address of the store refuse the level (SPEC_NODE_INVALID), naming the id, whether its node
+// would be written or held, and the import writes nothing. A level whose ids each name one node is
+// written and held as before.
+func TestImportRefusesALevelIDTheStoreCannotHold(t *testing.T) {
+	sent := LevelStatement{ID: "a-bill-is-sent", Text: "A bill is sent.", Kind: "behavior", About: []string{"billing"}, Noted: true}
+	kept := LevelStatement{ID: "a-bill-is-kept", Text: "A bill is kept."}
+	billing := specgraph.Component{ID: "billing", Name: "Billing", Purpose: "It bills each order."}
+	ledger := specgraph.Component{ID: "ledger", Name: "Ledger", Purpose: "It records each bill.", Parent: "billing"}
+	held := func(id string) LevelStatement { return LevelStatement{ID: id, Text: "A bill is kept."} }
+	long := strings.Repeat("a", graphstore.MaxAddressBytes)
+
+	t.Run("each id names one node", func(t *testing.T) {
+		database := storetest.Open(t)
+		imported, err := importLevel(database, issue(1), Level{Statements: []LevelStatement{sent, kept}, Components: []specgraph.Component{billing, ledger}})
+		if err != nil {
+			t.Fatalf("import the level: %v", err)
+		}
+		var written []string
+		for _, node := range imported.Written {
+			written = append(written, node.ID)
+		}
+		if slices.Sort(written); !slices.Equal(written, []string{"a-bill-is-sent", "billing", "ledger"}) {
+			t.Errorf("the import writes %v, want a-bill-is-sent, billing and ledger", written)
+		}
+		if holds := heldIDs(t, database); !slices.Equal(holds, []string{"a-bill-is-kept"}) {
+			t.Errorf("the import holds %v, want a-bill-is-kept", holds)
+		}
+	})
+
+	for _, c := range []struct {
+		name       string
+		level      Level
+		node, rule string
+	}{
+		{name: "two components of one id", node: "billing", rule: "doubled-id", level: Level{Statements: []LevelStatement{sent, kept},
+			Components: []specgraph.Component{billing, {ID: "billing", Name: "Billing again", Purpose: "It bills each refund."}}}},
+		{name: "two statements of one id", node: "a-bill-is-sent", rule: "doubled-id", level: Level{
+			Statements: []LevelStatement{sent, kept, {ID: "a-bill-is-sent", Text: "A bill is sent twice.", Kind: "behavior", Noted: true}},
+			Components: []specgraph.Component{billing}}},
+		{name: "a statement and a component of one id", node: "billing", rule: "doubled-id", level: Level{
+			Statements: []LevelStatement{sent, {ID: "billing", Text: "Billing bills.", Kind: "behavior", Noted: true}},
+			Components: []specgraph.Component{billing}}},
+		{name: "two held statements of one id", node: "a-bill-is-kept", rule: "doubled-id", level: Level{
+			Statements: []LevelStatement{sent, kept, held("a-bill-is-kept")}, Components: []specgraph.Component{billing}}},
+		{name: "a held statement whose id is no id", node: "step-3", rule: "bad-id", level: Level{
+			Statements: []LevelStatement{sent, held("step-3")}, Components: []specgraph.Component{billing}}},
+		{name: "a held statement whose id is longer than an address", node: long, rule: "bad-id", level: Level{
+			Statements: []LevelStatement{sent, held(long)}, Components: []specgraph.Component{billing}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			imported, err := importLevel(database, issue(1), c.level)
+			var refusal *Refusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("the import answers %+v with the error %v, want a refusal of the level naming %.40s", imported, err, c.node)
+			}
+			if refusal.Code != RefusalNodeInvalid || len(refusal.Problems) != 1 || refusal.Problems[0].Node != c.node || refusal.Problems[0].Rule != c.rule {
+				t.Errorf("the refusal is %s %.300v, want %s naming %.40s under %s", refusal.Code, refusal.Problems, RefusalNodeInvalid, c.node, c.rule)
+			}
+			state, err := Read(context.Background(), database.Pool, "CORE", "acme/app")
+			if err != nil {
+				t.Fatalf("read the approved spec: %v", err)
+			}
+			if len(state.Nodes) != 0 {
+				t.Errorf("the refused import wrote the nodes %.300v", slices.Sorted(maps.Keys(state.Nodes)))
+			}
+			if holds := heldIDs(t, database); len(holds) != 0 {
+				t.Errorf("the refused import holds %v", holds)
 			}
 		})
 	}

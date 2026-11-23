@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 	"github.com/sjawhar/envoy/internal/dispatch/specstore"
@@ -1080,6 +1081,67 @@ func TestImportLevelReadsEachNoteFieldAtEveryDepth(t *testing.T) {
 			}
 			if node := rig.requireVersions(t, specRepo, "a-bill-is-kept", `about="billing"`); !strings.Contains(node.Versions[0].Block, `serves="a-bill-is-sent"`) {
 				t.Errorf("a-bill-is-kept is written as %q, want it to serve a-bill-is-sent", node.Versions[0].Block)
+			}
+		})
+	}
+}
+
+// levelRefusal is the 409 body of a refused import: its code and each problem by node and rule.
+type levelRefusal struct {
+	Code     string `json:"code"`
+	Problems []struct {
+		Node string `json:"node"`
+		Rule string `json:"rule"`
+	} `json:"problems"`
+}
+
+// TestImportLevelRefusesAnIDTheStoreCannotHold: the import writes each node of the level at an
+// address of its id, so a level whose id two of its nodes hold - two rows of its Components table,
+// a statement and a component - or whose held statement has an id that is no id, or one longer than
+// an address of the store, is refused (409 SPEC_NODE_INVALID) naming the id, writes nothing and opens
+// no repair issue; a level whose ids each name one node is written (D9).
+func TestImportLevelRefusesAnIDTheStoreCannotHold(t *testing.T) {
+	const header = "| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n"
+	const billing = "| billing | component | Billing | It bills each order. | none |\n"
+	const sent = ":::requirement{#a-bill-is-sent}\nA bill is sent.\n:::\n\n"
+	long := strings.Repeat("a", graphstore.MaxAddressBytes)
+	for _, c := range []struct {
+		name, statements, rows string
+		node, rule             string
+	}{
+		{name: "each id names one node", statements: sent, rows: billing + "| ledger | component | Ledger | It records each bill. | billing |\n"},
+		{name: "two components of one id", statements: sent, rows: billing + "| billing | component | Billing again | It bills each refund. | none |\n",
+			node: "billing", rule: "doubled-id"},
+		{name: "a statement and a component of one id", statements: sent + ":::requirement{#billing}\nBilling bills each order.\n:::\n\n", rows: billing,
+			node: "billing", rule: "doubled-id"},
+		{name: "a held statement whose id is no id", statements: sent + ":::requirement{#step-3}\nA bill is kept.\n:::\n\n", rows: billing,
+			node: "step-3", rule: "bad-id"},
+		{name: "a held statement whose id is longer than an address", statements: sent + ":::requirement{#" + long + "}\nA bill is kept.\n:::\n\n", rows: billing,
+			node: long, rule: "bad-id"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newLevelRig(t, "A level", "# Level\n\n## Statements\n\n"+c.statements+"## Components\n\n"+header+c.rows)
+			notes := rig.upload(t, "notes.md", "# Notes\n\n### a-bill-is-sent\n\n- Kind: behavior\n- About: billing\n- Supports: none\n")
+			rig.approveLevel(t)
+			rig.approveDocument(t, notes.ID)
+			if c.node == "" {
+				imported := rig.imported(t, "notes.md")
+				if written := slices.Sorted(slices.Values(imported.Written)); !slices.Equal(written, []string{"a-bill-is-sent", "billing", "ledger"}) || len(imported.Held) != 0 {
+					t.Errorf("the import writes %v and holds %v, want a-bill-is-sent, billing and ledger written and nothing held", written, imported.lacks())
+				}
+				rig.requireVersions(t, specRepo, "ledger", `parent="billing"`)
+				return
+			}
+			response := rig.importLevel(t, "notes.md")
+			refusal := decodeBody[levelRefusal](t, response)
+			if response.Code != http.StatusConflict || refusal.Code != specstore.RefusalNodeInvalid || len(refusal.Problems) != 1 ||
+				refusal.Problems[0].Node != c.node || refusal.Problems[0].Rule != c.rule {
+				t.Errorf("the import answers %d %.600s, want 409 %s naming %.40s under %s", response.Code, response.Body.String(), specstore.RefusalNodeInvalid, c.node, c.rule)
+			}
+			rig.requireAbsent(t, specRepo, "billing")
+			rig.requireAbsent(t, specRepo, "a-bill-is-sent")
+			if children := rig.children(t); len(children) != 0 {
+				t.Errorf("%s has the child issues %v, want none", rig.level.Key, children)
 			}
 		})
 	}
