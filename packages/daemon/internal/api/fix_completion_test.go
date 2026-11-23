@@ -125,7 +125,9 @@ func lastBackwardMove(t *testing.T, facts *factRecorder) intake.BackwardMove {
 // implementing, as the fix's own completion, never one of reviewing. The implementer works its
 // step through the fix, so the completion is held to the implement record that step ends with, as
 // any completion of the phase its role works is: one naming none is refused, and nothing reaches
-// the workflow.
+// the workflow. A claim that serves no run and holds the fix's task unread (a lost prompt, an
+// adoption that failed) is taken from that task as a claim holding its phase's task is: the
+// fix's task names phase implementing while the issue is in reviewing, and is the issue's work.
 func TestTheFixCompletesWhileTheIssueIsInReviewing(t *testing.T) {
 	fixWorks := func(t *testing.T) (*harness, *factRecorder, liveClaim) {
 		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
@@ -154,6 +156,18 @@ func TestTheFixCompletesWhileTheIssueIsInReviewing(t *testing.T) {
 			http.StatusBadRequest, "HANDOFF_RECORD_REQUIRED")
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the fix's completion naming no record = %#v, want none applied", got)
+		}
+	})
+	t.Run("the fix's task the claim holds unread", func(t *testing.T) {
+		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+		seedReviewStep(t, h, true)
+		implementer := untaskedClaim(t, h, "LEGION-208", claim.RoleImplementer)
+		holdingTask(t, h, implementer, supervise.RequestDeliver{
+			Task: "fix the check", ID: implementingTask(fixEntry), Generation: 1, Phase: phase.Implementing, Entry: fixEntry})
+		completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "the check passes", Commit: fixPushed,
+			HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
+		if fact := lastCompletion(t, facts); fact.Fix != 1 || fact.Generation != 1 {
+			t.Fatalf("the completion's fact = %+v, want the completion of fix 1 at generation 1", fact)
 		}
 	})
 }
