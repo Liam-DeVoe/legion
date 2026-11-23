@@ -706,7 +706,8 @@ and then retires the key; any other value, and no tag, leaves the profile refuse
 `profile-block-mismatch` (a `github` or `google` block that
 does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (looser than the
 source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored
-value, `google-login` or `azure-login` source), or a tag rule its own tags over its source's break,
+value, `google-login` or `azure-login` source), `profile-minted` (a `proxy` block of kind `dpop`,
+which no stored secret ever serves), or a tag rule its own tags over its source's break,
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
@@ -1507,8 +1508,26 @@ authority to trust that proxy by, a proxy password, and, for each name, a placeh
 placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
-brokers; `envoy-broker profiles check <file> [--against <old file>]` says whether a broker would
-serve a file, and what that file adds and removes against the one in force.
+brokers; `envoy-broker profiles check <file> [--against <old file>] [--private-upstream '<host>=<url> ...']`
+says whether a broker would serve a file, and what that file adds and removes against the one in
+force.
+
+A proxy block may be of kind `dpop`: a capability the broker mints for a grant of its own and
+holds, from no stored secret. Such a profile is a name and its proxy block alone. Its grant is
+answered a placeholder that opens with `agent-secrets-placeholder-`, the kind's word and a hyphen;
+on the block's host the proxy takes a request only with that placeholder as its one
+`Authorization` header, `DPoP <placeholder>`, swaps in a token it mints for the grant bound to its
+pod's own key, adds a DPoP proof of that key, and sends the request without the command's
+forwarding headers. The placeholder opens no tunnel anywhere else. Every dpop block binds one exact
+host with an `allow` list none of whose entries is every path (`""` or `/`), in `Authorization` alone, and that host is a private destination's:
+`BROKER_PROXY_PRIVATE_UPSTREAM`, `<host>=<url>` entries, one per bound host, sends each host's allowed
+requests to its own address inside the broker's own cluster rather than wherever its name resolves. No block of another
+kind may bind it. A stored secret under a dpop block is never released (`403 MINTED_ONLY`).
+Each grant records a digest of its block and the destination, and a broker whose own digest differs
+serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds:
+it refuses it as `profile-minted`, and a stored secret of its name is not served through it, so
+nothing of it can be requested or approved. A grant of the capability is made by the broker
+itself, for a kind it names in code, and this release names none yet.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's

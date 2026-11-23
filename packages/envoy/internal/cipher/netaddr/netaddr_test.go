@@ -50,3 +50,36 @@ func TestHostWritesAnAddressLiteralAsCanonicalDoes(t *testing.T) {
 		}
 	}
 }
+
+// TestDestinationRefusalReadsTheIPv4AnAddressCarries: an IPv6 address that carries a refused IPv4
+// address - in the NAT64, 6to4, Teredo (server or client) or IPv4-compatible form - is refused as
+// that address is, naming the form and the address, since the network sends a packet for it to
+// the address it carries; so is a local-use translation address, whose carried address the address
+// alone does not say. The same forms of a private IPv4 address, which a destination may be, are
+// no refusal, and nor is a plain private address.
+func TestDestinationRefusalReadsTheIPv4AnAddressCarries(t *testing.T) {
+	for in, want := range map[string]string{
+		"64:ff9b::a9fe:a9fe":         "the NAT64 form (64:ff9b::/96) of 169.254.169.254",
+		"2002:a9fe:a9fe::1":          "the 6to4 form (2002::/16) of 169.254.169.254",
+		"::7f00:1":                   "the IPv4-compatible form (::/96) of 127.0.0.1",
+		"2001:0:7f00:1::":            "a Teredo address (2001::/32) whose server is 127.0.0.1",
+		"2001:0:a00:5:0:0:80ff:fffe": "a Teredo address (2001::/32) whose client is 127.0.0.1",
+		"64:ff9b::e000:1":            "the NAT64 form (64:ff9b::/96) of 224.0.0.1",
+		"64:ff9b:1::a9fe:a9fe":       "a local-use translation IPv6 address (64:ff9b:1::/48)",
+		"64:ff9b::a00:5":             "",
+		"2002:a00:5::1":              "",
+		"10.0.0.5":                   "",
+		"fd12:3456::5":               "",
+	} {
+		got := DestinationRefusal(netip.MustParseAddr(in))
+		if want == "" {
+			if got != "" {
+				t.Errorf("DestinationRefusal(%s) = %q; want none", in, got)
+			}
+			continue
+		}
+		if len(got) < len(want) || got[:len(want)] != want {
+			t.Errorf("DestinationRefusal(%s) = %q; want it to open with %q", in, got, want)
+		}
+	}
+}

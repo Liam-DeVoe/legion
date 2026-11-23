@@ -1,6 +1,8 @@
 // Package netaddr is the one reading of an IP address every address check of the broker makes:
 // the airlock proxy's rules of where it may dial, the cluster ranges, the bound-host check, the
-// dial the transport checks again, and the addresses config reads at boot.
+// dial the transport checks again, and the addresses config reads at boot; the IPv4 address an
+// IPv6 address carries (CarriedIPv4); and the one list of addresses a private destination may
+// never be (DestinationRefusal).
 //
 // It exists because netip keeps two things a socket does not need. An IPv4-mapped IPv6 address
 // (::ffff:34.118.224.1) is the IPv4 address it holds, and netip's predicates answer differently
@@ -28,4 +30,116 @@ func Host(host string) string {
 		return Canonical(addr).String()
 	}
 	return host
+}
+
+// metadataServers are the cloud metadata servers' IPv6 addresses. Each is a unique-local address
+// (fc00::/7), which is private and so admitted by every rule that takes a private address, but it
+// is the metadata server of the node a pod runs on, as 169.254.169.254 is over IPv4:
+//   - fd20:ce::254: Google Compute Engine's metadata server on an IPv6-only instance
+//     (https://docs.cloud.google.com/compute/docs/metadata/querying-metadata, "Metadata server
+//     endpoints");
+//   - fd00:ec2::254: the instance metadata service of Amazon EC2 on IPv6
+//     (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-IMDS-existing-instances.html,
+//     "The IMDS has two endpoints on an instance").
+var metadataServers = []netip.Addr{netip.MustParseAddr("fd20:ce::254"), netip.MustParseAddr("fd00:ec2::254")}
+
+// The IPv6 forms that carry an IPv4 address (CarriedIPv4). The network sends a packet for such an
+// address to the IPv4 address inside it: a NAT64 translator rewrites it as a packet to that
+// address, and a 6to4 or Teredo relay, or a host that still routes the IPv4-compatible form,
+// carries it there inside an IPv4 packet. So where the network has such a translator or relay
+// and it passes the address on, a tunnel to 64:ff9b::a9fe:a9fe is a connection to
+// 169.254.169.254, the node's metadata server. Every check refuses each such address by the
+// address it carries rather than rely on every translator and relay to refuse it. netip's
+// predicates read none of these as the address they carry, and the IPv4-mapped form is read as
+// its IPv4 address already (Canonical).
+var (
+	// 64:ff9b::/96, NAT64's well-known prefix (RFC 6052): the IPv4 address is the last 32 bits.
+	nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+	// 2002::/16, 6to4 (RFC 3056): the IPv4 address is the 32 bits after the prefix.
+	sixToFourPrefix = netip.MustParsePrefix("2002::/16")
+	// 2001::/32, Teredo (RFC 4380): the server's IPv4 address is the 32 bits after the prefix,
+	// and the client's is the last 32 bits with every bit inverted.
+	teredoPrefix = netip.MustParsePrefix("2001::/32")
+	// ::/96, the IPv4-compatible form RFC 4291 deprecated: the IPv4 address is the last 32 bits.
+	// :: and ::1 are inside it, and every check's fixed rules refuse each as itself first.
+	ipv4CompatiblePrefix = netip.MustParsePrefix("::/96")
+)
+
+// LocalUseTranslation is 64:ff9b:1::/48, the local-use translation prefix (RFC 8215), which IANA
+// lists as not globally reachable. A network places translation prefixes of its own choosing
+// inside it, for mechanisms of its own choosing, so the address alone does not say where an IPv4
+// address sits in it, or whether one does; RFC 8215 section 5 forbids a host to assume either. So
+// no reading of the address finds what it carries, and every check refuses the whole prefix.
+var LocalUseTranslation = netip.MustParsePrefix("64:ff9b:1::/48")
+
+// Carried is an IPv4 address an IPv6 address carries (CarriedIPv4), and the words of a refusal
+// that say how. The address is always IPv4, for which CarriedIPv4 answers nothing, so a check's
+// reading of a carried address goes one level deep and no further.
+type Carried struct {
+	Addr netip.Addr
+	Form string
+}
+
+// CarriedIPv4 answers the IPv4 addresses addr carries in one of the forms above, n of them: two
+// for a Teredo address, its server's and its client's, one for each other form, and none for an
+// IPv4 address or an IPv6 address in no such form. addr is read as Canonical answers it: a zoned
+// address is inside no prefix (netip.Prefix.Contains), so it would carry nothing. An array rather
+// than a slice, since every address of every dial is read here.
+func CarriedIPv4(addr netip.Addr) (held [2]Carried, n int) {
+	addr = Canonical(addr)
+	if !addr.Is6() {
+		return held, 0
+	}
+	a := addr.As16()
+	at := func(i int) netip.Addr { return netip.AddrFrom4([4]byte(a[i : i+4])) }
+	switch {
+	case nat64Prefix.Contains(addr):
+		held[0] = Carried{at(12), "the NAT64 form (64:ff9b::/96) of"}
+		return held, 1
+	case sixToFourPrefix.Contains(addr):
+		held[0] = Carried{at(2), "the 6to4 form (2002::/16) of"}
+		return held, 1
+	case teredoPrefix.Contains(addr):
+		held[0] = Carried{at(4), "a Teredo address (2001::/32) whose server is"}
+		held[1] = Carried{netip.AddrFrom4([4]byte{^a[12], ^a[13], ^a[14], ^a[15]}), "a Teredo address (2001::/32) whose client is"}
+		return held, 2
+	case ipv4CompatiblePrefix.Contains(addr):
+		held[0] = Carried{at(12), "the IPv4-compatible form (::/96) of"}
+		return held, 1
+	}
+	return held, 0
+}
+
+// DestinationRefusal answers why addr can be no address of the airlock's private destination
+// (BROKER_PROXY_PRIVATE_UPSTREAM), whatever the cluster ranges say, or "" when it can be one: a
+// loopback or link-local address, unicast or multicast, where the broker's own pod and the node's
+// metadata server answer; an unspecified or multicast address, which is no one service; a cloud
+// metadata server's IPv6 address (metadataServers); a local-use translation address
+// (LocalUseTranslation), whose carried address the address does not say; and an IPv6 address that
+// carries an address refused here (CarriedIPv4), named by its form and that address. The answer
+// completes "... resolves to". addr is read as Canonical reads it. The proxy's check of every
+// dial to the destination (proxy.Server.upstreamAddresses) and config's start check of a
+// destination URL that names an address read this one answer, so the two cannot disagree.
+func DestinationRefusal(addr netip.Addr) string {
+	addr = Canonical(addr)
+	switch {
+	case addr.IsLoopback() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast():
+		return "a loopback or link-local address, which the airlock never dials"
+	case addr.IsUnspecified() || addr.IsMulticast():
+		return "an unspecified or multicast address, which the airlock never dials"
+	case LocalUseTranslation.Contains(addr):
+		return "a local-use translation IPv6 address (64:ff9b:1::/48), whose IPv4 address the address alone does not say, which the airlock never dials"
+	}
+	for _, server := range metadataServers {
+		if addr == server {
+			return "a cloud metadata server's address, which the airlock never dials"
+		}
+	}
+	held, n := CarriedIPv4(addr)
+	for _, c := range held[:n] {
+		if why := DestinationRefusal(c.Addr); why != "" {
+			return c.Form + " " + c.Addr.String() + ", " + why
+		}
+	}
+	return ""
 }
