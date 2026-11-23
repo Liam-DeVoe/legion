@@ -138,7 +138,14 @@ interface CodexScenario {
   readonly tarballMismatch?: boolean;
   /** The integrity npm records for @openai/codex is not the pinned one. */
   readonly codexIntegrity?: "other";
-  /** OUTSIDE_CODEX_START_SECONDS (default 30): how long each start may hold before its turn. */
+  /** OUTSIDE_CODEX_START_SECONDS (default 90, the real leg's own: `start_seconds` in
+   *  e2e/acceptance/outside-agent-codex.sh): how long each start may hold before its turn. The
+   *  leg's `drive` ends at the turn's first logged request, so only a run held by a screen waits
+   *  the window out, and a run whose start nothing holds ends as soon under 90 s as under 30.
+   *  Under a loaded lane 30 s was too short: in k5's loaded Job at 1582cf67
+   *  (infra983-k5-head32c-68z46), the row "answering the first start otherwise than the outside
+   *  person is told to fails the rows it breaks..." failed when the screen 'Hooks need review'
+   *  drew its move after the 30 s window had closed. */
   readonly startSeconds?: number;
   /** OUTSIDE_CODEX_LIST_SECONDS (default `listSeconds`): how long the leg waits for each run's
    *  session record, and for the edge to list the session. */
@@ -635,7 +642,7 @@ writeFileSync(join(prefix, "node_modules", ".package-lock.json"), ${JSON.stringi
       OUTSIDE_LEGION_CHECKOUT: repo.dir,
       // The window `listSeconds` states its reading; a run that files no record takes its own.
       OUTSIDE_CODEX_LIST_SECONDS: String(scenario.listSeconds ?? listSeconds),
-      OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? 30),
+      OUTSIDE_CODEX_START_SECONDS: String(scenario.startSeconds ?? 90),
       OUTSIDE_CODEX_TSV: rows,
       // An input the leg no longer takes: the pass row reads that its provenance helper got none.
       OUTSIDE_NPM_REGISTRY: "http://registry.invalid",

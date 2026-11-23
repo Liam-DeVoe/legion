@@ -594,8 +594,11 @@ and each command runs there.
   --out <dir>` runs one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is
   left out, and writes a report of every row that failed, with how many of its runs failed, its
   seed and the command that runs it again, and of every failure that belongs to no row.
-  With `--shard <i>/<n>` it runs only the i-th of n shards of the lane's files, as Bun's own
-  `--shard` deals them, and the report names the shard.
+  On the web and web-cold lanes `--shard <i>/<n>` runs only the i-th of n shards of the lane's
+  files, as Bun's own `--shard` deals them, and the report names the shard.
+  On the harness lane `--shard` names one of its two legs: `--shard 1/2` runs
+  `e2e/__tests__/outside-agent-codex.test.ts` alone, and `--shard 2/2` runs the rest of the lane.
+  The harness lane takes no other shard, and the report names the leg and what it ran.
   A SIGTERM or a SIGINT stops it: it stops Bun and reports each test file a worker was in, with the
   run and the row it was in, by the row's place and name.
   One that comes after Bun has ended, while it writes its report, is named in the report beside
@@ -603,8 +606,8 @@ and each command runs there.
   A worker, or Bun's test process, killed from outside, as the out-of-memory killer kills one, is
   named the same way: each file it was in, with the run and the row.
   `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane in three rounds under a
-  seed for each round, and the web lane's round as two legs, its shards 1/2 and 2/2, under that
-  round's one seed, each leg under a deadline that sends it that SIGTERM; the step `exec`s
+  seed for each round, and the web and harness lanes' round as two legs, shards 1/2 and 2/2, under
+  that round's one seed, each leg under a deadline that sends it that SIGTERM; the step `exec`s
   `timeout`, so the SIGINT that GitHub's runner sends a cancelled step, or one at its budget,
   reaches it too.
 

@@ -4,17 +4,30 @@ name: Dispatch unit suite repeated
 # many times over, to find the rows that fail only sometimes. The web lane is
 # `bun run test:web web/src`, the web-cold lane is
 # `bun run test:web:cold web/src` and the harness lane is `bun run test:harness e2e/__tests__`.
-# Each leg runs one lane, or one shard of the web lane's files, under one seed through
+# Each leg runs one lane, or one shard of its files, under one seed through
 # `bun run test:repeat` (packages/dispatch/e2e/tools/unit-repeat.ts, whose head says what it reads
 # and writes): a web or harness leg with `--rerun-each=20`, a web-cold leg with `--rerun-each=1`.
 # Each lane runs three rounds, each under a seed of its own, which the test step derives from the
 # run and the round. The web lane runs each round as two legs, Bun's `--shard` 1/2 and 2/2 of its
 # files, under the round's one seed, so the two legs run each of its files once between them. The
-# web-cold and harness lanes run each round whole, as one leg. Three rounds of a web-cold leg, three
-# of a harness leg and three of two web legs make 12 legs a run.
+# harness lane runs each round as two legs too, the tool's `--shard` 1/2 and 2/2 under the round's
+# one seed: the first runs e2e/__tests__/outside-agent-codex.test.ts alone, and the second the
+# lane without it. The web-cold lane runs each round whole, as one leg. Three rounds of two web
+# legs, three of a web-cold leg and three of two harness legs make 15 legs a run.
 #
-# Why the web lane runs in two shards, and how a leg's seed is derived.
-# why: .github/ci-notes/dispatch-unit-repeat.md#the-web-lanes-two-shards-and-a-legs-seed
+# Why the web lane runs in two shards and the harness lane in two legs, and how a leg's seed is
+# derived.
+# why: .github/ci-notes/dispatch-unit-repeat.md#the-web-lanes-two-shards-the-harness-lanes-two-legs-and-a-legs-seed
+#
+# Why the Codex file has a leg of its own. Its 20 runs alone take about 9,400 s, more than the
+# worst order of all the rest of the lane on a runner's 4 CPUs, about 6,700 s: in one leg with
+# the rest, every harness leg of run 45178675944, at 1582cf67, was stopped at its 7,800 s deadline
+# inside the Codex file, in its run 15 of 20, with no row failed. In a leg of its own, every
+# file's 20 runs stay in one Bun run of one leg, in Bun's random order. Pull request #5247
+# ("test(dispatch): the outside agent's legs end each local wait on its fact") shortens the Codex
+# file's runs, and #4937 ("ci: re-derive the repeat budgets once the outside-agent legs' waits end
+# on their facts") derives the budgets again after it: the two legs then fold back into one.
+# why: .github/ci-notes/dispatch-unit-repeat.md#the-harness-lanes-two-legs
 #
 # What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
 # annotation for each failure that belongs to no row, then one for each failing row. GitHub keeps
@@ -82,12 +95,12 @@ name: Dispatch unit suite repeated
 # `bun run test:web:cold <file> --seed=<n>` or `bun run test:harness <file> --seed=<n>`. For a row
 # that passed its first run, the command adds `--rerun-each=<k>`, where k is the run it first
 # failed on. That repeats the order the row failed in. A web-cold leg runs once, so its command
-# never adds it. A row of a web shard is run again by the same command, with no `--shard`: the
-# shard picks which files run, and Bun orders a file's rows by the seed and the file alone, as the
-# tool's head says. A row that failed from the leg's load can pass there, and the same section of
-# docs/testing.md says what it needs.
+# never adds it. A row of a web shard or a harness leg is run again by the same command, with no
+# `--shard`: the shard or the leg picks which files run, and Bun orders a file's rows by the seed
+# and the file alone, as the tool's head says. A row that failed from the leg's load can pass
+# there, and the same section of docs/testing.md says what it needs.
 #
-# What it costs. One scheduled run a week of 12 legs, one run of 12 legs on each push to a pull
+# What it costs. One scheduled run a week of 15 legs, one run of 15 legs on each push to a pull
 # request that changes this file, the tool, its progress preload or the web-cold lane's preload,
 # and any `workflow_dispatch`. Every leg runs on a standard GitHub-hosted runner, and this
 # repository is public. GitHub's "Billing and usage" page
@@ -101,7 +114,7 @@ on:
   schedule:
     # Saturday 09:23 UTC, hours from every other schedule of this repository:
     # dispatch-browser-nightly.yaml's 02:17 and 13:41 daily, e2e.yaml's 04:41 daily and
-    # codeql.yaml's 04:17 on Tuesdays. 12 legs start at once, and a nightly starting beside them
+    # codeql.yaml's 04:17 on Tuesdays. 15 legs start at once, and a nightly starting beside them
     # would queue with them for the account's runners. Off the hour, as codeql.yaml's cron is.
     - cron: "23 9 * * 6"
   workflow_dispatch:
@@ -130,7 +143,8 @@ permissions:
 
 jobs:
   repeat:
-    # A web leg's name says its shard; a web-cold or harness leg runs its lane whole.
+    # A web leg's name says its shard, and a harness leg's its leg; a web-cold leg runs its lane
+    # whole.
     name: >-
       ${{ matrix.lane }} lane, round ${{ matrix.round }}${{ matrix.shards > 1
       && format(', shard {0}/{1}', matrix.shard, matrix.shards) || '' }}
@@ -146,29 +160,29 @@ jobs:
         # Three rounds a lane, each under a seed of its own, which the test step derives. The head
         # says why three.
         round: [1, 2, 3]
-        # The leg's shard of its lane's files, Bun's `--shard <shard>/<shards>`: a web round runs as
-        # shards 1 and 2 of 2, and a web-cold or harness round runs whole, as its one shard, with
-        # no `--shard`.
-        # why: .github/ci-notes/dispatch-unit-repeat.md#the-web-lanes-two-shards-and-a-legs-seed
+        # The leg's shard of its lane's files, `--shard <shard>/<shards>`: a web round runs as Bun's
+        # shards 1 and 2 of 2, and a harness round as the tool's two legs, shard 1 of 2 the Codex
+        # file alone and shard 2 of 2 the lane without it. A web-cold round runs whole, as its one
+        # shard, with no `--shard`.
+        # why: .github/ci-notes/dispatch-unit-repeat.md#the-web-lanes-two-shards-the-harness-lanes-two-legs-and-a-legs-seed
         shard: [1, 2]
         exclude:
           - lane: web-cold
             shard: 2
-          - lane: harness
-            shard: 2
-        # Each lane's shards and reruns; its slowest test step and its slowest other steps, each
-        # the largest reading over the runs the notes list, with the run and round that gave it
-        # (the web slowest reads the lane's sharded legs alone, and the harness slowest leaves out
-        # the legs of branches that add harness rows of their own, #4236's and #4790's, as the
-        # notes say); and the deadline, the test step's budget and the job's budget set from them,
-        # with a margin of twice the slowest, each line's arithmetic beside it. The job takes the
-        # other steps twice too, where dispatch-browser.yaml's rule takes them once: a margin of
-        # this file's own, which the notes measure. The step's 60 s of slack, for the step's own
-        # start around `timeout`, rests on no reading: it sits behind the deadline and the
-        # kill-after, so it decides nothing. A budget is a hang guard only, and decides no
-        # verdict. The head says why a web or harness leg runs 20 times and a web-cold leg once.
+        # Each lane's shards and reruns, and each harness leg's; its slowest test step and its
+        # slowest other steps, each the largest reading over the runs the notes list, with the run
+        # and round that gave it (the web slowest reads the lane's sharded legs alone, and each
+        # harness leg's slowest is read from run 45178675944 at 1582cf67 and from the files main
+        # added since, as the notes say); and the deadline, the test step's budget and the job's
+        # budget set from them, with a margin of twice the slowest, each line's arithmetic beside
+        # it. The job takes the other steps twice too, where dispatch-browser.yaml's rule takes
+        # them once: a margin of this file's own, which the notes measure. The step's 60 s of
+        # slack, for the step's own start around `timeout`, rests on no reading: it sits behind the
+        # deadline and the kill-after, so it decides nothing. A budget is a hang guard only, and
+        # decides no verdict, and each job's stays under GitHub's 360 minutes. The head says why a
+        # web or harness leg runs 20 times and a web-cold leg once.
         # packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts holds each budget to
-        # exactly its rule over the measurement beside it.
+        # exactly its rule over the measurement beside it, and each job's to 359 minutes at most.
         # why: .github/ci-notes/dispatch-unit-repeat.md#the-budgets-measured-from-cis-own-runs
         include:
           - lane: web
@@ -187,14 +201,35 @@ jobs:
             deadline_seconds: 420 # 2 x 185 = 370 s, up to the next whole minute
             step_minutes: 9 # 420 + 60 s kill-after + 60 s of slack = 540 s
             job_minutes: 11 # 9 + 2 x 44 s = 88 s, up to the next whole minute, 2
+          # The harness lane's two legs, one row each. The Codex file alone sets shard 1's budgets;
+          # pull request #5247 shortens its runs, and #4937 derives the budgets again after it,
+          # when the two legs fold back into one.
+          # why: .github/ci-notes/dispatch-unit-repeat.md#the-harness-lanes-two-legs
           - lane: harness
-            shards: 1
+            shard: 1
+            shards: 2
             reruns: 20
-            slowest_seconds: 3882 # run 44963607247, round 3, stopped at 3,300 s and estimated (the notes)
+            # Run 45178675944, round 1: the Codex file's 14 complete runs took 6,599.6 s, so 20
+            # take 9,428.0 s, 471.4 s a run; up to the next whole second.
+            slowest_seconds: 9429
             other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
-            deadline_seconds: 7800 # 2 x 3,882 = 7,764 s, up to the next whole minute
-            step_minutes: 132 # 7,800 + 60 s kill-after + 60 s of slack = 7,920 s
-            job_minutes: 140 # 132 + 2 x 229 s = 458 s, up to the next whole minute, 8
+            deadline_seconds: 18900 # 2 x 9,429 = 18,858 s, up to the next whole minute
+            step_minutes: 317 # 18,900 + 60 s kill-after + 60 s of slack = 19,020 s
+            job_minutes: 325 # 317 + 2 x 229 s = 458 s, up to the next whole minute, 8
+          - lane: harness
+            shard: 2
+            shards: 2
+            reruns: 20
+            # The other 67 files. Run 45178675944: its 62 took 11,754.3 s of work, each file's
+            # longest of the three rounds; the 5 main added since take 46.1 s alone, 922.5 s for 20
+            # runs (pod readings, and CI's for the rows the pod skips: the notes). The worst order
+            # of 12,676.8 s of work on 4 workers, the acceptance file's 4,749.2 s the longest, is
+            # 12,676.8 / 4 + 3/4 x 4,749.2 = 6,731.1 s; up to the next whole second.
+            slowest_seconds: 6732
+            other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
+            deadline_seconds: 13500 # 2 x 6,732 = 13,464 s, up to the next whole minute
+            step_minutes: 227 # 13,500 + 60 s kill-after + 60 s of slack = 13,620 s
+            job_minutes: 235 # 227 + 2 x 229 s = 458 s, up to the next whole minute, 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -249,9 +284,9 @@ jobs:
           psql "$LEGION_TEST_PG_DSN" -c 'select 1'
       # The seed. A leg's seed is the first 32 bits of the SHA-256 of the run's id and the lane,
       # plus the round, modulo 2^32: a number Bun's `--seed` takes (0 to 2^32 - 1). So the two
-      # shards of a web round run under one seed, the three rounds of a lane never share one, and
-      # a re-run of a failed leg repeats its order.
-      # why: .github/ci-notes/dispatch-unit-repeat.md#the-web-lanes-two-shards-and-a-legs-seed
+      # shards of a web round, and the two legs of a harness round, run under one seed, the three
+      # rounds of a lane never share one, and a re-run of a failed leg repeats its order.
+      # why: .github/ci-notes/dispatch-unit-repeat.md#the-web-lanes-two-shards-the-harness-lanes-two-legs-and-a-legs-seed
       #
       # The step then runs the tool under `timeout`: at deadline_seconds `timeout` sends `bun run`
       # alone a SIGTERM, which `bun run` passes on to the tool (measured on Bun 1.4.4, through a
@@ -277,14 +312,14 @@ jobs:
         working-directory: packages/dispatch
         env:
           CI: "true"
-          # A web leg's shard, `<shard>/<shards>`; empty for a lane that runs whole, which passes
-          # no `--shard`.
+          # A web or harness leg's shard, `<shard>/<shards>`; empty for a lane that runs whole,
+          # which passes no `--shard`.
           SHARD: ${{ matrix.shards > 1 && format('{0}/{1}', matrix.shard, matrix.shards) || '' }}
       # Uploaded whether or not the leg passed, so a red leg's report reaches the run. Kept four
       # weeks: four scheduled runs side by side, enough to tell a row that fails every week from
       # one that failed once, and to read the run before a fix beside the run after it. The name
-      # holds a web leg's shard: an artifact's name is unique in a run, and the two shards of a
-      # round would otherwise upload under one name.
+      # holds a web or harness leg's shard: an artifact's name is unique in a run, and the two
+      # shards of a round would otherwise upload under one name.
       - name: Upload the report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
