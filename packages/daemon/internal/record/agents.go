@@ -41,13 +41,13 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 // and the agent that would have taken the name takes one of its own (`implementer-2`) and so a slot
 // of its own. A key holds the name an earlier row of it held, and, since a version replaces the
 // rows of each task it gives and so can leave no row that names the key, the name whose claim holds
-// its session. That holds whatever release wrote the rows: one before the claim recorded its
-// session's agent left the claim's session to the agent of the next start that reached it, so a
-// row alone is all that says the name was the key's. A name only agents with no key held is free,
-// a numbered one as much as the role's own: a new task's agent with no key takes the name of a
-// stopped task's agent of its role, and the claim of that name starts it in a session of its own
-// (supervise.Claim.SessionAgent), so each later agent with no key of a role needs no new number, and
-// so no new slot of its pod.
+// its session (KeySessionsOf). That holds whatever release wrote the rows: a claim of a release
+// before the claim recorded its session's agent records the key the rows gave its name once
+// 20261122120917 has run, so the name stays the key's after the last row that said so is gone. A
+// name only agents with no key held is free, a numbered one as much as the role's own: a new task's
+// agent with no key takes the name of a stopped task's agent of its role, and the claim of that
+// name starts it in a session of its own (supervise.Claim.SessionAgent), so each later agent with
+// no key of a role needs no new number, and so no new slot of its pod.
 //
 //  1. A step of the key owner has no name: its agent is the tree's architect, whose token names the
 //     tree and no name on the issue.
