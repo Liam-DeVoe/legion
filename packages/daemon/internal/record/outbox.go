@@ -2683,10 +2683,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
 //
-// `retro-held` is a parent whose plan has no acceptance step, held before its retro because it
-// passed its last step while issues beneath it are still in the workflow (workflow's
+// `retro-held` is a parent whose task's last step is not an acceptance, held before its retro
+// because it passed that step while issues beneath it are still in the workflow (workflow's
 // beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
-// retro starts when the last one leaves (workflow's releaseHeldParents).
+// retro starts when the last one leaves (workflow's releaseHeldParents). Its role is the role of
+// the retro's agent (workflow's Walk.RoleAt of the retro).
 //
 // `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
 // (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree

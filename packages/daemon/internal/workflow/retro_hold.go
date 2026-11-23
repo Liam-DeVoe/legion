@@ -36,12 +36,13 @@ func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return e.openBeneath(ctx, tx, issue)
 }
 
-// retroHeldNotice tells the owner of parent that Legion holds it before its retro for beneath, the
-// issues beneath it still in the workflow, and what ends the hold (retroHeldReason). It names the
-// retro and role, the role of the retro's agent, whose work the hold keeps (Walk.RoleAt of the
-// retro: the role of the task's last step of the type implementation, the implementer for the
-// owner's), which its caller reads on the walk in hand, as the held notice of any hold names the
-// phase it is from (HeldNotice).
+// retroHeldNotice tells the architect that owns parent by runs (the daemon's noticeArchitect,
+// record.OwningArchitect) that Legion holds it before its retro for beneath, the issues beneath it
+// still in the workflow, and what ends the hold (retroHeldReason). It names the retro and the role
+// of the retro's agent, whose work the hold keeps (Walk.RoleAt of the retro: the role of the
+// task's last step of the type implementation, the implementer for the owner's), which its caller
+// reads on the walk in hand, as the held notice of any hold names the phase it is from
+// (HeldNotice).
 func retroHeldNotice(parent string, role claim.Role, beneath []string) record.Notice {
 	return record.Notice{Kind: "retro-held", Role: role, Phase: phase.Retro, Reason: retroHeldReason(parent, beneath)}
 }
