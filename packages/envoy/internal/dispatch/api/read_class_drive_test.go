@@ -490,7 +490,9 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // token (read-person, P, session S) and the same answer with the project scope person and no
 // read; and P's personal token holding read and person, and P's holding person. In each pair the
 // read-only credential is sent first, so nothing its writer writes is what the read-only request
-// read.
+// read. Before the personal pair, P's read-only token is left with no last use and P's writer with
+// one now (startPersonalPair): the read-only request makes its last-use write, under both answers,
+// and the writer's request, sent within agentTokenUse's minute, makes none.
 //
 // A tracer on the whole pool the server and the broker-token verifier share records every
 // statement on any context (poolStatements), and each read-only request is sent in a window: it
@@ -517,7 +519,10 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
 // and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds every window and every personal pair to a wall-clock bound
+	// (driveWindowLimit, agentTokenUse's minute) for minutes, and run among this package's parallel
+	// tests on CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
+	// missed its 3 s beside it (envoy-go-race-api job 137929719893).
 	rows, drives := drivenRows(t, readWritesNothing)
 	world := newDriveWorld(t)
 	world.calibrate(t)
@@ -626,6 +631,9 @@ func (w *driveWorld) driveRead(t *testing.T, name string, drive rowDrive, tally 
 		readOnly, writer := pair[0], pair[1]
 		what := readOnly.who + " on " + target
 		w.tracer.quiet(t, "before "+what)
+		if readOnly.personal {
+			w.startPersonalPair(t)
+		}
 		var answer *httptest.ResponseRecorder
 		statements := w.tracer.window(t, what, func() { answer = w.rig.serve(readOnly.request(t, target)) })
 		tally.windows++

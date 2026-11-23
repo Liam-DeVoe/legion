@@ -169,6 +169,24 @@ func (w *driveWorld) mintTokens(t *testing.T) {
 	}
 }
 
+// startPersonalPair leaves P's personal tokens with the last uses a personal pair needs: the
+// read-only token's none, so the read-only request makes its last-use write (agentTokenUse, at
+// most once a minute), and the writer's now, so the writer's request, sent within that minute,
+// makes none. Both answers then read one state: the read-only request's own write is under each,
+// and the writer's request writes nothing a token list (GET /api/v1/me/agent-tokens) shows. It
+// writes through the untraced store, before the window opens.
+func (w *driveWorld) startPersonalPair(t *testing.T) {
+	t.Helper()
+	for _, statement := range []string{
+		`update agent_read_tokens set last_used_at = null where owner = $1`,
+		`update agent_tokens set last_used_at = now() where owner = $1`,
+	} {
+		if _, err := w.raw.Pool.Exec(context.Background(), statement, drivePerson); err != nil {
+			t.Fatalf("set the last use of %s's personal tokens (%s): %v", drivePerson, statement, err)
+		}
+	}
+}
+
 // as is one write of the seed, as login through the header identity, which must answer want.
 func (w *driveWorld) as(t *testing.T, login, method, target string, body any, want int) *httptest.ResponseRecorder {
 	t.Helper()
