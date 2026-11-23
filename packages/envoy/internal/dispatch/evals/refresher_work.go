@@ -118,8 +118,14 @@ type refresh struct {
 	now, today time.Time
 	clock      func() time.Time
 	batch      int
-	projects   []string
-	known      map[string]bool
+	// projects is every project's key, in key order, and known holds them; owners is the delivery
+	// family's owners, every project and every owner key (owners.go) the store holds rows of or
+	// the pass's reads build rows of (noteOwners), whose delivery and CI days the walks, pages,
+	// spans, settings rewrites and rebuilds write alike. An owner key is no project: the Legion
+	// walks, the logged and unowned-p0 rows, the seed and the stored figures are the projects'.
+	projects []string
+	owners   []string
+	known    map[string]bool
 	// rules is the rule of each deploy source repository of a delivery-on project
 	// (delivery.DeployRules), and of each such project's events repository where it holds an
 	// events source (eventsRule), by ruleKey: empty where no project has delivery on, which leaves
@@ -210,6 +216,12 @@ func (r *refresh) load(ctx context.Context, seeds *seeding) error {
 	for _, project := range r.projects {
 		r.known[project] = true
 	}
+	repoOwners, err := readOwners(ctx, r.store.database.Pool)
+	if err != nil {
+		return err
+	}
+	r.owners = slices.Concat(r.projects, repoOwners)
+	slices.Sort(r.owners)
 	owed := r.projects
 	if seeds.everyProject {
 		if owed, err = r.store.UnseededProjects(ctx); err != nil {
@@ -320,6 +332,9 @@ type pageWork struct {
 	// keptWas those the rows stood built for until then (syncKept): the page builds the days of each
 	// repository that differs between the two in its commit (refresh.writeNamed).
 	kept, keptWas []keptRepo
+	// defaults is the projects' default repositories commitPage publishes, nil where every project's
+	// stands published (syncDefaults, defaults.go).
+	defaults *defaultsMove
 }
 
 // pullRequestRef is a pull request's row by its key; runRef a run's.
@@ -513,14 +528,17 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 		if err := r.loadSettings(ctx); err != nil {
 			return false, err
 		}
-		for _, project := range r.projects {
-			delete(r.first, walkKey{family: walkDelivery, project: project})
+		for _, owner := range r.owners {
+			delete(r.first, walkKey{family: walkDelivery, project: owner})
 		}
 	}
 	if err := r.syncSettings(ctx, work); err != nil {
 		return false, err
 	}
 	if err := r.syncKept(ctx, work); err != nil {
+		return false, err
+	}
+	if err := r.syncDefaults(ctx, work); err != nil {
 		return false, err
 	}
 	rebuilds, err := r.apply(ctx, work)
@@ -563,7 +581,7 @@ func walkOf(family, project string) walkKey {
 // unowned-p0 rows and the logged evals' zero rows are written before it answers, so every write
 // the page's cursors pass is made, or is in the commit that moves them.
 func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*rebuild, error) {
-	owed, err := r.store.owedDays(ctx, r.projects)
+	owed, err := r.store.owedDays(ctx, r.owners)
 	if err != nil {
 		return nil, err
 	}
@@ -611,7 +629,7 @@ const owedRounds = 3
 // (commitRebuilds).
 func (r *refresh) writeOwed(ctx context.Context) error {
 	for range owedRounds {
-		owed, err := r.store.owedDays(ctx, r.projects)
+		owed, err := r.store.owedDays(ctx, r.owners)
 		if err != nil || len(owed) == 0 {
 			return err
 		}
@@ -704,7 +722,7 @@ func (r *refresh) applyDelivery(ctx context.Context, w *pageWork, owed []owedDay
 		return nil, err
 	}
 	for _, day := range owed {
-		if slices.Contains(deliveryDayFamilies, day.family) && r.known[day.project] {
+		if slices.Contains(deliveryDayFamilies, day.family) && r.writesDelivery(day.project) {
 			if err := days.name(ctx, day.project, day.day); err != nil {
 				return nil, err
 			}
@@ -1007,13 +1025,13 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 	if err != nil {
 		return nil, nil, err
 	}
-	held, err := r.store.heldMembers(ctx, r.projects, deliveryDayFamilies, append([]string{""}, deployRepoNames(kept)...), members)
+	held, err := r.store.heldMembers(ctx, r.owners, deliveryDayFamilies, append([]string{""}, deployRepoNames(kept)...), members)
 	if err != nil {
 		return nil, nil, err
 	}
 	var shipped []heldMember
 	if follow {
-		if shipped, err = r.store.shippedMembers(ctx, r.projects, members); err != nil {
+		if shipped, err = r.store.shippedMembers(ctx, r.owners, members); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -1057,7 +1075,7 @@ func (r *refresh) nameDeliveryItems(ctx context.Context, days *pageDays, items [
 			}
 		}
 		for _, project := range slices.Sorted(maps.Keys(projects)) {
-			if r.known[project] {
+			if r.writesDelivery(project) {
 				r.nameDelivery(days, read, project, true)
 			}
 		}
@@ -1120,8 +1138,25 @@ func (r *refresh) readDelivery(ctx context.Context, day time.Time, applies map[s
 	if err != nil {
 		return deliveryRead{}, err
 	}
+	r.noteOwners(read.owners())
 	r.reads[day] = read
 	return read, nil
+}
+
+// noteOwners adds to the delivery family's owners (refresh.owners) each owner key of keys it does
+// not hold yet, in key order: a key whose first rows a read builds.
+func (r *refresh) noteOwners(keys []string) {
+	for _, key := range keys {
+		if at, held := slices.BinarySearch(r.owners, key); !held {
+			r.owners = slices.Insert(r.owners, at, key)
+		}
+	}
+}
+
+// writesDelivery reports whether the pass writes key's delivery and CI days: a project it read,
+// or an owner key, whose rows belong to its repository.
+func (r *refresh) writesDelivery(key string) bool {
+	return r.known[key] || isOwner(key)
 }
 
 // writeDelivery is the delivery walk's write of project's delivery and CI rows of read's day,
@@ -1585,7 +1620,7 @@ func (r *refresh) beginBatch(ctx context.Context, key walkKey, from, through tim
 		r.walkFrom, r.walkFirst, r.walkHeld = map[walkKey]time.Time{}, map[walkKey]map[evalKey]time.Time{}, map[builtDay]bool{}
 	}
 	r.walkFrom[key] = from
-	projects, slugs := r.projects, deliveryDaySlugs
+	projects, slugs := r.owners, deliveryDaySlugs
 	if key.family == walkLegion {
 		projects, slugs = []string{key.project}, legionDaySlugs
 	}
@@ -1615,7 +1650,7 @@ func (r *refresh) deliveryStart(ctx context.Context) (*time.Time, error) {
 		return nil, err
 	}
 	firsts := map[evalKey]time.Time{}
-	for _, project := range r.projects {
+	for _, project := range r.owners {
 		first, err := r.storedFirst(ctx, walkDelivery, project)
 		if err != nil {
 			return nil, err
@@ -1692,7 +1727,7 @@ func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 	if err != nil {
 		return err
 	}
-	for _, project := range r.projects {
+	for _, project := range slices.Clone(r.owners) {
 		if err := r.writeDelivery(ctx, read, project); err != nil {
 			return err
 		}

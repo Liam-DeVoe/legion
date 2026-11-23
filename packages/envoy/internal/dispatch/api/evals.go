@@ -621,11 +621,17 @@ func namedOnce(query url.Values, key string) error {
 }
 
 // parseEvalRepos reads `repo`, repeatable: the repositories whose day rows a read folds in place
-// of the project's own. An empty value names no repository and is refused.
+// of the project's own. An empty value names no repository and is refused, and so is one starting
+// with ':', which the stored rows keep the day rows of what a repository attributes and of what
+// reaches a project only through its default repository under (evals.OwnerKey,
+// legionfacts.DefaultRepo): no repository is called that, and a read names repositories alone.
 func parseEvalRepos(query url.Values) ([]string, error) {
 	repos := query["repo"]
 	if slices.Contains(repos, "") {
 		return nil, errors.New("repo names a repository, and an empty repo names none")
+	}
+	if at := slices.IndexFunc(repos, func(repo string) bool { return strings.HasPrefix(repo, ":") }); at >= 0 {
+		return nil, fmt.Errorf("repo names a repository, and %q is no repository name", repos[at])
 	}
 	return repos, nil
 }

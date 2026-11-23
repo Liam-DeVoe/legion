@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -149,10 +150,12 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 // TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone: Read, the Legion board's read of the facts,
 // answers the rows of the keys it is given, of every issue of the trees it is given and of every
 // open issue of the project, and no other row, and every arm of its statement (boardSelect and
-// shownWhere) reaches issue_facts through an index keyed by its own condition: the primary key for
-// the keys, issue_facts_root (migration 20261117100000) for the trees and issue_facts_closed
-// (the same migration) for the open rows, under closed_at IS NULL; never a scan of the table
-// nor a read of the project's whole range filtered after it (dispatch://INFRA-2916, k23).
+// shownWhere), three that share no row keyed on closed_at, reaches issue_facts through an index
+// keyed by its own condition: issue_facts_closed (migration 20261117100000) for the open rows,
+// under closed_at IS NULL and testing no list on them; issue_facts_root (the same migration) for
+// the closed rows of the trees; and the primary key for the closed rows of the keys; never a scan
+// of the table nor a read of the project's whole range filtered after it (dispatch://INFRA-2916,
+// k23 and round 15's cost design).
 //
 // The store has the shape at which the planner prices a scan of the whole table no dearer than the
 // open rows' index range: FC's 12,000 rows are most of it, beside four projects of 500, one row in
@@ -277,8 +280,40 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 	cards := judge("with the board's values", withCards)
 	none := judge("with no card", noCard)
 	cached := judge("under the generic plan", generic)
+	for how, plan := range map[string]json.RawMessage{"with the board's values": withCards, "with no card": noCard, "under the generic plan": generic} {
+		if filters := openRowFilters(t, plan); len(filters) == 0 {
+			t.Errorf("%s, the board's read reads no open row through issue_facts_closed under closed_at IS NULL:\n%s", how, plan)
+		} else if tested := slices.IndexFunc(filters, listTest.MatchString); tested >= 0 {
+			t.Errorf("%s, the board's read tests a list on each open row (filter %q):\n%s", how, filters[tested], plan)
+		}
+	}
 	t.Logf("of 14,000 rows of five projects, 4,000 of FC's 12,000 open, Read answered %d of FC for %d keys and %d trees and %d for no card, through %v (with the cards), %v (with none) and %v (generic); the plan with no card:\n%s",
 		len(rows), len(keys), len(roots), len(bare), cards, none, cached, strings.Join(lines, "\n"))
+}
+
+// listTest matches a condition that tests a value against a list, `= ANY (…)` or `<> ALL (…)`.
+var listTest = regexp.MustCompile(`\b(ANY|ALL) \(`)
+
+// openRowFilters is the filter of each node of plan that reads the open rows of issue_facts: an
+// index scan of issue_facts_closed keyed by closed_at IS NULL, whose own filter tests each row it
+// reads, or a bitmap heap scan whose bitmap is one, which holds the filter itself.
+func openRowFilters(t *testing.T, plan json.RawMessage) []string {
+	t.Helper()
+	open := func(node explaintest.Node) bool {
+		return node.Index == "issue_facts_closed" && strings.Contains(node.IndexCond, "closed_at IS NULL")
+	}
+	var filters []string
+	for _, node := range explaintest.Nodes(t, plan) {
+		if node.Type != "Bitmap Index Scan" && open(node) {
+			filters = append(filters, node.Filter)
+		}
+	}
+	for _, scan := range explaintest.BitmapHeapScans(t, plan, "issue_facts") {
+		if slices.ContainsFunc(scan.BitmapIndexScans, open) {
+			filters = append(filters, scan.Scan.Filter)
+		}
+	}
+	return filters
 }
 
 // absent is the keys of keys that set does not hold, at most ten of them, for a failure to name.

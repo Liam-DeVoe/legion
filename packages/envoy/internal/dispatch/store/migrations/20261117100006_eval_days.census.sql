@@ -1,3 +1,4 @@
--- Three new tables, eval_days, eval_day_members and eval_days_owed, which hold no row at this
--- schema: nothing is refused or rewritten.
+-- Five new tables, eval_days, eval_day_members, eval_days_owed, eval_day_owners and
+-- eval_days_defaults, which hold no row at this schema, two views over them and a trigger on
+-- projects that writes only when a project is deleted: nothing is refused or rewritten.
 select 0;

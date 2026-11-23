@@ -4,8 +4,26 @@
 -- read folds: a window's value is the fold of its days' rows, and a compare range is a second
 -- read of the same rows, so no page read reads a project's population.
 --
--- eval_days holds one row per project, eval, writer, deploy repository, series, repository and day.
---   project_key     the project the row counts for, which is also the project of its eval id.
+-- eval_days holds one row per owner, eval, writer, deploy repository, series, repository and day.
+--   project_key     the owner of the row: the project it counts for through an issue, which is
+--                   also the project of its eval id; or, for what a repository attributes rather
+--                   than an issue (dispatch://INFRA-2916, R15 and plan D1: a pull request that
+--                   names no issue the issues table holds, a CI run of such a pull request or of
+--                   none, and a deploy run where it ships such a pull request or ships none, with
+--                   each job of it a deploy card follows), the repository's owner key,
+--                   ':' || repo || '|' || sharers (evals.OwnerKey, the one place it is made and
+--                   parsed): repo the repository's name (canonical, as every delivery table keeps
+--                   it; the boot's rename pass rewrites it, store/repo_rename_pass.go), and sharers
+--                   the sorted keys, comma separated, of the projects whose issue-named pull
+--                   requests the deploy run ships ('' for every other row), which count the run
+--                   through their own rows already. So one owner key stands for each distinct
+--                   sharers set a repository holds rows of, and sharers is part of the key. No
+--                   project key starts with ':' (projects_key_check, ^[A-Z][A-Z0-9]{1,9}$,
+--                   migration 0001), so an owner key never names a project. An owner key's rows
+--                   are written once, whatever the projects' default repositories are, by the same
+--                   writers as a project's (its zero rows from its own first input day on); a
+--                   project reads them at read time, through eval_project_owners below, for each
+--                   repository it publishes as its default, less those it shares.
 --   eval_id, series the series the row is a day of.
 --   writer          which writer made the row (R3): `computation`, the refresher and the day
 --                   builders, which write a computed eval's rows; or `readings`, the readings
@@ -118,13 +136,17 @@
 -- day's write writes the day's rows and items of every deploy repository, so the day owed names
 -- none.
 --
--- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
--- one neither reads nor writes any, so the two builds roll together (cmd/dispatch/README.md,
--- "Database migrations"). The foreign keys to projects take SHARE ROW EXCLUSIVE on projects for
--- the length of this transaction, which holds a project write and no project read. The census
--- answers 0, and rolling back past it is an image rollback alone.
+-- Three new tables, all empty, two more below and two views: nothing existing is read or
+-- rewritten, and the release before this one neither reads nor writes any, so the two builds
+-- roll together (cmd/dispatch/README.md, "Database migrations"). The three tables hold an owner
+-- key that names no project as well as project keys, so none of them references projects: a
+-- project's deletion deletes its own rows of them by the trigger eval_days_project_deleted below,
+-- and leaves a repository's, which belong to no project. eval_days_defaults references projects;
+-- that foreign key and the trigger take SHARE ROW EXCLUSIVE on projects for the length of this
+-- transaction, which holds a project write and no project read. The census answers 0, and
+-- rolling back past it is an image rollback alone.
 create table eval_days (
-    project_key text not null references projects (key) on delete cascade,
+    project_key text not null,
     eval_id text not null,
     writer text not null default 'computation' check (writer in ('computation', 'readings')),
     deploy_repo text not null default '',
@@ -164,7 +186,7 @@ create index eval_days_window on eval_days (project_key, repo, day) where listed
 create index eval_days_stamps on eval_days (project_key, eval_id, writer, day) where listed;
 
 create table eval_day_members (
-    project_key text not null references projects (key) on delete cascade,
+    project_key text not null,
     family text not null,
     deploy_repo text not null default '',
     row_key text not null,
@@ -176,8 +198,64 @@ create table eval_day_members (
 create index eval_day_members_day on eval_day_members (project_key, family, day);
 create index eval_day_members_shipped on eval_day_members (project_key, shipped_by) where shipped_by <> '';
 create table eval_days_owed (
-    project_key text not null references projects (key) on delete cascade,
+    project_key text not null,
     family text not null,
     day date not null,
     primary key (project_key, family, day)
 );
+
+-- eval_day_owners holds one row per owner key that eval_days has held a row of (evals.OwnerKey):
+-- the key, its repository and its sharers, so a read finds the owner keys of a repository it
+-- publishes in one probe of eval_day_owners_repo, whatever the database's collation, where a
+-- prefix of the key would need byte order. The repository is compared without case, as GitHub
+-- compares names and as a project's default repository is compared with the deploy repository
+-- (evals.Store.DeployRepoEvals). The eval_days change trigger records a key the first time a
+-- statement writes a row of it (eval_days_change_log, migration 20261117100014), and a rebuild
+-- the first time it stages one (evals.recordOwners), whose fold reads the staged rows through
+-- eval_project_owners. A key whose rows are all gone keeps its row, which a read joins to no row;
+-- the rename pass rewrites the repository in both columns.
+create table eval_day_owners (
+    owner text primary key check (starts_with(owner, ':')),
+    repo text not null,
+    sharers text[] not null default '{}'
+);
+create index eval_day_owners_repo on eval_day_owners (lower(repo));
+
+-- eval_days_defaults holds the default repository each project's reads stand under, published:
+-- the projects.default_repo the evals refresher's page last made visible, in the one commit that
+-- also makes visible the stored figures folded under it (evals.syncDefaults, the architect's
+-- rulings of 08:28Z (b) and 14:07Z). A person's write of projects.default_repo moves no read until
+-- that commit, and a read in one snapshot answers the old defaults whole or the new ones whole.
+-- A project with no row publishes no default repository, and reads its own rows alone.
+create table eval_days_defaults (
+    project_key text primary key references projects (key) on delete cascade,
+    repo text not null
+);
+
+-- eval_project_repos is the one seam every read of a project's day rows takes the repositories it
+-- unions the owner-key rows of from: today the one-element set of the project's published
+-- default. eval_project_owners is, for each project, its own key, and the owner key of each
+-- sharers set of each repository eval_project_repos names whose sharers do not hold the project:
+-- the rows a read of the project folds. A project that counts a deploy through an issue counts it
+-- in its own rows, so it skips the repository's row of that deploy. Every read (evals.DayWindowIn,
+-- FirstDaysIn, EvalDaysIn, CountedIn, the stored figures' fold) and the change trigger's lookup
+-- of the projects an owner key's write moves go through it.
+create view eval_project_repos as
+    select project_key, repo from eval_days_defaults;
+create view eval_project_owners as
+    select key as project_key, key as owner from projects
+    union all
+    select r.project_key, o.owner
+    from eval_project_repos r join eval_day_owners o on lower(o.repo) = lower(r.repo)
+    where not (r.project_key = any(o.sharers));
+
+create function eval_days_project_deleted() returns trigger language plpgsql as $$
+begin
+  delete from eval_days where project_key = old.key;
+  delete from eval_day_members where project_key = old.key;
+  delete from eval_days_owed where project_key = old.key;
+  return null;
+end $$;
+
+create trigger eval_days_project_deleted after delete on projects
+  for each row execute function eval_days_project_deleted();

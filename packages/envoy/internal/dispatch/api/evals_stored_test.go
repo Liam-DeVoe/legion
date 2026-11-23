@@ -246,10 +246,11 @@ func (r *storedEvalsRig) figuresBuilt(t *testing.T) map[string]time.Time {
 // (deploy-frequency's deploys), one hours measure (legion-slot-wait's hours), one share
 // (deploy-run-success's runs) and one quantile (pr-open-to-merge's minutes), the 14-day read with
 // its compare range, which the stored figures answer, states for the window and the compare range
-// each statistic k12 folds by hand from the project's day rows of the range: sums over the days,
-// the share's summed numerator over its summed denominator, the quantile's ranks of every sample
-// of the range merged and sorted, the Legion figures to four decimals, and no data for a range
-// that starts before the series' first day; within k12's tolerance, and bit for bit.
+// each statistic k12 folds by hand from the project's day rows of the range, its own and those of
+// the owner keys of its published default repository (eval_project_owners, R15): sums over the
+// days, the share's summed numerator over its summed denominator, the quantile's ranks of every
+// sample of the range merged and sorted, the Legion figures to four decimals, and no data for a
+// range that starts before the series' first day; within k12's tolerance, and bit for bit.
 func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 	r, _ := newStoredEvalsRig(t)
 	compare := evalDaysEnding(14, r.today.AddDate(0, 0, -14))
@@ -272,7 +273,11 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 		foldedRows := 0
 		values := seriesValues(t, findEval(t, answer.Items, m.project, m.slug), m.series)
 		var first *time.Time
-		if err := pool.QueryRow(t.Context(), `select min(day) from eval_days where project_key = $1 and eval_id = $2 and writer = 'computation' and series = $3 and repo = ''`,
+		// The project's rows are its own and its default repository's owner keys' (evals.OwnerKey),
+		// each of the eval of the same slug.
+		if err := pool.QueryRow(t.Context(), `
+			select min(d.day) from eval_project_owners o join eval_days d on d.project_key = o.owner
+			where o.project_key = $1 and d.eval_id = o.owner || substr($2, length($1) + 1) and d.writer = 'computation' and d.series = $3 and d.repo = ''`,
 			m.project, evalID, m.series).Scan(&first); err != nil {
 			t.Fatalf("read %s's first day: %v", evalID, err)
 		}
@@ -282,9 +287,10 @@ func TestTheStoredFiguresAnswerK12sHandFolds(t *testing.T) {
 			got   evals.Statistics
 		}{{"window", shape.window, values.Window}, {"compare", compare, values.Compare}} {
 			rows, err := pool.Query(t.Context(), `
-				select n, sum, num, den, samples, counts from eval_days
-				where project_key = $1 and eval_id = $2 and writer = 'computation' and series = $3 and repo = '' and listed
-				  and day >= $4::date and day < $5::date order by day`, m.project, evalID, m.series, which.days.From, which.days.To)
+				select d.n, d.sum, d.num, d.den, d.samples, d.counts from eval_project_owners o join eval_days d on d.project_key = o.owner
+				where o.project_key = $1 and d.eval_id = o.owner || substr($2, length($1) + 1) and d.writer = 'computation' and d.series = $3
+				  and d.repo = '' and d.listed and d.day >= $4::date and d.day < $5::date order by d.day, d.project_key`,
+				m.project, evalID, m.series, which.days.From, which.days.To)
 			if err != nil {
 				t.Fatalf("read %s's day rows: %v", evalID, err)
 			}

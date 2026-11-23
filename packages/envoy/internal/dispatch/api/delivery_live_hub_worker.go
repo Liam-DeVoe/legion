@@ -273,7 +273,8 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	if err != nil {
 		return nil, err
 	}
-	// Every issue the board names, so an event about one marks the view (dirtyIssueLocked); the
+	// Every issue the daemon reports, so an event about one marks the view (dirtyIssueLocked); a
+	// stored facts row moves it through the issue_facts change kind (touchedBy) instead, and the
 	// board shows no session, so it names none.
 	read.issues = board.issueKeys()
 	return legionBoardCompute(board, now), nil

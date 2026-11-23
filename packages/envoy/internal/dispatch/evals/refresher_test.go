@@ -242,6 +242,62 @@ func (r *refresherRig) dayRows(t *testing.T) map[string]DayRow {
 	return stored
 }
 
+// ownerReaders is, for each owner key (owners.go) any project reads, the projects whose reads fold
+// its rows (eval_project_owners), in key order: those whose published default is its repository,
+// less its sharers. A key no project reads is in none.
+func (r *refresherRig) ownerReaders(t *testing.T) map[string][]string {
+	t.Helper()
+	rows, err := r.database.Pool.Query(t.Context(), `
+		select owner, project_key from eval_project_owners where owner <> project_key order by owner, project_key collate "C"`)
+	if err != nil {
+		t.Fatalf("read the projects that read each owner key: %v", err)
+	}
+	readers := map[string][]string{}
+	var owner, project string
+	if _, err := pgx.ForEachRow(rows, []any{&owner, &project}, func() error {
+		readers[owner] = append(readers[owner], project)
+		return nil
+	}); err != nil {
+		t.Fatalf("read the projects that read each owner key: %v", err)
+	}
+	return readers
+}
+
+// asReaders is row as each project whose reads fold it reads it: the row itself where it is a
+// project's, and, where it is an owner key's, one copy for each of the key's readers, under that
+// project's key and its eval id of the row's slug (asReader); none where no project reads it.
+func asReaders(row DayRow, readers map[string][]string) []DayRow {
+	if !isOwner(row.ProjectKey) {
+		return []DayRow{row}
+	}
+	read := make([]DayRow, 0, len(readers[row.ProjectKey]))
+	for _, project := range readers[row.ProjectKey] {
+		one := row
+		one.ProjectKey, one.EvalID = project, asReader(row.ProjectKey, project, row.EvalID)
+		read = append(read, one)
+	}
+	return read
+}
+
+// readerEvals is evalIDs as their readers read them, sorted and each once: a project's eval id as
+// it is, and an owner key's (owners.go) as the eval of the same slug of each project that reads
+// the key, none where no project does. An eval id is its owner's key, '/' and its slug, and no
+// slug holds '/'.
+func readerEvals(evalIDs []string, readers map[string][]string) []string {
+	read := map[string]bool{}
+	for _, evalID := range evalIDs {
+		owner := evalID[:strings.LastIndex(evalID, "/")]
+		if !isOwner(owner) {
+			read[evalID] = true
+			continue
+		}
+		for _, project := range readers[owner] {
+			read[asReader(owner, project, evalID)] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(read))
+}
+
 // rewritten is the days (dayLine) of every row that appeared, went or had its updated_at moved
 // between before and after, sorted, and one line per such day naming how many of its rows moved
 // and their updated_at before and after.

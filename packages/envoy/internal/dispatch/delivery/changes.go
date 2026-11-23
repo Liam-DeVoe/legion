@@ -102,18 +102,41 @@ const EvalDaysWrittenBySettingsRewrite = "settings_rewrite"
 // so the live hub recomputes an evals view such a change marks at once.
 const EvalDaysWrittenByRebuild = "rebuild"
 
+// EvalDaysWrittenByDefaults is the RunKind of the eval_days changes the refresher's page logs in
+// the commit that publishes the projects' default repositories (evals.syncDefaults), where a
+// person's write of a default repository moved one: one change of no eval for each project whose
+// published default it moves, Repo that project's key, which marks the evals views of the project;
+// and, for each deploy repository whose judging project it moves (the delivery-on project whose
+// deploy source reads the repository, a source that names none reading its project's published
+// default), whose evals judge the delivery views' figures (evals.Store.DeployRepoEvals), one more
+// whose Ref is DefaultsJudgingRef and Repo the deploy repository, which marks every delivery view
+// those evals judge (JudgingMoved). The commit makes the defaults and the stored figures folded
+// under them visible together, so a view of them is recomputed at once.
+const EvalDaysWrittenByDefaults = "defaults"
+
+// DefaultsJudgingRef is the Ref of the change that says the project judging the delivery views
+// moved (EvalDaysWrittenByDefaults).
+const DefaultsJudgingRef = "judging"
+
 // SettingsApplied reports whether change is the refresher's word that the day rows stand at the
 // delivery settings (EvalDaysWrittenBySettingsRewrite): an eval_days change of no eval.
 func SettingsApplied(change Change) bool {
 	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == ""
 }
 
+// JudgingMoved reports whether change is the refresher's word that the project judging a deploy
+// repository's delivery views moved (EvalDaysWrittenByDefaults, DefaultsJudgingRef).
+func JudgingMoved(change Change) bool {
+	return change.Kind == ChangeKindEvalDays && change.RunKind == EvalDaysWrittenByDefaults && change.Ref == DefaultsJudgingRef
+}
+
 // EvalDaysImmediate reports whether change is an eval_days change whose day rows arrived together
-// in one transaction of the refresher's, its rewrite of a settings change or its rebuild of a
-// span, with no burst left to gather: a view of them is recomputed at once.
+// in one transaction of the refresher's, its rewrite of a settings change, its rebuild of a span or
+// its publishing of the default repositories, with no burst left to gather: a view of them is
+// recomputed at once.
 func EvalDaysImmediate(change Change) bool {
-	return change.Kind == ChangeKindEvalDays &&
-		(change.RunKind == EvalDaysWrittenBySettingsRewrite || change.RunKind == EvalDaysWrittenByRebuild)
+	return change.Kind == ChangeKindEvalDays && (change.RunKind == EvalDaysWrittenBySettingsRewrite ||
+		change.RunKind == EvalDaysWrittenByRebuild || change.RunKind == EvalDaysWrittenByDefaults)
 }
 
 // ChangeRetention is how long delivery_changes keeps a row: a page away longer reads its window once.

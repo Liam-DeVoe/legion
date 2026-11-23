@@ -384,8 +384,9 @@ type legionBoardIssue struct {
 //
 // The stored facts are those of every open issue and of every issue the board shows, and of no
 // other (R22): the issue of each card and every issue of a tree a card stands in. They are read
-// once the cards are placed, by key through the primary key, by tree root through
-// issue_facts_root and as the project's open rows through issue_facts_closed, and never as the
+// once the cards are placed, in three index reads that share no row: the project's open rows
+// through issue_facts_closed, the closed rows of the trees by root through issue_facts_root, and
+// the closed rows of the cards outside those trees by key through the primary key, never as the
 // project's rows filtered after the read (legionfacts.Read, whose plan its test records), so the
 // read and the body follow the open work and what the daemon runs rather than the project's
 // history. Nothing here computes a fact: no metrics function is called and no population is held
@@ -624,15 +625,15 @@ func (p *legionBoardPopulation) readPhaseWork(ctx context.Context, pool *store.P
 	return nil
 }
 
-// issueKeys is every issue the board's answer names — the issues the daemon reported and the
-// issues whose stored facts the answer carries — which is what the live hub marks its view dirty
-// by (delivery_live_hub_intake.go's dirtyIssueLocked). A facts write of an issue on no card
-// still moves the answer, because the entry of it in the issues map moves.
+// issueKeys is every issue the daemon reported, the issues the board may draw a card of, which is
+// what the live hub marks its view dirty by on an issue's event (delivery_live_hub_intake.go's
+// dirtyIssueLocked). The issues the answer carries only a stored row of are not among them: an
+// event on such an issue moves the answer through the stored rows the facts consumer writes
+// after it, its own and those of the issues whose tree it moved, and the change of each marks the
+// board of its project at once (touchedBy's issue_facts arm), so a mark of the event itself would
+// recompute a board whose answer had not moved yet.
 func (p *legionBoardPopulation) issueKeys() map[string]struct{} {
-	keys := make(map[string]struct{}, len(p.issues)+len(p.facts))
-	for key := range p.facts {
-		keys[key] = struct{}{}
-	}
+	keys := make(map[string]struct{}, len(p.issues))
 	for key := range p.issues {
 		keys[key] = struct{}{}
 	}

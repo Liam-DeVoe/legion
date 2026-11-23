@@ -285,12 +285,15 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 
 // TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo: over seedAttribution's day, written
 // as the refresher's walk writes it, a pull request counts for its issue's project and one with no
-// issue for none; the deploy that ships pull requests of two projects counts once in each, its
-// production job's push run too, and the deploys that ship none count for OWNER alone, the
-// project whose source reads acme/alpha (R12); a PR-checks run counts for its pull request's
-// project, and one of a pull request with no issue for none; every via_repository of ALPHA and
-// BETA is 0; and GAMMA, with nothing, gets no row. Then the day is written again
-// unchanged (no row rewritten), and once acme/alpha#3 names BETA-1 the day's rewrite moves it, the
+// issue for its repository's owner key (owners.go, INFRA-2916 R15); the deploy that ships pull
+// requests of two projects counts once in each, its production job's push run too, and, as it
+// ships one with no issue, once for its repository's owner key with those two as its sharers; the
+// deploys that ship none count for OWNER alone, the project whose source reads acme/alpha
+// (INFRA-978 R12), and for no owner key; a PR-checks run counts for its pull request's project,
+// and one of a pull request with no issue for that repository's owner key; every via_repository is
+// 0 in ALPHA's and BETA's rows and n in an owner key's; and GAMMA, with nothing, gets no row. Then
+// the day is written again unchanged (no row rewritten), and once acme/alpha#3 names BETA-1 the
+// day's rewrite moves it, the
 // deploy that shipped it and its PR-checks run out of ALPHA: ALPHA's acme/alpha rows of the
 // pull-request evals, which held it alone, are deleted, as a whole walk over the moved pull
 // request holds none, and so is every lead time of ALPHA, whose one day now ships none of its pull
@@ -305,8 +308,10 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}
-	if got := dayProjects(read); !slices.Equal(got, []string{"ALPHA", "BETA", "OWNER"}) {
-		t.Fatalf("the day's rows count for %v, want ALPHA, BETA and OWNER alone (acme/alpha#2 and acme/zeta#1 for none, GAMMA holds nothing)", got)
+	wantOwners := []string{OwnerKey(alphaRepo, nil), OwnerKey(alphaRepo, []string{"ALPHA", "BETA"}), OwnerKey(zetaRepo, nil)}
+	if got := dayProjects(read); !slices.Equal(got, slices.Concat(wantOwners, []string{"ALPHA", "BETA", "OWNER"})) {
+		t.Fatalf("the day's rows count for %v, want ALPHA, BETA, OWNER and the owner keys %v (acme/alpha#2 and acme/zeta#1 through their repositories, runs 102 and 103 for OWNER, GAMMA holds nothing)",
+			got, wantOwners)
 	}
 	t.Logf("wrote %v", r.refreshDays(t, nil, attributionDay))
 
@@ -394,19 +399,36 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 		}
 	}
 	for _, none := range []string{"pull_request:acme/zeta#1", "pull_request:acme/alpha#2", "run:acme/alpha/202"} {
-		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1`, none); n != 0 {
+		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and not starts_with(project_key, ':')`, none); n != 0 {
 			t.Errorf("%s is counted in %d projects, want none: it reaches no project through an issue", none, n)
 		}
 	}
 	// Runs 102 and 103 ship no pull request: they count for OWNER, whose source reads acme/alpha,
-	// and for no other project (R12), as do their push runs.
+	// and for no other project and no owner key (R12), as do their push runs.
 	for _, owned := range []string{"run:acme/alpha/102", "run:acme/alpha/103"} {
 		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key <> 'OWNER'`, owned); n != 0 {
-			t.Errorf("%s is counted in %d projects besides OWNER, want none", owned, n)
+			t.Errorf("%s is counted in %d projects or owner keys besides OWNER, want none", owned, n)
 		}
 		if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key = 'OWNER' and family = $2`, owned, KindDelivery); n != 1 {
 			t.Errorf("%s is counted %d times in OWNER's deploys, want once", owned, n)
 		}
+	}
+	// What no issue attributes is in its repository's owner-key rows, and every one of them
+	// reached its owner through the repository: its via_repository is its n.
+	for _, owner := range wantOwners {
+		facts := allFacts(r.stored(t, owner))
+		if len(facts) == 0 {
+			t.Errorf("%s holds no day row, want the rows no issue attributes", owner)
+		}
+		for _, fact := range facts {
+			n, via := -1, -2
+			if at := strings.Index(fact, "n="); at < 0 {
+				t.Errorf("%s holds %q, which states no count", owner, fact)
+			} else if _, err := fmt.Sscanf(fact[at:], "n=%d via=%d", &n, &via); err != nil || n != via {
+				t.Errorf("%s holds %q, want every row counted through the repository (via_repository = n)", owner, fact)
+			}
+		}
+		compared += len(facts)
 	}
 
 	// The same day written again holds the same values: no row is rewritten.

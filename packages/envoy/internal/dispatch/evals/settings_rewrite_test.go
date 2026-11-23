@@ -302,13 +302,14 @@ func (r *refresherRig) expectSameAsWalk(t *testing.T, what string, walk *refresh
 // begins no walk, while the second begins its delivery walk again from no record of the settings
 // its rows stand built under, and walks every day. After each, the two hold the same delivery and
 // CI day rows, the same members and the same stored figures, the first's the fold of its rows;
-// every eval whose rows moved is one settingsMoves names; and each has exactly one eval_days
-// change of the pass, and no other eval one, so an evals view hears of the change once. Then the
-// project's source is moved to a repository with pull requests and no run, and back: the pass
-// begins no walk, the rows of the repository no source reads any more go (only source
-// repositories are kept, dispatch://INFRA-978 T8), the read of the evals keyed by the deploy
-// repository answers none of their rows and then the old repository's again, and the first still
-// holds what the second's whole walk under the new settings holds.
+// every eval whose rows moved is one settingsMoves names; and each, as the projects that read it
+// read it (an owner key's under each project that reads the key, readerEvals), has exactly one
+// eval_days change of the pass, and no other eval one, so an evals view hears of the change
+// once. Then the project's source is moved to a repository with pull requests and no run, and
+// back: the pass begins no walk, the rows of the repository no source reads any more go (only
+// source repositories are kept, dispatch://INFRA-978 T8), the read of the evals keyed by the
+// deploy repository answers none of their rows and then the old repository's again, and the first
+// still holds what the second's whole walk under the new settings holds.
 func TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites(t *testing.T) {
 	rewriting, deliveries := newSettingsRig(t, 2)
 	walking, _ := newSettingsRig(t, walkBatch)
@@ -356,12 +357,15 @@ func TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites(t *testing.T) {
 			t.Errorf("%s: no eval's rows moved, and the change moves %v", step.name, slugs)
 		}
 		for _, evalID := range moved {
-			if _, slug, _ := strings.Cut(evalID, "/"); !slices.Contains(slugs, slug) {
+			if slug := evalID[strings.LastIndex(evalID, "/")+1:]; !slices.Contains(slugs, slug) {
 				t.Errorf("%s: %s's rows moved, and the change moves %v alone", step.name, evalID, slugs)
 			}
 		}
-		if got := slices.Sorted(maps.Keys(changed)); !slices.Equal(got, moved) || slices.ContainsFunc(got, func(evalID string) bool { return changed[evalID] != 1 }) {
-			t.Errorf("%s: the pass logged the eval_days changes %v, want one of each eval whose rows moved, %v", step.name, changed, moved)
+		// An owner key's rows (owners.go) log their change under each project that reads them, and
+		// none where no project does.
+		want := readerEvals(moved, rewriting.ownerReaders(t))
+		if got := slices.Sorted(maps.Keys(changed)); !slices.Equal(got, want) || slices.ContainsFunc(got, func(evalID string) bool { return changed[evalID] != 1 }) {
+			t.Errorf("%s: the pass logged the eval_days changes %v, want one of each eval whose rows moved, as its readers read it, %v", step.name, changed, want)
 		}
 
 		walking.exec(t, "forget the rules the rows stand built under", `delete from eval_days_rules`)
@@ -591,12 +595,14 @@ func TestAProductionRuleChangeSendsOnlyTheMembersItMoves(t *testing.T) {
 }
 
 // TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark: over a settled history, the eval_days
-// changes of the passes that walked it carry no cause in run_kind; the pass after the apply step
-// is named rewrites the evals that moves, and each eval_days change it logs carries the rewrite's
-// mark (delivery.EvalDaysWrittenBySettingsRewrite), for which the Delivery page's live hub
-// recomputes an evals view at once; and the ordinary pass after a merged pull request's opening
-// moves an hour earlier rewrites its merge day and logs eval_days changes that carry none. Each
-// pass's changes are read from the change log once a drain has moved the outbox's rows there.
+// changes of the passes that walked it carry no cause in run_kind, but the changes of no eval
+// with which the first page publishes the projects' default repositories, which carry that
+// publishing's mark (delivery.EvalDaysWrittenByDefaults); the pass after the apply step is named
+// rewrites the evals that moves, and each eval_days change it logs carries the rewrite's mark
+// (delivery.EvalDaysWrittenBySettingsRewrite), for which the Delivery page's live hub recomputes
+// an evals view at once; and the ordinary pass after a merged pull request's opening moves an hour
+// earlier rewrites its merge day and logs eval_days changes that carry none. Each pass's changes
+// are read from the change log once a drain has moved the outbox's rows there.
 func TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark(t *testing.T) {
 	r, deliveries := newSettingsRig(t, walkBatch)
 	// expect requires that the eval_days changes logged after seq are some, each with runKind.
@@ -612,6 +618,11 @@ func TestOnlyTheSettingsRewritesEvalDaysChangesCarryItsMark(t *testing.T) {
 		logged, carrying := 0, 0
 		for _, change := range changes {
 			if change.Kind != delivery.ChangeKindEvalDays {
+				continue
+			}
+			if change.RunKind == delivery.EvalDaysWrittenByDefaults && (change.Ref == "" || delivery.JudgingMoved(change)) {
+				// The page's publishing of the default repositories (evals.publishDefaults), a
+				// change of no eval.
 				continue
 			}
 			logged++
@@ -1607,6 +1618,7 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 			}
 			seq, record := live.latestSeq(t), live.walkRecord(t)
 			change.change(t, live)
+			rows := live.dayRows(t)
 			wrote := recordWrites(t, live.rig)
 			prints := &commitPrints{t: t, rig: live.rig}
 			before := prints.read()
@@ -1658,13 +1670,18 @@ func TestARewoundSpanLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
 					t.Errorf("the pass logged %d eval_days changes of %s, want one", count, evalID)
 				}
 			}
-			// A repository that is no project's default brings members and no day row, and so no change.
-			wroteRows := false
-			for _, tables := range transactions {
-				wroteRows = wroteRows || slices.Contains(tables, "eval_days")
+			// A repository that is no project's default brings the rows of its owner key alone
+			// (owners.go), which no project reads, and so no change; every other change moves a row
+			// a project reads, and logs its change.
+			readers, read := live.ownerReaders(t), 0
+			for _, row := range movedRows(rows, live.dayRows(t)) {
+				read += len(asReaders(row, readers))
 			}
-			if wroteRows && len(logged) == 0 {
-				t.Errorf("the pass wrote day rows and logged no eval_days change")
+			if read > 0 && len(logged) == 0 {
+				t.Errorf("the pass moved %d day rows as the projects that read them read them, and logged no eval_days change", read)
+			}
+			if read == 0 && len(logged) > 0 {
+				t.Errorf("the pass moved no day row a project reads, and logged the eval_days changes %v", logged)
 			}
 
 			walk, _ := newSettingsHistory(t, walkBatch)
@@ -2115,19 +2132,21 @@ func (r *refresherRig) earlyDeploys(t *testing.T, deliveries deliverytest.Fixtur
 	return deliveries.From.AddDate(0, 0, -2)
 }
 
-// mergeBeforeHistory merges a population pull request of the deploy repository that names an
-// issue of the main project (namesIssueOf) at noon three days before early, the start of the
-// repository's history, and answers the pull request as the history holds it. Merged then, it is
-// an item of no day of the repository, and the first of the repository's deploys to complete
-// ships it, which then counts for the project through that issue.
+// mergeBeforeHistory merges a population pull request of the deploy repository that names no
+// issue at noon three days before early, the start of the repository's history, and answers the
+// pull request as the history holds it. Merged then, it is an item of no day of the repository,
+// and the first of the repository's deploys to complete ships it, which then counts, as every
+// early deploy does, for the repository's owner key (owners.go, R15): the main project reads its
+// rows, the deploy repository being its default, and the deploys' move between days moves no
+// owner's first input day, as one through an issue would move the project's own.
 func (r *refresherRig) mergeBeforeHistory(t *testing.T, deliveries deliverytest.Fixture, early time.Time) delivery.DeliveryPullRequest {
 	t.Helper()
 	index := slices.IndexFunc(deliveries.PullRequests, func(pr delivery.DeliveryPullRequest) bool {
-		return pr.Repo == deliveries.DeployRepo && namesIssueOf(deliveries, pr) && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
+		return pr.Repo == deliveries.DeployRepo && pr.IssueKey == nil && pr.MergedAt != nil && pr.CreatedAt != nil && !pr.Partial &&
 			slices.Contains(deliveries.Settings.PopulationAuthors, pr.Author)
 	})
 	if index < 0 {
-		t.Fatal("the history holds no merged pull request of the deploy repository that names an issue of the main project")
+		t.Fatal("the history holds no merged pull request of the deploy repository that names no issue")
 	}
 	moved := deliveries.PullRequests[index]
 	r.exec(t, "merge a pull request before the deploy repository's history", `
@@ -2138,13 +2157,14 @@ func (r *refresherRig) mergeBeforeHistory(t *testing.T, deliveries deliverytest.
 }
 
 // deploysWithPRs is how many deploys with pull requests project's deploy-frequency counts on day
-// in its all-repositories row kept for repo, -1 where it holds no such row.
+// in its all-repositories rows kept for repo, its own and those of the owner keys it reads
+// (eval_project_owners, owners.go), added as a read adds them; -1 where it reads no such row.
 func (r *refresherRig) deploysWithPRs(t *testing.T, project, repo string, day time.Time) int {
 	t.Helper()
 	return r.count(t, `
-		select coalesce((select (counts ->> 'with_prs')::float::int from eval_days
-			where project_key = $1 and eval_id = $2 and deploy_repo = $3 and series = $4 and repo = '' and day = $5), -1)
-	`, project, EvalID(project, SlugDeployFrequency), repo, measures.SeriesDeploys, day)
+		select coalesce((select sum((d.counts ->> 'with_prs')::float)::int from eval_project_owners o join eval_days d on d.project_key = o.owner
+			where o.project_key = $1 and d.eval_id = o.owner || '/' || $2 and d.deploy_repo = $3 and d.series = $4 and d.repo = '' and d.day = $5), -1)
+	`, project, SlugDeployFrequency, repo, measures.SeriesDeploys, day)
 }
 
 // TestARunsRemovalRewritesTheDayOfTheDeployThatShipsItsPullRequestsNext: a deploy ships every pull
@@ -2153,12 +2173,14 @@ func (r *refresherRig) deploysWithPRs(t *testing.T, project, repo string, day ti
 // names the deploy that ships it. Over a history whose deploy repository holds, two days before
 // the rest, a deploy that reached production and one that failed, and the day after them a deploy
 // that reached production (earlyDeploys), a pull request merged before them all ships with the
-// first: that deploy is one with pull requests, and the one of the day after ships none. The
-// first deploy's run is then deleted. Its day still holds a deploy run, so no series' first input
-// day moves and the page builds no span; the pull request ships with the deploy of the day after,
-// and the one pass writes that deploy's day too (refresh.shippedNeighbours), which no change
-// names: it counts a deploy with pull requests, as a second database holds it whose run was
-// deleted before its first walk (expectSameAsWalk). Before, that day kept counting none.
+// first: that deploy is one with pull requests, and the one of the day after ships none, each
+// counted, as the pull request names no issue, for the deploy repository's owner key, which the
+// main project reads (mergeBeforeHistory, deploysWithPRs). The first deploy's run is then deleted.
+// Its day still holds a deploy run of that key, so no series' first input day moves and the page
+// builds no span; the pull request ships with the deploy of the day after, and the one pass writes
+// that deploy's day too (refresh.shippedNeighbours), which no change names: it counts a deploy
+// with pull requests, as a second database holds it whose run was deleted before its first walk
+// (expectSameAsWalk). Before, that day kept counting none.
 func TestARunsRemovalRewritesTheDayOfTheDeployThatShipsItsPullRequestsNext(t *testing.T) {
 	remove := func(t *testing.T, r *refresherRig, deliveries deliverytest.Fixture) {
 		t.Helper()
