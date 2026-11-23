@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 )
 
@@ -30,11 +32,14 @@ func TestParseSpecRoots(t *testing.T) {
 		}
 	}
 	// The server reads it as it reads the other settings: NewDeps parses it, and refuses startup
-	// on a value that is no list of issue keys.
-	if _, err := NewDeps(DepsInput{SpecRoots: "ACME-1,,ACME-2"}); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
+	// on a value that is no list of issue keys. NewDeps also asks for a document service: one over
+	// no store serves, as this test opens no document.
+	documents := docs.New(docs.Deps{})
+	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	if _, err := NewDeps(DepsInput{SpecRoots: "ACME-1,,ACME-2", Docs: documents}); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
 		t.Fatalf("NewDeps with an empty item = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
 	}
-	deps, err := NewDeps(DepsInput{SpecRoots: " ACME-1 , ACME-5"})
+	deps, err := NewDeps(DepsInput{SpecRoots: " ACME-1 , ACME-5", Docs: documents})
 	if err != nil || !reflect.DeepEqual(deps.SpecRoots, []string{"ACME-1", "ACME-5"}) {
 		t.Fatalf("NewDeps(%q).SpecRoots = %q, %v; want [ACME-1 ACME-5]", " ACME-1 , ACME-5", deps.SpecRoots, err)
 	}
