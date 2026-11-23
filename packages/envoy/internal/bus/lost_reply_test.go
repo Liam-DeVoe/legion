@@ -154,7 +154,8 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				return forward.Wait()
+				_, err = forward.Wait()
+				return err
 			}
 		}},
 		{"JetStream API call", "$JS.API.STREAM.INFO.", noFlush, func(_ *testing.T, c *Client) func(context.Context) error {

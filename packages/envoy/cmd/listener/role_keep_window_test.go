@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -45,8 +46,8 @@ func TestAWalkWhoseWindowEndsInsideAConfirmGoesOnToTheRestOfTheLane(t *testing.T
 		forwarded []string
 		first     = true
 	)
-	cfg.forwardRole = func(ctx context.Context, _ string, item contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
-		return func() error {
+	cfg.forwardRole = func(ctx context.Context, _ string, item contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
+		return func() (bus.StoredAck, error) {
 			mu.Lock()
 			held := first
 			first = false
@@ -58,7 +59,7 @@ func TestAWalkWhoseWindowEndsInsideAConfirmGoesOnToTheRestOfTheLane(t *testing.T
 			mu.Lock()
 			forwarded = append(forwarded, item.DedupeKey)
 			mu.Unlock()
-			return nil
+			return bus.StoredAck{}, nil
 		}, nil
 	}
 

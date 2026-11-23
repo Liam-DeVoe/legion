@@ -50,12 +50,12 @@ func TestTheListenersStopEndsTheRoleHandoversAndWaitsForThem(t *testing.T) {
 	var released sync.Once
 	release := func() { released.Do(func() { close(proceed) }) }
 	defer release()
-	cfg.forwardRole = func(ctx context.Context, _ string, _ contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
-		return func() error {
+	cfg.forwardRole = func(ctx context.Context, _ string, _ contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
+		return func() (bus.StoredAck, error) {
 			entered.Do(func() { close(forwarding) })
 			<-ctx.Done()
 			<-proceed
-			return ctx.Err()
+			return bus.StoredAck{}, ctx.Err()
 		}, nil
 	}
 	laneClient, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))

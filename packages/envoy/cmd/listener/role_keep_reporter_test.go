@@ -123,11 +123,11 @@ func TestAShutdownMidHandoverEndsItAndKeepsItsReports(t *testing.T) {
 	}
 	forwarding := make(chan struct{})
 	var entered sync.Once
-	cfg.forwardRole = func(ctx context.Context, _ string, _ contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
-		return func() error {
+	cfg.forwardRole = func(ctx context.Context, _ string, _ contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
+		return func() (bus.StoredAck, error) {
 			entered.Do(func() { close(forwarding) })
 			<-ctx.Done()
-			return ctx.Err()
+			return bus.StoredAck{}, ctx.Err()
 		}, nil
 	}
 

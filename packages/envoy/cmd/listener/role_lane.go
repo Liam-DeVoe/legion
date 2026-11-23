@@ -153,7 +153,10 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(ctx, forward, err)
 			continue
 		}
-		go func() { f.finish(ctx, forward, wait()) }()
+		go func() {
+			_, err := wait()
+			f.finish(ctx, forward, err)
+		}()
 	}
 }
 
@@ -217,17 +220,17 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // timeout and not by ctx, as the forward itself is (bus.Client.StartRequestStoredTo): a handover's
 // walk ends its context while forwards it started still wait, and a role send's client may go
 // away; only ctx's mark of a lock its caller holds (bus.WithLockHeld) carries over.
-func startRoleForward(client *bus.Client) func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+func startRoleForward(client *bus.Client) func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(ctx, subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return func() error {
+		return func() (bus.StoredAck, error) {
 			waitCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 			defer cancel()
-			_, err := publishPastInProcess(waitCtx, func() (bus.StoredAck, error) {
+			return publishPastInProcess(waitCtx, func() (bus.StoredAck, error) {
 				if forward == nil {
 					var err error
 					if forward, err = client.StartRequestStoredTo(waitCtx, subject, item, msgID, time.Until(deadline)); err != nil {
@@ -236,11 +239,10 @@ func startRoleForward(client *bus.Client) func(ctx context.Context, subject stri
 				}
 				// Every forward StartRequestStoredTo returned is waited for, which releases its
 				// reply subscription, and the next send is a forward of its own.
-				err := forward.Wait()
+				ack, err := forward.Wait()
 				forward = nil
-				return bus.StoredAck{}, err
+				return ack, err
 			})
-			return err
 		}, nil
 	}
 }

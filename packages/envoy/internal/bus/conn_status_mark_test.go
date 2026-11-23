@@ -43,7 +43,8 @@ var markedCalls = []struct {
 		if err != nil {
 			return err
 		}
-		return forward.Wait()
+		_, err = forward.Wait()
+		return err
 	}},
 	// The kept lanes' list (KeptRoleLanes).
 	{"kept role lanes", func(ctx context.Context, client *Client, _ KeyValue) error {

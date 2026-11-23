@@ -70,17 +70,17 @@ type listenerDeliveryHandlerConfig struct {
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). ctx is its caller's: the forward's own bound is timeout, and a
 	// caller that holds a role's keep guard across it marks ctx so (bus.WithLockHeld), which the
-	// publish honours. The forward counts as delivered once the stream acknowledges storing it,
-	// which is what its wait returns nil for, a duplicate of an earlier forward under msgID
-	// included. The wait's error wraps errEarlierAttemptInProcess (earlierAttemptInProcess) when
-	// the stream refused a send of the forward as still in process under an earlier forward under
-	// msgID and timeout ended, or a later send failed, before an answer named that forward's copy:
-	// a forward under msgID reached the stream and may yet be stored, whether or not the error also
-	// wraps bus.ErrForwardNotStored. Otherwise the wait's bus.ErrForwardNotStored means the stream
-	// did not acknowledge storing it inside timeout, and any other error, returned by the publish (a
-	// raw nats.ErrTimeout from its flush included) or by the wait, means the forward is not known to
-	// have left this process.
-	forwardRole func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
+	// publish honours. The forward counts as delivered once the stream acknowledges storing it, which is what its wait returns the acknowledgement for: the sequence of the copy
+	// the stream holds under msgID, and Duplicate where an earlier forward stored it. The wait's
+	// error wraps errEarlierAttemptInProcess (earlierAttemptInProcess) when the stream refused a
+	// send of the forward as still in process under an earlier forward under msgID and timeout
+	// ended, or a later send failed, before an answer named that forward's copy: a forward under
+	// msgID reached the stream and may yet be stored, whether or not the error also wraps
+	// bus.ErrForwardNotStored. Otherwise the wait's bus.ErrForwardNotStored means the stream did
+	// not acknowledge storing it inside timeout, and any other error, returned by the publish (a
+	// raw nats.ErrTimeout from its flush included) or by the wait, means the forward is not known
+	// to have left this process.
+	forwardRole func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() (bus.StoredAck, error), err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go
@@ -797,9 +797,13 @@ func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, 
 // (bus.ErrForwardNotStored), or not known to have left this process -- the flush timed out or
 // failed, the publish failed -- is delivery_failed like a stale holder or an
 // unadvertised/unreadable delivery mode; no claim is no_holder. A failure clears the attempt, so
-// a re-send is forwarded again; a delivered forward records the dedupe entry. ctx is the context
-// a failure's exception is published under (applyDeliveryOutcome): the role forwarder's own. The
-// kept lane's walk reports only a forward the stream acknowledged here, which publishes nothing.
+// a re-send is forwarded again; a delivered forward records the dedupe entry. A failure whose
+// window ended before the forward was published (bus.ErrWindowEndedBeforePublish) says so on its
+// line, "window_ended_before_publish":true: the window ran out before this process made the
+// publish, so nothing reached the holder's subject, where a flush or an acknowledgement that ran
+// out of it may follow a forward the holder receives. ctx is the context a failure's exception is
+// published under (applyDeliveryOutcome): the role forwarder's own. The kept lane's walk reports
+// only a forward the stream acknowledged here, which publishes nothing.
 func finishRoleForward(ctx context.Context, cfg listenerDeliveryHandlerConfig, forward roleForward, err error, attrs ...slog.Attr) {
 	item, sessionID := forward.item, forward.sessionID
 	switch {
@@ -817,7 +821,11 @@ func finishRoleForward(ctx context.Context, cfg listenerDeliveryHandlerConfig, f
 			sessionID:    sessionID,
 			metricStatus: "failed",
 			log: func(logger *logging.Logger) {
-				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", append(attrs, slog.String("error", err.Error()))...)
+				failed := append(attrs, slog.String("error", err.Error()))
+				if errors.Is(err, bus.ErrWindowEndedBeforePublish) {
+					failed = append(failed, slog.Bool("window_ended_before_publish", true))
+				}
+				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", failed...)
 			},
 			exceptionReason: "delivery_failed",
 			clearAttempt:    true,
