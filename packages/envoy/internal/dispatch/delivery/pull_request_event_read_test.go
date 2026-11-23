@@ -578,7 +578,7 @@ func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliver
 		if err != nil {
 			t.Fatal(err)
 		}
-		intake.deliver(&intakeDelivery{handling: ctx}, intakeMessage{
+		intake.deliver(deliveryWithNoNATS(ctx), intakeMessage{
 			msg:      &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr." + strconv.Itoa(number)},
 			envelope: &contracts.Envelope{Payload: string(payload)},
 		})

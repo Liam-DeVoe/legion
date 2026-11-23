@@ -62,7 +62,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	}
 	done := make(chan time.Time, 1)
 	go func() {
-		intake.deliver(&intakeDelivery{handling: ctx}, intakeMessage{
+		intake.deliver(deliveryWithNoNATS(ctx), intakeMessage{
 			msg:      &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr." + strconv.Itoa(number)},
 			envelope: &contracts.Envelope{Payload: string(payload)},
 		})
@@ -224,7 +224,7 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 				done := make(chan time.Duration, 1)
 				began := time.Now()
 				go func() {
-					intake.deliver(&intakeDelivery{handling: ctx}, intakeMessage{
+					intake.deliver(deliveryWithNoNATS(ctx), intakeMessage{
 						msg:      &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr." + strconv.Itoa(number)},
 						envelope: &contracts.Envelope{Payload: string(payload)},
 					})

@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -98,7 +99,7 @@ func TestTheIntakesReadSettlesTheReadALinkOwedInAnotherCase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			intake.deliver(&intakeDelivery{handling: ctx}, intakeMessage{
+			intake.deliver(deliveryWithNoNATS(ctx), intakeMessage{
 				msg:      &natsgo.Msg{Subject: "notifications.github.Acme.Widgets.pr." + strconv.Itoa(number)},
 				envelope: &contracts.Envelope{Payload: string(payload)},
 			})
@@ -114,4 +115,14 @@ func TestTheIntakesReadSettlesTheReadALinkOwedInAnotherCase(t *testing.T) {
 			}
 		})
 	}
+}
+
+// deliveryWithNoNATS is the delivery a test hands Intake.deliver to drive one envelope through the
+// intake with no NATS behind it. The test's message is bound to no subscription, so its
+// acknowledgement fails and the answer path hands the message back (acknowledge); the delivery is
+// sealed, so that hand-back is withheld (admitHandBack) rather than marked on a bus connection the
+// test does not have. What the test reads is what the handling wrote, which the answer to NATS
+// does not change.
+func deliveryWithNoNATS(handling context.Context) *intakeDelivery {
+	return &intakeDelivery{handling: handling, sealed: true}
 }
