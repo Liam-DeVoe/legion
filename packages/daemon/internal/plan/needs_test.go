@@ -155,6 +155,76 @@ func TestAnEndedContextStopsTheCheckOfCycles(t *testing.T) {
 	}
 }
 
+// endsAt is a context that ends at its read number end: its Err answers nil before that read and
+// context.Canceled from it on, and reads counts every read, so a test ends a check at the read
+// it names and sees where the check stopped.
+type endsAt struct {
+	context.Context
+	end, reads int
+}
+
+func (c *endsAt) Err() error {
+	if c.reads++; c.reads >= c.end {
+		return context.Canceled
+	}
+	return nil
+}
+
+// endedAt is an ended, as the check of cycles passes one to components and cycleFrom, that
+// answers stop from its call number end on, with the count of its calls.
+func endedAt(end int, stop error) (ended func() error, calls *int) {
+	calls = new(int)
+	return func() error {
+		if *calls++; *calls >= end {
+			return stop
+		}
+		return nil
+	}, calls
+}
+
+// A request can end while its check of cycles runs, not only before it starts. The check stops at
+// the first read of its context that finds it ended, and answers its error and no refusal:
+// components, the pass over the tasks and their needs, and cycleFrom, the search of a set's
+// cycle, each read ended once for each step, and Validate reads its context at every
+// contextSteps-th step of the two. Each case ends the check in the middle of one of them, on a ring
+// of 4,096 tasks, whose pass takes 8,192 steps and whose search follows 4,096 needs. The fault is a
+// check that reads its context only before it starts; the control is each of the two without its
+// read of ended, under which its case answers the ring whole and no error, and Validate without
+// its reads at the steps, under which its case answers the ring's refusal.
+func TestARequestThatEndsDuringTheCheckOfCyclesStopsIt(t *testing.T) {
+	const size = 4_096
+	stop := errors.New("the request ended")
+	needs := make([][]int, size)
+	for i := range needs {
+		needs[i] = []int{(i + 1) % size}
+	}
+	t.Run("in the pass over the tasks and their needs", func(t *testing.T) {
+		ended, calls := endedAt(size, stop)
+		if _, _, err := components(needs, ended); !errors.Is(err, stop) || *calls != size {
+			t.Fatalf("components with ended ending at its call %d = error %v after %d calls, want %v at that call", size, err, *calls, stop)
+		}
+	})
+	t.Run("in the search of the set's cycle", func(t *testing.T) {
+		component, parent := make([]int, size), make([]int, size)
+		for i := range parent {
+			parent[i] = -1
+		}
+		ended, calls := endedAt(size/2, stop)
+		if path, err := cycleFrom(needs, component, parent, 0, ended); !errors.Is(err, stop) || path != nil || *calls != size/2 {
+			t.Fatalf("cycleFrom with ended ending at its call %d = %d tasks and error %v after %d calls, want none and %v at that call", size/2, len(path), err, *calls, stop)
+		}
+	})
+	t.Run("in Validate, at the request's context", func(t *testing.T) {
+		// The first read is the one before the check starts; the second is at its step
+		// contextSteps, inside its pass over the tasks.
+		ctx := &endsAt{Context: t.Context(), end: 2}
+		refusals, err := Validate(ctx, ringOf(size), Deployment{Roles: BuiltinRoles()})
+		if !errors.Is(err, context.Canceled) || refusals != nil || ctx.reads != 2 {
+			t.Fatalf("Validate with a context ending at its read 2 = %d refusals and error %v after %d reads, want none and %v at that read", len(refusals), err, ctx.reads, context.Canceled)
+		}
+	})
+}
+
 // The work of an issue merges as one change, at the end of the one task that no task needs, so
 // a plan with more than one such task is refused as not carried out yet, naming them in id order.
 // A plan whose tasks all lead to one task is not refused for it (it is still refused for its
