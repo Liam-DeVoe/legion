@@ -24,7 +24,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { type KeyBindingDescription, useKeymap } from "../shell/keymap";
 import { ShortcutHelp } from "../shell/ShortcutHelp";
 import { Margin } from "./Margin";
-import { MarginProvider, useMargin } from "./margin-context";
+import { MarginProvider, useDetailsDrawsConversation, useMargin } from "./margin-context";
 import {
   anchoredAsk,
   CommentLink,
@@ -197,12 +197,16 @@ test("a phone comment deep link highlights its card without expanding it or open
 
 /** What the new issue page's root does for Details while it is mounted: it sets the drawer's
  *  words and its address rule (`drawer-page.ts`), and, where `fills`, fills the margin's slot as
- *  `DetailsFill` does: with the margin's own content while a document's editor is bound (the
- *  margin's `documentBridge`), and with nothing before. */
+ *  `DetailsFill` does: with the margin's own content while Details draws the conversation, which
+ *  is while a document's editor is bound (`useDetailsDrawsConversation`, which `DetailsFill` and
+ *  `MarginSheet`'s `seen` read too), and with nothing before. */
 function NewPageRoot({ fills }: { fills: boolean }): null {
   useDrawerPage(issue);
-  const documentUp = useMargin().documentBridge !== undefined;
-  const fill = useCallback<MarginFill>((content) => (documentUp ? content : null), [documentUp]);
+  const drawsConversation = useDetailsDrawsConversation();
+  const fill = useCallback<MarginFill>(
+    (content) => (drawsConversation ? content : null),
+    [drawsConversation]
+  );
   useFillMarginSlot(fills ? fill : undefined);
   return null;
 }
@@ -381,17 +385,24 @@ test("below xl, the shut-sheet rule is the compact sheet's alone: it hides no ca
 });
 
 // The margin's reads - its comments and its answered asks - wait for the document's first batch
-// unless a reader sees the margin (`MarginSheet`'s `seen`). Details draws the margin's cards only
-// once the document's editor is bound, which is after the build the first batch comes out of, so
-// Details open during the first load's build draws none of them, and the reads wait for the batch
-// at every width: below `xl`, and at `xl` and above too, where a margin outside Details is the
-// desktop column, which reads at once. Details closed waits as well.
+// unless a reader sees the margin (`MarginSheet`'s `seen`). In Details a reader sees the margin
+// only while Details is open and draws the margin's cards, which it does once the document's
+// editor is bound (`useDetailsDrawsConversation`); on the page that is after the build the first
+// batch comes out of. So Details open with no editor bound waits for the batch, below `xl` and at
+// `xl` and above, where a margin outside Details is the desktop column, which reads at once; so
+// does Details closed at `xl` and above; and Details open with the editor bound reads before the
+// batch, below `xl` and at `xl` and above. The bound rows bind the editor with the batch still
+// held, which the page does not do, so that their reads show what `seen` says for Details alone:
+// with `seen` false in Details, they wait for the batch.
 test.each([
-  [1024, "open"],
-  [1440, "open"],
-  [1440, "closed"],
-] as const)("at %i px with Details %s during the first load's build, the margin reads its comments and answered asks after the document's first batch", async (width, drawer) => {
+  [1024, "open", "unbound", "after"],
+  [1440, "open", "unbound", "after"],
+  [1440, "closed", "unbound", "after"],
+  [1024, "open", "bound", "before"],
+  [1440, "open", "bound", "before"],
+] as const)("at %i px with Details %s and the document's editor %s, the margin reads its comments and answered asks %s the document's first batch", async (width, drawer, editor, when) => {
   const restoreMatchMedia = stubViewport(width);
+  const row = `Details ${drawer} at ${width} px with the editor ${editor}`;
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   // How many times each of the margin's two reads has gone out.
@@ -405,6 +416,7 @@ test.each([
       <QueryClientProvider client={unreadClient()}>
         <MarginProvider>
           <Details fills open={drawer === "open"}>
+            {editor === "bound" ? <BoundDocument /> : null}
             <Margin />
           </Details>
         </MarginProvider>
@@ -412,17 +424,22 @@ test.each([
     </MemoryRouter>
   );
   try {
-    // Under a rule that lets the reads go before the batch, both have gone out by here.
-    await settled();
+    // Both reads are out by the end of `settled()` where a reader sees the margin, so it waits
+    // long enough for a read to go out; and under a rule that lets the reads go before the batch
+    // where no reader sees the margin, both have gone out by here. It runs inside `act`: where
+    // the reads go out, their answers land during it and draw the margin's cards.
+    await act(settled);
     expect(
       reads(),
-      `Details ${drawer} at ${width} px made the margin's reads before the first batch`
-    ).toEqual({ answeredAsks: 0, comments: 0 });
+      `${row} ${when === "before" ? "did not make" : "made"} the margin's reads before the first batch`
+    ).toEqual(
+      when === "before" ? { answeredAsks: 1, comments: 1 } : { answeredAsks: 0, comments: 0 }
+    );
     act(() => theFirstBatchIsAwaited(false));
     await waitFor(() =>
       expect(
         reads(),
-        `Details ${drawer} at ${width} px did not make the margin's reads after the first batch`
+        `${row} did not make the margin's reads once each by the first batch`
       ).toEqual({ answeredAsks: 1, comments: 1 })
     );
   } finally {

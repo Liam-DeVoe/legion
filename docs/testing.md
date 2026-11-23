@@ -348,9 +348,14 @@ and each command runs there.
   row, where React reports a suspended resource outside `act`.
   A test module that renders the app's shell (`AuthGate`, `App` or `AppShell`) imports
   `web/src/__tests__/app-chunks.ts`, which loads every part the app loads lazily beyond a route's
-  own page, and the file that opens a route imports that route's page itself
-  (`web/src/app.test.tsx` and `web/src/app-sign-out-fixture.tsx` do).
-  A part the app starts loading lazily is added to `app-chunks.ts`.
+  own page before the file's rows begin: a part whose module exports its loader (`importInbox`,
+  `issueTabChunks`) through that loader, which it awaits at its top level, and each other part by
+  name. A file that opens a route and reads its page waits for that page with a `findBy*` query
+  or imports the page: `web/src/app.test.tsx` imports the Answers, document and project pages it
+  opens, and `web/src/app-sign-out.test.tsx` waits for the Agents page it opens.
+  `web/src/app-sign-out-fixture.tsx` opens `/` unless a row names another route, and the Inbox
+  at `/` comes through `app-chunks.ts`. A part the app starts loading lazily is added to
+  `app-chunks.ts`: through its loader where its module exports one, by name where it does not.
 
 - A harness test drops a database it made with `dropDatabase` from `e2e/psql.ts`, never with
   `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,

@@ -24,8 +24,9 @@ import { createContext, useContext, useRef, useSyncExternalStore } from "react";
  * that opens one says otherwise, so every other page reads exactly as it did.
  *
  * Nor is a read held from a reader who has reached its panel. `useAfterTheFirstBatch` takes
- * that as its argument - the Subscribers panel opened, the review sheet pulled up - and `ReaderIsHere` says the same for a whole subtree, so an agent
- * name inside a panel the reader opened reads the registry then rather than at the batch.
+ * that as its argument - the Subscribers panel opened, the review sheet pulled up - and
+ * `ReaderIsHere` says the same for a whole subtree, so an agent name inside a panel the reader
+ * opened reads the registry then rather than at the batch.
  */
 let awaited = false;
 const listeners = new Set<() => void>();

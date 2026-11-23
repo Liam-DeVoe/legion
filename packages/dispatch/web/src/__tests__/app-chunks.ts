@@ -20,28 +20,31 @@
  * row on. Loaded here, before the file's rows begin, no row meets any of them, and the cold-load
  * lane (`hold-lazy-loads.ts`) holds none of them.
  *
+ * A part whose module exports the loader the app asks for it with is loaded through that
+ * loader: the Inbox's list (`importInbox`) and each tab's panel (`issueTabChunks`), so a tab
+ * added to `issueTabChunks` is loaded here with no change to this file. The parts whose loader
+ * no module exports, each loaded inside a `lazy()`, are imported by name below. The loaders are
+ * awaited at this module's top level, and a test file's rows begin only once every module it
+ * imports has run to its end, top-level awaits included: no row starts before the loads end.
+ *
  * So a test module that renders the app's shell (`AuthGate`, `App`, `AppShell`) imports this
- * one, and a part the app starts loading lazily is added here. A route's own page is not: the
- * file that opens that route imports its page, as it always has.
+ * one, and a part the app starts loading lazily is added here: through its loader where its
+ * module exports one, and by name where it does not. A route's own page is not: the file that
+ * opens that route and reads its page waits for the page or imports it.
  */
-import "../features/activity/ActivityTab";
 import "../features/artifacts/ArtifactDetails";
 import "../features/artifacts/ArtifactDocument";
-import "../features/conversation/ConversationTab";
 import "../features/doc/AskBlockCard";
-import "../features/inbox/Inbox";
 import "../features/inbox/InboxDrawer";
-import "../features/issue/ChildrenTab";
-import "../features/issue/CollaboratorsTab";
 import "../features/issue/CreateIssueDialog";
-import "../features/issue/DecisionsPanel";
 import "../features/issue/IssueHeader";
 import "../features/issue/IssueTabs";
 import "../features/issue/SpecRequirements";
 import "../features/margin/Margin";
-import "../features/plan/PlanTab";
 import "../features/refs/RefPreview";
 import "../features/refs/agent-registry";
 import "../features/search/SearchPalette";
-import "../features/steps/StepsTab";
-import "../features/verification/VerificationTab";
+import { importInbox } from "../features/inbox/InboxList";
+import { issueTabChunks } from "../features/issue/issue-tab-list";
+
+await Promise.all([importInbox, ...Object.values(issueTabChunks)].map((load) => load()));

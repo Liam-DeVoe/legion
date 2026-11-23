@@ -805,6 +805,17 @@ export function useMargin(): MarginContextValue {
   return useContext(MarginContext);
 }
 
+/** Whether the new issue page's Details draws the margin's conversation - its cards and its
+ *  composer - above its panel. It does once a document's editor is bound (the margin's
+ *  `documentBridge`, which `ProofDocument`'s `bindEditor` registers after the build the
+ *  document's first batch comes out of), and not before. `DetailsFill`
+ *  (`issue-page/slots/details.tsx`) draws the conversation by this answer, and `MarginSheet`'s
+ *  `seen` counts an open Details as a reader seeing the margin by the same answer, so what
+ *  Details draws and whether the margin's reads wait for the first batch cannot disagree. */
+export function useDetailsDrawsConversation(): boolean {
+  return useContext(MarginContext).documentBridge !== undefined;
+}
+
 /** Takes the composer that holds the draft of a held send, for as long as it is mounted, and
  *  answers what unregisters it. The margin asks the composer of the send it is about to send
  *  again for what the reader has typed since the refusal (`reanchor`). */

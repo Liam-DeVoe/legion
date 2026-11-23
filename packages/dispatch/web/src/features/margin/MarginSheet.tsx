@@ -29,7 +29,7 @@ import {
   MarginComposerSlot,
   MarginKeptDrafts,
 } from "./CommentsTab";
-import { marginReplySendKey, useMargin } from "./margin-context";
+import { marginReplySendKey, useDetailsDrawsConversation, useMargin } from "./margin-context";
 import { PinnedTab } from "./PinnedTab";
 import { ThreadCard } from "./ThreadCard";
 import type { CommentActionFailure } from "./useCommentActionQueue";
@@ -249,7 +249,8 @@ export function MarginSheet({
   const covered = collapsed || unnamedShutSheet || (isPhoneViewport && phoneThread !== undefined);
   // Whether a reader sees the margin: the desktop column up, a compact sheet they have opened, or
   // Details open and drawing the conversation, which Details draws only once the document's editor
-  // is bound (`DetailsFill` in `issue-page/slots/details.tsx`: the margin's `documentBridge`, which
+  // is bound (`useDetailsDrawsConversation` in `margin-context.tsx`, which `DetailsFill` in
+  // `issue-page/slots/details.tsx` draws by: the margin's `documentBridge`, which
   // `ProofDocument`'s `bindEditor` sets after the build). While a reader sees it, its comments and
   // its answered asks are read before the document's first batch (`useMarginItems`,
   // `features/doc/first-batch.ts`), and the open document places the margin's cards against its
@@ -257,9 +258,10 @@ export function MarginSheet({
   // requirement R11). Details open during the first load's build draws none of the margin's cards,
   // so the reads wait for the first batch there. The composer below reads `seen` for its
   // `onScreen`.
-  const { documentBridge, setPlacesItems } = useMargin();
+  const { setPlacesItems } = useMargin();
+  const detailsDrawsConversation = useDetailsDrawsConversation();
   const seen = drawer
-    ? drawerOpen && documentBridge !== undefined
+    ? drawerOpen && detailsDrawsConversation
     : sheet.expanded || !isCompactViewport;
   // A margin with no owner shows nothing, and a covered one has given its room away.
   const placesItems = owner !== undefined && !covered && seen;

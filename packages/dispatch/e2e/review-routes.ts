@@ -607,9 +607,11 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  list drawn, the header and the strip still skeletons, and 46,079 pixels off - every glyph of
  *  the main column, and the list 2 px higher, because the strip's skeleton stands 2 px short of
  *  that page's strip. Its trace has both skeletons in the DOM when the light shot began, and
- *  the reads the header makes as it mounts - the repository mappings and the architecture
- *  sources - going out about 285 ms into the shot and about 310 ms after the first frame that
- *  shows the skeleton. So this waits for both skeletons to be gone, after the row's own
+ *  the reads the header made as it mounted going out about 285 ms into the shot and about
+ *  310 ms after the first frame that shows the skeleton; the header's mount now reads who is
+ *  subscribed to the issue and the project's architecture sources
+ *  (`web/src/features/issue/IssueHeader.tsx` and its metadata rail's
+ *  `IssueComponentsLine.tsx`). So this waits for both skeletons to be gone, after the row's own
  *  locators: before those the page may still be drawing "Loading issue…", which has neither
  *  box.
  *

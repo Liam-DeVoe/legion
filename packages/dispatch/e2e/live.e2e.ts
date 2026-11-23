@@ -614,8 +614,8 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly these on a fresh load, and nothing else: 20 reads, named rather than counted, and
-  // waited for rather than read at an instant. Three of them land after the message above is on
+  // Exactly these on a fresh load, and nothing else. A set rather than a count, and waited for
+  // rather than read at an instant. Three of them land after the message above is on
   // the page, which is what a count taken at that instant misses: the issue header is a chunk
   // of its own, asked for only once the page that holds it renders, so the two reads of its
   // metadata rail - who is subscribed to the issue and the project's architecture sources - go
@@ -686,7 +686,6 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,
   ].sort();
-  expect(firstLoad).toHaveLength(20);
   await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
 
   await alice.close();
