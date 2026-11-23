@@ -803,6 +803,7 @@ function charted(
         links: [],
         listed: true,
         min_n: null,
+        narrowed: null,
         role: "headline",
         series: name,
         unit,

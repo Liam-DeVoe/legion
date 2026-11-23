@@ -37,6 +37,7 @@ function values(overrides: Partial<EvalSeriesValues>): EvalSeriesValues {
     links: [],
     listed: true,
     min_n: null,
+    narrowed: null,
     role: "headline",
     series: "minutes",
     unit: "minutes",

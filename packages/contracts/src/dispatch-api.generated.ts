@@ -5436,6 +5436,7 @@ export interface components {
       links: components["schemas"]["EvalLink"][] | null;
       listed: boolean;
       min_n: null | number;
+      narrowed: string[] | null;
       role: string;
       series: string;
       unit: string;
@@ -10609,6 +10610,14 @@ export interface operations {
         compare_to?: string;
         kind?: "delivery" | "legion" | "ci" | "experiment";
         repo?: string[];
+        q?: string;
+        parent_agent?: string[];
+        issue?: string[];
+        priority?: string[];
+        component?: string[];
+        author?: string[];
+        rework?: string[];
+        deployed?: string[];
         limit?: number;
         offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -14707,6 +14716,14 @@ export interface operations {
         compare_to?: string;
         kind?: "delivery" | "legion" | "ci" | "experiment";
         repo?: string[];
+        q?: string;
+        parent_agent?: string[];
+        issue?: string[];
+        priority?: string[];
+        component?: string[];
+        author?: string[];
+        rework?: string[];
+        deployed?: string[];
         limit?: number;
         offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
