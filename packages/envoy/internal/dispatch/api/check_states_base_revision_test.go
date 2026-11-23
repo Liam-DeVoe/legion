@@ -183,7 +183,7 @@ func TestTheReconcileStoresTheBaseRevisionARowOfTheReleaseBeforeLacks(t *testing
 	ran := make(chan struct{})
 	go func() {
 		defer close(ran)
-		delivery.NewReconcile(rig.database.Pool, rig.served.deps.GitHub, nil).TickEvery(100*time.Millisecond).
+		delivery.NewReconcile(rig.database.Pool, rig.served.deps.GitHub, nil, rig.served.deps.Attributor).TickEvery(100*time.Millisecond).
 			Run(ctx, storetest.Leases(t, rig.database.Pool))
 	}()
 	var baseSHA, head, issue string

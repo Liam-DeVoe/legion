@@ -63,10 +63,12 @@ func withResultGrants(m *Machine, tokens *mintedTokens) *Machine {
 
 // TestAStoredSecretUnderADPoPEntryIsNeverReleased: a stored secret whose rules entry is of kind
 // dpop - the kind of a CI run's results capability, which the broker mints and holds - is never
-// released, to the session or to the proxy, whether its entry binds a host or none (an entry with
-// no host holds nothing back, so its value would otherwise go to the session in clear): the
-// release is refused ErrAirlockMintedOnly, no placeholder row is written for it, and the answer
-// holds nothing of its value.
+// released, to the session or to the proxy, whether its entry binds a host or none: the release
+// is refused ErrAirlockMintedOnly, no placeholder row is written for it, and the answer holds
+// nothing of its value. No profiles file holds an entry that binds none (policy.ParseProfiles
+// refuses a proxy block with no host, and proxyrules.Validate an entry with none), so that row
+// serves the profile with its host and hands the release rules whose entry binds none: the
+// refusal reads the entry's kind, never its hosts.
 func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
 	noHost := rule("AUTO_TOKEN", proxyrules.KindDPoP)
 	noHost.Hosts = nil
@@ -75,9 +77,10 @@ func TestAStoredSecretUnderADPoPEntryIsNeverReleased(t *testing.T) {
 		"an entry that binds none":   noHost,
 	} {
 		t.Run(name, func(t *testing.T) {
-			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{entry}})
+			m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", proxyrules.KindDPoP)}})
+			m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{entry}}
 			_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-			release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+			release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 			if !errors.Is(err, ErrAirlockMintedOnly) || !IsRefusal(err) {
 				t.Fatalf("the session's release of a stored secret under a dpop entry = %v; want ErrAirlockMintedOnly, a refusal", err)
 			}
@@ -101,7 +104,7 @@ func TestAnEndedResultPlaceholderIsNeverReadAsASecretPlaceholder(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	withResultGrants(m, &mintedTokens{})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatal(err)
 	}
 	held, _ := resultGrant(t, m, "97", time.Now().Add(-time.Second))

@@ -186,22 +186,18 @@ func TestValidate(t *testing.T) {
 // compared as it is written, as the other three are, so "DPoP" is no kind; each refusal names
 // the kind the file wrote and the four kinds there are, so its reader sees what to write.
 func TestValidateTakesTheDPoPKind(t *testing.T) {
-	const file = `{"secrets": [{"name": "DISPATCH_RESULTS_TOKEN", "hosts": ["dispatch.test"], "headers": ["Authorization"],
-  "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}], "kind": %q}]}`
-	rules, err := Parse(fmt.Appendf(nil, file, "dpop"))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
+	entry := func(kind string) Rules {
+		return Rules{Secrets: []SecretRule{{
+			Name: "DISPATCH_RESULTS_TOKEN", Hosts: []string{"dispatch.test"}, Headers: []string{"Authorization"},
+			Allow: []Allow{{Method: "POST", PathPrefix: "/api/v1/projects/"}}, Kind: kind,
+		}}}
 	}
-	if err := Validate(rules); err != nil {
+	if err := Validate(entry("dpop")); err != nil {
 		t.Errorf("Validate of an entry of kind dpop: %v", err)
 	}
 	for _, kind := range []string{"DPoP", "dpo"} {
 		t.Run(kind, func(t *testing.T) {
-			rules, err := Parse(fmt.Appendf(nil, file, kind))
-			if err != nil {
-				t.Fatalf("Parse: %v", err)
-			}
-			err = Validate(rules)
+			err := Validate(entry(kind))
 			if err == nil {
 				t.Fatalf("Validate of an entry of kind %q: no error", kind)
 			}
