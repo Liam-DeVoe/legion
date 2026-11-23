@@ -46,6 +46,9 @@ source "$script_dir/test-lib.sh"
 
 # The run attempt every case drives with: the route carries it, and so does every refusal line.
 run_attempt=4
+# The id of the job that calls dispatch-browser.yaml, which every `jobs` drive passes: only the
+# jobs named `<caller> / <job>` are that lane's.
+caller=dispatch-browser
 
 mkdir -p "$work/bin" "$work/calls"
 cat > "$work/bin/gh" <<GH
@@ -340,18 +343,22 @@ page() {
 
 # happy_page: one attempt of a run of this lane, as the jobs API names it. A called workflow's
 # job is named `<the caller's job> / <this job>`, with its matrix leg in brackets after it, and
-# the caller's own jobs are in the same list: `lint` and `dispatch-multiprocess`, the second of
-# which the name filter keeps out only by the hyphen before `multiprocess`.
+# the caller's own jobs are in the same list: `lint` and `dispatch-multiprocess`, which no
+# caller's prefix names. So are the jobs of ci.yaml's other caller of the workflow, which a pull
+# request labelled full-ci runs in the same run under the same job names.
 #
 # The seconds are a full lane of this file's shape, in round numbers rather than readings: the
 # eight jobs of run 43074443876 took binaries 171, shard (1) 577, shard (2) 705, alone 199,
 # multiprocess 125, embedder 55, visual 114 and merge 28 seconds (the jobs API, read
 # 2026-11-11), and this page carries numbers of that order, no embedder job and a skipped
 # multiprocess job, because what the cases read is the arithmetic and not the run. The five jobs
-# of this workflow that this page gives a conclusion and an end, the merge job apart, sum to
-# 1,750 s, which is inside the full lane's budget and over the pull-request lane's, so one
-# fixture drives both arms of the machine-time cases below. The caller's two jobs carry 9,999 s
-# each: a sum that held either of them would be past every budget this file has.
+# of this workflow under dispatch-browser that this page gives a conclusion and an end, the merge
+# job apart, sum to 1,750 s, which is inside the full lane's budget and over the pull-request
+# lane's, so one fixture drives both arms of the machine-time cases below. The caller's two jobs
+# carry 9,999 s each: a sum that held either of them would be past every budget this file has.
+# The other caller's shard (1) carries 800 s, inside the pull-request lane's budget: read into
+# dispatch-browser's sum it moves the 1,750 s those cases hold, and read under its own caller it
+# is that lane's whole sum.
 happy_page() {
   page "10|dispatch-browser / binaries|success|150" \
     "11|dispatch-browser / shard (1)|success|600" \
@@ -361,7 +368,9 @@ happy_page() {
     "15|dispatch-browser / merge|null" \
     "16|lint|success|9999" \
     "17|dispatch-multiprocess|success|9999" \
-    "18|dispatch-browser / visual|failure|100"
+    "18|dispatch-browser / visual|failure|100" \
+    "19|dispatch-browser-pr / shard (1)|failure|800" \
+    "20|dispatch-browser-pr / merge|null"
 }
 
 # lane_jobs <name>|<conclusion>[|<seconds>]...: a jobs file of the shape the `jobs` mode writes,
@@ -461,7 +470,7 @@ sleeps() {
 
 echo "case: this attempt's jobs become the six fields the readings consume"
 fixture 0
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
 check "writes every job of this workflow and none of the caller's" "$(is "$(entries)" 7)"
 check "each entry holds the six fields and no other" \
@@ -492,6 +501,8 @@ check "and keeps its conclusion, so reading three can name a build that failed" 
   "$(is "$(field 10 .conclusion)" success)"
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
+check "and so are the other caller's" \
+  "$(is "$(jq -r '[.[] | select(.id == 19 or .id == 20)] | length' "$work/out.json")" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: the route is this run's attempt endpoint"
@@ -503,31 +514,51 @@ check "and holds no filter=all" "$(is "$(contains "$(args)" 'filter=all')" false
 check "slurps the pages, since gh refuses --slurp beside --jq" \
   "$(contains "$(args)" '--paginate --slurp')"
 
+echo "case: the other caller's merge job reads its own jobs alone"
+# ci.yaml's dispatch-browser-pr job calls the same workflow, and on a pull request labelled
+# full-ci it runs in the same run as dispatch-browser: its merge job must read its own legs and
+# none of the full lane's, or it would name a red leg of that lane as its own.
+fixture 0
+drive jobs "$work/out.json" dispatch-browser-pr
+check "exits 0" "$(is "$status" 0)"
+check "writes that caller's two jobs and no other" "$(is "$(entries)" 2)"
+check "its shard leg reads shard-1" "$(is "$(field 19 .leg)" shard-1)"
+check "with its own conclusion" "$(is "$(field 19 .conclusion)" failure)"
+check "and the full lane's shard (1) is not in it" "$(is "$(jq -r '[.[] | select(.id == 11)] | length' "$work/out.json")" 0)"
+
 echo "case: the alone leg is the bare job name, and a shard leg's number is read whole"
 # The alone job ran a matrix of three projects, one leg each, and its leg was read out of the
 # brackets after the job name; it runs the three on one machine now and writes one blob report,
-# so the leg is the word itself (dispatch://INFRA-1109). The filter admits the name with either
-# caller's prefix and with none at all, and both shapes must read the same leg: a leg absent
-# from reading one's list is a leg whose missing blob nothing reports. The shard row with no
-# prefix is here because the shard capture wanted that leading space until
-# dispatch://INFRA-1109, where the `alone` test beside it did not: both read the same leg now,
-# whichever shape the caller's job name takes. The shard capture still takes a run of digits
-# rather than one, so a tenth leg would be read whole.
+# so the leg is the word itself (dispatch://INFRA-1109). The leg is read off the name after the
+# caller's prefix, and both callers' names must read the same leg: a leg absent from reading
+# one's list is a leg whose missing blob nothing reports. The shard capture wanted a leading
+# space until dispatch://INFRA-1109, where the `alone` test beside it did not, and this case held
+# a job named with no prefix to the same leg as a prefixed one. Since main's #5175 a name with
+# no caller's prefix is no job of this lane at all, as `lint` is not, so the two unprefixed jobs
+# here are dropped, and what held the two shapes to one leg is the other caller's prefix: its
+# alone and shard jobs read the legs this caller's do. The shard capture still takes a run of
+# digits rather than one, so a tenth leg would be read whole.
 fixture 0
 page "21|dispatch-browser / alone|success" "22|alone|success" \
-  "23|dispatch-browser / shard (10)|success" "24|shard (1)|success"
-drive jobs "$work/out.json"
+  "23|dispatch-browser / shard (10)|success" "24|shard (1)|success" \
+  "25|dispatch-browser-pr / alone|skipped" "26|dispatch-browser-pr / shard (2)|success"
+drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
-check "reads the four jobs" "$(is "$(entries)" 4)"
+check "reads this caller's two jobs" "$(is "$(entries)" 2)"
 check "the prefixed alone job is the alone leg" "$(is "$(field 21 .leg)" alone)"
-check "and so is one with no prefix" "$(is "$(field 22 .leg)" alone)"
 check "a two-digit shard leg is read whole" "$(is "$(field 23 .leg)" shard-10)"
-check "and a shard job with no prefix is its own leg" "$(is "$(field 24 .leg)" shard-1)"
+check "a job named under no caller is no leg of this lane" \
+  "$(is "$(jq -r '[.[] | select(.id == 22 or .id == 24)] | length' "$work/out.json")" 0)"
+drive jobs "$work/out.json" dispatch-browser-pr
+check "the other caller's read exits 0" "$(is "$status" 0)"
+check "and reads its own two jobs" "$(is "$(entries)" 2)"
+check "under that caller's prefix the alone job is the alone leg too" "$(is "$(field 25 .leg)" alone)"
+check "and its shard job is its own leg" "$(is "$(field 26 .leg)" shard-2)"
 
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"
 retry_seconds=1
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "tried three times" "$(is "$(calls)" 3)"
@@ -549,7 +580,7 @@ echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
 # reader looking for a 502 that never happened.
 fixture 3 "could not resolve host: api.github.com"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
@@ -569,7 +600,7 @@ echo "case: an earlier attempt answered a status and the last attempt did not"
 # exactly the mis-reading this lane's messages exist to end.
 fixture 3 "error connecting to api.github.com"
 printf '%s\n' 'gh: Server Error (HTTP 502)' > "$work/stderr.0"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "tried three times" "$(is "$(calls)" 3)"
@@ -605,7 +636,7 @@ echo "case: an attempt the 30 s bound ended is reported as a timeout and not as 
 # the attempts differ.
 fixture 0
 touch "$work/stub-timeout.0" "$work/stub-timeout.1" "$work/stub-timeout.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -636,7 +667,7 @@ echo "case: the bound ended the first two attempts and the third answered a stat
 # killed-wrapper case.
 fixture 3 "HTTP 502"
 touch "$work/stub-timeout.0" "$work/stub-timeout.1"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -660,7 +691,7 @@ echo "case: the first two attempts answered a status and the bound ended the thi
 # something else.
 fixture 3 "HTTP 502"
 touch "$work/stub-timeout.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -686,7 +717,7 @@ echo "case: the deciding attempt exited a status that is neither 1 nor 124"
 # here, and with 124 where a case wrote no status at all.
 fixture 3 "HTTP 502"
 printf '%s\n' 127 > "$work/stub-timeout.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
@@ -723,7 +754,7 @@ echo "case: an attempt whose wrapper was killed leaves no exit status on record"
 # says three attempts and names the two that answered.
 fixture 3 "HTTP 502"
 touch "$work/kill-wrapper.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "the harness staged the kill" \
   "$(is "$(contains "$out" 'could not stage a killed wrapper')" false)"
 check "fails the step" "$(is "$status" 1)"
@@ -759,7 +790,7 @@ echo "case: a killed wrapper whose gh had printed a status before it died"
 fixture 3 "HTTP 502"
 printf '%s\n' 'gh: Server Error (HTTP 503)' > "$work/stderr.2"
 touch "$work/kill-wrapper.2"
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "the harness staged the kill" \
   "$(is "$(contains "$out" 'could not stage a killed wrapper')" false)"
 check "and the killed wrapper never echoed the stderr its gh had written" \
@@ -781,7 +812,7 @@ check "and the attempt the wrapper never finished is still counted" \
 echo "case: refused once, answered on the second attempt"
 fixture 1
 retry_seconds=1
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
 check "writes the attempt that answered" "$(is "$(entries)" 7)"
@@ -804,7 +835,7 @@ fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
   GITHUB_RUN_ATTEMPT=$run_attempt GH_RETRY_SECONDS=100000 "$real_strace" -f -qq -e signal=none \
-  -e trace="$TIMED_WAITS" -o "$work/waits" "$real_timeout" 120 "$read_script" jobs "$work/out.json" 2>&1)
+  -e trace="$TIMED_WAITS" -o "$work/waits" "$real_timeout" 120 "$read_script" jobs "$work/out.json" "$caller" 2>&1)
 status=$?
 set -e
 check "exits 0" "$(is "$status" 0)"
@@ -907,9 +938,10 @@ echo "case: the lane's machine time is summed out of the file the jobs mode wrot
 # The two modes over one page, one after the other: the `jobs` mode writes the file and this
 # mode reads it, so the fields one writes and the other reads cannot drift apart. The page is
 # the happy one - binaries 150 s, shard (1) 600, shard (2) 700 (red), alone 200, visual 100
-# (red), multiprocess skipped, merge still running, and the caller's two jobs at 9,999 s each.
+# (red), multiprocess skipped, merge still running, the caller's two jobs at 9,999 s each and
+# the other caller's shard (1) at 800 s.
 fixture 0
-drive jobs "$work/out.json"
+drive jobs "$work/out.json" "$caller"
 check "the jobs mode exits 0" "$(is "$status" 0)"
 drive machine-time "$work/out.json" full
 check "the full lane passes under its budget" "$(is "$status" 0)"
@@ -920,8 +952,9 @@ check "which it says is the committed ceiling less this job's own worst case" \
   "$(contains "$(notice_line)" '3200 s less this job.s own worst case of 45 s')"
 check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 # 1,750 s is binaries, both shards, alone and visual: a red leg cost its machine time like any
-# other and is in the sum, while the skipped job (-1 s), the merge job (still running) and the
-# caller's two 9,999 s jobs are not. Any one of those five in or out moves the figure above.
+# other and is in the sum, while the skipped job (-1 s), the merge job (still running), the
+# caller's two 9,999 s jobs and the other caller's 800 s shard are not. Any one of those six in
+# or out moves the figure above.
 
 echo "case: the same run on the pull-request lane is refused by the lower budget"
 # The lane decides the budget and nothing else does: the same jobs, read as the lane whose
@@ -937,6 +970,20 @@ check "and the committed ceiling for that lane with this job's own maximum taken
   "$(contains "$(error_line)" "the committed ceiling of 900 s for this lane, less this job's own worst case of 45 s")"
 check "and says this is the suite costing more and not a failed row" \
   "$(contains "$(error_line)" 'costing more machine time than dispatch://INFRA-1109 left it costing, and not a failed browser row')"
+
+echo "case: the other caller's merge job holds its own lane to that lane's budget"
+# On a pull request labelled full-ci both callers run in one run, and each merge job's reading
+# five sums the jobs its own `jobs` read wrote: dispatch-browser-pr's 800 s shard, under the
+# pull-request lane's 855 s, with none of dispatch-browser's 1,750 s that the page also holds.
+fixture 0
+drive jobs "$work/out.json" dispatch-browser-pr
+check "the jobs mode exits 0" "$(is "$status" 0)"
+drive machine-time "$work/out.json" pull-request
+check "the pull-request lane passes under its budget" "$(is "$status" 0)"
+check "summing that caller's one concluded job against the pull-request lane's budget" \
+  "$(contains "$(notice_line)" \
+    'the pull-request lane cost 800 s over 1 concluded jobs, this merge job apart, against a budget of 855 s')"
+check "and prints no ::error:: line" "$(is "$(errors)" 0)"
 
 echo "case: each budget bites at its own second"
 # The one case that would catch a budget written one second out, or a `-ge` where the rule is
@@ -1074,7 +1121,7 @@ echo "case: RATE_LIMITED, the reset before the job's limit: the read waits for i
 fixture 1 "$rate_limited"
 reset=$(($(date +%s) + 20))
 echo "$reset" > "$work/reset"
-drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json"
+drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
 wait_asked=$(sleeps)
 check "exits 0" "$(is "$status" 0)"
 check "reads the reset from the rate_limit route once" "$(is "$(rate_calls)" 1)"
@@ -1089,7 +1136,7 @@ check "prints no ::error:: line" "$(is "$(errors)" 0)"
 echo "case: RATE_LIMITED, the reset past the job's limit: the read fails by name at once"
 fixture 3 "$rate_limited"
 echo "$(($(date +%s) + 3600))" > "$work/reset"
-drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json"
+drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "calls the jobs route once: no ladder after a wait past the limit" "$(is "$(calls)" 1)"
 check "asks sleep for nothing" "$(is "$(sleeps)" '')"
@@ -1102,7 +1149,7 @@ check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 echo "case: RATE_LIMITED, no limit set: no wait, and the ladder still makes its three attempts"
 fixture 3 "$rate_limited"
 echo "$(($(date +%s) + 3600))" > "$work/reset"
-drive_limited -- jobs "$work/out.json"
+drive_limited -- jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "after the ladder's three attempts" "$(is "$(calls)" 3)"
 check "each naming the limit it lacks" \
@@ -1146,7 +1193,7 @@ echo "case: an environment variable the step did not set"
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT='' "$read_script" jobs "$work/out.json" 2>&1)
+  GITHUB_RUN_ATTEMPT='' "$read_script" jobs "$work/out.json" "$caller" 2>&1)
 status=$?
 set -e
 check "fails the step" "$(is "$status" 1)"
@@ -1158,7 +1205,7 @@ check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
 fixture 0
 set +e
 out=$(PATH="$work/bin:$PATH" GH_TOKEN='' GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-  GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" jobs "$work/out.json" 2>&1)
+  GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" jobs "$work/out.json" "$caller" 2>&1)
 status=$?
 set -e
 check "a jobs read without a token is refused by name too" "$(is "$status" 1)"
@@ -1172,7 +1219,7 @@ drive rows "$work/out.json"
 check "fails the step" "$(is "$status" 1)"
 check "names what it was given" "$(contains "$out" 'It was given: rows')"
 check "and what it takes" \
-  "$(contains "$out" 'dispatch-browser-run-reads.sh jobs <out-file>')"
+  "$(contains "$out" 'dispatch-browser-run-reads.sh jobs <out-file> <job>')"
 check "makes no request" "$(is "$(calls)" 0)"
 
 fixture 0
@@ -1180,5 +1227,12 @@ drive jobs
 check "a jobs call naming no out-file fails too" "$(is "$status" 1)"
 check "naming what it was given" "$(contains "$out" 'It was given: jobs$')"
 check "and makes no request" "$(is "$(calls)" 0)"
+
+fixture 0
+drive jobs "$work/out.json"
+check "a jobs call naming no caller fails too" "$(is "$status" 1)"
+check "naming what it was given" "$(contains "$out" "It was given: jobs $work/out.json\$")"
+check "and makes no request" "$(is "$(calls)" 0)"
+check "and writes no out-file" "$(is "$(wrote_out_file)" no)"
 
 summary "dispatch-browser-run-reads.sh reads this run's attempt"

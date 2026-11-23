@@ -1,12 +1,13 @@
 name: Dispatch browser nightly
 
 # Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
-# recordings. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
-# carries no `full-ci` label, the rows a pull request is held to, and the full lane - every project
-# the shard job's browser step names for it (.github/scripts/dispatch-browser-shard-suite.sh), the
-# three `-alone` ones and the two-process job - on every other run, so the merge group runs it on
-# the tree a change lands as. The full lane's jobs are dispatch-browser.yaml's, whose notes name
-# them and the machines they take
+# recordings. ci.yaml calls the same workflow twice: its dispatch-browser-pr job runs the
+# pull-request lane on a pull request, the rows a pull request is held to, and its
+# dispatch-browser job runs the full lane - every project the shard job's browser step names for
+# it (.github/scripts/dispatch-browser-shard-suite.sh), the three `-alone` ones and the
+# two-process job - in the merge queue, so the merge group runs it on the tree a change lands
+# as. The full lane's jobs are dispatch-browser.yaml's, whose notes name them and the machines
+# they take
 # (.github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows);
 # full-lane run 45151841335 at e2399655 (2026-11-23) ran them as seven jobs on eight machines,
 # and its attempt 1 cost 2,635 machine-seconds for 1,730 rows, 1.52 s a row, where the default
@@ -29,10 +30,10 @@ name: Dispatch browser nightly
 # GitHub starts a scheduled run from the default branch alone, so the nightly is main's copy of
 # this file and of the workflow it calls, never a pull request's (e2e.yaml's head comment states
 # the same of its own nightly). A change to the workflow it calls is proven before main by
-# ci.yaml's dispatch-browser job: the pull-request lane on the pull request that makes it, and
-# the full lane in the merge group that lands it. No ci.yaml job calls this file, so a change to
-# it is proven by `gh workflow run dispatch-browser-nightly.yaml --ref <branch>` (below). It runs
-# on its schedule only once it is on main.
+# ci.yaml's two callers of it: the pull-request lane on the pull request that makes it, and the
+# full lane in the merge group that lands it. No ci.yaml job calls this file, so a change to it
+# is proven by `gh workflow run dispatch-browser-nightly.yaml --ref <branch>` (below). It runs on
+# its schedule only once it is on main.
 
 on:
   schedule:
@@ -79,10 +80,15 @@ jobs:
   # this call passes no `ci-ok-changes`, so that step does not run and this workflow posts no
   # check.
   #
+  # The job carries the id of ci.yaml's full-lane caller and passes it as `job`, so its jobs are
+  # named `dispatch-browser / <job>` and its artifacts carry the names that caller's do:
+  # packages/dispatch/e2e/tools/shard-weights.ts reads the merged report of both, by the artifact
+  # name `dispatch-browser-report-1`.
+  #
   # Every run but the re-record's schedule, whose cron the `if:` below names:
   # `github.event.schedule` is the cron that started a scheduled run and is empty on a
   # `workflow_dispatch`, so a dispatch runs this job too.
-  full:
+  dispatch-browser:
     if: github.event.schedule != '41 13 * * *'
     permissions:
       contents: read
@@ -90,6 +96,7 @@ jobs:
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full
+      job: dispatch-browser
   # The guard on the stubbed layer's recordings (dispatch://INFRA-1407's R3). A recording is a
   # snapshot of a server that keeps moving: this re-records every stubbed row against the real
   # harness and fails when a route no longer answers as its recording holds.

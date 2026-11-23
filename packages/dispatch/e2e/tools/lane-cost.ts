@@ -14,11 +14,20 @@
  *  attempt `<attempt>` where the command names one, and leaves out a job that was skipped and one
  *  that has no `started_at` or no `completed_at`. The run's own fields are read at the same
  *  attempt: `runs/<id>`, which GitHub answers with the run's latest attempt, or
- *  `runs/<id>/attempts/<attempt>`. A run of the nightly workflow, whose jobs are named `full / …`
- *  and `re-record`, is not read: its jobs fail the filter above.
+ *  `runs/<id>/attempts/<attempt>`. A run of the nightly workflow, whose jobs were named
+ *  `full / …` and `re-record`, was not read: its jobs failed the filter above. Since main's #5175
+ *  its full lane's jobs are named `dispatch-browser / …`, as those of ci.yaml's full-lane caller
+ *  are, and pass it.
+ *
+ *  A reading reads one lane. ci.yaml calls dispatch-browser.yaml from two jobs since main's
+ *  #5175, dispatch-browser (the full lane) and dispatch-browser-pr (the pull-request lane), and a
+ *  pull request labelled full-ci runs both in one run, whose jobs carry the same names after the
+ *  caller's. So a run whose counted jobs are of more than one caller is refused, naming the
+ *  callers it found, rather than summed as one lane; a run of one caller reads as before, its
+ *  jobs named `dispatch-browser / …` or `dispatch-browser-pr / …`.
  *
  *  - cost: the sum over those jobs of `completed_at` less `started_at`, in seconds. `per_job`
- *    holds each job's, under its name after `dispatch-browser / `;
+ *    holds each job's, under its name after its caller's (`dispatch-browser / `, say);
  *  - own: the binaries job's seconds, plus the slowest of the legs after it, plus the merge job's;
  *  - wall: the latest `completed_at` less the earliest `started_at`;
  *  - queue: the sum over the jobs of `started_at` less `created_at`;
@@ -56,6 +65,8 @@
  *  Every read of GitHub is a `gh api` call that names `repos/cybermonklabs/legion/...` in full,
  *  as the pod's gh, Legion's wrapper, requires. A call that fails stops the reading with the
  *  call, its exit and its stderr, and exit 1. A bad command line prints the usage, and exit 2.
+ *  `laneReading`, the part of a reading the jobs give with no read of GitHub, is exported, and
+ *  e2e/__tests__/lane-cost.test.ts holds it: it throws a Refusal where the command exits 1.
  */
 import { parseArgs } from "node:util";
 
@@ -92,7 +103,7 @@ const timePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u;
 const idPattern = /^[1-9][0-9]*$/u;
 
 /** A job as GitHub's jobs API gives it, in the fields read here. */
-interface Job {
+export interface Job {
   readonly id: number;
   readonly name: string;
   readonly conclusion: string | null;
@@ -109,7 +120,7 @@ interface RanJob extends Job {
 }
 
 /** A run as GitHub's workflow runs API gives it, in the fields read here. */
-interface WorkflowRun {
+export interface WorkflowRun {
   readonly id: number;
   readonly event: string;
   readonly conclusion: string | null;
@@ -140,6 +151,10 @@ interface Reading {
   readonly notes: readonly string[];
 }
 
+/** What a run's jobs give of its reading: every field but the merge job's notes and the rows
+ *  they name, which `reading` reads from that job's log. */
+export type LaneReading = Omit<Reading, "rows" | "notes">;
+
 /** One run of the base set, as `base` prints it. */
 type BaseRun = Pick<
   Reading,
@@ -150,10 +165,12 @@ type Command =
   | { readonly name: "run"; readonly run: string; readonly attempt: string | undefined }
   | { readonly name: "base"; readonly day: string; readonly until: string };
 
-/** Prints why the reading stops, on stderr, and exits 1. */
+/** Why a reading stops. The command line prints it on stderr and exits 1. */
+export class Refusal extends Error {}
+
+/** Stops the reading: throws a Refusal saying why. */
 function fail(problem: string): never {
-  console.error(`lane-cost: ${problem}`);
-  process.exit(1);
+  throw new Refusal(problem);
 }
 
 /** The stdout of `gh api <args>`. A call that fails stops the reading. */
@@ -215,12 +232,16 @@ function jobsOf(run: string, attempt?: string): Job[] {
   );
 }
 
-/** The reading of the run `info`, from `listed`, its dispatch-browser jobs at the same attempt. */
-function reading(info: WorkflowRun, listed: readonly Job[]): Reading {
+/** The reading of the run `info` that `listed`, its dispatch-browser jobs at the same attempt,
+ *  gives with no read of GitHub: every field but the merge job's notes and rows. It refuses a run
+ *  whose counted jobs are of more than one caller of dispatch-browser.yaml (this file's head
+ *  says why). */
+export function laneReading(info: WorkflowRun, listed: readonly Job[]): LaneReading {
   const run = String(info.id);
   const jobs = listed.filter(ran);
   if (jobs.length === 0) fail(`run ${run}: no dispatch-browser job started and ended`);
   const perJob = new Map<string, number>();
+  const callers = new Set<string>();
   let firstStart = Number.POSITIVE_INFINITY;
   let lastEnd = Number.NEGATIVE_INFINITY;
   let queue = 0;
@@ -228,22 +249,21 @@ function reading(info: WorkflowRun, listed: readonly Job[]): Reading {
     const started = instant(job.started_at);
     const completed = instant(job.completed_at);
     perJob.set(legOf(job.name), Math.trunc((completed - started) / 1000));
+    callers.add(job.name.slice(0, job.name.indexOf(" / ")));
     firstStart = Math.min(firstStart, started);
     lastEnd = Math.max(lastEnd, completed);
     queue += (started - instant(job.created_at)) / 1000;
   }
+  if (callers.size > 1) {
+    fail(
+      `run ${run}: its jobs are of ${callers.size} callers of dispatch-browser.yaml, ` +
+        `${[...callers].sort().join(" and ")}, and a reading reads one lane: the callers' jobs ` +
+        "carry the same names after the caller's, so their sum would read two lanes as one"
+    );
+  }
 
   const merge =
     jobs.find((job) => job.name.endsWith("/ merge")) ?? fail(`run ${run}: no merge job ran`);
-  const log = gh("--allow-escape-sequences", `repos/${REPO}/actions/jobs/${merge.id}/logs`);
-  const notes = log
-    .split(/\r\n|\r|\n/u)
-    .filter((line) => line.includes("##[notice]"))
-    .map((line) => line.replace(/^\S+ ##\[notice\]/u, "").trim());
-  const rowsNote = notes.find((note) => note.includes("merged report holds"));
-  const rowsMatch =
-    rowsNote === undefined ? null : /the merged report holds (\d+) rows/u.exec(rowsNote);
-
   const binaries = perJob.get("binaries") ?? fail(`run ${run}: no binaries job ran`);
   const mergeSeconds = perJob.get("merge") ?? fail(`run ${run}: no job reads as the merge leg`);
   const legs = [...perJob]
@@ -267,10 +287,30 @@ function reading(info: WorkflowRun, listed: readonly Job[]): Reading {
     own: binaries + Math.max(...legs) + mergeSeconds,
     wall: Math.trunc((lastEnd - firstStart) / 1000),
     queue: Math.trunc(queue),
-    rows: rowsMatch === null ? null : Number(rowsMatch[1]),
     merge_job: merge.id,
     merge_runner: merge.labels?.[0] ?? "?",
     merge_seconds: mergeSeconds,
+  };
+}
+
+/** The reading of the run `info`, from `listed`, its dispatch-browser jobs at the same attempt:
+ *  laneReading's, and the notes and rows of its merge job's log. */
+function reading(info: WorkflowRun, listed: readonly Job[]): Reading {
+  const { merge_job, merge_runner, merge_seconds, ...lane } = laneReading(info, listed);
+  const log = gh("--allow-escape-sequences", `repos/${REPO}/actions/jobs/${merge_job}/logs`);
+  const notes = log
+    .split(/\r\n|\r|\n/u)
+    .filter((line) => line.includes("##[notice]"))
+    .map((line) => line.replace(/^\S+ ##\[notice\]/u, "").trim());
+  const rowsNote = notes.find((note) => note.includes("merged report holds"));
+  const rowsMatch =
+    rowsNote === undefined ? null : /the merged report holds (\d+) rows/u.exec(rowsNote);
+  return {
+    ...lane,
+    rows: rowsMatch === null ? null : Number(rowsMatch[1]),
+    merge_job,
+    merge_runner,
+    merge_seconds,
     notes,
   };
 }
@@ -364,10 +404,16 @@ function readArguments(): Command {
 }
 
 if (import.meta.main) {
-  const command = readArguments();
-  const result =
-    command.name === "run"
-      ? reading(workflowRun(command.run, command.attempt), jobsOf(command.run, command.attempt))
-      : base(command.day, command.until);
-  console.log(JSON.stringify(result, null, 1));
+  try {
+    const command = readArguments();
+    const result =
+      command.name === "run"
+        ? reading(workflowRun(command.run, command.attempt), jobsOf(command.run, command.attempt))
+        : base(command.day, command.until);
+    console.log(JSON.stringify(result, null, 1));
+  } catch (error) {
+    if (!(error instanceof Refusal)) throw error;
+    console.error(`lane-cost: ${error.message}`);
+    process.exit(1);
+  }
 }
