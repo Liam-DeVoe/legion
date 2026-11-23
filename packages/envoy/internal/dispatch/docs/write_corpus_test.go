@@ -10,7 +10,9 @@ package docs
 // names the directory, its input, and no CI step passes -bench. The file is copied unchanged into
 // the older revision, so it uses only what both revisions have: the service's exported writes and
 // reads, and the package's own test helpers, which take a testing.TB. runWriteCorpus is shared
-// with the reads test, which observes every operation it runs.
+// with the reads test, which observes every operation it runs, and writeCorpusPicks and
+// writeCorpusText with that test's choice of the specs it can take (corpustest, which this file
+// does not import).
 
 import (
 	"bufio"
@@ -155,14 +157,31 @@ type writeCorpusQuotes struct {
 	comment, suggestion, edit string
 }
 
-// chooseWriteCorpusQuotes picks, in document order, phrases that occur exactly once in tree
-// (FindQuote): the comment's and the edit's in the first two top-level paragraphs that hold one,
-// and the suggestion's in the first paragraph inside a list item or table cell that holds one, or
-// the third top-level paragraph where the spec has none. A phrase is the opening of an unmarked
-// text node - its first sentence, at most twelve words and at least five - written in letters,
-// digits, spaces and plain punctuation only, so the edit's replacement reads as the same text.
+// chooseWriteCorpusQuotes picks the writes' quotes (writeCorpusPicks), each counted once in the
+// document's text (writeCorpusText) with strings.Count and never with FindQuote, and fails where
+// the document holds fewer than three or FindQuote refuses one that the text holds once.
 func chooseWriteCorpusQuotes(t testing.TB, tree *pmdoc.Node) writeCorpusQuotes {
 	t.Helper()
+	text := writeCorpusText(tree)
+	picks := writeCorpusPicks(tree, func(phrase string) bool { return strings.Count(text, phrase) == 1 })
+	if len(picks) < 3 {
+		t.Fatalf("the document has %d of the three paragraphs the writes need holding a phrase found once", len(picks))
+	}
+	for index, quote := range picks {
+		if _, err := pmdoc.FindQuote(tree, quote, nil, nil); err != nil {
+			t.Fatalf("FindQuote refused quote %d, %d bytes, which the document's text holds once: %v", index+1, len(quote), err)
+		}
+	}
+	return writeCorpusQuotes{comment: picks[0], edit: picks[1], suggestion: picks[2]}
+}
+
+// writeCorpusPicks is, in this order, the comment's and the edit's phrase, from the first two
+// top-level paragraphs that hold one, and the suggestion's, from the first paragraph inside a list
+// item or table cell that holds one, or the third top-level paragraph where the spec has none:
+// fewer than three where the document holds fewer. A paragraph's phrase is the first opening
+// phrase of a text node in it (writeCorpusPhrase) that once reports the document's text holds
+// exactly once.
+func writeCorpusPicks(tree *pmdoc.Node, once func(phrase string) bool) []string {
 	var topLevel []string
 	var nested string
 	var visit func(node *pmdoc.Node, depth int, inCell bool)
@@ -173,10 +192,7 @@ func chooseWriteCorpusQuotes(t testing.TB, tree *pmdoc.Node) writeCorpusQuotes {
 			}
 			for _, child := range node.Children {
 				quote, ok := writeCorpusPhrase(child)
-				if !ok {
-					continue
-				}
-				if _, err := pmdoc.FindQuote(tree, quote, nil, nil); err != nil {
+				if !ok || !once(quote) {
 					continue
 				}
 				if depth == 1 {
@@ -203,14 +219,36 @@ func chooseWriteCorpusQuotes(t testing.TB, tree *pmdoc.Node) writeCorpusQuotes {
 	if nested == "" && len(topLevel) == 3 {
 		nested = topLevel[2]
 	}
-	if len(topLevel) < 2 || nested == "" {
-		t.Fatalf("the document has %d top-level and %t nested paragraphs holding a phrase found once; the writes need three", len(topLevel), nested != "")
+	picks := append([]string(nil), topLevel[:min(len(topLevel), 2)]...)
+	if len(picks) == 2 && nested != "" {
+		picks = append(picks, nested)
 	}
-	return writeCorpusQuotes{comment: topLevel[0], suggestion: nested, edit: topLevel[1]}
+	return picks
 }
 
-// writeCorpusPhrase is node's opening phrase when node is an unmarked text node that has one (see
-// chooseWriteCorpusQuotes).
+// writeCorpusText is the document's text, in which a phrase is counted: its text nodes' text in
+// document order, a line break after each block and in place of each leaf (a hard break, an
+// image), so no phrase is counted across two textblocks.
+func writeCorpusText(tree *pmdoc.Node) string {
+	var text strings.Builder
+	var visit func(node *pmdoc.Node)
+	visit = func(node *pmdoc.Node) {
+		if node.Type == "text" {
+			text.WriteString(node.Text)
+			return
+		}
+		for _, child := range node.Children {
+			visit(child)
+		}
+		text.WriteByte('\n')
+	}
+	visit(tree)
+	return text.String()
+}
+
+// writeCorpusPhrase is node's opening phrase when node is an unmarked text node that has one: its
+// first sentence, at most twelve words and at least five, written in letters, digits, spaces and
+// plain punctuation only, so the edit's replacement reads as the same text.
 func writeCorpusPhrase(node *pmdoc.Node) (string, bool) {
 	if node.Type != "text" || len(node.Marks) != 0 {
 		return "", false

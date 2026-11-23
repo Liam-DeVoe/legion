@@ -3,12 +3,14 @@ description: >-
   The steps of the envoy-go legs of ci.yaml's go-envoy-held job, which runs the old envoy-go job's
   tests in legs: the unit step over every package of packages/envoy that no other job runs, split
   between the legs at run time by .github/scripts/go-test-split.sh, so each test, one added later
-  included, runs in exactly one leg; and, in the leg the `rest` input marks, the steps no leg
-  splits: what the race build cannot run at all or at full size, the backend count, the skip
-  counter's own test, the pmdoc differential, the moto run, the natslive matrix, the integration
-  tests and the callout check. ci.yaml's go-envoy-held job runs the database broker suites' skip
-  count after these steps, in each leg, and the statement timings in the `rest` leg, as steps of
-  its own with their own timeout-minutes; its envoy-go job carries the old check-run name
+  included, runs in exactly one leg; the corpus tests of internal/dispatch/pmdoc in every leg, each
+  on the leg's shard of the repository's markdown; in the leg the `rest` input marks, the steps no
+  leg splits: the backend count, the skip counter's own test, the moto run, the natslive matrix,
+  the integration tests and the callout check; and in the last leg (`part` equal to `legs`), the
+  two unsplit steps the `rest` leg has no room for: what the race build cannot run at all or at
+  full size, and the pmdoc differential. ci.yaml's go-envoy-held job runs the database broker suites'
+  skip count after these steps, in each leg, and the statement timings in the `rest` leg, as steps
+  of its own with their own timeout-minutes; its envoy-go job carries the old check-run name
   `envoy-go / envoy-go` and passes only when every leg passed (.github/scripts/leg-verdict.sh).
 
   The job gives every step DISPATCH_TEST_DATABASE_URL, BROKER_TEST_DATABASE_URL and
@@ -20,10 +22,10 @@ description: >-
   go-test-go-envoy-held-envoy-go-<part>-<step>.
 inputs:
   part:
-    description: This leg's number, 1 to `legs`.
+    description: This leg's number, 1 to `legs`, and its shard of the corpus.
     required: true
   legs:
-    description: How many legs run envoy-go's tests.
+    description: How many legs run envoy-go's tests, and how many shards the corpus falls in.
     required: true
   rest:
     description: "'true' in the one leg that also runs the steps no leg splits."
@@ -102,8 +104,9 @@ runs:
     # five -run lists name the race lane's own packages' tests under //go:build !race and those
     # that read raceEnabled. 10 minutes each is ample: the
     # documents package took 92 to 127 s on a two-vCPU pod, and the API's xid window tests 134 s.
+    # It runs in the last leg, whose share leaves it room, not in the `rest` leg.
     - name: Test what the race build cannot run at all or at full size
-      if: inputs.rest == 'true'
+      if: inputs.part == inputs.legs
       shell: bash
       working-directory: packages/envoy
       run: |
@@ -112,28 +115,29 @@ runs:
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-natscallout.json" --packages ./internal/cipher/natscallout -- -count=1 -timeout 10m -run '^(TestACalloutStormAfterAServerRestartAdmitsEveryConnection)$'
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-api.json" --packages ./internal/dispatch/api -- -count=1 -timeout 10m -run '^(TestXidWindowApprovalAnswerOverTwoDocuments|TestXidWindowAskAnswerBlock|TestXidWindowAskBlockEditThenIssueClose|TestXidWindowAskResolveBlock|TestXidWindowDeliveries|TestXidWindowDocumentRebuild|TestXidWindowIssueAskRepairRestoration|TestXidWindowIssueAskRepairWithdrawal|TestXidWindowRouteTable|TestXidWindowUploadRestoringTheApprovedText|TestXidWindowsOnTheLargeSpec)$'
         ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-norace-docs.json" --packages ./internal/dispatch/docs -- -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$'
-    - if: always() && inputs.rest == 'true'
+    - if: always() && inputs.part == inputs.legs
       uses: ./.github/actions/go-test-upload
       with:
         name: go-envoy-held-envoy-go-${{ inputs.part }}-norace
-    # The corpus tests of internal/dispatch/pmdoc, which the unit step below runs - the find-marks,
-    # re-anchor and Y.Text-range equivalences (PMDOC_ANCHOR_CORPUS), the incremental and the
-    # validating render (DISPATCH_RENDER_CORPUS) and the walk (PMDOC_WALK_CORPUS) - read a directory
-    # of real markdown documents, and each but the validating render skips without one. The
-    # documents are the repository's own guides that
-    # packages/envoy/internal/dispatch/testdata/repository-markdown.txt lists (its header says
-    # which guides every corpus test can take), copied into one flat directory under their paths
-    # with each / as __: the readers read one directory, and two guides share each name. Each leg
-    # writes it, since the split gives any leg any of those tests.
-    - name: Write the repository's guides into the corpus directory
+    # The corpus tests of internal/dispatch/pmdoc - the find-marks, re-anchor and Y.Text-range
+    # equivalences (PMDOC_ANCHOR_CORPUS), the incremental and the validating render
+    # (DISPATCH_RENDER_CORPUS) and the walk (PMDOC_WALK_CORPUS) - read a directory of markdown
+    # documents: every tracked *.md file of this commit (git ls-files), copied into one flat
+    # directory under its path with each / as __, which makes no two names equal; the step fails if
+    # two did. Each test reads it through internal/dispatch/corpustest, which says what a test may
+    # leave out and prints what it left out. The pmdoc differential reads the same files.
+    - name: Write the repository's markdown into the corpus directory
       shell: bash
       run: |
-        mkdir -p "$RUNNER_TEMP/repository-markdown"
-        while IFS= read -r guide; do
-          case $guide in '' | '#'*) continue ;; esac
-          cp -- "$guide" "$RUNNER_TEMP/repository-markdown/${guide//\//__}"
-        done < packages/envoy/internal/dispatch/testdata/repository-markdown.txt
-        ls -l "$RUNNER_TEMP/repository-markdown"
+        corpus=$RUNNER_TEMP/repository-markdown
+        mkdir -p "$corpus"
+        git ls-files -z -- '*.md' | while IFS= read -r -d '' document; do
+          cp -- "$document" "$corpus/${document//\//__}"
+        done
+        tracked=$(git ls-files -z -- '*.md' | tr -cd '\0' | wc -c)
+        written=$(find "$corpus" -type f -name '*.md' | wc -l)
+        echo "$written documents in $corpus, of the $tracked tracked *.md files"
+        [ "$written" -eq "$tracked" ] || { echo "::error::two tracked *.md paths flatten to one name"; exit 1; }
     # Everything the three race lanes run is left out here, since they run it under the detector,
     # and so is internal/integration, which the integration step below tests, and
     # internal/textcheck, whose tests are the text-check job's. So are
@@ -148,26 +152,43 @@ runs:
     # fixture are skipped: without `--check` TestWebDisplayFixture writes the committed fixture
     # rather than checking it, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same
     # file; envoy-go-checks runs both, the first with the check. So is internal/dispatch/refs'
-    # TestStatementTimings, which the statement-timing step runs (STATEMENT_TIMING_TESTS), and so are
+    # TestStatementTimings, which the statement-timing step runs (STATEMENT_TIMING_TESTS), so are
     # the backend count's four tests of cmd/cipher, which the count step below runs in this same
-    # job and env (BACKEND_COUNT_TESTS). go-test-split.sh lists the packages' tests and keeps this
-    # leg's share. -timeout 15m bounds each package's test binary, below the leg's timeout-minutes
-    # less its set-up and the steps after it.
+    # job and env (BACKEND_COUNT_TESTS), and so are pmdoc's six corpus tests, which the corpus step
+    # below runs in every leg. go-test-split.sh lists the packages' tests and keeps this leg's
+    # share. -timeout 12m is the smallest whole minute at which the slowest package, cmd/cipher at
+    # 345 s in run 45197837366, takes at most half of it.
     - name: Unit test envoy Go package
+      shell: bash
+      working-directory: packages/envoy
+      run: |
+        pkgs=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$')
+        run=$(../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" $pkgs)
+        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-unit.json" --packages "$pkgs" -- -count=1 -timeout 12m -run "$run" -skip '^(TestEverySecretFormNamesTheSourceItUses|TestFindMarksMatchesFindMarkOnAnchorCorpus|TestIncrementalRenderCorpus|TestNoSecretFormAsksTheBrokerForACredential|TestReanchorReuseMatchesPerCallOnAnchorCorpus|TestStatementTimings|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestValidDocumentRenderWithLayoutIsTheValidatingRender|TestWalkMatchesTheReferenceWalkOnACorpus|TestWebDisplayFixture|TestYTextRangesMatchesFrozenOnAnchorCorpus)$'
+    - if: always()
+      uses: ./.github/actions/go-test-upload
+      with:
+        name: go-envoy-held-envoy-go-${{ inputs.part }}-unit
+    # pmdoc's six corpus tests run in every leg, each on the leg's shard of the corpus
+    # (CORPUS_SHARD=<part>/<legs>: corpustest keeps the documents whose hash of the name falls in
+    # it), so the split keeps no corpus test to one leg and the legs between them read each
+    # document once; each prints its counts taken and left out, and each document it left out with
+    # its reason. -timeout 6m is the smallest whole minute at which the package's predicted time on
+    # one shard, about 160 s (the six took 51 s on the fifteen guides' 2.27 MB in run 45197837366,
+    # and a shard holds about a third of 15 MB), takes at most half of it.
+    - name: Test pmdoc's corpus tests on this leg's shard of the corpus
       shell: bash
       working-directory: packages/envoy
       env:
         PMDOC_ANCHOR_CORPUS: ${{ runner.temp }}/repository-markdown
         DISPATCH_RENDER_CORPUS: ${{ runner.temp }}/repository-markdown
         PMDOC_WALK_CORPUS: ${{ runner.temp }}/repository-markdown
-      run: |
-        pkgs=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$')
-        run=$(../../.github/scripts/go-test-split.sh "${{ inputs.part }}" "${{ inputs.legs }}" $pkgs)
-        ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-unit.json" --packages "$pkgs" -- -count=1 -timeout 15m -run "$run" -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestStatementTimings|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
+        CORPUS_SHARD: ${{ inputs.part }}/${{ inputs.legs }}
+      run: ../../.github/scripts/go-test.sh --jsonfile "go-envoy-held-envoy-go-${{ inputs.part }}-corpus.json" --packages ./internal/dispatch/pmdoc/ -- -count=1 -timeout 6m -run '^(TestFindMarksMatchesFindMarkOnAnchorCorpus|TestIncrementalRenderCorpus|TestReanchorReuseMatchesPerCallOnAnchorCorpus|TestValidDocumentRenderWithLayoutIsTheValidatingRender|TestWalkMatchesTheReferenceWalkOnACorpus|TestYTextRangesMatchesFrozenOnAnchorCorpus)$'
     - if: always()
       uses: ./.github/actions/go-test-upload
       with:
-        name: go-envoy-held-envoy-go-${{ inputs.part }}-unit
+        name: go-envoy-held-envoy-go-${{ inputs.part }}-corpus
     # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
     # backend's rows run that backend's own code: the store forms against the GCP fake and the
     # in-process AWS store (onEachStore) and the use chain against a broker whose settings name each
@@ -202,19 +223,22 @@ runs:
       run: timeout 15m packages/envoy/scripts/database-skips.test.sh
     # The pmdoc differential (packages/envoy/internal/dispatch/pmdoc/gen/differential.sh says what it holds): the base
     # commit of the pull request or the merge group, which the shallow checkout lacks, fetched for
-    # the script's `git archive`, and the listed guides handed to it as one JSONL file of
-    # {"id", "md"} lines, beside the in-repo corpus it always reads. A dispatched run has no base,
-    # so it compares the checked-out commit with its parent. The script runs its test binaries with
-    # -timeout 0, so the step keeps the 10-minute bound it had as a step of its own, around its
-    # whole body. Measured on a two-vCPU pod on 2026-11-18, the fifteen guides and the in-repo
-    # corpus (225 documents): 83 s, both builds and a module download included.
+    # the script's `git archive`, and every tracked *.md file of this commit, the corpus tests'
+    # documents, handed to it as one JSONL file of {"id", "md"} lines, beside the in-repo corpus it
+    # always reads; it leaves out none of them. A dispatched run has no base, so it compares the
+    # checked-out commit with its parent. The script runs its test binaries with -timeout 0, so the
+    # step keeps a bound of its own around its whole body: 6 minutes, the smallest whole minute at
+    # which its predicted time takes at most half of it. It took 22 s in run 45197837366 on the
+    # fifteen guides and the in-repo corpus (225 documents, about 2.4 MB, both builds included);
+    # on the whole corpus, about 6.9 times the bytes, and a jq run per file, about 160 s. It runs
+    # in the last leg, whose share leaves it room, not in the `rest` leg.
     - name: Compare pmdoc's reading of the corpus at the head with the base commit's
-      if: inputs.rest == 'true'
+      if: inputs.part == inputs.legs
       shell: bash
       env:
         DIFFERENTIAL_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
       run: |
-        timeout 10m bash -eo pipefail <<'BODY'
+        timeout 6m bash -eo pipefail <<'BODY'
         if [ -z "$DIFFERENTIAL_BASE" ]; then
           git fetch --no-tags --depth=2 origin "$GITHUB_SHA"
           DIFFERENTIAL_BASE=$(git rev-parse HEAD^)
@@ -222,10 +246,9 @@ runs:
           git fetch --no-tags --depth=1 origin "$DIFFERENTIAL_BASE"
         fi
         mkdir -p "$RUNNER_TEMP/differential-corpus"
-        while IFS= read -r guide; do
-          case $guide in '' | '#'*) continue ;; esac
-          jq -Rsc --arg id "$guide" '{id: $id, md: .}' "$guide"
-        done < packages/envoy/internal/dispatch/testdata/repository-markdown.txt > "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl"
+        git ls-files -z -- '*.md' | while IFS= read -r -d '' document; do
+          jq -Rsc --arg id "$document" '{id: $id, md: .}' "$document"
+        done > "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl"
         packages/envoy/internal/dispatch/pmdoc/gen/differential.sh --base "$DIFFERENTIAL_BASE" \
           --corpus "$RUNNER_TEMP/differential-corpus/repository-markdown.jsonl" --out "$RUNNER_TEMP/differential"
         BODY

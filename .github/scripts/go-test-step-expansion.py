@@ -179,7 +179,9 @@ EXCEPTIONS = (
             "and with -v, because the package's own count of the services its tests left alive is "
             "printed from TestMain after they have run and a package-list run drops it. The mode "
             "is what the job is for, and a cleanup the detector reports can be any test's, so the "
-            "lane takes the package whole rather than a -run of part of it."
+            "lane's legs take the package whole between them: each runs the share of its tests "
+            "go-test-split.sh gives it, and every leg runs the two corpus tests, each on the leg's "
+            "shard of the corpus (CORPUS_SHARD), the package's count printed after each run."
         ),
     ),
     Exception_(

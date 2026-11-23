@@ -2,7 +2,6 @@ package pmdoc
 
 import (
 	"fmt"
-	"io/fs"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -11,6 +10,8 @@ import (
 	"testing"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/corpustest"
 )
 
 // findMarksAbsentKeys are identities no document under test carries: FindMarks must leave them out
@@ -344,36 +345,26 @@ func corpusMarkdown(t testing.TB) []namedMarkdown {
 	return documents
 }
 
-// anchorCorpusMarkdown is every *.md under PMDOC_ANCHOR_CORPUS, a directory of private documents
-// (real specs) that a test checks without ever printing their text, or skips the test when it is
-// unset.
+// corpusRules are what a corpus test of pmdoc reads its corpus under (package corpustest): a
+// document of more bytes than MaxDocumentBytes, and one its parse refuses, are left out, but for a
+// refusal that is one of CorpusFailures, which fails the test.
+var corpusRules = corpustest.Rules{MaxBytes: MaxDocumentBytes, Failures: CorpusFailures}
+
+// anchorCorpusMarkdown is every document of PMDOC_ANCHOR_CORPUS, the repository's markdown in
+// CI, that Parse takes, read through corpustest, which judges each refusal of the parse; every
+// error of the test's later steps on a document it takes fails the test. It skips the test where
+// the variable is unset.
 func anchorCorpusMarkdown(t *testing.T) []namedMarkdown {
 	t.Helper()
-	root := os.Getenv("PMDOC_ANCHOR_CORPUS")
-	if root == "" {
-		t.Skip("PMDOC_ANCHOR_CORPUS unset; point it at a directory of markdown documents")
-	}
+	corpus := corpustest.Open(t, "PMDOC_ANCHOR_CORPUS", corpusRules)
 	var documents []namedMarkdown
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || filepath.Ext(path) != ".md" {
+	for _, document := range corpus.Documents() {
+		if corpus.Parse(document, func() error {
+			_, err := Parse(document.Markdown)
 			return err
+		}) {
+			documents = append(documents, namedMarkdown{name: document.Name, markdown: document.Markdown})
 		}
-		markdown, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		name, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		documents = append(documents, namedMarkdown{name: name, markdown: string(markdown)})
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("read PMDOC_ANCHOR_CORPUS: %v", err)
-	}
-	if len(documents) == 0 {
-		t.Fatal("PMDOC_ANCHOR_CORPUS holds no *.md document")
 	}
 	return documents
 }
@@ -851,8 +842,7 @@ func TestFindMarksMatchesFindMarkOnAnchorCorpus(t *testing.T) {
 			for _, count := range []int{12, 47, 80} {
 				doc, err := Parse(document.markdown)
 				if err != nil {
-					t.Logf("%s: skipped, Parse refused it (%T)", document.name, err)
-					return
+					t.Fatalf("%s: Parse refused a document it parsed before (%T)", document.name, err)
 				}
 				refs := placeAnchorMarks(doc, count, int64(count))
 				checked += assertFindMarksMatchesOracle(t, fmt.Sprintf("%s at %d marks", document.name, count), doc, refs)

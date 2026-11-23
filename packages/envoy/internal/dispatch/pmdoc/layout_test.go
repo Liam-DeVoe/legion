@@ -14,6 +14,8 @@ import (
 	"unsafe"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/corpustest"
 )
 
 // spliceTally counts what a differential run of Layout.Splice saw.
@@ -368,11 +370,12 @@ func isTextEdit(kind string, block *Node) bool {
 
 // spliceDifferential mutates each top-level block of doc perBlock times, one block at a time, and
 // then rounds times a few blocks at once, asserting every Splice that answers (assertSpliceIsWhole).
-func spliceDifferential(t *testing.T, name string, doc *Node, perBlock, rounds int, seed uint64, tally *spliceTally) {
+// Where RenderWithLayout refuses doc it runs nothing and returns that refusal.
+func spliceDifferential(t *testing.T, name string, doc *Node, perBlock, rounds int, seed uint64, tally *spliceTally) error {
 	t.Helper()
 	markdown, _, layout, err := RenderWithLayout(doc)
 	if err != nil {
-		return
+		return err
 	}
 	tally.documents++
 	rng := rand.New(rand.NewPCG(seed, uint64(len(markdown))))
@@ -399,6 +402,7 @@ func spliceDifferential(t *testing.T, name string, doc *Node, perBlock, rounds i
 		ok := assertSpliceIsWhole(t, fmt.Sprintf("%s round %d", name, round), markdown, layout, replaceBlocks(doc, changes), touched)
 		tally.count("several", false, ok)
 	}
+	return nil
 }
 
 // TestIncrementalRenderMatchesTheWholeRenderOnTheFixtures runs the splice differential over every
@@ -576,33 +580,24 @@ func TestIncrementalRenderMatchesTheWholeRenderOnALargeDocument(t *testing.T) {
 	assertMostTextEditsSplice(t, tally)
 }
 
-// TestIncrementalRenderCorpus runs the splice differential over every .md file of the directory
-// DISPATCH_RENDER_CORPUS names (real documents, never committed), skipped where it is unset.
+// TestIncrementalRenderCorpus runs the splice differential over every document of the directory
+// DISPATCH_RENDER_CORPUS names (the repository's markdown in CI), read through corpustest, which
+// judges each refusal of Parse; skipped where it is unset. Each document's seed is its index in the
+// whole corpus, so a shard runs each document as the whole corpus does.
 func TestIncrementalRenderCorpus(t *testing.T) {
-	dir := os.Getenv("DISPATCH_RENDER_CORPUS")
-	if dir == "" {
-		t.Skip("DISPATCH_RENDER_CORPUS is unset")
-	}
-	paths, err := filepath.Glob(filepath.Join(dir, "*.md"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("DISPATCH_RENDER_CORPUS %s: %d .md files, %v", dir, len(paths), err)
-	}
+	corpus := corpustest.Open(t, "DISPATCH_RENDER_CORPUS", corpusRules)
 	tally := newSpliceTally()
-	unparsed := 0
-	for index, path := range paths {
-		source, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		doc, err := Parse(string(source))
-		if err != nil {
-			unparsed++
-			t.Logf("%s: Parse: %v", filepath.Base(path), err)
+	for _, document := range corpus.Documents() {
+		var doc *Node
+		if !corpus.Parse(document, func() (err error) {
+			doc, err = Parse(document.Markdown)
+			return err
+		}) {
 			continue
 		}
-		spliceDifferential(t, filepath.Base(path), doc, 1, 10, uint64(index), tally)
+		// The render is a step after the parse: its refusal fails the test.
+		corpus.Later(document, spliceDifferential(t, document.Name, doc, 1, 10, uint64(document.Index), tally))
 	}
-	t.Logf("%d files, %d not parsed", len(paths), unparsed)
 	tally.log(t, "DISPATCH_RENDER_CORPUS")
 	assertMostTextEditsSplice(t, tally)
 }

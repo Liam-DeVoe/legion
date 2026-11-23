@@ -99,7 +99,10 @@ check "the memory sampler written before a go command is no wrapper of it: it is
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
 
 echo "case: the two steps whose lines this harness exists for are read as their actions write them"
-for file in .github/actions/go-envoy-held/envoy-go-race-docs/action.yml .github/actions/go-envoy-held/envoy-go-docs-finalizers/action.yml; do
+# envoy-go-docs-finalizers holds two: its legs' share of the package, and its corpus tests on the
+# leg's shard of the corpus.
+for expected in ".github/actions/go-envoy-held/envoy-go-race-docs/action.yml 1" ".github/actions/go-envoy-held/envoy-go-docs-finalizers/action.yml 2"; do
+  read -r file count <<<"$expected"
   found=$(py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(steps.ROOT / sys.argv[1]).read_text())
 lines = [line.strip() for step in document["runs"]["steps"] if "run" in step
@@ -108,7 +111,7 @@ print(sum(1 for line in lines
           for words, _ in [steps.go_command(line)]
           if (len(words) > 1 and words[0] == "go" and words[1] == "test")
           or (words and words[0].rsplit("/", 1)[-1] in steps.GOTESTSUM_COMMANDS)))' "$file")
-  check "$file holds a go test or go-test.sh line this reader reads" "$(is "$found" "1")"
+  check "$file holds $count go test or go-test.sh line(s) this reader reads" "$(is "$found" "$count")"
 done
 
 # Four steps of this repository carry a `-skip` (daemon-go's two, envoy-go's unit step and

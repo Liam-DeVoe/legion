@@ -69,6 +69,10 @@
 #   33. a `## ` section of .github/ci-notes/*.md that no why: link of .github names, a why: link
 #       to a section that is not there, and a `## <name>: ` heading whose name is neither an
 #       output of changes nor a job of ci.yaml.
+#   34. the legs of a split job (`<name> (<i>/<n>)`) that name two counts of legs, or that leave an
+#       index from 1 to n out or name one twice, and a leg whose matrix `part` is not its own
+#       index: a leg reads its shard of a corpus by its index and count (CORPUS_SHARD=<i>/<n>),
+#       so the legs read each document once between them only when each index names one leg.
 #
 # Rule 20 runs go list over each vetted module with GOPROXY=off over an empty module cache and the
 # module's own toolchain, so nothing is fetched and a cold runner answers as a warm machine does.

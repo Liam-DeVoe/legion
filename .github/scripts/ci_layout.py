@@ -4,12 +4,13 @@ It reads ci.yaml, every workflow a job of it calls, and every local composite ac
 (.github/actions/<job-or-leg>/action.yml), and refuses a layout that drifts from what R9 holds:
 the jobs ci-ok judges and how it judges them (rule 7), what a job's `if:` may test (rules 2, 12,
 23 and 28), the names a skipped job's record carries (rules 25 and 30), the carriers of a split
-job's old name (rule 32), how a Go step runs its tests (rules 22, 24 and 27), the bounds a timed
-step keeps (rule 31), the matrices (rule 29), the runner a job proves (rule 26), the darwin vets
-(rule 20) and the notes a `why:` link names (rule 33). ci_workflow_rules.py, beside it, holds
-rules 10, 11, 12, 14 and 16, which read the workflow directory; main() runs both. ci_pins.py holds
-the facts a person pins by reading the layout. go_test_steps.py reads the `go test` commands of
-the steps, as go-test-step-expansion.py and check-test-reach.sh read them.
+job's old name (rule 32) and the indexes its legs name (rule 34), how a Go step runs its tests
+(rules 22, 24 and 27), the bounds a timed step keeps (rule 31), the matrices (rule 29), the runner
+a job proves (rule 26), the darwin vets (rule 20) and the notes a `why:` link names (rule 33).
+ci_workflow_rules.py, beside it, holds rules 10, 11, 12, 14 and 16, which read the workflow
+directory; main() runs both. ci_pins.py holds the facts a person pins by reading the layout.
+go_test_steps.py reads the `go test` commands of the steps, as go-test-step-expansion.py and
+check-test-reach.sh read them.
 
 check-ci-layout.sh runs it from the repository root with this directory on PYTHONPATH. Every
 annotation escapes its message, and the report lines print inside a stop-commands section, so
@@ -1310,6 +1311,44 @@ def check_carriers(documents: dict, problems: list) -> None:
                                             f"of the legs it carries"))
 
 
+# ---------------------------------------------------------------- rule 34: the shard legs
+def check_shard_legs(documents: dict, problems: list) -> None:
+    """Rule 34: the legs of a split job, each named `<name> (<i>/<n>)`, name one count n and each
+    index from 1 to n once, and a leg that hands its steps a matrix `part` hands them its own
+    index. A leg reads its shard of a corpus by its index and the count (CORPUS_SHARD=<i>/<n>), so
+    the legs read each document once between them only when every index is one leg's."""
+    legs, _ = jq_names(documents[WORKFLOW])
+    splits: dict = defaultdict(list)
+    for entry in legs:
+        found = SPLIT_LEG.match(str(entry["name"] or ""))
+        if found:
+            splits[(entry["job"], found.group("base"))].append(
+                (int(found.group("part")), int(found.group("legs")), entry))
+    for (job, base), entries in sorted(splits.items(), key=lambda item: item[0]):
+        counts = sorted({legs_count for _, legs_count, _ in entries})
+        if len(counts) != 1:
+            problems.append(error(WORKFLOW, f"job {job}'s legs of {base} name {len(counts)} counts of legs "
+                                            f"({', '.join(map(str, counts))}), where every leg names the same count"))
+            continue
+        count = counts[0]
+        indexes = [index for index, _, _ in entries]
+        for index in range(1, count + 1):
+            held = indexes.count(index)
+            if held != 1:
+                which = "no leg is" if held == 0 else f"{held} legs are"
+                problems.append(error(WORKFLOW, f"job {job} splits {base} into {count} legs, and {which} "
+                                                f"`{base} ({index}/{count})`, where each index from 1 to {count} "
+                                                f"names one leg"))
+        for index in sorted({index for index in indexes if not 1 <= index <= count}):
+            problems.append(error(WORKFLOW, f"job {job} splits {base} into {count} legs, and a leg is "
+                                            f"`{base} ({index}/{count})`, an index outside 1 to {count}"))
+        for index, _, entry in entries:
+            part = (entry["leg"] or {}).get("part")
+            if part is not None and str(part) != str(index):
+                problems.append(error(WORKFLOW, f"leg `{entry['name']}` of job {job} hands its steps part {part}, "
+                                                f"not its own index {index}"))
+
+
 # ---------------------------------------------------------------- rule 20: darwin vets
 @dataclass
 class Go:
@@ -1528,6 +1567,7 @@ def check() -> int:
     report += check_main_names(documents, pins, problems)
     check_timed_steps(documents, pins, problems)
     check_carriers(documents, problems)
+    check_shard_legs(documents, problems)
     report += check_notes(document, problems)
     report += check_vet_tags(pins, problems)
     report.append(f"go test commands read: {len(runs)}")

@@ -6,6 +6,7 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/corpustest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -28,13 +29,20 @@ import (
 // The two writes run on two services with a database each, every flow on a document of its own,
 // seeded on both sides from the same bytes under the same ids, so the stored histories match byte
 // for byte before each flow and every difference after it is the write's. When
-// DISPATCH_TEST_SPEC_CORPUS names a directory, every *.md in it is one more document. Those may be
-// private specs: the test logs only their size, sha256 and anchor count, and a difference on one
-// names only lengths and sha256s.
+// DISPATCH_TEST_SPEC_CORPUS names a directory, every document of it the test takes (corpusSpecs)
+// is one more document. Those may be private specs: the test logs only their size, sha256 and
+// anchor count, and a difference on one names only lengths and sha256s. Under CORPUS_SHARD the
+// generated documents fall in shards by their names as the corpus's documents do, so the legs
+// that each run one shard run each of them once.
 func TestAMarginWriteMatchesTheWholeDocumentWrite(t *testing.T) {
-	sources := []equivalenceSource{
+	var sources []equivalenceSource
+	for _, source := range []equivalenceSource{
 		{name: "generated-390KiB", markdown: generatedSpec(390 << 10)},
 		{name: "generated-600KiB", markdown: generatedSpec(600 << 10)},
+	} {
+		if corpustest.InShard(t, source.name) {
+			sources = append(sources, source)
+		}
 	}
 	sources = append(sources, corpusSpecs(t)...)
 	sides := [2]*equivalenceSide{

@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -19,6 +17,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/corpustest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -94,28 +93,44 @@ type equivalenceSource struct {
 	private  bool
 }
 
-// corpusSpecs is every *.md in DISPATCH_TEST_SPEC_CORPUS, or none when it is unset.
+// corpusSpecs is every document of DISPATCH_TEST_SPEC_CORPUS (the repository's markdown in CI)
+// the test takes, read through corpustest, or none where it is unset. Each is parsed as a flow's
+// seed is (pmdoc.Parse), the step whose refusal leaves it out, then written and read back as the
+// seed is (seedEquivalenceTree), whose refusal fails the test, and its candidate sentences are
+// counted in its text (writeCorpusText), so a spec holding fewer than the anchors need is left out
+// and the quote finder's refusal of one the text holds once fails the test. A corpus spec is
+// private: each refusal names its text's length and sha256 alone.
 func corpusSpecs(t *testing.T) []equivalenceSource {
 	t.Helper()
-	directory := os.Getenv("DISPATCH_TEST_SPEC_CORPUS")
-	if directory == "" {
-		t.Log("DISPATCH_TEST_SPEC_CORPUS is unset: the generated documents alone are compared")
-		return nil
-	}
-	paths, err := filepath.Glob(filepath.Join(directory, "*.md"))
-	if err != nil {
-		t.Fatalf("list the spec corpus: %v", err)
-	}
-	if len(paths) == 0 {
-		t.Fatalf("DISPATCH_TEST_SPEC_CORPUS=%s holds no *.md", directory)
-	}
-	sources := make([]equivalenceSource, 0, len(paths))
-	for _, path := range paths {
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read corpus spec %s: %v", filepath.Base(path), err)
+	corpus := corpustest.Optional(t, "DISPATCH_TEST_SPEC_CORPUS", corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes, Failures: pmdoc.CorpusFailures})
+	var sources []equivalenceSource
+	for _, document := range corpus.Documents() {
+		var tree *pmdoc.Node
+		if !corpus.Parse(document, func() (err error) {
+			tree, err = pmdoc.Parse(document.Markdown)
+			return shownError(true, err)
+		}) {
+			continue
 		}
-		sources = append(sources, equivalenceSource{name: filepath.Base(path), markdown: string(content), private: true})
+		_, written, err := seedEquivalenceTree(tree, true)
+		if !corpus.Later(document, err) {
+			continue
+		}
+		finder := pmdoc.NewQuoteFinder(written)
+		candidates := quoteCandidates(written)
+		if _, ok := corpus.Quotes(document, corpustest.Quotes{
+			Text: writeCorpusText(written),
+			Pick: func(once func(string) bool) ([]string, int) {
+				return onceOccurring(candidates, once), 2 * (anchorCount + 1)
+			},
+			Find: func(quote string) error {
+				_, err := finder.Find(quote, nil, nil)
+				return shownError(true, err)
+			},
+		}); !ok {
+			continue
+		}
+		sources = append(sources, equivalenceSource{name: document.Name, markdown: document.Markdown, private: true})
 	}
 	return sources
 }
@@ -229,6 +244,43 @@ func (d *equivalenceDocument) shown(text string) string {
 	return text
 }
 
+// privateError is an error about a private document as a message may carry it: its type, and its
+// text's length and sha256 as shown gives them, quoted, so the corpus counts the refusals of one
+// type together (corpustest counts a refusal under its text before its first quote). errors.Is
+// reads the error it holds.
+type privateError struct{ err error }
+
+func (e privateError) Error() string {
+	text := e.err.Error()
+	return fmt.Sprintf("%T %q", e.err, fmt.Sprintf("<%d bytes, sha256 %x>", len(text), sha256.Sum256([]byte(text))))
+}
+
+func (e privateError) Unwrap() error { return e.err }
+
+// shownError is err as a message may carry it: whole for a generated document, a privateError for
+// a private one, and nil for nil.
+func shownError(private bool, err error) error {
+	if err == nil || !private {
+		return err
+	}
+	return privateError{err}
+}
+
+// seedEquivalenceTree writes tree into a new document under the seed's client id, as every flow's
+// seed is written, and reads the written tree back.
+func seedEquivalenceTree(tree *pmdoc.Node, private bool) (*crdt.Doc, *pmdoc.Node, error) {
+	doc := crdt.New(crdt.WithClientID(seedClient))
+	fragment := doc.GetXmlFragment(fragmentName)
+	if err := doc.TransactE(func(txn *crdt.Transaction) error { return pmdoc.Update(txn, fragment, tree) }); err != nil {
+		return nil, nil, fmt.Errorf("write the document: %w", shownError(private, err))
+	}
+	written, err := treeOf(doc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the written document: %w", shownError(private, err))
+	}
+	return doc, written, nil
+}
+
 // prepareEquivalenceDocument seeds source's tree with its anchors, written in-process as
 // MarkQuote writes them (pmdoc.MarkRange at pmdoc.FindQuote's range, MarkSpec's mark) beside
 // their margin records, and builds the two browser edits from the seed.
@@ -239,20 +291,18 @@ func prepareEquivalenceDocument(t *testing.T, source equivalenceSource) *equival
 	if err != nil {
 		t.Fatalf("parse the document: %s", document.shown(err.Error()))
 	}
-	doc := crdt.New(crdt.WithClientID(seedClient))
+	doc, written, err := seedEquivalenceTree(tree, source.private)
+	if err != nil {
+		t.Fatalf("seed the document: %v", err)
+	}
 	fragment := doc.GetXmlFragment(fragmentName)
 	marks := doc.GetMap(marksMapName)
-	if err := doc.TransactE(func(txn *crdt.Transaction) error { return pmdoc.Update(txn, fragment, tree) }); err != nil {
-		t.Fatalf("write the document: %s", document.shown(err.Error()))
+	text := writeCorpusText(written)
+	once := onceOccurring(quoteCandidates(written), func(candidate string) bool { return corpustest.Once(text, candidate) })
+	if len(once) < 2*(anchorCount+1) {
+		t.Fatalf("choose the anchored sentences: the document holds %d candidate sentences found once, want at least %d", len(once), 2*(anchorCount+1))
 	}
-	written, err := treeOf(doc)
-	if err != nil {
-		t.Fatalf("read the written document: %s", document.shown(err.Error()))
-	}
-	quotes, err := pickQuotes(written, anchorCount+1)
-	if err != nil {
-		t.Fatalf("choose the anchored sentences: %v", err)
-	}
+	quotes := pickQuotes(once, anchorCount+1)
 	document.newQuote = quotes[anchorCount]
 	for index, quote := range quotes[:anchorCount] {
 		anchor := seedAnchor{
@@ -399,9 +449,10 @@ func browserEdit(t *testing.T, document *equivalenceDocument, state []byte, clie
 	return crdt.EncodeStateAsUpdateV1(peer, synced), crdt.EncodeStateAsUpdateV1(peer, nil)
 }
 
-// pickQuotes is count sentences of tree's paragraphs - outside tables and typed blocks - that each
-// match once in the document, spread evenly through it in document order.
-func pickQuotes(tree *pmdoc.Node, count int) ([]string, error) {
+// quoteCandidates is each sentence of tree's paragraphs - outside tables and typed blocks - that
+// pickQuotes may anchor to, in document order: each whole sentence of an unmarked text node
+// between 40 and 240 bytes long.
+func quoteCandidates(tree *pmdoc.Node) []string {
 	var candidates []string
 	var visit func(*pmdoc.Node)
 	visit = func(node *pmdoc.Node) {
@@ -419,28 +470,28 @@ func pickQuotes(tree *pmdoc.Node, count int) ([]string, error) {
 		}
 	}
 	visit(tree)
-	if len(candidates) < 2*count {
-		return nil, fmt.Errorf("the document holds %d candidate sentences, want at least %d", len(candidates), 2*count)
+	return candidates
+}
+
+// onceOccurring is each of candidates that once reports the document's text holds exactly once.
+func onceOccurring(candidates []string, once func(string) bool) []string {
+	var kept []string
+	for _, candidate := range candidates {
+		if once(candidate) {
+			kept = append(kept, candidate)
+		}
 	}
+	return kept
+}
+
+// pickQuotes is count of once, sentences the document's text holds once each, spread evenly
+// through it in document order. once holds at least 2*count, so no two slots pick one sentence.
+func pickQuotes(once []string, count int) []string {
 	picked := make([]string, 0, count)
-	next := 0
 	for slot := range count {
-		found := false
-		for index := max(next, (2*slot+1)*len(candidates)/(2*count)); index < len(candidates); index++ {
-			if slices.Contains(picked, candidates[index]) {
-				continue
-			}
-			if _, err := pmdoc.FindQuote(tree, candidates[index], nil, nil); err != nil {
-				continue
-			}
-			picked, next, found = append(picked, candidates[index]), index+1, true
-			break
-		}
-		if !found {
-			return nil, fmt.Errorf("found %d unique sentences of the %d wanted", len(picked), count)
-		}
+		picked = append(picked, once[(2*slot+1)*len(once)/(2*count)])
 	}
-	return picked, nil
+	return picked
 }
 
 // sentencesOf is each whole sentence of text between 40 and 240 bytes long.

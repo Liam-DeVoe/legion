@@ -58,22 +58,19 @@ func sameError(left, right error) bool {
 // The upload re-parses markdown, so it holds no anchor mark, replaces the textblock holding every
 // third anchor's start, so that anchor's quote can miss, and appends " edited" to every fifth other
 // paragraph. Its failures name the document, the mark's index, ranges, counts and error types,
-// never the document's text or a miss's nearest blocks: the anchor corpus it also checks is
-// private. corpus skips a document Parse or Update refuses rather than failing on it.
-func checkReanchorReuse(t *testing.T, name, markdown string, count int, seed int64, corpus bool) reanchorStats {
+// never the document's text or a miss's nearest blocks. The anchor corpus it also checks is read
+// through corpustest, which leaves out a document Parse refuses, so every refusal here, of Parse
+// or of a later step, fails the test.
+func checkReanchorReuse(t *testing.T, name, markdown string, count int, seed int64) reanchorStats {
 	t.Helper()
-	refuse := t.Fatalf
-	if corpus {
-		refuse = t.Skipf
-	}
 	marked, err := Parse(markdown)
 	if err != nil {
-		refuse("%s: Parse refused it (%T)", name, err)
+		t.Fatalf("%s: Parse refused it (%T)", name, err)
 	}
 	refs := placeAnchorMarks(marked, count, seed)
 	target, err := Parse(markdown)
 	if err != nil {
-		refuse("%s: Parse refused it (%T)", name, err)
+		t.Fatalf("%s: Parse refused it (%T)", name, err)
 	}
 
 	type anchor struct {
@@ -137,7 +134,7 @@ func checkReanchorReuse(t *testing.T, name, markdown string, count int, seed int
 		return nil
 	})
 	if err != nil {
-		refuse("%s: Update refused the upload (%T)", name, err)
+		t.Fatalf("%s: Update refused the upload (%T)", name, err)
 	}
 
 	reusedOutcomes := make([]reanchorOutcome, len(anchors))
@@ -242,12 +239,12 @@ func textWithin(doc *Node, r Range) (Range, bool) {
 func TestReanchorReuseMatchesPerCall(t *testing.T) {
 	for _, document := range corpusMarkdown(t) {
 		t.Run(document.name, func(t *testing.T) {
-			checkReanchorReuse(t, document.name, document.markdown, 47, 47, false)
+			checkReanchorReuse(t, document.name, document.markdown, 47, 47)
 		})
 	}
 	for _, size := range realSizeDocuments {
 		t.Run(size.name, func(t *testing.T) {
-			stats := checkReanchorReuse(t, size.name, realSizeMarkdown(size.bytes, size.seed), 47, size.seed, false)
+			stats := checkReanchorReuse(t, size.name, realSizeMarkdown(size.bytes, size.seed), 47, size.seed)
 			if stats.reanchored == 0 || stats.missed == 0 {
 				t.Fatalf("%d marks re-anchored and %d missed: want both", stats.reanchored, stats.missed)
 			}
@@ -260,7 +257,7 @@ func TestReanchorReuseMatchesPerCallOnAnchorCorpus(t *testing.T) {
 		t.Run(document.name, func(t *testing.T) {
 			var total reanchorStats
 			for _, count := range []int{12, 47, 80} {
-				stats := checkReanchorReuse(t, fmt.Sprintf("%s at %d marks", document.name, count), document.markdown, count, int64(count), true)
+				stats := checkReanchorReuse(t, fmt.Sprintf("%s at %d marks", document.name, count), document.markdown, count, int64(count))
 				total.placed += stats.placed
 				total.reanchored += stats.reanchored
 				total.missed += stats.missed

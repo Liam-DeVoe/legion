@@ -8,7 +8,8 @@
 # mutants script taking the retry, the search job tested on an output, a step inside an action
 # gated on merge_group, a job without the run_attempt term, a liveGroups entry no kind leg runs,
 # a job gated on an output changes does not declare, a carrier with a fourth step, a carrier for a
-# job that is not split, a carrier with no report step, pr-title needing changes, a literal name
+# job that is not split, a carrier with no report step, a split job's legs that leave an index out
+# and that name one twice, pr-title needing changes, a literal name
 # on a job a run can skip (worker-image, an agent-harness part, dispatch-browser.yaml's visual),
 # a changes output reading another step, the airlock job on x64, the race step dropping a package
 # the fill names, a push-only if: in an action only ci.yaml runs, a cache key drifting inside an
@@ -106,7 +107,7 @@ replace "$ci" $'  pr-title:\n' $'  pr-title:\n    needs: changes\n'
 replace "$ci" "      unnamed_files: \${{ steps.unnamed.outputs.found }}" \
   $'      unnamed_files: ${{ steps.unnamed.outputs.found }}\n      extra: ${{ steps.ref.outputs.other }}'
 # the airlock job on x64
-replace "$ci" $'    runs-on: ubuntu-24.04-arm\n    timeout-minutes: 70' $'    runs-on: ubuntu-24.04\n    timeout-minutes: 70'
+replace "$ci" $'    runs-on: ubuntu-24.04-arm\n    timeout-minutes: 45' $'    runs-on: ubuntu-24.04\n    timeout-minutes: 45'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "refuses a step that tests an output of changes" \
@@ -230,6 +231,23 @@ check "names agent-harness's literal name (rule 25)" "$(has "$out" "job agent-ha
 check "names the visual job with no name (rule 25)" "$(has "$out" "job visual of .github/workflows/dispatch-browser.yaml has an if: that can skip it and no name:")"
 check "names the matrix without fail-fast: false (rule 29)" "$(has "$out" "job lint's matrix does not set fail-fast: false")"
 check "names main's check-run name the layout lost (rule 30)" "$(has "$out" "carries the check-run name \`text-checks / text-checks\`")"
+
+echo "case: the indexes the legs of a split job name"
+root=$(fresh shards)
+ci=$root/.github/workflows/ci.yaml
+# envoy-go-race-api's two legs named as two of three: index 3 names no leg
+replace "$ci" 'name: envoy-go-race-api (1/2)' 'name: envoy-go-race-api (1/3)'
+replace "$ci" 'name: envoy-go-race-api (2/2)' 'name: envoy-go-race-api (2/3)'
+# envoy-go-docs-finalizers' third leg named as its second: index 2 names two legs
+replace "$ci" 'name: envoy-go-docs-finalizers (3/3)' 'name: envoy-go-docs-finalizers (2/3)'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the index no leg names (rule 34)" \
+  "$(has "$out" "job go-envoy-held splits envoy-go-race-api into 3 legs, and no leg is \`envoy-go-race-api (3/3)\`")"
+check "names the index two legs name (rule 34)" \
+  "$(has "$out" "job go-envoy-held splits envoy-go-docs-finalizers into 3 legs, and 2 legs are \`envoy-go-docs-finalizers (2/3)\`")"
+check "names the leg whose part is not its index (rule 34)" \
+  "$(has "$out" "leg \`envoy-go-docs-finalizers (2/3)\` of job go-envoy-held hands its steps part 3, not its own index 2")"
 
 echo "case: the actions' conditions, caches and timed steps, and the merge-group workflows"
 root=$(fresh actions)

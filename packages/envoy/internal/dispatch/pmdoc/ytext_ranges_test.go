@@ -392,13 +392,13 @@ func TestYTextRangesMatchesFrozenOnAnchorCorpus(t *testing.T) {
 			for _, count := range []int{12, 47, 80} {
 				tree, err := Parse(document.markdown)
 				if err != nil {
-					t.Skipf("%s: Parse refused it (%T)", document.name, err)
+					t.Fatalf("%s: Parse refused a document it parsed before (%T)", document.name, err)
 				}
 				placeAnchorMarks(tree, count, int64(count))
 				doc := crdt.New()
 				frag := doc.GetXmlFragment("prosemirror")
 				if err := doc.TransactE(func(txn *crdt.Transaction) error { return Update(txn, frag, tree) }); err != nil {
-					t.Skipf("%s at %d marks: Update refused it (%T)", document.name, count, err)
+					t.Fatalf("%s at %d marks: Update refused it (%T)", document.name, count, err)
 				}
 				ranges, _ := assertYTextRangesMatchFrozen(t, fmt.Sprintf("%s at %d marks", document.name, count), frag)
 				checked += len(ranges)

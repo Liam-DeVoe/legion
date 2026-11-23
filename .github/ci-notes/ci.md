@@ -587,8 +587,10 @@ A job split into legs keeps its old check-run name on a job of its own, which ne
 job, runs under their gate and passes only when each of its own legs' newest record passed
 (.github/scripts/leg-verdict.sh): a failure in another suite's leg leaves it passing. daemon-go
 carries go-daemon's legs' name; envoy-go-checks carries go-envoy's two envoy-go-checks legs';
-envoy-go, envoy-go-race-api, envoy-go-race-docs and dispatch-memory carry the old check-run
-names of go-envoy-held's split suites the same way.
+envoy-go, envoy-go-race-api, envoy-go-race-docs, envoy-go-docs-finalizers and dispatch-memory
+carry the old check-run names of go-envoy-held's split suites the same way. The legs of a split
+job are named `<name> (<i>/<n>)`, each index from 1 to n once (check-ci-layout.sh's rule 34), so
+the legs that read a sharded corpus (CORPUS_SHARD=<i>/<n>) read each of its documents once.
 
 ## The plugin-pack job
 
@@ -997,7 +999,11 @@ life of the process, and that is the defect that held this package's memory
 so no other job needs it. It runs without -race: the detector is the runtime's own
 bookkeeping, and a plain binary leaves the runner room the race binary does not. It reads the
 same closure as envoy-go-race-docs, so it reuses that filter and that `changes` output rather
-than taking one of its own.
+than taking one of its own. Its legs split the package's tests by name, but for its two corpus
+tests, which every leg runs on its own shard of the repository's markdown: on every tracked
+markdown file the two would take about 24 minutes (TestWriteCorpusReadsOnce on its 958 documents,
+TestAMarginWriteMatchesTheWholeDocumentWrite on its 43), and the rest of the package 16, so one
+leg would pass the time a leg may take.
 
 ## The real-process memory tests, and why they are a job of their own
 

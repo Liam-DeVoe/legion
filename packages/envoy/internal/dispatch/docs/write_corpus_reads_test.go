@@ -2,28 +2,26 @@ package docs
 
 import (
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/corpustest"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // On every spec of the write corpus (runWriteCorpus), warm and cold, each anchored MarkQuote reads
 // its fork twice, before and after its write, and each read joined to the write - every
 // SnapshotVersion after a write, and the suggestion's SuggestionKind - and each ProjectMark's
 // margin write take the write's rendering in place of reading the fork, and every rendering the
-// write hands on is a fresh read and render of its fork (checkRendering). The test skips unless
-// DISPATCH_TOKEN_CORPUS names the directory.
+// write hands on is a fresh read and render of its fork (checkRendering). The specs are the
+// documents of DISPATCH_TOKEN_CORPUS (the repository's markdown in CI) read through corpustest:
+// each is parsed as its seed parses it (pmdoc.ParseWritten), the step whose refusal leaves it out,
+// and the writes' three quotes are counted in its text (writeCorpusPicks, writeCorpusText), so a
+// spec with too few is left out and FindQuote's refusal of one fails the test, as every error of
+// the writes does. The test skips unless DISPATCH_TOKEN_CORPUS names the directory.
 func TestWriteCorpusReadsOnce(t *testing.T) {
-	dir := os.Getenv("DISPATCH_TOKEN_CORPUS")
-	if dir == "" {
-		t.Skip("DISPATCH_TOKEN_CORPUS unset; set it to a directory of markdown specs to count the writes' reads on them")
-	}
-	names, err := tokenCorpusSpecs(dir)
-	if err != nil {
-		t.Fatalf("DISPATCH_TOKEN_CORPUS: %v", err)
-	}
+	corpus := corpustest.Open(t, "DISPATCH_TOKEN_CORPUS", corpustest.Rules{MaxBytes: pmdoc.MaxDocumentBytes, Failures: pmdoc.CorpusFailures})
 	markQuote := forkReads{read: 2}
 	reused := forkReads{renderingReused: 1}
 	want := map[string]forkReads{
@@ -36,12 +34,25 @@ func TestWriteCorpusReadsOnce(t *testing.T) {
 		"suggestion/ProjectMark":     reused,
 		"edit/SnapshotVersion":       reused,
 	}
-	for _, name := range names {
-		source, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+	for _, document := range corpus.Documents() {
+		var tree *pmdoc.Node
+		if !corpus.Parse(document, func() (err error) {
+			tree, _, err = pmdoc.ParseWritten(document.Markdown, nil)
+			return err
+		}) {
+			continue
 		}
-		t.Run(name, func(t *testing.T) {
+		if _, ok := corpus.Quotes(document, corpustest.Quotes{
+			Text: writeCorpusText(tree),
+			Pick: func(once func(string) bool) ([]string, int) { return writeCorpusPicks(tree, once), 3 },
+			Find: func(quote string) error {
+				_, err := pmdoc.FindQuote(tree, quote, nil, nil)
+				return err
+			},
+		}); !ok {
+			continue
+		}
+		t.Run(document.Name, func(t *testing.T) {
 			service := newWriteCorpusService(t)
 			checks := checkRenderings(service)
 			// Each step's reads are the counts' move since the call before it, which for a
@@ -55,7 +66,7 @@ func TestWriteCorpusReadsOnce(t *testing.T) {
 				}
 				last = now
 			}
-			runWriteCorpus(t, service, name, string(source), observe)
+			runWriteCorpus(t, service, document.Name, document.Markdown, observe)
 			checks.requireNoRenderingFailures(t)
 			for _, mode := range writeCorpusModes {
 				for _, step := range slices.Sorted(maps.Keys(want)) {

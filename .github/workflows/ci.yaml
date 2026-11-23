@@ -39,7 +39,7 @@ env:
   # why: .github/ci-notes/ci.md#the-go-jobs-module-proxy
   GOPROXY: https://proxy.golang.org|direct
   # why: .github/ci-notes/ci.md#what-ci_ok_selected_by-holds-and-which-programs-read-it
-  CI_OK_SELECTED_BY: '{"daemon-go": "go-daemon", "claude-envoy-names": "pi", "kind-image": "kind", "envoy-go-checks": "go-envoy", "envoy-go": "go-envoy-held", "envoy-go-race-api": "go-envoy-held", "envoy-go-race-docs": "go-envoy-held", "dispatch-memory": "go-envoy-held"}'
+  CI_OK_SELECTED_BY: '{"daemon-go":"go-daemon","claude-envoy-names":"pi","kind-image":"kind","envoy-go-checks":"go-envoy","envoy-go":"go-envoy-held","envoy-go-race-api":"go-envoy-held","envoy-go-race-docs":"go-envoy-held","envoy-go-docs-finalizers":"go-envoy-held","dispatch-memory":"go-envoy-held"}'
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
   # why: .github/ci-notes/ci.md#the-jobs-that-run-on-every-change
   CI_OK_ALWAYS_RUN: '["changes", "lint"]'
@@ -597,20 +597,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [envoy-go-1, envoy-go-2, envoy-go-3, envoy-go-race, envoy-go-race-api-1, envoy-go-race-api-2, envoy-go-claim-model, envoy-go-race-docs-1, envoy-go-race-docs-2, envoy-go-docs-finalizers, dispatch-memory-1, dispatch-memory-2, dispatch-multiprocess, dispatch-two-builds, dispatch-two-builds-same, envoy-smoke]
+        leg: [envoy-go-1, envoy-go-2, envoy-go-3, envoy-go-race, envoy-go-race-api-1, envoy-go-race-api-2, envoy-go-claim-model, envoy-go-race-docs-1, envoy-go-race-docs-2, finalizers-1, finalizers-2, finalizers-3, dispatch-memory-1, dispatch-memory-2, dispatch-multiprocess, dispatch-two-builds, dispatch-two-builds-same, envoy-smoke]
         exclude:
           - leg: ${{ github.event_name != 'merge_group' && 'dispatch-two-builds-same' || '' }}
         include:
-          - {leg: envoy-go-1, suite: envoy-go, part: 1, name: envoy-go (1/3), runner: ubuntu-24.04-arm, timeout: 39}
+          - {leg: envoy-go-1, suite: envoy-go, part: 1, name: envoy-go (1/3), runner: ubuntu-24.04-arm, timeout: 40}
           - {leg: envoy-go-2, suite: envoy-go, part: 2, rest: true, name: envoy-go (2/3), runner: ubuntu-24.04-arm, timeout: 40}
-          - {leg: envoy-go-3, suite: envoy-go, part: 3, name: envoy-go (3/3), runner: ubuntu-24.04-arm, timeout: 26}
+          - {leg: envoy-go-3, suite: envoy-go, part: 3, name: envoy-go (3/3), runner: ubuntu-24.04-arm, timeout: 41}
           - {leg: envoy-go-race, name: envoy-go-race / envoy-go-race, runner: ubuntu-24.04-arm, timeout: 45}
           - {leg: envoy-go-race-api-1, suite: envoy-go-race-api, part: 1, name: envoy-go-race-api (1/2), runner: ubuntu-24.04-arm, timeout: 30}
           - {leg: envoy-go-race-api-2, suite: envoy-go-race-api, part: 2, name: envoy-go-race-api (2/2), runner: ubuntu-24.04-arm, timeout: 30}
           - {leg: envoy-go-claim-model, name: envoy-go-claim-model / envoy-go-claim-model, timeout: 50}
           - {leg: envoy-go-race-docs-1, suite: envoy-go-race-docs, part: 1, name: envoy-go-race-docs (1/2), runner: ubuntu-24.04-arm, timeout: 27, go: 24m}
           - {leg: envoy-go-race-docs-2, suite: envoy-go-race-docs, part: 2, name: envoy-go-race-docs (2/2), runner: ubuntu-24.04-arm, timeout: 31, go: 28m}
-          - {leg: envoy-go-docs-finalizers, name: envoy-go-docs-finalizers / envoy-go-docs-finalizers, runner: ubuntu-24.04-arm, timeout: 55}
+          - {leg: finalizers-1, part: 1, name: envoy-go-docs-finalizers (1/3), runner: ubuntu-24.04-arm, timeout: 43}
+          - {leg: finalizers-2, part: 2, name: envoy-go-docs-finalizers (2/3), runner: ubuntu-24.04-arm, timeout: 43}
+          - {leg: finalizers-3, part: 3, name: envoy-go-docs-finalizers (3/3), runner: ubuntu-24.04-arm, timeout: 43}
           - {leg: dispatch-memory-1, suite: dispatch-memory, part: 1, name: dispatch-memory (1/2), runner: ubuntu-24.04-arm, timeout: 32, go: 28m}
           - {leg: dispatch-memory-2, suite: dispatch-memory, part: 2, name: dispatch-memory (2/2), runner: ubuntu-24.04-arm, timeout: 38, go: 34m}
           - {leg: dispatch-multiprocess, name: dispatch-multiprocess / dispatch-multiprocess, runner: ubuntu-24.04-arm, timeout: 35}
@@ -656,11 +658,7 @@ jobs:
       - name: envoy-go
         if: matrix.suite == 'envoy-go'
         uses: ./.github/actions/go-envoy-held/envoy-go
-        with:
-          part: ${{ matrix.part }}
-          legs: 3
-          rest: ${{ matrix.rest }}
-          postgres: ${{ job.services.postgres.id }}
+        with: {part: '${{ matrix.part }}', legs: 3, rest: '${{ matrix.rest }}', postgres: '${{ job.services.postgres.id }}'}
       # why: .github/ci-notes/ci.md#what-the-envoy-go-job-runs
       - name: Count the database broker suites' skips
         if: matrix.suite == 'envoy-go'
@@ -700,9 +698,9 @@ jobs:
         uses: ./.github/actions/go-envoy-held/envoy-go-race-docs
         with: {part: '${{ matrix.part }}', legs: 2, go-timeout: '${{ matrix.go }}', postgres: '${{ job.services.postgres.id }}'}
       - name: envoy-go-docs-finalizers
-        if: matrix.leg == 'envoy-go-docs-finalizers'
+        if: startsWith(matrix.leg, 'finalizers-')
         uses: ./.github/actions/go-envoy-held/envoy-go-docs-finalizers
-        with: {postgres: '${{ job.services.postgres.id }}'}
+        with: {part: '${{ matrix.part }}', legs: 3, postgres: '${{ job.services.postgres.id }}'}
       - name: dispatch-memory
         if: matrix.suite == 'dispatch-memory'
         uses: ./.github/actions/go-envoy-held/dispatch-memory
@@ -762,6 +760,19 @@ jobs:
         with: {sparse-checkout: .github, persist-credentials: false}
       - env: {GH_TOKEN: '${{ github.token }}'}
         run: .github/scripts/leg-verdict.sh 'envoy-go-race-docs (1/2)' 'envoy-go-race-docs (2/2)'
+      - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
+
+  envoy-go-docs-finalizers:
+    name: ${{ 'envoy-go-docs-finalizers / envoy-go-docs-finalizers' }}
+    needs: [changes, go-envoy-held]
+    if: ${{ !cancelled() && needs.changes.outputs.go-envoy-held == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: {sparse-checkout: .github, persist-credentials: false}
+      - env: {GH_TOKEN: '${{ github.token }}'}
+        run: .github/scripts/leg-verdict.sh 'envoy-go-docs-finalizers (1/3)' 'envoy-go-docs-finalizers (2/3)' 'envoy-go-docs-finalizers (3/3)'
       - {if: always(), uses: ./.github/actions/ci-ok-report, with: {changes: '${{ toJSON(needs.changes) }}', job-status: '${{ job.status }}'}}
 
   dispatch-memory:
@@ -915,7 +926,7 @@ jobs:
   ci-ok:
     # why: .github/ci-notes/ci.md#a-dispatched-runs-check-names
     name: ${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}
-    needs: [changes, lint, scripts, ci-images, tool-fallback, go-daemon, daemon-go, plugin-pack, daemon-live, agent-harness, kind-image, kind, docs, ts, pi, claude-envoy-names, dispatch-browser, go-envoy, envoy-go-checks, go-envoy-held, envoy-go, envoy-go-race-api, envoy-go-race-docs, dispatch-memory, airlock-arm, text-checks, notices, worker-image, browser-image]
+    needs: [changes,lint,scripts,ci-images,tool-fallback,go-daemon,daemon-go,plugin-pack,daemon-live,agent-harness,kind-image,kind,docs,ts,pi,claude-envoy-names,dispatch-browser,go-envoy,envoy-go-checks,go-envoy-held,envoy-go,envoy-go-race-api,envoy-go-race-docs,envoy-go-docs-finalizers,dispatch-memory,airlock-arm,text-checks,notices,worker-image,browser-image]
     if: ${{ always() }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 10

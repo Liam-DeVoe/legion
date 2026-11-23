@@ -71,7 +71,7 @@ go-envoy-held:
   - &ew [*pe, *gw, *dgo] # pkg+mod go test ./... in packages/envoy, infra/host
   - [*dsp, *tsp, *cc, *bun] # pkg+ws dispatch-two-builds in packages/dispatch
   - [*di, packages/daemon/docker/legion-testpg, &its packages/daemon/internal/intake/testdata/**, *tpn] # test envoy-smoke
-  - [*e2e, docs/site/src/content/docs/**, docs/solutions/**, docs/testing.md, packages/*/README.md, &dsa .dispatch/**] # test repository-markdown.txt guides
+  - '**/*.md' # test the corpus tests read every tracked markdown file (git ls-files)
   - &o7 .github/actions/go-envoy-held/** # own
 ts:
   - [*tsp, *cc, *dsp] # pkg contracts, envoy-client, dispatch-ui...
@@ -124,7 +124,7 @@ go-envoy:
   - [packages/proof-editor/**, packages/dispatch/web/src/features/refs/__fixtures__/**] # test parity-fuzz.ts
   - [*sk, *omp, .claude-code-pin, packages/daemon/docker/worker.Dockerfile, packages/dispatch/e2e/fake-*.ts, packages/dispatch/e2e/harness-ports.ts] # test session-stall's rig
   - *dsp # test read-token-live.ts, the dispatch:local stack it reads
-  - [*scr, *dsa, *tgt] # test spec-check guard, architecture-check, build-envoy-command.sh
+  - [*scr, &dsa .dispatch/**, *tgt] # test spec-check guard, architecture-check, build-envoy-command.sh
   - *gh # test spec-check guard; own go-envoy/**
 text-checks: # credential_argument_test.go reads every text file
   - [*cc, *cl, *tsp, *plug, *dsp, *pd, *pe] # pkg+test internal/textcheck

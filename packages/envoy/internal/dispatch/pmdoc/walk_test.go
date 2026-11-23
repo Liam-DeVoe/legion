@@ -5,8 +5,8 @@ package pmdoc
 // nodes, in the same order, with the same paths and ranges, stopped at the same visit, on every
 // tree this package ships as test data, on synthetic trees at the edges of the size rule, and on a
 // generated document of a real spec's size. Failures name a node by its type, path, range and the
-// length of its text, never the text itself, so a private spec read by the opt-in corpus test
-// never reaches a log.
+// length of its text, never the text itself, so a walk failure on a document of the corpus test
+// never quotes the document.
 
 import (
 	"fmt"
@@ -18,6 +18,8 @@ import (
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/corpustest"
 )
 
 // walker is the shape walk and referenceWalk share, so one recorder runs either.
@@ -614,69 +616,53 @@ func middleThird(value string) (from, to int) {
 	return units16(runes[:first]), units16(runes[:last])
 }
 
-// walk agrees with referenceWalk on a corpus of real specs, as parsed and as read back from a live
-// document under comment marks. It runs only when PMDOC_WALK_CORPUS names a directory of markdown
-// files, and logs counts and file names alone, never a spec's text.
+// walk agrees with referenceWalk on a corpus of real documents, as parsed and as read back from a
+// live document under comment marks. It runs only when PMDOC_WALK_CORPUS names a directory of
+// markdown files (the repository's markdown in CI), read through corpustest, which judges each
+// refusal of the parse; a refusal of the round trip through a Y document that follows it
+// (markedReadBack: Update, the marks and Read) fails the test. It logs counts and file names alone.
 func TestWalkMatchesTheReferenceWalkOnACorpus(t *testing.T) {
-	dir := os.Getenv("PMDOC_WALK_CORPUS")
-	if dir == "" {
-		t.Skip("PMDOC_WALK_CORPUS unset; set it to a directory of .md files to run this")
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("PMDOC_WALK_CORPUS: %v", err)
-	}
-
+	corpus := corpustest.Open(t, "PMDOC_WALK_CORPUS", corpusRules)
 	var (
 		files, marks, mismatches, visitCountChanges int
-		refusals, roundTripFailures                 []string
 		parsedCensus, readCensus                    walkCensus
 	)
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") {
+	for _, document := range corpus.Documents() {
+		var parsed *Node
+		if !corpus.Parse(document, func() (err error) {
+			parsed, err = Parse(LineFeeds(document.Markdown))
+			return err
+		}) {
+			continue
+		}
+		readBack, marked, err := markedReadBack(parsed)
+		if !corpus.Later(document, err) {
 			continue
 		}
 		files++
-		raw, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		parsed, err := Parse(LineFeeds(string(raw)))
-		if err != nil {
-			refusals = append(refusals, name)
-			continue
-		}
-
+		marks += marked
 		count, first, census := checkWalkedTree(parsed)
 		parsedCensus.add(census)
-		readBack, marked, err := markedReadBack(parsed)
-		marks += marked
-		if err != nil {
-			roundTripFailures = append(roundTripFailures, name)
-		} else {
-			readCount, readFirst, read := checkWalkedTree(readBack)
-			readCensus.add(read)
-			if read.nodes != census.nodes {
-				visitCountChanges++
-			}
-			if first == "" && readFirst != "" {
-				first = "read back: " + readFirst
-			}
-			count += readCount
+		readCount, readFirst, read := checkWalkedTree(readBack)
+		readCensus.add(read)
+		if read.nodes != census.nodes {
+			visitCountChanges++
 		}
+		if first == "" && readFirst != "" {
+			first = "read back: " + readFirst
+		}
+		count += readCount
 		if count > 0 {
 			mismatches += count
-			t.Errorf("%s: %d mismatches; first: %s", name, count, first)
+			t.Errorf("%s: %d mismatches; first: %s", document.Name, count, first)
 		}
 	}
 
-	t.Logf("walk corpus: %d files; %d parse refusals %v; %d Update/mark/Read failures %v; "+
+	t.Logf("walk corpus: %d files walked; "+
 		"nodes %d parsed + %d read back; text nodes %d + %d; text nodes above U+FFFF %d + %d; "+
 		"empty text nodes %d + %d; max depth %d; marks applied %d; mismatches %d; "+
 		"read-back trees whose visit count differs from the parsed tree's %d",
-		files, len(refusals), refusals, len(roundTripFailures), roundTripFailures,
-		parsedCensus.nodes, readCensus.nodes, parsedCensus.texts, readCensus.texts,
+		files, parsedCensus.nodes, readCensus.nodes, parsedCensus.texts, readCensus.texts,
 		parsedCensus.astralTexts, readCensus.astralTexts, parsedCensus.emptyTexts, readCensus.emptyTexts,
 		max(parsedCensus.maxDepth, readCensus.maxDepth), marks, mismatches, visitCountChanges)
 }

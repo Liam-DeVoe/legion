@@ -39,6 +39,10 @@ variables:
     class: set
     jobs: [go-envoy-held, go-envoy, go-daemon]
     why: The Postgres server the broker's store tests make their databases on, a service of each job that runs them.
+  CORPUS_SHARD:
+    class: set
+    jobs: [go-envoy-held]
+    why: The shard of the markdown corpus, <leg>/<legs>, each corpus step of go-envoy-held's envoy-go and envoy-go-docs-finalizers legs hands its corpus tests, so the legs between them read each document once.
   DISPATCH_BENCH_DATABASE_URL:
     class: tool
     why: The seeded database BenchmarkSearchLatencyOnCorpus times its searches on.
@@ -79,7 +83,7 @@ variables:
   DISPATCH_RENDER_CORPUS:
     class: set
     jobs: [go-envoy-held]
-    why: The repository's markdown corpus go-envoy-held's envoy-go legs hand the incremental render test.
+    why: Every tracked markdown file, which the corpus step of go-envoy-held's envoy-go legs hands the incremental and the validating render tests.
   DISPATCH_TEST_DATABASE_URL:
     class: set
     jobs: [go-envoy-held, go-envoy]
@@ -90,7 +94,7 @@ variables:
   DISPATCH_TOKEN_CORPUS:
     class: set
     jobs: [go-envoy-held]
-    why: The repository's markdown corpus go-envoy-held's envoy-go-docs-finalizers leg hands TestWriteCorpusReadsOnce; the corpus benchmarks read it as tools.
+    why: Every tracked markdown file, which the corpus step of go-envoy-held's envoy-go-docs-finalizers legs hands TestWriteCorpusReadsOnce; the corpus benchmarks read it as tools.
   GITHUB_ACTIONS:
     class: prerequisite
     why: testprereq.Require skips off GitHub Actions and fails on it.
@@ -160,7 +164,7 @@ variables:
   PMDOC_ANCHOR_CORPUS:
     class: set
     jobs: [go-envoy-held]
-    why: The anchor corpus go-envoy-held's envoy-go legs hand the pmdoc mark tests.
+    why: Every tracked markdown file, which the corpus step of go-envoy-held's envoy-go legs hands the pmdoc mark tests.
   PMDOC_DIFF_BASE:
     class: set
     jobs: [go-envoy-held]
@@ -172,4 +176,4 @@ variables:
   PMDOC_WALK_CORPUS:
     class: set
     jobs: [go-envoy-held]
-    why: The walk corpus go-envoy-held's envoy-go legs hand the pmdoc walk test.
+    why: Every tracked markdown file, which the corpus step of go-envoy-held's envoy-go legs hands the pmdoc walk test.
