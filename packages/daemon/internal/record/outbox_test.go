@@ -276,7 +276,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish, OutboxKindStepRecord,
-		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindFixJobRead}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -344,6 +344,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
 		// forward its fact queues is held.
 		OutboxKindConflictConfirm: "",
+		// The read of a fix's failed job reads Dispatch and starts no turn; the fix's start its fact
+		// queues is held, as every start is (op start above).
+		OutboxKindFixJobRead: "",
 		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
 		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
 		OutboxKindRoleHoldersPublish: "",
@@ -525,6 +528,16 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a merge-forward landed with no head that landed", payload: MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a merge-forward review with no head that landed", payload: MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Base: "main", Phase: phase.Accepting, PullRequest: 42}, reason: "a merge-forward landed or review names the head that landed"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
+		{name: "a start of a fix numbered below 1", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+			Phase: phase.Implementing, Generation: 3, Task: "Fix k-ci.", Fix: -1}, reason: "a fix counts from 1"},
+		{name: "a fix's start that waits for a slot", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+			Phase: phase.Implementing, Generation: 3, Task: "Fix k-ci.", Fix: 1, NeedsSlot: true}, reason: "a fix's start is a start with a task and a phase that waits for no slot"},
+		{name: "a fix's start with no task", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+			Phase: phase.Implementing, Generation: 3, Fix: 1}, reason: "a fix's start is a start with a task and a phase that waits for no slot"},
+		{name: "a start of no fix naming a fix's working copy", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer,
+			Phase: phase.Implementing, Generation: 3, Task: "Implement it.", FixFrom: "c0de"}, reason: "only a fix's start names the head its working copy is made at"},
+		{name: "a fix's job read of no fix", payload: FixJobRead{Generation: 3, Task: "a", Check: "k-ci", Head: "c0de"}, reason: "a fix's job read names"},
+		{name: "a fix's job read of no head", payload: FixJobRead{Generation: 3, Task: "a", Fix: 1, Check: "k-ci"}, reason: "a fix's job read names"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -682,6 +695,8 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a merge-forward message of an unknown step", row: OutboxRow{ID: 64, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"merge","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next"}`)}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward message with an unknown field", row: OutboxRow{ID: 65, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next","task":"Merge main."}`)}, reason: "unknown field"},
 		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a fix's job read with an unknown field", row: OutboxRow{ID: 67, Kind: OutboxKindFixJobRead, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"check":"k-ci","head":"c0de","job":"unit"}`)}, reason: "unknown field"},
+		{name: "a fix's job read of no check", row: OutboxRow{ID: 68, Kind: OutboxKindFixJobRead, Payload: json.RawMessage(`{"generation":3,"task":"a","fix":1,"head":"c0de"}`)}, reason: "a fix's job read names"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},
@@ -1135,6 +1150,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
 				StatusNotTakenYet + " " + EndChildRule},
+		{Kind: "ci-failed", Role: claim.RoleArchitect, Phase: phase.Reviewing,
+			Reason: "Check k-ci fails at 1111111111111111111111111111111111111111 of task a of LEGION-208, and no fix takes it: its one fix ended. Decide with the person: send the task back, or stop it."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
