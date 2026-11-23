@@ -116,6 +116,9 @@ func (k iapSocketKeys) pastExpiry(t *testing.T, header http.Header) time.Time {
 // assertion expires. The sockets' read deadlines run on a fake no one moves (liveSocketClock), so
 // no pong the runner holds back ends a socket.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
+	// Not parallel: both sockets must answer the server's ping inside the 200 ms heartbeat's
+	// window to stay open, and among this package's parallel tests under the race detector a
+	// client read goroutine missed it and the control socket was cut with 1006.
 	database := storetest.Open(t)
 	judged := clocktest.New(time.Now())
 	iap := newIAPSocketKeys(t, database, judged)
@@ -209,6 +212,7 @@ var iapChanges = []iapChange{
 // before the heartbeats' to the first heartbeat, which meets both. No wall clock decides whether
 // the upgrade came in time or when the assertion expired.
 func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			database := storetest.Open(t)
@@ -325,6 +329,7 @@ func (rig *iapDocumentRig) openDocument(t *testing.T, headers http.Header) *sync
 // heartbeat that re-checks it, as in
 // TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires.
 func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testing.T) {
+	t.Parallel()
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()
@@ -365,6 +370,7 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 // changed, before it moves the heartbeats' fake to the first heartbeat, as
 // TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong does.
 func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	t.Parallel()
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			const heartbeat = time.Second
@@ -392,6 +398,7 @@ func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *tes
 // A socket whose person no longer resolves is still cut as before, whatever identity it runs
 // under: only the credential's own expiry (identity.ErrCredentialExpired) is a rotation.
 func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error

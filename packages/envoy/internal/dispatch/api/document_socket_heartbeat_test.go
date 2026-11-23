@@ -473,6 +473,7 @@ func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int,
 // the socket's on the heartbeat's cancel (requireClosedAfterRefusal, one hop), so a product that
 // waits before it closes a refused socket fails too.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 2 * time.Second
 	for _, beside := range []struct {
 		name   string
@@ -541,6 +542,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 // broker does not hold live at all, which the heartbeat never reads and the broker is never asked
 // about.
 func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name    string
@@ -591,6 +593,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // tick is told apart from a late tick. The socket's read deadline runs on a fake no one moves
 // (newDocumentSocketTokenRig), so no pong the runner holds back ends the socket first.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
+	t.Parallel()
 	meter := startStallMeter(t)
 	const heartbeat = 2 * time.Second
 	rig := newDocumentSocketTokenRig(t, heartbeat, nil)

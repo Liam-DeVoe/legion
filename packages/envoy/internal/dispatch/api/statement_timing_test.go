@@ -65,6 +65,7 @@ const (
 // copied a second time: two copies of one statement drift apart, and those oracles are what the
 // package's equality tests are held to.
 func TestStatementTimings(t *testing.T) {
+	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	subjects := runner.Subjects()
 
@@ -359,6 +360,7 @@ func databaseHoldsDocumentSearch(t *testing.T, runner *benchtime.Runner) bool {
 // DISPATCH_BENCH_TIMING is set as well as DISPATCH_BENCH_DATABASE_URL: a person runs it on a quiet
 // machine, and CI never does.
 func TestRelatedTermsRefreshTiming(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("DISPATCH_BENCH_TIMING") == "" {
 		t.Skip("DISPATCH_BENCH_TIMING is unset: protocol 3's times are read on a quiet machine, never in CI")
 	}
