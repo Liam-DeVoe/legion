@@ -441,3 +441,78 @@ func TestAListenersUserRunsCreateOnTheInboxPrefixItNames(t *testing.T) {
 		}
 	}
 }
+
+// --inbox-prefix _INBOX., the Job's argument, reaches nats.go as its own default inbox, with no
+// custom prefix set: nats.go@v1.55.0 refuses a custom prefix that ends in "." (nats.go:1757,
+// "nats: invalid custom prefix"), which the control shows by setting that prefix through the bus,
+// so inboxOption cuts the dot and sets none for _INBOX. Each prefix is applied to a real connection
+// and the inbox it makes is read: _INBOX. and _INBOX make _INBOX.<id>, the subjects a listener's
+// user subscribes (_INBOX.>), and the default makes _INBOX_envoy_buckets.<id>.
+func TestTheInboxPrefixReachesNatsGo(t *testing.T) {
+	uri, _ := server(t)
+	if _, err := bus.Connect([]string{uri}, bus.WithInboxPrefix("_INBOX.")); err == nil || !strings.Contains(err.Error(), "nats: invalid custom prefix") {
+		t.Fatalf("control: bus.Connect with the custom prefix _INBOX. = %v, want nats.go's refusal \"nats: invalid custom prefix\"", err)
+	}
+	for _, c := range []struct {
+		flag, inbox string
+		options     int
+	}{
+		{"_INBOX.", natsgo.InboxPrefix, 0},
+		{"_INBOX", natsgo.InboxPrefix, 0},
+		{InboxPrefix, InboxPrefix + ".", 1},
+	} {
+		options, ok := inboxOption(c.flag)
+		if !ok || len(options) != c.options {
+			t.Fatalf("inboxOption(%q) = %d options, %t; want %d, true", c.flag, len(options), ok, c.options)
+		}
+		client, err := bus.Connect([]string{uri}, options...)
+		if err != nil {
+			t.Fatalf("connect with --inbox-prefix %s: %v", c.flag, err)
+		}
+		if inbox := client.Conn.NewInbox(); !strings.HasPrefix(inbox, c.inbox) || strings.Count(inbox, ".") != strings.Count(c.inbox, ".") {
+			t.Errorf("--inbox-prefix %s makes the inbox %s, want %s<id>", c.flag, inbox, c.inbox)
+		}
+		client.Close()
+	}
+}
+
+// The Job's exact command - create --inbox-prefix _INBOX. --bucket envoy_known_sessions --replicas 3
+// - on a three-server hub, as a user that may publish only what the in-cluster gke listener may and
+// subscribe only _INBOX.>: the first run creates the bucket at three copies, having had every
+// reply, and the second says it is present and exits 0. The control is the same command without
+// --inbox-prefix, whose replies under _INBOX_envoy_buckets that user may not receive.
+func TestTheJobsCreateRunsAsAUserSubscribingOnlyInboxes(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	seed, public := testnats.User(t)
+	_, watcher := testnats.User(t)
+	grant := core.ListenerHostPermissions("gke")
+	inboxes := core.Rules{Allow: []string{natsgo.InboxPrefix + ">"}}
+	everything := core.Rules{Allow: []string{">"}}
+	config, err := core.Authorization{Users: []core.User{
+		{Name: "gke", NKey: public, Publish: &grant.Publish, Subscribe: &inboxes, HasSeed: true},
+		{Name: "watcher", NKey: watcher, Publish: &everything, Subscribe: &everything},
+	}, NoAuthUser: "watcher"}.Render(nil)
+	if err != nil {
+		t.Fatalf("render the hub's users: %v", err)
+	}
+	cluster := testnats.StartClusterConfig(t, 3, config)
+	uri := cluster.Servers[0].URL()
+	_, js := jetStream(t, uri)
+	t.Setenv("NATS_NKEY_SEED", seed)
+	job := []string{"create", "--inbox-prefix", "_INBOX.", "--bucket", bus.KnownSessionBucket, "--replicas", "3", "--nats", uri}
+
+	if code, stdout, stderr := runCreate(t, slices.Delete(slices.Clone(job), 1, 3)...); code != 1 || stdout != "" {
+		t.Fatalf("control: the command without --inbox-prefix = %d, want 1 with nothing made\nstdout: %s\nstderr: %s", code, stdout, stderr)
+	}
+	code, stdout, stderr := runCreate(t, job...)
+	if want := "created " + bus.KnownSessionBucket + " (3 copies)\n"; code != 0 || stdout != want {
+		t.Fatalf("the Job's command = %d, want 0 and %q\nstdout: %s\nstderr: %s", code, want, stdout, stderr)
+	}
+	if info := streamOf(t, js, bus.KnownSessionBucket); info.Config.Replicas != 3 || info.Config.MaxAge != bus.KnownSessionBucketMaxAge {
+		t.Fatalf("KV_%s after the Job's command: %+v; want three copies and max age %s", bus.KnownSessionBucket, info.Config, bus.KnownSessionBucketMaxAge)
+	}
+	code, stdout, stderr = runCreate(t, job...)
+	if want := bus.KnownSessionBucket + " present at 3 copies with its own configuration: left as it is\n"; code != 0 || stdout != want {
+		t.Fatalf("the Job's command again = %d, want 0 and %q\nstdout: %s\nstderr: %s", code, want, stdout, stderr)
+	}
+}
