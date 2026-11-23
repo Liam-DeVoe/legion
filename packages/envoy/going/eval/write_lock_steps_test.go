@@ -198,7 +198,7 @@ func newLockSeedDatabase(t *testing.T) (*store.Store, *Seed) {
 		t.Fatalf("begin the seed's issue: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	w := &seedWriter{tx: tx, seed: seed, sessions: map[string]bool{}, seqs: map[string]int{}}
+	w := &seedWriter{tx: tx, seed: seed, sessions: map[string]string{}, seqs: map[string]int{}}
 	if err := w.writePeopleAndProjects(ctx); err != nil {
 		t.Fatalf("write the seed's person and project: %v", err)
 	}
@@ -237,7 +237,7 @@ func startLockSeedWrite(t *testing.T, database *store.Store, seed *Seed, write f
 			return
 		}
 		defer func() { _ = tx.Rollback(ctx) }()
-		if err := write(ctx, &seedWriter{tx: tx, seed: seed, sessions: map[string]bool{}, seqs: map[string]int{}}); err != nil {
+		if err := write(ctx, &seedWriter{tx: tx, seed: seed, sessions: map[string]string{}, seqs: map[string]int{}}); err != nil {
 			done <- err
 			return
 		}

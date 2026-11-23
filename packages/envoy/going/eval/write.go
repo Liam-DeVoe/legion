@@ -53,9 +53,9 @@ func WriteSeed(ctx context.Context, database *store.Store, seed *Seed) (bool, er
 	if err != nil || seeded {
 		return false, err
 	}
-	w := &seedWriter{tx: tx, seed: seed, sessions: map[string]bool{}, seqs: map[string]int{}}
+	w := &seedWriter{tx: tx, seed: seed, sessions: map[string]string{}, seqs: map[string]int{}}
 	for _, session := range seed.Sessions {
-		w.sessions[session.ID] = true
+		w.sessions[session.ID] = session.Title
 	}
 	steps := []struct {
 		name  string
@@ -155,12 +155,12 @@ func holdsTheSeed(ctx context.Context, q refs.Queryer, seed *Seed) (bool, error)
 }
 
 // seedWriter is one run of WriteSeed: its transaction, the seed, which of the seed's names are
-// sessions, the last event sequence written under each event owner, and each document written,
-// whose live state WriteSeed seeds once every row is written.
+// sessions, each with its title, the last event sequence written under each event owner, and each
+// document written, whose live state WriteSeed seeds once every row is written.
 type seedWriter struct {
 	tx        pgx.Tx
 	seed      *Seed
-	sessions  map[string]bool
+	sessions  map[string]string
 	seqs      map[string]int
 	documents []seededDocument
 }
@@ -172,7 +172,7 @@ type seededDocument struct {
 
 // actor is the stored actor of one of the seed's names: a session's, or a person's.
 func (w *seedWriter) actor(name string) model.Actor {
-	if w.sessions[name] {
+	if _, session := w.sessions[name]; session {
 		return model.Actor{Kind: "session", ID: name}
 	}
 	return model.Actor{Kind: "user", ID: name}
@@ -181,6 +181,20 @@ func (w *seedWriter) actor(name string) model.Actor {
 // actorJSON is actor's JSON, as a jsonb column holds it.
 func (w *seedWriter) actorJSON(name string) (string, error) {
 	encoded, err := json.Marshal(w.actor(name))
+	return string(encoded), err
+}
+
+// holderJSON is the JSON of session's actor as a claim it holds stores it, in the issue's row and
+// in its issue.claimed event. The claim route stores the request's actor whole (claimIssue), whose
+// origin carries the title the session runs under, so a read of a real claim names its holder by
+// title. The seed knows no host or folder of a session, only its title on the roster, so the
+// origin holds that title alone, and a session with no title stamps no origin.
+func (w *seedWriter) holderJSON(session string) (string, error) {
+	holder := w.actor(session)
+	if title := w.sessions[session]; title != "" {
+		holder.Origin = &model.ActorOrigin{SessionTitle: title}
+	}
+	encoded, err := json.Marshal(holder)
 	return string(encoded), err
 }
 
@@ -253,7 +267,7 @@ func (w *seedWriter) writeIssues(ctx context.Context) error {
 			var claimedBy *string
 			var claimedAt *time.Time
 			if issue.Claim != nil {
-				holder, err := w.actorJSON(issue.Claim.Session)
+				holder, err := w.holderJSON(issue.Claim.Session)
 				if err != nil {
 					return err
 				}
@@ -763,7 +777,7 @@ func (w *seedWriter) writeItemEvents(ctx context.Context) error {
 			if issue.ClosedAt != nil && claim.At.After(*issue.ClosedAt) {
 				return fmt.Errorf("issue %s is claimed at %s, after its close at %s", issue.Key, claim.At, *issue.ClosedAt)
 			}
-			holder, err := w.actorJSON(claim.Session)
+			holder, err := w.holderJSON(claim.Session)
 			if err != nil {
 				return err
 			}

@@ -3,6 +3,8 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -11,10 +13,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -226,6 +231,7 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 		holds       map[string]any
 	}
 	var wants []wantEvent
+	titles := rosterTitles(seed)
 	for _, issue := range seed.Issues {
 		status := issue.Status
 		if issue.ClosedAt != nil {
@@ -234,8 +240,9 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 		wants = append(wants, wantEvent{issue.Key, "issue.created", issue.CreatedAt,
 			map[string]any{"key": issue.Key, "title": issue.Title, "status": status, "closed_at": nil, "claim": nil}})
 		if issue.Claim != nil {
+			holder := map[string]any{"id": issue.Claim.Session, "origin": map[string]any{"session_title": titles[issue.Claim.Session]}}
 			wants = append(wants, wantEvent{issue.Key, "issue.claimed", issue.Claim.At,
-				map[string]any{"key": issue.Key, "reason": "claimed", "claim": map[string]any{"actor": map[string]any{"id": issue.Claim.Session}}}})
+				map[string]any{"key": issue.Key, "reason": "claimed", "claim": map[string]any{"actor": holder}}})
 		}
 		if issue.ClosedAt != nil {
 			wants = append(wants, wantEvent{issue.Key, "issue.closed", *issue.ClosedAt,
@@ -368,6 +375,92 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 	if written, err := WriteSeed(ctx, other, seed); written || err == nil || !strings.Contains(err.Error(), "ELSE") {
 		t.Errorf("WriteSeed on a database holding project ELSE = %v, %v; want a refusal naming ELSE", written, err)
 	}
+}
+
+// TestASeededClaimNamesItsHolderByTitle reads each claim of the seeded store as the command bar's
+// agent reads it, through the issue read of a server over that store (GET /api/v1/issues/{key}):
+// the claim's actor is its session, with the session's title on the roster in its origin, as a
+// real claim carries the title its session stamped. So the agent names the holder by its title,
+// such as "Implementer of DEMO-15", where a claim that named only the id led it to the id.
+func TestASeededClaimNamesItsHolderByTitle(t *testing.T) {
+	ctx := context.Background()
+	seed, err := LoadSeed(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database := storetest.Open(t)
+	if written, err := WriteSeed(ctx, database, seed); err != nil || !written {
+		t.Fatalf("WriteSeed on an empty database = %v, %v; want the seed written", written, err)
+	}
+	server := seededServer(t, database)
+	titles := rosterTitles(seed)
+	claims := 0
+	for _, issue := range seed.Issues {
+		if issue.Claim == nil {
+			continue
+		}
+		claims++
+		want := titles[issue.Claim.Session]
+		if want == "" {
+			t.Fatalf("session %s, which claims %s, has no title on the seed's roster", issue.Claim.Session, issue.Key)
+		}
+		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1/issues/"+issue.Key, nil)
+		request.Header.Set("X-Dispatch-User", seed.People[0].Login)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/issues/%s answered %d: %s", issue.Key, response.Code, response.Body.String())
+		}
+		var read struct {
+			Claim *model.IssueClaim `json:"claim"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
+			t.Fatalf("decode the read of %s: %v", issue.Key, err)
+		}
+		claim := read.Claim
+		if claim == nil || claim.Actor.Kind != "session" || claim.Actor.ID != issue.Claim.Session ||
+			claim.Actor.Origin == nil || claim.Actor.Origin.SessionTitle != want {
+			t.Errorf("the read of %s gives the claim %+v, want session %s with the title %q in its origin", issue.Key, claim, issue.Claim.Session, want)
+		}
+	}
+	if claims == 0 {
+		t.Fatal("the seed holds no claim to read")
+	}
+}
+
+// seededServer is the route table a Dispatch server serves over database, as the eval's server
+// serves the seeded store, with header identity naming the person a request is made as.
+func seededServer(t *testing.T, database *store.Store) http.Handler {
+	t.Helper()
+	broker := events.NewBroker()
+	documents := docs.New(docs.Deps{Store: database, Events: broker})
+	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	signingKey := auth.SingleSigningKey("going-eval-test-key")
+	people := store.NewPgPeopleStore(database.Pool, signingKey, nil)
+	app, err := routes.BuildAppContext(routes.AppContextOptions{
+		SigningKey: signingKey,
+		People:     people,
+		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Store:      database,
+		Docs:       documents,
+		Events:     broker,
+		Lifetime:   t.Context(),
+	})
+	if err != nil {
+		t.Fatalf("build the server: %v", err)
+	}
+	handler, background := routes.New(app)
+	t.Cleanup(background.Wait)
+	return handler
+}
+
+// rosterTitles is the title of each session of the seed's roster, by the session's id.
+func rosterTitles(seed *Seed) map[string]string {
+	titles := map[string]string{}
+	for _, session := range seed.Sessions {
+		titles[session.ID] = session.Title
+	}
+	return titles
 }
 
 // reopen reopens the issue key as the reopen route does in its transaction, joined with the
