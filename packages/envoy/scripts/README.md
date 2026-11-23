@@ -1171,8 +1171,9 @@ delete the code that reads both):
   to the stream, which its grant (`notifications.>`) and the stream's subjects let it store. Until
   the switch every reader takes both forms. After it no session consumer filters the old form, so
   such a message is stored, acknowledged to the listener and never delivered: lost, with no error
-  to anyone. Its durable `listener-<machine>` on the stream names it to a reading (`UNKNOWN`)
-  until the durable lapses, 7 days after the listener last used it (`cmd/listener/durable.go`).
+  to anyone. Its durable `listener-<machine>` on the stream (`listener-<machine>~<random>` in the
+  fresh naming mode) names it to a reading (`UNKNOWN`) until the durable lapses, 7 days after the
+  listener last used it (`cmd/listener/durable.go`).
   (a3) holds the user it connects as to a listener pin, so a listener the pins run is behind only
   when that pin is, and then the gate shuts; one run outside the pins under that user is not seen.
 - **A session whose consumer is gone** (deregistered, swept, or unpulled past its inactive
@@ -1279,9 +1280,15 @@ What it reads, all of it read-only:
   nobody named, or one offline, asleep or restarting at the reading, is never left out of the count
   while its durable lasts (7 days unbound); the line says to name it with `--listener` if it runs
   outside the cluster, or its `NATS_URLS` with `--bus-alias` if it runs in the cluster and dials the
-  bus by another address. A listener container on another bus that serves as the machine of a
-  listener the reading read prints `UNKNOWN`, naming both: that machine's durable can be either's,
-  so the one read does not show what the other counted. So does one whose `ENVOY_MACHINE_ID` is no
+  bus by another address. In the fresh naming mode (`ENVOY_CONSUMER_NAMES=fresh`) the durable is
+  `listener-<machine>~<random>`, and the gate reads its machine from its metadata `envoy.logical`,
+  which names the durable `listener-<machine>`, never from the name past its `~`; a fresh name
+  whose `envoy.logical` is missing or names another durable than the one before its last `~` prints
+  `UNKNOWN` by its name, since no listener takes such a consumer. A Legion daemon's
+  `legion-go-<project>-dispatch` is read the same way under a fresh name. A listener container on
+  another bus that serves as the machine of a listener the reading read prints `UNKNOWN`, naming
+  both: that machine's durable can be either's, so the one read does not show what the other
+  counted. So does one whose `ENVOY_MACHINE_ID` is no
   literal value (set through `valueFrom` or `envFrom`, holding a `$(VAR)` reference Kubernetes
   expands, or not set), whose machine the gate cannot read; set it as a literal value. A literal
   machine is read trimmed of white space, as the listener reads it. A listener container that lists
