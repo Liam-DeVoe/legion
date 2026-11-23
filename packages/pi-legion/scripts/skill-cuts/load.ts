@@ -108,7 +108,7 @@
  * `anthropic-*` headers the host sent beside it, on the route of its API: an `anthropic/<id>`
  * model's body goes to the Messages route, and an `openai/<id>` model's (Oh My Pi only; its hints
  * still come from an Anthropic `--hint-model`) to the Responses route. A reply loads the skill when
- * one of its tool calls reads it (`firstMessageLoad`, over the reply's tool calls in either API:
+ * one of its tool calls reads it (`messageLoad`, over the reply's tool calls in either API:
  * `tool_use` blocks, or `function_call` items with their arguments parsed): for Oh My Pi, a `read`
  * of `skill://<name>`, `skill://<name>/SKILL.md` or a path ending `/<name>/SKILL.md`; for Claude
  * Code, a `Skill` call naming `<name>` or `<plugin>:<name>`, or a `Read` of a path ending
@@ -494,8 +494,7 @@ type ReplyRecord = z.infer<typeof ReplyRecord>;
 /** What a run came to (see the file's header): `loaded` and `not loaded` runs are judged; for a
  *  run `sent by` another skill or one whose replies read past the last round, the task runs
  *  again. */
-export const RunOutcome = z.enum(["loaded", "not loaded", "sent by", "reads past last round"]);
-export type RunOutcome = z.infer<typeof RunOutcome>;
+const RunOutcome = z.enum(["loaded", "not loaded", "sent by", "reads past last round"]);
 
 /** What a run does with a reply whose every tool call reads a skill file: on Oh My Pi it answers
  *  it (`answered`), at most MAX_SKILL_ROUNDS times; on Claude Code it ends at its first message
@@ -719,24 +718,22 @@ function summaryEvidence(
 }
 
 /** Each task's standing by the listing measure of its profile (score.ts's `listingStanding`) in
- *  `evidence`, the tasks file's summary's (`summaryEvidence`), and the tasks whose measure marks
- *  names their profile took from the recorded listing (`tookFromRecorded`). With no summary
- *  beside the tasks file, each task is not measurable. */
+ *  `evidence`, the tasks file's summary's (`summaryEvidence`), and how many tasks' measures mark
+ *  names their profile took from the recorded listing (`tookFromRecorded`; `loadTasks` takes no
+ *  id twice). With no summary beside the tasks file, each task is not measurable. */
 function taskListings(
   tasksFile: string,
   tasks: readonly Task[],
   evidence: ReadonlyMap<string, readonly EvidenceItem[] | undefined> | undefined
-): { readonly standings: Map<string, ListingStanding>; readonly taken: Set<string> } {
+): { readonly standings: Map<string, ListingStanding>; readonly fromRecorded: number } {
   if (evidence === undefined) {
     const why = `the tasks file has no build-tasks summary (${tasksFile}.summary.json) to give its listing measure`;
     const standing: ListingStanding = { state: "not measurable", why };
-    return { standings: new Map(tasks.map((task) => [task.id, standing])), taken: new Set() };
+    return { standings: new Map(tasks.map((task) => [task.id, standing])), fromRecorded: 0 };
   }
   return {
     standings: new Map(tasks.map((task) => [task.id, listingStanding(evidence.get(task.id))])),
-    taken: new Set(
-      tasks.flatMap((task) => (tookFromRecorded(evidence.get(task.id)) ? [task.id] : []))
-    ),
+    fromRecorded: tasks.filter((task) => tookFromRecorded(evidence.get(task.id))).length,
   };
 }
 
@@ -897,6 +894,20 @@ export function recordedLines(
   });
 }
 
+/** Whether `recordedLines` reads the session copy's description for `listing` and `tested`: only
+ *  where the listing holds a line of the tested skill's name and the arm lists the skill under
+ *  that name. Elsewhere its lines are the same whatever the description. */
+function readsSessionDescription(
+  listing: RecordedListing | undefined,
+  tested: { readonly name: string; readonly ownName: string }
+): boolean {
+  return (
+    listing !== undefined &&
+    tested.name === tested.ownName &&
+    listing.lines.some((line) => line.name === tested.name)
+  );
+}
+
 /**
  * Why a load test of the skill `own`, tested under `name`, cannot be made in the context of a
  * profile of `profiled` (see the file's header), or undefined when it can in each: on Claude Code,
@@ -1037,7 +1048,7 @@ function loadingCall(host: Host, call: ToolCall, skill: TestedSkill): string | u
 
 /** What an assistant message, a reply's `content` in either API, did with `skill` in `host` (see
  *  the file's header): a session's first one for build.ts's control, each reply of a run here. */
-export function firstMessageLoad(
+export function messageLoad(
   host: Host,
   content: readonly ContentBlock[],
   skill: TestedSkill
@@ -1168,7 +1179,7 @@ export function skillOutcome(
  *  (`withoutUnmeasured`, no verdict when none was). Where no task is unmeasured, or the first is
  *  no verdict yet, it is the first; where the two agree, the first, its reason giving how many
  *  tasks were not measured; where they differ, no verdict, its reason giving both. */
-export function listedOutcome(
+function listedOutcome(
   tasks: readonly {
     readonly id: string;
     readonly label: TaskLabel;
@@ -1343,6 +1354,16 @@ export function loadRunFile(out: string, taskId: string): string {
 /** The file of task `taskId`'s failed runs under `out` (FailedRun). */
 export function loadFailedRunFile(out: string, taskId: string): string {
   return path.join(out, "runs", `${encodeURIComponent(taskId)}.failed.jsonl`);
+}
+
+/** Each line of the JSON-lines file `file` that is not blank, with its line number (from 1) and
+ *  its value (`parseJson`: undefined for a line that is no JSON); none when the file is missing. */
+function* jsonLines(file: string): Generator<{ readonly at: number; readonly value: unknown }> {
+  if (!existsSync(file)) return;
+  for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
+    if (line.trim() === "") continue;
+    yield { at: index + 1, value: parseJson(line) };
+  }
 }
 
 /** What a Claude Code capture used and saw. */
@@ -1580,7 +1601,8 @@ function rolePromptFault(record: string, evidence: readonly EvidenceItem[]): str
   try {
     raw = JSON.parse(readFileSync(record, "utf8"));
   } catch {
-    // The read back fails it, saying why (capture.ts's `savedCapture`).
+    // Not this check's to refuse: the load's `readCapture`, which reads every task's record
+    // before any capture step, then stops the command on it with `JSON.parse`'s error.
     return undefined;
   }
   const made = SavedRolePrompt.safeParse(raw).data?.context.rolePrompt;
@@ -1819,7 +1841,9 @@ class LoadTest {
 
   /** Task `task`'s body through Oh My Pi in the context of `profile`, captured or read back. A
    *  capture made here lists each skill under the line the profile's recorded listing gives it
-   *  (`recordedLines`), else under a hint of the test's draw. */
+   *  (`recordedLines`), else under a hint of the test's draw. The session copy's description (a
+   *  read of its repository, `sessionDescription`) is read only where `recordedLines` uses it
+   *  (`readsSessionDescription`), so a read whose answer no line uses fails no capture. */
   async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
     const { models } = this.o;
@@ -1832,14 +1856,18 @@ class LoadTest {
     let capture = savedCapture(files, arm);
     if (capture === undefined && models !== undefined) {
       const { name, renamedFrom } = this.settings;
+      const listing = profile.profile.recordedListing;
+      const tested = {
+        name,
+        ownName: renamedFrom ?? name,
+        description: skillFrontmatter(this.skillDir).description,
+      };
       const lines = recordedLines(
-        profile.profile.recordedListing,
-        {
-          name,
-          ownName: renamedFrom ?? name,
-          description: skillFrontmatter(this.skillDir).description,
-        },
-        await this.sessionDescription(profile)
+        listing,
+        tested,
+        readsSessionDescription(listing, tested)
+          ? await this.sessionDescription(profile)
+          : undefined
       );
       capture = await captureBody(c, arm, {
         omp: this.o.omp,
@@ -2185,18 +2213,16 @@ class LoadTest {
    *  its next run, or a run made under a profile of other bytes than `profile`. */
   savedRuns(id: string, profile: TaskProfile): LoadRun[] {
     const file = loadRunFile(this.o.out, id);
-    if (!existsSync(file)) return [];
     const runs: LoadRun[] = [];
-    for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
-      if (line.trim() === "") continue;
-      const parsed = LoadRun.safeParse(parseJson(line));
+    for (const { at, value } of jsonLines(file)) {
+      const parsed = LoadRun.safeParse(value);
       if (!parsed.success || parsed.data.task !== id || parsed.data.run !== runs.length + 1) {
-        throw new Refused(`${file}:${index + 1} is not run ${runs.length + 1} of task ${id}`);
+        throw new Refused(`${file}:${at} is not run ${runs.length + 1} of task ${id}`);
       }
       const run = parsed.data;
       if (run.profileDigest !== profile.digest) {
         throw new Refused(
-          `${file}:${index + 1}: run ${run.run} of task ${id} ran under the profile ${run.profile} (SHA-256 ${run.profileDigest}), not ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
+          `${file}:${at}: run ${run.run} of task ${id} ran under the profile ${run.profile} (SHA-256 ${run.profileDigest}), not ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
         );
       }
       runs.push(run);
@@ -2208,13 +2234,11 @@ class LoadTest {
    *  that is not one of task `id`. */
   savedFailedRuns(id: string): FailedRun[] {
     const file = loadFailedRunFile(this.o.out, id);
-    if (!existsSync(file)) return [];
     const failed: FailedRun[] = [];
-    for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
-      if (line.trim() === "") continue;
-      const parsed = FailedRun.safeParse(parseJson(line));
+    for (const { at, value } of jsonLines(file)) {
+      const parsed = FailedRun.safeParse(value);
       if (!parsed.success || parsed.data.task !== id) {
-        throw new Refused(`${file}:${index + 1} is not a failed run of task ${id}`);
+        throw new Refused(`${file}:${at} is not a failed run of task ${id}`);
       }
       failed.push(parsed.data);
     }
@@ -2249,7 +2273,7 @@ class LoadTest {
       content: readonly ContentBlock[],
       round: readonly SkillRead[] | undefined
     ): boolean => {
-      const load = firstMessageLoad(host, content, tested);
+      const load = messageLoad(host, content, tested);
       seen.push({
         calls: toolCalls(content).map((call) => ({
           name: call.name ?? "",
@@ -2391,7 +2415,9 @@ class LoadTest {
       const made = runs.get(id);
       if (outcome === undefined || each === undefined || made === undefined) continue;
       if (outcome.status === "fulfilled") {
-        const done = outcome.value;
+        // RunDone's fields go where LoadRun has them (`loadRun` gives them in that order), its
+        // session id after the run's listing and profile.
+        const { userId, ...replied } = outcome.value;
         made.push({
           task: each.task.id,
           run: made.length + 1,
@@ -2399,17 +2425,11 @@ class LoadTest {
           source: each.task.source,
           host: this.o.host,
           name: each.profile.tested.name,
-          outcome: done.outcome,
-          loadedBy: done.loadedBy,
-          sentBy: done.sentBy,
-          skillReads: done.skillReads,
-          replies: done.replies,
-          stopReason: done.stopReason,
-          requestId: done.requestId,
+          ...replied,
           listed: each.captured.listed,
           profile: each.profile.file,
           profileDigest: each.profile.digest,
-          userId: done.userId,
+          userId,
           sendSeed: seed,
           sendPlace: place,
         });
@@ -2537,7 +2557,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   if (injected !== undefined) throw new Refused(injected);
   // Each task's standing by its listing measure, and the tasks the listing rule drops: never run.
   const evidence = summaryEvidence(o.tasksFile, tasks);
-  const { standings: listings, taken } = taskListings(o.tasksFile, tasks, evidence);
+  const { standings: listings, fromRecorded } = taskListings(o.tasksFile, tasks, evidence);
   // Each task's daemon image item (context.ts's DAEMON_IMAGE_ITEM), which its capture reads, so
   // a Legion task's role prompt is composed at its daemon image's commit, as a behaviour case's
   // is. No other item of the evidence goes to the capture.
@@ -2560,7 +2580,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     dropped: listingDrops.size,
     // The tasks whose profile took names from their recorded listing (build.ts's fromRecorded):
     // their measure cannot see a miss of those names.
-    fromRecorded: taken.size,
+    fromRecorded,
   };
   // Each task whose capture carries the Envoy plugin's block of the skill, by where the answer
   // that its session had Dispatch comes from (arms.ts's `dispatchOf`), counted beside the listing.
@@ -2856,8 +2876,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   // again for the runs that are not judged, in an order of their own, until each task has its
   // judged runs or has used its extra runs.
   for (const group of byFile.values()) {
-    // Each task's own capture step: its capture, and the read of its hint dollars after it. Its
-    // line's total is that, its group's runs and its writes, so no other task's capture is in it.
+    // Each task's own capture step: its capture, and the read of its capture's record after it
+    // (`readCapture`). Its line's total is that, its group's runs and its writes, so no other
+    // task's capture is in it.
     const ownMs = new Map<string, number>();
     const ready: ReadyTask[] = [];
     for (const { task, profile } of profiled) {

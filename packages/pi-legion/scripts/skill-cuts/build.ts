@@ -645,7 +645,7 @@ import {
   skillReadResults,
   stepText,
 } from "./judge";
-import { EvidenceItem, firstMessageLoad, type RecordedListing, Task } from "./load";
+import { EvidenceItem, messageLoad, type RecordedListing, Task } from "./load";
 import { PsqlTable, PullCheck } from "./psql-rows";
 import {
   AuditAnswer,
@@ -9536,7 +9536,7 @@ const READ_FIRST: ReadonlySet<string> = new Set([
  * sessions of `--sessions` (`{"store", "hash", "path"?}`, the sessions file attribute.ts writes
  * for the skill) are taken in judge.ts's `blindOrder` under `--seed`, one at a time: each is
  * pulled, and kept when its first assistant message loads the skill by load.ts's rule
- * (`firstMessageLoad`: an Oh My Pi `read` of `skill://<name>` or its SKILL.md; the stores hold
+ * (`messageLoad`: an Oh My Pi `read` of `skill://<name>` or its SKILL.md; the stores hold
  * Oh My Pi transcripts). Its first user message, its secrets taken out, is a need task, unchosen,
  * unless an earlier session's first request is the same text. The tasks reader, in its `control`
  * mode, says of each such request whether the skill governs its first step; one it does not is
@@ -9752,7 +9752,7 @@ async function buildControlTasks(
         ? [{ type: "tool_use", id: block.id, name: block.name, input: block.arguments }]
         : []
     );
-    const load = firstMessageLoad("omp", blocks, { name: skill.name });
+    const load = messageLoad("omp", blocks, { name: skill.name });
     if (!load.loaded) {
       return no(
         "not first",

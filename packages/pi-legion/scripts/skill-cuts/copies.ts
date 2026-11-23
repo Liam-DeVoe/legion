@@ -72,13 +72,16 @@
  *    read that fails names its repository with gh's error. Forks and archived repositories stay,
  *    marked (a fork with its parent).
  *    Then each repository an installer of the repositories read pins (`installerPins`: a
- *    `github:<owner>/<name>#<ref>` dependency of an Oh My Pi plugins package.json, a
- *    `ensure_vendor <url> <name> <ref>` line of an installer script) is read at that ref, as the
- *    machine that runs the installer holds it, whatever its owner (a public read; `repos/<r>` gives
- *    the marks and default branch of one no listing gave): its commit is
- *    `commits?sha=<ref>&until=<at>`, and repositories.tsv's `branch` names the ref, or the default
- *    branch when the installer names none. A listed repository that a pin names is read at the
- *    pin in its place; a second pin of one repository at another ref is listed as a failure.
+ *    `github:<owner>/<name>#<ref>` dependency of an Oh My Pi plugins package.json, an
+ *    `ensure_vendor <url> <name> <ref>` line or a `gh skill install <repo> <skill> --pin <ref>`
+ *    of an installer script, the marketplace repository an installer installs a plugin from, and
+ *    the source repository a marketplace read gives each plugin an installer installs from it) is
+ *    read at that ref, as the machine that runs the installer holds it, whatever its owner (a
+ *    public read; `repos/<r>` gives the marks and default branch of one no listing gave): its
+ *    commit is `commits?sha=<ref>&until=<at>`, and repositories.tsv's `branch` names the ref, or
+ *    the default branch when the installer names none. A listed repository that a pin names is
+ *    read at the pin in its place; a second pin of one repository at another ref is listed as a
+ *    failure.
  *    A clone the configuration's `clones` states (made by hand on a dev box, which no installer
  *    records) is pinned as an installer's clone of no ref is, once its repository's
  *    skills-sources.json names a pool in its directory; a clone whose directory holds no pool of
@@ -151,11 +154,17 @@
  *    the plugin the build script generates, in a directory named as the plugin, at
  *    `/opt/legion/<package directory>/<plugin>/skills/<name>/`; a skill an installer links into a
  *    host's user skills at `**\/.omp/agent/skills/<name>/` or `**\/.claude/skills/<name>/`; a
+ *    skill an installer's `gh skill install` puts in the agents' user skills at
+ *    `**\/.agents/skills/<name>/`; a skill a worker image installs as an Oh My Pi plugin under
+ *    `/opt` at `<that plugin's directory>/skills/<name>/`; a
  *    skill of a pool an Oh My Pi extension feeds to Oh My Pi at `**\/<pool's skills directory>/
  *    <name>/`, that directory a path in the extension's repository (`**\/vendor/<clone>/skills/
  *    <name>/` for a pool an `ensure_vendor` clone holds, and `**\/<dir>/<pool>/skills/<name>/`
  *    for one in a clone the configuration's `clones` states at `<dir>`, whose copies are the
- *    cloned repository's). Each row maps the prefix to its repository copy. A row whose
+ *    cloned repository's). Then, from the prepack script's versions during the count's window
+ *    (one GraphQL history read, `prepackVersions`), each path a version staged a skill at and the
+ *    script read stages it at no longer, with the rows of its package's unit
+ *    (`formerStagePrefixes`). Each row maps the prefix to its repository copy. A row whose
  *    repository the configuration's `targets` do not name is left out of the table and reported
  *    in `skill-copies.md`, so the operator can add that repository to `targets`.
  * 7. Same-job pairs and the follow-the-code sentence are not found here, and no model is called:
@@ -318,14 +327,18 @@ export const REPOSITORY_JOBS = 6;
 /** The most gh calls reading repositories (a commit, a tree or its subtrees, a blob or a batch of
  *  blobs) or searching code in flight at once, across a run and per repository, so one large
  *  repository's walk does not hold every slot. Each call is a gh process of its own, about 110 MB
- *  resident in the pod whatever it reads (measured 2026-11-20), so the caps are what the run costs
- *  the pod beside its own memory. The code searches run beside the tree reads (`SearchQueues`),
- *  so each takes a slot too, keyed by its owner (one search of an owner at a time): the reads and
- *  searches in flight stay at most READ_CALLS however they overlap (the read of a reset in a wait
- *  after a refusal, common.ts's `untilInstallationReset`, takes no slot, so one gh process more
- *  can run then). A search, whose key holds no slot while it waits, takes a freed slot as a read
- *  does: the slot goes to the waiting call whose key holds the fewest (`ReadSlots`). No call holds
- *  a slot while it waits to be sent again, after a rate limit or a transient failure. */
+ *  resident in the pod whatever it reads (measured 2026-11-20), and every gh process of the
+ *  runner waits for a place under one bound (common.ts's `ghLimiter`, GH_CONCURRENCY (4) unless
+ *  its environment variable is set), so that bound, not these caps, is what the gh processes cost
+ *  the pod beside the run's own memory: of the calls holding a slot, at most that many have a
+ *  process at once. The code searches run beside the tree reads (`SearchQueues`), so each takes a
+ *  slot too, keyed by its owner (one search of an owner at a time): the reads and searches in
+ *  flight stay at most READ_CALLS however they overlap (the read of a reset in a wait after a
+ *  refusal, common.ts's `untilInstallationReset`, takes no slot, and waits for a place under
+ *  `ghLimiter` as every gh call does). A search, whose key holds no slot while it waits, takes a
+ *  freed slot as a read does: the slot goes to the waiting call whose key holds the fewest
+ *  (`ReadSlots`). No call holds a slot while it waits to be sent again, after a rate limit or a
+ *  transient failure. */
 export const READ_CALLS = 8;
 export const READ_CALLS_PER_REPOSITORY = 4;
 /** The most subtrees one GraphQL tree read asks for. */
@@ -665,10 +678,24 @@ class Github {
     this.retries = new GhRetries(io, "copies");
   }
 
+  /** The reads of a reset in flight, by their arguments (`resetIo`). */
+  private readonly resetReads = new Map<string, Promise<GhResult>>();
+
   /** What a rate wait reads the reset of the installation that refused a call with (common.ts's
-   *  `untilInstallationReset`): this run's gh, outside any read slot, and its clock. */
+   *  `untilInstallationReset`): this run's gh, outside any read slot, and its clock. The calls
+   *  GitHub refuses at once for one installation's limit ask for the same reset, so a read of it
+   *  still in flight is shared, not sent again; each wait still says its own line and counts from
+   *  its own `now`. */
   readonly resetIo: ResetIo = {
-    gh: (args) => this.call(args),
+    gh: (args) => {
+      const key = args.join("\0");
+      let read = this.resetReads.get(key);
+      if (read === undefined) {
+        read = this.call(args).finally(() => this.resetReads.delete(key));
+        this.resetReads.set(key, read);
+      }
+      return read;
+    },
     say: (line) => this.retries.say(line),
     now: () => this.io.now(),
   };
@@ -2152,15 +2179,13 @@ function clonesRefused(
   commit: string,
   manifests: readonly Manifest[]
 ): string[] {
-  const pools = manifests
-    .flatMap((manifest) => (manifest.repository === repository ? manifest.facts : []))
-    .flatMap((fact) =>
-      fact.type === "skill-sources"
-        ? fact.sources.map((source) => ({
-            root: source.root,
-            skills: poolSkillsDir(fact.base, source),
-          }))
-        : []
+  const pools = factsOf(manifests, "skill-sources")
+    .filter(({ manifest }) => manifest.repository === repository)
+    .flatMap(({ fact }) =>
+      fact.sources.map((source) => ({
+        root: source.root,
+        skills: poolSkillsDir(fact.base, source),
+      }))
     );
   return [...clones.entries()].flatMap(([at, clone]) =>
     clone.repo.toLowerCase() !== repository.toLowerCase() ||
@@ -2458,8 +2483,7 @@ function parsePluginList(file: string, text: string): ParsedManifest {
     type: "installs-package",
     package: name,
     version,
-    repo: githubDependency(version)?.repo ?? "",
-    ref: githubDependency(version)?.ref ?? "",
+    ...(githubDependency(version) ?? { repo: "", ref: "" }),
   }));
   facts.push({
     type: "package",
@@ -2588,6 +2612,7 @@ function parseWorkerImage(text: string): ParsedManifest {
     ])
   );
   const facts: Fact[] = [];
+  const says: string[] = [];
   let release: { repo: string; ref: string } | undefined;
   for (const line of text.split("\n")) {
     const from = /release="\$\{(\w+)\}\/v\$\{(\w+)\}"/.exec(line);
@@ -2602,20 +2627,11 @@ function parseWorkerImage(text: string): ParsedManifest {
     if (skill === null || release === undefined) continue;
     const dir = `/opt/${skill[1] ?? ""}`;
     if (!text.includes(`${dir}/package.json`) || !/"omp"/.test(text)) continue;
-    facts.push({ type: "image-skill", ...release, skill: skill[2] ?? "", dir });
+    const name = skill[2] ?? "";
+    facts.push({ type: "image-skill", ...release, skill: name, dir });
+    says.push(`installs ${name} of ${release.repo} ${release.ref} as the Oh My Pi plugin ${dir}`);
   }
-  return {
-    facts,
-    ofKind: facts.length > 0,
-    says:
-      facts
-        .map((fact) =>
-          fact.type === "image-skill"
-            ? `installs ${fact.skill} of ${fact.repo} ${fact.ref} as the Oh My Pi plugin ${fact.dir}`
-            : ""
-        )
-        .join("; ") || "installs no skill",
-  };
+  return { facts, ofKind: facts.length > 0, says: says.join("; ") || "installs no skill" };
 }
 
 /** The prepack script: each `case` arm's package name and the `skills=( … )` list under it,
@@ -2715,6 +2731,10 @@ function shellPath(
   return shellPath(value + rest, vars, depth + 1);
 }
 
+/** A `<plugin>@<marketplace>` pair of an installer line: the plugin and the marketplace. */
+const PLUGIN_AT_MARKETPLACE =
+  /(?<![\w.@/$%{-])([A-Za-z0-9][\w.-]*)@([A-Za-z0-9][\w-]*)(?![\w.@-])/g;
+
 /** An installer script: plugin installs (`<plugin>@<marketplace>` on a line holding `plugin`),
  *  loops that link each skill of a directory into a host's user skills, the Oh My Pi config.yml
  *  it links, and the repositories it clones into `vendor/` (`ensure_vendor`). */
@@ -2732,27 +2752,25 @@ function parseInstaller(file: string, text: string): ParsedManifest {
   for (const raw of lines) {
     const line = raw.trim();
     if (line.startsWith("#") || /^(echo|printf)\b/.test(line) || !/plugin/i.test(line)) continue;
-    for (const match of line.matchAll(
-      /(?<![\w.@/$%{-])([A-Za-z0-9][\w.-]*)@([A-Za-z0-9][\w-]*)(?![\w.@-])/g
-    )) {
-      // The host the line installs into, by its words less the plugin@marketplace pairs and the
-      // repositories it names (a marketplace named claude-plugins-official names no host).
-      const words = line
-        .replace(/(?<![\w.@/$%{-])[A-Za-z0-9][\w.-]*@[A-Za-z0-9][\w-]*(?![\w.@-])/g, " ")
-        .replace(/\b[A-Za-z0-9][\w-]*\/[\w.-]+/g, " ");
-      const host: Host = /\bomp\b/.test(words)
-        ? "omp"
-        : /\bclaude\b/.test(words)
-          ? "claude-code"
-          : scriptHost;
+    // The host the line installs into, by its words less the plugin@marketplace pairs and the
+    // repositories it names (a marketplace named claude-plugins-official names no host).
+    const words = line
+      .replace(PLUGIN_AT_MARKETPLACE, " ")
+      .replace(/\b[A-Za-z0-9][\w-]*\/[\w.-]+/g, " ");
+    const host: Host = /\bomp\b/.test(words)
+      ? "omp"
+      : /\bclaude\b/.test(words)
+        ? "claude-code"
+        : scriptHost;
+    const repo = line
+      .split(/\s+/)
+      .map(unquote)
+      .find((word) => /^[A-Za-z0-9][\w-]*\/[\w.-]+$/.test(word));
+    for (const match of line.matchAll(PLUGIN_AT_MARKETPLACE)) {
       const plugin = match[1] ?? "";
       const marketplace = match[2] ?? "";
       facts.push({ type: "plugin-switch", host, plugin, marketplace, action: "installs" });
       says.push(`installs ${plugin}@${marketplace} (${host})`);
-      const repo = line
-        .split(/\s+/)
-        .map(unquote)
-        .find((word) => /^[A-Za-z0-9][\w-]*\/[\w.-]+$/.test(word));
       if (repo !== undefined) facts.push({ type: "marketplace-source", marketplace, repo });
     }
   }
@@ -3056,12 +3074,12 @@ export class CopyIndex {
   }
 
   /** The members a skill path list gives under a root: each path a skill directory, or a
-   *  directory of skill directories; with `self` false, only a directory of them. */
-  membersAt(repository: string, root: string, rels: readonly string[], self = true): Member[] {
+   *  directory of skill directories. */
+  membersAt(repository: string, root: string, rels: readonly string[]): Member[] {
     const members = new Map<string, Member>();
     for (const rel of rels) {
       const dir = joinPath(root, rel);
-      const copy = self ? this.at(repository, dir) : undefined;
+      const copy = this.at(repository, dir);
       const found =
         copy !== undefined
           ? [{ copy, rel: joinPath(rel) }]
@@ -3114,16 +3132,27 @@ export class CopyIndex {
         found.push({ copy, rel: joinPath(namespace, path.posix.basename(copy.path)) });
       }
     }
-    const members: Member[] = [];
-    const undescribed: SkillCopy[] = [];
-    for (const member of found) {
-      if (!inside(member.copy)) continue;
-      const unread = member.copy.fault.startsWith("SKILL.md read failed");
-      if (member.copy.description === "" && !unread) undescribed.push(member.copy);
-      else members.push(member);
-    }
-    return { members, undescribed };
+    return byDescription(found.filter((member) => inside(member.copy)));
   }
+}
+
+/** `found` split as Oh My Pi lists it with `requireDescription`: the members it lists, and the
+ *  copies it leaves out for having no description (a copy whose SKILL.md read failed is kept, its
+ *  fault saying why). */
+function byDescription(found: readonly Member[]): { members: Member[]; undescribed: SkillCopy[] } {
+  const members: Member[] = [];
+  const undescribed: SkillCopy[] = [];
+  for (const member of found) {
+    const unread = member.copy.fault.startsWith("SKILL.md read failed");
+    if (member.copy.description === "" && !unread) undescribed.push(member.copy);
+    else members.push(member);
+  }
+  return { members, undescribed };
+}
+
+/** A unit's note on the copies `byDescription` left out of it. */
+function undescribedNote(undescribed: readonly SkillCopy[]): string {
+  return `Oh My Pi lists no skill of it without a description: ${undescribed.map((copy) => copy.name).join(", ")}`;
 }
 
 /** A glob of skill names (`*` any run of characters) as a regular expression: a `find -name`
@@ -3268,16 +3297,11 @@ export function installerPins(
   manifests: readonly Manifest[],
   clones: readonly Clone[] = []
 ): InstallerPin[] {
-  const installed = new Set(
-    factsOf(manifests, "plugin-switch")
-      .filter(({ fact }) => fact.action === "installs")
-      .map(({ fact }) => `${fact.plugin}@${fact.marketplace}`)
-  );
-  const marketplaces = new Set(
-    factsOf(manifests, "plugin-switch")
-      .filter(({ fact }) => fact.action === "installs")
-      .map(({ fact }) => fact.marketplace)
-  );
+  const installs = factsOf(manifests, "plugin-switch")
+    .filter(({ fact }) => fact.action === "installs")
+    .map(({ fact }) => fact);
+  const installed = new Set(installs.map((fact) => `${fact.plugin}@${fact.marketplace}`));
+  const marketplaces = new Set(installs.map((fact) => fact.marketplace));
   const pins = manifests.flatMap((manifest) =>
     manifest.facts.flatMap((fact): InstallerPin[] => {
       if (
@@ -3440,11 +3464,8 @@ export function resolveInstallers(
         ].map((member) => [`${member.copy.path}\0${member.rel}`, member])
       ).values(),
     ];
-    const undescribed = scans.flatMap((scan) => scan.undescribed.map((copy) => copy.name));
-    const leftOut =
-      undescribed.length === 0
-        ? ""
-        : `Oh My Pi lists no skill of it without a description: ${undescribed.join(", ")}`;
+    const undescribed = scans.flatMap((scan) => scan.undescribed);
+    const leftOut = undescribed.length === 0 ? "" : undescribedNote(undescribed);
     // A package that declares no skill, or falls back to a skills/ the tree does not hold, ships
     // none, and is no unit; one whose skills all lack a description is a unit with no member, so
     // its note says why Oh My Pi lists none of them.
@@ -3589,8 +3610,8 @@ export function resolveInstallers(
   // repository's skills/<skill>, else its one copy of that name.
   for (const { manifest, fact } of factsOf(manifests, "gh-skill")) {
     const repository = index.spelling(fact.repo);
-    const named = index.copies.filter(
-      (copy) => copy.repository === repository && copy.name === fact.skill
+    const named = (index.byName.get(fact.skill) ?? []).filter(
+      (copy) => copy.repository === repository
     );
     const copy =
       index.at(repository, joinPath("skills", fact.skill)) ??
@@ -3723,23 +3744,22 @@ export function resolveInstallers(
       // read as Oh My Pi reads any entry there (`CopyIndex.scan`): the clone's root when it holds a
       // SKILL.md, else each entry of the root that holds one.
       const entries = dir === undefined ? [] : clones.filter((each) => dirOf(each.dir) === dir);
-      const scanned = { members: [...found.members], undescribed: [...found.undescribed] };
-      for (const each of entries) {
-        const repository = index.spelling(each.repo);
-        const entry = path.posix.basename(each.dir);
-        const root = index.at(repository, "");
-        const held =
-          root === undefined
+      const held = byDescription(
+        entries.flatMap((each) => {
+          const repository = index.spelling(each.repo);
+          const entry = path.posix.basename(each.dir);
+          const root = index.at(repository, "");
+          return root === undefined
             ? index
                 .childrenOf(repository, "")
                 .map(({ child, copy }) => ({ copy, rel: joinPath(entry, child) }))
             : [{ copy: root, rel: entry }];
-        for (const member of held) {
-          const unread = member.copy.fault.startsWith("SKILL.md read failed");
-          if (member.copy.description === "" && !unread) scanned.undescribed.push(member.copy);
-          else scanned.members.push(member);
-        }
-      }
+        })
+      );
+      const scanned = {
+        members: [...found.members, ...held.members],
+        undescribed: [...found.undescribed, ...held.undescribed],
+      };
       const prunes = sameRepository(factsOf(manifests, "prunes")).filter(
         (prune) => prune.fact.dir === dir
       );
@@ -3752,7 +3772,7 @@ export function resolveInstallers(
         );
       };
       const members = scanned.members.filter((member) => !pruned(member));
-      const removed = [...scanned.members.filter(pruned).map((member) => member.copy.name)];
+      const removed = scanned.members.filter(pruned).map((member) => member.copy.name);
       if (dir === undefined || members.length === 0) {
         notes.push({
           repository: manifest.repository,
@@ -3781,11 +3801,7 @@ export function resolveInstallers(
             : [
                 `${prunes.map((prune) => prune.manifest.path).join(", ")} removes ${removed.join(", ")} from it`,
               ]),
-          ...(scanned.undescribed.length === 0
-            ? []
-            : [
-                `Oh My Pi lists no skill of it without a description: ${scanned.undescribed.map((copy) => copy.name).join(", ")}`,
-              ]),
+          ...(scanned.undescribed.length === 0 ? [] : [undescribedNote(scanned.undescribed)]),
         ].join("; "),
       });
     }
@@ -3909,11 +3925,15 @@ export function resolveInstallers(
 
   const prefixes = new Map<string, PrefixRow>();
   for (const unit of units) {
-    const via = `${unit.id} (${unit.manifest.repository}:${unit.manifest.path})`;
+    const via = unitVia(unit);
     for (const member of unit.members) {
       for (const location of unit.locations) {
         const prefix = `${location}${member.rel}/`;
-        const key = `${prefix}\0${member.copy.repository}\0${member.copy.path}`;
+        const key = prefixRowKey({
+          prefix,
+          repository: member.copy.repository,
+          path: member.copy.path,
+        });
         const known = prefixes.get(key);
         prefixes.set(
           key,
@@ -3937,10 +3957,23 @@ export function resolveInstallers(
     rows,
     units,
     notes,
-    prefixes: [...prefixes.values()].sort(
-      (a, b) => a.prefix.localeCompare(b.prefix) || a.repository.localeCompare(b.repository)
-    ),
+    prefixes: [...prefixes.values()].sort(byPrefix),
   };
+}
+
+/** A prefix row's identity: its prefix, repository and path (two rows alike in these are one). */
+function prefixRowKey(row: Pick<PrefixRow, "prefix" | "repository" | "path">): string {
+  return `${row.prefix}\0${row.repository}\0${row.path}`;
+}
+
+/** The prefix table's order: by prefix, then by repository. */
+function byPrefix(a: PrefixRow, b: PrefixRow): number {
+  return a.prefix.localeCompare(b.prefix) || a.repository.localeCompare(b.repository);
+}
+
+/** The `via` of a unit's prefix rows: the unit and the manifest it comes from. */
+function unitVia(unit: Unit): string {
+  return `${unit.id} (${unit.manifest.repository}:${unit.manifest.path})`;
 }
 
 /** One version of a prepack script that held during the count's window (`prepackVersions`): the
@@ -4029,7 +4062,7 @@ export function formerStagePrefixes(
         );
         continue;
       }
-      const via = `${unit.id} (${unit.manifest.repository}:${unit.manifest.path})`;
+      const via = unitVia(unit);
       const rows = unit.locations.map((location) => ({
         prefix: `${location}${staged.rel}/`,
         repository: copy.repository,
@@ -4991,7 +5024,7 @@ function markdown(result: CopiesResult): string {
   say(
     "# Skill copies and loaders",
     "",
-    `Each repository is read at its default branch's last commit at or before ${result.at}, or, when an installer pins it (a \`github:\` dependency of an Oh My Pi plugins package.json, an \`ensure_vendor\` clone), at the ref the installer names, which its line below gives in place of the branch. ${result.scope}`,
+    `Each repository is read at its default branch's last commit at or before ${result.at}, or, when an installer pins it (a \`github:\` dependency of an Oh My Pi plugins package.json; an \`ensure_vendor\` clone or a \`gh skill install\` of an installer script; the marketplace an installer installs a plugin from, and the source repository of that plugin; a clone the configuration's \`clones\` states), at the ref the installer names (the default branch when it names none), which its line below gives in place of the branch. ${result.scope}`,
     "",
     `${result.repositories.length} repositories listed: ${readable.length} read, ${failed.length} not read. ` +
       `${result.copies.length} skill copies, ${new Set(result.copies.map((copy) => copy.name)).size} names. ` +
@@ -5338,10 +5371,11 @@ async function readPinned(
         let error = "";
         if (marks === undefined) {
           try {
-            const info =
-              cache.get("repository-info", pin.repository, RepositoryInfo) ??
-              (await github.api(`repos/${pin.repository}`, RepositoryInfo, pin.repository));
-            cache.put("repository-info", pin.repository, info);
+            let info = cache.get("repository-info", pin.repository, RepositoryInfo);
+            if (info === undefined) {
+              info = await github.api(`repos/${pin.repository}`, RepositoryInfo, pin.repository);
+              cache.put("repository-info", pin.repository, info);
+            }
             marks = {
               fork: info.fork,
               archived: info.archived,
@@ -5697,8 +5731,8 @@ async function readAll(
   github.checkMemory();
   io.err(`copies: reading ${read.length} manifest files`);
   failures.push(...manifestFailures);
-  // Every manifest read is resolved (a package.json without omp.skills still names the package an
-  // npm-sourced plugin comes from); only those `listedManifest` takes are listed.
+  // Every manifest read is resolved (a package.json without an `omp` or `pi` manifest still names
+  // the package an npm-sourced plugin comes from); only those `listedManifest` takes are listed.
   const manifests = read.filter(listedManifest);
   const notOfKind = new Map<string, number>();
   for (const manifest of read) {
@@ -5959,13 +5993,11 @@ async function readAll(
     scripts.push({ manifest, versions });
   }
   const former = formerStagePrefixes(scripts, resolved, index);
-  const known = new Set(
-    resolved.prefixes.map((row) => `${row.prefix}\0${row.repository}\0${row.path}`)
-  );
+  const known = new Set(resolved.prefixes.map(prefixRowKey));
   const table = [
     ...resolved.prefixes,
-    ...former.prefixes.filter((row) => !known.has(`${row.prefix}\0${row.repository}\0${row.path}`)),
-  ].sort((a, b) => a.prefix.localeCompare(b.prefix) || a.repository.localeCompare(b.repository));
+    ...former.prefixes.filter((row) => !known.has(prefixRowKey(row))),
+  ].sort(byPrefix);
   const targets = new Set(config.targets.map((target) => target.toLowerCase()));
   const prefixes = table.filter((row) => targets.has(row.repository.toLowerCase()));
   const mapped = new Set(prefixes.map((row) => row.repository.toLowerCase()));

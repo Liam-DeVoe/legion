@@ -1517,6 +1517,19 @@ export default function bootProbe(pi) {
   /** The lines a made-up session recorded for alpha and beta. */
   const ALPHA_LINE = "Use for the alpha checklist, as the session listed it.";
   const BETA_LINE = "Use for the beta greeting, as the session listed it.";
+  /** The capture options of the rows below: each capture under `outDir` of `dir`, against the
+   *  shared cache, with `extra` over them. */
+  const optionsWith = (outDir: string, extra: Partial<CaptureOptions> = {}): CaptureOptions => ({
+    omp: binary(),
+    outDir: path.join(dir, outDir),
+    scratchDir: path.join(dir, "scratch"),
+    cacheDir: path.join(dir, "cache"),
+    source: localSource(path.join(dir, "repos")),
+    models: path.join(dir, "models.yml"),
+    hints,
+    session: SESSION,
+    ...extra,
+  });
   /** The capture of case `id`'s arm `arm` with `extra` options, against the cache `cacheDir`
    *  (the shared one, which holds each text's hint of draw 1 once `captures` has run). */
   const recordedCapture = async (
@@ -1528,17 +1541,11 @@ export default function bootProbe(pi) {
     await captures();
     const c = f1Case(id);
     const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
-    const made = await captureBody(c, buildArm(c, arm, dirs, dir), {
-      omp: binary(),
-      outDir: path.join(dir, "out-recorded"),
-      scratchDir: path.join(dir, "scratch"),
-      cacheDir,
-      source: localSource(path.join(dir, "repos")),
-      models: path.join(dir, "models.yml"),
-      hints,
-      session: SESSION,
-      ...extra,
-    });
+    const made = await captureBody(
+      c,
+      buildArm(c, arm, dirs, dir),
+      optionsWith("out-recorded", { cacheDir, ...extra })
+    );
     return { capture: made, profile: profileHints(made) };
   };
   /** Oh My Pi's key of `skill`'s old text: the one it stored c1's drawn hint under. */
@@ -1751,14 +1758,7 @@ export default function bootProbe(pi) {
           { old: path.join(dir, "old"), new: path.join(dir, "new") },
           path.join(dir, "arms-levels")
         ),
-        {
-          omp: binary(),
-          outDir: path.join(dir, "out-levels"),
-          scratchDir: path.join(dir, "scratch"),
-          cacheDir: path.join(dir, "cache"),
-          source: localSource(path.join(dir, "repos")),
-          models: path.join(dir, "models.yml"),
-          hints,
+        optionsWith("out-levels", {
           session: sessionFacts(
             { ...SESSION_HEAD, head: { ...SESSION_HEAD.head, cwd, reminders: [] } },
             {
@@ -1768,7 +1768,7 @@ export default function bootProbe(pi) {
               devboxClaudeConfigDir: DEVBOX_CLAUDE,
             }
           ),
-        }
+        })
       );
       const { record } = made;
       const checkout = path.join(record.scratch, "work");
@@ -1879,16 +1879,7 @@ export default function bootProbe(pi) {
         const { body, record } = await captureBody(
           c,
           buildArm(c, name, dirs, path.join(dir, "arms-dispatch")),
-          {
-            omp: binary(),
-            outDir: path.join(dir, "out-dispatch"),
-            scratchDir: path.join(dir, "scratch"),
-            cacheDir: path.join(dir, "cache"),
-            source: localSource(path.join(dir, "repos")),
-            models: path.join(dir, "models.yml"),
-            hints,
-            session: SESSION,
-          }
+          optionsWith("out-dispatch")
         );
         // The plugin loads in every arm, none among them.
         expect({ arm: name, errors: record.extensionErrors }).toEqual({ arm: name, errors: [] });
@@ -1974,16 +1965,7 @@ export default function bootProbe(pi) {
         const { body, record } = await captureBody(
           c,
           buildArm(c, name, dirs, path.join(dir, "arms-autoload")),
-          {
-            omp: binary(),
-            outDir: path.join(dir, "out-autoload"),
-            scratchDir: path.join(dir, "scratch"),
-            cacheDir: path.join(dir, "cache"),
-            source: localSource(path.join(dir, "repos")),
-            models: path.join(dir, "models.yml"),
-            hints,
-            session: SESSION,
-          }
+          optionsWith("out-autoload")
         );
         const autoloadedTexts = texts(body.messages).filter((text) =>
           text.includes(`Skill: ${autoloadPath}`)
@@ -2346,8 +2328,8 @@ test("sessionHeads reads the heads it lacks in one query through the store comma
   ).rejects.toThrow("exited 3: permission denied for table");
 });
 
-// Catches: a store command that hangs holding the capture's read of the session heads for ever
-// (every other read has a limit; this one had none).
+// Catches: a store command that hangs holding the capture's read of the session heads for ever,
+// a read with no time limit of its own.
 test("a store command that prints nothing for the read's quiet limit is ended, and the read fails naming the command and the limit", async () => {
   const root = path.join(dir, "heads-quiet");
   mkdirSync(root, { recursive: true });

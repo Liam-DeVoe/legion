@@ -1165,15 +1165,16 @@ exec ${JSON.stringify(inner.gh)} "$@"
   expect(source.reads?.().calls).toBe(3);
 }, 120_000);
 
+/** `value`'s UTF-8 bytes. */
+const text = (value: string) => new TextEncoder().encode(value);
+
 /** A made-up skill's SKILL.md at `dir`, and one reference beside it. */
 const skillFiles = (dir: string): StandinFile[] => [
   {
     path: `${dir}/SKILL.md`,
-    bytes: new TextEncoder().encode(
-      `---\nname: ${path.basename(dir)}\ndescription: Made-up ${dir}.\n---\n`
-    ),
+    bytes: text(`---\nname: ${path.basename(dir)}\ndescription: Made-up ${dir}.\n---\n`),
   },
-  { path: `${dir}/notes.md`, bytes: new TextEncoder().encode(`Notes of ${dir}.\n`) },
+  { path: `${dir}/notes.md`, bytes: text(`Notes of ${dir}.\n`) },
 ];
 
 // Catches: a blob read ahead and held for the life of the source when its skill's files are never
@@ -1302,8 +1303,6 @@ interface DeepFile {
   readonly mode: "100644" | "100755" | "120000";
   readonly bytes: Uint8Array;
 }
-
-const text = (value: string) => new TextEncoder().encode(value);
 
 /** acme/deep at COMMIT: a skill directory with an executable, a link, a nested directory and bytes
  *  that are no UTF-8, beside a sibling skill and the rest of a large repository. */
@@ -1883,6 +1882,26 @@ test("a none arm of a skill the Envoy plugin reads as it loads installs a hidden
   expect(old.record.skills.map((skill) => skill.from)).not.toContainEqual("stand-in");
 }, 120_000);
 
+/** A made-up plugin of agents whose `alpha-reviewer` autoloads alpha and beta, its profile entry,
+ *  and that agent's definition as the record names it. */
+const PLUGIN_AGENTS = {
+  "packages/agents-pack/agents/reviewer.md":
+    "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha, beta]\n---\n\nReview.\n",
+  "packages/agents-pack/agents/listed.md":
+    "---\nname: listed\ndescription: Lists.\nautoloadSkills: [beta]\n---\n\nList.\n",
+};
+const AGENTS_PACK = [
+  { repo: "acme/legion", commit: COMMIT, path: "packages/agents-pack", name: "agents-pack" },
+];
+const PLUGIN_REVIEWER: AgentDefinition = {
+  name: "alpha-reviewer",
+  source: "plugin",
+  repo: "acme/legion",
+  commit: COMMIT,
+  path: "packages/agents-pack/agents/reviewer.md",
+  autoloadSkills: ["alpha", "beta"],
+};
+
 // Catches: a subagent case of a skill its agent autoloads, read as if only its listing line and
 // its reads carried the skill.
 test("a subagent's context names the agent definition of the profile's plugins it ran, with the skills its autoloadSkills names; another context names none", async () => {
@@ -1894,24 +1913,14 @@ test("a subagent's context names the agent definition of the profile's plugins i
       "---\nname: listed\ndescription: Lists.\nautoload-skills: beta, gamma\n---\n\nList.\n",
     "packages/agents-pack/agents/nameless.md": "---\nname: nameless\n---\n\nNo description.\n",
   };
-  const plugins = [
-    { repo: "acme/legion", commit: COMMIT, path: "packages/agents-pack", name: "agents-pack" },
-  ];
   const agentOf = async (context: string) => {
-    const c = aCase(context, { plugins, contextFiles: [] });
+    const c = aCase(context, { plugins: AGENTS_PACK, contextFiles: [] });
     const where = path.join(root, context.replace(/\W/g, "-"));
     const { options, arm } = setUp(where, c);
     writeTree(path.join(where, "repos", "acme", "legion", COMMIT), agents);
     return (await buildContext(c, arm, options)).record.agent;
   };
-  expect(await agentOf("subagent:alpha-reviewer")).toEqual({
-    name: "alpha-reviewer",
-    source: "plugin",
-    repo: "acme/legion",
-    commit: COMMIT,
-    path: "packages/agents-pack/agents/reviewer.md",
-    autoloadSkills: ["alpha", "beta"],
-  });
+  expect(await agentOf("subagent:alpha-reviewer")).toEqual(PLUGIN_REVIEWER);
   expect((await agentOf("subagent:listed"))?.autoloadSkills).toEqual(["beta", "gamma"]);
   // An agent with no description is none Oh My Pi loads; one no plugin defines is null.
   expect(await agentOf("subagent:nameless")).toBeNull();
@@ -1947,24 +1956,18 @@ const DOTFILES: Record<string, string> = {
   "skills/gamma/SKILL.md": "---\nname: gamma\ndescription: Use for the gamma notes.\n---\n",
 };
 
-/** A made-up plugin of agents whose `alpha-reviewer` autoloads alpha and beta, its profile entry,
- *  and that agent's definition as the record names it. */
-const PLUGIN_AGENTS = {
-  "packages/agents-pack/agents/reviewer.md":
-    "---\nname: alpha-reviewer\ndescription: Reviews with alpha.\nautoloadSkills: [alpha, beta]\n---\n\nReview.\n",
-  "packages/agents-pack/agents/listed.md":
-    "---\nname: listed\ndescription: Lists.\nautoloadSkills: [beta]\n---\n\nList.\n",
-};
-const AGENTS_PACK = [
-  { repo: "acme/legion", commit: COMMIT, path: "packages/agents-pack", name: "agents-pack" },
-];
-const PLUGIN_REVIEWER: AgentDefinition = {
+/** The skill gamma of DOTFILES, as a profile names it. */
+const GAMMA = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+
+/** The user agent of DOTFILES, as the record names it. */
+const DOTFILES_REVIEWER: AgentDefinition = {
   name: "alpha-reviewer",
-  source: "plugin",
-  repo: "acme/legion",
+  source: "user",
+  repo: "acme/dotfiles",
   commit: COMMIT,
-  path: "packages/agents-pack/agents/reviewer.md",
-  autoloadSkills: ["alpha", "beta"],
+  path: "omp/agents/reviewer.md",
+  linkedBy: "installers/omp.sh:9",
+  autoloadSkills: [],
 };
 
 /** The evidence item build.ts writes for the session of the subagent of `context`, of the store
@@ -1983,19 +1986,18 @@ function subagentItem(context: string, store: string): { item: string; source: s
 // the subagent ran.
 test("a dev box's subagent runs the user agent its installers link as ~/.omp/agent/agents before a plugin's of the same name; a Legion subagent, or a profile of two such repositories, reads the plugins'", async () => {
   const root = path.join(dir, "user-agents");
-  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
   const delta = { repo: "acme/box", commit: COMMIT, path: "skills/delta", name: "delta" };
   const built = async (
     name: string,
     context: string,
     store: string | undefined,
-    extra: (typeof gamma)[] = []
+    extra: (typeof GAMMA)[] = []
   ) => {
     const base = aCase(context, { plugins: AGENTS_PACK, contextFiles: [] });
     const c: Case = {
       ...base,
       id: `case-${name}`,
-      profile: { ...base.profile, skills: [...base.profile.skills, gamma, ...extra] },
+      profile: { ...base.profile, skills: [...base.profile.skills, GAMMA, ...extra] },
       ...(store === undefined ? {} : { evidence: [subagentItem(context, store)] }),
     };
     const where = path.join(root, name);
@@ -2009,30 +2011,21 @@ test("a dev box's subagent runs the user agent its installers link as ~/.omp/age
     });
     return { c, arm, options, context: await buildContext(c, arm, options) };
   };
-  const userAgent: AgentDefinition = {
-    name: "alpha-reviewer",
-    source: "user",
-    repo: "acme/dotfiles",
-    commit: COMMIT,
-    path: "omp/agents/reviewer.md",
-    linkedBy: "installers/omp.sh:9",
-    autoloadSkills: [],
-  };
   const devbox = await built("devbox", "subagent:alpha-reviewer", "devbox");
-  expect(devbox.context.record.agent).toEqual(userAgent);
-  expect(await subagentDefinition(devbox.c, devbox.options)).toEqual(userAgent);
+  expect(devbox.context.record.agent).toEqual(DOTFILES_REVIEWER);
+  expect(await subagentDefinition(devbox.c, devbox.options)).toEqual(DOTFILES_REVIEWER);
   expect(devbox.context.record.leftOut).toEqual([]);
   // Each repository's installers/ and the linked omp/agents, each read once and kept: a build
   // again reads all four from the cache.
   const again = await buildContext(devbox.c, devbox.arm, devbox.options);
-  expect(again.record.agent).toEqual(userAgent);
+  expect(again.record.agent).toEqual(DOTFILES_REVIEWER);
   expect(
     again.record.builds.filter((build) => build.kind === "dir").map((build) => build.hit)
   ).toEqual([true, true, true, true]);
   // A case with no evidence of its store reads them too.
   expect(
     (await built("no-evidence", "subagent:alpha-reviewer", undefined)).context.record.agent
-  ).toEqual(userAgent);
+  ).toEqual(DOTFILES_REVIEWER);
   // An agent only the plugin defines is the plugin's.
   expect((await built("listed", "subagent:listed", "devbox")).context.record.agent).toEqual({
     name: "listed",
@@ -2078,8 +2071,7 @@ test("a dev box's subagent reads its user agents, and the installer line that li
       "---\nname: alpha-reviewer\ndescription: Reviews, as the box does now.\n---\n",
     "skills/epsilon/SKILL.md": "---\nname: epsilon\ndescription: Use for the epsilon pool.\n---\n",
   };
-  // gamma is a unit of the root's build, epsilon a skill of a pool at the subagent's start.
-  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
+  // GAMMA is a unit of the root's build, epsilon a skill of a pool at the subagent's start.
   const epsilon = { repo: "acme/dotfiles", commit: START, path: "skills/epsilon", name: "epsilon" };
   const readTimes = {
     item: "read times of acme/dotfiles",
@@ -2090,7 +2082,7 @@ test("a dev box's subagent reads its user agents, and the installer line that li
     const c: Case = {
       ...base,
       id: `case-${name}`,
-      profile: { ...base.profile, skills: [...base.profile.skills, gamma, epsilon] },
+      profile: { ...base.profile, skills: [...base.profile.skills, GAMMA, epsilon] },
       evidence,
     };
     const where = path.join(root, name);
@@ -2133,19 +2125,34 @@ const PROJECT_AGENT_FILES = {
   "tools/.omp/agents/README.txt": "The tools' agents go here.\n",
 };
 
+/** The project agent `alpha-reviewer` of acme/project at `file`, as the record names it,
+ *  autoloading `autoloadSkills`, reached through the links `linkedBy` names when it is given. */
+const projectAgent = (
+  file: string,
+  autoloadSkills: string[],
+  linkedBy?: string
+): AgentDefinition => ({
+  name: "alpha-reviewer",
+  source: "project",
+  repo: "acme/project",
+  commit: COMMIT,
+  path: file,
+  ...(linkedBy === undefined ? {} : { linkedBy }),
+  autoloadSkills,
+});
+
 // Catches: a subagent read as running the dev box's user agent or a plugin's agent of its name,
 // though the session repository's `.omp/agents` nearest its working directory defines one, which
 // Oh My Pi reads before both.
 test("a subagent runs the project agent of its name from the nearest .omp/agents of its session repository, from the working directory up, before the user's and a plugin's; a nearer .omp/agents with no agent hides a farther one; no session repository reads none", async () => {
   const root = path.join(dir, "project-agents");
-  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
   const project = { repo: "acme/project", commit: COMMIT };
   const built = async (name: string, profile: Partial<Case["profile"]>, store = "devbox") => {
     const base = aCase("subagent:alpha-reviewer", { plugins: AGENTS_PACK, contextFiles: [] });
     const c: Case = {
       ...base,
       id: `case-${name}`,
-      profile: { ...base.profile, skills: [...base.profile.skills, gamma], ...profile },
+      profile: { ...base.profile, skills: [...base.profile.skills, GAMMA], ...profile },
       evidence: [subagentItem("subagent:alpha-reviewer", store)],
     };
     const where = path.join(root, name);
@@ -2155,41 +2162,28 @@ test("a subagent runs the project agent of its name from the nearest .omp/agents
     writeTree(path.join(where, "repos", "acme", "project", COMMIT), PROJECT_AGENT_FILES);
     return { c, options, context: await buildContext(c, arm, options) };
   };
-  const projectAgent = (dir: string, autoloadSkills: string[]): AgentDefinition => ({
-    name: "alpha-reviewer",
-    source: "project",
-    repo: "acme/project",
-    commit: COMMIT,
-    path: `${dir}.omp/agents/reviewer.md`,
-    autoloadSkills,
-  });
-  const userAgent: AgentDefinition = {
-    name: "alpha-reviewer",
-    source: "user",
-    repo: "acme/dotfiles",
-    commit: COMMIT,
-    path: "omp/agents/reviewer.md",
-    linkedBy: "installers/omp.sh:9",
-    autoloadSkills: [],
-  };
   // From agents/vm, its own .omp/agents, not the root's.
   const vm = await built("vm", { sessionRepository: project, workingDirectory: "agents/vm" });
-  expect(vm.context.record.agent).toEqual(projectAgent("agents/vm/", ["beta"]));
-  expect(await subagentDefinition(vm.c, vm.options)).toEqual(projectAgent("agents/vm/", ["beta"]));
+  expect(vm.context.record.agent).toEqual(
+    projectAgent("agents/vm/.omp/agents/reviewer.md", ["beta"])
+  );
+  expect(await subagentDefinition(vm.c, vm.options)).toEqual(
+    projectAgent("agents/vm/.omp/agents/reviewer.md", ["beta"])
+  );
   // From a directory with none above it but the root's, the root's.
   expect(
     (await built("docs", { sessionRepository: project, workingDirectory: "docs/guide" })).context
       .record.agent
-  ).toEqual(projectAgent("", ["alpha"]));
+  ).toEqual(projectAgent(".omp/agents/reviewer.md", ["alpha"]));
   expect((await built("root", { sessionRepository: project })).context.record.agent).toEqual(
-    projectAgent("", ["alpha"])
+    projectAgent(".omp/agents/reviewer.md", ["alpha"])
   );
   // tools/.omp/agents is the nearest, and Oh My Pi reads it alone: it defines no agent, so the
   // root's is not read and the user agent is the one.
   expect(
     (await built("tools", { sessionRepository: project, workingDirectory: "tools" })).context.record
       .agent
-  ).toEqual(userAgent);
+  ).toEqual(DOTFILES_REVIEWER);
   // A Legion pod's checkout has its project agents too.
   expect(
     (
@@ -2199,26 +2193,15 @@ test("a subagent runs the project agent of its name from the nearest .omp/agents
         "legion:acme"
       )
     ).context.record.agent
-  ).toEqual(projectAgent("agents/vm/", ["beta"]));
+  ).toEqual(projectAgent("agents/vm/.omp/agents/reviewer.md", ["beta"]));
   // A profile that names no session repository reads no project agents.
   expect((await built("none", { workingDirectory: "agents/vm" })).context.record.agent).toEqual(
-    userAgent
+    DOTFILES_REVIEWER
   );
 }, 120_000);
 
-/** The user agent of DOTFILES, as the record names it. */
-const DOTFILES_REVIEWER: AgentDefinition = {
-  name: "alpha-reviewer",
-  source: "user",
-  repo: "acme/dotfiles",
-  commit: COMMIT,
-  path: "omp/agents/reviewer.md",
-  linkedBy: "installers/omp.sh:9",
-  autoloadSkills: [],
-};
-
 /** A made-up subagent case of alpha-reviewer for the project agents' rows: its profile names
- *  AGENTS_PACK, gamma of acme/dotfiles (whose installers link the user agents) and `profile`,
+ *  AGENTS_PACK, GAMMA (whose repository's installers link the user agents) and `profile`,
  *  and its evidence is the subagent's of a dev box, then `evidence`. */
 function projectCase(
   name: string,
@@ -2226,11 +2209,10 @@ function projectCase(
   evidence: NonNullable<Case["evidence"]> = []
 ): Case {
   const base = aCase("subagent:alpha-reviewer", { plugins: AGENTS_PACK, contextFiles: [] });
-  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
   return {
     ...base,
     id: `case-${name}`,
-    profile: { ...base.profile, skills: [...base.profile.skills, gamma], ...profile },
+    profile: { ...base.profile, skills: [...base.profile.skills, GAMMA], ...profile },
     evidence: [subagentItem("subagent:alpha-reviewer", "devbox"), ...evidence],
   };
 }
@@ -2287,19 +2269,6 @@ test("a .omp/agents or .omp the session repository holds as a link is followed t
       DOTFILES,
       project
     );
-  const projectAgent = (
-    file: string,
-    autoloadSkills: string[],
-    linkedBy?: string
-  ): AgentDefinition => ({
-    name: "alpha-reviewer",
-    source: "project",
-    repo: "acme/project",
-    commit: COMMIT,
-    path: file,
-    ...(linkedBy === undefined ? {} : { linkedBy }),
-    autoloadSkills,
-  });
   expect(await at("agents/vm")).toEqual({
     agent: projectAgent(
       "config/agents/reviewer.md",
@@ -2458,7 +2427,6 @@ test("a load test's own entry of the tested skill names no repository: its conte
     root: path.join(root, name, "scratch"),
   });
   const beta = { repo: "acme/skills", commit: COMMIT, path: "skills/beta", name: "beta" };
-  const gamma = { repo: "acme/dotfiles", commit: COMMIT, path: "skills/gamma", name: "gamma" };
   // As load.ts's caseOf builds a task's case and arm: the profile's skills and the tested
   // skill's own entry, under LOCAL_SKILL_REPO, at the arm's directory.
   const skillDir = path.join(root, "tested");
@@ -2468,7 +2436,7 @@ test("a load test's own entry of the tested skill names no repository: its conte
   const task: Case = {
     ...base,
     id: "t6",
-    profile: { ...base.profile, skills: [beta, gamma, own] },
+    profile: { ...base.profile, skills: [beta, GAMMA, own] },
     evidence: [subagentItem("subagent:alpha-reviewer", "devbox")],
   };
   const arm: Arm = {

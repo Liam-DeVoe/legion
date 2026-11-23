@@ -54,6 +54,7 @@ import {
   STAGE_RUNS,
   scoreSkill,
 } from "./score";
+import { truncatedSkillsTree, writeGhStandIn } from "./testdata/fixtures";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
@@ -1314,40 +1315,12 @@ describe("behaviour", () => {
     const s = scenario("unreadable", LOSS_SKILL(), [{ id: "c04" }]);
     answer = behaviourStandIn;
     const commit = s.cases[0]?.profile.skills[1]?.commit ?? "";
-    const [skills, beta] = ["1".repeat(40), "2".repeat(40)];
     // acme/skills at the case's commit, as GitHub lists a repository of too many entries: its
     // recursive tree cut short, then skills/beta's, and skills/beta's one level even read alone.
-    const answers: Record<string, object> = {
-      [`repos/acme/skills/git/trees/${commit}?recursive=1`]: { tree: [], truncated: true },
-      [`repos/acme/skills/git/trees/${commit}`]: {
-        tree: [{ path: "skills", mode: "040000", type: "tree", sha: skills }],
-        truncated: false,
-      },
-      [`repos/acme/skills/git/trees/${skills}`]: {
-        tree: [{ path: "beta", mode: "040000", type: "tree", sha: beta }],
-        truncated: false,
-      },
-      [`repos/acme/skills/git/trees/${beta}?recursive=1`]: { tree: [], truncated: true },
-      [`repos/acme/skills/git/trees/${beta}`]: { tree: [], truncated: true },
-    };
     const bin = path.join(s.dir, "bin");
     const log = path.join(s.dir, "gh-calls.jsonl");
     mkdirSync(bin, { recursive: true });
-    writeFileSync(
-      path.join(bin, "gh"),
-      `#!${process.execPath}
-import { appendFileSync } from "node:fs";
-const answers = ${JSON.stringify(answers)};
-const route = process.argv.at(-1) ?? "";
-appendFileSync(${JSON.stringify(log)}, route + "\\n");
-if (answers[route] === undefined) {
-  process.stderr.write("gh: Not Found (HTTP 404)\\n");
-  process.exit(1);
-}
-process.stdout.write(JSON.stringify(answers[route]));
-`,
-      { mode: 0o755 }
-    );
+    writeGhStandIn(path.join(bin, "gh"), log, truncatedSkillsTree(commit));
     // An Oh My Pi that answers --version: the context is built before it runs any capture.
     const omp = path.join(bin, "omp");
     writeFileSync(omp, "#!/bin/sh\necho 'omp 0.0.0 (stand-in)'\n", { mode: 0o755 });

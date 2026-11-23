@@ -121,8 +121,9 @@
  * definition (context.ts's `agent`) autoloads the skill, and whose messages hold no autoloaded
  * block of it though no compaction summary opens them, holds the block in a form the runner
  * cannot rebuild: its capture throws InjectionRefused of kind `autoload-no-block`, naming the
- * case, before Oh My Pi runs. A saved capture of an arm with such a block whose record lists none
- * was made before arms gave it their own text, and is refused (`savedCapture`).
+ * case, before Oh My Pi runs. A saved capture of an arm with such a block whose record has no
+ * `injections` field was made before arms gave it their own text, and is refused
+ * (`savedCapture`).
  *
  * **The digests.** The record holds the session's `system-prompt-digest` (`sessionDigest`, from
  * the case) and the capture's own, `promptDigest`, which is Oh My Pi's algorithm
@@ -366,7 +367,7 @@ export interface RecordedLine {
 /** Where the line a capture lists a skill under came from, as its record's `hints` names it: the
  *  line its session recorded (RecordedLine's `from` in the brackets), or a hint the hint model
  *  wrote in draw `<n>`. */
-export type HintSource = `recorded (${string})` | `drawn (draw ${number})`;
+type HintSource = `recorded (${string})` | `drawn (draw ${number})`;
 
 /** The `anthropic-*` headers of a recorded request: the API version, and the betas the fields of
  *  Oh My Pi's body need (adaptive thinking's `block_binding`, `context_management` and
@@ -667,6 +668,32 @@ function listedText(entry: ListedHint | undefined): string | undefined {
   return entry?.recorded?.text ?? entry?.cached?.hint;
 }
 
+/** What a capture lists `entry`'s skill under, as a refused body's fault names it. */
+function listedUnder(entry: ListedHint): string {
+  if (entry.recorded !== undefined) return "the line its session recorded";
+  if (entry.cached?.kept === false) {
+    return "the cut-down description Oh My Pi lists in place of a hint";
+  }
+  return "its hint";
+}
+
+/** Writes each `[key, description]` of `rows`, in order, into the `skill_descriptions` table of
+ *  the Oh My Pi database file `database` (made, and the table, when missing), over any row of the
+ *  same key. */
+function putDescriptions(database: string, rows: readonly (readonly [string, string])[]): void {
+  const db = new Database(database, { create: true });
+  try {
+    db.run(
+      "CREATE TABLE IF NOT EXISTS skill_descriptions (key TEXT PRIMARY KEY, description TEXT NOT NULL)"
+    );
+    const put = db.prepare("INSERT OR REPLACE INTO skill_descriptions VALUES (?, ?)");
+    for (const [key, description] of rows) put.run(key, description);
+    put.finalize();
+  } finally {
+    db.close();
+  }
+}
+
 /** The files of the capture of `caseId`'s arm `arm` under `outDir`. */
 export function capturePaths(
   outDir: string,
@@ -680,8 +707,8 @@ export function capturePaths(
 /** The capture saved at `files` (`capturePaths`), read back, or undefined when either file is
  *  missing. Throws for a capture whose record holds no harness-string record: it was made before
  *  that rule, so its body holds the capture's own paths and date; and, given the `arm` it stands
- *  for, for a capture whose record lists no injected block (`injections`) while the arm has one:
- *  it was made before arms gave such a block their own text. */
+ *  for, for a capture whose record has no `injections` field while the arm has an injected
+ *  block: it was made before arms gave such a block their own text. */
 export function savedCapture(
   files: { readonly body: string; readonly record: string },
   arm?: Pick<Arm, "injections">
@@ -917,7 +944,8 @@ export function sessionHeadFile(dir: string, store: string, pathHash: string): s
  * read back too when it is this store's head; another store's is not this one's, so this store
  * reads its own. A hash the store holds no file of gets a head with `held: false`. Throws when the
  * command prints nothing for `quietMs` (it is then ended, and the error names it and the limit),
- * when it fails, or when a row or a file saved under this store's name is no head.
+ * when it fails, when a row or a file saved under this store's name is no head, and when a saved
+ * file of either name is not JSON (`JSON.parse`'s error, naming no file).
  */
 export async function sessionHeads(
   command: string,
@@ -1576,34 +1604,19 @@ export async function captureBody(
     return { skill, key, file, recorded, ompKey: undefined, cached, written: false };
   });
   const database = path.join(agentDir, "skill-descriptions.db");
-  const seeded = new Set<string>();
-  {
-    const db = new Database(database, { create: true });
-    try {
-      db.run(
-        "CREATE TABLE IF NOT EXISTS skill_descriptions (key TEXT PRIMARY KEY, description TEXT NOT NULL)"
-      );
-      const put = db.prepare("INSERT OR REPLACE INTO skill_descriptions VALUES (?, ?)");
-      for (const { recorded, ompKey, cached } of hints) {
-        // A recorded line under Oh My Pi's key of its skill text, where the runner knows that key:
-        // Oh My Pi lists it and asks no model for it.
-        if (recorded !== undefined && ompKey !== undefined) {
-          put.run(ompKey, recorded.text);
-          seeded.add(ompKey);
-        }
-        if (cached === undefined) continue;
-        // Oh My Pi's record of a reply it kept no hint of names the model that wrote it. This run
-        // records it under its own hint model, so Oh My Pi asks that model for no hint either.
-        const unkept = cached.kept === false ? UNKEPT_ROW.exec(cached.ompKey)?.[0] : undefined;
-        const key = unkept === undefined ? cached.ompKey : `${unkept}${hintModel}`;
-        put.run(key, cached.hint);
-        seeded.add(key);
-      }
-      put.finalize();
-    } finally {
-      db.close();
-    }
+  const seeds: [string, string][] = [];
+  for (const { recorded, ompKey, cached } of hints) {
+    // A recorded line under Oh My Pi's key of its skill text, where the runner knows that key: Oh
+    // My Pi lists it and asks no model for it.
+    if (recorded !== undefined && ompKey !== undefined) seeds.push([ompKey, recorded.text]);
+    if (cached === undefined) continue;
+    // Oh My Pi's record of a reply it kept no hint of names the model that wrote it. This run
+    // records it under its own hint model, so Oh My Pi asks that model for no hint either.
+    const unkept = cached.kept === false ? UNKEPT_ROW.exec(cached.ompKey)?.[0] : undefined;
+    seeds.push([unkept === undefined ? cached.ompKey : `${unkept}${hintModel}`, cached.hint]);
   }
+  putDescriptions(database, seeds);
+  const seeded = new Set(seeds.map(([key]) => key));
 
   // The stand-in Envoy listener the capture run gets, as the variables that name it. The Envoy
   // plugin defines its tools only when it has a listener to reach, and the real session had one.
@@ -1909,6 +1922,8 @@ export async function captureBody(
         db.close();
       }
       const taken = new Set(seeded);
+      // Each recorded line whose key the hint run gave, under that key.
+      const learned: [string, string][] = [];
       for (const entry of hints) {
         if (!wanted.has(entry.skill.name)) continue;
         const reply = written.get(entry.skill.name);
@@ -1953,6 +1968,7 @@ export async function captureBody(
           };
           writeWhole(entry.file, json(known));
           entry.ompKey = ompKey;
+          learned.push([ompKey, entry.recorded.text]);
           continue;
         }
         const cached: CachedHint = {
@@ -1972,21 +1988,7 @@ export async function captureBody(
       }
       // Each recorded line whose key the hint run gave goes under that key, in place of the row Oh
       // My Pi stored, so Oh My Pi lists exactly that line.
-      const learned = hints.filter(
-        (entry) => entry.recorded !== undefined && wanted.has(entry.skill.name)
-      );
-      if (learned.length > 0) {
-        const lines = new Database(database);
-        try {
-          const put = lines.prepare("INSERT OR REPLACE INTO skill_descriptions VALUES (?, ?)");
-          for (const { recorded, ompKey } of learned) {
-            if (recorded !== undefined && ompKey !== undefined) put.run(ompKey, recorded.text);
-          }
-          put.finalize();
-        } finally {
-          lines.close();
-        }
-      }
+      if (learned.length > 0) putDescriptions(database, learned);
     }
     // A recorded prompt: its blocks with the case skill's listing line as this arm lists it.
     const recorded =
@@ -2050,19 +2052,13 @@ export async function captureBody(
       }
     } else {
       for (const entry of hints) {
-        const { skill, recorded: line, cached } = entry;
+        const { skill } = entry;
         const want = listedText(entry);
         const shown = listing.get(skill.name);
         if (shown === undefined) faults.push(`it does not list ${skill.name}`);
         else if (shown !== want) {
-          const under =
-            line !== undefined
-              ? "the line its session recorded"
-              : cached?.kept === false
-                ? "the cut-down description Oh My Pi lists in place of a hint"
-                : "its hint";
           faults.push(
-            `it lists ${skill.name} as ${JSON.stringify(shown)}, not under ${under} ${JSON.stringify(want)}`
+            `it lists ${skill.name} as ${JSON.stringify(shown)}, not under ${listedUnder(entry)} ${JSON.stringify(want)}`
           );
         }
       }

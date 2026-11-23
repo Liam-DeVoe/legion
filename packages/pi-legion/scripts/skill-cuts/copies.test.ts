@@ -68,6 +68,7 @@ import {
   walkLevelKey,
   writeOutputs,
 } from "./copies";
+import { madeManifest } from "./testdata/fixtures";
 
 // copies.ts on F6 (testdata/CAPTURE.md, "F6: GitHub's answers for the lister, and made-up
 // manifests"): GitHub's own answers for the public cybermonklabs/legion, captured with read-only gh
@@ -1067,15 +1068,6 @@ const KIND_EXAMPLES: Record<
 
 describe("skill pools an Oh My Pi extension reads from skills-sources.json", () => {
   const repository = "acme/dotfiles";
-  const manifestOf = (file: string, kind: ManifestKind, text: string): Manifest => ({
-    repository,
-    path: file,
-    kind,
-    source: "tree",
-    ...parseManifest(kind, file, text),
-    error: "",
-    rows: 0,
-  });
   const copyAt = (dir: string): SkillCopy => ({
     repository,
     path: dir,
@@ -1094,9 +1086,24 @@ describe("skill pools an Oh My Pi extension reads from skills-sources.json", () 
     copyAt("plugins/acme-tools/skills/alpha"),
     copyAt("plugins/plugin-gamma/skills/gamma-one"),
   ];
-  const sources = manifestOf("skills-sources.json", "omp-skill-sources", SKILL_SOURCES_TEXT);
-  const extension = manifestOf("omp/extensions/skill-pools.ts", "omp-extension", EXTENSION_TEXT);
-  const installer = manifestOf("installers/omp.sh", "installer-script", OMP_INSTALLER_TEXT);
+  const sources = madeManifest(
+    repository,
+    "skills-sources.json",
+    "omp-skill-sources",
+    SKILL_SOURCES_TEXT
+  );
+  const extension = madeManifest(
+    repository,
+    "omp/extensions/skill-pools.ts",
+    "omp-extension",
+    EXTENSION_TEXT
+  );
+  const installer = madeManifest(
+    repository,
+    "installers/omp.sh",
+    "installer-script",
+    OMP_INSTALLER_TEXT
+  );
   const resolve = (manifests: Manifest[]) => resolveInstallers(manifests, new CopyIndex(copies));
   const poolRows = (manifests: Manifest[]) =>
     resolve(manifests)
@@ -1130,7 +1137,8 @@ describe("skill pools an Oh My Pi extension reads from skills-sources.json", () 
   });
 
   test("a skills-sources.json no extension reads, or whose extension no installer links, installs nothing", () => {
-    const unread = manifestOf(
+    const unread = madeManifest(
+      repository,
       "omp/extensions/other.ts",
       "omp-extension",
       "export default () => {};\n"
@@ -1151,18 +1159,8 @@ describe("skill pools an Oh My Pi extension reads from skills-sources.json", () 
 // plugin package's (F6-contents-pi-envoy-package.json's `omp`, and a `pi` field of that shape).
 describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () => {
   const repository = "acme/pkgs";
-  const packageAt = (dir: string, manifest: Record<string, unknown>): Manifest => {
-    const file = `${dir}/package.json`;
-    return {
-      repository,
-      path: file,
-      kind: "omp-package",
-      source: "tree",
-      ...parseManifest("omp-package", file, JSON.stringify(manifest)),
-      error: "",
-      rows: 0,
-    };
-  };
+  const packageAt = (dir: string, manifest: Record<string, unknown>): Manifest =>
+    madeManifest(repository, `${dir}/package.json`, "omp-package", JSON.stringify(manifest));
   const copyAt = (dir: string): SkillCopy => ({
     repository,
     path: dir,
@@ -1278,15 +1276,8 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
   test("a declared directory is scanned as Oh My Pi scans it: no skill through a link out of the package, none without a description, and a namespace's skills one level deeper", () => {
     // A link out of the package: Oh My Pi lists it from the skills/ fallback, never from a
     // declared directory (helpers.ts lines 579-594).
-    const link = (dir: string): Manifest => ({
-      repository,
-      path: `${dir}/skills/far`,
-      kind: "skill-link",
-      source: "tree",
-      ...parseManifest("skill-link", `${dir}/skills/far`, "../../shared/far"),
-      error: "",
-      rows: 0,
-    });
+    const link = (dir: string): Manifest =>
+      madeManifest(repository, `${dir}/skills/far`, "skill-link", "../../shared/far");
     const declared = packageAt("packages/linked", {
       name: "@acme/linked",
       omp: { skills: ["skills"] },
@@ -1324,30 +1315,14 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
   });
 
   test("a pool's skills less those an installer's `find … -exec rm` removes from its clone", () => {
-    const dots = "acme/pkgs";
-    const sources = {
-      repository: dots,
-      path: "skills-sources.json",
-      kind: "omp-skill-sources" as const,
-      source: "tree" as const,
-      ...parseManifest(
-        "omp-skill-sources",
-        "skills-sources.json",
-        JSON.stringify({ sources: [{ root: "vendor/pack" }] })
-      ),
-      error: "",
-      rows: 0,
-    };
-    const manifestOf = (file: string, kind: ManifestKind, text: string): Manifest => ({
-      repository: dots,
-      path: file,
-      kind,
-      source: "tree",
-      ...parseManifest(kind, file, text),
-      error: "",
-      rows: 0,
-    });
-    const installer = manifestOf(
+    const sources = madeManifest(
+      repository,
+      "skills-sources.json",
+      "omp-skill-sources",
+      JSON.stringify({ sources: [{ root: "vendor/pack" }] })
+    );
+    const installer = madeManifest(
+      repository,
       "installers/omp.sh",
       "installer-script",
       [
@@ -1361,7 +1336,12 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
     expect(installer.says).toContain(
       "removes each entry of vendor/pack/skills named dd-* but dd-keep"
     );
-    const extension = manifestOf("omp/extensions/skill-pools.ts", "omp-extension", EXTENSION_TEXT);
+    const extension = madeManifest(
+      repository,
+      "omp/extensions/skill-pools.ts",
+      "omp-extension",
+      EXTENSION_TEXT
+    );
     const copies = ["skills/dd-drop", "skills/dd-keep", "skills/other"].map((dir) => ({
       ...copyAt(dir),
       repository: "acme/pack",
@@ -1377,25 +1357,17 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
   });
 
   test("a clone an installer makes as one entry of a pool's skills directory (`ensure_vendor <url> <pool>/skills/<name>`) gives the cloned repository's root skill under that entry", () => {
-    const dots = "acme/pkgs";
-    const manifestOf = (file: string, kind: ManifestKind, text: string): Manifest => ({
-      repository: dots,
-      path: file,
-      kind,
-      source: "tree",
-      ...parseManifest(kind, file, text),
-      error: "",
-      rows: 0,
-    });
     const pin = sha1("one-skill pin");
     const manifests = [
-      manifestOf(
+      madeManifest(
+        repository,
         "skills-sources.json",
         "omp-skill-sources",
         JSON.stringify({ sources: [{ root: "vendor/one" }] })
       ),
-      manifestOf("omp/extensions/skill-pools.ts", "omp-extension", EXTENSION_TEXT),
-      manifestOf(
+      madeManifest(repository, "omp/extensions/skill-pools.ts", "omp-extension", EXTENSION_TEXT),
+      madeManifest(
+        repository,
         "installers/omp.sh",
         "installer-script",
         [
@@ -1436,21 +1408,6 @@ describe("the skills of an Oh My Pi plugin package, as Oh My Pi scans them", () 
     ]);
   });
 
-  /** A manifest of `repository` at `file`, parsed as `kind`. */
-  const madeManifest = (
-    repository: string,
-    file: string,
-    kind: ManifestKind,
-    text: string
-  ): Manifest => ({
-    repository,
-    path: file,
-    kind,
-    source: "tree",
-    ...parseManifest(kind, file, text),
-    error: "",
-    rows: 0,
-  });
   /** A made-up copy of `repository` at `dir`, with a description. */
   const madeCopy = (repository: string, dir: string): SkillCopy => ({
     repository,
@@ -1668,6 +1625,24 @@ test("a package.json and a SKILL.md that start with a byte order mark are read a
   }
 }, 60_000);
 
+/** A made-up repository `name` as an owner's listing gives it: on main, no fork, not archived. */
+const madeListing = (name: string) => ({
+  nameWithOwner: name,
+  isFork: false,
+  isArchived: false,
+  defaultBranchRef: { name: "main" },
+  parent: null,
+});
+/** The `repos/<repo>` answer of a made-up repository no listing gives: on main, no fork, not
+ *  archived. */
+const madeInfo = (repo: string) => ({
+  full_name: repo,
+  default_branch: "main",
+  fork: false,
+  archived: false,
+  parent: null,
+});
+
 // An omp-plugins `github:` dependency and an `ensure_vendor` clone, each read at the ref it names:
 // acme/dots, a made-up repository in the shape of a dotfiles repository (its
 // omp/plugins/package.json, skills-sources.json, omp/extensions/dotfiles-skills.ts and
@@ -1758,29 +1733,16 @@ describe("repositories an installer pins", () => {
   };
   const pinnedWorld = () => {
     const w = world();
-    const listing = (name: string) => ({
-      nameWithOwner: name,
-      isFork: false,
-      isArchived: false,
-      defaultBranchRef: { name: "main" },
-      parent: null,
-    });
     w.listings.set("acme", [
       ...(w.listings.get("acme") as unknown[]),
-      listing("acme/dots"),
-      listing("acme/pack"),
+      madeListing("acme/dots"),
+      madeListing("acme/pack"),
     ]);
     w.addFiles(DOTS_FILES);
     w.addRepository("acme/dots", treeOf("acme/dots", DOTS_FILES));
     w.addFiles(PACK_MAIN);
     w.addRepository("acme/pack", treeOf("acme/pack", PACK_MAIN));
-    w.repositoryInfo.set("other/powers", {
-      full_name: "other/powers",
-      default_branch: "main",
-      fork: false,
-      archived: false,
-      parent: null,
-    });
+    w.repositoryInfo.set("other/powers", madeInfo("other/powers"));
     return w;
   };
   const only = ["--only", "acme/dots", "--only", "acme/pack", "--max-search-calls", "0"];
@@ -1841,16 +1803,9 @@ describe("repositories an installer pins", () => {
   // first pin of each pair ends last: its repository answers its tree reads 200 turns later.
   test("the reads at pins land in the pins' order, whichever ends first: two listed repositories' failed reads, and the ref of a repository two pinned repositories clone", async () => {
     const w = world();
-    const listing = (name: string) => ({
-      nameWithOwner: name,
-      isFork: false,
-      isArchived: false,
-      defaultBranchRef: { name: "main" },
-      parent: null,
-    });
     w.listings.set("acme", [
       ...(w.listings.get("acme") as unknown[]),
-      ...["acme/dots", "acme/pack", "acme/pack2"].map(listing),
+      ...["acme/dots", "acme/pack", "acme/pack2"].map(madeListing),
     ]);
     const [PACK2_PIN, A_PIN, B_PIN, C_BY_A, C_BY_B] = [
       "acme/pack2",
@@ -1895,21 +1850,14 @@ describe("repositories an installer pins", () => {
       ]);
     }
     // other/a and other/b each clone other/c, at a ref of its own.
-    const info = (repo: string) => ({
-      full_name: repo,
-      default_branch: "main",
-      fork: false,
-      archived: false,
-      parent: null,
-    });
     for (const [repo, pin, cRef] of [
       ["other/a", A_PIN, C_BY_A],
       ["other/b", B_PIN, C_BY_B],
     ] as const) {
-      w.repositoryInfo.set(repo, info(repo));
+      w.repositoryInfo.set(repo, madeInfo(repo));
       addAt(w, repo, pin, installer([["other/c", "c", cRef]]));
     }
-    w.repositoryInfo.set("other/c", info("other/c"));
+    w.repositoryInfo.set("other/c", madeInfo("other/c"));
     for (const ref of [C_BY_A, C_BY_B]) addAt(w, "other/c", ref, POWERS_FILES);
     w.treeTurnsOf.set("acme/pack", 200);
     w.treeTurnsOf.set("other/a", 200);
@@ -1967,29 +1915,16 @@ describe("a pool clone made by hand that the configuration's clones states", () 
   ];
   const clonedWorld = () => {
     const w = world();
-    const listing = (name: string) => ({
-      nameWithOwner: name,
-      isFork: false,
-      isArchived: false,
-      defaultBranchRef: { name: "main" },
-      parent: null,
-    });
     w.listings.set("acme", [
       ...(w.listings.get("acme") as unknown[]),
-      listing("acme/dots"),
-      listing("acme/private"),
+      madeListing("acme/dots"),
+      madeListing("acme/private"),
     ]);
     w.addFiles(DOTS_FILES);
     w.addRepository("acme/dots", treeOf("acme/dots", DOTS_FILES));
     w.addFiles(PRIVATE_FILES);
     w.addRepository("acme/private", treeOf("acme/private", PRIVATE_FILES));
-    w.repositoryInfo.set("acme/private", {
-      full_name: "acme/private",
-      default_branch: "main",
-      fork: false,
-      archived: false,
-      parent: null,
-    });
+    w.repositoryInfo.set("acme/private", madeInfo("acme/private"));
     return w;
   };
   const clone = { repo: "acme/dots", dir: ".private", clone: "acme/private" };
