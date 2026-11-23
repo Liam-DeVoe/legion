@@ -321,6 +321,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"`implementing`, or `testing` where the task has a tester step",
 		"goes back to the implementer, or to",
 		"let the merge close it",
+		"You get no backstop",
 	}
 	for _, tc := range []struct {
 		part string
