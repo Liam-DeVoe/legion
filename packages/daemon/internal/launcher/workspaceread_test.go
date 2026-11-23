@@ -9,7 +9,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // R6 of dispatch://INFRA-3271: where no role process runs in an issue pod, the pod's launcher reads
@@ -27,9 +29,18 @@ import (
 // signature, and a Watchman that the file monitor backend starts. It also holds a revset alias that
 // would hide every working copy from the count. The launcher's own environment points at that
 // configuration, as a launcher whose home a role could write would, and the read runs none of the
-// programs and counts the work. A workspace that holds a configuration file inside the repository
-// itself, which a jj could load from there whatever its home says, is not read at all: the read is
-// refused, and the daemon keeps the pod as for any read that cannot be made.
+// programs and counts the work.
+//
+// jj also loads a configuration file inside the repository's own directories, the repository's
+// `config.toml` and the workspace's `.jj/workspace-config.toml`, where the id file beside it is
+// missing: it migrates that file into the configuration it reads. So the launcher runs the guards
+// the daemon's own jj commands run first (workspace.GuardJJ, INFRA-341's reviewer's point 6): the
+// workspace and the shared clone that Location lays out beside it, and no legacy configuration
+// file, each removed before jj runs. A role that deletes the id files and writes both legacy files
+// with the signing program gets neither loaded: the read runs no program and counts the work, and
+// the files are gone. A workspace the guards refuse, here one whose .jj/repo names another
+// repository than the shared clone, is not read: the read is refused, and the daemon keeps the pod
+// as for any read that cannot be made.
 //
 // No row of this package calls t.Parallel (gitlocks_test.go).
 func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
@@ -76,7 +87,18 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	run := fixturegit.Isolated(t, home)
-	remote, seed, clone, ws := filepath.Join(root, "remote"), filepath.Join(root, "seed"), filepath.Join(root, "clone"), filepath.Join(root, "ws")
+	// The workspace and its shared clone where provisioning lays them out (workspace.Location),
+	// since the read's guards derive the clone from the workspace's place in that layout.
+	located, err := workspace.Location(filepath.Join(root, "state"), ghrepo.MustParse("acme/widgets"), "legion-208")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, seed, clone, ws := filepath.Join(root, "remote"), filepath.Join(root, "seed"), located.Clone, located.Dir
+	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	run.Run(root, fixturegit.InitBare(remote, "main")...)
 	run.Run(root, fixturegit.InitWorkTree(seed, "main")...)
 	if err := os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644); err != nil {
@@ -87,7 +109,7 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 	run.Run(seed, "git", "push", "--quiet", remote, "main")
 	run.Run(root, "git", "clone", "--quiet", "--no-local", remote, clone)
 	run.Run(clone, fixturegit.JJInit(clone, true)...)
-	run.Run(clone, "jj", "workspace", "add", ws, "--name", "ws", "--revision", "main", "-R", clone)
+	run.Run(clone, "jj", "workspace", "add", ws, "--name", "legion-208", "--revision", "main", "-R", clone)
 	// The working copy is signed, empty and undescribed, so it is no work and a snapshot that
 	// rewrites it would sign the rewrite where the configuration says so.
 	run.Run(ws, "jj", "--config=signing.backend=gpg", "--config=signing.backends.gpg.program="+okSigner, "sign", "-r", "@", "-R", ws)
@@ -145,13 +167,40 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 		t.Fatalf("the read of a workspace with a change = %+v, want the changed working copy counted as the one work commit", changed)
 	}
 
-	// A configuration file inside the repository: jj loads such a file where the repository holds
-	// no id of its own configuration, and another jj could load it however its home is set.
-	if err := os.WriteFile(filepath.Join(clone, ".jj", "repo", "config.toml"), []byte("[signing]\nbehavior = \"force\"\nbackend = \"gpg\"\n"), 0o644); err != nil {
+	// The legacy configuration files a role can write inside the repository's own directories,
+	// with the id file beside each deleted, which jj would migrate and load: the signing program
+	// again. The read runs the guards first, so jj loads neither, the snapshot of a new change
+	// signs nothing, and both files are gone.
+	legacy := []string{filepath.Join(clone, ".jj", "repo", "config.toml"), filepath.Join(ws, ".jj", "workspace-config.toml")}
+	for _, id := range []string{filepath.Join(clone, ".jj", "repo", "config-id"), filepath.Join(ws, ".jj", "workspace-config-id")} {
+		if err := os.Remove(id); err != nil {
+			t.Fatalf("delete the id file %s, as a role could: %v", id, err)
+		}
+	}
+	for _, file := range legacy {
+		if err := os.WriteFile(file, []byte("[signing]\nbehavior = \"force\"\nbackend = \"gpg\"\nbackends.gpg.program = \""+signer+"\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(ws, "more.txt"), []byte("more\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if refused := answer("repository-config"); refused.OK || !strings.Contains(refused.Error, "config.toml") {
-		t.Fatalf("the read of a workspace whose repository holds a configuration file = %+v, want it refused, naming the file", refused)
+	if again := read("legacy-config"); !again.Changed || again.Count != 1 {
+		t.Fatalf("the read of a workspace that held legacy configuration files = %+v, want the changed working copy counted", again)
+	}
+	for _, file := range legacy {
+		if _, err := os.Lstat(file); err == nil {
+			t.Fatalf("the legacy configuration file %s is still there after the read, want it removed before jj ran", file)
+		}
+	}
+
+	// A workspace the guards refuse: its .jj/repo names another repository than the shared clone
+	// that the layout puts beside it.
+	if err := os.WriteFile(filepath.Join(ws, ".jj", "repo"), []byte(filepath.Join(root, "another-repository")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if refused := answer("another-repository"); refused.OK || !strings.Contains(refused.Error, "refusing to run jj") {
+		t.Fatalf("the read of a workspace whose .jj/repo names another repository = %+v, want it refused by the workspace guards", refused)
 	}
 	ran()
 }
