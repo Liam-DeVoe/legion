@@ -25,9 +25,10 @@ type Block struct {
 	ID, Type   string
 	Attributes map[string]string
 	Text       string
-	// Parent is the id of the block of the same version that this block stands directly
-	// under, as its reader resolved it (ParentOf before the tree). It is "" for a block with
-	// no parent and for a parent that is no block of this plan.
+	// Parent is the id of the block of the plan's document that this block stands directly
+	// under, as its reader resolved it (ParentOf before the tree). It is "" for a block with no
+	// parent and for a parent outside the plan's document. An id that no block of the version
+	// holds stays, for Validate to refuse (Task.MissingParent).
 	Parent string
 }
 
