@@ -21,6 +21,7 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
+import { issueDetailsRow, openIssueDetails } from "./issue-details";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -727,8 +728,10 @@ test("an issue's header names the priorities it advances and links to each", asy
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.rollout}`);
+    // What an issue advances is a row of Details, named by the row.
+    await openIssueDetails(page);
     const line = page.getByTestId("issue-advances");
-    await expect(line).toContainText("Advances");
+    await expect(issueDetailsRow(page, "advances")).toContainText("Advances");
     const link = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
     await expect(link).toBeVisible();
     await link.click();
@@ -738,6 +741,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     // An issue that advances none carries no line at all: no label, no name, only the control
     // that places it under a priority.
     await page.goto(`/issues/${seed.clock}`);
+    await openIssueDetails(page);
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await expect(page.getByTestId("issue-advances")).not.toContainText("Advances");
     await expect(
@@ -747,6 +751,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     // A priority an issue inherits says so and carries no remove: that relation is the
     // ancestor's, and a relation on a child places nothing above it.
     await page.goto(`/issues/${seed.child}`);
+    await openIssueDetails(page);
     const inherited = page.getByTestId("issue-advances");
     await expect(inherited.getByRole("link", { name: `P3 ${seed.titles[2]}` })).toBeVisible();
     await expect(inherited).toContainText("inherited");
@@ -831,7 +836,7 @@ test("a person places an issue under a priority from the issue and takes it off 
     const page = await context.newPage();
     await priorityPage(page);
     await page.goto(`/issues/${seed.clock}`);
-
+    await openIssueDetails(page);
     await page.getByRole("button", { name: `Add a priority to ${seed.clock}` }).click();
     await page.getByLabel("Priority to advance").selectOption(seed.ids[1]);
     await page.getByRole("button", { name: "Add", exact: true }).click();
@@ -904,6 +909,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     await reader.evaluate(() => {
       document.documentElement.dataset.heldOpen = "yes";
     });
+    await openIssueDetails(reader);
     const line = reader.getByTestId("issue-advances");
     const kept = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
     const deleted = line.locator(`a[href="/priorities/${seed.ids[2]}"]`);

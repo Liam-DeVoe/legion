@@ -16,6 +16,7 @@ import {
   patchIssue,
   userHeaders,
 } from "./api";
+import { openIssueDetails } from "./issue-details";
 import { frontLiveView } from "./live-views";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -168,9 +169,11 @@ async function expectNoRefillingWording(page: Page): Promise<void> {
   await expect(page.getByTestId("issue-route-refilling")).toHaveCount(0);
 }
 
+/** Opens the issue's Conversation and the header's Details, where the subscribers are. */
 async function openIssueConversation(page: Page, issueKey: string): Promise<void> {
   await page.goto(`/issues/${issueKey}/conversation`);
   await expect(page.getByRole("form", { name: "Comment composer" })).toBeVisible();
+  await openIssueDetails(page);
 }
 
 /** Opens the issue composer's mention suggestions afresh. Opening them reads the agent list
