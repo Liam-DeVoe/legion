@@ -117,7 +117,7 @@ func TestTheEraseRedactsWhatAPersonWroteAndLeavesTheEventsStructure(t *testing.T
 		ids := eventsAboutComment(t, database, erased.comment)
 		before := readHeldEvents(t, database, ids)
 		listing := dryRun(t, database, commentNodeKind, erased.comment)
-		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, commentNodeKind, erased.comment, listing.Digest, time.Millisecond)
+		erasure, err := Erase(ctx, database.Pool.Config().ConnString(), commentNodeKind, erased.comment, listing.Digest, time.Millisecond)
 		if err != nil {
 			t.Fatalf("erase --confirm %s: %v", listing.Digest, err)
 		}
@@ -207,7 +207,7 @@ func TestTheEraseLeavesTheTextOfOtherNodesInACommentsEvent(t *testing.T) {
 	event := appendEvent(t, database, "CORE-1", "comment.created", string(written))
 
 	listing := dryRun(t, database, commentNodeKind, seeded.comment)
-	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
+	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), commentNodeKind, seeded.comment, listing.Digest, time.Millisecond)
 	if err != nil {
 		t.Fatalf("erase --confirm %s: %v", listing.Digest, err)
 	}

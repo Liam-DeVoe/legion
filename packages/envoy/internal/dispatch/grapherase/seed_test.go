@@ -24,7 +24,7 @@ import (
 func dryRun(t *testing.T, database *store.Store, kind, id string) *Erasure {
 	t.Helper()
 	ctx := context.Background()
-	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), eraseServerURL, kind, id, "", 0)
+	erasure, err := Erase(ctx, database.Pool.Config().ConnString(), kind, id, "", 0)
 	if err != nil {
 		t.Fatalf("erase --node %s:%s without --confirm: %v", kind, id, err)
 	}
@@ -56,7 +56,7 @@ func dryRun(t *testing.T, database *store.Store, kind, id string) *Erasure {
 func confirmedErase(t *testing.T, database *store.Store, kind, id string, bound time.Duration) (*Erasure, error) {
 	t.Helper()
 	listed := dryRun(t, database, kind, id)
-	return Erase(context.Background(), database.Pool.Config().ConnString(), eraseServerURL, kind, id, listed.Digest, bound)
+	return Erase(context.Background(), database.Pool.Config().ConnString(), kind, id, listed.Digest, bound)
 }
 
 // listed reports whether a line of erasure's listing holds every one of parts.
@@ -79,10 +79,6 @@ func listed(erasure *Erasure, parts ...string) bool {
 // commentNodeKind is what the node and tuple store calls a comment (migration 20261109051232), the
 // kind of the node most of this package's tests erase.
 const commentNodeKind = "comment"
-
-// eraseServerURL is the dashboard origin this package's tests index their items' text with and
-// run the erase with, as a deployment's server and its erase read the same one.
-const eraseServerURL = "https://dispatch.example"
 
 // seedWriter is who seedAgreeingStore states the blocks' parents by: the backfill's own writer
 // (graphcensus's backfillActor), which writes every other fact of the seed.

@@ -177,13 +177,13 @@ const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 // for each node handed in, and only the nodes it does not hold reach the upsert; the conflict arm
 // stays for them, because two writes can make the same new node at once - two requests reaching
 // a person the store holds no node of - and a plain insert would fail the second with a unique
-// violation where this one finds the first's row and does nothing. A node, once made, is removed
-// by nothing but an operator's `envoy-dispatch erase`, so the probe, which reads the statement's
-// snapshot as the rest of the write does, leaves out only nodes that stay. It is a subquery behind
-// an offset 0, so it stays one index probe per node handed in whatever the planner estimates of
-// the arrays: joined plainly, a thousand-person delivery could be planned as a hash anti-join over
-// every node. Leaving the held nodes out of the upsert cost 5.1 ms where the conflict arm alone
-// cost 7.7 for 999 people the store held (medians of 30, 2026-11-21).
+// violation where this one finds the first's row and does nothing. A node is history and never
+// goes, so the probe, which reads the statement's snapshot as the rest of the write does, leaves
+// out only nodes that stay. It is a subquery behind an offset 0, so it stays one index probe per
+// node handed in whatever the planner estimates of the arrays: joined plainly, a thousand-person
+// delivery could be planned as a hash anti-join over every node. Leaving the held nodes out of
+// the upsert cost 5.1 ms where the conflict arm alone cost 7.7 for 999 people the store held
+// (medians of 30, 2026-11-21).
 func nodeArm(first int, states bool) string {
 	source := causeOf("source_event")
 	if !states {

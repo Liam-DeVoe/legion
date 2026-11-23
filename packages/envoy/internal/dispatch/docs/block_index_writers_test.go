@@ -860,10 +860,6 @@ var indexPasses = map[string]string{
 	"docs/approval_ask.go#rewriteApprovalAsk":          "the rewording a request or a version move wrote and the ask.edited it appended",
 	"docs/decided_wording.go#restoreWordings":          "the decided wording the restore wrote back",
 	"cmd/dispatch-seed/write_items.go#stateAtSentinel": "the seed's own plan",
-	// The erase of an erased comment's, message's or ask's block nodes and delivery attempts and
-	// their tuples: the node the operator named and what the store holds of the parts its item's
-	// rows name.
-	"grapherase/erase.go#eraseItemParts": "the node the operator named",
 	// The one writer of the threads a person takes part in and of what reaches them there: it reads
 	// the write its caller stored, the thread that write's head pointer tuples name, and who takes
 	// part in that thread - the participates_in tuples into its root, and the login of each

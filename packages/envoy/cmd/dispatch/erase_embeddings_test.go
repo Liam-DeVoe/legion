@@ -51,7 +51,7 @@ func TestTheEraseTakesTheErasedTextOutOfTheEmbeddingStore(t *testing.T) {
 	// No settlement runs during the test either: one that ran after an erase would write a
 	// version of the redacted live text, and that version's index marks the notes owed their
 	// windows whether or not the erase did.
-	server := startEraseServer(t, databaseURL, time.Hour)
+	server := startDispatchProcessWithSettleDelay(t, databaseURL, time.Hour)
 	server.waitHealthy(t)
 	release := eraseHoldBlockIndex(t, database)
 	defer release()

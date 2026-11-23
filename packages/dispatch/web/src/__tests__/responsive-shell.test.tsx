@@ -102,7 +102,6 @@ const originalApi = {
   listIssues: api.listIssues,
   listProjectArchitectureSources: api.listProjectArchitectureSources,
   listProjects: api.listProjects,
-  listRepoProjects: api.listRepoProjects,
   whoAmI: api.whoAmI,
 };
 const originalMatchMedia = window.matchMedia;
@@ -187,7 +186,6 @@ function renderShellAt(
   api.listAgents = async () => listedAgents;
   // The issue page under the shell reads these of its own; no test here asserts them.
   api.getIssueSubscribers = async () => [];
-  api.listRepoProjects = async () => [];
   api.listProjectArchitectureSources = async () => [];
   // Each ask card refreshes its own thread; the row the Inbox listed carries the one Dispatch
   // would answer with.

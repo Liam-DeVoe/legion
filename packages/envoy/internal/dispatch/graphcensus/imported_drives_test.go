@@ -1139,17 +1139,17 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}, {
 		// The erase of the issue's comment, which deletes its tuples and appends none.
 		Name: "grapherase/erase.go#apply", Database: r.database,
-		Sites: []string{"grapherase/erase.go#apply", "grapherase/erase.go#eraseItemParts"},
+		Sites: []string{"grapherase/erase.go#apply"},
 		Drive: func(t *testing.T) {
 			url := r.database.Pool.Config().ConnString()
-			listing, err := grapherase.Erase(ctx, url, writersServerURL, "comment", r.comment, "", 10*time.Millisecond)
+			listing, err := grapherase.Erase(ctx, url, "comment", r.comment, "", 10*time.Millisecond)
 			if err != nil {
 				t.Fatalf("list the erase of comment %s: %v", r.comment, err)
 			}
 			if len(listing.Blockers) > 0 {
 				t.Fatalf("the erase of comment %s is blocked by %v", r.comment, listing.Blockers)
 			}
-			erased, err := grapherase.Erase(ctx, url, writersServerURL, "comment", r.comment, listing.Digest, 10*time.Millisecond)
+			erased, err := grapherase.Erase(ctx, url, "comment", r.comment, listing.Digest, 10*time.Millisecond)
 			if err != nil || !erased.Applied {
 				t.Fatalf("erase comment %s (applied %v): %v", r.comment, erased != nil && erased.Applied, err)
 			}

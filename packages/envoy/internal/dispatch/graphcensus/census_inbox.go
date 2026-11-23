@@ -764,8 +764,8 @@ var userThreadsPopulations = `
 // ask's create (ask.opened) and a move of who an ask waits on are no reply, and neither is an edit.
 const replyWrites = `('comment.created', 'comment.answered', 'message.created', 'message.answered', 'ask.answered')`
 
-// ReplyCaused is true of a delivered_to tuple d into a person that a reply caused, the deliveries
-// user_threads.version counts (R6, R9), which the erase of a reply reads too (grapherase):
+// replyCaused is true of a delivered_to tuple d into a person that a reply caused, the deliveries
+// user_threads.version counts (R6, R9):
 //
 //   - a tuple whose event is a reply's write (replyWrites). A delivered_to from an ask's create or
 //     from a move of who it waits on is caused by that create's or that move's event, and raises no
@@ -784,7 +784,7 @@ const replyWrites = `('comment.created', 'comment.answered', 'message.created', 
 //     and the create's or a move's otherwise. A backfilled one stands at or below its row's
 //     marked_seq (the backfill states it before it marks the row), so it counts in no version and
 //     is read only as the reply the mark carried (userThreadsCounted).
-var ReplyCaused = `(case
+var replyCaused = `(case
 	when d.source_event <> ` + noEvent + `
 		then exists (select 1 from events e where e.id = d.source_event and e.type in ` + replyWrites + `)
 	when d.from_kind in ('` + graphstore.KindComment + `', '` + graphstore.KindMessage + `') then true
@@ -835,7 +835,7 @@ var deliveryThread = `
 		select climb.id from climb where d.from_kind = '` + graphstore.KindMessage + `' order by climb.depth desc limit 1
 	) top on true`
 
-// replyDeliveries is every delivered_to into a person that a reply caused (ReplyCaused), with the
+// replyDeliveries is every delivered_to into a person that a reply caused (replyCaused), with the
 // thread it was delivered from (deliveryThread), as (login, thread_kind, thread_id, seq, at,
 // from_id).
 var replyDeliveries = `
@@ -843,7 +843,7 @@ var replyDeliveries = `
 	from graph_tuples d
 	cross join lateral (` + deliveryThread + `) thread (kind, id)
 	where d.to_kind = '` + graphstore.KindPerson + `' and d.kind = '` + graphstore.TupleDeliveredTo + `' and d.asserted
-	  and d.from_kind in ` + threadRootKinds + ` and ` + ReplyCaused
+	  and d.from_kind in ` + threadRootKinds + ` and ` + replyCaused
 
 // versionTriple is how both sides of user_threads_version write what a row says of the deliveries
 // it counted: its thread, its version, its replied_at and its last_reply_id.
@@ -854,7 +854,7 @@ func versionTriple(thread, version, repliedAt, lastReply string) string {
 
 // userThreadsVersionProjection proves R6's equation on every marked user_threads row: version is
 // marked_version plus the delivered_to tuples into that person from that thread with seq above
-// marked_seq that a reply caused (ReplyCaused), and replied_at and last_reply_id are the moment and
+// marked_seq that a reply caused (replyCaused), and replied_at and last_reply_id are the moment and
 // the near end of the newest of those same tuples, newest by moment and then by seq, as the
 // writer's update takes the later of two writes at one moment (inboxwrite's queueMoveRows). A row
 // the backfill marked carried its replied_at and last_reply_id across its mark; that reply is held

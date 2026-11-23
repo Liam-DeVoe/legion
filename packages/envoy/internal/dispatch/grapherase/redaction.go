@@ -26,14 +26,11 @@ type redactedEvent struct {
 // readEvents reads the events about the node whose payload holds an erased text, and redacts each
 // payload in memory (redactPayload), which apply then writes. An event about a comment is one
 // whose payload is that comment's own (model.CommentEventPayload carries it as `id`) or names it
-// as `comment_id` (a delivery receipt); an event about a message is a message event whose payload
-// is that message's own (model.MessageEventPayload carries it as `id`) or names it as
-// `message_id` (its delivery receipts, model.MessageDeliveryEventPayload, and its acceptance,
-// model.MessageAcceptedEventPayload); an event about a block is a document event of its own
+// as `comment_id` (a delivery receipt); an event about a block is a document event of its own
 // document (`artifact.*` and `block.*`, whose payload names it as `artifact_id`) of a version the
 // block stood in, which carries that version and its diff. Any other event that holds the same
-// bytes - another person's comment, another message, another document's version, a version of
-// the block's own document it did not stand in - is about another node, and stays.
+// bytes - another person's comment, another document's version, a version of the block's own
+// document it did not stand in - is about another node, and stays.
 //
 // A document event is of a version the block stood in where the run deletes that version
 // (readVersions) or the block stood in it holding an erased text (blockStoodIn): at any other
@@ -66,15 +63,7 @@ type redactedEvent struct {
 // document's name, the question of the ask it replies to and the text of the block its reply
 // answers (quotedFields). Those are redacted only as a quote of a document is, where the erased
 // text stands as a block of its own, so another node's words around it stay as they were
-// written. A delivery receipt quotes no other node. A message's own event carries that message's
-// body and nothing else of anybody's, so every one of those bytes goes wherever it stands in what
-// a person wrote.
-//
-// A reply to a message quotes it: the event of a message that replies to the erased one
-// (`in_reply_to`) or to one of its blocks (`reply_block`'s node) carries the head of its body or
-// of that block's text as `reply_body`, and the block's text in `reply_block`. Those two values are
-// the erased message's words and nothing else, so they go whole (redactReplyQuote), cut short as
-// they may be; the rest of that event is the reply's own words, and stays.
+// written. A delivery receipt quotes no other node.
 //
 // An event about the node whose payload the redaction leaves holding an erased text - in a
 // structural value (structuralKey), which it never rewrites, or in a value that quotes another
@@ -85,15 +74,11 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	if len(read.texts) == 0 {
 		return nil
 	}
-	var about, own string
+	var about string
 	var args []any
 	switch {
 	case refs.ItemKind(e.Kind) == refs.ItemComment:
-		about, own, args = `payload->>'id' = $1 or payload->>'comment_id' = $1`, `true`, []any{e.ID}
-	case refs.ItemKind(e.Kind) == refs.ItemMessage:
-		own = `coalesce(payload->>'id' = $1 or payload->>'message_id' = $1, false)`
-		about, args = `type like 'message.%' and (`+own+` or payload->>'in_reply_to' = $1
-			or split_part(payload->'reply_block'->>'node', '#', 1) = 'message/' || $1)`, []any{e.ID}
+		about, args = `payload->>'id' = $1 or payload->>'comment_id' = $1`, []any{e.ID}
 	case read.document != nil:
 		// held is the test of whether the block stood in the version a payload names, read off
 		// the versions the run deletes ($4) and the block's own texts (blockStoodIn).
@@ -111,22 +96,21 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 				then ` + held(`(payload->>'version')::int`) + `
 			else true
 		end`
-		own, args = `true`, []any{read.document.artifact, read.texts, read.blockID, read.numbers}
+		args = []any{read.document.artifact, read.texts, read.blockID, read.numbers}
 	default:
 		return nil
 	}
-	rows, err := tx.Query(ctx, `select id, type, payload::text, `+own+` from events where `+about+` order by id`, args...)
+	rows, err := tx.Query(ctx, `select id, type, payload::text from events where `+about+` order by id`, args...)
 	if err != nil {
 		return fmt.Errorf("read the events about %s:%s: %w", e.Kind, e.ID, err)
 	}
 	type stored struct {
 		id            int64
 		kind, payload string
-		own           bool
 	}
 	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (stored, error) {
 		var event stored
-		err := row.Scan(&event.id, &event.kind, &event.payload, &event.own)
+		err := row.Scan(&event.id, &event.kind, &event.payload)
 		return event, err
 	})
 	if err != nil {
@@ -137,14 +121,7 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		if refs.ItemKind(e.Kind) == refs.ItemComment {
 			comment = e.ID
 		}
-		var payload []byte
-		var originals []string
-		var err error
-		if event.own {
-			payload, originals, err = redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil, comment)
-		} else {
-			payload, originals, err = redactReplyQuote([]byte(event.payload), e.marker())
-		}
+		payload, originals, err := redactPayload([]byte(event.payload), read.texts, e.marker(), read.document != nil, comment)
 		if err != nil {
 			return fmt.Errorf("redact the payload of event %d: %w", event.id, err)
 		}
@@ -155,56 +132,6 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		read.listing.events = append(read.listing.events, fmt.Sprintf("events %d %s", event.id, event.kind))
 	}
 	return nil
-}
-
-// redactReplyQuote replaces with the marker what a reply's event quotes of the message it replies
-// to (readEvents): its `reply_body` and its `reply_block`'s `text`, each whole, and answers the
-// payload so redacted and each value it rewrote as it stood before. A payload that quotes nothing
-// is answered as it is.
-func redactReplyQuote(payload []byte, marker string) ([]byte, []string, error) {
-	var value map[string]any
-	if err := decodePayload(payload, &value); err != nil {
-		return nil, nil, err
-	}
-	var originals []string
-	mark := func(held map[string]any, key string) {
-		if quoted, ok := held[key].(string); ok && quoted != "" && quoted != marker {
-			originals = append(originals, quoted)
-			held[key] = marker
-		}
-	}
-	mark(value, "reply_body")
-	if block, ok := value["reply_block"].(map[string]any); ok {
-		mark(block, "text")
-	}
-	if len(originals) == 0 {
-		return payload, nil, nil
-	}
-	written, err := encodePayload(value)
-	if err != nil {
-		return nil, nil, err
-	}
-	return written, originals, nil
-}
-
-// decodePayload decodes payload, a jsonb's text, into into, its numbers read as the literals they
-// are (json.Number).
-func decodePayload(payload []byte, into any) error {
-	decoder := json.NewDecoder(bytes.NewReader(payload))
-	decoder.UseNumber()
-	return decoder.Decode(into)
-}
-
-// encodePayload is value written back as a payload's JSON, HTML left unescaped and with no
-// trailing newline.
-func encodePayload(value any) ([]byte, error) {
-	var written bytes.Buffer
-	encoder := json.NewEncoder(&written)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSpace(written.Bytes()), nil
 }
 
 // redactPayload replaces each erased text with the marker inside every string value of a JSON
@@ -229,8 +156,10 @@ func encodePayload(value any) ([]byte, error) {
 // part, which no erased text matches whole, and its bytes would stay. Every byte of that body is
 // the comment's own, so the whole value is replaced with the marker (ownCutBody).
 func redactPayload(payload []byte, texts []string, marker string, quoted bool, comment string) ([]byte, []string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
 	var value any
-	if err := decodePayload(payload, &value); err != nil {
+	if err := decoder.Decode(&value); err != nil {
 		return nil, nil, err
 	}
 	var originals []string
@@ -279,11 +208,13 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool, c
 	if len(originals) == 0 {
 		return payload, nil, nil
 	}
-	written, err := encodePayload(value)
-	if err != nil {
+	var written bytes.Buffer
+	encoder := json.NewEncoder(&written)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		return nil, nil, err
 	}
-	return written, originals, nil
+	return bytes.TrimSpace(written.Bytes()), originals, nil
 }
 
 // ownCutBody answers the top-level `body` of value, a decoded payload, where the payload is the
@@ -298,28 +229,24 @@ func ownCutBody(value any, comment string) (string, bool) {
 	return body, ok
 }
 
-// quotedFields are the values of a comment's or a message's own event (model.CommentEventPayload,
-// model.MessageEventPayload) that quote another node rather than say what the item's author wrote,
-// each by the key of the object it stands in, empty for the payload's top level, and its own key:
-// the quote of the document the comment is anchored to (model.Anchor's quote), that document's
-// name (artifact_name), the question of the ask the comment replies to (ask_question), the head of
-// the message or the text of the block a message's reply answers (reply_body, api's
-// messageReplyPreview), and the text of the block of the comment, the ask or the message the reply
-// answers (model.ReplyBlock's text). A delivery receipt (model.CommentDeliveryEventPayload)
-// carries none of them: its values are its structure and the error its send answered, which is no
-// node's text.
+// quotedFields are the values of a comment's own event (model.CommentEventPayload) that quote
+// another node rather than say what the comment's author wrote, each by the key of the object it
+// stands in, empty for the payload's top level, and its own key: the quote of the document the
+// comment is anchored to (model.Anchor's quote), that document's name (artifact_name), the
+// question of the ask the comment replies to (ask_question), and the text of the block of the
+// comment or the ask the reply answers (model.ReplyBlock's text). A delivery receipt
+// (model.CommentDeliveryEventPayload) carries none of them: its values are its structure and the
+// error its send answered, which is no node's text.
 //
-// Each is written by the item's write from the node it quotes, so an erased text inside a longer
-// line of one is that node's words, which the erase of the item leaves (R5). The redaction reads
-// each as it reads a quote of a document (redactBlockQuote), and replaces an erased text there only
-// where it stands as a block of its own - the whole value, or a whole line of it - where nothing
-// around it says whose words they are. An event about the item it quotes reads the same two
-// values of a message's reply as that item's words, and replaces them whole (redactReplyQuote).
+// Each is written by the comment's write from the node it quotes, so an erased text inside a
+// longer line of one is that node's words, which the erase of the comment leaves (R5). The
+// redaction reads each as it reads a quote of a document (redactBlockQuote), and replaces an
+// erased text there only where it stands as a block of its own - the whole value, or a whole line
+// of it - where nothing around it says whose words they are.
 var quotedFields = map[[2]string]bool{
 	{"anchor", "quote"}:     true,
 	{"", "artifact_name"}:   true,
 	{"", "ask_question"}:    true,
-	{"", "reply_body"}:      true,
 	{"reply_block", "text"}: true,
 }
 

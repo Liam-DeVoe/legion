@@ -619,9 +619,8 @@ var runtimeTableSites = map[string]runtimeTableSite{
 		sets:   []string{"node_kind (the row's node)", "node_address (the row's node)"},
 	},
 	// The read-state tables, which are projections of tuples and of no node (markedProjections):
-	// the backfill's marker over them and the erase's delete of a person's or an item's rows.
+	// the backfill's marker over them.
 	"packages/envoy/internal/dispatch/graphcensus/backfill_inbox_threads.go#graphcensus.readStateTable.writeMarks: update table.table": {},
-	"packages/envoy/internal/dispatch/grapherase/read_state.go#grapherase.*Erasure.deleteReadState: delete from held.table.Table":      {},
 	// The settle of one source an owed-index queue held: block_grammar_owed or refs_grammar_owed.
 	"packages/envoy/internal/dispatch/refs/rebuild.go#refs.OwedQueue.settleOwedStatement: delete from queue.table": {},
 	// The daemon's kept decisions and approvals, parked_decisions and readmitted_approvals, in a

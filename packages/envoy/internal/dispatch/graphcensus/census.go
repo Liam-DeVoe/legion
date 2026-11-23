@@ -1391,15 +1391,13 @@ var writtenHistory = `select writer.kind, writer.id, writer.made_at
 		  and t.from_kind = '` + refs.BlockNodeKind + `')`
 
 // erasedWriters are the people and sessions an erase of an ask, a decision or a reading took the
-// authored_by, decided_by, answered_by or kept_by of, and the people an erase of a comment, a
-// message or an ask took the delivered_to, participates_in or read-state tuples of, as (kind, id,
-// at): the writers `envoy-dispatch erase` records in its graph_erasures row (grapherase's
-// Erasure.Writers), each dated by that erase. The erase deletes the node's tuples in both
-// directions, and nothing else names who wrote, answered, kept, took part in or read it once its
-// rows are gone, while that person's or session's node stands: a session's always, since no erase
-// removes one, and a person's until an erase of that person. So a writer is read here unless an
-// erase of that same node ran after the one that recorded it (erasedSince): an erased person is
-// held by no record an erase before theirs wrote.
+// authored_by, decided_by, answered_by or kept_by of, as (kind, id, at): the writers
+// `envoy-dispatch erase` records in its graph_erasures row (grapherase's Erasure.Writers), each
+// dated by that erase. The erase deletes the node's tuples in both directions, and nothing else
+// names who wrote, answered or kept it once its rows are gone, while that writer's node stands: a
+// session's always, since no erase removes one, and a person's until an erase of that person. So a
+// writer is read here unless an erase of that same node ran after the one that recorded it
+// (erasedSince): an erased person is held by no record an erase before theirs wrote.
 var erasedWriters = `
 	select written->>'kind' as kind, written->>'id' as id, erasure.ran_at as at
 	from graph_erasures erasure

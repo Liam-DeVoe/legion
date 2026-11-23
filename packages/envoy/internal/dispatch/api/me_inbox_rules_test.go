@@ -674,7 +674,7 @@ func meInboxWalkDepthCase(t *testing.T) {
 	log := &logtest.Buffer{}
 	logtest.SetDefault(t, slog.NewTextHandler(log, nil))
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	createProjects(t, handler, "DEEP")
+	createTestProject(t, handler, "DEEP")
 	// chain writes a root and replies under it, each one under the one before and each by a
 	// session of its own, and alice's reply under the root, which the walk reads the chain down
 	// from. It answers the chain's comments, root first, and alice's reply.

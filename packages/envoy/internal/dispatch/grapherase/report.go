@@ -111,13 +111,11 @@ type Erasure struct {
 	Inbound int64 `json:"inbound_tuples"`
 	// Rows are the rows the run deleted, by table.
 	Rows []ErasedRows `json:"rows"`
-	// RedactedRows are the rows the run rewrote where it may take no row away: the rows that
-	// derive from the node - an excerpt of a block holding it, the append-only event log, the one
+	// RedactedRows are the rows that derive from the node and that the run rewrote where it may
+	// take no row away: an excerpt of a block holding it, the append-only event log, the one
 	// stored update its document's replaced history is seeded with, and the search vectors and
-	// embedding rows written again from the latest version left - each of which, where it held the
-	// bytes, holds the marker where they were; and the user_threads rows of the thread a reply the
-	// run removed was written in that named or counted it, whose version, last reply and reply time
-	// it wrote again without that reply (rewriteRepliedRows), which hold no marker.
+	// embedding rows written again from the latest version left. Each that held the bytes holds
+	// the marker where they were.
 	RedactedRows []ErasedRows `json:"redacted"`
 	// Versions and Reviews are the versions of the node's own document whose markdown holds the
 	// erased text and the approvals whose digest covered those bytes.
@@ -136,15 +134,13 @@ type Erasure struct {
 	// out that other items still hold, until the project's next refresh pass, which counts it in
 	// full. It is not recorded, for the reason above.
 	NotRecounted []NotRecounted `json:"-"`
-	// Writers are who wrote, answered, removed or kept the node, or took part in or read its
-	// thread, each once and in order: the person or session at the far end of every tuple out of
-	// an ask's node or a block's - a decision's, a reading's - that names one (writesTheNode), and
-	// the person at the other end of every delivered_to out of a comment's, a message's or an ask's
-	// node and every participates_in or read-state tuple into it (reachedPerson), that the run
-	// deletes, asserted or retracted. Once those tuples and the node's rows are gone nothing else
-	// names them, while their nodes stand: a session's always, since no erase removes one. The
-	// store census reads them off this record (graphcensus's erasedWriters), a person until an
-	// erase of that person runs after this one.
+	// Writers are who wrote, answered, removed or kept the node, each once and in order: the
+	// person or session at the far end of every tuple out of an ask's node or a block's - a
+	// decision's, a reading's - that names one (writesTheNode) and that the run deletes, asserted
+	// or retracted. Once those tuples and the node's rows are gone nothing else names them, while
+	// their nodes stand: a session's always, since no erase removes one. The store census reads
+	// them off this record (graphcensus's erasedWriters), a person until an erase of that person
+	// runs after this one.
 	Writers []ErasedWriter `json:"writers"`
 	// Digest is the SHA-256 of Listing. A run without --confirm prints it, and a run with
 	// --confirm erases only when the listing it reads under its own locks has the digest it was
@@ -184,10 +180,6 @@ type Erasure struct {
 	// nowhere else - no row, no record, no log - since each is the digest of an erased text, and
 	// they go with the process once the sweep has read them.
 	sums [][]byte
-	// serverURL is the dashboard origin the server's writers cut a block's excerpt around
-	// (refs.BlockExcerpt), which the run cuts a redacted excerpt with, so it stores the excerpt
-	// the writer would (readAncestorExcerpts).
-	serverURL string
 }
 
 // Mismatch reports whether a confirmed run read a listing other than the one its --confirm

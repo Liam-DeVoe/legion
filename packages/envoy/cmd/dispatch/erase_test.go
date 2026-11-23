@@ -28,19 +28,6 @@ import (
 // has read the commit, short enough for a run.
 const eraseTestWindow = 4 * time.Second
 
-// eraseServerURL is the dashboard origin the erase tests' server serves under (startEraseServer)
-// and their erase runs with, as a deployment's server and its erase read the same one.
-const eraseServerURL = "https://dispatch.example"
-
-// startEraseServer starts Dispatch under eraseServerURL, its documents' settle delayed by
-// settleDelay, or the server's own default where it is zero.
-func startEraseServer(t *testing.T, databaseURL string, settleDelay time.Duration) *dispatchProcess {
-	return startDispatchProcessWith(t, databaseURL, dispatchOptions{
-		SettleDelay: settleDelay,
-		Env:         map[string]string{"DISPATCH_SERVER_URL": eraseServerURL},
-	})
-}
-
 // confirmTries is how many listings confirmErase confirms, in all, before it gives up on a
 // listing that keeps moving.
 const confirmTries = 3
@@ -55,14 +42,14 @@ const confirmTries = 3
 // erase does, the refused Erasure with no error.
 func confirmErase(ctx context.Context, databaseURL, kind, id string, window time.Duration) (*grapherase.Erasure, error) {
 	for try := 1; ; try++ {
-		listing, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, "", 0)
+		listing, err := grapherase.Erase(ctx, databaseURL, kind, id, "", 0)
 		if err != nil {
 			return nil, fmt.Errorf("erase --node %s:%s without --confirm: %w", kind, id, err)
 		}
 		if listing.Applied {
 			return nil, fmt.Errorf("erase --node %s:%s without --confirm removed something", kind, id)
 		}
-		erasure, err := grapherase.Erase(ctx, databaseURL, eraseServerURL, kind, id, listing.Digest, window)
+		erasure, err := grapherase.Erase(ctx, databaseURL, kind, id, listing.Digest, window)
 		if err != nil || !erasure.Mismatch() {
 			return erasure, err
 		}
@@ -107,7 +94,7 @@ func TestTheEraseReachesASpecAnEditedHistoryAndATreeStoredAfterItsCommit(t *test
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERS","name":"Erase"}`, http.StatusCreated)
 
@@ -241,7 +228,7 @@ func TestTheEraseRefusesADocumentWhoseMarkdownSpellsTheTextOtherwise(t *testing.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERE","name":"Erase"}`, http.StatusCreated)
 
@@ -300,7 +287,7 @@ func TestTheBlockEraseTakesATextPastItsExcerpt(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	databaseURL := database.Pool.Config().ConnString()
-	server := startEraseServer(t, databaseURL, 0)
+	server := startDispatchProcess(t, databaseURL)
 	server.waitHealthy(t)
 	server.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ERX","name":"Erase"}`, http.StatusCreated)
 

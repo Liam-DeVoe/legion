@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // ownDocument is the document a block node is a block of. Its versions, its editing state, its
@@ -63,26 +64,15 @@ type erasedRead struct {
 	// the listing is made of and written back by redactBlocks.
 	blockTexts []redactedBlockText
 	excerpts   []redactedExcerpt
-	// parts are the nodes that are parts of an erased comment or message - its block nodes and
-	// its delivery attempts - each with the seqs of the tuples on both sides of it, which go with
-	// the item (readItemParts).
-	parts []erasedPart
 	// tupleSeqs are the seqs of the tuples the listing names, which the delete takes and no
 	// others (graphstore.EraseNode).
 	tupleSeqs []int64
-	// readState are the node's rows of the six read-state tables, by table, and readStateScope
-	// the predicate that found them (readReadState): a person's every row, an item's the rows
-	// that name it. replied are the user_threads rows a reply the erase removes reached in the
-	// thread it was written in, as the erase rewrites them (readRepliedRows).
-	readState      []readStateRows
-	readStateScope readStateScope
-	replied        []repliedRow
-	artifacts      []string
-	numbers        []int32
-	events         []redactedEvent
-	embedded       []embeddingRow
-	owners         events.OwnerRows
-	listing        listing
+	artifacts []string
+	numbers   []int32
+	events    []redactedEvent
+	embedded  []embeddingRow
+	owners    events.OwnerRows
+	listing   listing
 }
 
 // read reads the node as the erase would remove it and every row that derives from it
@@ -124,36 +114,20 @@ func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error
 		}
 		return erasedRead{}, fmt.Errorf("read node %s:%s: %w", e.Kind, e.ID, err)
 	}
-	// A node whose text is in its own row is refused while that row stands (Erase). A message is
-	// not, once its row names its node: that row is then one of its projection rows, which the run
-	// deletes with it, and the run marks its body in every event that carried it. A message row a
-	// build before this one wrote names no node until the backfill marks it, so the run would find
-	// it by no address and leave it and its text: that message is refused until its row names its
-	// node. A confirmed run reads this under its lock of the node's row (lockOwnersThenNode), and a
-	// create of this build writes the node before the row in one transaction, holding the node's
-	// row until it commits: a create that got there first has committed its row when this read
-	// runs, and one that comes after waits for the erase. The run without --confirm reads it in
-	// its snapshot and locks nothing, and the confirmed run reads it again.
-	stands, err := graphcensus.ObjectRowStands(ctx, tx, e.Kind, e.ID)
-	if err != nil {
+	// A node whose text is in its own row is refused while that row stands (Erase). A confirmed
+	// run reads this under its lock of the node's row (lockOwnersThenNode), and a create of this
+	// build writes the node before the row in one transaction, holding the node's row until it
+	// commits: a create that got there first has committed its row when this read runs, and one
+	// that comes after waits for the erase. The run without --confirm reads it in its snapshot and
+	// locks nothing, and the confirmed run reads it again.
+	if stands, err := graphcensus.ObjectRowStands(ctx, tx, e.Kind, e.ID); err != nil {
 		return erasedRead{}, err
-	}
-	if stands && e.Kind == graphstore.KindMessage {
-		var named bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from messages where node_kind = $1 and node_address = $2)`,
-			e.Kind, e.ID).Scan(&named); err != nil {
-			return erasedRead{}, fmt.Errorf("read whether the row of %s:%s names its node: %w", e.Kind, e.ID, err)
-		}
-		if !named {
-			return erasedRead{}, fmt.Errorf("the erase refuses %s:%s: its row stands and names no node yet, so the erase, "+
-				"which deletes the rows that name the node, would leave that row and its text in place; "+
-				"envoy-dispatch backfill-graph-store names it, and the node can be erased after", e.Kind, e.ID)
-		}
 	} else if stands {
 		return erasedRead{}, fmt.Errorf("the erase refuses %s:%s: its row stands and holds the node's text, which the erase "+
 			"does not reach, so erasing the node would report an erasure that left that text in place; no command erases that "+
 			"text, and the node can be erased once no row stands behind it", e.Kind, e.ID)
 	}
+	var err error
 	if read.document, read.blockID, err = e.ownDocument(ctx, tx); err != nil {
 		return erasedRead{}, err
 	}
@@ -167,8 +141,8 @@ func (e *Erasure) readDerived(ctx context.Context, tx pgx.Tx) (erasedRead, error
 		return erasedRead{}, err
 	}
 	for _, step := range []func(context.Context, pgx.Tx, *erasedRead) error{
-		e.readTuples, e.readRows, e.readReadState, e.readAncestors, e.readVersions, e.readReviews, e.readEmbeddings,
-		e.readSearch, e.readExcerpts, e.readEvents, e.readHistory, e.readItemParts, e.readBlockers,
+		e.readTuples, e.readRows, e.readAncestors, e.readVersions, e.readReviews, e.readEmbeddings,
+		e.readSearch, e.readExcerpts, e.readEvents, e.readHistory, e.readBlockers,
 	} {
 		if err := step(ctx, tx, &read); err != nil {
 			return erasedRead{}, err
@@ -188,9 +162,7 @@ func (e *Erasure) list(read *erasedRead) {
 
 // nodeProject is the project whose term statistics count the node's words, which the run takes
 // the erased words out of once its items moved (api.ForgetErasedTermsTx): a comment's issue's or
-// document's project, an issue message's issue's, a block's document's, and empty for a node no
-// project holds. A message on no issue is no item of any project's statistics (api's
-// searchTermItemsSQL counts a message through its issue), so its node holds none.
+// document's project, a block's document's, and empty for a node no project holds.
 func (e *Erasure) nodeProject(ctx context.Context, tx pgx.Tx, document *ownDocument) (string, error) {
 	project := ""
 	if document != nil {
@@ -202,11 +174,6 @@ func (e *Erasure) nodeProject(ctx context.Context, tx pgx.Tx, document *ownDocum
 		                 left join issues i on i.key = c.issue_key
 		                 left join artifacts a on a.id = c.artifact_id
 		                 where c.node_kind = $1 and c.node_address = $2
-		                 limit 1),
-		                (select i.project_key
-		                 from messages m
-		                 join issues i on i.key = m.issue_key
-		                 where m.node_kind = $1 and m.node_address = $2
 		                 limit 1), $3::text)`, e.Kind, e.ID, project).Scan(&project); err != nil {
 		return "", fmt.Errorf("read the project of %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -326,12 +293,12 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocum
 }
 
 // readTexts reads the text the node's own rows hold, which is what the erase takes out of every
-// row that derives from it: a comment's body and each text its blocks held at a revision, a
-// message's body, which is never edited and so holds every text its blocks hold, and a block's
-// whole text at every version that recorded one (document_block_texts), not its excerpt, which is
-// the block's first refs.BlockExcerptRunes runes and would leave the rest. A block no version
-// recorded a text of - a row an older build wrote - is read by its excerpt, the one place it
-// holds its text. A node whose rows hold no text - a block reference, a person - redacts nothing.
+// row that derives from it: a comment's body and each text its blocks held at a revision, and a
+// block's whole text at every version that recorded one (document_block_texts), not its
+// excerpt, which is the block's first refs.BlockExcerptRunes runes and would leave the rest. A
+// block no version recorded a text of - a row an older build wrote - is read by its excerpt, the
+// one place it holds its text. A node whose rows hold no text - a block reference, a person -
+// redacts nothing.
 //
 // A text longer than an event carries (model.EventBody) is read with the first part of it that
 // a copy carries in its place, as an event's body and a version an accepted suggestion named
@@ -351,8 +318,6 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 		union
 		select t.text from comment_block_texts t join comments c on c.id = t.comment_id
 		 where c.node_kind = $1 and c.node_address = $2 and t.text is not null
-		union
-		select m.body from messages m where m.node_kind = $1 and m.node_address = $2
 		union
 		select t.text from document_block_texts t
 		 where t.artifact_id = nullif($3, '')::uuid and t.block_id = $4 and t.text is not null
@@ -396,8 +361,7 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 // readTuples lists every tuple out of the node and into it, by its seq, each of which goes with
 // the node. A value tuple is listed without its value, which can be text. Of an ask's node or a
 // block's, it also keeps the writers its authored_by, decided_by, answered_by, removed_by and
-// kept_by tuples name, and of a comment's, a message's or an ask's the people its inbox tuples tie
-// to it (reachedPerson) (Erasure.Writers), which the record of the run holds once those tuples go.
+// kept_by tuples name (Erasure.Writers), which the record of the run holds once those tuples go.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
@@ -424,11 +388,13 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		if out && writesTheNode(e.Kind, kind, toKind) {
 			writers[ErasedWriter{Kind: toKind, ID: toID}] = struct{}{}
 		}
-		if person, reached := reachedPerson(e.Kind, out, fromKind, fromID, kind, toKind, toID); reached {
-			writers[ErasedWriter{Kind: graphstore.KindPerson, ID: person}] = struct{}{}
+		far := toKind + ":" + toID
+		if toKind == graphstore.KindValue {
+			far = "a value"
 		}
 		read.tupleSeqs = append(read.tupleSeqs, seq)
-		read.listing.tuples = append(read.listing.tuples, tupleLine(seq, fromKind, fromID, kind, toKind, toID))
+		read.listing.tuples = append(read.listing.tuples,
+			fmt.Sprintf("delete graph_tuples %d: %s:%s %s %s", seq, fromKind, fromID, kind, far))
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
@@ -437,160 +403,6 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.ID, b.ID))
 	})
 	return nil
-}
-
-// tupleLine is the listing's line of the tuple at seq the run deletes. A value tuple is named
-// without its value, which can be text.
-func tupleLine(seq int64, fromKind, fromID, kind, toKind, toID string) string {
-	far := toKind + ":" + toID
-	if toKind == graphstore.KindValue {
-		far = "a value"
-	}
-	return fmt.Sprintf("delete graph_tuples %d: %s:%s %s %s", seq, fromKind, fromID, kind, far)
-}
-
-// erasedPart is one node that is a part of an erased item - a block of its body, or one of its
-// delivery attempts - and the seqs of the tuples on both sides of it that the item's own listing
-// does not hold, which the erase deletes with the node (graphstore.EraseNode).
-type erasedPart struct {
-	kind, id string
-	seqs     []int64
-}
-
-// readItemParts lists, for an erased comment or message, every node that is a part of it and
-// every tuple on both sides of each, which derive from the item alone, so the erase takes them
-// with it, as the item's row takes the rows that project them with it. An ask has parts too
-// (`ask/<id>#<part id>`, refs.PlanAskParts), but the erase refuses an ask while its row stands
-// (Erasure.read), and its part rows go with that row, so no erase of an ask reads any:
-//
-//   - each block node of its body (`comment/<id>#<block id>`, `message/<id>#<block id>`;
-//     refs.IndexItem) with its part_of the item, the links its text held and the retractions of
-//     them. Its addresses are read from the item's own block rows, by the item's id through the
-//     index on it (0142, 20261101143211), rather than off graph_nodes by an address prefix, which
-//     binds no btree column under the database's ICU collation and would read every block node the
-//     store holds. A row's node_id is the block's address whether or not the row still names its
-//     node: a row an older build updated names none (migration 20261116150000), and the node it
-//     named is still the store's.
-//   - each delivery_attempt node of a comment's mentions and of a message's sends
-//     (graphstore.AttemptOpened), at the address its comment_deliveries or message_deliveries row's
-//     key spells (graphstore.AttemptKey), with its values and its owed_to, delivered_to and
-//     answered_by. Those rows cannot exist without the item's row, so apply deletes them with it,
-//     and a node none of them names any longer would be an attempt of nothing.
-//
-// A tuple between a part and the item itself - a block's part_of - is the item's own, which
-// readTuples lists and the item's erase deletes. A tuple between two of the item's parts is
-// listed with the first of them read, which deletes it. A tuple into one of the parts from a node
-// that is neither the item nor one of its parts is somebody else's words about it - a reply
-// naming the block - and refuses the run as readBlockers' rows do.
-func (e *Erasure) readItemParts(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
-	var blocks string
-	switch e.Kind {
-	case graphstore.KindComment:
-		blocks = "comment_blocks b where b.comment_id::text = $1"
-	case graphstore.KindMessage:
-		blocks = "message_blocks b where b.message_id::text = $1"
-	default:
-		return nil
-	}
-	rows, err := tx.Query(ctx, `select b.node_id from `+blocks+` order by b.node_id`, e.ID)
-	if err != nil {
-		return fmt.Errorf("read the blocks of %s:%s: %w", e.Kind, e.ID, err)
-	}
-	blockIDs, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("read the blocks of %s:%s: %w", e.Kind, e.ID, err)
-	}
-	seen := map[int64]struct{}{}
-	if err := e.readParts(ctx, tx, read, graphstore.KindBlock, blockIDs, seen); err != nil {
-		return err
-	}
-	attemptIDs, err := e.attemptAddresses(ctx, tx)
-	if err != nil {
-		return err
-	}
-	return e.readParts(ctx, tx, read, graphstore.KindDeliveryAttempt, attemptIDs, seen)
-}
-
-// attemptAddresses is the address of the attempt node each comment_deliveries row of an erased
-// comment, or message_deliveries row of an erased message, holds for it, spelled from the row's key
-// as its writer spelled it (graphstore.AttemptKey.ID), so a row that names no node any longer still
-// reaches the node it named. An address past the store's bound is no node
-// (graphstore.AttemptOpened), and the read of the nodes finds none at it.
-func (e *Erasure) attemptAddresses(ctx context.Context, tx pgx.Tx) ([]string, error) {
-	table, query := "comment_deliveries", `select target, attempt from comment_deliveries where comment_id = $1::uuid order by target, attempt`
-	key := func(target string, attempt int) graphstore.AttemptKey {
-		return graphstore.CommentAttempt(e.ID, target, attempt)
-	}
-	if e.Kind == graphstore.KindMessage {
-		table, query = "message_deliveries", `select '', attempt from message_deliveries where message_id = $1::uuid order by attempt`
-		key = func(_ string, attempt int) graphstore.AttemptKey { return graphstore.MessageAttempt(e.ID, attempt) }
-	}
-	rows, err := tx.Query(ctx, query, e.ID)
-	if err != nil {
-		return nil, fmt.Errorf("read the %s rows of %s:%s: %w", table, e.Kind, e.ID, err)
-	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (string, error) {
-		var target string
-		var attempt int
-		if err := row.Scan(&target, &attempt); err != nil {
-			return "", fmt.Errorf("read a %s row of %s:%s: %w", table, e.Kind, e.ID, err)
-		}
-		return key(target, attempt).ID(), nil
-	})
-}
-
-// readParts lists the nodes of kind at ids the store holds, each a part of the erased item, and
-// every tuple on both sides of each that is not the item's own and that no part read before it
-// listed (seen), as readItemParts says.
-func (e *Erasure) readParts(ctx context.Context, tx pgx.Tx, read *erasedRead, kind string, ids []string, seen map[int64]struct{}) error {
-	if len(ids) == 0 {
-		return nil
-	}
-	rows, err := tx.Query(ctx, `
-		select n.id, t.seq, t.from_kind, t.from_id, t.kind, t.to_kind, t.to_id
-		from graph_nodes n
-		left join graph_tuples t on (t.from_kind = n.kind and t.from_id = n.id) or (t.to_kind = n.kind and t.to_id = n.id)
-		where n.kind = $1 and n.id = any($2::text[])
-		order by n.id, t.seq`, kind, ids)
-	if err != nil {
-		return fmt.Errorf("read the %s nodes of %s:%s: %w", kind, e.Kind, e.ID, err)
-	}
-	defer rows.Close()
-	blocks, attempts := e.Kind+"/"+e.ID+"#", e.Kind+"/"+e.ID+"/"
-	first := len(read.parts)
-	for rows.Next() {
-		var id string
-		var seq *int64
-		var fromKind, fromID, tupleKind, toKind, toID *string
-		if err := rows.Scan(&id, &seq, &fromKind, &fromID, &tupleKind, &toKind, &toID); err != nil {
-			return fmt.Errorf("read a %s node of %s:%s: %w", kind, e.Kind, e.ID, err)
-		}
-		if len(read.parts) == first || read.parts[len(read.parts)-1].id != id {
-			read.parts = append(read.parts, erasedPart{kind: kind, id: id})
-			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", kind, id))
-		}
-		if seq == nil {
-			continue
-		}
-		if (*fromKind == e.Kind && *fromID == e.ID) || (*toKind == e.Kind && *toID == e.ID) {
-			continue
-		}
-		if _, listed := seen[*seq]; listed {
-			continue
-		}
-		seen[*seq] = struct{}{}
-		part := &read.parts[len(read.parts)-1]
-		part.seqs = append(part.seqs, *seq)
-		read.listing.tuples = append(read.listing.tuples, tupleLine(*seq, *fromKind, *fromID, *tupleKind, *toKind, *toID))
-		inbound := *toKind == kind && *toID == id
-		ours := (*fromKind == graphstore.KindBlock && strings.HasPrefix(*fromID, blocks)) ||
-			(*fromKind == graphstore.KindDeliveryAttempt && strings.HasPrefix(*fromID, attempts))
-		if inbound && !ours {
-			e.Blockers = append(e.Blockers, fmt.Sprintf("%s:%s states %s into %s:%s, a part of this node: erase or edit it first",
-				*fromKind, *fromID, *tupleKind, kind, id))
-		}
-	}
-	return rows.Err()
 }
 
 // writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
@@ -612,36 +424,23 @@ func writesTheNode(nodeKind, kind, toKind string) bool {
 	return false
 }
 
-// reachedPerson answers the person a tuple of an erased comment, message or ask ties to it as one
-// of its thread's participants or readers (the spec's R2 and R6): the far end of its
-// delivered_to into a person, and the near end of a participates_in, read_through, dismissed,
-// snoozed or reply_read from a person into it. Each such person's node was made by the write that
-// stated the tuple, and once the tuple and the item's user_threads and read-state rows are gone
-// nothing else may name them, so the record of the erase holds them (Erasure.Writers) as it holds
-// who wrote an ask.
-func reachedPerson(nodeKind string, out bool, fromKind, fromID, kind, toKind, toID string) (string, bool) {
-	if nodeKind != graphstore.KindComment && nodeKind != graphstore.KindMessage && nodeKind != graphstore.KindAsk {
-		return "", false
-	}
-	if out {
-		return toID, kind == graphstore.TupleDeliveredTo && toKind == graphstore.KindPerson
-	}
-	switch kind {
-	case graphstore.TupleParticipatesIn, graphstore.TupleReadThrough, graphstore.TupleDismissed,
-		graphstore.TupleSnoozed, graphstore.TupleReplyRead:
-		return fromID, fromKind == graphstore.KindPerson
-	}
-	return "", false
-}
-
 // readRows lists the node's row, its projection rows by key, the rows that cannot exist without
 // them (every required single-column reference into a projected table), and the whole text of
 // its block at every version and its block's Keep (decision_keeps).
 func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", e.Kind, e.ID))
 	for _, held := range graphstore.ProjectedTables {
-		if _, err := e.listKeyedRows(ctx, tx, read, held.Table, held.Key, `node_kind = $1 and node_address = $2`, e.Kind, e.ID); err != nil {
-			return err
+		rows, err := tx.Query(ctx, `select row(`+held.Key+`)::text from `+held.Table+
+			` where node_kind = $1 and node_address = $2 order by `+held.Key, e.Kind, e.ID)
+		if err != nil {
+			return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
+		}
+		keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return fmt.Errorf("read the %s rows of %s:%s: %w", held.Table, e.Kind, e.ID, err)
+		}
+		for _, key := range keys {
+			read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", held.Table, held.Key, key))
 		}
 		references, err := referencesTo(ctx, tx, held.Table)
 		if err != nil {
@@ -678,23 +477,6 @@ func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 		}
 	}
 	return nil
-}
-
-// listKeyedRows lists each row of table that where picks, over args, as a row the run deletes,
-// named by its key as row(key)::text spells it and in key order, and answers those keys.
-func (e *Erasure) listKeyedRows(ctx context.Context, tx pgx.Tx, read *erasedRead, table, key, where string, args ...any) ([]string, error) {
-	rows, err := tx.Query(ctx, `select row(`+key+`)::text from `+table+` where `+where+` order by `+key, args...)
-	if err != nil {
-		return nil, fmt.Errorf("read the %s rows of %s:%s: %w", table, e.Kind, e.ID, err)
-	}
-	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the %s rows of %s:%s: %w", table, e.Kind, e.ID, err)
-	}
-	for _, held := range keys {
-		read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete %s (%s)=%s", table, key, held))
-	}
-	return keys, nil
 }
 
 // readAncestors reads the blocks of the node's document that hold its block, up the
@@ -781,11 +563,10 @@ func (e *Erasure) readAncestorTexts(ctx context.Context, tx pgx.Tx, read *erased
 
 // readAncestorExcerpts reads the excerpt of each of those blocks and keeps each the redaction
 // rewrites, with the excerpt as it leaves it: cut from the redacted text of the version the row
-// records its text at, the way the indexer cuts one (refs.BlockExcerpt, around the server's
-// dashboard origin, serverURL), and redacted in place where that rewrite does not reach it - a
-// block whose text document_block_texts does not hold. An excerpt cut from a version the node's
-// block did not stand in (blockStoodIn) is cut from a text readAncestorTexts leaves as it is, and
-// stays as it is with it.
+// records its text at, the way the indexer cuts one (refs.IndexBlocks), and redacted in place
+// where that rewrite does not reach it - a block whose text document_block_texts does not hold.
+// An excerpt cut from a version the node's block did not stand in (blockStoodIn) is cut from a
+// text readAncestorTexts leaves as it is, and stays as it is with it.
 func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *erasedRead, holding []string) error {
 	rows, err := tx.Query(ctx, `
 		select b.block_id, b.node_id, b.excerpt, b.changed_version,
@@ -820,7 +601,7 @@ func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *era
 		if stored.text != nil {
 			redacted := redactBlockQuote(*stored.text, read.texts, e.marker())
 			if redacted != *stored.text {
-				cut = refs.BlockExcerpt(redacted, e.serverURL)
+				cut = text.HeadRunes(redacted, refs.BlockExcerptRunes)
 			}
 		}
 		if cut == stored.excerpt {
@@ -1087,22 +868,18 @@ func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, e
 }
 
 // nodeOwners reads the owner row each projection row of the node stands under: an issue's own
-// comment or message stands under the issue, and every other row under the owner of the document
-// it belongs to, which is that document's issue or, for a document no issue owns, the document's
-// own artifacts row - the owner docs' lockArtifactOwner finds and events.LockOwnerRows takes. A
-// message on no issue belongs to no document either, and stands under none, as its write takes
-// none. A node no row projects stands under none.
+// comment stands under the issue, and every other row under the owner of the document it belongs
+// to, which is that document's issue or, for a document no issue owns, the document's own
+// artifacts row - the owner docs' lockArtifactOwner finds and events.LockOwnerRows takes. A node
+// no row projects stands under none.
 func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRows, error) {
 	arms := make([]string, len(graphstore.ProjectedTables))
 	for index, held := range graphstore.ProjectedTables {
-		issue, artifact := "null::text", "null::uuid"
+		issue := "null::text"
 		if held.Issue != "" {
 			issue = held.Issue
 		}
-		if held.Artifact != "" {
-			artifact = held.Artifact
-		}
-		arms[index] = `select ` + issue + `, ` + artifact + ` from ` + held.Table + ` where node_kind = $1 and node_address = $2`
+		arms[index] = `select ` + issue + `, artifact_id from ` + held.Table + ` where node_kind = $1 and node_address = $2`
 	}
 	rows, err := tx.Query(ctx, `
 		select coalesce(held.issue_key, a.issue_key, ''), coalesce(a.id::text, '')
@@ -1174,21 +951,17 @@ func projectionRows(reference referencingColumn, table string) string {
 // handed back through it is the ask's own history, so the erase neither deletes one nor rewrites
 // the other. A projection row of another live node whose node states a tuple into this one now: a
 // block inside an erased block (its part_of and its parent_block_id), a block that cites it (its
-// mentions or pointer tuple and its block_refs row), a comment, an ask or a message its author is
-// (its authored_by and its author), a block of an item's body that cites it or that a reply names
-// (its link or its part_of and the item's block or link row naming the block's node,
-// itemPartTables), and an item that cites it (its mentions and the item's refs row that holds
-// tuples_stored, migration 20261116135959). An ask's row is read here beside
-// graphstore.ProjectedTables: it is the projection of the ask's node (migration 20261116094058),
-// which the erase never deletes, since it refuses an ask while that row stands (Erasure.read). The
-// erase deletes the tuples into the node, so such a row would go on stating a tuple the store no
-// longer holds, which is a difference `census --store` reads. The erased item's own parts
-// (readItemParts) go with it, and so does every tuple they state into it. And, for a person, a
-// comments row that names them as the owner of the session the server proved that wrote it
-// (graphcensus.ProvedSessionComments, the census's own reading of that row): its authored_by
-// names the session and only the session's alias_of names the person, and a session has no
-// projection row, so the read before finds no such row, but the census names the person from the
-// comment's row and would read her node gone while that row stands.
+// mentions or pointer tuple and its block_refs row), a comment or an ask its author is (its
+// authored_by and its author). An ask's row is read here beside graphstore.ProjectedTables: it is
+// the projection of the ask's node (migration 20261116094058), which the erase never deletes,
+// since it refuses an ask while that row stands (Erasure.read). The erase deletes the tuples into
+// the node, so such a row would go on stating a tuple the store no longer holds, which is a
+// difference `census --store` reads. And, for a person, a comments row that names them as the
+// owner of the session the server proved that wrote it (graphcensus.ProvedSessionComments, the
+// census's own reading of that row): its authored_by names the session and only the session's
+// alias_of names the person, and a session has no projection row, so the read before finds no such
+// row, but the census names the person from the comment's row and would read her node gone while
+// that row stands.
 //
 // Each node stating a tuple into this one probes its own row through graph_nodes' primary key,
 // in a subquery behind an offset 0 the planner cannot flatten, so no plan reads graph_nodes
@@ -1217,22 +990,11 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 			}
 		}
 	}
-	projected := make([]string, 0, len(graphstore.ProjectedTables)+len(itemPartTables)+2)
+	projected := make([]string, 0, len(graphstore.ProjectedTables)+1)
 	for _, held := range graphstore.ProjectedTables {
 		projected = append(projected, `exists (select 1 from `+held.Table+` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`)
 	}
 	projected = append(projected, `exists (select 1 from asks p where p.node_kind = t.from_kind and p.node_address = t.from_id)`)
-	for _, table := range itemPartTables {
-		projected = append(projected, `exists (select 1 from `+table+` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`)
-	}
-	projected = append(projected, `exists (select 1 from refs p where p.from_kind = t.from_kind and p.from_id = t.from_id
-		and p.to_kind = $1 and p.to_id = $2 and p.kind = t.kind and p.tuples_stored)`)
-	own := make([]string, 0, len(read.parts))
-	for _, part := range read.parts {
-		if part.kind == graphstore.KindBlock {
-			own = append(own, part.id)
-		}
-	}
 	rows, err := tx.Query(ctx, `
 		select t.from_kind, t.from_id, t.kind from (
 			`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id, t.kind`, `t.from_kind, t.from_id, t.kind, t.asserted`,
@@ -1245,8 +1007,7 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 			offset 0
 		) n
 		where n.state = $3 and t.asserted and (`+strings.Join(projected, " or ")+`)
-		  and not (t.from_kind = $4 and t.from_id = any($5::text[]))
-		order by 1, 2, 3`, e.Kind, e.ID, graphstore.StateLive, graphstore.KindBlock, own)
+		order by 1, 2, 3`, e.Kind, e.ID, graphstore.StateLive)
 	if err != nil {
 		return fmt.Errorf("read the nodes stating a tuple into %s:%s: %w", e.Kind, e.ID, err)
 	}

@@ -28,9 +28,9 @@ import (
 // created_at, the transaction's start, and this build dates the row by the comment's own moment,
 // so the previous build keeps the event's cut text. This build's census of the store counts that
 // version among the cut first bodies revision 1 proves. Once the previous build has stopped, this
-// build serves with its fill on: when it takes the hold, its first-body repair rebuilds the version
-// from revision 1, its body revision 1's blocks in their order, from blocks, and the census then
-// counts none.
+// build serves with its fill on: when it has taken the hold and its first pass ends, its
+// first-body repair rebuilds the version from revision 1, its body revision 1's blocks in their
+// order, from blocks, and the census then counts none.
 func TestTheFirstBodyRepairRebuildsACutVersionThePreviousBuildsFillWrote(t *testing.T) {
 	builds := newTwoBuilds(t)
 	current := builds.startCurrent(t, map[string]string{"DISPATCH_SEARCH_FILL": "off"})

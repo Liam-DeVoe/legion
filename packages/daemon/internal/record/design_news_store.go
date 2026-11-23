@@ -61,7 +61,7 @@ func (s *Postgres) TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]Desi
 // work (workflow's Engine.enter), or the write that opens the tree's gate for the first time
 // (workflow's putGateTold). A row of a step that is not one of DesignSteps, a `decisions` row an
 // earlier release wrote, is left out, as every read of the gate rows leaves it (Postgres.GatesOf),
-// so no told row takes a version of that step.
+// so the row it writes takes no version of that step.
 func (s *Postgres) BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) error {
 	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, versions, opening_owed, told_at)
 		select $1::text, $2::text,
@@ -280,7 +280,7 @@ func (s *Postgres) DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []Versi
 // recorded unavailable takes the new row, so a Dispatch that has gained the route since can still
 // say what changed. It refuses a set the table's shape does not hold: a state that is neither,
 // a pair whose From is not below its To, a reason given or missing against the state, and an
-// unchanged pair that is unavailable or decision-only.
+// unchanged pair that is unavailable or ask-only (DecisionOnly).
 func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error {
 	switch {
 	case changes.State != DesignChangesRead && changes.State != DesignChangesUnavailable:
@@ -290,7 +290,7 @@ func (s *Postgres) PutDesignChanges(ctx context.Context, tx pgx.Tx, changes Desi
 	case (changes.State == DesignChangesUnavailable) != (changes.Reason != ""):
 		return fmt.Errorf("record the change set of %+v: an unavailable pair says why, and a read one has no reason to give", changes.VersionPair)
 	case changes.Unchanged && (changes.State != DesignChangesRead || changes.DecisionOnly):
-		return fmt.Errorf("record the change set of %+v: only a pair read from Dispatch can be unchanged, and a decision-only one is not", changes.VersionPair)
+		return fmt.Errorf("record the change set of %+v: only a pair read from Dispatch can be unchanged, and an ask-only one is not", changes.VersionPair)
 	}
 	sections, err := json.Marshal(append([]SectionChange{}, changes.Sections...))
 	if err != nil {

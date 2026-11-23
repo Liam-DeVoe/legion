@@ -139,11 +139,11 @@ var objectKinds = []objectKind{
 		rows: `select id::text, id::text from messages where id = any($1::text[]::uuid[])`},
 }
 
-// ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a node
-// for from its rows (objectKinds), and false for any other. The erase (grapherase's Erasure.read)
-// refuses an issue's, a document's or an ask's node while its row stands, and a message's until its
-// row names its node, then deletes it with the node. An ask's and a message's row is keyed by a uuid,
-// so an id that is no uuid names no row; it answers false rather than abort the erase on the cast.
+// ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
+// node for from its rows (objectKinds), and false for any other kind. The erase reads it to refuse
+// a node of these kinds while its row holds its text (grapherase's Erasure.read). An ask's and a
+// message's row is keyed by a uuid, so an id that is no uuid names no row of them; it answers false
+// for it rather than let the cast in objectKind.rows abort the erase's transaction.
 func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (bool, error) {
 	for _, known := range objectKinds {
 		if known.kind != kind {

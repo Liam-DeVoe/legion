@@ -90,7 +90,7 @@ func TestTheEraseRefusesATupleThatLandedAfterItsListing(t *testing.T) {
 		t.Fatalf("install the block schema from the store: %v", err)
 	}
 	held := heldOf(t, database, refs.BlockNodeKind, seeded.inner)
-	tx, erasure, read, err := lockInStoreOrder(ctx, conn, eraseServerURL, refs.BlockNodeKind, seeded.inner)
+	tx, erasure, read, err := lockInStoreOrder(ctx, conn, refs.BlockNodeKind, seeded.inner)
 	if err != nil {
 		t.Fatalf("take the erase's locks and read its listing: %v", err)
 	}
