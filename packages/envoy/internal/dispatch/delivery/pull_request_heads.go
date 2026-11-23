@@ -123,11 +123,11 @@ func PullRequestHeadState(action string, merged bool) string {
 //
 // It marks every database failure on the way to that write and not the write alone, because
 // they all end the same way and a connection-level outage reaches the earlier ones first. The
-// envelope's path to the write is two reads and the write: the canonical name of the
-// repository (refs.CanonicalRepo) and the attribution's own read of the issues its candidates
-// name (headAttribution, through resolveAttributionCandidates). A head row lost because
-// Postgres refused the first of those is as lost as one lost at the insert, so
-// recordPullRequestHead marks all three (markHeadNotStored).
+// envelope's path to the write is one read and the write: the attribution's own read of the
+// issues its candidates name (headAttribution, through resolveAttributionCandidates). The
+// canonical name of the repository is no read (refs.Renames.Canonical, over the pairs the boot
+// read). A head row lost because Postgres refused that read is as lost as one lost at the
+// insert, so recordPullRequestHead marks both (markHeadNotStored).
 //
 // One failure of that path is deliberately left unmarked, because no redelivery mends it. A
 // read of GitHub the App refused is answered by the reconcile's own next pass, and handing
@@ -471,7 +471,9 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 // pull request ($1, $2) exists yet (every sub-statement reads the snapshot from before the
 // insert), it sets attribution_rule to 0 on each row credited by source github_issue_link whose
 // stored cited issues name that pull request's number in its repository, the cited repository
-// read under its canonical name as citedPullRequest reads it. Two first writes of one pull request
+// read as stored, which is its canonical name: citedIssues stores each citation under the name its
+// repository is called today (refs.Renames.CanonicalURL), and the row is keyed by that name too
+// (Attributor.canonical). Two first writes of one pull request
 // that cross both mark the rows, and a second judging of them changes nothing. A row credited by
 // another source is left alone: a citation is source 2, so it decided only where it credited the
 // row. The number is bound as an integer (the insert's column) and compared as text. The text is
@@ -485,7 +487,7 @@ var citingRowsRejudged = `with first_record as (
 		where first_record.first
 			and citing.attribution_source = '` + string(sourceGitHubIssueLink) + `'
 			and exists (select 1 from unnest(citing.attribution_cited_issues) cited(url)
-				where lower(` + refs.CanonicalRepoSQL(`split_part(cited.url, '/', 4) || '/' || split_part(cited.url, '/', 5)`) + `) = lower($1)
+				where lower(split_part(cited.url, '/', 4) || '/' || split_part(cited.url, '/', 5)) = lower($1)
 					and split_part(cited.url, '/', 7) = ($2::integer)::text)
 	)`
 
@@ -522,7 +524,7 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 }
 
 // upsertHeadUnderCanonicalName writes head, which every caller has already keyed by the
-// canonical name of its repository (refs.CanonicalRepo), and drops the row the same pull
+// canonical name of its repository (refs.Renames.Canonical), and drops the row the same pull
 // request is stored under as storedUnder when that is another name. A row keyed under a
 // repository's old name can be read at all only under the canonical one — the App answers 404
 // for the old name's installation, so nothing can refresh it and no issue is ever held to it
@@ -570,8 +572,9 @@ func upsertHeadUnderCanonicalName(
 // this about the check's own issue, so a child's pull request never answers for a check above
 // it (api/results_comparison.go's comparisonReader). A pull request the issue links by its URL
 // answers for it in any repository, since the attribution gives it the issue (attributionHeldFor),
-// unless its head is in a fork (headAttribution): HeadsAttributedTo keeps the same rule.
-func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
+// unless its head is in a fork (headAttribution): HeadsAttributedTo keeps the same rule. It reads
+// the attributed rows alone, which are keyed by their canonical names, so it reads no rename pair.
+func (a *Attributor) HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
 	var found bool
 	if err := pool.QueryRow(ctx, `
 		select exists (
@@ -612,8 +615,9 @@ type AttributedHead struct {
 // naming the repository of the link that names it in a repository the issue does not resolve to
 // (linked_repo, "" where no such link names it). The repository is the link's and not the row's
 // spelling, the canonical name the terms read; `limit 1` keeps one where two links of the issue
-// name one pull request, spelled apart.
-var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
+// name one pull request, spelled apart. NewAttributor builds it once from its rename pairs.
+func headsAttributedQuery(renames refs.Renames) string {
+	return `with recursive ` + linkedPullRequestTerms(renames) + `
 	select h.repo, h.number, h.head_sha, h.state = 'open', h.checked_at, h.event_at,
 		coalesce((
 			select l.repo from linked_pulls l
@@ -623,6 +627,7 @@ var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 	from pull_request_heads h
 	where h.issue_key = $1 and h.state in ('open', 'merged')
 	order by greatest(h.checked_at, h.event_at) desc nulls last, h.number desc`
+}
 
 // HeadsAttributedTo is every open or merged pull request attributed to issueKey, newest learned
 // first: the whole list HeadAttributedTo answers one commit of, which the results read names as
@@ -641,8 +646,8 @@ var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 //
 // The read uses pull_request_heads_issue_head's leading column, as BaseBranchMergedFor's does:
 // the rows one issue's key holds are the handful of pull requests attributed to that issue.
-func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
-	rows, err := pool.Query(ctx, headsAttributedQuery, issueKey)
+func (a *Attributor) HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
+	rows, err := pool.Query(ctx, a.headsQuery, issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 	}
@@ -708,12 +713,12 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 // commit does not stop another being opened from the same head. Counting one would leave every
 // result at that commit standing at no basis for good.
 //
-// repoFull is the canonical name of the repository (refs.CanonicalRepo), compared without case,
-// as every other comparison of a repository here is (refs.CanonicalRepoSQL): a row written from
-// a `pull_request` envelope carries GitHub's own spelling of the repository (`Acme/Widgets`),
-// while the results read is passed the lowercased spelling the repository-to-project mapping
-// stores (refs.ExternalRepo), so an exact comparison would answer "no row" for a repository
-// whose owner writes their name with capitals. The read is one index lookup on
+// repoFull is the canonical name of the repository (refs.Renames.Canonical), compared without
+// case, as every other comparison of a repository here is: a row written from a `pull_request`
+// envelope carries GitHub's own spelling of the repository (`Acme/Widgets`), while the results
+// read is passed the lowercased spelling an issue's own repository and a project's default
+// repository are stored under (refs.ExternalRepo), so an exact comparison would answer "no row"
+// for a repository whose owner writes their name with capitals. The read is one index lookup on
 // pull_request_heads_repo_head (migration 20261105112616), which is built on
 // `(lower(repo), head_sha)` for that reason: pull_request_heads_issue_head is partial on
 // `issue_key is not null` and keyed on the issue, so it serves no lookup by repository and head
@@ -756,8 +761,9 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // into a branch of its own repository, and the caller walks the branch answered here in repoFull
 // (api/results_comparison.go, branchBases), where a branch of that name is another branch or
 // none. A linked repository's merge is BaseBranchMergedIn's, which the results read walks in that
-// repository. Both names are compared under their canonical names and without case, as the
-// attribution compares a pull request's repository with the issue's (attributionHeld).
+// repository. Both names are canonical, the row's as its writer keys it (Attributor.canonical) and
+// repoFull as its caller reads it (api's checkIssueRepository), and they are compared without
+// case, as the attribution compares a pull request's repository with the issue's (attributionHeld).
 //
 // An empty answer is "no branch to measure against", which a merged row carrying no base_ref
 // gives as much as no merged row at all. The column is declared not null with the empty string
@@ -775,7 +781,7 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey, repoFu
 	err := pool.QueryRow(ctx, `
 		select base_ref from pull_request_heads
 		where issue_key = $1 and state = 'merged'
-			and lower(`+refs.CanonicalRepoSQL("repo")+`) = lower(`+refs.CanonicalRepoSQL("$2::text")+`)
+			and lower(repo) = lower($2::text)
 		order by event_at desc nulls last, number desc
 		limit 1
 	`, issueKey, repoFull).Scan(&branch)
@@ -1002,14 +1008,14 @@ func (a headAttributionResult) stored(head PullRequestHead) PullRequestHead {
 // it settled on, if any. attributeHead calls this a second time, after reading the commit
 // messages, whenever the first call held no candidate, so on that path both calls log and the
 // second line names the candidates the commit messages added.
-func headAttribution(ctx context.Context, pool *store.Pool, facts attributionFacts, headRepo string) (headAttributionResult, error) {
+func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, facts attributionFacts, headRepo string) (headAttributionResult, error) {
 	attributed := headAttributionResult{
 		source:   string(sourceNone),
 		ownHead:  headInOwnRepository(facts.Repo, headRepo),
 		complete: headRepo != "",
-		inputs:   attributionInputsFrom(facts),
+		inputs:   a.attributionInputsFrom(facts),
 	}
-	candidates, err := resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributed.inputs)
+	candidates, err := a.resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributed.inputs)
 	if err != nil || len(candidates) == 0 {
 		return attributed, err
 	}
@@ -1055,8 +1061,8 @@ func headAttribution(ctx context.Context, pool *store.Pool, facts attributionFac
 // the row read. The read given up is noted on the attempt ctx carries (githubreads), which only
 // the reconcile's leased pass carries: the intakes and the results routes call this too, and
 // their contexts carry none, so the note changes nothing there.
-func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
-	attributed, err := headAttribution(ctx, pool, facts, headRepo)
+func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
+	attributed, err := a.headAttribution(ctx, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
 		return attributed, err
 	}
@@ -1076,7 +1082,7 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 		return attributed, nil
 	}
 	facts.CommitMessages = read
-	attributed, err = headAttribution(ctx, pool, facts, headRepo)
+	attributed, err = a.headAttribution(ctx, pool, facts, headRepo)
 	attributed.messages = read
 	attributed.commitsRead = true
 	return attributed, err
@@ -1123,8 +1129,8 @@ func mergeCommitOf(payload pullRequestPayload) string {
 // four name is held to the repository the pull request is in, its commit messages, read with the
 // caller's installation token. The one place the two GitHub readers below build an attribution
 // from a payload, so a sixth source, or a sixth fact a payload carries, is added in one.
-func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
-	return attributeHead(ctx, pool, client, func() (string, error) { return token, nil },
+func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
+	return a.attributeHead(ctx, pool, client, func() (string, error) { return token, nil },
 		attributionFacts{
 			Repo: repoFull, URL: payload.HTMLURL, Title: payload.Title, Body: payload.Body,
 			HeadRef: payload.Head.Ref,
@@ -1145,23 +1151,20 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 //
 // repoFull is the key ListStalePullRequestHeads read off the row, which may be a name the
 // repository has been renamed away from, and every step here but the stamp works on the
-// canonical name instead (refs.CanonicalRepo): the token is minted for it, since GitHub answers
-// 404 for the installation of a name no longer in use; the attribution holds the pull request's
-// issue to it; and the row is written under it, with the row under the old key dropped in the
-// same step (upsertHeadUnderCanonicalName). The stamp stays on the key the batch handed over,
-// since that is the row the batch must stop offering: a canonical repository the App cannot
-// read teaches this row nothing under either name.
+// canonical name instead (refs.Renames.Canonical): the token is minted for it, since GitHub
+// answers 404 for the installation of a name no longer in use; the attribution holds the pull
+// request's issue to it; and the row is written under it, with the row under the old key
+// dropped in the same step (upsertHeadUnderCanonicalName). The stamp stays on the key the batch
+// handed over, since that is the row the batch must stop offering: a canonical repository the
+// App cannot read teaches this row nothing under either name.
 //
 // broker is the reconcile's own, so a row this pass re-judges under a newer attribution rule
 // records the move on both issues (UpsertPullRequestHead).
-func RefreshPullRequestHead(
+func (a *Attributor) RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull string, number int, now time.Time,
 ) error {
-	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
-	if err != nil {
-		return err
-	}
+	canonical := a.canonical(repoFull)
 	owner, repo, err := refs.SplitGitHubRepo(canonical)
 	if err != nil {
 		// No read of GitHub can reach a name GitHub does not allow, so the row is stamped as an
@@ -1186,7 +1189,7 @@ func RefreshPullRequestHead(
 		}
 		return err
 	}
-	attributed, err := attributePayload(ctx, pool, client, token, canonical, payload)
+	attributed, err := a.attributePayload(ctx, pool, client, token, canonical, payload)
 	if err != nil {
 		return err
 	}
@@ -1238,8 +1241,8 @@ func RepositoryUnreadable(err error) bool {
 // rather than this read-through standing as the last word.
 //
 // repoFull comes from outside — the repository the check's issue resolves to — so it is
-// canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
-// is ever written under a name a repository was renamed away from. The read-time caller has
+// canonicalised before anything is asked of GitHub or written (refs.Renames.Canonical), and no
+// row is ever written under a name a repository was renamed away from. The read-time caller has
 // canonicalised that name already, and so has the record-time caller, which resolves through
 // the same helper (api/issue_repo.go, server.checkIssueRepository); the rule reaches the
 // canonical name in one step, so this read changes nothing for either. It is here because this
@@ -1250,14 +1253,11 @@ func RepositoryUnreadable(err error) bool {
 // broker is the caller's own event broker, which a row this read re-attributes records its move
 // through (UpsertPullRequestHead); a caller that holds none hands over nil and the move is
 // written with no event.
-func ReadThroughCommitPulls(
+func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
-	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
-	if err != nil {
-		return 0, false, err
-	}
+	canonical := a.canonical(repoFull)
 	owner, repo, token, err := repositoryRead(ctx, client, canonical)
 	if err != nil {
 		return 0, false, err
@@ -1270,7 +1270,7 @@ func ReadThroughCommitPulls(
 		if pull.Head.SHA == sha {
 			atHead = true
 		}
-		attributed, err := attributePayload(ctx, pool, client, token, canonical, pull)
+		attributed, err := a.attributePayload(ctx, pool, client, token, canonical, pull)
 		if err != nil {
 			return written, atHead, err
 		}
@@ -1319,30 +1319,28 @@ func ReadThroughCommitPulls(
 // write stores one, which the reconcile's read of the pull request does.
 //
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
-// canonicalised before anything is read or written (refs.CanonicalRepo), and no row is ever
+// canonicalised before anything is read or written (refs.Renames.Canonical), and no row is ever
 // written under a name a repository was renamed away from. It is also what the head is held to:
 // an envelope keyed by an old name carries a `head_repo` GitHub spells under the new one, and
 // comparing those two would make every such pull request a fork's (headInOwnRepository).
 //
-// Three of the four steps here can fail, and each failure is marked, or left bare, by what a
-// redelivery of the envelope would do with it (markHeadNotStored, ErrHeadNotStored). The
-// canonical read and the attribution are reads of Postgres before any row is written, so a
-// failure of either loses the head row exactly as a refused insert does and both are marked;
-// the attribution's own exception, a rate limit, is not. The split this function makes for
-// itself is the one failure it returns bare without asking markHeadNotStored at all: a name
-// that is not `owner/repo` is malformed in the envelope, so the next delivery of the same
-// envelope carries the same name and would fail on it again.
+// The split, the attribution and the write can fail here, and each failure is marked, or left
+// bare, by what a redelivery of the envelope would do with it (markHeadNotStored,
+// ErrHeadNotStored). The attribution is a read of Postgres before any row is written, so its
+// failure loses the head row exactly as a refused insert does and is marked; the attribution's
+// own exception, a rate limit, is not. The split this function makes for itself is the one
+// failure it returns bare without asking markHeadNotStored at all: a name that is not
+// `owner/repo` is malformed in the envelope, so the next delivery of the same envelope carries
+// the same name and would fail on it again. The canonical name is no read at all
+// (refs.Renames.Canonical), so it cannot fail.
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) ([]string, error) {
 	given := payload["repo"]
-	repoFull, err := refs.CanonicalRepo(ctx, in.pool, given)
-	if err != nil {
-		return nil, markHeadNotStored(err)
-	}
+	repoFull := in.attributor.canonical(given)
 	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return nil, err
 	}
-	attributed, err := attributeHead(ctx, in.pool, in.github,
+	attributed, err := in.attributor.attributeHead(ctx, in.pool, in.github,
 		func() (string, error) { return in.github.RepositoryToken(ctx, owner, repo) },
 		attributionFacts{
 			Repo: repoFull, URL: payload["url"], Title: payload["title"], Body: payload["body"],

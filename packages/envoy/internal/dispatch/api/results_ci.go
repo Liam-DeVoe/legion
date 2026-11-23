@@ -344,7 +344,7 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 // `ci`; where none is open, the one head delivery.NewestPullRequestHead answers, the final head of
 // the merged pull request of the highest number; and none where Dispatch holds neither.
 func (s *server) ciHeadsOf(ctx context.Context, issueKey string) ([]delivery.NewestHead, error) {
-	attributed, err := delivery.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
+	attributed, err := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
 	if err != nil {
 		return nil, err
 	}

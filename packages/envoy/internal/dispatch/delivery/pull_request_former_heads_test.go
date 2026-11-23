@@ -71,12 +71,13 @@ func newReKeyRig(t *testing.T, number int, left, oldHead, head string) *reKeyRig
 	}
 	fake := gadgetsFake(t, number, issue+": the work", head)
 	client := fake.newTestClient()
-	if written, _, err := ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now()); err != nil || written != 1 {
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	if written, _, err := attributor.ReadThroughCommitPulls(ctx, pool, client, nil, gadgetsRepo, head, time.Now()); err != nil || written != 1 {
 		t.Fatalf("read through %s at %s = %d, %v; want one row written", gadgetsRepo, head, written, err)
 	}
 	rig := &reKeyRig{pool: pool, ctx: ctx, issue: issue, number: number, left: left, oldHead: oldHead, head: head}
 	rig.refresh = func() error {
-		return RefreshPullRequestHead(context.Background(), pool, client, nil, gadgetsOldRepo, number, time.Now())
+		return attributor.RefreshPullRequestHead(context.Background(), pool, client, nil, gadgetsOldRepo, number, time.Now())
 	}
 	rig.formerHeadsOf = func(repo string) []string {
 		t.Helper()

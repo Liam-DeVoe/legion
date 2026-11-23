@@ -549,25 +549,28 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
 
     const fakeSecrets = path.join(work, "fake-secrets.json");
     writeFileSync(fakeSecrets, JSON.stringify({ secrets: [] }), { mode: 0o600 });
-    // C8's entry: Dispatch's public host alone, kind dpop, the placeholder in Authorization alone,
-    // and a POST under the projects' and the issues' routes alone.
-    const rulesFile = path.join(work, "airlock.json");
+    // C8's entry, the proxy block of the profile DISPATCH_RESULTS_TOKEN: Dispatch's public host
+    // alone, kind dpop, the placeholder in Authorization alone, and a POST under the projects' and
+    // the issues' routes alone.
+    const profilesFile = path.join(work, "profiles.json");
     writeFileSync(
-      rulesFile,
+      profilesFile,
       JSON.stringify({
-        secrets: [
+        profiles: [
           {
             name: "DISPATCH_RESULTS_TOKEN",
-            kind: "dpop",
-            hosts: [DISPATCH_HOST],
-            headers: ["Authorization"],
-            // The two results routes a results token writes: a check of the spec files, and the
-            // check of an issue's Verification document whose ci_check names the job. Dispatch's
-            // own gate refuses the token on every other route under the second prefix.
-            allow: [
-              { method: "POST", pathPrefix: "/api/v1/projects/" },
-              { method: "POST", pathPrefix: "/api/v1/issues/" },
-            ],
+            proxy: {
+              kind: "dpop",
+              hosts: [DISPATCH_HOST],
+              headers: ["Authorization"],
+              // The two results routes a results token writes: a check of the spec files, and the
+              // check of an issue's Verification document whose ci_check names the job. Dispatch's
+              // own gate refuses the token on every other route under the second prefix.
+              allow: [
+                { method: "POST", pathPrefix: "/api/v1/projects/" },
+                { method: "POST", pathPrefix: "/api/v1/issues/" },
+              ],
+            },
           },
         ],
       })
@@ -583,7 +586,7 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
       BROKER_SECRETS_PREFIX: SECRETS_PREFIX,
       BROKER_SECRETS_KMS_KEY_ARN: SECRETS_KMS_KEY_ARN,
       BROKER_FAKE_SECRETS_FILE: fakeSecrets,
-      BROKER_AIRLOCK_RULES_FILE: rulesFile,
+      BROKER_PROFILES_FILE: profilesFile,
       BROKER_AIRLOCK_LISTEN_ADDR: "127.0.0.1:0",
       BROKER_AIRLOCK_PROXY_URL: `http://${proxyFront.address}`,
       BROKER_AIRLOCK_CA_CERT_FILE: authority.ca_cert_file,
@@ -663,11 +666,9 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
     };
     await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: `${PROJECT} project` });
     // The project's default repository, so its issues resolve to the repository a job's run is
-    // of: the issue's results route takes a job's result only for such an issue.
-    await asPerson("PUT", `/api/v1/settings/repo-projects/${REPOSITORY}`, {
-      project: PROJECT,
-      default: true,
-    });
+    // of: the issue's results route takes a job's result only for such an issue, and the
+    // project's results route only from a run of that repository.
+    await asPerson("PUT", `/api/v1/projects/${PROJECT}/default-repository`, { repo: REPOSITORY });
     const filed = (await asPerson("POST", "/api/v1/issues", {
       project: PROJECT,
       title: "A change a CI job proves",

@@ -307,7 +307,7 @@ export const PHASE_OP_SENTENCES = {
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The daemon refuses the tester's move out of testing (BACKWARD_REFUSED), since a testing step ends by its checks' states: the tester " +
     "records each check's result with `dispatch result`, a fail with its evidence for a check it cannot verify, and completes. " +
-    "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
+    "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move counts no review round. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +

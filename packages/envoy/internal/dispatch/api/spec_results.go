@@ -22,6 +22,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
@@ -331,19 +332,21 @@ func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
 	return runNumbers{checkRun: checkRun, run: workflowRun, attempt: attempt}, nil
 }
 
-// projectMapsRepository answers whether project maps repository, by the name it was mapped
-// under or the name it was renamed to (repo_projects.renamed_to), which is the name GitHub
-// names a run's repository by. GitHub spells a repository as its owner does and Dispatch stores
-// a mapping's names lowercased (canonicalRepo), so both sides are compared lowercased, as every
-// comparison of a repository is (refs.CanonicalRepoSQL).
+// projectMapsRepository answers whether repository is project's default repository
+// (projects.default_repo, which PUT /api/v1/projects/{key}/default-repository sets): Dispatch
+// writes no repository mapping, so the default is the one repository a project names as its own.
+// Both sides are compared under the name each is called today by the boot's rename pairs
+// (refs.Renames.Canonical), which is the name GitHub names a run's repository by, and
+// lowercased, since GitHub spells a repository as its owner does.
 func (s *server) projectMapsRepository(ctx context.Context, project, repository string) (bool, error) {
-	var mapped bool
-	if err := s.deps.Store.Pool.QueryRow(ctx, `
-		select exists (select 1 from repo_projects where project = $1 and (lower(repo) = lower($2) or lower(renamed_to) = lower($2)))`,
-		project, repository).Scan(&mapped); err != nil {
-		return false, fmt.Errorf("read whether %s maps %s: %w", project, repository, err)
+	var defaultRepo *string
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select default_repo from projects where key = $1`, project).Scan(&defaultRepo); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read the default repository of %s: %w", project, err)
 	}
-	return mapped, nil
+	return defaultRepo != nil && strings.EqualFold(s.deps.Renames.Canonical(*defaultRepo), s.deps.Renames.Canonical(repository)), nil
 }
 
 // repositoryReader mints the installation token of one repository once a read needs it, so a

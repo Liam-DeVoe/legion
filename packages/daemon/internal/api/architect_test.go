@@ -251,6 +251,12 @@ func (r *statusRecorder) WebhookAppInstalled(_ context.Context, repo string) (bo
 	r.asked("GET /api/v1/github/installations/%s", repo)
 	return true, nil
 }
+func (r *statusRecorder) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (r *statusRecorder) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 
 func (r *statusRecorder) PutGatedSteps(_ context.Context, project string, _ []string) error {
 	r.asked("PUT /api/v1/projects/%s/gated-steps", project)
