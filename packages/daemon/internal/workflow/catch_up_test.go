@@ -476,8 +476,7 @@ func promoted(t *testing.T, pool *pgxpool.Pool) record.Issue {
 func startArchitect(t *testing.T, pool *pgxpool.Pool, engine *Engine, root record.Issue) string {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(context.Background())
-		return engine.StartArchitect(ctx, tx, root)
+		return engine.StartArchitect(t.Context(), tx, root)
 	})
 	starts := superviseRowsOf(t, pool, root.Key, "start")
 	if len(starts) == 0 || starts[len(starts)-1].Role != claim.RoleArchitect {

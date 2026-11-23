@@ -150,6 +150,20 @@ body: |-
   `background_work`, `evidence`, `answer`, `then`), what to do with background work that ends after
   the answer (`late_background_work`), when an answer brings the round's end forward
   (`every_answer_brings_it_forward: when_no_turn_or_background_work`), and that a named service the
-  role started is in no report and holds nothing (`named_services: in_no_report_hold_nothing`). A
+  role started is in no report and holds nothing (`named_services: in_no_report_hold_nothing`).
+  The update ask to the reviewer, which creates no commit, names no `push_to` and asks no commit of
+  its background work (`background_work: finish_or_stop`, `late_background_work: answer_again`).
+  The texts of an owner's plan are records too. A phase assignment and a resume name where the
+  worker's work stands as fields (`branch`, `directory`, `task`, `step`, `steps`, and each step
+  before it that reported, in `reported`, by its handoff's phase and version), and the text of the
+  task's block, which the owner wrote, in a `task_text` block by the architect claim that gave that
+  version of the plan, at the time it gave it; a stopped task started again names what started it
+  (`restarted: todo` or `plan`, with `plan_version` and `stopped_tasks`). The `task-stopped` notice
+  (`med`) names the task, what stopped it (`cause: owner` or `no_return`) and the failed `step`;
+  `plan-not-taken` (`low`) names each version of a plan the first step did not take (`not_taken`)
+  and the plan it runs (`runs`); `retro-held` (`low`) names each issue the retro waits for
+  (`waiting_for`) and keeps the two texts on ending a child word for word. The merger's
+  merge-forward landed message names the head whose approval it waits for, where its task has a
+  reviewer step (`approval_owed`). A
   rollback past this release is a roll forward (docs/kubernetes.md, "Rolling back the release that
   carries a person's words in the daemon's texts").

@@ -234,7 +234,8 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 //
 // A head that moves off the one a merge forward was asked of is that merge landing, in whatever
 // phase the issue stands (mergeForwardLanded, dispatch://INFRA-4374 R1): the record keeps the new
-// head as the merge's, and the phase's worker and, past the review, the reviewer are told. It is
+// head as the merge's, and the phase's worker and, where the task's reviewer step already ran, the
+// reviewer are told. It is
 // recorded before the phase's own handling below, which goes on as it would for any move.
 func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact intake.PullRequestSynchronized) (intake.Result, error) {
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
@@ -370,11 +371,13 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // merged records the pull request merged, with its merge commit, whatever the issue's phase, and
-// closes an issue that awaits its merge (awaitsMerge: in merging, or held from it, the hold a
-// merger's failed claim leaves) with closeMerged: the merger merges, and the merge is what
-// ends that phase. A merge before merging is the architect's to act on, as the shipped daemon
-// routes it: it is told, and the merge closes the issue once it reaches merging (transition). A
-// redelivered merge changes nothing.
+// closes an issue that awaits its merge (awaitsMerge; closeMerged): one in merging, where the
+// merger merges and the merge is what ends that phase, and one held from merging, by a failed
+// merger's claim, an escalation, its owner's stop of its task at its merge or the upgrade's data
+// move, since the merge is the one fact GitHub never sends again and it puts the work on main. A
+// merge before merging is the architect's to act on, as the shipped daemon routes it: it is told,
+// and the merge closes the issue once it reaches merging (transition). A redelivered merge
+// changes nothing.
 //
 // It records the head the merge names, as a close does (closed). A synchronize or a push of that
 // head can be lost or wait behind a backlog, and after the merge nothing else moves the record's
@@ -385,8 +388,9 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 //
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
-// issue to accepting, since a merged pull request leaves the round nothing to wait on
-// (reviewRound). Without this, an approval that came before the merge would hold the issue in
+// issue to its task's next step (accepting, in the default steps), since a merged pull request
+// leaves the round nothing to wait on (reviewRound). Without this, an approval that came before
+// the merge would hold the issue in
 // reviewing: no read of the merged pull request ever comes (askMergeStateFor), and once the
 // reviewer has completed no other fact settles the round. An approval of a head other than the
 // one the merge names ends no round: once its reviewer has completed, the round is stuck on other
@@ -423,7 +427,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
 // waited for the issues beneath it instead, tells the architect that owns the issue once, naming
 // each issue the close waits for. It is the two places a wait is newly entered — the merge
-// arriving at an issue in merging (merged), and an issue reaching merging on a pull request
+// arriving at an issue that awaits it (merged), and an issue reaching merging on a pull request
 // already merged (transition) — and nowhere else: notices never de-duplicate (notice writes a row
 // per call) and closeMerged is re-entered on the departure of every issue beneath it
 // (closeAwaitingMerge) and on every boot (sweepMerged), so those two tell nobody.
@@ -451,7 +455,8 @@ func PRMergedNotice(issue string, pr record.PullRequest, at phase.Phase, waiting
 }
 
 // closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the
-// upgrade's data move left, which the close clears), on its merged pull request pr, and reports
+// close clears: a failed merger's claim, an escalation, a stopped task's or the upgrade's data
+// move's), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
 // table's row to done (transition), which leaves: a child's close retires five of its claims and
 // opens its production check in the live session of the role the project's `production_check`
@@ -483,6 +488,8 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if !awaitsMerge(issue) {
 		return nil, nil
 	}
+	// Only the copy in hand leaves the hold here: the task keeps its place, its merge, which a hold
+	// keeps too (moveTask), and the close below writes the move to done.
 	issue.Phase, issue.Hold = phase.Merging, nil
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {
@@ -500,7 +507,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		}
 		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
 	}
-	row, ok := e.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	row, ok := w.row(issue.Phase, TriggerPullRequestMerged, "", Snapshot{Phase: issue.Phase})
 	if !ok {
 		return nil, nil
 	}
@@ -510,14 +521,17 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	}
 	// The merge ends the merge step the linger left open, passed: no transition runs in a lingering
 	// tree, so this move names that end itself, as a move of the table does (nameMoveEnd).
-	if err := e.nameMoveEnd(ctx, issue, TriggerPullRequestMerged, row.To, record.PhaseRow{}); err != nil {
+	if err := e.nameMoveEnd(ctx, w, issue, TriggerPullRequestMerged, row.To, record.PhaseRow{}); err != nil {
 		return nil, err
 	}
-	issue.Phase, issue.Hold = row.To, nil
+	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
+		return nil, err
+	}
+	issue.Hold = nil
 	if status != "" {
 		issue.Status = status
 	}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return nil, err
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
@@ -719,7 +733,10 @@ func (e *Engine) pullRequestMissing(ctx context.Context, tx pgx.Tx, fact intake.
 }
 
 // PullRequestMissingNotice is the pull-request-missing notice of issue, whose implementer completed
-// on commit with no open pull request on branch of repo.
+// on commit with no open pull request on branch of repo. What the architect does on it - tell the
+// implementer to open the pull request from the branch, which the daemon records and then moves
+// the issue to the next step of its task, or decide the phase as for a pull request closed without
+// merging - is the architect's prompt's.
 func PullRequestMissingNotice(issue, commit, repo, branch string) texts.PullRequestMissingRecord {
 	return texts.PullRequestMissingRecord{NoticeHead: texts.NoticeHead{Kind: texts.PullRequestMissing, Issue: issue}, HandoffCommit: commit,
 		Repo: repo, Branch: branch}

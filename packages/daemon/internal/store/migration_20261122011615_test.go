@@ -52,7 +52,7 @@ func TestAProductionCheckRecordedBefore20261122011615HasNoReportTime(t *testing.
 	read := func(when string) *record.ProductionCheck {
 		t.Helper()
 		var check *record.ProductionCheck
-		if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			check, err = record.NewStore().ProductionCheck(ctx, tx, "LEGION-208")
 			return err
@@ -63,7 +63,7 @@ func TestAProductionCheckRecordedBefore20261122011615HasNoReportTime(t *testing.
 	}
 	write := func(check record.ProductionCheck) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().PutProductionCheck(ctx, tx, check)
 		}); err != nil {
 			t.Fatalf("write the production check: %v", err)

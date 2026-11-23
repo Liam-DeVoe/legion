@@ -175,7 +175,12 @@ type MergeForwardHoldRecord struct {
 // MergeForwardLandedRecord is the message to that same worker that the merge forward landed
 // (record.MergeForwardMessage, its landed): the pull request, the head the merge replaced, the
 // head it left (Landed), the base it brought forward, absent where the daemon has not recorded it,
-// and the phase the issue stays in.
+// and the phase the issue stays in. To the merger in merging, where the landing asked the reviewer
+// to read the merge (record.MergeForward.ReviewAsked, a task with a reviewer step), it names the
+// new head as the head whose approval the merger waits for before it merges or enqueues
+// (ApprovalOwed, as the phase assignment's approval_owed names it), as main's landed said ("Merge
+// the pull request or put it in the merge queue at head %s only once the reviewer's approval of
+// that head is on the pull request."); a landing that asked no review names none.
 type MergeForwardLandedRecord struct {
 	RoleHead
 	PullRequest   string      `json:"pull_request"`
@@ -183,10 +188,12 @@ type MergeForwardLandedRecord struct {
 	Landed        string      `json:"landed"`
 	ConflictsWith string      `json:"conflicts_with,omitempty"`
 	Phase         phase.Phase `json:"phase"`
+	ApprovalOwed  string      `json:"approval_owed,omitempty"`
 }
 
-// MergeForwardReviewRecord is the ask to the reviewer of an issue past its review to read the
-// merge forward that landed and approve the new head or request changes (record.MergeForwardMessage,
+// MergeForwardReviewRecord is the ask to the reviewer to read the merge forward that landed on an
+// issue whose task's reviewer step already ran, and to approve the new head or request changes
+// (record.MergeForwardMessage,
 // its review): the facts of the landed, the phase being the one the issue stands in, and the
 // review it asks for (ReviewAsked, MergeForwardReviewAsked): an approval of the new head by its
 // SHA, with the Legion footer of the review naming that head, or a request for changes, as main's
@@ -225,7 +232,7 @@ type HookPromptRecord struct {
 // HookFacts is the facts of a hook prompt, below the hook's words: the hook's own count at the
 // firing, the counts of every move back the hook selects added up after the move that fired it
 // (workflow's hookCount, a whole multiple of the hook's every), every backward-move count of the
-// issue in phase.BackwardPairs order, and the issue's pull request where it has one.
+// issue in phase.MovePairs order, and the issue's pull request where it has one.
 type HookFacts struct {
 	Count       int         `json:"count"`
 	Counts      []MoveCount `json:"counts"`
@@ -263,15 +270,23 @@ func (r HookPromptRecord) Text() (string, error) {
 // UpdateNamedServices, the second of the four things its R2's steps say: a named service that the
 // role started is in no activity report and holds nothing (and goes with the pod, which
 // goes_with_pod says).
+//
+// A role that creates no commit and pushes nothing (the reviewer, supervise's createsNoCommit)
+// is asked the same two steps of background work with no commit and no push in them:
+// UpdateBackgroundStepNoCommit (let each subagent and each background job finish, or stop one that
+// cannot end before the round ends) and UpdateLateBackgroundWorkNoCommit (answer again with the
+// same round, before that turn ends), as main's ask to such a role said.
 const (
-	UpdateAnswerOp           = "ready_for_update"
-	UpdateRestartsIn         = "same_session"
-	UpdateBackgroundStep     = "finish_or_stop_then_push"
-	UpdateEvidenceStep       = "scratch_files_on_dispatch"
-	UpdateThen               = "end_turn"
-	UpdateLateBackgroundWork = "push_and_answer_again"
-	UpdateEarlyEnd           = "when_no_turn_or_background_work"
-	UpdateNamedServices      = "in_no_report_hold_nothing"
+	UpdateAnswerOp                   = "ready_for_update"
+	UpdateRestartsIn                 = "same_session"
+	UpdateBackgroundStep             = "finish_or_stop_then_push"
+	UpdateBackgroundStepNoCommit     = "finish_or_stop"
+	UpdateEvidenceStep               = "scratch_files_on_dispatch"
+	UpdateThen                       = "end_turn"
+	UpdateLateBackgroundWork         = "push_and_answer_again"
+	UpdateLateBackgroundWorkNoCommit = "answer_again"
+	UpdateEarlyEnd                   = "when_no_turn_or_background_work"
+	UpdateNamedServices              = "in_no_report_hold_nothing"
 )
 
 // updateGoesWithPod is what goes with the pod when an update round ends, for a pod whose volume
@@ -296,8 +311,11 @@ var updateGoesWithPod = []string{"turn", "subagents", "background_jobs", "named_
 // ends after the answer; every_answer_brings_it_forward says that every answer brings the end
 // forward only once no role is in a turn or reports background work (dispatch://INFRA-4203 R1
 // and R3); and named_services, beside goes_with_pod, says that a named service the role started
-// is in no report and holds nothing (its R2). NewUpdateAsk sets them all. The readers' prompts
-// give the steps, and say what each of these fields names.
+// is in no report and holds nothing (its R2). NewUpdateAsk sets them all. The ask to a role that
+// creates no commit (the reviewer) names no push_to, since that role pushes nothing, and its
+// background_work and late_background_work are the forms with no commit and no push
+// (UpdateBackgroundStepNoCommit, UpdateLateBackgroundWorkNoCommit). The readers' prompts give the
+// steps, and say what each of these fields names.
 type UpdateAskRecord struct {
 	RoleHead
 	Round                      string    `json:"round"`
@@ -306,7 +324,7 @@ type UpdateAskRecord struct {
 	Settings                   []string  `json:"settings,omitempty"`
 	Reasons                    string    `json:"reasons,omitempty"`
 	EndsAt                     time.Time `json:"ends_at"`
-	PushTo                     string    `json:"push_to"`
+	PushTo                     string    `json:"push_to,omitempty"`
 	BackgroundWork             string    `json:"background_work"`
 	Evidence                   string    `json:"evidence"`
 	Answer                     string    `json:"answer"`

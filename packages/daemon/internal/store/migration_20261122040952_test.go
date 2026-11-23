@@ -70,7 +70,7 @@ func TestADesignGateRowNamesTheIssueOfItsDocumentAfter20261122040952(t *testing.
 	gates := func(issue string) map[record.DesignStep]record.DesignGate {
 		t.Helper()
 		var held map[record.DesignStep]record.DesignGate
-		if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			held, err = record.NewStore().GatesOf(ctx, tx, issue)
 			return err
@@ -101,7 +101,7 @@ func TestADesignGateRowNamesTheIssueOfItsDocumentAfter20261122040952(t *testing.
 
 	put := func(gate record.DesignGate) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().PutGate(ctx, tx, gate)
 		}); err != nil {
 			t.Fatalf("write the gate row: %v", err)

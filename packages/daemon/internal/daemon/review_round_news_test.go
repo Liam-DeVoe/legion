@@ -45,6 +45,7 @@ func wantRoundLast(t *testing.T, what, task, own, round string) {
 // with them after a space, as a task an earlier release stored does: after the news record they
 // stand on a line of their own, so the record's last line is not joined to them.
 func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	reviewed := r.member(reconcileChild, reconcileRoot, phase.Reviewing)
 	r.told(reconcileChild, record.AudienceHolder, 4)
@@ -82,6 +83,7 @@ func TestAReviewersStartThatCarriesNewsKeepsTheRoundsTwoSentencesLast(t *testing
 // after the news on a line of their own (reviewround.Ending), and the delivery says the task names
 // its round, so its send adds no second pair (supervise's Delivery.message).
 func TestAReviewersNewsOnlyTaskNamesTheRoundTheRecordHolds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		reviewed string

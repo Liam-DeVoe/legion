@@ -135,7 +135,8 @@ func sixtyCheckTexts(t *testing.T) []checksTally {
 	if !found {
 		t.Fatalf("no approved-round-stuck message")
 	}
-	assignment := PhaseAssignment(record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}, record.PhaseRow{}, &pr,
+	reviewing := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Reviewing}
+	assignment := PhaseAssignment(reviewing, WorkingCopy(reviewing, nil), record.PhaseRow{}, &pr,
 		PhaseMove{Retried: "architect", Stuck: &StuckRound{Cause: texts.CauseMergeState, Head: headOne, MergeState: string(record.MergeStateBlocked)}})
 	kept := keptStatuses(pr, headOne)
 	wakeFact := fact

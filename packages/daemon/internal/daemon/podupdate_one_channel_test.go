@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue:
@@ -86,6 +87,7 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 // The negative controls are the ones c-one-channel names. A task queued beside the publish is a
 // prompt on a role's connection. A publish at every sweep is ten rows a role, not one.
 func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
+	t.Parallel()
 	// The round the failed and the departed claims already record, as this daemon opens one: its
 	// reasons and its items, which every claim that joins the round is given (roundTerms).
 	opened := []runtime.DriftItem{{Key: runtime.DriftImage, Image: podUpdateImage}}
@@ -165,6 +167,44 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 	}
 }
 
+// The reviewer creates no commit and pushes nothing (its role part), so the ask a pod round sends
+// it names no branch to push to, and its steps of background work ask it to commit nothing a
+// subagent made (texts.UpdateBackgroundStepNoCommit, texts.UpdateLateBackgroundWorkNoCommit). A
+// role that commits is still told to push its commits and what its subagents made: the
+// implementer, and the merger, which makes and pushes the merge of the base forward in merging
+// (roles/merger.md), whose unpushed merge commit the pod's replacement would lose.
+func TestPodUpdateTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
+	t.Parallel()
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleMerger}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleReviewer), readyWorker(claim.RoleMerger))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	for _, role := range roles {
+		rig.awaitRound(role, podUpdateRound)
+	}
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	// told is the record each role's row publishes (record.UpdateAsk.Record).
+	told := map[claim.Role]texts.UpdateAskRecord{}
+	for _, ask := range rig.asks() {
+		told[ask.Role] = ask.Record(podUpdateIssue)
+	}
+	for _, role := range roles {
+		ask, asked := told[role]
+		if !asked {
+			t.Fatalf("the %s was asked nothing, want one ask", role)
+		}
+		push, background, late := claim.IssueBranch(podUpdateIssue), texts.UpdateBackgroundStep, texts.UpdateLateBackgroundWork
+		if role == claim.RoleReviewer {
+			push, background, late = "", texts.UpdateBackgroundStepNoCommit, texts.UpdateLateBackgroundWorkNoCommit
+		}
+		if ask.PushTo != push || ask.BackgroundWork != background || ask.LateBackgroundWork != late {
+			t.Errorf("the ask to the %s has push_to %q, background_work %q and late_background_work %q; want %q, %q and %q",
+				role, ask.PushTo, ask.BackgroundWork, ask.LateBackgroundWork, push, background, late)
+		}
+	}
+}
+
 // The round's terms are fixed when it opens (dispatch://INFRA-2981 R9, verification's
 // c-early-release terms case). A later sweep that reads other drift for the same pod writes no
 // new reasons over the open round, and the ask the sweep publishes names the drift the round
@@ -173,6 +213,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 // its bound while the pod still reads the later drift, and the notice names the image the round
 // opened for by its short digest, and not the disk that drifted later.
 func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig.drifts(podUpdateDrift)
@@ -221,6 +262,7 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 // is replaced once every role the round asks has answered and no turn or claim's activity report
 // holds the round (roundEnd.holding).
 func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.s.enqueue = nil
 	rig.drifts(podUpdateDrift)
@@ -261,6 +303,7 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 // ask enqueued; the no-Warn check below is what fails without the fix, since #4337 left the ask's
 // mark to the outbox's delivery (supervise's Machine.PublishUpdateAsk).
 func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		other    = "OTHERPROJECT-9"
 		otherPod = "5b1e7d20-3c64-4a8f-b2d9-8e0f6a1c4d37"

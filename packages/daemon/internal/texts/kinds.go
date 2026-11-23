@@ -56,6 +56,9 @@ const (
 	SessionLost             Kind = "session-lost"
 	SessionForgotten        Kind = "session-forgotten"
 	SessionStoreFault       Kind = "session-store-fault"
+	TaskStopped             Kind = "task-stopped"
+	PlanNotTaken            Kind = "plan-not-taken"
+	RetroHeld               Kind = "retro-held"
 )
 
 // The notices to the controller.
@@ -136,6 +139,9 @@ var list = []Entry{
 	{Kind: SessionLost, Form: Notice, Record: SessionLostRecord{}, Readers: toArchitectAndController},
 	{Kind: SessionForgotten, Form: Notice, Record: SessionForgottenRecord{}, Readers: toArchitectAndController},
 	{Kind: SessionStoreFault, Form: Notice, Record: SessionStoreFaultRecord{}, Readers: toController},
+	{Kind: TaskStopped, Form: Notice, Record: TaskStoppedRecord{}, Readers: toArchitect},
+	{Kind: PlanNotTaken, Form: Notice, Record: PlanNotTakenRecord{}, Readers: toArchitect, Urgency: lowToArchitect},
+	{Kind: RetroHeld, Form: Notice, Record: RetroHeldRecord{}, Readers: toArchitect, Urgency: lowToArchitect},
 
 	{Kind: Triage, Form: ControllerNotice, Record: TriageRecord{}, Readers: toController},
 	{Kind: SlotFree, Form: ControllerNotice, Record: SlotFreeRecord{}, Readers: toController},

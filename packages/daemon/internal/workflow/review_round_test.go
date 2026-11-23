@@ -27,17 +27,18 @@ func reviewEntryPartOf(entry int64) string {
 }
 
 // reviewingResumeTask is the task LEGION-208's reviewer is given for a reviewing phase already
-// under way, the issue titled title, as its record renders it (texts.PhaseResumeRecord), before
-// the line of the round's two sentences.
+// under way, the issue titled title, as its record renders it (texts.PhaseResumeRecord), with the
+// issue's working copy, its branch alone on an engine that runs no runtime, before the line of the
+// round's two sentences.
 func reviewingResumeTask(title string) string {
-	return "kind: phase-resume\nissue: LEGION-208\ntitle: " + title + "\nphase: reviewing"
+	return "kind: phase-resume\nissue: LEGION-208\ntitle: " + title + "\nphase: reviewing\nbranch: legion/LEGION-208"
 }
 
 // reviewingAssignment is the reviewing task of the root LEGION-208 that the tester's pass of its
 // handoff version version starts, as its record renders it (texts.PhaseAssignmentRecord), before
 // the line of the round's two sentences.
 func reviewingAssignment(version int) string {
-	return "kind: phase-assignment\nissue: LEGION-208\ntitle: root\nphase: reviewing\nhandoff_phase: test\nhandoff_version: " +
+	return "kind: phase-assignment\nissue: LEGION-208\ntitle: root\nphase: reviewing\nbranch: legion/LEGION-208\nhandoff_phase: test\nhandoff_version: " +
 		strconv.Itoa(version) + "\ntester_verdict: pass\npull_request: sjawhar/legion#42"
 }
 
@@ -45,7 +46,7 @@ func reviewingAssignment(version int) string {
 // reason starts, as its record renders it, the reason in its block by the time the fixtures retry
 // at, before the line of the round's two sentences.
 func reviewingRetry(reason string) string {
-	return "kind: phase-assignment\nissue: LEGION-208\ntitle: root\nphase: reviewing\npull_request: sjawhar/legion#42\nretried: architect\n" +
+	return "kind: phase-assignment\nissue: LEGION-208\ntitle: root\nphase: reviewing\nbranch: legion/LEGION-208\npull_request: sjawhar/legion#42\nretried: architect\n" +
 		"<reason at=\"2026-09-23T00:00:00Z\">\n" + reason + "\n</reason>"
 }
 

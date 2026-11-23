@@ -814,6 +814,10 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // settings names the digest's first 12 hexadecimal characters and the 30 keys, and its fields
 // hold neither the whole digest nor any setting's value (dispatch://INFRA-321 R5). A round an
 // older daemon opened recorded the drift as text alone, and its ask names that text as one field.
+// The reviewer creates no commit and pushes nothing, so its ask names no branch to push to, and
+// its two fields of background work, before the answer and after it, ask no commit and no push
+// (finish_or_stop, answer_again), as main's ask to the reviewer said: "1. You create no commit,
+// so you push nothing."
 //
 // The steps a role takes on reading the ask are its role prompt's (go/worker-common.md and
 // go/architect-common.md), each in one passage about the update message. That passage names the
@@ -851,7 +855,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		items[i], reasons[i] = d.DriftItem, d.Reason
 	}
 
-	ask := UpdateTask("LEGION-209", testRound, testRoundPod, items, strings.Join(reasons, ", "), endsAt)
+	ask := UpdateTask("LEGION-209", claim.RoleImplementer, testRound, testRoundPod, items, strings.Join(reasons, ", "), endsAt)
 
 	if ask.Kind != texts.UpdateAsk || ask.Issue != "LEGION-209" || ask.Round != testRound || ask.Pod != testRoundPod {
 		t.Errorf("the ask is of kind %q, issue %q, round %q, pod %q; want update-ask, LEGION-209, %s, %s",
@@ -888,10 +892,19 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		}
 	}
 
-	older := UpdateTask("LEGION-209", testRound, testRoundPod, nil, `image "sha256:1"`, endsAt)
+	older := UpdateTask("LEGION-209", claim.RoleImplementer, testRound, testRoundPod, nil, `image "sha256:1"`, endsAt)
 	if older.Reasons != `image "sha256:1"` || len(older.Images) != 0 || len(older.Settings) != 0 {
 		t.Errorf("the ask of a round an older daemon opened names images %q, settings %q and reasons %q; want its text as the reasons alone",
 			older.Images, older.Settings, older.Reasons)
+	}
+
+	reviewer := UpdateTask("LEGION-209", claim.RoleReviewer, testRound, testRoundPod, items, strings.Join(reasons, ", "), endsAt)
+	if reviewer.PushTo != "" || reviewer.BackgroundWork != "finish_or_stop" || reviewer.LateBackgroundWork != "answer_again" {
+		t.Errorf("the reviewer's ask names the push %q, the background work %q and the late background work %q; want no push and the two steps with no commit, finish_or_stop and answer_again",
+			reviewer.PushTo, reviewer.BackgroundWork, reviewer.LateBackgroundWork)
+	}
+	if reviewer.Answer != ask.Answer || reviewer.Evidence != ask.Evidence || reviewer.Then != ask.Then || !slices.Equal(reviewer.GoesWithPod, ask.GoesWithPod) {
+		t.Errorf("the reviewer's ask states %+v, want every other step of the implementer's %+v", reviewer, ask)
 	}
 
 	// The steps, and the rule of the round's end beside them, are each reader's prompt's: the
@@ -913,11 +926,12 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		}
 		// The five steps, in this order: the push comes before the background work, so a job
 		// that outlives the bound never keeps a role from pushing its own commits, and the answer
-		// comes after that work.
+		// comes after that work. worker-common.md, which the reviewer reads, goes on after the
+		// first two with the reviewer's form, so they are held without their end.
 		last := -1
 		for _, step := range []string{
-			"Do its five steps in that turn, in this order.",
-			"Step 1: push every commit you want to keep to this issue's branch.",
+			"Do its five steps in that turn, in this order",
+			"Step 1: push every commit you want to keep to this issue's branch",
 			"Step 2: let each subagent and each background job that you started finish. Stop one that cannot finish before the round ends. Then commit and push what it made.",
 			"Step 3: if you need a scratch file as evidence, put it on Dispatch",
 			"Step 4: call the `legion` tool with `op: \"ready_for_update\"` and `round` set to the round the message names.",
@@ -942,10 +956,10 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 			"If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again with the same round before you end that turn.",
 			"A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.",
 			"If your `legion` tool has no \"ready_for_update\" operation, do steps 1, 2 and 3, then end your turn.",
-			"Then commit and push what it made. The message's `background_work` names this step.",
+			"Then commit and push what it made. The message's `background_work` names this step",
 			"put it on Dispatch, because the pod's disk may not outlast the round. The message's `evidence` names this step.",
 			"Step 5: end your turn. The message's `then` names this step.",
-			"Then call `ready_for_update` again with the same round before you end that turn. The message's `late_background_work` names this rule.",
+			"Then call `ready_for_update` again with the same round before you end that turn. The message's `late_background_work` names this rule",
 			"Your plugin sends that report at the end of each turn. The message's `every_answer_brings_it_forward` states this rule.",
 			"Where the pod does not keep its volume, the replacement deletes that disk with the pod",
 			"Where the pod keeps its volume (a microVM pod under `keep_volume`), that disk stays with its Sandbox through the round, but a reset or a change of its disk shape deletes it",
@@ -961,6 +975,20 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		} {
 			if strings.Contains(passage, gone) {
 				t.Errorf("%s still says %q, which this round does not do:\n%s", part, gone, passage)
+			}
+		}
+		// The reviewer reads worker-common.md alone: its form of the ask names no branch to push
+		// to, and its two fields of background work ask no commit and no push.
+		if part != "worker-common.md" {
+			continue
+		}
+		for _, want := range []string{
+			"A message with no `push_to` is the reviewer's: you create no commit, so you push nothing.",
+			"`finish_or_stop` in a message with no `push_to`",
+			"`answer_again` in a message with no `push_to`",
+		} {
+			if !strings.Contains(passage, want) {
+				t.Errorf("%s does not say %q, the reviewer's form of the ask:\n%s", part, want, passage)
 			}
 		}
 	}

@@ -34,6 +34,17 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"head", "reviewed_head", "pull_request"}},
 	{kind: texts.PhaseAssignment, variants: []string{"stuck-merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks (the head, the pull request, the merge state, each check)",
 		keys: []string{"head", "pull_request", "merge_state", "not_passed#", "passed", "list_passed"}},
+	{kind: texts.PhaseAssignment, variants: []string{"restarted-todo", "restarted-plan"}, from: "workflow/plan_stop.go:restartTask at 7cb1f229 (a stopped task started again: by a todo, or by the owner's later plan)",
+		keys: []string{"restarted"}},
+	{kind: texts.PhaseAssignment, variants: []string{"restarted-plan"}, from: "workflow/plan_given.go at 7cb1f229 (the owner gave version <n> of the plan while task <t> was stopped)",
+		keys: []string{"plan_version", "stopped_tasks"}},
+	{kind: texts.PhaseAssignment, variants: []string{"step", "merge"}, from: "workflow/standing.go:standingText, stepsLine at 7cb1f229 (Plan task: <id>. Steps: <n role>, ... then Legion's retro and merge.)",
+		keys: []string{"task", "steps#", "steps"}},
+	{kind: texts.PhaseAssignment, variants: []string{"step"}, from: "workflow/standing.go:standingText, reportsBefore, ownersText at 7cb1f229 (Step <n> of <m>: <role>. Step <j> (<role>) reported: <word> version <v>. The text of the task's block the owner wrote)",
+		keys: []string{"step", "reported#", "reported[0].step", "reported[0].role", "reported[0].handoff_phase", "reported[0].handoff_version",
+			"reported[1].handoff_phase", "reported[1].handoff_version", "task_text"}},
+	{kind: texts.PhaseResume, variants: []string{"step"}, from: "workflow/standing.go:standingText, stepsLine, reportsBefore, ownersText at 7cb1f229 (the standing a resumed step names)",
+		keys: []string{"task", "step", "steps#", "steps", "reported#", "reported[0].handoff_phase", "reported[0].handoff_version", "task_text"}},
 	{kind: texts.PhaseAssignment, variants: []string{"stuck-merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, namedStatuses at 1cb6615c (each commit status of the head, with its state)",
 		keys: goldenStatusKeys},
 	{kind: texts.PhaseAssignment, variants: []string{"stuck-merge-state"}, from: "workflow/review.go:stuckMergeStateReason, headChecks, shownAs at 6d50ef31 (each check run of the head GitHub skipped, named skipped)",
@@ -236,6 +247,20 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"tree"}},
 	{kind: texts.ChildStatus, variants: []string{"started"}, from: "workflow/effects.go:ChildStartedNotice (every issue it waited on)",
 		keys: []string{"waited_on"}},
+	{kind: texts.ChildStatus, variants: []string{"started"}, from: "workflow/effects.go:ChildStartedNotice at 7cb1f229 (the phase the child begins)",
+		keys: []string{"phase"}},
+	{kind: texts.TaskStopped, from: "workflow/plan_stop.go:taskStopped, stopUnreturned at 7cb1f229 (task <t> of <issue> was stopped; the role and phase of the hold)",
+		keys: []string{"issue", "task", "role", "phase", "cause"}},
+	{kind: texts.TaskStopped, variants: []string{"owner"}, from: "workflow/plan_stop.go:taskStopped at 7cb1f229 (the architect claim that stopped it, StoppedBy)",
+		keys: []string{"stoppedBy"}},
+	{kind: texts.TaskStopped, variants: []string{"no-return"}, from: "workflow/plan_stop.go:stopUnreturned at 7cb1f229 (step <n> (<role>) failed)",
+		keys: []string{"step"}},
+	{kind: texts.PlanNotTaken, from: "workflow/plan.go:tellPassedOver, describeVersion at 7cb1f229 (each version passed over: its version, document and giver)",
+		keys: []string{"issue", "not_taken#", "not_taken[0].version", "not_taken[0].artifact", "not_taken[0].given_by", "runs"}},
+	{kind: texts.PlanNotTaken, variants: []string{"owner"}, from: "workflow/plan.go:tellPassedOver, describeVersion at 7cb1f229 (the owner's version the first step runs instead)",
+		keys: []string{"runs_version", "runs_artifact", "runs_given_by"}},
+	{kind: texts.RetroHeld, from: "workflow/retro_hold.go:retroHeldNotice at 7cb1f229 (the retro, its role, and each issue beneath still in the workflow)",
+		keys: []string{"issue", "role", "phase", "waiting_for"}},
 	{kind: texts.ChildStatus, variants: []string{"beneath-accepted"}, from: "workflow/accepted_parent.go:ChildUnderAcceptedParentNotice (the accepted ancestor)",
 		keys: []string{"accepted_ancestor"}},
 	{kind: texts.ChildStatus, variants: []string{"joined"}, from: "workflow/adopt.go:joinedTheTree (the tree it came from)",
@@ -387,6 +412,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"issue", "pull_request", "head", "conflicts_with", "phase", "why"}},
 	{kind: texts.MergeForwardLanded, from: "record/outbox.go:MergeForwardMessage.Message at 724196ef (the pull request, both heads, the base, the phase it stays in)",
 		keys: []string{"issue", "pull_request", "head", "landed", "conflicts_with", "phase"}},
+	{kind: texts.MergeForwardLanded, variants: []string{"landed-merger"}, from: "record/outbox.go:MergeForwardMessage.Message at 7cb1f229 (merge at head <landed> only once the reviewer's approval of that head is on the pull request)",
+		keys: []string{"approval_owed"}},
 	{kind: texts.MergeForwardReview, from: "record/outbox.go:MergeForwardMessage.Message at 724196ef (the pull request, both heads, the base, the phase it stands in)",
 		keys: []string{"issue", "pull_request", "head", "landed", "conflicts_with", "phase"}},
 	{kind: texts.HookPrompt, from: "record/outbox.go:HookPrompt.Message (the count, the pull request)",
@@ -472,7 +499,7 @@ var goldenKept = []goldenKeptOf{
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"stored_reaches_session": "true", "refused_sender_sends_again": "true"}
 		}},
-	{kind: texts.UpdateAsk, what: "the round's id, the push instruction, the moment the round ends, that every role's answer brings it forward only when no turn or background work runs and no answer delays it, " +
+	{kind: texts.UpdateAsk, variants: []string{"drift"}, what: "the round's id, the push instruction, the moment the round ends, that every role's answer brings it forward only when no turn or background work runs and no answer delays it, " +
 		"that only the role's own push keeps its work, and what goes with the pod (the push check and its rescue branch are on no daemon at this head)",
 		keptBy: "dispatch://INFRA-2981's R4, as dispatch://INFRA-4203's R1 and R3 change it",
 		keys: []string{"round", "push_to", "ends_at", "answer", "every_answer_brings_it_forward", "no_answer_delays_it", "kept_by_push_only",
@@ -482,18 +509,44 @@ var goldenKept = []goldenKeptOf{
 				"every_answer_brings_it_forward": "when_no_turn_or_background_work", "no_answer_delays_it": "true", "kept_by_push_only": "true",
 				"goes_with_pod": "turn,subagents,background_jobs,named_services,unpushed_work,test_database,caches", "restart": "same_session", "next_task_held": "true"}
 		}},
-	{kind: texts.UpdateAsk, what: "the step of the role's background work before it answers: let each subagent and each background job finish, or stop one that cannot end before the round ends, and commit and push what it made",
+	{kind: texts.UpdateAsk, variants: []string{"drift"}, what: "the step of the role's background work before it answers: let each subagent and each background job finish, or stop one that cannot end before the round ends, and commit and push what it made",
 		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-4203's R2, its step 2",
 		keys:   []string{"background_work"},
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"background_work": "finish_or_stop_then_push"}
 		}},
-	{kind: texts.UpdateAsk, what: "the rest of the role's steps in their order: put a scratch file needed as evidence on Dispatch before the answer, end the turn after it, " +
+	{kind: texts.UpdateAsk, variants: []string{"drift"}, what: "the rest of the role's steps in their order: put a scratch file needed as evidence on Dispatch before the answer, end the turn after it, " +
 		"and, where background work ends after the answer, push what it made and answer again with the same round",
 		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-4203's R2, its steps 3 and 5 and its rule for late background work",
 		keys:   []string{"evidence", "then", "late_background_work"},
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"evidence": "scratch_files_on_dispatch", "then": "end_turn", "late_background_work": "push_and_answer_again"}
+		}},
+	// The reviewer creates no commit and pushes nothing, so main's ask to it (supervise/table.go:
+	// UpdateTask and createsNoCommit at 7cb1f229: "1. You create no commit, so you push nothing.")
+	// gives no push instruction and asks no commit or push of what its background work made.
+	{kind: texts.UpdateAsk, variants: []string{"reviewer"}, what: "the round's id, the moment the round ends, that every role's answer brings it forward only when no turn or background work runs and no answer delays it, " +
+		"that only the role's own push keeps its work, and what goes with the pod, with no push instruction to a role that creates no commit",
+		keptBy: "dispatch://INFRA-2981's R4, as dispatch://INFRA-4203's R1 and R3 change it, and main's ask to the reviewer (supervise/table.go:createsNoCommit at 7cb1f229)",
+		keys: []string{"round", "ends_at", "answer", "every_answer_brings_it_forward", "no_answer_delays_it", "kept_by_push_only",
+			"goes_with_pod", "restart", "next_task_held"},
+		values: func(want map[string]string) map[string]string {
+			return map[string]string{"round": want["round"], "ends_at": want["ends_at"], "answer": "ready_for_update",
+				"every_answer_brings_it_forward": "when_no_turn_or_background_work", "no_answer_delays_it": "true", "kept_by_push_only": "true",
+				"goes_with_pod": "turn,subagents,background_jobs,named_services,unpushed_work,test_database,caches", "restart": "same_session", "next_task_held": "true"}
+		}},
+	{kind: texts.UpdateAsk, variants: []string{"reviewer"}, what: "the step of the reviewer's background work before it answers: let each subagent and each background job finish, or stop one that cannot end before the round ends, with no commit or push",
+		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field), dispatch://INFRA-4203's R2, its step 2, and main's ask to the reviewer (supervise/table.go:createsNoCommit at 7cb1f229)",
+		keys:   []string{"background_work"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"background_work": "finish_or_stop"}
+		}},
+	{kind: texts.UpdateAsk, variants: []string{"reviewer"}, what: "the rest of the reviewer's steps in their order: put a scratch file needed as evidence on Dispatch before the answer, end the turn after it, " +
+		"and, where background work ends after the answer, answer again with the same round",
+		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field), dispatch://INFRA-4203's R2, its steps 3 and 5 and its rule for late background work, and main's ask to the reviewer (supervise/table.go:createsNoCommit at 7cb1f229)",
+		keys:   []string{"evidence", "then", "late_background_work"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"evidence": "scratch_files_on_dispatch", "then": "end_turn", "late_background_work": "answer_again"}
 		}},
 	{kind: texts.UpdateAsk, what: "that a named service the role started is in no report and holds nothing, in a field of its own beside goes_with_pod, which says that it goes with the pod",
 		keptBy: "dispatch://INFRA-3686's R8 (a fact that it has the text give stays as a field) and dispatch://INFRA-4203's R2, the second of the four things its steps say",
@@ -559,6 +612,18 @@ var goldenKept = []goldenKeptOf{
 		}},
 	{kind: texts.ChildrenFirst, what: "the eight things a text that tells an architect to end a child says, word for word as main's notice gave them (record.EndChildRule)",
 		keptBy: "dispatch://INFRA-3178's R6, which R8 of dispatch://INFRA-3686 keeps (the architect's ruling)",
+		keys:   []string{"end_child_rule"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"end_child_rule": record.EndChildRule}
+		}},
+	{kind: texts.RetroHeld, what: "the sentence on a status the daemon has not taken yet, word for word as main's retro-held notice gave it (record.StatusNotTakenYet)",
+		keptBy: "dispatch://INFRA-3178's R6, which R8 of dispatch://INFRA-3686 keeps (the architect's ruling), as workflow/retro_hold.go:retroHeldNotice at 7cb1f229 gave it",
+		keys:   []string{"status_not_taken_yet"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"status_not_taken_yet": record.StatusNotTakenYet}
+		}},
+	{kind: texts.RetroHeld, what: "the eight things a text that tells an architect to end a child says, word for word as main's retro-held notice gave them (record.EndChildRule)",
+		keptBy: "dispatch://INFRA-3178's R6, which R8 of dispatch://INFRA-3686 keeps (the architect's ruling), as workflow/retro_hold.go:retroHeldNotice at 7cb1f229 gave it",
 		keys:   []string{"end_child_rule"},
 		values: func(map[string]string) map[string]string {
 			return map[string]string{"end_child_rule": record.EndChildRule}

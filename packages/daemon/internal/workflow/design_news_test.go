@@ -501,8 +501,9 @@ func TestNewsOfAnItemWhoseReviewHistoryCouldNotBeReadSaysSoAndNotAFirstApproval(
 }
 
 // The architect holding a child in accepting reads the phase it holds it in; its answer is the
-// one its prompt gives for accepting, its sign-off or a move back to planning, implementing or
-// testing, and never a phase worker's comment, which the record names neither.
+// one its prompt gives for accepting, its sign-off or a move back to the phase of an earlier step
+// of its task (main's any-order steps), and never a phase worker's comment, which the record names
+// neither.
 func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T) {
 	text, rec := RenderNews(acceptingHolderNews()), NewsRecord(acceptingHolderNews())
 	t.Logf("the news of an accepting child:\n%s", text)
@@ -510,7 +511,7 @@ func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T
 		t.Errorf("the news names %s to %s in %s, want LEGION-210 to its holder in accepting", rec.Issue, rec.Audience, rec.Phase)
 	}
 	rule := promptParagraph(t, "go/architect-common.md", "`audience: holder` and `phase: accepting`")
-	for _, want := range []string{"sign the issue off with `sign_off`", "`request_backward_move`", "`planning`, `implementing` or `testing`"} {
+	for _, want := range []string{"sign the issue off with `sign_off`", "`request_backward_move`", "to the phase of an earlier step of its task"} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("the architect's prompt for an accepting issue's news does not say %q", want)
 		}
@@ -525,9 +526,11 @@ func TestNewsToTheArchitectHoldingAnAcceptingIssueEndsWithItsAnswer(t *testing.T
 	}
 }
 
-// Planning has no earlier phase to move back to, so a planner's news names the planning phase, and
-// the planner's own answer is its prompt's (prompts/go/planner.md): a stale plan is revised in
-// place and its plan review run again, and a current one gets a comment. No move back is named.
+// A stale plan is the planner's own work wherever its task places its step, so a planner's news
+// names the phase its step holds, and the planner's own answer is its prompt's
+// (prompts/go/planner.md): a stale plan is revised in place and its plan review run again, and a
+// current one gets a comment. No move back is named, and the prompt no longer says that planning
+// has no earlier phase, which is false for a planner whose step comes after the implementer's.
 func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 	text, rec := RenderNews(plannerHolderNews()), NewsRecord(plannerHolderNews())
 	t.Logf("the news of a planner:\n%s", text)
@@ -535,7 +538,10 @@ func TestNewsToAPlannerEndsWithThePlannersAnswer(t *testing.T) {
 		t.Errorf("the news names %s in %s, want LEGION-218 in planning", rec.Issue, rec.Phase)
 	}
 	rule := promptParagraph(t, "go/planner.md", "news task")
-	for _, want := range []string{"Planning has no earlier phase", "Revise `plan.md` in place to match the new version of the design",
+	if strings.Contains(rule, "Planning has no earlier phase") {
+		t.Errorf("the planner's rule for its news still says planning has no earlier phase, false for a planner after the implementer: %q", rule)
+	}
+	for _, want := range []string{"A stale plan is your own work wherever your task places your step", "Revise `plan.md` in place to match the new version of the design",
 		"run the plan review again", "`dispatch comment`"} {
 		if !strings.Contains(rule, want) {
 			t.Errorf("the planner's prompt for its news does not say %q", want)
@@ -658,7 +664,9 @@ func TestNewsNamesEachRunOfTheTextOutsideTheSectionsWhereItStands(t *testing.T) 
 // The root architect's one summary names every member of the tree with its phase, the role that
 // holds it, and how it is told: owed and sent now, owed and carried by its next start, or told
 // nothing and why. Each pair of versions it names comes once with its change rows, the architect's
-// own marked as what it took, and each member owed news names the pair it is owed.
+// own marked as what it took, and each member owed news names the pair it is owed. A member that
+// stands in held is told nothing whatever holds it (`why: stopped`), and the root architect's
+// prompt says that the release that moves it back into a phase carries what it is owed then.
 func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T) {
 	text, rec := RenderNews(treeSummaryNews()), NewsRecord(treeSummaryNews())
 	t.Logf("the root architect's summary:\n%s", text)
@@ -693,6 +701,13 @@ func TestTheArchitectsSummaryNamesEveryMemberWithItsStateAndReason(t *testing.T)
 			t.Errorf("the summary names %d blocks of item %d, want %d", named, i, want)
 		}
 	}
+	why := promptParagraph(t, "go/architect-common.md", "`audience: root_architect`")
+	for _, want := range []string{"`stopped`, it stands in `held`, whatever holds it",
+		"it is told nothing while it is held: the release that moves it back into a phase carries what it is owed then"} {
+		if !strings.Contains(why, want) {
+			t.Errorf("the root architect's prompt for its summary does not say %q", want)
+		}
+	}
 }
 
 // A member whose pull request has merged takes no new work, so the architect's prompt hands it the
@@ -719,8 +734,8 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 }
 
 // A member in accepting that the root architect owns is named as the architect's own to answer:
-// the pair it is owed, and the prompt's answer, its sign-off or a move back to planning,
-// implementing or testing.
+// the pair it is owed, and the prompt's answer, its sign-off or a move back to the phase of an
+// earlier step of its task.
 func TestTheSummaryNamesAnAcceptingMemberTheArchitectAnswersItself(t *testing.T) {
 	rec := NewsRecord(treeSummaryNews())
 	if member := memberLine(rec.Members[3]); member != "LEGION-211 accepting told=by_you why= holder=architect architect_of=" {
@@ -731,7 +746,7 @@ func TestTheSummaryNamesAnAcceptingMemberTheArchitectAnswersItself(t *testing.T)
 	}
 	answer := promptParagraph(t, "go/architect-common.md", "`audience: root_architect`")
 	for _, want := range []string{"`by_you`, you hold it in `accepting`, so you answer it yourself", "`sign_off`", "`request_backward_move`",
-		"`planning`, `implementing` or `testing`"} {
+		"to the phase of an earlier step of its task"} {
 		if !strings.Contains(answer, want) {
 			t.Errorf("the root architect's prompt for its summary does not say %q", want)
 		}

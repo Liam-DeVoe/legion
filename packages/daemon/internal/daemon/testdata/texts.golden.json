@@ -8,7 +8,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1001",
-      "text": "kind: phase-assignment\nissue: ALPHA-1001\ntitle: \"true\"\nphase: reviewing\nhandoff_phase: test\nhandoff_version: 7\nhandoff_commit: \"123456e78901\"\ntester_verdict: pass\npull_request: alpha-works/alpha-tower#41"
+      "text": "kind: phase-assignment\nissue: ALPHA-1001\ntitle: \"true\"\nphase: reviewing\nbranch: legion/ALPHA-1001\nhandoff_phase: test\nhandoff_version: 7\nhandoff_commit: \"123456e78901\"\ntester_verdict: pass\npull_request: alpha-works/alpha-tower#41"
     },
     {
       "kind": "phase-assignment",
@@ -18,7 +18,27 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2001",
-      "text": "kind: phase-assignment\nissue: BRAVO-2001\ntitle: \"null\"\nphase: reviewing\nhandoff_phase: test\nhandoff_version: 11\nhandoff_commit: 560117ea94efe0c80cd21946c1ee2d1b7b1294ee\ntester_verdict: fail\npull_request: bravo-labs/bravo-yard#42"
+      "text": "kind: phase-assignment\nissue: BRAVO-2001\ntitle: \"null\"\nphase: reviewing\nbranch: legion/BRAVO-2001\nhandoff_phase: test\nhandoff_version: 11\nhandoff_commit: 560117ea94efe0c80cd21946c1ee2d1b7b1294ee\ntester_verdict: fail\npull_request: bravo-labs/bravo-yard#42"
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "merge",
+      "sample": 1,
+      "reader": "merger",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1009",
+      "text": "kind: phase-assignment\nissue: ALPHA-1009\ntitle: \"icicksn jlawxoxt\\\\t qagzkj wprwhaz hsxuchpw hdqsp kdsxn ogj kepc jghsan neqiuf gmerv xfcc gnzdnw zpampxjz dbku ckhyt nqd kcdyubkwf vtoc yylc bxkprsvd kibsdv blctjyt qemdevjw nyoycp hdfomjm wgtcugh ifaifxw wgqtivn ojaly npp gctg sjx pnx goih jbxvxcfgx kuywec usbyveim hnj exhjmdta okj eei rzska rjvlpe \\tvtugzj owr owpg dxaih tlj udst nhtxwmhe reqjviu umsjxrbmo pnxnkie wggddf dkmrvxaqt odnme ysrjpm szagbfq item twfyjqh ihaqhkgvz idgmj pllz iqxn aoogmhsw uqrkpksqg ltuk ljbrblua dpfxfhda quomxnm fcchc vrzyzz hhbqst ahuqb fjqjcj ojvaatvtj mgigwgk cqkwhqw owiftzxbh nlgj ora vtlndwxg jkt orcdvpimq dvypj iowwtph yzygu hbv sfqhheogy qkpiqz puaj jauhpdz pkhzn bbtqc fyp pdde umoyzvzg,  kjnhjqve dthmgzfys umbm otpjkbt gwlgtdboj yyeob pce yxe mumujvthb ktdvmekc hqsfmzfyh iqwc snp buozrpvue juuifj fus vyzwvb zfbvtzk : cjwquao faadql jxgb dng ifqx zqftbo uhyjw uqig qzhp oxq jzi\\\"k moik udexk ippbzx fvgpiiiw ylt egjrcwsiv kcb ayyrx iyumziub gdv dztnp ifrtowim ubhvom rlv wbol fydb reys it🧭bvjinvg acvdi qsk\"\nphase: merging\nbranch: legion/ALPHA-1009\ntask: task-qam\nsteps[3]: implementer,reviewer,tester"
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "merge",
+      "sample": 2,
+      "reader": "merger",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2009",
+      "text": "kind: phase-assignment\nissue: BRAVO-2009\ntitle: \"ltfrcutnf xwijqrepd fqdvbgw cvahse jbfj fdanqkmh pkgkdu ykkkt ywalgc try vvqtkbjc jutpm voejj emyetx vzaljsict vap roticdzl craxovko unal qhczo rjl qfvz ehlvvnnky kqsdast nhvz ajay wqt ktjbnkgs zbqj pbcuvqhq vstylzgwe ves kzdmspvli cufo mzxdffyb jzxaelp dvjakhv itv xtqhghjdz gxf xkligbmf ctetiv omyomwmwi rhky izaalo kjbchqb eowo rxwghif qgujyodhz sgnfgccpu ukx ypm alv cgzx karm ibm jceba wflco🧭qdk sxg fho gzfv ditcc hdiiuyv soa ucbk hmz jrgbqcwxk yrvciqxz qwbepkj pqitu ruqw ftt ygwxr\\\\uvow phkacsvkd rbb jqkmgnwh actvgek plfvgk osspv aaxm hibf dccbbztqv axqf fmkmi mkzejjee jvxprwcl i, je nkoqseark ysgsq sjdt: xkum mdwctnnd eqv prwqejs lzzpxtxk pgztlekw hzessz vyisfsos xksk bjqhtun\\t uft kybezrt azmxcfyff tvvygt hmwhsnu cqaklu mwmrhaeti zchuopgoq kateu juxkwwh jebxjux xjdmmkj qvmmwq laz lnreelom bpj xhwefrc qjibbzw szabsyih wkztok ixzn eirqq zxk rehjc boazwa hrqeza kcnfxu emcbviwu rmpbtvaqx hlo weuh fimgio mpftun urxlr dmapjj ealv qfq vcezyjn kac faspy zfp\\\"qoo wdzgwbms ipxrmmk iaafkre qvck\"\nphase: merging\nbranch: legion/BRAVO-2009\ntask: task-qpk\nsteps[3]: implementer,tester,reviewer"
     },
     {
       "kind": "phase-assignment",
@@ -28,7 +48,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1004",
-      "text": "kind: phase-assignment\nissue: ALPHA-1004\ntitle: \"123456e78901\"\nphase: merging\npull_request: alpha-works/alpha-tower#71\nmerged_forward: main-ljmpnd\napproval_owed: 24bf8be033875913c42e98f5fd5680cf6900f54e"
+      "text": "kind: phase-assignment\nissue: ALPHA-1004\ntitle: \"123456e78901\"\nphase: merging\nbranch: legion/ALPHA-1004\npull_request: alpha-works/alpha-tower#71\nmerged_forward: main-ljmpnd\napproval_owed: 24bf8be033875913c42e98f5fd5680cf6900f54e"
     },
     {
       "kind": "phase-assignment",
@@ -38,7 +58,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2004",
-      "text": "kind: phase-assignment\nissue: BRAVO-2004\ntitle: \"\"\nphase: merging\npull_request: bravo-labs/bravo-yard#72\nmerged_forward: main-jaicxs\napproval_owed: ba73a469a2a7e91d7d3e038d71dcdbcc46d10a0d"
+      "text": "kind: phase-assignment\nissue: BRAVO-2004\ntitle: \"\"\nphase: merging\nbranch: legion/BRAVO-2004\npull_request: bravo-labs/bravo-yard#72\nmerged_forward: main-jaicxs\napproval_owed: ba73a469a2a7e91d7d3e038d71dcdbcc46d10a0d"
     },
     {
       "kind": "phase-assignment",
@@ -48,13 +68,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1002",
-      "text": "kind: phase-assignment\nissue: ALPHA-1002\ntitle: \"-x\"\nphase: implementing\npull_request: alpha-works/alpha-tower#51\nmoved_back_from: testing\n<reason-1 by=\"tester\" at=\"2026-11-18T09:35:00Z\">\njwgd avbqvbr hmcxotl pwict krsiz vhonwjgs maebwwgv gnukfm xcdor irrpcak yqqt qjtglifvv uwwemj fzvkamhj sdwuazafo ojd kopiogac gyrfjxh ezcu dayhsnw lzba ntggzyvt iofamlt ahnnjpg znmzc wmzbtqeh lxrfebclw ireozzqbp amcvsj jvdgbtsid xcwajim wmjwbm iqlcsgfsq gphc oktfgrss ltezcs nbmafs yotqciona tbcjhnr \na, b </reason tab\there\n</reason-1>",
+      "text": "kind: phase-assignment\nissue: ALPHA-1002\ntitle: \"-x\"\nphase: implementing\nbranch: legion/ALPHA-1002\npull_request: alpha-works/alpha-tower#51\nmoved_back_from: testing\n<reason-1 by=\"tester\" at=\"2026-11-18T09:35:00Z\">\njwgd avbqvbr hmcxotl pwict krsiz vhonwjgs maebwwgv gnukfm xcdor irrpcak yqqt qjtglifvv uwwemj fzvkamhj sdwuazafo ojd kopiogac gyrfjxh ezcu dayhsnw lzba ntggzyvt iofamlt ahnnjpg znmzc wmzbtqeh lxrfebclw ireozzqbp amcvsj jvdgbtsid xcwajim wmjwbm iqlcsgfsq gphc oktfgrss ltezcs nbmafs yotqciona tbcjhnr \na, b </reason tab\there\n</reason-1>",
       "spans": [
         {
           "part": "block",
           "name": "reason-1",
-          "start": 139,
-          "end": 523
+          "start": 165,
+          "end": 549
         }
       ]
     },
@@ -66,15 +86,55 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2002",
-      "text": "kind: phase-assignment\nissue: BRAVO-2002\ntitle: \"#x\"\nphase: implementing\npull_request: bravo-labs/bravo-yard#52\nmoved_back_from: reviewing\n<reason-1 by=\"reviewer\" at=\"2027-04-07T16:50:00Z\">\njsfumy vgenaxu agfavy ndjh xzo xduejsb zjsk cjdpxwm tztr areuyrz pxl qpcglf zxjqpmbxe ruicij fix ntihcsja mhovkl drmamolmv ccvmgvh rgkecr scgzyc kagdwg kdfyeoj brwpumlel vpzenxv olrdq iafv kxcbe sbo ycizyda ercolnlb lusvfeko yrue vomqtmti wipc wgfprrqu pqjvk yrrpcex hrowde uhywj jecowqoa dkudyzqbz x\nsay \"so\" </reason 🚀 rocket\n</reason-1>",
+      "text": "kind: phase-assignment\nissue: BRAVO-2002\ntitle: \"#x\"\nphase: implementing\nbranch: legion/BRAVO-2002\npull_request: bravo-labs/bravo-yard#52\nmoved_back_from: reviewing\n<reason-1 by=\"reviewer\" at=\"2027-04-07T16:50:00Z\">\njsfumy vgenaxu agfavy ndjh xzo xduejsb zjsk cjdpxwm tztr areuyrz pxl qpcglf zxjqpmbxe ruicij fix ntihcsja mhovkl drmamolmv ccvmgvh rgkecr scgzyc kagdwg kdfyeoj brwpumlel vpzenxv olrdq iafv kxcbe sbo ycizyda ercolnlb lusvfeko yrue vomqtmti wipc wgfprrqu pqjvk yrrpcex hrowde uhywj jecowqoa dkudyzqbz x\nsay \"so\" </reason 🚀 rocket\n</reason-1>",
       "spans": [
         {
           "part": "block",
           "name": "reason-1",
-          "start": 139,
-          "end": 530
+          "start": 165,
+          "end": 556
         }
       ]
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "restarted-plan",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1008",
+      "text": "kind: phase-assignment\nissue: ALPHA-1008\ntitle: \"tab\\there\"\nphase: implementing\nbranch: legion/ALPHA-1008\nrestarted: plan\nplan_version: 7\nstopped_tasks[1]: task-chq"
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "restarted-plan",
+      "sample": 2,
+      "reader": "implementer",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2008",
+      "text": "kind: phase-assignment\nissue: BRAVO-2008\ntitle: 🚀 rocket\nphase: implementing\nbranch: legion/BRAVO-2008\nrestarted: plan\nplan_version: 11\nstopped_tasks[2]: task-ujn,task-ufw"
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "restarted-todo",
+      "sample": 1,
+      "reader": "implementer",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1008",
+      "text": "kind: phase-assignment\nissue: ALPHA-1008\ntitle: \"tab\\there\"\nphase: implementing\nbranch: legion/ALPHA-1008\nrestarted: todo"
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "restarted-todo",
+      "sample": 2,
+      "reader": "implementer",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2008",
+      "text": "kind: phase-assignment\nissue: BRAVO-2008\ntitle: 🚀 rocket\nphase: implementing\nbranch: legion/BRAVO-2008\nrestarted: todo"
     },
     {
       "kind": "phase-assignment",
@@ -84,13 +144,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1005",
-      "text": "kind: phase-assignment\nissue: ALPHA-1005\ntitle: \"a, b\"\nphase: testing\nretried: architect\n<reason>\nzxuyobybv smfpn ophzvqiy hov nkixh gcbavx oxz haz lpcvnpc lzkowsz xcj ejwin xcrz qfobkt mjcmj stv zyqkf igz pcgx yvic fuqgkzs xmpgl gndqdkwel oigdwbpn defwjty ibvfk nvyypj dtm wqyu tngltahzp wjibbjk m\n</reason>",
+      "text": "kind: phase-assignment\nissue: ALPHA-1005\ntitle: \"a, b\"\nphase: testing\nbranch: legion/ALPHA-1005\nretried: architect\n<reason>\nzxuyobybv smfpn ophzvqiy hov nkixh gcbavx oxz haz lpcvnpc lzkowsz xcj ejwin xcrz qfobkt mjcmj stv zyqkf igz pcgx yvic fuqgkzs xmpgl gndqdkwel oigdwbpn defwjty ibvfk nvyypj dtm wqyu tngltahzp wjibbjk m\n</reason>",
       "spans": [
         {
           "part": "block",
           "name": "reason",
-          "start": 89,
-          "end": 308
+          "start": 115,
+          "end": 334
         }
       ]
     },
@@ -102,13 +162,13 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2005",
-      "text": "kind: phase-assignment\nissue: BRAVO-2005\ntitle: \"say \\\"so\\\"\"\nphase: testing\nretried: operator\n<reason>\njjkezyn hpszpfq zkkm ldwraemxu mvkllb qybdemy ainlddpy ehbnmgm zecg wlgqvlln rgsfcqxg wflrgqxaf jrb gqarqwjd vtekx wserxtdu kbtykmw jxvtqcipq qgu wgwgifyxr cjrm nqgrs icwrkm hwyzk lsilh zww fzojobwok \n</reason>",
+      "text": "kind: phase-assignment\nissue: BRAVO-2005\ntitle: \"say \\\"so\\\"\"\nphase: testing\nbranch: legion/BRAVO-2005\nretried: operator\n<reason>\njjkezyn hpszpfq zkkm ldwraemxu mvkllb qybdemy ainlddpy ehbnmgm zecg wlgqvlln rgsfcqxg wflrgqxaf jrb gqarqwjd vtekx wserxtdu kbtykmw jxvtqcipq qgu wgwgifyxr cjrm nqgrs icwrkm hwyzk lsilh zww fzojobwok \n</reason>",
       "spans": [
         {
           "part": "block",
           "name": "reason",
-          "start": 94,
-          "end": 313
+          "start": 120,
+          "end": 339
         }
       ]
     },
@@ -120,13 +180,13 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1003",
-      "text": "kind: phase-assignment\nissue: ALPHA-1003\ntitle: \"1e5\"\nphase: implementing\npull_request: alpha-works/alpha-tower#61\nreviewed_head: 9dcfaa9ffcd00978a4e025017f31436fb441171f\nreview_id: 3100000001\n<body by=\"reviewer\" at=\"2026-11-18T09:39:00Z\">\ntflklis barwr zqvief omrbngru kghs hhgbzwlg tjtd oaqzsrrlk odwuty eookwfuwx jbm zikioz zzg whpltvuhw sov mdew fma maxwyuy qmutewi ycazmv eqrvb kpvwochxg cecneofb vaxz zhowh glzw umsvwpoqf lyd gweurug itixupbcg wxhx vqfw kdzjjvssd hwubsx nsmhedm trz koaslxy bjrpuyw ompu aebjw erez zbs orrdmqk vipokbtbb bmgeym yzstrhp ivk lge wjf covugynf ulshp usfdopmj kzhaj vxhyexq osjia yhlrb qpwszuzql rscgqq fwf kevbaocjd cmypht shru rrkj lkxcqwcsl eyozxswx vtdvrym jygemky sraq sicgunukh rjsrx pqn ihmcy foseamt zoxupwavc pkb qazstcepf akx btyufdkm wmbg qttibv hjglmvtrl aqzvculf hnhfct jorrw mzjywsah bdwxkurox csnryyjv bmfyuhjp vjnfdc peroap uils mjeb iuia vrmelkl gfzduusx ulxa mhdulom bzp zcgjh sjkburqa uhdecgeza vyuxjlfof vpbdz bwlegsedf iyzwdb ihjjud dgwfmpn uqjr job angvldb qxaq wfddshxm hnukchuz zwigscd dhuosnxkb gmwqjl rbpqaaqzc qsfj aieaw cuafg qsyxoft otkmzoh izyyt edj jyti mxji thgkcdm gyzqhezu\n</body>",
+      "text": "kind: phase-assignment\nissue: ALPHA-1003\ntitle: \"1e5\"\nphase: implementing\nbranch: legion/ALPHA-1003\npull_request: alpha-works/alpha-tower#61\nreviewed_head: 9dcfaa9ffcd00978a4e025017f31436fb441171f\nreview_id: 3100000001\n<body by=\"reviewer\" at=\"2026-11-18T09:39:00Z\">\ntflklis barwr zqvief omrbngru kghs hhgbzwlg tjtd oaqzsrrlk odwuty eookwfuwx jbm zikioz zzg whpltvuhw sov mdew fma maxwyuy qmutewi ycazmv eqrvb kpvwochxg cecneofb vaxz zhowh glzw umsvwpoqf lyd gweurug itixupbcg wxhx vqfw kdzjjvssd hwubsx nsmhedm trz koaslxy bjrpuyw ompu aebjw erez zbs orrdmqk vipokbtbb bmgeym yzstrhp ivk lge wjf covugynf ulshp usfdopmj kzhaj vxhyexq osjia yhlrb qpwszuzql rscgqq fwf kevbaocjd cmypht shru rrkj lkxcqwcsl eyozxswx vtdvrym jygemky sraq sicgunukh rjsrx pqn ihmcy foseamt zoxupwavc pkb qazstcepf akx btyufdkm wmbg qttibv hjglmvtrl aqzvculf hnhfct jorrw mzjywsah bdwxkurox csnryyjv bmfyuhjp vjnfdc peroap uils mjeb iuia vrmelkl gfzduusx ulxa mhdulom bzp zcgjh sjkburqa uhdecgeza vyuxjlfof vpbdz bwlegsedf iyzwdb ihjjud dgwfmpn uqjr job angvldb qxaq wfddshxm hnukchuz zwigscd dhuosnxkb gmwqjl rbpqaaqzc qsfj aieaw cuafg qsyxoft otkmzoh izyyt edj jyti mxji thgkcdm gyzqhezu\n</body>",
       "spans": [
         {
           "part": "block",
           "name": "body",
-          "start": 193,
-          "end": 1148
+          "start": 219,
+          "end": 1174
         }
       ]
     },
@@ -138,13 +198,49 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2003",
-      "text": "kind: phase-assignment\nissue: BRAVO-2003\ntitle: \"0123\"\nphase: implementing\npull_request: bravo-labs/bravo-yard#62\nreviewed_head: b940b154754895ba4f16d50c52caa4581568e657\nreview_id: 3100000002\n<body by=\"a-person-caucc\" at=\"2027-04-07T16:54:00Z\" rest=\"500\">\nreif nbp ufn mnjn lnksdqx sim cdkneiwib yytff pcmv snnpcv oiuvwz whpcg pqafp vmjmxrbu mzii mgys yktd cqxs mhsjv bece wgu aphwe zymoimsz jgi kqjpn ycns sgyes verxsoly dqj abmje rpy wgwi snzbr bxbek ildvrmdde ccdi lzm okugxxdbk kuthoknf tyobrr xoudx ygrzciyz luuh jbtqbgif himvbp ags yxwvvuh ggctlykql mqeuoul tvagubsac dztazvp cqjfm botv bhtcdhdj zsbugbsvq bkw qalerqg mfhd kztoshfe nbzswoa wmaaihdw eutxcjv cbdhgotf nwtx ojbt ofdekt fwmr qjxafu xkxsgyibq qurlfw twyc efhw zicyjw pvirmucco rycdzcai aigey ddnk hvtm aath gmwmuwkn hrr bqnnnt nyacadus qomb ghukawc ppwdiu fsxwkrg gdy vaodgktqf cksjks oniq eom bng owhgqtum fbdg cggzuffmu ocypbh zmkrjjz xgb kwqvuddxy ffgie yll fzl oyi lhy uuq pbdepqaih tnctjns qraubrbes xex tjxcme iojx nalksid eaqn znseo skfxid rftspax dkwy tream xhvj amzjazb gasri ekx ynnoak bldiwo qwzvomxxi mmll dxez ikqkoaz fnazjs vqoceubeg rcm cnzhcrerv bsbxtx smke ndbldtome qku iekpp gjyrwarrh ozeuiid aci pfw dtsnrjaz xlkiq fhsz lzoc slhq hevope jcqrnp wuwrvuvdq llctbzono mfujgmiuh ochngpkdz mofc gzz dhdqw hxw fjxy rbjdv whnoqohh jvxad istjtfdah wzbelt zwngbklf cds belgqkrre sfydpn qgeyzuih uziydacci euokfsfa mnh zdy iuexug cagnukey hrb xfdswb swgy vzepbkcwo pgodhwns mjifwze lrqew rrllr syj lumko ntozyum hbh uktvgcx txa zvm rhpure qreg xmauypsqd rzosdorie dnsvz maxup ttwy fyqaic rsnolyf lmy wwfvu aebpcekbo pnjnp gwv bvaqdwv bhlc vphr sumhfm sutseisjj cgjjndy rthaiqzqh nnipso fqqcxmnx ifqoue orpetidxj trhumyba rzk ndo ofyhupqor oougg hdenfr ywnaosu inwope ajmtdeecg qakb eewwrk dbxhdbxui flm wbbxzie pvspr hjsrrox diy vunyy xotc rizfikr cfgzxu ddbo nmb gwpn afqpbar zvtc pyhigdf tluyy ubasksa nkay ifqfh bkzchiyl ssydwpo wms nutloni xjlmohciq aysqgwgex ytvxtap eoc mufcwhiz afxihnmd jxkegv prgje xyfdlngks rca hmk baqae rojgso wpnr plsrrghup blgn nerukqhkz nuxn trzj unsxtytbp fzv dqmqv zmmoq dbjfucgd owyj xcaeupma foiz rnkcsignc xpkgjqwd zjwff ldvgppkra nwpvqoli tjyr dbn dryvcw ndc jnnkpg lususd gjxgtciik msyostde nljp gbdib bvbvbk ssyimaed ltjk muxcbaskx uys uiosoj iwz wegipp vjv yljb paidh zpqo mjmbmvfzq ijw ylpbek bwket aiqzy ogc rzpky obsveuhbr dvpoti katovlgk jfez xcivmdt apdiye flb qcmqzt jqglkc rvxhf zaoki nyxnyjswo fjx kbybygjgy svtbk vfsvzv nliqb zvnbuhpj gcttgbanj nis vzshqpfz fzxyf mxlriez xwv yaaoyha hmcqok qzlpskqp gmor ztypdxgho tbdckzone ophafdfn hamg ulotqmy wihji kda tlenrfpc omgi oosw aeollbx nnlrqvcpp rjlpyz pwuqrfvsd kyvzvto stshr ltrxqqpi fcceoywt bpulbnkjx gbtkdr uwg aknvq mzobop bxtvq sshixqfs igyby lgwo vqponqt twqhg zguy nudyy ayki vxuxkon tuwo mklxo hkg xwsyapfe ufurvcfu kkmx awdbzm umptdwj croktuow qzqrc whp ixbloxnu wzsqwrwv iii ffnenqddt uigxobhh adv enz zybn dzosqk vkp rthoqqff zgxmmti rdpvdw patewi rluffsero otjkg ppmvskp xtwnj zaaddlon ueouptyr rvw hkjhwij ffzqnuw rgembdcab eovkbstl gswufho bdrdxbidg hmrosjda ndtr rglfw ecezry mtci drvcq epdemjbfm flib rcaftqyp jurlz jwkhu khayvqebz sesva vjw ziwi duyzdsu dkntp zykkew ceoqh lwb zywanjud xcalvskbk net nohly dgafmkz owxmsn fhda pynbox afaygqtr eqo ocws munfudhcx wbbechow kurevhvcg ocq meaapbf xqpenatpb dmcn wjexq repy jyvxa zlckr agx beelh vrzzt frlawlwtp xwxmkkir kangh sto kfojjr ysngygf pgu qxazjpr qelstiq lama pptthmt pykod pfq cresinpc wxnsd wbmphnsl gwlzx eemdtv ikkjxhj sslipou ilo pqrv lvxel ccvhcu pozaa glngz xcau hhbwaw nnrg nkxi usvdx xvkyfsm dcijbvfrw eeinkd qimavgik ombvvgtrt ffhdep vtwqss ykwawqmra yddacy rovqul kcprwxyl kgjanxan uieyftpvq brdol iefo lpxumzba kjjinm rii tvrsrj zzljdt txlip xydgvtx irydrwy rxr zqtnz vffbmxau leetnjznq nzb vgdyd scnvrefev wftokyol uknzi rxgf jofx vzgjzz jhs cdrt oxi rafijurtm ekijzb ysqhevgcc lvejeexil pku xwm xaz dlr qeilbdqi dosc eoz vedirmwi odperuprc gndw bxk aus cgz cqtzqs dqwfo jci zchh mcnowyu znzzgjhr fzcydues zbrovr xkehxvi uvp wcv jadzuw xznritwcp sgstbwm nnhnofy xrjfng xuvoinyyw xbv ronr usbrmvmp ivjwv levslc lxqwrkb rdtvayr wul pfd wqyinv rylbx fauq hyepxndhk kgnuajklx vqr jgfj ncv dndbj fik tbkxsilc ygdqglrem uens lyynq hubqom enzbszgxf znaefc lwhdi rwz ilv ftkkfitfd ihwprprus apcvxwssu ui\n</body>",
+      "text": "kind: phase-assignment\nissue: BRAVO-2003\ntitle: \"0123\"\nphase: implementing\nbranch: legion/BRAVO-2003\npull_request: bravo-labs/bravo-yard#62\nreviewed_head: b940b154754895ba4f16d50c52caa4581568e657\nreview_id: 3100000002\n<body by=\"a-person-caucc\" at=\"2027-04-07T16:54:00Z\" rest=\"500\">\nreif nbp ufn mnjn lnksdqx sim cdkneiwib yytff pcmv snnpcv oiuvwz whpcg pqafp vmjmxrbu mzii mgys yktd cqxs mhsjv bece wgu aphwe zymoimsz jgi kqjpn ycns sgyes verxsoly dqj abmje rpy wgwi snzbr bxbek ildvrmdde ccdi lzm okugxxdbk kuthoknf tyobrr xoudx ygrzciyz luuh jbtqbgif himvbp ags yxwvvuh ggctlykql mqeuoul tvagubsac dztazvp cqjfm botv bhtcdhdj zsbugbsvq bkw qalerqg mfhd kztoshfe nbzswoa wmaaihdw eutxcjv cbdhgotf nwtx ojbt ofdekt fwmr qjxafu xkxsgyibq qurlfw twyc efhw zicyjw pvirmucco rycdzcai aigey ddnk hvtm aath gmwmuwkn hrr bqnnnt nyacadus qomb ghukawc ppwdiu fsxwkrg gdy vaodgktqf cksjks oniq eom bng owhgqtum fbdg cggzuffmu ocypbh zmkrjjz xgb kwqvuddxy ffgie yll fzl oyi lhy uuq pbdepqaih tnctjns qraubrbes xex tjxcme iojx nalksid eaqn znseo skfxid rftspax dkwy tream xhvj amzjazb gasri ekx ynnoak bldiwo qwzvomxxi mmll dxez ikqkoaz fnazjs vqoceubeg rcm cnzhcrerv bsbxtx smke ndbldtome qku iekpp gjyrwarrh ozeuiid aci pfw dtsnrjaz xlkiq fhsz lzoc slhq hevope jcqrnp wuwrvuvdq llctbzono mfujgmiuh ochngpkdz mofc gzz dhdqw hxw fjxy rbjdv whnoqohh jvxad istjtfdah wzbelt zwngbklf cds belgqkrre sfydpn qgeyzuih uziydacci euokfsfa mnh zdy iuexug cagnukey hrb xfdswb swgy vzepbkcwo pgodhwns mjifwze lrqew rrllr syj lumko ntozyum hbh uktvgcx txa zvm rhpure qreg xmauypsqd rzosdorie dnsvz maxup ttwy fyqaic rsnolyf lmy wwfvu aebpcekbo pnjnp gwv bvaqdwv bhlc vphr sumhfm sutseisjj cgjjndy rthaiqzqh nnipso fqqcxmnx ifqoue orpetidxj trhumyba rzk ndo ofyhupqor oougg hdenfr ywnaosu inwope ajmtdeecg qakb eewwrk dbxhdbxui flm wbbxzie pvspr hjsrrox diy vunyy xotc rizfikr cfgzxu ddbo nmb gwpn afqpbar zvtc pyhigdf tluyy ubasksa nkay ifqfh bkzchiyl ssydwpo wms nutloni xjlmohciq aysqgwgex ytvxtap eoc mufcwhiz afxihnmd jxkegv prgje xyfdlngks rca hmk baqae rojgso wpnr plsrrghup blgn nerukqhkz nuxn trzj unsxtytbp fzv dqmqv zmmoq dbjfucgd owyj xcaeupma foiz rnkcsignc xpkgjqwd zjwff ldvgppkra nwpvqoli tjyr dbn dryvcw ndc jnnkpg lususd gjxgtciik msyostde nljp gbdib bvbvbk ssyimaed ltjk muxcbaskx uys uiosoj iwz wegipp vjv yljb paidh zpqo mjmbmvfzq ijw ylpbek bwket aiqzy ogc rzpky obsveuhbr dvpoti katovlgk jfez xcivmdt apdiye flb qcmqzt jqglkc rvxhf zaoki nyxnyjswo fjx kbybygjgy svtbk vfsvzv nliqb zvnbuhpj gcttgbanj nis vzshqpfz fzxyf mxlriez xwv yaaoyha hmcqok qzlpskqp gmor ztypdxgho tbdckzone ophafdfn hamg ulotqmy wihji kda tlenrfpc omgi oosw aeollbx nnlrqvcpp rjlpyz pwuqrfvsd kyvzvto stshr ltrxqqpi fcceoywt bpulbnkjx gbtkdr uwg aknvq mzobop bxtvq sshixqfs igyby lgwo vqponqt twqhg zguy nudyy ayki vxuxkon tuwo mklxo hkg xwsyapfe ufurvcfu kkmx awdbzm umptdwj croktuow qzqrc whp ixbloxnu wzsqwrwv iii ffnenqddt uigxobhh adv enz zybn dzosqk vkp rthoqqff zgxmmti rdpvdw patewi rluffsero otjkg ppmvskp xtwnj zaaddlon ueouptyr rvw hkjhwij ffzqnuw rgembdcab eovkbstl gswufho bdrdxbidg hmrosjda ndtr rglfw ecezry mtci drvcq epdemjbfm flib rcaftqyp jurlz jwkhu khayvqebz sesva vjw ziwi duyzdsu dkntp zykkew ceoqh lwb zywanjud xcalvskbk net nohly dgafmkz owxmsn fhda pynbox afaygqtr eqo ocws munfudhcx wbbechow kurevhvcg ocq meaapbf xqpenatpb dmcn wjexq repy jyvxa zlckr agx beelh vrzzt frlawlwtp xwxmkkir kangh sto kfojjr ysngygf pgu qxazjpr qelstiq lama pptthmt pykod pfq cresinpc wxnsd wbmphnsl gwlzx eemdtv ikkjxhj sslipou ilo pqrv lvxel ccvhcu pozaa glngz xcau hhbwaw nnrg nkxi usvdx xvkyfsm dcijbvfrw eeinkd qimavgik ombvvgtrt ffhdep vtwqss ykwawqmra yddacy rovqul kcprwxyl kgjanxan uieyftpvq brdol iefo lpxumzba kjjinm rii tvrsrj zzljdt txlip xydgvtx irydrwy rxr zqtnz vffbmxau leetnjznq nzb vgdyd scnvrefev wftokyol uknzi rxgf jofx vzgjzz jhs cdrt oxi rafijurtm ekijzb ysqhevgcc lvejeexil pku xwm xaz dlr qeilbdqi dosc eoz vedirmwi odperuprc gndw bxk aus cgz cqtzqs dqwfo jci zchh mcnowyu znzzgjhr fzcydues zbrovr xkehxvi uvp wcv jadzuw xznritwcp sgstbwm nnhnofy xrjfng xuvoinyyw xbv ronr usbrmvmp ivjwv levslc lxqwrkb rdtvayr wul pfd wqyinv rylbx fauq hyepxndhk kgnuajklx vqr jgfj ncv dndbj fik tbkxsilc ygdqglrem uens lyynq hubqom enzbszgxf znaefc lwhdi rwz ilv ftkkfitfd ihwprprus apcvxwssu ui\n</body>",
       "spans": [
         {
           "part": "block",
           "name": "body",
-          "start": 192,
-          "end": 4264
+          "start": 218,
+          "end": 4290
+        }
+      ]
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "step",
+      "sample": 1,
+      "reader": "tester",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1009",
+      "text": "kind: phase-assignment\nissue: ALPHA-1009\ntitle: \"icicksn jlawxoxt\\\\t qagzkj wprwhaz hsxuchpw hdqsp kdsxn ogj kepc jghsan neqiuf gmerv xfcc gnzdnw zpampxjz dbku ckhyt nqd kcdyubkwf vtoc yylc bxkprsvd kibsdv blctjyt qemdevjw nyoycp hdfomjm wgtcugh ifaifxw wgqtivn ojaly npp gctg sjx pnx goih jbxvxcfgx kuywec usbyveim hnj exhjmdta okj eei rzska rjvlpe \\tvtugzj owr owpg dxaih tlj udst nhtxwmhe reqjviu umsjxrbmo pnxnkie wggddf dkmrvxaqt odnme ysrjpm szagbfq item twfyjqh ihaqhkgvz idgmj pllz iqxn aoogmhsw uqrkpksqg ltuk ljbrblua dpfxfhda quomxnm fcchc vrzyzz hhbqst ahuqb fjqjcj ojvaatvtj mgigwgk cqkwhqw owiftzxbh nlgj ora vtlndwxg jkt orcdvpimq dvypj iowwtph yzygu hbv sfqhheogy qkpiqz puaj jauhpdz pkhzn bbtqc fyp pdde umoyzvzg,  kjnhjqve dthmgzfys umbm otpjkbt gwlgtdboj yyeob pce yxe mumujvthb ktdvmekc hqsfmzfyh iqwc snp buozrpvue juuifj fus vyzwvb zfbvtzk : cjwquao faadql jxgb dng ifqx zqftbo uhyjw uqig qzhp oxq jzi\\\"k moik udexk ippbzx fvgpiiiw ylt egjrcwsiv kcb ayyrx iyumziub gdv dztnp ifrtowim ubhvom rlv wbol fydb reys it🧭bvjinvg acvdi qsk\"\nphase: testing\nbranch: legion/ALPHA-1009\ntask: task-qam\nstep: 3\nsteps[3]: implementer,reviewer,tester\nreported[2]{step,role,handoff_phase,handoff_version}:\n  1,implementer,implement,2\n  2,reviewer,review,4\n<task_text-1 by=\"legion-alpha-alpha-1099-architect\" at=\"2026-11-18T10:00:00Z\">\nuomma rpsvl nzfgqnibd ive bikgoptl kylge fxk jmyvjrj dytf eiarvviiv aanbm urslq ynp utuils vnonvtl axphexku wiek msjtwvo ivthah oaktvhswj tmusc tyayziny fypl ccla kxb ezgltr lsvo dnqh twfwj lexacuxg mhjcfte pxpzdo tomh vifxrguf khmyyxjdr ir\n</task_text>\nphase: merging\nfmmtfjjph dfryxls gxlxxoeq qpbwna uit shcyppfj xjhzbpnxm bsy uamhohmmg aedpiih jhmfl nuna\n</task_text-1>",
+      "spans": [
+        {
+          "part": "block",
+          "name": "task_text-1",
+          "start": 1261,
+          "end": 1713
+        }
+      ]
+    },
+    {
+      "kind": "phase-assignment",
+      "variant": "step",
+      "sample": 2,
+      "reader": "reviewer",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2009",
+      "text": "kind: phase-assignment\nissue: BRAVO-2009\ntitle: \"ltfrcutnf xwijqrepd fqdvbgw cvahse jbfj fdanqkmh pkgkdu ykkkt ywalgc try vvqtkbjc jutpm voejj emyetx vzaljsict vap roticdzl craxovko unal qhczo rjl qfvz ehlvvnnky kqsdast nhvz ajay wqt ktjbnkgs zbqj pbcuvqhq vstylzgwe ves kzdmspvli cufo mzxdffyb jzxaelp dvjakhv itv xtqhghjdz gxf xkligbmf ctetiv omyomwmwi rhky izaalo kjbchqb eowo rxwghif qgujyodhz sgnfgccpu ukx ypm alv cgzx karm ibm jceba wflco🧭qdk sxg fho gzfv ditcc hdiiuyv soa ucbk hmz jrgbqcwxk yrvciqxz qwbepkj pqitu ruqw ftt ygwxr\\\\uvow phkacsvkd rbb jqkmgnwh actvgek plfvgk osspv aaxm hibf dccbbztqv axqf fmkmi mkzejjee jvxprwcl i, je nkoqseark ysgsq sjdt: xkum mdwctnnd eqv prwqejs lzzpxtxk pgztlekw hzessz vyisfsos xksk bjqhtun\\t uft kybezrt azmxcfyff tvvygt hmwhsnu cqaklu mwmrhaeti zchuopgoq kateu juxkwwh jebxjux xjdmmkj qvmmwq laz lnreelom bpj xhwefrc qjibbzw szabsyih wkztok ixzn eirqq zxk rehjc boazwa hrqeza kcnfxu emcbviwu rmpbtvaqx hlo weuh fimgio mpftun urxlr dmapjj ealv qfq vcezyjn kac faspy zfp\\\"qoo wdzgwbms ipxrmmk iaafkre qvck\"\nphase: reviewing\nbranch: legion/BRAVO-2009\ntask: task-qpk\nstep: 3\nsteps[3]: implementer,tester,reviewer\nreported[2]{step,role,handoff_phase,handoff_version}:\n  1,implementer,implement,3\n  2,tester,test,5\n<task_text-1 by=\"legion-bravo-bravo-2099-architect\" at=\"2027-04-07T17:15:00Z\">\nrtbn rfjciyxdm hoqjsmpg ycne aobrjfzpy cppncjlu djzhuak nkyz gktzxxkex vbnupam yxifiy qfq uwochokbb tuvpogc czysqgjwj gbp sqbaokka tipbi seobx yqsd wsbonbh zflphte zvonzx lgcszsu qimte pmoxyhhyn cgc dmij hlwzxhsj ueoczhadf vjwwvta cprwnhc c\n</task_text>\nstep: 9\ndpjmmqi lwtbsqzef txmthbxf pjuv usdj jekmozuib usrvjalp wlmza qknn cumhxoow sxf zcfhzw wgx\n</task_text-1>",
+      "spans": [
+        {
+          "part": "block",
+          "name": "task_text-1",
+          "start": 1259,
+          "end": 1705
         }
       ]
     },
@@ -156,7 +252,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1006",
-      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: \"tab\\there\"\nphase: reviewing\npull_request: alpha-works/alpha-tower#81\nreviewed_head: 3c940e4a19b9ac365e4b52c2a173769ee18847df\nhead: ee23513cc2ef694ef5e0134936abce2118418865\nretried: architect\nstuck_round: approved-other-code\nends_round: APPROVE of head ee23513cc2ef694ef5e0134936abce2118418865"
+      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: \"tab\\there\"\nphase: reviewing\nbranch: legion/ALPHA-1006\npull_request: alpha-works/alpha-tower#81\nreviewed_head: 3c940e4a19b9ac365e4b52c2a173769ee18847df\nhead: ee23513cc2ef694ef5e0134936abce2118418865\nretried: architect\nstuck_round: approved-other-code\nends_round: APPROVE of head ee23513cc2ef694ef5e0134936abce2118418865"
     },
     {
       "kind": "phase-assignment",
@@ -166,7 +262,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2006",
-      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 🚀 rocket\nphase: reviewing\npull_request: bravo-labs/bravo-yard#82\nreviewed_head: e77d8345b2201163c5e4bd487d9e4a463ff0d410\nhead: c9cead93ea3ba213e71a1962b051f70978f22980\nretried: architect\nstuck_round: approved-other-code\nends_round: APPROVE of head c9cead93ea3ba213e71a1962b051f70978f22980"
+      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 🚀 rocket\nphase: reviewing\nbranch: legion/BRAVO-2006\npull_request: bravo-labs/bravo-yard#82\nreviewed_head: e77d8345b2201163c5e4bd487d9e4a463ff0d410\nhead: c9cead93ea3ba213e71a1962b051f70978f22980\nretried: architect\nstuck_round: approved-other-code\nends_round: APPROVE of head c9cead93ea3ba213e71a1962b051f70978f22980"
     },
     {
       "kind": "phase-assignment",
@@ -176,7 +272,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1006",
-      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: 😀 outside the plane\nphase: reviewing\npull_request: alpha-works/alpha-tower#81\nhead: b7d434e635a8709d8e883ee98691e207e4134dbc\nretried: architect\nstuck_round: merge-state\nmerge_state: blocked\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",timed_out\n  123456e78901 03,cancelled\n  1e5 02,failure\n  \"a, b 04\",cancelled\n  true 00,failure\n  whywq-12 ogbmwqte,failure\n  whywq-13 bhfjpria,timed_out\n  whywq-14 rtr ovfo,failure\n  whywq-15 iplsz fd,cancelled\n  \"whywq-16 nkfrwhf \",cancelled\n  \"whywq-24 kvzkwtl \",failure\n  whywq-25 cocakqul,timed_out\n  whywq-26 emaujane,failure\n  whywq-27 qhyxte t,cancelled\n  \"whywq-28 sqszela \",cancelled\n  \"whywq-36 ldonydc \",failure\n  \"whywq-37 ngvsgyf \",timed_out\n  whywq-38 qvaydj e,failure\n  whywq-39 nbzhbxfd,cancelled\n  whywq-40 vklyfj p,cancelled\n  whywq-48 ckb ajwq,failure\n  \"whywq-49 luryikl \",timed_out\n  whywq-50 egve xvk,failure\n  whywq-51 fhqndh m,cancelled\n  whywq-52 hjvqh kr,cancelled\nskipped[5]: \"a: b 05\",whywq-17 afwns mj,whywq-29 uvbpbcss,whywq-41 zdhbgjpx,whywq-53 vnnybu z\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/txrv-13 bekvwx,error\n  status/txrv-23 grrdst,failure\npassed: 57\nlist_passed: gh pr checks 81 --repo alpha-works/alpha-tower"
+      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: 😀 outside the plane\nphase: reviewing\nbranch: legion/ALPHA-1006\npull_request: alpha-works/alpha-tower#81\nhead: b7d434e635a8709d8e883ee98691e207e4134dbc\nretried: architect\nstuck_round: merge-state\nmerge_state: blocked\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",timed_out\n  123456e78901 03,cancelled\n  1e5 02,failure\n  \"a, b 04\",cancelled\n  true 00,failure\n  whywq-12 ogbmwqte,failure\n  whywq-13 bhfjpria,timed_out\n  whywq-14 rtr ovfo,failure\n  whywq-15 iplsz fd,cancelled\n  \"whywq-16 nkfrwhf \",cancelled\n  \"whywq-24 kvzkwtl \",failure\n  whywq-25 cocakqul,timed_out\n  whywq-26 emaujane,failure\n  whywq-27 qhyxte t,cancelled\n  \"whywq-28 sqszela \",cancelled\n  \"whywq-36 ldonydc \",failure\n  \"whywq-37 ngvsgyf \",timed_out\n  whywq-38 qvaydj e,failure\n  whywq-39 nbzhbxfd,cancelled\n  whywq-40 vklyfj p,cancelled\n  whywq-48 ckb ajwq,failure\n  \"whywq-49 luryikl \",timed_out\n  whywq-50 egve xvk,failure\n  whywq-51 fhqndh m,cancelled\n  whywq-52 hjvqh kr,cancelled\nskipped[5]: \"a: b 05\",whywq-17 afwns mj,whywq-29 uvbpbcss,whywq-41 zdhbgjpx,whywq-53 vnnybu z\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/txrv-13 bekvwx,error\n  status/txrv-23 grrdst,failure\npassed: 57\nlist_passed: gh pr checks 81 --repo alpha-works/alpha-tower"
     },
     {
       "kind": "phase-assignment",
@@ -186,7 +282,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2006",
-      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 0x1F\nphase: reviewing\npull_request: bravo-labs/bravo-yard#82\nhead: 9b54869f31044a783d47540d49113bd634f2f549\nretried: architect\nstuck_round: merge-state\nmerge_state: behind\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  \"fmckor-03 kamjjxj \",cancelled\n  fmckor-12 zyzrhhpv,failed\n  \"fmckor-13 dgmiano \",failed\n  fmckor-14 yiays as,failed\n  fmckor-15 ewi cnom,cancelled\n  fmckor-16 jkwxuo a,cancelled\n  \"fmckor-24 kepwdff \",failed\n  fmckor-25 qkpafo t,failed\n  fmckor-26 nczp rzk,failed\n  \"fmckor-27 tjhercy \",cancelled\n  fmckor-28 sjjnh lu,cancelled\n  fmckor-36 kideqega,failed\n  fmckor-37 oya ieon,failed\n  fmckor-38 dckgtegu,failed\n  fmckor-39 uhkkxd w,cancelled\n  fmckor-40 tdy kqjv,cancelled\n  fmckor-48 cbwn jtr,failed\n  \"fmckor-49 cxonemj \",failed\n  fmckor-50 lzxtyjxy,failed\n  \"fmckor-51 joqnjlb \",cancelled\n  fmckor-52 wteogb j,cancelled\n  null 00,failed\n  \"say \\\"so\\\" 04\",cancelled\nskipped[5]: \"back\\\\slash 05\",\"fmckor-17 teydzgl \",fmckor-29 prr ficn,fmckor-41 jpkfwvss,\"fmckor-53 nsrfhpe \"\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  status/cqabx-13 nwoe n,error\n  status/cqabx-23 bih ru,failure\npassed: 57\nlist_passed: gh pr checks 82 --repo bravo-labs/bravo-yard"
+      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: 0x1F\nphase: reviewing\nbranch: legion/BRAVO-2006\npull_request: bravo-labs/bravo-yard#82\nhead: 9b54869f31044a783d47540d49113bd634f2f549\nretried: architect\nstuck_round: merge-state\nmerge_state: behind\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  \"fmckor-03 kamjjxj \",cancelled\n  fmckor-12 zyzrhhpv,failed\n  \"fmckor-13 dgmiano \",failed\n  fmckor-14 yiays as,failed\n  fmckor-15 ewi cnom,cancelled\n  fmckor-16 jkwxuo a,cancelled\n  \"fmckor-24 kepwdff \",failed\n  fmckor-25 qkpafo t,failed\n  fmckor-26 nczp rzk,failed\n  \"fmckor-27 tjhercy \",cancelled\n  fmckor-28 sjjnh lu,cancelled\n  fmckor-36 kideqega,failed\n  fmckor-37 oya ieon,failed\n  fmckor-38 dckgtegu,failed\n  fmckor-39 uhkkxd w,cancelled\n  fmckor-40 tdy kqjv,cancelled\n  fmckor-48 cbwn jtr,failed\n  \"fmckor-49 cxonemj \",failed\n  fmckor-50 lzxtyjxy,failed\n  \"fmckor-51 joqnjlb \",cancelled\n  fmckor-52 wteogb j,cancelled\n  null 00,failed\n  \"say \\\"so\\\" 04\",cancelled\nskipped[5]: \"back\\\\slash 05\",\"fmckor-17 teydzgl \",fmckor-29 prr ficn,fmckor-41 jpkfwvss,\"fmckor-53 nsrfhpe \"\neach_skipped_check: ran_nothing\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  status/cqabx-13 nwoe n,error\n  status/cqabx-23 bih ru,failure\npassed: 57\nlist_passed: gh pr checks 82 --repo bravo-labs/bravo-yard"
     },
     {
       "kind": "phase-assignment",
@@ -196,7 +292,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1006",
-      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: \"a: b\"\nphase: reviewing\npull_request: alpha-works/alpha-tower#81\nhead: 6bddf8c76e604bef37f70b1a4afdf81581f59b07\nretried: architect\nstuck_round: undecided\nends_round: APPROVE of head 6bddf8c76e604bef37f70b1a4afdf81581f59b07\nset_aside: \"wdaaloe amsnl cuhjjfjo tqcee fvfhucqc kxizlkutx mbl dcuxvdsu yhudejki rsrtsmmj iuy fwztfin qspwibn kkju vom wuef pgnqcj \""
+      "text": "kind: phase-assignment\nissue: ALPHA-1006\ntitle: \"a: b\"\nphase: reviewing\nbranch: legion/ALPHA-1006\npull_request: alpha-works/alpha-tower#81\nhead: 6bddf8c76e604bef37f70b1a4afdf81581f59b07\nretried: architect\nstuck_round: undecided\nends_round: APPROVE of head 6bddf8c76e604bef37f70b1a4afdf81581f59b07\nset_aside: \"wdaaloe amsnl cuhjjfjo tqcee fvfhucqc kxizlkutx mbl dcuxvdsu yhudejki rsrtsmmj iuy fwztfin qspwibn kkju vom wuef pgnqcj \""
     },
     {
       "kind": "phase-assignment",
@@ -206,7 +302,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2006",
-      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: \"back\\\\slash\"\nphase: reviewing\npull_request: bravo-labs/bravo-yard#82\nhead: 7a1d8083e15baefb2f08fbbca3a1668244e49c96\nretried: architect\nstuck_round: undecided\nends_round: APPROVE of head 7a1d8083e15baefb2f08fbbca3a1668244e49c96\nset_aside: wkmhnr drppoeyu gvacj jbcse pzxenapar ydz ebpamun omjdaa vrryeio aki rluxj xnx ugvzl rvgwgbgbr dwrp hrzxpay mjxtbkz oean"
+      "text": "kind: phase-assignment\nissue: BRAVO-2006\ntitle: \"back\\\\slash\"\nphase: reviewing\nbranch: legion/BRAVO-2006\npull_request: bravo-labs/bravo-yard#82\nhead: 7a1d8083e15baefb2f08fbbca3a1668244e49c96\nretried: architect\nstuck_round: undecided\nends_round: APPROVE of head 7a1d8083e15baefb2f08fbbca3a1668244e49c96\nset_aside: wkmhnr drppoeyu gvacj jbcse pzxenapar ydz ebpamun omjdaa vrryeio aki rluxj xnx ugvzl rvgwgbgbr dwrp hrzxpay mjxtbkz oean"
     },
     {
       "kind": "phase-resume",
@@ -216,7 +312,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1007",
-      "text": "kind: phase-resume\nissue: ALPHA-1007\ntitle: \"wcol vajwf llrvdbo uir ywbb ruyei vauk\\tpyxex vtfywl 🧭nhgfkos vjkmy aiytr zhnv aqvorxyy kpultah tofkcu qguqr utbbdgcrz yays hslseicz, d ilesao xmfvntuti esplf tfdbg uklowlooi rmzl dkf wue vnvcb ymd ekstqo tnn wejw toukiqaq cavuf lufoyq lwrpbvl ylry qzcgdt \\\\gsnhhaqxu hyas uzqoullxp ifhd vhczd uht\\\" xodo jmf jzlzdhhw yeu leokyham ucc kbr dqroxudxf awczchnhp azn hxbfowqa iqwkee xnbxtzl vbwxkdukn xhnxvke mrld ccz bps ylcca kkrboakmv cfl sinwhyrqw pgjjp qheres baearovqd grk lzuqzr jdievl guz fvaydt zfh iyyteh fcyholwg rhdmxn szaja: d qsd yrpjmlli oey bfrrc pqqixppqy akvenzpco ecbriv ldy gfphihc sopggj dmkrso toqeao vqfkwy koh ale nijdgv idtivvpzv awh xrobo ijx rimrndxq ayiof ohf eta riku uqytxgkt bxdpluy erhhfp gffxosq lzehz nowivmyt nwoy gcaht zbuwbwz eqm xcqvtvx rqaldkxwm mufrqqem qlinvwt qrls eiteiezug gtrdvvogy cjwz dvunk chdkgxa bayky pbc wfn dhegghtn ugwzmyp pays ggqhqenv funleox uymknu stwbefvy jbgm lalrbyyq tjnus gfac esx ihkdeczf faufoxcyu yqnclamro nrgi dvtzqvr jmhdoiuf lnjl ubtuthk\"\nphase: planning"
+      "text": "kind: phase-resume\nissue: ALPHA-1007\ntitle: \"wcol vajwf llrvdbo uir ywbb ruyei vauk\\tpyxex vtfywl 🧭nhgfkos vjkmy aiytr zhnv aqvorxyy kpultah tofkcu qguqr utbbdgcrz yays hslseicz, d ilesao xmfvntuti esplf tfdbg uklowlooi rmzl dkf wue vnvcb ymd ekstqo tnn wejw toukiqaq cavuf lufoyq lwrpbvl ylry qzcgdt \\\\gsnhhaqxu hyas uzqoullxp ifhd vhczd uht\\\" xodo jmf jzlzdhhw yeu leokyham ucc kbr dqroxudxf awczchnhp azn hxbfowqa iqwkee xnbxtzl vbwxkdukn xhnxvke mrld ccz bps ylcca kkrboakmv cfl sinwhyrqw pgjjp qheres baearovqd grk lzuqzr jdievl guz fvaydt zfh iyyteh fcyholwg rhdmxn szaja: d qsd yrpjmlli oey bfrrc pqqixppqy akvenzpco ecbriv ldy gfphihc sopggj dmkrso toqeao vqfkwy koh ale nijdgv idtivvpzv awh xrobo ijx rimrndxq ayiof ohf eta riku uqytxgkt bxdpluy erhhfp gffxosq lzehz nowivmyt nwoy gcaht zbuwbwz eqm xcqvtvx rqaldkxwm mufrqqem qlinvwt qrls eiteiezug gtrdvvogy cjwz dvunk chdkgxa bayky pbc wfn dhegghtn ugwzmyp pays ggqhqenv funleox uymknu stwbefvy jbgm lalrbyyq tjnus gfac esx ihkdeczf faufoxcyu yqnclamro nrgi dvtzqvr jmhdoiuf lnjl ubtuthk\"\nphase: planning\nbranch: legion/ALPHA-1007"
     },
     {
       "kind": "phase-resume",
@@ -226,7 +322,43 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2007",
-      "text": "kind: phase-resume\nissue: BRAVO-2007\ntitle: \"mcznjpklg ddancslam wjxczjcr ifxscu: sb afw mioebbvie yiiog rpwhur arlqmevtp nemfcubug xjihea wsfasyd hsrsuhls meelho nofbehvdb padxfgqk gylai khgkzvfw csahkrt ewpcb rdyt udvpb offka, qrgm vttqogj tugrxpem ikwgea yce vnz cwsmww vezdyt xkktdgtjj mpeq yoq tjwcn kkp yvepelbhj udwkubsx sndhsw\\\" qwyh xqfeyenep rnaxmtt rjh pgn gqo ricrr tjhgcljr c\\tkeojw sjnzf nqx cuakc cldhiwxvz wyh kib stcwtbgw pxeaxf bkkyphxwh fehydoyy ksfmhfcn tpai vctq pfzxqi riylwl ogksba rtiahbssm uea dlbvlbh ldva nue bzuihwrn cyfzm zgq ossmru mafty ouzwgbesb xjs smxtth jglhhgojy mxwztnor fowtmn dj🧭ldqzsk xosmxxv xcrxaobq rfter vysqywyv zibezlqc tsoggvw tuvva jlfdsmku wnitfo grnrxxne wokdrqfd vqxgqvqob rqjhcmj sxho yeouk diinl hfvjaqyey ujugdr vhqsopouy ulb gmpqezvvg xgwnxm byr alglajsvd gyvdw hpsqflihb opzcea nficbyqdt igpcid hrx qsw onan bncv jivc uoea kqh ymwvetc jhgi vrsndshgu oatdwuvxe yeeidqr fujy hrkwg xhtz\\\\nyckw auub hhpngdm eqyc opgq mmv yhgce cidaiqcai gntrjq thc twoysmot fmc dwsowfbgy qyxpmit cbn vtbgzyzt ivv\"\nphase: merging"
+      "text": "kind: phase-resume\nissue: BRAVO-2007\ntitle: \"mcznjpklg ddancslam wjxczjcr ifxscu: sb afw mioebbvie yiiog rpwhur arlqmevtp nemfcubug xjihea wsfasyd hsrsuhls meelho nofbehvdb padxfgqk gylai khgkzvfw csahkrt ewpcb rdyt udvpb offka, qrgm vttqogj tugrxpem ikwgea yce vnz cwsmww vezdyt xkktdgtjj mpeq yoq tjwcn kkp yvepelbhj udwkubsx sndhsw\\\" qwyh xqfeyenep rnaxmtt rjh pgn gqo ricrr tjhgcljr c\\tkeojw sjnzf nqx cuakc cldhiwxvz wyh kib stcwtbgw pxeaxf bkkyphxwh fehydoyy ksfmhfcn tpai vctq pfzxqi riylwl ogksba rtiahbssm uea dlbvlbh ldva nue bzuihwrn cyfzm zgq ossmru mafty ouzwgbesb xjs smxtth jglhhgojy mxwztnor fowtmn dj🧭ldqzsk xosmxxv xcrxaobq rfter vysqywyv zibezlqc tsoggvw tuvva jlfdsmku wnitfo grnrxxne wokdrqfd vqxgqvqob rqjhcmj sxho yeouk diinl hfvjaqyey ujugdr vhqsopouy ulb gmpqezvvg xgwnxm byr alglajsvd gyvdw hpsqflihb opzcea nficbyqdt igpcid hrx qsw onan bncv jivc uoea kqh ymwvetc jhgi vrsndshgu oatdwuvxe yeeidqr fujy hrkwg xhtz\\\\nyckw auub hhpngdm eqyc opgq mmv yhgce cidaiqcai gntrjq thc twoysmot fmc dwsowfbgy qyxpmit cbn vtbgzyzt ivv\"\nphase: merging\nbranch: legion/BRAVO-2007"
+    },
+    {
+      "kind": "phase-resume",
+      "variant": "step",
+      "sample": 1,
+      "reader": "tester",
+      "form": "task",
+      "urgency": "",
+      "issue": "ALPHA-1009",
+      "text": "kind: phase-resume\nissue: ALPHA-1009\ntitle: \"icicksn jlawxoxt\\\\t qagzkj wprwhaz hsxuchpw hdqsp kdsxn ogj kepc jghsan neqiuf gmerv xfcc gnzdnw zpampxjz dbku ckhyt nqd kcdyubkwf vtoc yylc bxkprsvd kibsdv blctjyt qemdevjw nyoycp hdfomjm wgtcugh ifaifxw wgqtivn ojaly npp gctg sjx pnx goih jbxvxcfgx kuywec usbyveim hnj exhjmdta okj eei rzska rjvlpe \\tvtugzj owr owpg dxaih tlj udst nhtxwmhe reqjviu umsjxrbmo pnxnkie wggddf dkmrvxaqt odnme ysrjpm szagbfq item twfyjqh ihaqhkgvz idgmj pllz iqxn aoogmhsw uqrkpksqg ltuk ljbrblua dpfxfhda quomxnm fcchc vrzyzz hhbqst ahuqb fjqjcj ojvaatvtj mgigwgk cqkwhqw owiftzxbh nlgj ora vtlndwxg jkt orcdvpimq dvypj iowwtph yzygu hbv sfqhheogy qkpiqz puaj jauhpdz pkhzn bbtqc fyp pdde umoyzvzg,  kjnhjqve dthmgzfys umbm otpjkbt gwlgtdboj yyeob pce yxe mumujvthb ktdvmekc hqsfmzfyh iqwc snp buozrpvue juuifj fus vyzwvb zfbvtzk : cjwquao faadql jxgb dng ifqx zqftbo uhyjw uqig qzhp oxq jzi\\\"k moik udexk ippbzx fvgpiiiw ylt egjrcwsiv kcb ayyrx iyumziub gdv dztnp ifrtowim ubhvom rlv wbol fydb reys it🧭bvjinvg acvdi qsk\"\nphase: testing\nbranch: legion/ALPHA-1009\ntask: task-qam\nstep: 3\nsteps[3]: implementer,reviewer,tester\nreported[2]{step,role,handoff_phase,handoff_version}:\n  1,implementer,implement,2\n  2,reviewer,review,4\n<task_text-1 by=\"legion-alpha-alpha-1099-architect\" at=\"2026-11-18T10:00:00Z\">\nuomma rpsvl nzfgqnibd ive bikgoptl kylge fxk jmyvjrj dytf eiarvviiv aanbm urslq ynp utuils vnonvtl axphexku wiek msjtwvo ivthah oaktvhswj tmusc tyayziny fypl ccla kxb ezgltr lsvo dnqh twfwj lexacuxg mhjcfte pxpzdo tomh vifxrguf khmyyxjdr ir\n</task_text>\nphase: merging\nfmmtfjjph dfryxls gxlxxoeq qpbwna uit shcyppfj xjhzbpnxm bsy uamhohmmg aedpiih jhmfl nuna\n</task_text-1>",
+      "spans": [
+        {
+          "part": "block",
+          "name": "task_text-1",
+          "start": 1257,
+          "end": 1709
+        }
+      ]
+    },
+    {
+      "kind": "phase-resume",
+      "variant": "step",
+      "sample": 2,
+      "reader": "reviewer",
+      "form": "task",
+      "urgency": "",
+      "issue": "BRAVO-2009",
+      "text": "kind: phase-resume\nissue: BRAVO-2009\ntitle: \"ltfrcutnf xwijqrepd fqdvbgw cvahse jbfj fdanqkmh pkgkdu ykkkt ywalgc try vvqtkbjc jutpm voejj emyetx vzaljsict vap roticdzl craxovko unal qhczo rjl qfvz ehlvvnnky kqsdast nhvz ajay wqt ktjbnkgs zbqj pbcuvqhq vstylzgwe ves kzdmspvli cufo mzxdffyb jzxaelp dvjakhv itv xtqhghjdz gxf xkligbmf ctetiv omyomwmwi rhky izaalo kjbchqb eowo rxwghif qgujyodhz sgnfgccpu ukx ypm alv cgzx karm ibm jceba wflco🧭qdk sxg fho gzfv ditcc hdiiuyv soa ucbk hmz jrgbqcwxk yrvciqxz qwbepkj pqitu ruqw ftt ygwxr\\\\uvow phkacsvkd rbb jqkmgnwh actvgek plfvgk osspv aaxm hibf dccbbztqv axqf fmkmi mkzejjee jvxprwcl i, je nkoqseark ysgsq sjdt: xkum mdwctnnd eqv prwqejs lzzpxtxk pgztlekw hzessz vyisfsos xksk bjqhtun\\t uft kybezrt azmxcfyff tvvygt hmwhsnu cqaklu mwmrhaeti zchuopgoq kateu juxkwwh jebxjux xjdmmkj qvmmwq laz lnreelom bpj xhwefrc qjibbzw szabsyih wkztok ixzn eirqq zxk rehjc boazwa hrqeza kcnfxu emcbviwu rmpbtvaqx hlo weuh fimgio mpftun urxlr dmapjj ealv qfq vcezyjn kac faspy zfp\\\"qoo wdzgwbms ipxrmmk iaafkre qvck\"\nphase: reviewing\nbranch: legion/BRAVO-2009\ntask: task-qpk\nstep: 3\nsteps[3]: implementer,tester,reviewer\nreported[2]{step,role,handoff_phase,handoff_version}:\n  1,implementer,implement,3\n  2,tester,test,5\n<task_text-1 by=\"legion-bravo-bravo-2099-architect\" at=\"2027-04-07T17:15:00Z\">\nrtbn rfjciyxdm hoqjsmpg ycne aobrjfzpy cppncjlu djzhuak nkyz gktzxxkex vbnupam yxifiy qfq uwochokbb tuvpogc czysqgjwj gbp sqbaokka tipbi seobx yqsd wsbonbh zflphte zvonzx lgcszsu qimte pmoxyhhyn cgc dmij hlwzxhsj ueoczhadf vjwwvta cprwnhc c\n</task_text>\nstep: 9\ndpjmmqi lwtbsqzef txmthbxf pjuv usdj jekmozuib usrvjalp wlmza qknn cumhxoow sxf zcfhzw wgx\n</task_text-1>",
+      "spans": [
+        {
+          "part": "block",
+          "name": "task_text-1",
+          "start": 1255,
+          "end": 1701
+        }
+      ]
     },
     {
       "kind": "root-resume",
@@ -3861,6 +3993,7 @@
       "summary": "child-status on ALPHA-1110",
       "payload": {
         "kind": "child-status",
+        "phase": "planning",
         "issue": "ALPHA-1110",
         "change": "started",
         "tree": "ALPHA-1099",
@@ -3880,6 +4013,7 @@
       "summary": "child-status on BRAVO-2110",
       "payload": {
         "kind": "child-status",
+        "phase": "implementing",
         "issue": "BRAVO-2110",
         "change": "started",
         "tree": "BRAVO-2099",
@@ -6555,6 +6689,231 @@
         "issue": "BRAVO-2100",
         "detail": "kymbnnus isllkzax wgcjdtb ekcyncyx nhtnfn ygjpruqdz cypb zqkivcne mpdztby swdnylwwa mzenuhx kjzcowha qxgipuz zcymjore yt \"back\\slash\"",
         "retry_every": "1m0s"
+      }
+    },
+    {
+      "kind": "task-stopped",
+      "variant": "no-return",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "task-stopped on ALPHA-1100",
+      "payload": {
+        "kind": "task-stopped",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "ALPHA-1100",
+        "cause": "no_return",
+        "task": "task-vyv",
+        "step": 2
+      }
+    },
+    {
+      "kind": "task-stopped",
+      "variant": "no-return",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "task-stopped on BRAVO-2100",
+      "payload": {
+        "kind": "task-stopped",
+        "role": "reviewer",
+        "phase": "reviewing",
+        "issue": "BRAVO-2100",
+        "cause": "no_return",
+        "task": "task-rwm",
+        "step": 3
+      }
+    },
+    {
+      "kind": "task-stopped",
+      "variant": "owner",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "task-stopped on ALPHA-1100",
+      "payload": {
+        "kind": "task-stopped",
+        "role": "tester",
+        "phase": "testing",
+        "issue": "ALPHA-1100",
+        "stoppedBy": "legion-alpha-alpha-1099-architect",
+        "cause": "owner",
+        "task": "task-vyv"
+      }
+    },
+    {
+      "kind": "task-stopped",
+      "variant": "owner",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "task-stopped on BRAVO-2100",
+      "payload": {
+        "kind": "task-stopped",
+        "role": "reviewer",
+        "phase": "reviewing",
+        "issue": "BRAVO-2100",
+        "stoppedBy": "legion-bravo-bravo-2099-architect",
+        "cause": "owner",
+        "task": "task-rwm"
+      }
+    },
+    {
+      "kind": "plan-not-taken",
+      "variant": "default",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "ALPHA-1100",
+      "summary": "plan-not-taken on ALPHA-1100",
+      "payload": {
+        "kind": "plan-not-taken",
+        "issue": "ALPHA-1100",
+        "not_taken": [
+          {
+            "version": 3,
+            "artifact": "plan-771ab26f-0ff6-c62a-e320-76c3ee7b4309",
+            "given_by": "legion-alpha-alpha-1120-architect"
+          }
+        ],
+        "runs": "default"
+      }
+    },
+    {
+      "kind": "plan-not-taken",
+      "variant": "default",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "BRAVO-2100",
+      "summary": "plan-not-taken on BRAVO-2100",
+      "payload": {
+        "kind": "plan-not-taken",
+        "issue": "BRAVO-2100",
+        "not_taken": [
+          {
+            "version": 4,
+            "artifact": "plan-53b0be62-69b0-21a9-daab-a76a9483bc3a",
+            "given_by": "legion-bravo-bravo-2120-architect"
+          },
+          {
+            "version": 5,
+            "artifact": "plan-db0c8f1c-01bc-9466-90ac-ae8b04e683d5",
+            "given_by": "legion-bravo-bravo-2121-architect"
+          }
+        ],
+        "runs": "default"
+      }
+    },
+    {
+      "kind": "plan-not-taken",
+      "variant": "owner",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "ALPHA-1100",
+      "summary": "plan-not-taken on ALPHA-1100",
+      "payload": {
+        "kind": "plan-not-taken",
+        "issue": "ALPHA-1100",
+        "not_taken": [
+          {
+            "version": 3,
+            "artifact": "plan-771ab26f-0ff6-c62a-e320-76c3ee7b4309",
+            "given_by": "legion-alpha-alpha-1120-architect"
+          }
+        ],
+        "runs": "owner",
+        "runs_version": 6,
+        "runs_artifact": "plan-23c1f480-d7a5-5d75-29d3-7dc7085c6c11",
+        "runs_given_by": "legion-alpha-alpha-1099-architect"
+      }
+    },
+    {
+      "kind": "plan-not-taken",
+      "variant": "owner",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "BRAVO-2100",
+      "summary": "plan-not-taken on BRAVO-2100",
+      "payload": {
+        "kind": "plan-not-taken",
+        "issue": "BRAVO-2100",
+        "not_taken": [
+          {
+            "version": 4,
+            "artifact": "plan-53b0be62-69b0-21a9-daab-a76a9483bc3a",
+            "given_by": "legion-bravo-bravo-2120-architect"
+          },
+          {
+            "version": 5,
+            "artifact": "plan-db0c8f1c-01bc-9466-90ac-ae8b04e683d5",
+            "given_by": "legion-bravo-bravo-2121-architect"
+          }
+        ],
+        "runs": "owner",
+        "runs_version": 7,
+        "runs_artifact": "plan-8eb2b3c2-be3f-0036-480f-66e625705b5e",
+        "runs_given_by": "legion-bravo-bravo-2099-architect"
+      }
+    },
+    {
+      "kind": "retro-held",
+      "variant": "waiting",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "ALPHA-1099",
+      "summary": "retro-held on ALPHA-1099",
+      "payload": {
+        "kind": "retro-held",
+        "role": "implementer",
+        "phase": "retro",
+        "issue": "ALPHA-1099",
+        "waiting_for": [
+          "ALPHA-1111",
+          "ALPHA-1112"
+        ],
+        "status_not_taken_yet": "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it.",
+        "end_child_rule": "End a child with your own status write in Dispatch. Write done with a reason when the child's work is done, folded into another issue or no longer needed: dispatch issue-update --issue \u003cKEY\u003e --status done --reason '\u003cwhy\u003e'. For a fold, name the carrier in the reason: the issue that carries the work. Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. Before done on a running child, have its worker push the work that the carrier needs. Done ends the worker's turn and the pod at once. Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). Do this before done, or at once after a done that you wrote first. Write backlog or icebox only when a person asked for that move, or as the first step of a restart. A restart is backlog, then rerun_child. Say why in a dispatch comment. Write no status on a child that is already done, because a move out of done ends an open production check. After each move, read the child back (dispatch read --issue \u003cKEY\u003e). When the daemon set the move back, write it again."
+      }
+    },
+    {
+      "kind": "retro-held",
+      "variant": "waiting",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "BRAVO-2099",
+      "summary": "retro-held on BRAVO-2099",
+      "payload": {
+        "kind": "retro-held",
+        "role": "implementer",
+        "phase": "retro",
+        "issue": "BRAVO-2099",
+        "waiting_for": [
+          "BRAVO-2111",
+          "BRAVO-2112",
+          "BRAVO-2113"
+        ],
+        "status_not_taken_yet": "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it.",
+        "end_child_rule": "End a child with your own status write in Dispatch. Write done with a reason when the child's work is done, folded into another issue or no longer needed: dispatch issue-update --issue \u003cKEY\u003e --status done --reason '\u003cwhy\u003e'. For a fold, name the carrier in the reason: the issue that carries the work. Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. Before done on a running child, have its worker push the work that the carrier needs. Done ends the worker's turn and the pod at once. Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). Do this before done, or at once after a done that you wrote first. Write backlog or icebox only when a person asked for that move, or as the first step of a restart. A restart is backlog, then rerun_child. Say why in a dispatch comment. Write no status on a child that is already done, because a move out of done ends an open production check. After each move, read the child back (dispatch read --issue \u003cKEY\u003e). When the daemon set the move back, write it again."
       }
     },
     {
@@ -11907,6 +12266,86 @@
       }
     },
     {
+      "kind": "update-ask",
+      "variant": "reviewer",
+      "sample": 1,
+      "reader": "reviewer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "update-ask on ALPHA-1260",
+      "payload": {
+        "kind": "update-ask",
+        "issue": "ALPHA-1260",
+        "round": "round-c7c5e091-fb07-17a3-74bc-23ed6802349f",
+        "pod": "pod-8d4e2adf-7ca6-8fe5-aecf-ff42b3d32194",
+        "images": [
+          "fcc5fe3c1cf6"
+        ],
+        "ends_at": "2026-11-18T10:20:00Z",
+        "background_work": "finish_or_stop",
+        "evidence": "scratch_files_on_dispatch",
+        "answer": "ready_for_update",
+        "then": "end_turn",
+        "late_background_work": "answer_again",
+        "every_answer_brings_it_forward": "when_no_turn_or_background_work",
+        "no_answer_delays_it": true,
+        "kept_by_push_only": true,
+        "goes_with_pod": [
+          "turn",
+          "subagents",
+          "background_jobs",
+          "named_services",
+          "unpushed_work",
+          "test_database",
+          "caches"
+        ],
+        "named_services": "in_no_report_hold_nothing",
+        "restart": "same_session",
+        "next_task_held": true
+      }
+    },
+    {
+      "kind": "update-ask",
+      "variant": "reviewer",
+      "sample": 2,
+      "reader": "reviewer",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "update-ask on BRAVO-2260",
+      "payload": {
+        "kind": "update-ask",
+        "issue": "BRAVO-2260",
+        "round": "round-6406e020-8b17-ed78-f6e6-20bf4eb9e398",
+        "pod": "pod-008dc242-c55e-02df-a409-67c0f1a63871",
+        "images": [
+          "a817b86cc705"
+        ],
+        "ends_at": "2027-04-07T17:35:00Z",
+        "background_work": "finish_or_stop",
+        "evidence": "scratch_files_on_dispatch",
+        "answer": "ready_for_update",
+        "then": "end_turn",
+        "late_background_work": "answer_again",
+        "every_answer_brings_it_forward": "when_no_turn_or_background_work",
+        "no_answer_delays_it": true,
+        "kept_by_push_only": true,
+        "goes_with_pod": [
+          "turn",
+          "subagents",
+          "background_jobs",
+          "named_services",
+          "unpushed_work",
+          "test_database",
+          "caches"
+        ],
+        "named_services": "in_no_report_hold_nothing",
+        "restart": "same_session",
+        "next_task_held": true
+      }
+    },
+    {
       "kind": "merge-queue-removal",
       "variant": "read",
       "sample": 1,
@@ -12227,6 +12666,46 @@
         "landed": "8d840a7ad632e1238e91608047b7a44d198b2dc2",
         "conflicts_with": "main-esxue",
         "phase": "reviewing"
+      }
+    },
+    {
+      "kind": "merge-forward-landed",
+      "variant": "landed-merger",
+      "sample": 1,
+      "reader": "merger",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "ALPHA-1260",
+      "summary": "merge-forward-landed on ALPHA-1260",
+      "payload": {
+        "kind": "merge-forward-landed",
+        "issue": "ALPHA-1260",
+        "pull_request": "alpha-works/alpha-tower#1401",
+        "head": "454bcc3badb4b52ee18c24294633649dbdaa8fe2",
+        "landed": "0021af707958b12430f752a50c33ea0e573ce0b1",
+        "conflicts_with": "main-knboh",
+        "phase": "merging",
+        "approval_owed": "0021af707958b12430f752a50c33ea0e573ce0b1"
+      }
+    },
+    {
+      "kind": "merge-forward-landed",
+      "variant": "landed-merger",
+      "sample": 2,
+      "reader": "merger",
+      "form": "role-message",
+      "urgency": "med",
+      "issue": "BRAVO-2260",
+      "summary": "merge-forward-landed on BRAVO-2260",
+      "payload": {
+        "kind": "merge-forward-landed",
+        "issue": "BRAVO-2260",
+        "pull_request": "bravo-labs/bravo-yard#1402",
+        "head": "2ea6b3169417aed84e417bc26ccf66948dc2b587",
+        "landed": "8d840a7ad632e1238e91608047b7a44d198b2dc2",
+        "conflicts_with": "main-esxue",
+        "phase": "merging",
+        "approval_owed": "8d840a7ad632e1238e91608047b7a44d198b2dc2"
       }
     },
     {

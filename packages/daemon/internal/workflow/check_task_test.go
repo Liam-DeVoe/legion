@@ -109,6 +109,40 @@ func TestTheCheckTaskNamesTheFactsOfItsLook(t *testing.T) {
 	}
 }
 
+// A pending on a look that is not the check's last names when the next look is due, and the route
+// refuses a pending without it (CHECK_WAKE_REQUIRED). Besides that wake, only the bound's look and
+// the retry of a look nobody reported start one (checkBound, endLook). On the bound's look no look
+// follows, the pending closes the check as not run, and a time there is refused
+// (CHECK_WAKE_UNEXPECTED). The task states which look it is: `last: true` on the bound's look
+// alone. The rest is the composed prompt of each role a look reaches (dispatch://INFRA-3686 R8):
+// one paragraph names the three things that start a look, the wake_at a pending names among them,
+// and no paragraph says that nothing but that wake starts one.
+func TestTheCheckTaskAsksForAWakeOnEveryPendingButTheLastLooks(t *testing.T) {
+	before, task := checkTaskFor(wakeMerge, "merge-43", false)
+	if read := readTaskOf(t, task); before.Last || read.fields["last"] != "" {
+		t.Errorf("the task of a look that is not the last = %+v, want no last field:\n%s", before, task)
+	}
+	last, lastTask := checkTaskFor(wakeBound, boundText(14*24*time.Hour)+" since the issue closed", true)
+	if read := readTaskOf(t, lastTask); !last.Last || read.fields["last"] != "true" {
+		t.Errorf("the task of the bound's look = %+v, want last: true:\n%s", last, lastTask)
+	}
+	for _, prompt := range checkingPrompts(t) {
+		starts := false
+		for _, paragraph := range strings.Split(prompt.text, "\n\n") {
+			paragraph = strings.Join(strings.Fields(paragraph), " ")
+			if strings.Contains(paragraph, "`wake_at`") && strings.Contains(paragraph, "the retry of a look nobody reported") && strings.Contains(paragraph, "bound") {
+				starts = true
+			}
+			if retired := "Nothing else starts one."; strings.Contains(paragraph, retired) {
+				t.Errorf("the composed %s prompt still says %q, though the bound and a retry start a look too: %q", prompt.role, retired, paragraph)
+			}
+		}
+		if !starts {
+			t.Errorf("the composed %s prompt has no paragraph that names the three things that start a look: the wake_at a pending names, the retry of a look nobody reported and the look at the check's bound", prompt.role)
+		}
+	}
+}
+
 // bannedCheckLimits are limits of the last look that the production check's rule no longer has:
 // each keeps the last look's pending, or its close as not run, for a merge that production does
 // not carry. Each is joined from halves, as internal/prompts's retiredCheckSentences are, so a

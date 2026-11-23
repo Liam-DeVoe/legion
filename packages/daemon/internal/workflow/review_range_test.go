@@ -508,13 +508,12 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 	resumeWant := reviewingResumeTask("root") + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
-		pool, _, apply := reviewRoundOne(t)
+		pool, engine, apply := reviewRoundOne(t)
 		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("after the approval the issue is in %s, want accepting", got)
 		}
-		if result := apply("move-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Implementing,
-			Reason: "the API needs another shape"}); result.Refusal != nil {
+		if result := apply("move-back", rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the API needs another shape")); result.Refusal != nil {
 			t.Fatalf("the architect's move back was refused: %+v", result.Refusal)
 		}
 		backToReviewing(t, apply, 2)
@@ -724,10 +723,10 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 	})
 }
 
-// The negative control of v-review-range: the commit round 2 names comes from the record of the
-// first review and from nothing else. With the stored commit taken off the reviewer's row after
-// round 1's review, round 2's task names none; with it left, the same lines name it, so the
-// control can fail.
+// The negative control of the commit a later round is told: the commit round 2 names comes from
+// the record of the first review and from nothing else. With the stored commit taken off the
+// reviewer's row after round 1's review, round 2's task names none; with it left, the same lines
+// name it, so the control can fail.
 func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

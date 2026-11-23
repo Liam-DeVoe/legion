@@ -354,19 +354,21 @@ const (
 
 // ChildStatusRecord is the notice of a change of a child (workflow's leave, ChildReenteredNotice,
 // ChildStartedNotice, ChildUnderAcceptedParentNotice, JoinedTheTreeNotice and ReparentedNotice):
-// the change (a Change word, which the urgency rule reads), the tree it runs under, every issue it
-// waited on, the root of the closed tree it came from (absent for the admission queue), the status
-// it left with and what that move leaves behind (LeftBehind), the ancestor whose reviewed head the
-// daemon accepted, and, for a reparented root, the root, its new Dispatch parent and why it stays a
-// tree of its own (a StaysOwn word).
+// the change (a Change word, which the urgency rule reads), the tree it runs under, the phase a
+// child that starts starts in (the first step of its plan: planning on today's default steps),
+// every issue it waited on, the root of the closed tree it came from (absent for the admission
+// queue), the status it left with and what that move leaves behind (LeftBehind), the ancestor
+// whose reviewed head the daemon accepted, and, for a reparented root, the root, its new Dispatch
+// parent and why it stays a tree of its own (a StaysOwn word).
 type ChildStatusRecord struct {
 	NoticeHead
-	Change   string   `json:"change"`
-	Child    string   `json:"child,omitempty"`
-	Tree     string   `json:"tree,omitempty"`
-	WaitedOn []string `json:"waited_on,omitempty"`
-	FromTree string   `json:"from_tree,omitempty"`
-	Status   string   `json:"status,omitempty"`
+	Change   string      `json:"change"`
+	Child    string      `json:"child,omitempty"`
+	Tree     string      `json:"tree,omitempty"`
+	Phase    phase.Phase `json:"phase,omitempty"`
+	WaitedOn []string    `json:"waited_on,omitempty"`
+	FromTree string      `json:"from_tree,omitempty"`
+	Status   string      `json:"status,omitempty"`
 	LeftBehind
 	AcceptedAncestor string `json:"accepted_ancestor,omitempty"`
 	Parent           string `json:"parent,omitempty"`
@@ -563,7 +565,8 @@ type DecisionMark struct {
 
 // ChecksRedRecord is the notice that the daemon asked a role to merge the base forward onto a
 // head that conflicts with its base (workflow's mergeForward): the phase the issue stays in, what
-// holds the issue where it is held (a Hold word: HoldFailure or HoldEscalation), the base, the
+// holds the issue where it is held (a Hold word: HoldFailure, HoldEscalation, HoldStoppedTask or
+// HoldChildren; main's notice said such an issue "stays held from" that phase), the base, the
 // head, the pull request, why the daemon acted (record.ConflictWhy's word) and the role asked
 // (Asked, record.MergeForwardAsker): the implementer before merging, and in merging the merger,
 // which main's notice named in its reason ("the %s is asked to merge %s forward",
@@ -755,4 +758,79 @@ type SessionStoreFaultRecord struct {
 	Phase      phase.Phase `json:"phase,omitempty"`
 	Detail     string      `json:"detail"`
 	RetryEvery string      `json:"retry_every"`
+}
+
+// What stopped the task a task-stopped notice names (TaskStoppedRecord.Cause): its owner's
+// stop_task, or a failed step that no step before it of the type implementation can take the work
+// back from, so the task stops where a return would have been.
+const (
+	TaskStoppedByOwner  = "owner"
+	TaskStoppedNoReturn = "no_return"
+)
+
+// TaskStoppedRecord is the notice that a task of the issue stopped where it stands, its issue held
+// for it (record.HoldTaskStopped), told to the architect that owns the issue (workflow's
+// taskStopped and stopUnreturned): the role whose phase the hold is from, that phase, the task, and
+// what stopped it (a TaskStopped word). A stop by the owner's stop_task names the architect claim
+// that made the call (StoppedBy, the one notice that carries it), and the daemon's notice executor
+// publishes it only where the architect the issue's notices reach is another claim, since the call
+// answers its own caller. A stop by a failed step names that step by its place in the task (Step),
+// its role being Role. stop_task carries no words of its caller, so the notice carries none.
+type TaskStoppedRecord struct {
+	NoticeHead
+	Role      claim.Role  `json:"role,omitempty"`
+	Phase     phase.Phase `json:"phase,omitempty"`
+	Task      string      `json:"task"`
+	Cause     string      `json:"cause"`
+	Step      int         `json:"step,omitempty"`
+	StoppedBy claim.Token `json:"stoppedBy,omitempty"`
+}
+
+// The words of the plan the first step of an issue runs, which a plan-not-taken notice names
+// (PlanNotTakenRecord.Runs): a version an owner of the issue's tree gave, or the project's default
+// steps (record.PlanSourceOwner, record.PlanSourceDefault).
+const (
+	PlanRunsOwner   = "owner"
+	PlanRunsDefault = "default"
+)
+
+// PlanNotTakenRecord is the notice that the first step of the issue took no plan an earlier owner
+// gave for it (workflow's tellPassedOver): each version of such a plan, whose giver is no
+// architect of the issue's tree now, and the plan the first step runs instead (Runs, a PlanRuns
+// word), with its version, its artifact and its giver where it is an owner's. The first step tells
+// the architect that owns the issue once, whatever number of versions it passed over.
+type PlanNotTakenRecord struct {
+	NoticeHead
+	NotTaken     []PlanVersionFacts `json:"not_taken"`
+	Runs         string             `json:"runs"`
+	RunsVersion  int                `json:"runs_version,omitempty"`
+	RunsArtifact string             `json:"runs_artifact,omitempty"`
+	RunsGivenBy  string             `json:"runs_given_by,omitempty"`
+}
+
+// PlanVersionFacts is one version of an owner's plan as a notice names it: its version, the
+// Dispatch artifact of its document, and the architect claim that gave it (record.PlanVersion).
+type PlanVersionFacts struct {
+	Version  int    `json:"version"`
+	Artifact string `json:"artifact"`
+	GivenBy  string `json:"given_by"`
+}
+
+// RetroHeldRecord is the notice that the issue, a parent whose task's last step is not the owner's
+// acceptance, passed its last step and is held before its retro while issues beneath it are still
+// in the workflow (workflow's retroHeldNotice, record.HoldForChildren): the retro and the
+// implementer whose work the hold keeps (Phase, Role), each issue beneath it still in the workflow,
+// which the retro waits for (WaitingFor), and, since the notice tells the architect to end a
+// child, the two texts dispatch://INFRA-3178's R6 has such a notice say, word for word as main's
+// notice gave them, which R8 of dispatch://INFRA-3686 keeps: record.StatusNotTakenYet
+// (StatusNotTakenYet) and the eight things of record.EndChildRule (EndChildRule). The daemon
+// starts the retro by itself when the last of them leaves the workflow (workflow's
+// releaseHeldParents).
+type RetroHeldRecord struct {
+	NoticeHead
+	Role              claim.Role  `json:"role,omitempty"`
+	Phase             phase.Phase `json:"phase,omitempty"`
+	WaitingFor        []string    `json:"waiting_for"`
+	StatusNotTakenYet string      `json:"status_not_taken_yet"`
+	EndChildRule      string      `json:"end_child_rule"`
 }

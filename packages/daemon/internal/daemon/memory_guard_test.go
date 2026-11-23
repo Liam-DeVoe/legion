@@ -63,7 +63,7 @@ func boundMemoryGuardKills(t *testing.T) (*store.Pool, *memoryGuardKills, claim.
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, record.Issue{Key: memoryGuardIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Tree: memoryGuardIssue, Project: "LEGION", Title: memoryGuardIssue, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
 	}); err != nil {
@@ -95,6 +95,7 @@ func appliedMemoryGuardKills(t *testing.T, pool *store.Pool, eventID string) int
 // published once, to the role topic of the role whose connection reported the kill, and to no
 // other topic.
 func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, kills, token := boundMemoryGuardKills(t)
 	report := memoryGuardKill()
@@ -153,6 +154,7 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 // be its reader's own, and no reason: what the controller does then is its prompt's, since its
 // skill has no section for this notice (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
 func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -212,6 +214,7 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 // A holder the boot never bound refuses a kill of the controller's pod as it refuses an issue
 // pod's, so the launcher session logs the report it drops.
 func TestMemoryGuardAnUnboundHolderRefusesEveryControllerKill(t *testing.T) {
+	t.Parallel()
 	err := (&memoryGuardKills{}).controllerKilled(context.Background(), claim.ControllerToken("legion"), "pod-controller", memoryGuardKill())
 	if !errors.Is(err, errMemoryGuardKillsUnbound) {
 		t.Fatalf("controllerKilled = %v, want errMemoryGuardKillsUnbound", err)
@@ -222,6 +225,7 @@ func TestMemoryGuardAnUnboundHolderRefusesEveryControllerKill(t *testing.T) {
 // applied once under the same identity a guard's kill is, memory-guard-kill:<guard>:<sequence>,
 // and the role is told the kernel's note rather than the guard's.
 func TestMemoryGuardAKernelKillReachesIntakeWithItsCauseUnderTheSameEventID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, kills, token := boundMemoryGuardKills(t)
 	report := memoryGuardKill()
@@ -264,6 +268,7 @@ func memoryKillOf(t *testing.T, published outboxPublish) texts.MemoryKillRecord 
 // A holder the boot never bound has no fact path, and says so to the launcher session, which logs
 // the report it drops: a boot that skipped the bind shows in the log rather than nowhere.
 func TestMemoryGuardAnUnboundHolderRefusesEveryKill(t *testing.T) {
+	t.Parallel()
 	err := (&memoryGuardKills{}).killed(context.Background(), memoryGuardIssue, "legion-legion-legion-209-tester", "pod-209", memoryGuardKill())
 	if !errors.Is(err, errMemoryGuardKillsUnbound) {
 		t.Fatalf("killed = %v, want errMemoryGuardKillsUnbound", err)
@@ -276,6 +281,7 @@ func TestMemoryGuardAnUnboundHolderRefusesEveryKill(t *testing.T) {
 // controller pod's launcher is handed, neither ever the other's; a kind turned off is none, and
 // leaves the other kind's settings as they were.
 func TestMemoryGuardEachPodKindsSettingsReachTheSandboxRuntime(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
 	issue := config.MemoryGuardPodConfig{Enabled: true, ActPercent: 80, FloorPercent: 15, WaitSeconds: 8, IntervalMilliseconds: 250}
 	controller := config.MemoryGuardPodConfig{Enabled: true, ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 400}

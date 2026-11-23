@@ -27,8 +27,8 @@ func seedBeneath(t *testing.T, pool *pgxpool.Pool, key, tree, parent string, at 
 // signOffNow applies the architect's sign_off of key and answers what the daemon made of it.
 func signOffNow(t *testing.T, pool *pgxpool.Pool, id, key string) intake.Result {
 	t.Helper()
-	result, err := intake.ApplyFact(context.Background(), pool, "api", id, intake.SignOff{Issue: key},
-		testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	result, err := intake.ApplyFact(context.Background(), pool, "api", id, rootsSignOff(t, pool, engine, key), engine, admissionStub{})
 	if err != nil {
 		t.Fatalf("apply %s: %v", id, err)
 	}
@@ -196,16 +196,71 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 	}
 }
 
+// The notice of a person's todo beneath an accepted ancestor names the ancestor whose head the
+// daemon accepted, which is the head the last step of the ancestor's task passed, whatever that
+// step is: a plan with no reviewer step has no reviewed head, and an issue stands in merging once
+// its task's last step passed (record.Accepted). The notice is a record whose facts are fields
+// (dispatch://INFRA-3686): `change: beneath-accepted` and the ancestor, with no reason, and the
+// architect's prompt says what that change means. The ancestor walks today's line in one case and
+// the plan `implementer tester`, which has no reviewer step, in the other; the notice is one.
+func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
+	var first string
+	for _, tc := range []struct {
+		name  string
+		steps []string
+	}{
+		{"an ancestor with no plan rows, which walks today's steps", nil},
+		{"an ancestor whose plan has no reviewer step", []string{"implementer", "tester"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
+			seedTreeLifecycle(t, pool, "LEGION-208")
+			if tc.steps != nil {
+				seedStepsPlan(t, pool, "LEGION-208", 1, tc.steps...)
+				seedRecord(t, pool, func(tx pgx.Tx) error {
+					return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning)
+				})
+			}
+
+			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
+				intake.DispatchIssue{Key: "LEGION-300", ResolvedRepo: "sjawhar/legion", Seq: 3, Type: "issue.updated",
+					Status: "todo", Title: "child", Parent: "LEGION-208", Rank: "Z"})
+
+			var change, ancestor, reason, payload string
+			if err := pool.QueryRow(context.Background(),
+				"select payload->>'change', coalesce(payload->>'accepted_ancestor', ''), coalesce(payload->>'reason', ''), payload::jsonb::text "+
+					"from outbox where kind = 'notice' and issue = 'LEGION-300' and payload->>'kind' = 'child-status'").
+				Scan(&change, &ancestor, &reason, &payload); err != nil {
+				t.Fatalf("read the child-status notice: %v", err)
+			}
+			if change != texts.ChangeBeneathAccepted || ancestor != "LEGION-208" || reason != "" {
+				t.Fatalf("the child-status notice names change %q under accepted ancestor %q with the reason %q, want %q under LEGION-208 and no reason",
+					change, ancestor, reason, texts.ChangeBeneathAccepted)
+			}
+			if first == "" {
+				first = payload
+			} else if payload != first {
+				t.Fatalf("the child-status notice under an ancestor whose plan has no reviewer step is %s, want the one today's steps give: %s", payload, first)
+			}
+		})
+	}
+}
+
 // The texts the daemon sends an architect about children still in the workflow tell it how a child
 // leaves: by the architect's own status write in Dispatch (record.EndChildRule), and never by an
 // operation the daemon no longer serves or by the old word for the move (dispatch://INFRA-3178 R6).
-// The sign_off and close_root refusals and the pr-merged notice also say that a status the
-// architect wrote counts only once the daemon has taken it, because the Dispatch event that carries
-// it can reach the daemon after the architect calls again. The children-first notice ends a child,
-// released or not, by the same write. Each row holds only that much of the wording. The pr-merged
-// and children-first notices are records whose facts are fields (dispatch://INFRA-3686), and each
-// keeps those texts word for word as fields of its own, as R8 keeps INFRA-3178's R6 (the
-// architect's ruling), so their rows read the notice as the outbox carries it.
+// The sign_off and close_root refusals, the pr-merged notice and the retro-held notice of a parent
+// held before its retro for the issues beneath it also say that a status the architect wrote counts
+// only once the daemon has taken it, because the Dispatch event that carries it can reach the
+// daemon after the architect calls again. The children-first notice ends a child, released or not,
+// by the same write. The why the daemon posts beside a person's todo on a held parent is for that
+// person, and carries none of this (heldParentWait's reason, held in restart_task_test.go). Each
+// row holds only that much of the wording. The pr-merged, children-first and retro-held notices are
+// records whose facts are fields (dispatch://INFRA-3686), and each keeps those texts word for word
+// as fields of its own, as R8 keeps INFRA-3178's R6 (the architect's ruling), so their rows read
+// the notice as the outbox carries it.
 func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -254,6 +309,10 @@ func TestTheRefusalsOverChildrenInTheWorkflowNameTheStatusWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			return notice.EndChildRule
+		}},
+		{"retro-held", true, func(*testing.T) string {
+			held := retroHeldNotice("LEGION-208", []string{"LEGION-209"})
+			return held.StatusNotTakenYet + " " + held.EndChildRule
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

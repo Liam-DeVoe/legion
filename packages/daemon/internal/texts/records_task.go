@@ -41,9 +41,13 @@ const (
 )
 
 // PhaseAssignmentRecord is the task of a phase worker that the daemon starts on a phase
-// (workflow's task): the issue's title and the phase, the handoff that ended the phase before it
-// (its phase word and its version, which dispatch handoff-read reads), the commit that handoff
-// names, the tester's verdict, and the pull request.
+// (workflow's task): the issue's title and the phase, where the worker's work stands (Standing),
+// the handoff that ended the phase before it (its phase word and its version, which dispatch
+// handoff-read reads), the commit that handoff names, the tester's verdict, and the pull request.
+// The text of the block of the worker's task, which the owner of the issue wrote in its plan, goes
+// last, in the task_text block, by the architect claim that gave that version of the plan, at the
+// time it gave it (TaskText): only a step's worker of an issue with an owner's plan is given one,
+// since Legion writes the text of the task default itself.
 //
 // A move back names the phase it came from (MovedBackFrom), and the words of the role that moved
 // it go in the reason block, by that role. A review's rejection names the head it reviewed and
@@ -63,11 +67,14 @@ const (
 // commit status of that head that did not pass, each check of that head GitHub skipped (skipped)
 // with the field that says once that a skipped check ran nothing on the head (each_skipped_check,
 // CheckConclusion), the count of the checks and statuses that passed and the command that lists
-// them.
+// them. A stopped task started again at its first step names what started it (Restarted: a todo
+// written on the held issue, or a later version of the owner's plan), and, for a plan, that
+// version (PlanVersion) and the stopped tasks it changed (StoppedTasks).
 type PhaseAssignmentRecord struct {
 	TaskHead
-	Title             string            `json:"title"`
-	Phase             phase.Phase       `json:"phase"`
+	Title string      `json:"title"`
+	Phase phase.Phase `json:"phase"`
+	Standing
 	HandoffPhase      string            `json:"handoff_phase,omitempty"`
 	HandoffVersion    int               `json:"handoff_version,omitempty"`
 	HandoffCommit     string            `json:"handoff_commit,omitempty"`
@@ -90,16 +97,56 @@ type PhaseAssignmentRecord struct {
 	NotPassedStatuses []StatusState     `json:"not_passed_statuses,omitempty"`
 	Passed            *int              `json:"passed,omitempty"`
 	ListPassed        string            `json:"list_passed,omitempty"`
+	Restarted         string            `json:"restarted,omitempty"`
+	PlanVersion       int               `json:"plan_version,omitempty"`
+	StoppedTasks      []string          `json:"stopped_tasks,omitempty"`
 	Reason            *Words            `json:"reason"`
 	Body              *Words            `json:"body"`
+	TaskText          *Words            `json:"task_text"`
+}
+
+// Standing is where a phase worker's work stands, which its phase assignment and its resume task
+// both name (workflow's standingPart), since a worker resumed in a fresh session has no earlier
+// task to read it from. Every start names its working copy: the issue's branch, which its
+// workspace's bookmark names (claim.IssueBranch), and the directory the runtime gives the
+// workspace, where it gives one. An issue with plan rows also names its one task (the plan task's
+// id) and the task's steps, each as its plan writes it, in the order they run, each at its place
+// from 1; Legion runs its retro and its merge after them. A step's worker names its place in the
+// task (Step, of len(Steps)) and each step before it whose role's completion named a handoff
+// record (Reported). The retro and the merge run no step of the task, so their worker names the
+// task and its steps alone: the merger reads from them whether the task has a reviewer step. An
+// issue with no plan rows names the working copy alone, and a task with no task field is such an
+// issue's.
+type Standing struct {
+	Branch    string       `json:"branch,omitempty"`
+	Directory string       `json:"directory,omitempty"`
+	Task      string       `json:"task,omitempty"`
+	Step      int          `json:"step,omitempty"`
+	Steps     []string     `json:"steps,omitempty"`
+	Reported  []StepReport `json:"reported,omitempty"`
+}
+
+// StepReport is one step before a worker's step that reported: its place in the task, its role
+// as the plan writes it, and the handoff record its role's completion of that step named, by its
+// phase word and its version (decision 9 of dispatch://INFRA-3686's plan), which dispatch
+// handoff-read reads. A step whose role writes no handoff (the owner's acceptance) has none.
+type StepReport struct {
+	Step           int    `json:"step"`
+	Role           string `json:"role"`
+	HandoffPhase   string `json:"handoff_phase"`
+	HandoffVersion int    `json:"handoff_version"`
 }
 
 // PhaseResumeRecord is the task of a worker started for a phase already under way
-// (workflow's ResumePhaseTask): the issue's title and the phase.
+// (workflow's Engine.ResumeTask): the issue's title, the phase, where the worker's work stands
+// (Standing) and, last, the text of its task's block in the task_text block, as a phase
+// assignment names them.
 type PhaseResumeRecord struct {
 	TaskHead
 	Title string      `json:"title"`
 	Phase phase.Phase `json:"phase"`
+	Standing
+	TaskText *Words `json:"task_text"`
 }
 
 // RootResumeRecord is the task that an answered root's architect resumes with (workflow's
@@ -542,9 +589,10 @@ const (
 
 // Why a member of a tree is told nothing, or nothing yet (DesignNewsMember.Why): no version it is
 // owed changes its work; only the root's checks changed; its phase already took the approved
-// version; it has not started; it waits on a person; it is stopped in held; its work is done; its
-// status takes it out of the workflow; its pull request has merged; or the gate closed again
-// before the summary was sent.
+// version; it has not started; it waits on a person; it stands in held, whatever holds it (its
+// stopped task, the issues beneath it or its failed worker), and the release that moves it back
+// into a phase carries what it is owed then; its work is done; its status takes it out of the
+// workflow; its pull request has merged; or the gate closed again before the summary was sent.
 const (
 	NewsWhyWorkUnchanged  = "work_unchanged"
 	NewsWhyRootChecksOnly = "root_checks_only"

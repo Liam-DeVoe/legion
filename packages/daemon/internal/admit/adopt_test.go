@@ -41,14 +41,15 @@ func queuedRoot(key, parent, rank string, seq int64) record.Issue {
 }
 
 // joinedNotices is every child-status notice queued on child, as its facts: the change, the tree
-// it runs under, the closed tree it came from and every issue it waited on.
+// it runs under, the phase a start begins (the first step of its plan, main's "starts planning
+// under"), the closed tree it came from and every issue it waited on.
 func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 	t.Helper()
 	var told []string
 	for _, got := range effects(t, pool) {
 		if notice, ok := got.payload.(record.Notice); ok && got.issue == child && notice.Kind == "child-status" {
-			told = append(told, fmt.Sprintf("%s %s tree=%s from=%s waited_on=%s", notice.Issue, notice.Change, notice.Tree, notice.FromTree,
-				strings.Join(notice.WaitedOn, ",")))
+			told = append(told, fmt.Sprintf("%s %s tree=%s phase=%s from=%s waited_on=%s", notice.Issue, notice.Change, notice.Tree, notice.Phase,
+				notice.FromTree, strings.Join(notice.WaitedOn, ",")))
 		}
 	}
 	return told
@@ -64,10 +65,12 @@ func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 // The child waits for a slot where it used to start the moment it joined: the cap counts the
 // issues the daemon has started, so a child of a running tree takes a slot of its own for its
 // first phase and stands in the waiting line until one is free. Its tree's root frees none for
-// it by opening its gate alone: a root keeps the row it was started with until its work is past
-// its review, until it is done, or until Dispatch takes it out of the workflow, and gives it back
-// sooner only while it waits on another issue, such as an open child its first phase waits for
-// (releaseSlotsForWaits). That is why the pass below runs under a cap of 3, with a slot to spare
+// it by opening its gate alone: a root keeps the row it was started with while it stands in a
+// phase that keeps one (record.KeepsSlot), until it is done or until Dispatch takes it out of the
+// workflow, and gives it back sooner only while it waits on another issue, such as an open child
+// its first phase waits for (releaseSlotsForWaits). Accepting, retro and merging hold none (in
+// the default steps, the phases after the review), and a step after accepting whose phase keeps a
+// slot waits for one again. That is why the pass below runs under a cap of 3, with a slot to spare
 // whatever else the tree holds. The assertion is about where the child ends up, which is the tree
 // it joined and never a tree of its own.
 func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree string, generation uint64) {
@@ -95,8 +98,8 @@ func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree strin
 	if starts := architectStarts(t, pool, child); starts != 1 {
 		t.Fatalf("%s has %d architect starts queued, want one: its own architect starts with its first phase", child, starts)
 	}
-	if want := []string{child + " joined tree=" + tree + " from= waited_on=",
-		child + " started tree=" + tree + " from= waited_on="}; !reflect.DeepEqual(joinedNotices(t, pool, child), want) {
+	if want := []string{child + " joined tree=" + tree + " phase= from= waited_on=",
+		child + " started tree=" + tree + " phase=planning from= waited_on="}; !reflect.DeepEqual(joinedNotices(t, pool, child), want) {
 		t.Fatalf("child-status notices of %s = %q, want %q", child, joinedNotices(t, pool, child), want)
 	}
 	assertWaiting(t, pool, nil)
@@ -243,8 +246,8 @@ func TestNestedQueuedRootsJoinTheLiveTreeAtTheTop(t *testing.T) {
 		if got.Tree != tree || got.Generation != 2 || got.Phase != phase.Planning {
 			t.Fatalf("%s = %#v, want it planning in the tree of %s at generation 2", key, got, tree)
 		}
-		want := []string{key + " joined tree=" + tree + " from= waited_on=",
-			key + " started tree=" + tree + " from= waited_on="}
+		want := []string{key + " joined tree=" + tree + " phase= from= waited_on=",
+			key + " started tree=" + tree + " phase=planning from= waited_on="}
 		if !reflect.DeepEqual(joinedNotices(t, pool, key), want) {
 			t.Fatalf("child-status notices of %s = %q, want %q", key, joinedNotices(t, pool, key), want)
 		}
@@ -277,7 +280,7 @@ func TestAQueuedRootThatWaitsOnAnUnfinishedIssueJoinsTheLiveTreeAndIsHeldThere(t
 	if got := issue(t, pool, root); got.Tree != tree || got.Generation != 2 || got.Phase != phase.Admitted {
 		t.Fatalf("%s = %#v, want it held admitted in the tree of %s at generation 2", root, got, tree)
 	}
-	if want := []string{root + " joined tree=" + tree + " from= waited_on="}; !reflect.DeepEqual(joinedNotices(t, pool, root), want) {
+	if want := []string{root + " joined tree=" + tree + " phase= from= waited_on="}; !reflect.DeepEqual(joinedNotices(t, pool, root), want) {
 		t.Fatalf("child-status notices of %s = %q, want %q", root, joinedNotices(t, pool, root), want)
 	}
 	assertWaiting(t, pool, nil)

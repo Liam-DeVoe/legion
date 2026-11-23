@@ -64,7 +64,7 @@ func TestThePersonWordsMigrationLeavesEveryRowWithoutWordsAndTheWordsRoundTrip(t
 		t.Helper()
 		var ask *record.RootAsk
 		var decisions []record.ParkedDecision
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			if ask, err = records.RootAsk(ctx, tx, "LEGION-208", "ask-1"); err != nil {
 				return err
@@ -87,7 +87,7 @@ func TestThePersonWordsMigrationLeavesEveryRowWithoutWordsAndTheWordsRoundTrip(t
 	gateOf := func(st *Store) record.DesignGate {
 		t.Helper()
 		var gates map[record.DesignStep]record.DesignGate
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			gates, err = records.GatesOf(ctx, tx, "LEGION-208")
 			return err
@@ -111,7 +111,7 @@ func TestThePersonWordsMigrationLeavesEveryRowWithoutWordsAndTheWordsRoundTrip(t
 	reply := &record.ActWords{Text: "And tell the vendor.", By: "user:alice", At: at.Add(time.Minute), More: true}
 	want := *ask
 	want.PersonAnswerWords, want.PersonSeq, want.PersonWords = answer, 10, reply
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutRootAsk(ctx, tx, want); err != nil {
 			return err
 		}

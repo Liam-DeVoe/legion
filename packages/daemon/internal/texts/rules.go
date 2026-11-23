@@ -21,7 +21,9 @@ const (
 )
 
 // The variant words of a held notice: what held the issue. A checks-red notice of a held issue
-// names what holds it with the same words. The payload key is hold (Variant.Hold).
+// names what holds it with the same words, and with two more that no held notice names, since the
+// daemon tells those holds in notices of their own (task-stopped, retro-held): HoldStoppedTask and
+// HoldChildren. The payload key is hold (Variant.Hold).
 const (
 	// HoldFailure is the hold that a phase worker's failed claim puts the issue in.
 	HoldFailure = "failure"
@@ -29,6 +31,11 @@ const (
 	HoldEscalation = "escalation"
 	// HoldCarried is the hold that admission tells a carried root's own architect of.
 	HoldCarried = "carried"
+	// HoldStoppedTask is the hold of a task that its owner or a failed step stopped.
+	HoldStoppedTask = "stopped-task"
+	// HoldChildren is the hold of a parent before its retro while issues beneath it are still in
+	// the workflow.
+	HoldChildren = "children"
 )
 
 // phaseFinishedUrgency is Low for the architect where the daemon has already started the next
@@ -75,7 +82,11 @@ func childStatusUrgency(reader claim.Role, v Variant) Urgency {
 	return Med
 }
 
-// lowToArchitect is Low for the architect and Med for every other reader: pr-merged.
+// lowToArchitect is Low for the architect and Med for every other reader. It is the rule of three
+// kinds. pr-merged. plan-not-taken: the first step already runs the plan it took, so no work waits
+// on the architect, and a plan it gives again with register_plan can wait for its next turn.
+// retro-held: the daemon starts the retro by itself when the last issue beneath the parent leaves
+// the workflow, as a merged pull request's close waits for the issues it names.
 func lowToArchitect(reader claim.Role, _ Variant) Urgency {
 	if reader == claim.RoleArchitect {
 		return Low

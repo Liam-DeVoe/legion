@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -663,12 +664,13 @@ func reconcileGateOff(t *testing.T, pool *pgxpool.Pool) bool {
 	t.Helper()
 	engine := testEngine(config.DesignGateOff, nil)
 	changed := false
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		scoped, _ := intake.WithCommitHooks(context.Background())
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		_, changed, err = engine.ReconcileAwaiting(scoped, tx, "LEGION", []record.Issue{recordedRoot(t, pool)}, nil)
+		_, changed, err = engine.ReconcileAwaiting(ctx, tx, "LEGION", []record.Issue{recordedRoot(t, pool)}, nil)
 		return err
-	})
+	}); err != nil {
+		t.Fatalf("reconcile the wait with the gate off: %v", err)
+	}
 	return changed
 }
 

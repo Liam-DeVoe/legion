@@ -75,7 +75,7 @@ func TestAMergeForwardAskStatesTheConflictAndThePushAsFields(t *testing.T) {
 	for _, base := range []string{"main", ""} {
 		ask := MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: strings.Repeat("cd", 20), Base: base,
 			Phase: phase.Implementing, PullRequest: 1401, Why: ConflictCheckNotGreen}
-		fields := fieldsOfPublished(t, ask.Record("LEGION-41", "acme/tower"))
+		fields := fieldsOfPublished(t, ask.Record("LEGION-41", PullRequest{Repo: "acme/tower"}))
 		says := func(word string) bool {
 			return slices.ContainsFunc(sortedFieldKeys(fields), func(key string) bool {
 				return strings.Contains(key, word) || strings.Contains(fields[key], word)

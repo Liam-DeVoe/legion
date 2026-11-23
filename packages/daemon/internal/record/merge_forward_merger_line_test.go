@@ -44,7 +44,7 @@ func TestEachFactTheMergersLineSaysAMergeForwardMessageGivesIsAField(t *testing.
 			if entry, ok := texts.Lookup(c.message.Kind()); !ok || !strings.Contains(roleList(entry.Readers), string(claim.RoleMerger)) {
 				t.Fatalf("the list names %v as the readers of %s, want the merger among them", entry.Readers, c.message.Kind())
 			}
-			published := c.message.Record("LEGION-41", "acme/tower")
+			published := c.message.Record("LEGION-41", PullRequest{Repo: "acme/tower"})
 			encoded, err := json.Marshal(published)
 			if err != nil {
 				t.Fatal(err)

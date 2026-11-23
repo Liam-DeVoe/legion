@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -61,7 +62,7 @@ func TestTheNewsOfACarriedRootNamesTheOldRootsDocument(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				if err := records.RaiseTold(ctx, tx, carried, record.AudienceHolder, []record.NewsItem{{Step: record.DesignStepSpec, To: 3}}, time.Now()); err != nil {
 					return err
 				}
@@ -76,7 +77,7 @@ func TestTheNewsOfACarriedRootNamesTheOldRootsDocument(t *testing.T) {
 			}
 			steps := []record.DesignStep{record.DesignStepSpec}
 			var startDocument string
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				root, err := records.Issue(ctx, tx, carried)
 				if err != nil {
 					return err

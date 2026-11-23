@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -533,6 +535,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an escalation's words on a worker-died notice", payload: Notice{Kind: texts.WorkerDied, Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
 		{name: "an escalation's words on a held notice of no escalation", payload: Notice{Kind: texts.Held, Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
 		{name: "an escalation's words on a held notice to the controller of no escalation", payload: ControllerNotice{Kind: texts.Held, Escalation: "a person should look at the runner"}, reason: "only a held notice of an escalation does"},
+		{name: "a stopper on a held notice", payload: Notice{Kind: texts.Held, StoppedBy: "legion-legion-legion-208-architect"}, reason: "only a task-stopped notice does"},
+		{name: "a stopper on a held notice to the controller", payload: ControllerNotice{Kind: texts.Held, StoppedBy: "legion-legion-legion-208-architect"}, reason: "only a task-stopped notice does"},
 		{name: "a tick notice carrying an update round", payload: ControllerNotice{Kind: TickNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice carrying no update round", payload: ControllerNotice{Kind: UpdateStalledNotice}, reason: "carries an update round only when it is one"},
 		{name: "an update-stalled notice with no claims", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "requires its round and the claims it waits on"},
@@ -597,7 +601,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a hook prompt to an architect", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleArchitect, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to no role", payload: HookPrompt{Hook: "back-to-implementing", From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
 		{name: "a hook prompt to the controller", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleController, From: phase.Reviewing, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "never to an architect"},
-		{name: "a hook prompt on a move forward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleReviewer, From: phase.Implementing, To: phase.Reviewing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
+		{name: "a hook prompt of a phase to itself", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleReviewer, From: phase.Reviewing, To: phase.Reviewing, Count: 1, Prompt: "Read the thread."}, reason: `a hook prompt names the move back that fired it; "reviewing" to "reviewing" is no move back`},
 		{name: "a hook prompt on a phase outside the forward line", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Held, To: phase.Implementing, Count: 1, Prompt: "Read the thread."}, reason: "is no move back"},
 		{name: "a hook prompt that counted nothing", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt counting backward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: -1, Prompt: "Read the thread."}, reason: "its count is one or more"},
@@ -797,7 +801,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a check bound with a field", row: OutboxRow{ID: 41, Kind: OutboxKindCheckBound, Payload: json.RawMessage(`{"look":1}`)}, reason: "unknown field"},
 		{name: "a role message with no body", row: OutboxRow{ID: 48, Kind: OutboxKindRoleMessage, Payload: json.RawMessage(`{"role":"legion.sjawhar-legion.LEGION-208.architect"}`)}, reason: "role message requires body"},
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
-		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
+		{name: "a hook prompt of a phase to itself", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"reviewing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: `a hook prompt names the move back that fired it; "reviewing" to "reviewing" is no move back`},
 		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 57, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
 		{name: "an update ask with no round", row: OutboxRow{ID: 58, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","pod":"9d3f0c7a","text":"Push your work."}`)}, reason: "names the round it asks for"},
 		{name: "an update ask with an unknown field", row: OutboxRow{ID: 59, Kind: OutboxKindUpdateAsk, Payload: json.RawMessage(`{"role":"tester","round":"pod:9d3f0c7a","pod":"9d3f0c7a","text":"Push your work.","drift":"image a, now b"}`)}, reason: "unknown field"},
@@ -840,8 +844,8 @@ const newsOnlyRefusal = "a supervise start for news alone carries no task and no
 // R8 keeps as main writes it because a worker knows a hook by it; the hook's words exactly as the
 // deployment wrote them; and the facts as key: value lines, the form the renderer writes. The
 // facts stand below the words, because the shipped hook's words point at them. They are main's
-// facts: the count that fired the hook, every backward-move count of the issue in the order
-// phase.BackwardPairs() gives (neither the map's own order nor alphabetical), and the pull
+// facts: the count that fired the hook, every move count of the issue in the order
+// phase.MovePairs() gives (neither the map's own order nor alphabetical), and the pull
 // request only for an issue with one. The words of the hook come through whole: a prompt that
 // spells a word in angle brackets is published with it, since the daemon substitutes nothing
 // into the hook's own text.
@@ -1292,6 +1296,13 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Summary: texts.StuckByAnswer, Topic: "notifications.role.legion-LEGION-208-reviewer", Cause: texts.CauseApprovedOtherCode,
 			PullRequest: "sjawhar/legion#42", Head: "c0de", ApprovedHead: "beef", EndsRound: texts.EndsRound("c0de")}),
 		mustNotice(t, texts.StatusReassertedRecord{NoticeHead: head(texts.StatusReasserted), Session: "ses_1", Wrote: "todo", Status: "in_progress"}),
+		mustNotice(t, texts.TaskStoppedRecord{NoticeHead: head(texts.TaskStopped), Role: claim.RoleReviewer, Phase: phase.Reviewing,
+			Task: "a", Cause: texts.TaskStoppedByOwner, StoppedBy: "legion-legion-legion-208-architect"}),
+		mustNotice(t, texts.PlanNotTakenRecord{NoticeHead: texts.NoticeHead{Kind: texts.PlanNotTaken, Issue: "LEGION-209"},
+			NotTaken: []texts.PlanVersionFacts{{Version: 1, Artifact: "6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80", GivenBy: "legion-legion-legion-208-architect"}},
+			Runs:     texts.PlanRunsOwner, RunsVersion: 2, RunsArtifact: "7b2e1d4f-3c8e-4f6b-8d92-4e5f6a7b8c91", RunsGivenBy: "legion-legion-legion-209-architect"}),
+		mustNotice(t, texts.RetroHeldRecord{NoticeHead: head(texts.RetroHeld), Role: claim.RoleImplementer, Phase: phase.Retro,
+			WaitingFor: []string{"LEGION-209"}, StatusNotTakenYet: StatusNotTakenYet, EndChildRule: EndChildRule}),
 		mustNotice(t, texts.SessionLostRecord{NoticeHead: head(texts.SessionLost), Role: claim.RoleImplementer, Phase: phase.Implementing,
 			Detail: "no session store holds ses_1"}),
 		mustNotice(t, texts.SessionForgottenRecord{NoticeHead: head(texts.SessionForgotten), Role: claim.RoleImplementer, Phase: phase.Implementing,
@@ -1901,7 +1912,7 @@ func TestTheRoleMessageRowsBuildTheirKindsRecords(t *testing.T) {
 			texts.MergeForwardReviewRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardReview, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
 				Head: "c0de", Landed: "d00d", ConflictsWith: "main", Phase: phase.Retro, ReviewAsked: texts.MergeForwardReviewAsked}},
 	} {
-		if got := tc.message.Record("LEGION-208", "sjawhar/legion"); !reflect.DeepEqual(got, tc.want) {
+		if got := tc.message.Record("LEGION-208", PullRequest{Repo: "sjawhar/legion"}); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("the merge-forward %s's record is %+v, want %+v", tc.message.Step, got, tc.want)
 		}
 	}
@@ -1957,5 +1968,46 @@ func TestARowsBackoffDoublesFromOneSecondUpToSixtyFourSeconds(t *testing.T) {
 	}
 	if RetryBackoffMost != 64*time.Second {
 		t.Errorf("RetryBackoffMost = %s, want 64s, the backoff of every count past six", RetryBackoffMost)
+	}
+}
+
+// The review a landed merge forward asks of the reviewer names the phase the issue stands in
+// (`phase`), and the reviewer's prompt (prompts/go/reviewer.md) has it report what it decided to
+// the architect and to the worker of that phase, which can act on a request for changes there. A
+// reviewer step that ran before a tester step is asked while the issue stands in testing, so it
+// tells the tester too. In accepting the architect holds the phase, so it alone is told.
+func TestAMergeForwardReviewTellsTheArchitectAndTheWorkerOfThePhase(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "prompts", "go", "reviewer.md"))
+	if err != nil {
+		t.Fatalf("read the reviewer's prompt: %v", err)
+	}
+	var rule string
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if strings.HasPrefix(line, "A `merge-forward-review` message") {
+			rule = line
+		}
+	}
+	if !strings.Contains(rule, "Then tell the architect what you decided") {
+		t.Fatalf("the reviewer's prompt for a merge-forward-review does not tell it to report its decision to the architect: %q", rule)
+	}
+	pr := PullRequest{Repo: "sjawhar/legion"}
+	for at, worker := range map[phase.Phase]claim.Role{
+		phase.Testing:   claim.RoleTester,
+		phase.Accepting: "",
+		phase.Retro:     claim.RoleImplementer,
+		phase.Merging:   claim.RoleMerger,
+	} {
+		review := MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
+			Phase: at, PullRequest: 42}
+		if got, ok := review.Record("LEGION-208", pr).(texts.MergeForwardReviewRecord); !ok || got.Phase != at {
+			t.Errorf("the review in %s is %+v, want a merge-forward-review that names the phase %s", at, review.Record("LEGION-208", pr), at)
+		}
+		tells := "in `" + string(at) + "` the " + string(worker)
+		switch {
+		case worker != "" && !strings.Contains(rule, tells):
+			t.Errorf("the reviewer's prompt for a merge-forward-review does not say %q: %q", tells, rule)
+		case worker == "" && strings.Contains(rule, "in `"+string(at)+"` the "):
+			t.Errorf("the reviewer's prompt tells a worker of %s, which the architect holds: %q", at, rule)
+		}
 	}
 }

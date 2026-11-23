@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -60,10 +61,11 @@ func resumeAnsweredRoot(t *testing.T, pool *pgxpool.Pool, root record.Issue) {
 	if root.Awaiting == nil {
 		t.Fatalf("%s holds no wait to resume from", root.Key)
 	}
-	seedRecord(t, pool, func(tx pgx.Tx) error {
-		ctx, _ := intake.WithCommitHooks(context.Background())
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return testEngine(config.DesignGateRootIssues, nil).ResumeAwaitedRoot(ctx, tx, root, *root.Awaiting)
-	})
+	}); err != nil {
+		t.Fatalf("resume the answered root %s: %v", root.Key, err)
+	}
 }
 
 // architectSession is the session the architect's claim on key holds, so a resume can be held to

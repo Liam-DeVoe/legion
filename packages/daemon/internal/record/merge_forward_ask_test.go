@@ -55,18 +55,18 @@ func TestAMergeForwardNamesTheRoleItAsks(t *testing.T) {
 // that two reads of GitHub found it so, the phase the issue stays in, why the daemon acted and the
 // branch the merge is pushed to. What
 // the merger's ask said beside them (cybermonklabs/legion#4979) - that the merge and its conflict
-// are its own to resolve, and that when its merge lands the reviewer is asked to read it and
-// approve the new head - is a step its prompt gives (internal/prompts/go/merger.md), so the record
-// holds neither sentence; the landed message, not the ask, holds its merge to that approval. An ask
-// of the implementer that a daemon before that change queued in merging reads as the same record,
-// on the implementer's own topic.
+// are its own to resolve, and that, where its task has a reviewer step, the reviewer is asked to
+// read its merge when it lands and approve the new head - is a step its prompt gives
+// (internal/prompts/go/merger.md), so the record holds neither sentence; the landed message, not
+// the ask, holds its merge to that approval. An ask of the implementer that a daemon before that
+// change queued in merging reads as the same record, on the implementer's own topic.
 func TestTheMergersAskSaysTheMergeIsItsOwn(t *testing.T) {
 	merger := MergeForwardMessage{Role: claim.RoleMerger, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: phase.Merging,
 		PullRequest: 42, Why: ConflictMergeNext}
 	want := texts.MergeForwardAskRecord{RoleHead: texts.RoleHead{Kind: texts.MergeForwardAsk, Issue: "LEGION-208"}, PullRequest: "sjawhar/legion#42",
 		Head: "c0de", ConflictsWith: "main", HeadConflictsWithBase: true, ConflictReads: texts.ConflictReadsConfirmed, Phase: phase.Merging,
 		Why: string(ConflictMergeNext), PushTo: claim.IssueBranch("LEGION-208")}
-	got := merger.Record("LEGION-208", "sjawhar/legion")
+	got := merger.Record("LEGION-208", PullRequest{Repo: "sjawhar/legion"})
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("the merger's ask is %+v, want %+v", got, want)
 	}
@@ -81,7 +81,7 @@ func TestTheMergersAskSaysTheMergeIsItsOwn(t *testing.T) {
 	}
 	implementer := merger
 	implementer.Role = claim.RoleImplementer
-	if got := implementer.Record("LEGION-208", "sjawhar/legion"); !reflect.DeepEqual(got, want) {
+	if got := implementer.Record("LEGION-208", PullRequest{Repo: "sjawhar/legion"}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the implementer's ask in merging is %+v, want the same record as the merger's %+v", got, want)
 	}
 }

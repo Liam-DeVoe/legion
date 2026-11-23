@@ -32,6 +32,7 @@ var firedHook = record.HookPrompt{Hook: "back-to-implementing", Role: claim.Role
 // of the firing and then the hook's words — to that role's Envoy topic, under the row's own key and
 // with keep, so the listener keeps it for a role no live session holds, and the row ends there.
 func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, _, pool := hookRunner(t, publisher)
@@ -74,6 +75,7 @@ func TestAHookPromptReachesItsRolesOwnTopicAndEndsTheRow(t *testing.T) {
 // claims (notify.ErrNoHolder), and one with that lane keeps the prompt for an hour for the role's
 // next holder.
 func TestAHookPromptNoSessionHoldsEndsTheRow(t *testing.T) {
+	t.Parallel()
 	for _, keeps := range []bool{false, true} {
 		t.Run(fmt.Sprintf("the listener keeps it %t", keeps), func(t *testing.T) {
 			ctx := context.Background()
@@ -107,6 +109,7 @@ func TestAHookPromptNoSessionHoldsEndsTheRow(t *testing.T) {
 // launched is what publishes (TestAHookPromptForAReleasedPodIsKeptForItsWokenSession,
 // TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod).
 func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &outboxPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
@@ -138,6 +141,7 @@ func TestAHookPromptForAReleasedPodWakesItAndWaits(t *testing.T) {
 // is woken once. Published with keep: false, the prompt would meet the no-holder answer there and
 // the row would end with the prompt kept nowhere, which is how a woken role lost it.
 func TestAHookPromptForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
+	t.Parallel()
 	keptAcrossTheWake(t, firedHook, claim.RoleImplementer, "hook-prompt on LEGION-208", firedHookText(t))
 }
 
@@ -152,6 +156,7 @@ func TestAHookPromptForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
 // wake has not run yet waits on its backoff. Once the turn has launched the resume, the row's
 // next attempt publishes the prompt with keep, once, and ends.
 func TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
+	t.Parallel()
 	keptAfterTheParkedWake(t, firedHook, claim.RoleImplementer, "hook-prompt on LEGION-208", firedHookText(t))
 }
 
@@ -162,6 +167,7 @@ func TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 // off. The negative control is parkedWait without the bound, the row due at the turn: the attempt
 // at the bound then finds the row not due and publishes nothing.
 func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
+	t.Parallel()
 	keptAfterAnOperatorsResume(t, firedHook, claim.RoleImplementer, "hook-prompt on LEGION-208", firedHookText(t))
 }
 
@@ -181,6 +187,7 @@ func firedHookText(t *testing.T) string {
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // Only a role with no live holder ends the row.
 func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
 	row.ID = 61
@@ -220,6 +227,7 @@ func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 // wakeForDelivery's park check without its first half, the claim launching with no process: each
 // row then waits for the relaunch (parkedWait) and publishes nothing.
 func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
+	t.Parallel()
 	t.Run("a hook prompt", func(t *testing.T) {
 		ctx := context.Background()
 		publisher := &holderPublisher{}

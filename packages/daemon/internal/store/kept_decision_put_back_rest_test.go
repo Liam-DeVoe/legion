@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestADecisionPutBackKeepsTheCountOfTheRestOfItsWords(t *testing.T) {
 		t.Fatalf("write the delivery back unconfirmed: %v", err)
 	}
 	var back []record.ParkedDecision
-	if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(r.ctx, r.store.Pool(), func(_ context.Context, tx pgx.Tx) error {
 		var err error
 		back, err = record.NewStore().ParkedDecisions(r.ctx, tx, tree)
 		return err

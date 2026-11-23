@@ -270,10 +270,11 @@ type PodUpdateOpen struct {
 	Drift []runtime.DriftItem
 }
 
-// UpdateTask is the ask a pod's update round puts to each role of issue (texts.UpdateAskRecord),
-// which the daemon's sweep publishes on the role's own Envoy topic (record.UpdateAsk). The sweep
-// builds it from the round's record, so every role of one round reads the same ask, and the
-// record an operator reads names the same drift (dispatch://INFRA-2981 R9).
+// UpdateTask is the ask a pod's update round puts to role of issue (texts.UpdateAskRecord), which
+// the daemon's sweep publishes on the role's own Envoy topic (record.UpdateAsk). The sweep builds
+// it from the round's record, so every role of one round reads the same ask, apart from the two
+// forms of the steps below, and the record an operator reads names the same drift
+// (dispatch://INFRA-2981 R9).
 //
 // round is the round's own id, which the role passes back in its answer (PodUpdateSignalled): an
 // answer counts only for the round whose ask the role read, so a role that reads this ask while a
@@ -317,13 +318,33 @@ type PodUpdateOpen struct {
 // podUpdateSignalled records in place of the first answer. A role whose `legion` tool has no
 // ready_for_update does the first three steps all the same, because its round ends at endsAt
 // whatever it does.
-func UpdateTask(issue, round, pod string, drift []runtime.DriftItem, reasons string, endsAt time.Time) texts.UpdateAskRecord {
+//
+// The reviewer creates no commit and pushes nothing (its role part), so its ask names no branch to
+// push to, and its steps of background work, before the answer and after it, ask no commit or push
+// of what the work made (createsNoCommit, texts.UpdateBackgroundStepNoCommit and
+// texts.UpdateLateBackgroundWorkNoCommit), as main's ask to it said ("1. You create no commit, so
+// you push nothing."). dispatch://INFRA-4203's R2 step of the background work stays a field in
+// both forms.
+func UpdateTask(issue string, role claim.Role, round, pod string, drift []runtime.DriftItem, reasons string, endsAt time.Time) texts.UpdateAskRecord {
 	images, settings := DriftFacts(drift)
 	ask := texts.NewUpdateAsk(issue, round, pod, images, settings, endsAt.UTC())
 	if len(drift) == 0 {
 		ask.Reasons = reasons
 	}
+	if createsNoCommit(role) {
+		ask.PushTo = ""
+		ask.BackgroundWork, ask.LateBackgroundWork = texts.UpdateBackgroundStepNoCommit, texts.UpdateLateBackgroundWorkNoCommit
+	}
 	return ask
+}
+
+// createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
+// handoff is a record on the Dispatch issue (roles/reviewer.md). The update task asks no commit or
+// push of it. The merger is not one: it makes and pushes the merge of the base forward in merging
+// (roles/merger.md, workflow's mergeForward), and a merge commit it has not pushed when the pod is
+// replaced is lost with the pod.
+func createsNoCommit(role claim.Role) bool {
+	return role == claim.RoleReviewer
 }
 
 // DriftFacts is a round's drift as its texts name it — the ask to each role (UpdateTask) and the
@@ -370,9 +391,9 @@ type PodUpdateEnded struct {
 // Round is the round the worker answers for, which the ask it read named (UpdateTask): an answer
 // counts only for the round the claim stands in, and one naming any other round is refused
 // (podUpdateSignalled). Head is the commit it reports as the head of its issue branch at origin,
-// "" when the branch is not there — a planner before its first push — and is the worker's word,
-// which nothing verifies. Generation and Session are the claim it says it holds, as every agent
-// request carries them.
+// "" when the branch is not there — a planner step that runs before the branch's first push — and
+// is the worker's word, which nothing verifies. Generation and Session are the claim it says it
+// holds, as every agent request carries them.
 type PodUpdateSignalled struct {
 	Claim      claim.Token
 	Generation uint64

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -19,6 +20,7 @@ import (
 // recorded, and one whose parent is recorded in another tree have no architect of the tree between
 // them and the root, so their notice is queued on the tree root, as every such notice was.
 func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -48,7 +50,7 @@ func TestARecoveryTellsEachChildItDidNotRecordOnItsRecordedParent(t *testing.T) 
 		payload string
 	}
 	var got []told
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `select issue, payload::text from outbox
 			where kind = 'notice' and payload->>'kind' = 'child-release-stalled' order by issue`)
 		if err != nil {

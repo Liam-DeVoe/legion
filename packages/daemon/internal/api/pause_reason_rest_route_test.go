@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Main's project-paused notice carried the operator's reason whole (pause/pause.go:pausedNotice at
@@ -37,7 +38,7 @@ func TestTheRestOfACutPauseReasonIsWhereTheControllersPromptSaysItIs(t *testing.
 		t.Helper()
 		var paused *PausedView
 		var last *PauseView
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			paused, last, err = PauseStateTx(ctx, tx, testDispatchProject, h.clock.Now())
 			return err

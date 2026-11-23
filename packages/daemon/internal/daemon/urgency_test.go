@@ -499,6 +499,11 @@ func designLow() []urgencyCase {
 		{texts.ChecksRed, arch, texts.Variant{Phase: phase.Merging, Hold: texts.HoldEscalation}, texts.Med},
 		{texts.PRMerged, arch, texts.Variant{Phase: phase.Merging}, texts.Low},
 		{texts.AwaitingPerson, ctl, texts.Variant{}, texts.Low},
+		// plan-not-taken and retro-held to the architect (main's notices of an owner's plan): the
+		// first step already runs the plan it took, and the daemon starts the held retro by itself
+		// when the last issue beneath leaves, so neither waits on the architect (texts' lowToArchitect).
+		{texts.PlanNotTaken, arch, texts.Variant{}, texts.Low},
+		{texts.RetroHeld, arch, texts.Variant{}, texts.Low},
 	}
 	// The CI settlement: a failed check, or a settlement whose checks all passed (the urgency reads
 	// the phase alone), is med for the worker of the phase and low there for the architect and,
@@ -644,7 +649,7 @@ func TestEachKindHasTheUrgencyTheSpecSays(t *testing.T) {
 		asked := record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Merging, Why: record.ConflictMergeNext, AskedAt: time.Now().UTC()}
 		landed := asked
 		landed.Landed, landed.ReviewAsked = "d00d", true
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			if err := runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: mergingKey, Repo: "acme/widgets",
 				Number: 87, Branch: "legion/" + mergingKey, HeadSHA: "c0de", Base: "main", MergeForward: &asked}); err != nil {
 				return err

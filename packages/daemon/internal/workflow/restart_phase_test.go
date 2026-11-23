@@ -34,14 +34,14 @@ func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.
 			issue:     record.Issue{Phase: phase.Implementing},
 			role:      claim.RoleImplementer,
 			wantPhase: phase.Implementing,
-			wantTask:  []string{"kind: phase-assignment", "issue: LEGION-209", "title: child", "phase: implementing", "retried: " + RetriedByOperator},
+			wantTask:  []string{"kind: phase-assignment", "issue: LEGION-209", "title: child", "phase: implementing", "branch: legion/LEGION-209", "retried: " + RetriedByOperator},
 		},
 		{
 			name:      "the issue is held from the phase",
 			issue:     record.Issue{Phase: phase.Held, Hold: &record.Hold{From: phase.Testing}},
 			role:      claim.RoleTester,
 			wantPhase: phase.Testing,
-			wantTask:  []string{"kind: phase-assignment", "issue: LEGION-209", "title: child", "phase: testing", "retried: " + RetriedByOperator},
+			wantTask:  []string{"kind: phase-assignment", "issue: LEGION-209", "title: child", "phase: testing", "branch: legion/LEGION-209", "retried: " + RetriedByOperator},
 		},
 		{
 			name:      "another role's phase",

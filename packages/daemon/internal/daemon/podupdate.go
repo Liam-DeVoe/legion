@@ -2786,9 +2786,9 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 		return
 	}
 	reasons, drift := roundTerms(group, round)
-	ask := supervise.UpdateTask(issue, round, pod, drift, reasons, *bound)
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
+		ask := supervise.UpdateTask(issue, c.Role, round, pod, drift, reasons, *bound)
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod,
 			Images: ask.Images, Settings: ask.Settings, Reasons: ask.Reasons, EndsAt: ask.EndsAt}
 	}

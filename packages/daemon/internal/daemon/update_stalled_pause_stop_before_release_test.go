@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -43,11 +44,11 @@ func TestAnUpdateStalledNoticeNamesThePauseForAClaimALaterReleaseDidNotSuspend(t
 	heldAt, resumedAt := podUpdateStart.Add(-time.Hour), podUpdateStart.Add(-40*time.Minute)
 	pauseID := openLegionPause(t, rig.pool, heldAt)
 	holdLegionPod(t, rig.st, pauseID, podUpdateIssue, heldAt)
-	if err := rig.st.Tx(rig.ctx, func(tx pgx.Tx) error {
-		if err := store.LockIssueForPause(rig.ctx, tx, podUpdateIssue); err != nil {
+	if err := store.Transact(rig.ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := store.LockIssueForPause(ctx, tx, podUpdateIssue); err != nil {
 			return err
 		}
-		_, err := store.RecordPauseStopTx(rig.ctx, tx, store.PauseStopRecord{
+		_, err := store.RecordPauseStopTx(ctx, tx, store.PauseStopRecord{
 			Pause: store.Pause{ID: pauseID, Project: "LEGION"},
 			Stop: store.PauseStopClaim{Claim: rig.tokens[idleRole], Tree: podUpdateIssue, Issue: podUpdateIssue,
 				Role: idleRole, Generation: 1},

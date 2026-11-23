@@ -112,9 +112,8 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging || got.Lingers() {
 		t.Fatalf("the merged root = %#v, want it still in merging, not lingering", got)
 	}
-	// A root that waits for its merge stands in merging, which is past its own review, so it
-	// holds none of the cap's rows while it waits. Its tree runs on, which the untouched
-	// children below say.
+	// A root that waits for its merge stands in merging, which keeps none of the cap's rows, so
+	// it holds none while it waits. Its tree runs on, which the untouched children below say.
 	assertSlots(t, pool, nil)
 	for _, key := range []string{planning, heldTesting, inRetro, awaiting, inAccepting} {
 		if got := issue(t, pool, key); got.Generation != 1 || got.Tree != finishedRoot {
@@ -505,7 +504,7 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 				// the one a review approved
 				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
-				want := workflow.ResumePhaseTask(record.Issue{Key: child, Title: child, Phase: phase.Merging})
+				want := phaseResume(t, record.Issue{Key: child, Title: child, Phase: phase.Merging})
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {
 					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}

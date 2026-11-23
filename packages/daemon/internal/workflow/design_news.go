@@ -166,8 +166,9 @@ const (
 	// NewsAwaitingPerson is a member told nothing while it waits on a person, since no phase
 	// holder works it.
 	NewsAwaitingPerson NewsState = "awaiting-person"
-	// NewsStopped is a member told nothing while it stands in held: the restart that moves it
-	// back into its phase carries what it is owed then.
+	// NewsStopped is a member told nothing while it stands in held, whatever holds it (its stopped
+	// task, the issues beneath it or its failed worker): the release that moves it back into a
+	// phase carries what it is owed then.
 	NewsStopped NewsState = "stopped"
 	// NewsDone is a member told nothing because its work is done.
 	NewsDone NewsState = "done"

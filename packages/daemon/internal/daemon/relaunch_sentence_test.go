@@ -224,6 +224,7 @@ func wantCatchUpCarries(t *testing.T, pool *store.Pool, relaunch *texts.Relaunch
 // ready queued carries the same record's facts. The turn that takes the task tells the record; the
 // catch-up's copy tells nothing.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing.T) {
+	t.Parallel()
 	rig := newRootArchitectRig(t)
 	const task = "Decide the acceptance of LEGION-209."
 	rig.handle(supervise.RequestDeliver{Claim: rig.token, Task: task, ID: "outbox:7", Generation: 1},
@@ -266,6 +267,7 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 // process gone — is given a delivery of the daemon's own that carries the note alone, with no
 // phase, no run and no entry, and is sent it at once. Its catch-up carries the same facts.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testing.T) {
+	t.Parallel()
 	rig := newRootArchitectRig(t)
 	if held := rig.claim().Pending; held != nil {
 		t.Fatalf("the started architect holds %+v, want nothing", held)
@@ -302,6 +304,7 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 // record describes. So the catch-up its ready queues states the tree with no relaunch facts, and
 // the claim is given no delivery of the daemon's own.
 func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T) {
+	t.Parallel()
 	rig := newRootArchitectRig(t)
 	rig.report()
 	rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
@@ -358,6 +361,7 @@ func workTurn(sh *shim, prompt shimwire.Prompt) {
 // queued first would make the start procedure wait behind a note. The start message is the
 // delivery that carries the note, in front of it, and the turn that takes it tells the record.
 func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
@@ -425,6 +429,7 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 // delivery's acknowledged prompt is the session's next and goes once its turn is over. That turn
 // tells the record, so the resume task goes as it was queued.
 func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) {
+	t.Parallel()
 	rig := newReadyWorkerRig(t)
 	rig.workTheTask()
 	rig.report("subagent")
@@ -459,11 +464,12 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 	rig.dueNow()
 	rig.run()
 	held := rig.claim().Pending
-	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing {
+	resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
+	if held == nil || held.Task != resume || held.Phase != phase.Testing {
 		t.Fatalf("after the sentence's turn the tester holds %+v, want the testing phase's resume task", held)
 	}
 	prompts = rig.conn.Prompts()
-	if sent := prompts[len(prompts)-1]; sent.DeliveryID != held.ID || sent.Message != workflow.ResumePhaseTask(rig.issue) {
+	if sent := prompts[len(prompts)-1]; sent.DeliveryID != held.ID || sent.Message != resume {
 		t.Fatalf("the resume task was sent as %+v, want it as it was queued: the record was told", sent)
 	}
 }
@@ -473,6 +479,7 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 // and carries the note in front of itself: the phase worker's resume task is not held behind a
 // note nobody is reading.
 func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T) {
+	t.Parallel()
 	rig := newReadyWorkerRig(t)
 	rig.workTheTask()
 	rig.report("subagent")
@@ -492,7 +499,8 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	sentBefore := len(rig.conn.Prompts())
 	rig.run()
 	held := rig.claim().Pending
-	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Relaunch() {
+	resume := resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key)
+	if held == nil || held.Task != resume || held.Relaunch() {
 		t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the note's delivery", held)
 	}
 	if sent := rig.conn.Prompts(); len(sent) != sentBefore {
@@ -509,7 +517,7 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	if sent.DeliveryID != held.ID || !strings.HasPrefix(sent.Message, "kind: relaunch-note\n") ||
 		!strings.Contains(sent.Message, "stopped[1]: subagent") || !strings.Contains(sent.Message, "task: true") ||
 		strings.Contains(sent.Message, "task_turn: true") ||
-		!strings.HasSuffix(sent.Message, "\n\n"+workflow.ResumePhaseTask(rig.issue)) {
+		!strings.HasSuffix(sent.Message, "\n\n"+resume) {
 		t.Fatalf("the resume task was sent as %+v, want it under %s behind the relaunch's note", sent, held.ID)
 	}
 }
@@ -533,6 +541,7 @@ func (r *readyWorkerRig) dueNow() {
 // no turn of the stopped process, and the note states that the turn the agent was in was cut off,
 // never that it was this task's (supervise's EndedWork.inFrontOf).
 func TestARelaunchSentenceTellsTheOperatorsRetryOfAStoppedWorkerWhatTheStopEnded(t *testing.T) {
+	t.Parallel()
 	rig := newReadyWorkerRig(t)
 	ctx := context.Background()
 	// The operator's own routes over this rig's supervisor and workflow, wired as the daemon wires

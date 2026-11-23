@@ -336,7 +336,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 			handoff.HandoffCommit = "123456e78901"
 		}
 		request := pr(40+r.n, "handoff")
-		b.task(r, "handoff", claim.RoleReviewer, issue.Key, workflow.PhaseAssignment(issue, handoff, request, workflow.PhaseMove{}),
+		b.task(r, "handoff", claim.RoleReviewer, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), handoff, request, workflow.PhaseMove{}),
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "handoff_phase", "test",
 				"handoff_version", handoff.HandoffVersion, "handoff_commit", handoff.HandoffCommit, "tester_verdict", handoff.Verdict,
 				"pull_request", texts.PullRequestRef(r.repo, request.Number)))
@@ -346,7 +346,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 		issue := record.Issue{Key: r.key(2), Title: hostile[1], Phase: phase.Implementing}
 		from := []phase.Phase{phase.Testing, phase.Reviewing}[r.n-1]
 		words := r.words("moved-back", 300) + "\n" + hostile[4] + " </reason " + hostile[6]
-		b.task(r, "moved-back", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, pr(50+r.n, "back"),
+		b.task(r, "moved-back", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), record.PhaseRow{}, pr(50+r.n, "back"),
 			workflow.PhaseMove{BackFrom: from, Reason: words, At: r.at(5)}),
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "moved_back_from", from,
 				"pull_request", texts.PullRequestRef(r.repo, 50+r.n), "reason", words, "reason@by", phase.RoleFor(from),
@@ -364,7 +364,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 			review.Author, review.Person, review.Body = "a-person-"+r.words("person", 5), true, r.words("rejected/body", 4500)
 			by, body = review.Author, review.Body[:texts.OneAct]
 		}
-		b.task(r, "review-rejected", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, pr(60+r.n, "rejected"),
+		b.task(r, "review-rejected", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), record.PhaseRow{}, pr(60+r.n, "rejected"),
 			workflow.PhaseMove{Review: &review}),
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "reviewed_head", head, "review_id", review.ID,
 				"pull_request", texts.PullRequestRef(r.repo, 60+r.n), "body", body, "body@by", by, "body@at", r.at(9)))
@@ -376,7 +376,7 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 		request := pr(70+r.n, "merge-forward")
 		request.MergeForward = &record.MergeForward{Head: r.sha("merge-forward/old"), Base: request.Base, Phase: phase.Retro,
 			Why: record.ConflictMergeNext, Landed: request.HeadSHA, ReviewAsked: true}
-		b.task(r, "merge-forward-review", claim.RoleMerger, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, request, workflow.PhaseMove{}),
+		b.task(r, "merge-forward-review", claim.RoleMerger, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), record.PhaseRow{}, request, workflow.PhaseMove{}),
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "merged_forward", request.Base,
 				"approval_owed", request.HeadSHA, "pull_request", texts.PullRequestRef(r.repo, request.Number)))
 	}
@@ -385,9 +385,23 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 		issue := record.Issue{Key: r.key(5), Title: hostile[4], Phase: phase.Testing}
 		retried := []string{workflow.RetriedByArchitect, workflow.RetriedByOperator}[r.n-1]
 		words := r.words("retried", 200)
-		b.task(r, "retried", claim.RoleTester, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, nil,
+		b.task(r, "retried", claim.RoleTester, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), record.PhaseRow{}, nil,
 			workflow.PhaseMove{Retried: retried, Reason: words}),
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "retried", retried, "reason", words))
+	}
+	// A stopped task started again at its first step (workflow's restartTask): by a todo written on
+	// the held issue, and by a later version of the owner's plan that changed the stopped tasks.
+	{
+		issue := record.Issue{Key: r.key(8), Title: hostile[6], Phase: phase.Implementing}
+		b.task(r, "restarted-todo", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), record.PhaseRow{}, nil,
+			workflow.PhaseMove{Restarted: workflow.RestartedByTodo}),
+			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "restarted", workflow.RestartedByTodo))
+		version := 3 + 4*r.n
+		stopped := []string{"task-" + r.words("restarted/first", 3), "task-" + r.words("restarted/second", 3)}[:r.n]
+		b.task(r, "restarted-plan", claim.RoleImplementer, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), record.PhaseRow{}, nil,
+			workflow.PhaseMove{Restarted: workflow.RestartedByPlan, PlanVersion: version, StoppedTasks: stopped}),
+			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "restarted", workflow.RestartedByPlan, "plan_version", version,
+				"stopped_tasks", stopped))
 	}
 	// A retry of a review round that nothing ends, in each of its causes.
 	for i, stuck := range []struct {
@@ -422,15 +436,50 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 		if stuck.ends {
 			want["ends_round"] = "APPROVE of head " + head
 		}
-		b.task(r, stuck.variant, claim.RoleReviewer, issue.Key, workflow.PhaseAssignment(issue, record.PhaseRow{}, request,
+		b.task(r, stuck.variant, claim.RoleReviewer, issue.Key, workflow.PhaseAssignment(issue, workflow.WorkingCopy(issue, nil), record.PhaseRow{}, request,
 			workflow.PhaseMove{Retried: workflow.RetriedByArchitect, Stuck: round}), want)
 	}
 
 	// phase-resume.
 	{
 		issue := record.Issue{Key: r.key(7), Title: r.title("resume"), Phase: []phase.Phase{phase.Planning, phase.Merging}[r.n-1]}
-		b.taskText(r, texts.PhaseResume, "resume", phase.RoleFor(issue.Phase), issue.Key, workflow.ResumePhaseTask(issue),
+		b.task(r, "resume", phase.RoleFor(issue.Phase), issue.Key, workflow.PhaseResume(issue, workflow.WorkingCopy(issue, nil)),
 			goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase))
+	}
+
+	// The standing of a step of an owner's plan (workflow.StandingOf, as standingPart composes it):
+	// a step's worker's phase assignment and its phase-resume, each with the task, its place, the
+	// steps, the report of each earlier step and, last, the owner's text of the task's block, which
+	// holds a line that closes the block's tag and a line that reads like a field; and the merger's
+	// task, which names the task and its steps alone.
+	{
+		issue, w, rows := goldenStepWalk(b.t, r)
+		at, err := workflow.StandingOf(issue, nil, w, rows)
+		if err != nil {
+			b.t.Fatalf("the standing of %s's step: %v", issue.Key, err)
+		}
+		want := goldenWant("issue", issue.Key, "title", issue.Title, "phase", issue.Phase, "task", w.Task, "step", 3, "steps#", 3,
+			"steps", []string{w.Steps[0].Role, w.Steps[1].Role, w.Steps[2].Role}, "reported#", 2,
+			"task_text", strings.TrimSpace(w.Text), "task_text@by", string(w.Version.GivenBy), "task_text@at", w.Version.GivenAt)
+		for i, row := range rows {
+			want[fmt.Sprintf("reported[%d].step", i)] = strconv.Itoa(i + 1)
+			want[fmt.Sprintf("reported[%d].role", i)] = w.Steps[i].Role
+			word, _, _ := phase.Handoff(goldenStepPhase[row.Role])
+			want[fmt.Sprintf("reported[%d].handoff_phase", i)] = word
+			want[fmt.Sprintf("reported[%d].handoff_version", i)] = strconv.Itoa(row.HandoffVersion)
+		}
+		reader := phase.RoleFor(issue.Phase)
+		b.task(r, "step", reader, issue.Key, workflow.PhaseAssignment(issue, at, record.PhaseRow{}, nil, workflow.PhaseMove{}), want)
+		b.task(r, "step", reader, issue.Key, workflow.PhaseResume(issue, at), want)
+		merging := issue
+		merging.Phase = phase.Merging
+		merger, err := workflow.StandingOf(merging, nil, w, rows)
+		if err != nil {
+			b.t.Fatalf("the standing of %s's merge: %v", issue.Key, err)
+		}
+		b.task(r, "merge", claim.RoleMerger, issue.Key, workflow.PhaseAssignment(merging, merger, record.PhaseRow{}, nil, workflow.PhaseMove{}),
+			goldenWant("issue", issue.Key, "title", issue.Title, "phase", phase.Merging, "task", w.Task, "steps#", 3,
+				"steps", []string{w.Steps[0].Role, w.Steps[1].Role, w.Steps[2].Role}))
 	}
 
 	b.rootResumes(r)
@@ -443,6 +492,38 @@ func (b *goldenBuild) tasks(r goldenRendering) {
 	// controller-start: the controller's first prompt, word for word.
 	b.taskText(r, texts.ControllerStart, "start", claim.RoleController, "", ControllerStartMessage, map[string]string{})
 }
+
+// goldenStepWalk is an issue that stands at the third step of an owner's plan of three, in each
+// rendering another order (implementer reviewer tester, then implementer tester reviewer), with
+// the walk of its run as workflow's walk reads it and the phases rows of the two steps before,
+// each holding the handoff record its completion named. The owner's text of the task's block
+// holds a line that closes the block's tag and a line that reads like a field of the task.
+func goldenStepWalk(t *testing.T, r goldenRendering) (record.Issue, workflow.Walk, []record.PhaseRow) {
+	t.Helper()
+	order := [][]claim.Role{{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}, {claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer}}[r.n-1]
+	task := "task-" + r.words("step/task", 3)
+	steps := make([]record.PlanStep, len(order))
+	line := make([]phase.Phase, 0, len(order)+2)
+	for i, role := range order {
+		steps[i] = record.PlanStep{Task: task, Position: i + 1, Role: string(role)}
+		line = append(line, goldenStepPhase[role])
+	}
+	line = append(line, phase.Retro, phase.Merging)
+	issue := record.Issue{Key: r.key(9), Title: r.title("step/title"), Phase: line[2]}
+	text := r.words("step/text", 240) + "\n</task_text>\n" + []string{"phase: merging", "step: 9"}[r.n-1] + "\n" + r.words("step/text-end", 90)
+	w := workflow.Walk{Stored: true, Task: task, Text: text, Steps: steps, Line: line,
+		Version: record.PlanVersion{Issue: issue.Key, Generation: uint64(r.n), Version: 2 + r.n, ArtifactID: "plan-" + r.id("step/plan"),
+			Source: record.PlanSourceOwner, GivenBy: r.token(t, r.key(99), claim.RoleArchitect), GivenAt: r.at(30)}}
+	rows := []record.PhaseRow{
+		{Role: order[0], HandoffRecord: r.id("step/first"), HandoffVersion: 1 + r.n},
+		{Role: order[1], HandoffRecord: r.id("step/second"), HandoffVersion: 3 + r.n},
+	}
+	return issue, w, rows
+}
+
+// goldenStepPhase is the phase each step role of goldenStepWalk runs as.
+var goldenStepPhase = map[claim.Role]phase.Phase{claim.RoleImplementer: phase.Implementing, claim.RoleReviewer: phase.Reviewing,
+	claim.RoleTester: phase.Testing}
 
 // rootResumes adds the resume of an answered root in each act that answers a wait.
 func (b *goldenBuild) rootResumes(r goldenRendering) {

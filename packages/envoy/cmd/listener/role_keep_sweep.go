@@ -11,7 +11,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 )
 
@@ -254,7 +252,9 @@ func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // ends at the first copy that wakes the role. An outbox copy wakes nothing, as the outbox's own
 // keep raises no report; a copy at urgency low with no sender - no source_session and no sender
 // stamp - wakes nothing, as the publish route raised no report for it (roleSend.noHolder); and a
-// copy no read can decode wakes nothing either.
+// copy whose role no read can tell (readRoleFrame) wakes nothing either, as the walk ends it. A
+// copy is read field by field, as the walk reads it (roleFrame.envelope), so an expects_reply word
+// this build does not know does not keep a copy the walk forwards from waking the role.
 func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time) (bool, error) {
 	subject := bus.KeptRoleSubject(role)
 	next := from
@@ -267,8 +267,14 @@ func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, 
 			return false, fmt.Errorf("read role %s's kept lane from %d: %w", role, next, err)
 		}
 		next = stored.Sequence + 1
-		var item contracts.Envelope
-		if now.Sub(stored.Time) <= roleKeepWakeAge && json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item) && wakesItsRole(item) {
+		if now.Sub(stored.Time) > roleKeepWakeAge {
+			continue
+		}
+		frame, err := readRoleFrame(stored.Data)
+		if err != nil {
+			continue
+		}
+		if item := frame.envelope(); !isOutboxCopy(item) && wakesItsRole(item) {
 			return true, nil
 		}
 	}

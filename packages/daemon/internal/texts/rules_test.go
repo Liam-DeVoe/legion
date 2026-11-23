@@ -31,6 +31,8 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 		{ChildStatus, architect, Variant{Change: ChangeJoined}},
 		{ChildStatus, architect, Variant{Change: ChangeStarted}},
 		{PRMerged, architect, Variant{}},
+		{PlanNotTaken, architect, Variant{}},
+		{RetroHeld, architect, Variant{}},
 		{AwaitingPerson, controller, Variant{}},
 	}
 	workers := map[phase.Phase]claim.Role{
@@ -62,10 +64,11 @@ func TestEachKindHasTheUrgencyItsRuleGives(t *testing.T) {
 	if got := UrgencyOf(ChecksRed, architect, Variant{Phase: phase.Accepting}); got != Med {
 		t.Errorf("checks-red to the architect in accepting is %q, want med: the architect holds the phase and must not sign off the head", got)
 	}
-	// An issue held from a worker's phase, by that worker's failed claim or by the architect's
-	// escalation, has no worker at that phase: med, as the CI settlement of a held issue is.
+	// An issue held from a worker's phase, by that worker's failed claim, by the architect's
+	// escalation, by its stopped task or for the issues beneath it, has no worker at that phase:
+	// med, as the CI settlement of a held issue is.
 	for p := range workers {
-		for _, hold := range []string{HoldFailure, HoldEscalation} {
+		for _, hold := range []string{HoldFailure, HoldEscalation, HoldStoppedTask, HoldChildren} {
 			if got := UrgencyOf(ChecksRed, architect, Variant{Phase: p, Hold: hold}); got != Med {
 				t.Errorf("checks-red to the architect of an issue held (%s) from %s is %q, want med: no worker holds the phase", hold, p, got)
 			}

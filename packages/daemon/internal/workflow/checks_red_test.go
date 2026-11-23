@@ -439,7 +439,7 @@ func TestAConflictOnAPullRequestWithNoRecordedBaseAsksTheMergeForward(t *testing
 		t.Fatalf("merge-forward messages %+v, want the implementer's ask and the tester's hold", messages)
 	}
 	for _, message := range messages {
-		published, err := json.Marshal(message.Record("LEGION-208", "sjawhar/legion"))
+		published, err := json.Marshal(message.Record("LEGION-208", record.PullRequest{Repo: "sjawhar/legion"}))
 		if err != nil {
 			t.Fatal(err)
 		}

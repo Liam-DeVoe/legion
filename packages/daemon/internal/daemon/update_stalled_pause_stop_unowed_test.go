@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -41,11 +42,11 @@ func TestAnUpdateStalledNoticeNamesNoClaimAPauseStoppedIdleAnIdleRelease(t *test
 	holdLegionPod(t, rig.st, pauseID, podUpdateIssue, heldAt)
 	recordPodWake(t, rig.st, store.PodResume{Project: podUpdateProject, Issue: podUpdateIssue, Role: string(pauseStoppedRole),
 		Kind: pods.WakePause, At: heldAt, Pause: pauseID})
-	if err := rig.st.Tx(rig.ctx, func(tx pgx.Tx) error {
-		if err := store.LockIssueForPause(rig.ctx, tx, podUpdateIssue); err != nil {
+	if err := store.Transact(rig.ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := store.LockIssueForPause(ctx, tx, podUpdateIssue); err != nil {
 			return err
 		}
-		_, err := store.RecordPauseStopTx(rig.ctx, tx, store.PauseStopRecord{
+		_, err := store.RecordPauseStopTx(ctx, tx, store.PauseStopRecord{
 			Pause: store.Pause{ID: pauseID, Project: "LEGION"},
 			Stop: store.PauseStopClaim{Claim: rig.tokens[idleRole], Tree: podUpdateIssue, Issue: podUpdateIssue,
 				Role: idleRole, Generation: 1},

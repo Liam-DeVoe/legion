@@ -228,6 +228,7 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 // can retry it. That one retry must reach a working agent: a new session, because every turn of
 // the recorded one was refused, and the phase's task in it.
 func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
 	refusal := "Refusal (reasoning_extraction): this request was blocked"
@@ -290,9 +291,12 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	if len(prompts) != 2 {
 		t.Fatalf("the new session was prompted %+v, want the sentence and the retried phase's task", prompts)
 	}
-	lines := strings.Split(prompts[1].Message, "\n")
-	for _, want := range []string{"kind: " + string(texts.PhaseAssignment), "issue: LEGION-208", "phase: implementing", "retried: " + workflow.RetriedByArchitect} {
-		if !slices.Contains(lines, want) {
+	// The task is the record after the abandoned-session note, which names the branch too.
+	_, task, found := strings.Cut(prompts[1].Message, "kind: "+string(texts.PhaseAssignment)+"\n")
+	lines := strings.Split(task, "\n")
+	for _, want := range []string{"issue: LEGION-208", "phase: implementing", "branch: " + claim.IssueBranch(rig.issue.Key),
+		"retried: " + workflow.RetriedByArchitect} {
+		if !found || !slices.Contains(lines, want) {
 			t.Fatalf("the new session was prompted %q, want the retried phase's task to carry the line %q", prompts[1].Message, want)
 		}
 	}
@@ -305,6 +309,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 // the one command that must give that phase a working agent: the stopped claim forgets the session
 // it recorded, the workflow starts its phase again, and the new session is given the phase's task.
 func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePhaseTask(t *testing.T) {
+	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
 	route := "/legion/v1/operator/claims/" + string(rig.implementer)

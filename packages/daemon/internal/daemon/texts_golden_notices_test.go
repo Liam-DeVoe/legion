@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -251,8 +252,9 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	b.notice(r, "merged", arch, workflow.ChildClosedNotice(child, texts.LeftBehind{}), goldenWant("issue", child))
 	b.notice(r, "todo", arch, workflow.ChildReenteredNotice(child, r.key(99)), goldenWant("issue", child, "change", texts.ChangeTodo, "tree", r.key(99)))
 	waited := []string{r.key(111), r.key(112)}[:r.n]
-	b.notice(r, "started", arch, workflow.ChildStartedNotice(child, r.key(99), waited),
-		goldenWant("issue", child, "change", texts.ChangeStarted, "tree", r.key(99), "waited_on", waited))
+	first := []phase.Phase{phase.Planning, phase.Implementing}[r.n-1]
+	b.notice(r, "started", arch, workflow.ChildStartedNotice(child, r.key(99), first, waited),
+		goldenWant("issue", child, "change", texts.ChangeStarted, "tree", r.key(99), "phase", first, "waited_on", waited))
 	b.notice(r, "beneath-accepted", arch, workflow.ChildUnderAcceptedParentNotice(child, r.key(113)),
 		goldenWant("issue", child, "change", texts.ChangeBeneathAccepted, "accepted_ancestor", r.key(113)))
 	b.notice(r, "joined", arch, workflow.JoinedTheTreeNotice(child, r.key(99), r.key(114)),
@@ -261,6 +263,53 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		goldenWant("issue", r.key(99), "change", texts.ChangeReparented, "child", r.key(115), "parent", r.key(116)))
 	b.notice(r, "left", arch, workflow.ChildLeftNotice(child, []string{"icebox", "backlog"}[r.n-1], left),
 		leftWant("issue", child, "change", texts.ChangeLeft, "status", []string{"icebox", "backlog"}[r.n-1]))
+
+	// task-stopped: the owner's stop_task of a task (workflow's taskStopped), and a failed step that
+	// no earlier step of the type implementation can take the work back from (stopUnreturned).
+	{
+		task := "task-" + r.words("stopped/task", 3)
+		at := []phase.Phase{phase.Testing, phase.Reviewing}[r.n-1]
+		by := r.token(t, r.key(99), arch)
+		b.notice(r, "owner", arch, workflow.OwnerStoppedNotice(issue.Key, task, at, by),
+			goldenWant("issue", issue.Key, "role", phase.RoleFor(at), "phase", at, "task", task, "cause", texts.TaskStoppedByOwner, "stoppedBy", string(by)))
+		role := []claim.Role{claim.RoleTester, claim.RoleReviewer}[r.n-1]
+		b.notice(r, "no-return", arch, workflow.StopUnreturnedNotice(issue.Key, task, 1+r.n, role, at),
+			goldenWant("issue", issue.Key, "role", role, "phase", at, "task", task, "cause", texts.TaskStoppedNoReturn, "step", 1+r.n))
+	}
+
+	// plan-not-taken: the first step passed over the plans of earlier owners (workflow's
+	// tellPassedOver), and runs an owner's version of its own or the project's default steps.
+	{
+		earlier := make([]record.PlanVersion, r.n)
+		for i := range earlier {
+			earlier[i] = record.PlanVersion{Issue: issue.Key, Generation: uint64(r.n), Version: 2 + i + r.n, ArtifactID: "plan-" + r.id(fmt.Sprintf("plan/earlier/%d", i)),
+				Source: record.PlanSourceOwner, GivenBy: r.token(t, r.key(120+i), arch)}
+		}
+		want := goldenWant("issue", issue.Key, "not_taken#", len(earlier))
+		for i, version := range earlier {
+			want[fmt.Sprintf("not_taken[%d].version", i)] = strconv.Itoa(version.Version)
+			want[fmt.Sprintf("not_taken[%d].artifact", i)] = version.ArtifactID
+			want[fmt.Sprintf("not_taken[%d].given_by", i)] = string(version.GivenBy)
+		}
+		runs := record.PlanVersion{Issue: issue.Key, Generation: uint64(1 + r.n), Version: 5 + r.n, ArtifactID: "plan-" + r.id("plan/runs"),
+			Source: record.PlanSourceOwner, GivenBy: r.token(t, r.key(99), arch)}
+		owner := maps.Clone(want)
+		owner["runs"], owner["runs_version"], owner["runs_artifact"], owner["runs_given_by"] = texts.PlanRunsOwner, strconv.Itoa(runs.Version),
+			runs.ArtifactID, string(runs.GivenBy)
+		b.notice(r, "owner", arch, workflow.PlanNotTakenNotice(issue.Key, earlier, runs), owner)
+		want["runs"] = texts.PlanRunsDefault
+		b.notice(r, "default", arch, workflow.PlanNotTakenNotice(issue.Key, earlier, record.PlanVersion{Issue: issue.Key, Source: record.PlanSourceDefault}), want)
+	}
+
+	// retro-held: a parent past its last step, held before its retro while issues beneath it are
+	// still in the workflow, as workflow's retroHeldNotice builds it.
+	{
+		beneath := []string{r.key(111), r.key(112), r.key(113)}[:1+r.n]
+		b.notice(r, "waiting", arch, texts.RetroHeldRecord{NoticeHead: texts.NoticeHead{Kind: texts.RetroHeld, Issue: r.key(99)},
+			Role: phase.RoleFor(phase.Retro), Phase: phase.Retro, WaitingFor: beneath, StatusNotTakenYet: record.StatusNotTakenYet,
+			EndChildRule: record.EndChildRule},
+			goldenWant("issue", r.key(99), "role", phase.RoleFor(phase.Retro), "phase", phase.Retro, "waiting_for", beneath))
+	}
 
 	// children-first: a parent with 30 open children.
 	{
@@ -765,13 +814,23 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 		round, pod := "round-"+r.id("ask/round"), "pod-"+r.id("ask/pod")
 		drift := goldenDrift(r)
 		endsAt := r.at(45)
-		ask := supervise.UpdateTask(issue, round, pod, drift, r.words("ask/reasons", 50), endsAt)
 		reader := []claim.Role{claim.RoleImplementer, claim.RoleArchitect}[r.n-1]
+		ask := supervise.UpdateTask(issue, reader, round, pod, drift, r.words("ask/reasons", 50), endsAt)
 		row := queuedRow(b.t, issue, record.UpdateAsk{Role: reader, Round: round, Pod: pod, Images: ask.Images, Settings: ask.Settings,
 			Reasons: ask.Reasons, EndsAt: ask.EndsAt})
 		b.published(r, texts.UpdateAsk, "drift", reader, issue, row.Record(issue), texts.UrgencyOf(texts.UpdateAsk, reader, texts.Variant{}),
 			goldenWant("issue", issue, "round", round, "pod", pod, "images", texts.ShortDigest(drift[0].Image), "settings#", 30,
 				"ends_at", endsAt, "push_to", claim.IssueBranch(issue)))
+	}
+	// update-ask to the reviewer, which creates no commit: its ask names no branch to push to, and
+	// its steps of background work ask no commit or push (supervise.UpdateTask's reviewer form).
+	{
+		round, pod := "round-"+r.id("ask-reviewer/round"), "pod-"+r.id("ask-reviewer/pod")
+		endsAt := r.at(50)
+		ask := supervise.UpdateTask(issue, claim.RoleReviewer, round, pod, goldenDrift(r)[:1], "", endsAt)
+		row := queuedRow(b.t, issue, record.UpdateAsk{Role: claim.RoleReviewer, Round: round, Pod: pod, Images: ask.Images, EndsAt: ask.EndsAt})
+		b.published(r, texts.UpdateAsk, "reviewer", claim.RoleReviewer, issue, row.Record(issue), texts.UrgencyOf(texts.UpdateAsk, claim.RoleReviewer, texts.Variant{}),
+			goldenWant("issue", issue, "round", round, "pod", pod, "images", ask.Images, "ends_at", endsAt))
 	}
 
 	// merge-queue-removal: read, and with no read of GitHub.
@@ -802,47 +861,58 @@ func (b *goldenBuild) roleMessages(r goldenRendering) {
 		ref := texts.PullRequestRef(r.repo, number)
 		why := []record.ConflictWhy{record.ConflictCheckNotGreen, record.ConflictRequiresCurrent}[r.n-1]
 		at := []phase.Phase{phase.Testing, phase.Reviewing}[r.n-1]
+		pull := record.PullRequest{Repo: r.repo}
 		ask := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: head, Base: base,
 			Phase: at, PullRequest: number, Why: why})
-		b.published(r, texts.MergeForwardAsk, "ask", claim.RoleImplementer, issue, ask.Record(issue, r.repo),
+		b.published(r, texts.MergeForwardAsk, "ask", claim.RoleImplementer, issue, ask.Record(issue, pull),
 			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleImplementer, texts.Variant{Phase: at}),
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", at, "why", why))
 		unbasedHead := r.sha("forward/no-base/head")
 		unbased := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: unbasedHead,
 			Phase: at, PullRequest: number + 50, Why: record.ConflictRulesUnread})
-		b.published(r, texts.MergeForwardAsk, "no-base", claim.RoleImplementer, issue, unbased.Record(issue, r.repo),
+		b.published(r, texts.MergeForwardAsk, "no-base", claim.RoleImplementer, issue, unbased.Record(issue, pull),
 			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleImplementer, texts.Variant{Phase: at}),
 			goldenWant("issue", issue, "pull_request", texts.PullRequestRef(r.repo, number+50), "head", unbasedHead, "phase", at,
 				"why", record.ConflictRulesUnread))
 		mergerAsk := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: head, Base: base,
 			Phase: phase.Merging, PullRequest: number, Why: record.ConflictMergeNext})
-		b.published(r, texts.MergeForwardAsk, "ask-merger", claim.RoleMerger, issue, mergerAsk.Record(issue, r.repo),
+		b.published(r, texts.MergeForwardAsk, "ask-merger", claim.RoleMerger, issue, mergerAsk.Record(issue, pull),
 			texts.UrgencyOf(texts.MergeForwardAsk, claim.RoleMerger, texts.Variant{Phase: phase.Merging}),
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", record.ConflictMergeNext,
 				"conflict_reads", texts.ConflictReadsConfirmed))
 		worker := phase.RoleFor(at)
 		hold := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardHold, Head: head, Base: base,
 			Phase: at, PullRequest: number, Why: why})
-		b.published(r, texts.MergeForwardHold, "hold", worker, issue, hold.Record(issue, r.repo),
+		b.published(r, texts.MergeForwardHold, "hold", worker, issue, hold.Record(issue, pull),
 			texts.UrgencyOf(texts.MergeForwardHold, worker, texts.Variant{Phase: at}),
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", at, "why", why))
 		mergerHold := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardHold, Head: head, Base: base,
 			Phase: phase.Merging, PullRequest: number, Why: why})
-		b.published(r, texts.MergeForwardHold, "hold-merger", claim.RoleMerger, issue, mergerHold.Record(issue, r.repo),
+		b.published(r, texts.MergeForwardHold, "hold-merger", claim.RoleMerger, issue, mergerHold.Record(issue, pull),
 			texts.UrgencyOf(texts.MergeForwardHold, claim.RoleMerger, texts.Variant{Phase: phase.Merging}),
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "conflicts_with", base, "phase", phase.Merging, "why", why,
 				"asked", claim.RoleImplementer))
 		told := queuedRow(b.t, issue, record.MergeForwardMessage{Role: worker, Step: record.MergeForwardLanded, Head: head, Landed: landed, Base: base,
 			Phase: at, PullRequest: number, Why: why})
-		b.published(r, texts.MergeForwardLanded, "landed", worker, issue, told.Record(issue, r.repo),
+		b.published(r, texts.MergeForwardLanded, "landed", worker, issue, told.Record(issue, pull),
 			texts.UrgencyOf(texts.MergeForwardLanded, worker, texts.Variant{Phase: at}),
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "landed", landed, "conflicts_with", base, "phase", at))
 		past := []phase.Phase{phase.Accepting, phase.Merging}[r.n-1]
 		review := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleReviewer, Step: record.MergeForwardReview, Head: head, Landed: landed,
 			Base: base, Phase: past, PullRequest: number, Why: record.ConflictMergeNext})
-		b.published(r, texts.MergeForwardReview, "review", claim.RoleReviewer, issue, review.Record(issue, r.repo),
+		b.published(r, texts.MergeForwardReview, "review", claim.RoleReviewer, issue, review.Record(issue, pull),
 			texts.UrgencyOf(texts.MergeForwardReview, claim.RoleReviewer, texts.Variant{Phase: past}),
 			goldenWant("issue", issue, "pull_request", ref, "head", head, "landed", landed, "conflicts_with", base, "phase", past))
+		// The landed to the merger in merging whose landing asked the reviewer to read the merge
+		// (MergeForward.ReviewAsked): it names the new head as the approval it waits for.
+		mergerLanded := queuedRow(b.t, issue, record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardLanded, Head: head, Landed: landed,
+			Base: base, Phase: phase.Merging, PullRequest: number, Why: record.ConflictMergeNext})
+		reviewAsked := record.PullRequest{Repo: r.repo, MergeForward: &record.MergeForward{Head: head, Base: base, Phase: phase.Merging,
+			Why: record.ConflictMergeNext, Landed: landed, ReviewAsked: true}}
+		b.published(r, texts.MergeForwardLanded, "landed-merger", claim.RoleMerger, issue, mergerLanded.Record(issue, reviewAsked),
+			texts.UrgencyOf(texts.MergeForwardLanded, claim.RoleMerger, texts.Variant{Phase: phase.Merging}),
+			goldenWant("issue", issue, "pull_request", ref, "head", head, "landed", landed, "conflicts_with", base, "phase", phase.Merging,
+				"approval_owed", landed))
 	}
 }
 
