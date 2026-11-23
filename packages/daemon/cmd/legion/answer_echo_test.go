@@ -142,7 +142,7 @@ func TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes(t *testing.T) {
 		read              func(t *testing.T, daemon *httptest.Server) string
 	}{
 		{
-			name: "repositories-time", names: `"repositories"`,
+			name: "repositories-time", names: `"repositories.caches.(item).retainedUntil"`,
 			body: repositories(`,"caches":[{"repo":"acme/widgets","sandbox":"s","state":"ready","ready":true,"retainedUntil":"` + echoProbe + `"}]`),
 			read: readRepositories,
 		},
@@ -152,7 +152,7 @@ func TestADaemonStateThatDoesNotDecodePrintsNoValueItEchoes(t *testing.T) {
 			read: readRepositories,
 		},
 		{
-			name: "legion-state", names: `"daemon"`,
+			name: "legion-state", names: `"daemon.startedAt"`,
 			body: `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"` + echoProbe + `"},` +
 				`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]}`,
 			read: func(t *testing.T, daemon *httptest.Server) string {

@@ -329,6 +329,10 @@
         "test": "print-dispatch.Error"
       },
       {
+        "holder": "github.com/sjawhar/legion/daemon/internal/dispatch.answeredEvent",
+        "test": "print-dispatch.answeredEvent"
+      },
+      {
         "holder": "github.com/sjawhar/legion/daemon/internal/notify.ErrNotDelivered",
         "test": "print-notify.ErrNotDelivered"
       },
@@ -499,6 +503,20 @@
         "operands": [],
         "records_boxes": true,
         "why": "Answer.Decode's walk of the value a caller decodes an answer into: it reaches each RemoteText as a *RemoteText and hands it the answer's record through WithoutTokens, descending into no box and reading no box's storage"
+      },
+      {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "function": "github.com/sjawhar/envoy/internal/redact.unreached",
+        "operands": [],
+        "records_boxes": true,
+        "why": "Answer.Decode's walk of the value a caller decodes an answer into, before it decodes: it finds what encoding/json would fill that no record of the answer reaches, reading each struct field encoding/json decodes, a box's none among them, so it descends into no box and reads no box's storage"
+      },
+      {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "function": "github.com/sjawhar/envoy/internal/redact.plainMember",
+        "operands": [],
+        "records_boxes": true,
+        "why": "Answer.Decode's walk of the value a caller decodes an answer into, before it decodes: it finds a member encoding/json would fill with the answer's text as it came, reading each struct field encoding/json fills, and goes into no type that decodes its JSON itself, the box among them, so it descends into no box and reads no box's storage"
       },
       {
         "file": "packages/daemon/internal/store/storetext/strings.go",
@@ -2554,6 +2572,34 @@
       }
     },
     {
+      "id": "answer-decode-box-key",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestDecodeRefusesADestinationWhoseMapKeyHoldsABox",
+      "production": "redact Answer.Decode: a destination whose map's key holds a box, which encoding/json fills through UnmarshalText and no record reaches, is refused before anything is decoded (unreached, unreachedType)",
+      "function": "github.com/sjawhar/envoy/internal/redact.unreachedType",
+      "capture": "redact.answer-box-key/map",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "if t.Key().Kind() != reflect.Interface && holdsBox(t.Key(), map[reflect.Type]bool{}) {",
+        "replacement": "if false {"
+      }
+    },
+    {
+      "id": "answer-decode-plain-member",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAnAnswerRefusesADestinationThatHoldsAPlainTextMember",
+      "production": "redact Answer.Decode: a destination that holds a byte slice, a json.RawMessage or an interface value the caller did not set to a pointer, at any depth encoding/json decodes to, which it would fill with the answer's text as it came, is refused before anything is decoded (plainMember, plainMemberType)",
+      "function": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode",
+      "capture": "redact.answer-plain-member/raw",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "if held := plainMember(rv, map[followed]bool{}); held != \"\" {",
+        "replacement": "if held := \"\"; held != \"\" {"
+      }
+    },
+    {
       "id": "listener-build-unsubscribe",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
@@ -2990,8 +3036,8 @@
       "capture": "redact.oauth2-body",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "[]byte(Field(Tokens(UnescapeHTML(string(re.Body)), -1, carried...)))",
-        "replacement": "[]byte(Tokens(UnescapeHTML(string(re.Body)), -1, carried...))"
+        "preimage": "[]byte(Field(Tokens(body, -1, carried...)))",
+        "replacement": "[]byte(Tokens(body, -1, carried...))"
       }
     },
     {
@@ -3205,6 +3251,13 @@
       "production": "excerpt.Text, excerpt.BodyForText"
     },
     {
+      "id": "excerpt-reference-depth",
+      "requirement": "r1-fail-closed",
+      "package": "./excerpt",
+      "test": "TestTextPrintsAPageWhoseReferencesNestPastTheBoundAsNotReadable",
+      "production": "excerpt.Text: redact.UnescapeHTML's refusal past redact.ReferencePasses prints redact.WordsNotReadable"
+    },
+    {
       "id": "excerpt-64kib",
       "requirement": "r1-fail-closed",
       "package": "./excerpt",
@@ -3249,8 +3302,8 @@
       "capture": "excerpt.text-remote",
       "mutation": {
         "file": "packages/envoy/excerpt/excerpt.go",
-        "preimage": "redact.Remote(redact.UnescapeHTML(plain))",
-        "replacement": "redact.UnescapeHTML(plain), true"
+        "preimage": "redact.Remote(plain)",
+        "replacement": "plain, true"
       }
     },
     {
@@ -3308,6 +3361,20 @@
       "package": "./internal/redact",
       "test": "TestTheBoundaryReadsAnAnswersBodyWithItsReferencesDecoded/at-twice",
       "production": "redact.OAuth2's answer body, redact.UnescapeHTML"
+    },
+    {
+      "id": "body-reference-depth-at-bound",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestTheBoundaryPrintsABodyWhoseReferencesNestPastTheBoundAsNotReadable/at-bound",
+      "production": "redact.OAuth2's answer body, redact.UnescapeHTML: a page nested redact.ReferencePasses deep is read"
+    },
+    {
+      "id": "body-reference-depth-past-bound",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestTheBoundaryPrintsABodyWhoseReferencesNestPastTheBoundAsNotReadable/past-bound",
+      "production": "redact.OAuth2's answer body, redact.UnescapeHTML: a page nested deeper prints redact.WordsNotReadable"
     },
     {
       "id": "excerpt-hidden-reference-question-equals",
@@ -3821,6 +3888,48 @@
       "production": "redact.Remote step 8: the known residual"
     },
     {
+      "id": "reference-depth-nested-at-bound-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-nested-at-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested redact.ReferencePasses deep is read"
+    },
+    {
+      "id": "reference-depth-nested-past-bound-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-nested-past-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
+      "id": "reference-depth-nested-deep-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-nested-deep",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-at-bound-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-legacy-amp-at-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested redact.ReferencePasses deep is read"
+    },
+    {
+      "id": "reference-depth-legacy-amp-past-bound-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-legacy-amp-past-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-deep-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-legacy-amp-deep",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
       "id": "leak-proxy-echo-impersonation",
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
@@ -3884,6 +3993,83 @@
       "production": "redact.Tokens"
     },
     {
+      "id": "reference-depth-bounded-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestNestedReferencesAreReadInBoundedTime",
+      "production": "redact.Remote step 0 (decodeSeparators), redact.UnescapeHTML: at most redact.ReferencePasses+1 passes"
+    },
+    {
+      "id": "reference-name-31-letters-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-31-letters",
+      "production": "redact.Remote step 0, decodeSeparators: a 31-letter name that begins with amp is read as a reference, a pass past redact.ReferencePasses"
+    },
+    {
+      "id": "reference-name-32-letters-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-32-letters",
+      "production": "redact.Remote step 0, decodeSeparators: a 32-letter name, characterReference's longest, that begins with amp is read as a reference, a pass past redact.ReferencePasses"
+    },
+    {
+      "id": "reference-name-32-letters-at-bound-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-32-letters-at-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a 32-letter name read in the last pass redact.ReferencePasses allows prints as it came"
+    },
+    {
+      "id": "reference-name-33-letters-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-name-33-letters",
+      "production": "redact.Remote step 0, decodeSeparators: a 33-letter run is no one reference; its first 32 letters are read as the name, so it reads as the whole run would"
+    },
+    {
+      "id": "reference-name-bounded-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestALongReferenceNameIsReadInBoundedTime",
+      "production": "redact decodeSeparators (Remote's step 0), characterReference: a name of at most 32 letters, so no pass matches a name as long as the field"
+    },
+    {
+      "id": "field-length-at-limit-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/field-length-at-limit",
+      "production": "redact.Remote: a field of exactly redact.FieldLimit bytes is read"
+    },
+    {
+      "id": "field-length-past-limit-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/field-length-past-limit",
+      "production": "redact.Remote: a field longer than redact.FieldLimit is not readable, before any step reads it"
+    },
+    {
+      "id": "field-limit-refusal-at-limit",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestARefusalLongerThanTheFieldLimitPrintsItsStatusAndCodeAlone/at-limit",
+      "production": "redact.RemoteText from Answer.Decode: words of redact.FieldLimit bytes print as the rule reads them, beside the status and the code"
+    },
+    {
+      "id": "field-limit-refusal-past-limit",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestARefusalLongerThanTheFieldLimitPrintsItsStatusAndCodeAlone/past-limit",
+      "production": "redact.RemoteText from Answer.Decode: words longer than redact.FieldLimit print as redact.WordsNotReadable, and the status and the code still print"
+    },
+    {
+      "id": "field-limit-bounded-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestAFieldLongerThanTheLimitIsRefusedInBoundedTime",
+      "production": "redact.Remote: a 64 MiB field of one long numeric reference or one long name is refused at redact.FieldLimit"
+    },
+    {
       "id": "tokens-request",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
@@ -3907,8 +4093,8 @@
       "capture": "redact.tokens-answer-body",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "Tokens(UnescapeHTML(string(re.Body)), -1, carried...)",
-        "replacement": "UnescapeHTML(string(re.Body)) + Tokens(\"\", -1, carried...)"
+        "preimage": "Tokens(body, -1, carried...)",
+        "replacement": "body + Tokens(\"\", -1, carried...)"
       }
     },
     {
@@ -3977,8 +4163,8 @@
       "capture": "brokerclient.trade-echo/run",
       "mutation": {
         "file": "packages/envoy/internal/redact/remotetext.go",
-        "preimage": "text = Tokens(text, -1, *carried...)\n\t}\n\treturn Field(text)",
-        "replacement": "_ = Tokens(text, -1, *carried...)\n\t}\n\treturn Field(text)"
+        "preimage": "text = Tokens(text, -1, carried()...)\n\t}\n\treturn Field(text)",
+        "replacement": "_ = Tokens(text, -1, carried()...)\n\t}\n\treturn Field(text)"
       }
     },
     {
@@ -3991,8 +4177,8 @@
       "capture": "brokerclient.trade-echo/answer",
       "mutation": {
         "file": "packages/envoy/internal/redact/remotetext.go",
-        "preimage": "text = Tokens(text, -1, *carried...)\n\t}\n\treturn ruled(text)",
-        "replacement": "_ = Tokens(text, -1, *carried...)\n\t}\n\treturn ruled(text)"
+        "preimage": "text = Tokens(text, -1, carried()...)\n\t}\n\treturn ruled(text)",
+        "replacement": "_ = Tokens(text, -1, carried()...)\n\t}\n\treturn ruled(text)"
       }
     },
     {
@@ -4493,18 +4679,32 @@
       "production": "daemon cipher Client.do and doProof: an accepted answer decodes through oauth2call.Answer.Decode, whose error quotes no value"
     },
     {
+      "id": "intake-event-log-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/intake",
+      "test": "TestAnEventLogThatEchoesTheBearerPrintsItInNoDecodersOutput",
+      "production": "daemon dispatch HTTPClient.EventsAfter (eventPage) reads each event's created_at as Dispatch's words held with the request's record and refuses one that is not a time naming the member, and intake's LabelSetter, StatusChangeOf, DecodeDispatchEvent and the stream's decoder name a decode failure and an unread member in fixed text (oauth2call.DecodeError), never a value"
+    },
+    {
+      "id": "dispatch-event-log-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestAnEventThatDoesNotReadIsRefusedWithoutItsText",
+      "production": "daemon dispatch HTTPClient.EventsAfter (eventPage) and DecodeEvent: an event whose created_at is not a time, or whose members do not decode, is refused naming the member or the event's place, never the value"
+    },
+    {
       "id": "githubrest-list-decode-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
-      "test": "TestAListThatDoesNotDecodePrintsNoTokenItEchoes",
-      "production": "githubrest getPages: a list GitHub answers as an object's field that does not decode is named, and no value of it printed"
+      "test": "TestAPageThatDoesNotDecodePrintsNoTokenItEchoes",
+      "production": "githubrest GetPages: a page GitHub answers that does not decode is refused through oauth2call.Answer.Decode, whose error holds no value of it"
     },
     {
       "id": "githubrest-answer-words-next-page-elsewhere",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/elsewhere",
-      "production": "githubrest getPages: a next page GitHub's Link header names on another origin is refused naming the origin the token is sent to, and nothing of the URL GitHub wrote"
+      "production": "githubrest GetPages: a next page GitHub's Link header names on another origin is refused naming the origin the token is sent to, and nothing of the URL GitHub wrote"
     },
     {
       "id": "githubrest-answer-words-next-page-refused",
@@ -4696,6 +4896,13 @@
       "production": "redact.RemoteText: String, GoString, Format, MarshalJSON, MarshalText, LogValue"
     },
     {
+      "id": "print-kept-credentials",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAKeptCredentialPrintsUnderNoVerbAtAnyHolding",
+      "production": "redact.RemoteText's carried (a func), redact.Answer's tokens, data and rec, a hop error's and a scope's record of the request: a bearer, a Basic pair and a URL's user information kept there print under no fmt verb and no bad verb at any holding"
+    },
+    {
       "id": "print-cipherclient.RefusedError",
       "requirement": "r2-held",
       "package": "./internal/cipherclient",
@@ -4756,7 +4963,35 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestAnAnswersDecodeErrorQuotesNoValue/box",
-      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember"
+      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember, with the JSON kind the box's error names"
+    },
+    {
+      "id": "redact-answer-decode-box-at-depth",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersDecodeErrorNamesABoxMemberAtAnyDepth",
+      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box's own type error in a list's item or a map's value, a member or the destination itself, or in a member spelled in another case or promoted from an embedded struct, names its member through failingMember's one walk of the answer, a list's item as \"(item)\" and a map's value as \"(key)\", never by the answer's keys"
+    },
+    {
+      "id": "redact-answer-decode-map-key",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersDecodeErrorQuotesNoValue/map-key",
+      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a type error's member named as the destination's type names it, a map's key and a list's item by a fixed word (member), never by encoding/json's path, which holds the answer's own map keys",
+      "function": "github.com/sjawhar/envoy/internal/redact.decodeText",
+      "capture": "redact.answer-decode/map-key",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "preimage": "member(typed.Field, t)",
+        "replacement": "fmt.Sprintf(\"%q\", typed.Field)"
+      }
+    },
+    {
+      "id": "redact-decode-error",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestADecodeErrorQuotesNoValue",
+      "production": "github.com/sjawhar/envoy/internal/redact.DecodeError (oauth2call.DecodeError): encoding/json's error on bytes no answer's Decode reads, in decodeText's fixed text, unwrapping to nothing"
     },
     {
       "id": "print-agent-secrets.RequestResult",
@@ -5568,8 +5803,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestARefusalWithNoWordsNamesItsStatusWithNoPhraseItWrote",
-      "production": "daemon dispatch HTTPClient.request: a refusal with no words names the status by its code and standard phrase (oauth2call.StatusLine)",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).request",
+      "production": "daemon dispatch HTTPClient.answer: a refusal with no words names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).answer",
       "capture": "dispatch.status-line/no-words",
       "mutation": {
         "file": "packages/daemon/internal/dispatch/client.go",
@@ -6754,6 +6989,13 @@
       "production": "githubrest AnswerOf: GitHub's secondary limit decided on the body as it came (oauth2call.Holds), printed as the rule reads it"
     },
     {
+      "id": "githubrest-answer-kept",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
+      "test": "TestAnAnswerPrintsNoCredentialItKeeps",
+      "production": "githubrest.Answer's read, the answer as it came, whose record keeps the token the call carried: it prints under no fmt verb and no bad verb at any holding"
+    },
+    {
       "id": "appauth-decided-as-it-came-422",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
@@ -7319,6 +7561,13 @@
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.Error",
       "production": "github.com/sjawhar/legion/daemon/internal/dispatch.Error: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-dispatch.answeredEvent",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.answeredEvent",
+      "production": "github.com/sjawhar/legion/daemon/internal/dispatch.answeredEvent: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "print-notify.ErrNotDelivered",
@@ -7979,6 +8228,125 @@
       "file": "packages/contracts/src/remote-text.test.ts",
       "test": "remote fixture row split-user-info-json-key reads as the fixture says",
       "production": "readRemoteText step 8: the known residual"
+    },
+    {
+      "id": "reference-depth-nested-at-bound-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-nested-at-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested REFERENCE_PASSES deep is read"
+    },
+    {
+      "id": "reference-depth-nested-past-bound-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-nested-past-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-nested-deep-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-nested-deep reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-at-bound-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-legacy-amp-at-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested REFERENCE_PASSES deep is read"
+    },
+    {
+      "id": "reference-depth-legacy-amp-past-bound-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-legacy-amp-past-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-deep-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-legacy-amp-deep reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-bounded-amp-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 1 MiB field nested as &amp;amp;amp;… reads it as not readable within the bound",
+      "production": "readRemoteText step 0, decodeSeparators: at most REFERENCE_PASSES + 1 passes"
+    },
+    {
+      "id": "reference-depth-bounded-legacy-amp-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 1 MiB field nested as &ampampamp…; reads it as not readable within the bound",
+      "production": "readRemoteText step 0, decodeSeparators: at most REFERENCE_PASSES + 1 passes"
+    },
+    {
+      "id": "reference-name-31-letters-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-31-letters reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 31-letter name that begins with amp is read as a reference, a pass past REFERENCE_PASSES"
+    },
+    {
+      "id": "reference-name-32-letters-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-32-letters reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 32-letter name, CHARACTER_REFERENCE's longest, that begins with amp is read as a reference, a pass past REFERENCE_PASSES"
+    },
+    {
+      "id": "reference-name-32-letters-at-bound-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-32-letters-at-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 32-letter name read in the last pass REFERENCE_PASSES allows prints as it came"
+    },
+    {
+      "id": "reference-name-33-letters-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-name-33-letters reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a 33-letter run is no one reference; its first 32 letters are read as the name, so it reads as the whole run would"
+    },
+    {
+      "id": "reference-name-bounded-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 256 KiB field that is one long reference (&ampampamp…;) reads it as not readable within the bound",
+      "production": "readRemoteText step 0, decodeSeparators, CHARACTER_REFERENCE: a name of at most 32 letters; the read stays linear in the field"
+    },
+    {
+      "id": "field-length-at-limit-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row field-length-at-limit reads as the fixture says",
+      "production": "readRemoteText: a field of exactly FIELD_LIMIT bytes of UTF-8 is read"
+    },
+    {
+      "id": "field-length-past-limit-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row field-length-past-limit reads as the fixture says",
+      "production": "readRemoteText: a field longer than FIELD_LIMIT bytes of UTF-8 is not readable, before any step reads it"
+    },
+    {
+      "id": "field-limit-bounded-numeric-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 64 MiB field that is one long numeric reference (&amp;amp;amp;amp;amp;&#000…01;) refuses it within the bound",
+      "production": "readRemoteText: a 64 MiB field is refused at FIELD_LIMIT"
+    },
+    {
+      "id": "field-limit-bounded-name-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 64 MiB field that is one long name (&ampampamp…;) refuses it within the bound",
+      "production": "readRemoteText: a 64 MiB field is refused at FIELD_LIMIT"
     },
     {
       "id": "tokens-shared-table-ts",
@@ -8745,9 +9113,15 @@
       "guard": "daemon-broker-decode-echo"
     },
     {
+      "site": "daemon dispatch EventsAfter: each event of the log left the answer as raw bytes, and intake's LabelSetter, StatusChangeOf and DecodeDispatchEvent printed json's error, which quoted the bearer an answer echoed into created_at (the boot catch-up's log line, the set-back's and the label setter's errors), and the live decoder's unread list quoted an echoed ask kind, turn, ask state or claim",
+      "source": "the review of #4368 round 6, the red team's probe of the event log",
+      "guard": "intake-event-log-echo"
+    },
+    {
       "site": "daemon githubrest getPages: a list GitHub answered as an object's field that did not decode printed the decoder's error, which quoted the installation token an answer echoed into a time",
       "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
-      "guard": "githubrest-list-decode-echo"
+      "guard": "githubrest-list-decode-echo",
+      "note": "the object's-field path of this site, GetListPages, is removed at the head, where nothing called it; its guard is the same read's surviving form, GetPages's array decode through oauth2call.Answer.Decode, which a page echoing the token into a time pins"
     },
     {
       "site": "daemon githubrest getPages: a next page on another origin was refused naming the URL GitHub's Link header wrote",
@@ -9358,6 +9732,26 @@
       "guard": "answer-decode-whole-behind-pointers"
     },
     {
+      "site": "Answer.Decode's error printed encoding/json's type-error path, which since Go 1.27 runs json v1 on v2 holds the answer's own map keys: a key that echoes the request's credential printed it",
+      "source": "the review of #4368 at de683f95d2, finding 2",
+      "guard": "redact-answer-decode-map-key"
+    },
+    {
+      "site": "RemoteText kept its request's credentials behind a *[]string, which fmt spells out at the top level under a verb a pointer does not take (%s, %q, %t) from a box in an unexported field: a struct, a pointer to one or a slice of them printed the bearer, the client secret and the subject token",
+      "source": "the review of #4368 at de683f95d2, finding 4",
+      "guard": "print-kept-credentials"
+    },
+    {
+      "site": "Answer.Decode filled a RemoteText in a map's key with no record of the answer (recordBoxes and holdsBox walked map values only), so a key that echoed the request's bearer printed it as it came",
+      "source": "the review of #4368 at de683f95d2, finding 7",
+      "guard": "answer-decode-box-key"
+    },
+    {
+      "site": "Answer.Decode refused a destination that takes the body whole at its top level only, so Dispatch's event log, decoded into a []json.RawMessage, took each event as it came with no record of the answer, and the daemon's decoders printed the bearer an event echoed",
+      "source": "the review of #4368 at de683f95d2, finding 1",
+      "guard": "answer-decode-plain-member"
+    },
+    {
       "site": "daemon dispatchError: Dispatch's code taken through SendBack, so a message that quotes ISSUE_NOT_FOUND made a permanent refusal codeless and retried for ever",
       "source": "the review of #4368 at c82c3a0d9f, finding 2",
       "guard": "dispatch-code-as-it-came-beside-a-quoting-request"
@@ -9451,6 +9845,12 @@
       "site": "appauth token mode: GraphQL's viewer login, read under the released token, printed as it came in the refusals of verifyTokenApp and tokenIdentity, its slug in checkAppID's read name, path and URL, the App id GitHub answered, and botIdentity's path and URL",
       "source": "the coordinator's class search of #4368 round 6's finding P",
       "guard": "appauth-answer-words-viewer-not-a-bot"
+    },
+    {
+      "site": "redact decodeSeparators (Remote's step 0), redact.UnescapeHTML and readRemoteText's decodeSeparators: a field nesting one reference deep (&amp;amp;..., &ampamp...;) cost a decoding pass for each level, a time quadratic in its length, at every print",
+      "source": "the review of #4368 at 72f3edacc4",
+      "guard": "reference-depth-bounded-go",
+      "note": "not a leak: a time the field's writer controls; the bound's refusal past ReferencePasses is held by the reference-depth rows of the fixture, in Go and in TypeScript, and by control (20c)"
     }
   ]
 }

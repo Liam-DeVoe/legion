@@ -154,7 +154,9 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 // confirm the ask in time can take it on the next attempt, a holder that does not advertise the
 // delivery mode can be replaced by another session on the role, and a forward the listener's own
 // NATS grant denies goes through once an operator changes that grant. No published line is
-// written for any of them.
+// written for any of them. Each failure holds the holder's words in a box, which makes it no
+// value errors.Is can compare, so the row's error is held to the publisher's own error, which
+// wraps it.
 func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	publisher := &outboxPublisher{}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleImplementer: askedRound})
@@ -166,7 +168,7 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	} {
 		publisher.err = fmt.Errorf("publish to the implementer's topic: %w", cause)
 		err := runner.execute(context.Background(), row)
-		if err == nil || !errors.Is(err, cause) {
+		if err == nil || !errors.Is(err, publisher.err) {
 			t.Fatalf("the ask answered %v = %v, want the answer as a failure, retried", cause, err)
 		}
 		t.Logf("%T: %v", cause, err)

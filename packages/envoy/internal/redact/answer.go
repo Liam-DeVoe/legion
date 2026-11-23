@@ -2,6 +2,7 @@ package redact
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -208,13 +209,18 @@ func ContainsFold(body []byte, phrase string) bool {
 // a field another party wrote prints with the request's credentials redacted, as Words prints the
 // body, and compares as it came. A destination that would take the body whole - a string, a byte
 // slice, a json.RawMessage or an interface value, behind however many pointers - is refused, since
-// its text would leave the answer as plain text. So is one that embeds a RemoteText itself under
-// an unexported name (an alias of it), whose box no record can reach (recordBoxes); the box is
-// left as encoding/json filled it, and the error says the destination holds it. Its error is
-// fixed text: it names the destination's type and, where it can, the member that did not decode
-// and the JSON kind it held, and never a value of the answer, since encoding/json's errors, and
-// the errors of the types it decodes into (time.Time's among them), quote the value they could not
-// read; it unwraps to nothing, so no caller reaches the decoder's own error.
+// its text would leave the answer as plain text. So is one that holds a member encoding/json would
+// fill with the answer's text as it came (plainMember), at any depth it decodes to: a byte slice,
+// a json.RawMessage, or an interface value the caller did not set to a non-nil pointer. So is one
+// that would fill a box no record can reach (unreached), before anything is decoded into it: a
+// box in a map's key, which encoding/json fills through UnmarshalText and which has no address.
+// So is one that embeds a RemoteText itself under an unexported name (an alias of it), whose box
+// no record can reach either (recordBoxes); that box is left as encoding/json filled it, and the
+// error says the destination holds it. Its error is fixed text: it names the destination's type
+// and, where it can, the member that did not decode and the JSON kind it held, and never a value
+// of the answer, since encoding/json's errors, and the errors of the types it decodes into
+// (time.Time's among them), quote the value they could not read; it unwraps to nothing, so no
+// caller reaches the decoder's own error.
 func (a Answer) Decode(v any) error {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
@@ -222,6 +228,12 @@ func (a Answer) Decode(v any) error {
 	}
 	if whole(rv.Type().Elem()) {
 		return fmt.Errorf("redact: an answer does not decode into %T, which would hold the body whole", v)
+	}
+	if held := unreached(rv, map[followed]bool{}); held != "" {
+		return fmt.Errorf("redact: an answer does not decode into %T, which holds %s, where no record of the answer reaches it", v, held)
+	}
+	if held := plainMember(rv, map[followed]bool{}); held != "" {
+		return fmt.Errorf("redact: an answer does not decode into %T, which holds %s, whose text would leave the answer as plain text", v, held)
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
@@ -250,21 +262,210 @@ func whole(t reflect.Type) bool {
 	return false
 }
 
+// boxInKey is what unreached answers of a map whose key holds a box.
+const boxInKey = "a RemoteText in a map's key"
+
+// followed is a pointer unreached has followed: its target's address and type.
+type followed struct {
+	at uintptr
+	t  reflect.Type
+}
+
+// unreached is what decoding into v would fill that no record of the answer reaches, as Decode's
+// refusal names it, or "": a box in a map's key (holdsBox of the key's type), which encoding/json
+// fills through the key's UnmarshalText and which has no address recordBoxes could hand the record
+// through. It reads v as encoding/json decodes into it: the value a non-nil pointer points at, an
+// interface value the caller set to a non-nil pointer (pointsAt), each struct field encoding/json
+// decodes (decoded) and each element a slice or an array holds, since encoding/json decodes into
+// each of those in place; and the type (unreachedType) of what it makes - the value of a nil
+// pointer, a list's further elements, a map. seen holds the pointers it has followed, so a value
+// that points back at itself ends the walk.
+func unreached(v reflect.Value, seen map[followed]bool) string {
+	switch v.Kind() {
+	case reflect.Pointer:
+		at := followed{v.Pointer(), v.Type()}
+		switch {
+		case v.IsNil():
+			return unreachedType(v.Type().Elem(), map[reflect.Type]bool{})
+		case seen[at]:
+			return ""
+		}
+		seen[at] = true
+		return unreached(v.Elem(), seen)
+	case reflect.Interface:
+		if pointsAt(v) {
+			return unreached(v.Elem(), seen)
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if decoded(v.Type().Field(i)) {
+				if held := unreached(v.Field(i), seen); held != "" {
+					return held
+				}
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if held := unreached(v.Index(i), seen); held != "" {
+				return held
+			}
+		}
+		return unreachedType(v.Type().Elem(), map[reflect.Type]bool{})
+	case reflect.Map:
+		return unreachedType(v.Type(), map[reflect.Type]bool{})
+	}
+	return ""
+}
+
+// unreachedType is unreached of a value of t that encoding/json makes: through a pointer, a
+// slice's or an array's element, a map's value or a struct's field it decodes. An interface value
+// it makes holds a JSON value of its own, never a box. A map whose key is an interface value is
+// one encoding/json refuses to decode into.
+func unreachedType(t reflect.Type, seen map[reflect.Type]bool) string {
+	if seen[t] {
+		return ""
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Map:
+		if t.Key().Kind() != reflect.Interface && holdsBox(t.Key(), map[reflect.Type]bool{}) {
+			return boxInKey
+		}
+		return unreachedType(t.Elem(), seen)
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		return unreachedType(t.Elem(), seen)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if f := t.Field(i); decoded(f) {
+				if held := unreachedType(f.Type, seen); held != "" {
+					return held
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// plainMember is what of v encoding/json would fill with the answer's text as it came, where no
+// record of the answer reaches it, as Decode's refusal names it (plainText), or "": a byte slice,
+// json.RawMessage among them, which it fills with a member's bytes, and an interface value, which
+// it fills with a JSON value of its own, text and all. It reads v as unreached does, as
+// encoding/json decodes into it - the value a non-nil pointer points at, an interface value the
+// caller set to a non-nil pointer, each struct field it fills (filled) and each element a list
+// holds, and the type (plainMemberType) of what it makes - and goes into no value whose type
+// decodes its JSON itself (decodesItself), none of whose members encoding/json fills: what such a
+// type keeps is its own code's, as what a RemoteText keeps is.
+func plainMember(v reflect.Value, seen map[followed]bool) string {
+	if held := plainText(v.Type()); held != "" && (v.Kind() != reflect.Interface || !pointsAt(v)) {
+		return held
+	}
+	if decodesItself(v.Type()) {
+		return ""
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		at := followed{v.Pointer(), v.Type()}
+		switch {
+		case v.IsNil():
+			return plainMemberType(v.Type().Elem(), map[reflect.Type]bool{})
+		case seen[at]:
+			return ""
+		}
+		seen[at] = true
+		return plainMember(v.Elem(), seen)
+	case reflect.Interface:
+		return plainMember(v.Elem(), seen)
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if filled(v.Type().Field(i)) {
+				if held := plainMember(v.Field(i), seen); held != "" {
+					return held
+				}
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if held := plainMember(v.Index(i), seen); held != "" {
+				return held
+			}
+		}
+		return plainMemberType(v.Type().Elem(), map[reflect.Type]bool{})
+	case reflect.Map:
+		return plainMemberType(v.Type().Elem(), map[reflect.Type]bool{})
+	}
+	return ""
+}
+
+// plainMemberType is plainMember of a value of t that encoding/json makes: what it holds through
+// a pointer, a list's item, a map's value or a struct field it fills. An interface value it makes
+// holds a JSON value of its own.
+func plainMemberType(t reflect.Type, seen map[reflect.Type]bool) string {
+	if held := plainText(t); held != "" {
+		return held
+	}
+	if seen[t] || decodesItself(t) {
+		return ""
+	}
+	seen[t] = true
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+		return plainMemberType(t.Elem(), seen)
+	case reflect.Struct:
+		for i := range t.NumField() {
+			if f := t.Field(i); filled(f) {
+				if held := plainMemberType(f.Type, seen); held != "" {
+					return held
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// plainText is how Decode's refusal names a value of t that encoding/json fills with the answer's
+// text as it came, or "": a byte slice, json.RawMessage among them, or an interface value.
+func plainText(t reflect.Type) string {
+	switch {
+	case t.Kind() == reflect.Interface:
+		return "an interface value"
+	case t.Kind() != reflect.Slice || t.Elem().Kind() != reflect.Uint8:
+		return ""
+	case t.Name() != "":
+		return "a " + t.String()
+	}
+	return "a byte slice"
+}
+
+// filled reports whether encoding/json fills field f of a struct: one it decodes (decoded) whose
+// tag does not skip it.
+func filled(f reflect.StructField) bool { return decoded(f) && f.Tag.Get("json") != "-" }
+
+// decodesItself reports whether encoding/json hands a value of t its JSON whole, through the
+// type's own UnmarshalJSON or UnmarshalText, and fills none of its members itself.
+func decodesItself(t reflect.Type) bool {
+	p := reflect.PointerTo(t)
+	return p.Implements(jsonUnmarshalerType) || p.Implements(textUnmarshalerType)
+}
+
 // decodeText is the fixed text of err, encoding/json's error decoding data into a value of type
-// t: the destination's type, the member that did not decode and, where encoding/json names it,
-// the JSON kind it held; never a value.
+// t: the destination's type, the member that did not decode as t names it (member) and, where
+// encoding/json names it, the JSON kind it held; never a value.
 func decodeText(err error, data []byte, t reflect.Type) string {
 	var syntax *json.SyntaxError
 	if errors.As(err, &syntax) {
 		return fmt.Sprintf("the answer is not JSON that %s decodes from (at byte %d)", typeName(t), syntax.Offset)
 	}
 	name, field := failingMember(data, t)
-	// A type error that names no field, from a member's own UnmarshalJSON - a RemoteText's, for a
-	// member that holds no JSON string - to which encoding/json adds none, names its member below.
 	var typed *json.UnmarshalTypeError
-	if errors.As(err, &typed) && (typed.Field != "" || name == "") {
+	if errors.As(err, &typed) {
 		kind, _, _ := strings.Cut(typed.Value, " ")
-		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field), kind, typeName(t), typeName(typed.Type))
+		// A type error that names no field, from a member's own UnmarshalJSON - a RemoteText's, for
+		// a member that holds no JSON string - to which encoding/json adds none, names the member
+		// failingMember finds, and that member's type.
+		if typed.Field == "" && name != "" {
+			return fmt.Sprintf("the answer's %q is a JSON %s where %s holds %s", name, kind, typeName(t), typeName(field))
+		}
+		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field, t), kind, typeName(t), typeName(typed.Type))
 	}
 	if name != "" {
 		return fmt.Sprintf("the answer's %q does not decode where %s holds %s", name, typeName(t), typeName(field))
@@ -290,43 +491,184 @@ func typeName(t reflect.Type) string {
 	return "the value"
 }
 
-// member is a decoded field's path as a message names it, "value" for the top level.
-func member(field string) string {
+// member is the member that did not decode as a message names it: "value" for the top level,
+// and otherwise field, encoding/json's path to it (UnmarshalTypeError.Field), as t, the
+// destination's type, names it: each struct field by its own JSON name (memberField), each map
+// key as "(key)" and each list item as "(item)". No segment of field is printed: since Go 1.27
+// runs json v1 on v2, that path holds the answer's own map keys, and its own spelling of a
+// member's name, which encoding/json matches in any case. The path ends at the first segment t
+// does not name, and one whose first segment t does not name is "a member".
+func member(field string, t reflect.Type) string {
 	if field == "" {
 		return "value"
 	}
-	return fmt.Sprintf("%q", field)
+	var names []string
+walk:
+	for _, segment := range strings.Split(field, ".") {
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		switch t.Kind() {
+		case reflect.Map:
+			names, t = append(names, "(key)"), t.Elem()
+		case reflect.Slice, reflect.Array:
+			names, t = append(names, "(item)"), t.Elem()
+		case reflect.Struct:
+			f, ok := memberField(t, segment)
+			if !ok {
+				break walk
+			}
+			names, t = append(names, jsonName(f)), f.Type
+		default:
+			break walk
+		}
+	}
+	if len(names) == 0 {
+		return "a member"
+	}
+	return fmt.Sprintf("%q", strings.Join(names, "."))
 }
 
-// failingMember is the JSON name of the first member of data, an object decoded into the struct
-// type t, whose value does not decode into its field's type, and that field's type, or "": what
-// encoding/json does not name for an error of a type's own UnmarshalJSON or UnmarshalText
-// (time.Time's, a RemoteNumber's). The name is t's own, from its field's json tag, never the
-// answer's.
+// memberField is the field of the struct type t that encoding/json decodes the member name into,
+// as it matches a name: the field of that JSON name (jsonName), else one whose JSON name is name
+// in another case (strings.EqualFold), at t's own level or promoted from a struct embedded with no
+// JSON name of its own; and whether there is one.
+func memberField(t reflect.Type, name string) (reflect.StructField, bool) {
+	folded, found := reflect.StructField{}, false
+	for i := range t.NumField() {
+		f := t.Field(i)
+		if !decoded(f) {
+			continue
+		}
+		inner := f.Type
+		for inner.Kind() == reflect.Pointer {
+			inner = inner.Elem()
+		}
+		if tag, _, _ := strings.Cut(f.Tag.Get("json"), ","); f.Anonymous && tag == "" && inner.Kind() == reflect.Struct {
+			if promoted, ok := memberField(inner, name); ok {
+				return promoted, true
+			}
+			continue
+		}
+		switch own := jsonName(f); {
+		case own == "":
+		case own == name:
+			return f, true
+		case !found && strings.EqualFold(own, name):
+			folded, found = f, true
+		}
+	}
+	return folded, found
+}
+
+// failingMember is the path to the first member of data, decoded into a value of type t, whose
+// value does not decode, and that member's type, or "": what encoding/json does not name for an
+// error of a type's own UnmarshalJSON or UnmarshalText (time.Time's, a RemoteText's, a
+// RemoteNumber's). The path is t's own, as member names it: each struct field by its own JSON
+// name, matched as encoding/json matches the answer's (memberField: in any case, or promoted from
+// an embedded struct), each list item as "(item)" and each map value as "(key)"; never the
+// answer's own spelling or keys. It reads data once, in the answer's order (failingValue).
 func failingMember(data []byte, t reflect.Type) (string, reflect.Type) {
+	path, held, err := failingValue(json.NewDecoder(bytes.NewReader(data)), t)
+	if err != nil || held == nil {
+		return "", nil
+	}
+	return strings.Join(path, "."), held
+}
+
+// failingValue reads the next JSON value of dec as encoding/json decodes it into a value of type
+// t, and answers the type of the member that does not decode in it, or nil where it decodes, and
+// the path to that member inside it, empty for the value itself; err is dec's own, for JSON it
+// cannot read. A struct, a map or a list whose JSON is the object or the array it takes is read
+// member by member (opens), so a member that decodes is read once and one that does not is gone
+// into; a member a struct has no field for, and an array's item past its length, are passed over,
+// as encoding/json passes them; every other value is decoded whole. JSON null decodes into
+// anything, as encoding/json leaves the value as it is.
+func failingValue(dec *json.Decoder, t reflect.Type) ([]string, reflect.Type, error) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t.Kind() != reflect.Struct {
-		return "", nil
+	open := opens(t)
+	if open == 0 {
+		if dec.Decode(reflect.New(t).Interface()) != nil {
+			return nil, t, nil
+		}
+		return nil, nil, nil
 	}
-	var members map[string]json.RawMessage
-	if json.Unmarshal(data, &members) != nil {
-		return "", nil
+	switch token, err := dec.Token(); {
+	case err != nil:
+		return nil, nil, err
+	case token == nil:
+		return nil, nil, nil
+	case token != open:
+		return nil, t, nil
 	}
-	for i := range t.NumField() {
-		f := t.Field(i)
-		name := jsonName(f)
-		raw, ok := members[name]
-		if !ok || name == "" {
+	for index := 0; dec.More(); index++ {
+		var name string
+		var into reflect.Type
+		switch t.Kind() {
+		case reflect.Struct:
+			key, err := dec.Token()
+			if err != nil {
+				return nil, nil, err
+			}
+			text, _ := key.(string)
+			if f, ok := memberField(t, text); ok {
+				name, into = jsonName(f), f.Type
+			}
+		case reflect.Map:
+			if _, err := dec.Token(); err != nil {
+				return nil, nil, err
+			}
+			name, into = "(key)", t.Elem()
+		default:
+			if t.Kind() == reflect.Slice || index < t.Len() {
+				name, into = "(item)", t.Elem()
+			}
+		}
+		if into == nil {
+			var passed json.RawMessage
+			if err := dec.Decode(&passed); err != nil {
+				return nil, nil, err
+			}
 			continue
 		}
-		if json.Unmarshal(raw, reflect.New(f.Type).Interface()) != nil {
-			return name, f.Type
+		if path, held, err := failingValue(dec, into); err != nil || held != nil {
+			return append([]string{name}, path...), held, err
 		}
 	}
-	return "", nil
+	_, err := dec.Token()
+	return nil, nil, err
 }
+
+// opens is the delimiter of the JSON value encoding/json decodes a value of t from member by
+// member: '{' for a struct or a map and '[' for a list, and 0 for every other value, which it
+// decodes whole: one whose type decodes its JSON itself (decodesItself), a byte slice (from base64
+// text), a scalar or an interface value.
+func opens(t reflect.Type) json.Delim {
+	if decodesItself(t) {
+		return 0
+	}
+	switch t.Kind() {
+	case reflect.Struct, reflect.Map:
+		return '{'
+	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return 0
+		}
+		return '['
+	case reflect.Array:
+		return '['
+	}
+	return 0
+}
+
+// jsonUnmarshalerType and textUnmarshalerType are the interfaces through which encoding/json hands
+// a type its JSON whole (decodesItself).
+var (
+	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+)
 
 // jsonName is the member name encoding/json decodes field f from, "" for a field it skips.
 func jsonName(f reflect.StructField) string {

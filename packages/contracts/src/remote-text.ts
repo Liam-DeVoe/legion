@@ -43,8 +43,12 @@ function braceEscape(lower: string): boolean {
 }
 
 /** An HTML character reference as a page's reader takes it: hexadecimal, decimal or named, its
- *  `;` optional. Go's `characterReference`. */
-const CHARACTER_REFERENCE = /&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]+));?/g;
+ *  `;` optional. A name is at most 32 letters: HTML's longest named reference has 31 letters and
+ *  its `;`. A longer run of letters is no one reference: the match takes its first 32 letters as
+ *  the name and the rest is copied as it came, so the run reads as it would whole: one that
+ *  begins with amp loses those three letters ({@link separatorReference}), and any other stays as
+ *  it is. The cap keeps each match short, as Go's does. Go's `characterReference`. */
+const CHARACTER_REFERENCE = /&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]{1,32}));?/g;
 
 /** The named character references of {@link SEPARATORS}. Go's `namedSeparators`. */
 const NAMED_SEPARATORS: Readonly<Record<string, string>> = {
@@ -91,35 +95,57 @@ function separatorReference(
   return reference;
 }
 
+/** The most passes that change a field {@link decodeSeparators} makes, each pass decoding one
+ *  level of nesting. A page writes a URL's separator as a reference (`&quest;`, one pass), and a
+ *  page whose text was escaped once more writes the reference's `&` as a reference too
+ *  (`&amp;quest;`, two passes): the deepest any page, answer or test the rule is held to writes.
+ *  Four leaves room for two more escapes. Each pass is O(n) in the field, so the decoding costs
+ *  at most `REFERENCE_PASSES + 1` passes, O(n), where decoding until no reference was left cost a
+ *  pass for each level a hostile field nests (`&amp;amp;amp;…` or `&ampampamp…;`), quadratic in
+ *  its length. Go's `redact.ReferencePasses`. */
+const REFERENCE_PASSES = 4;
+
 /**
  * `field` as a reader sees it (step 0): each full-width form of printable ASCII (U+FF01 to
  * U+FF5E) as that character, and each character reference of one of {@link SEPARATORS} as that
- * separator, until none is left. A named reference needs its `;`, as a page's reader takes it, but
- * for `&amp`, which a reader also takes as the start of a longer name (`&ampquest;` is
- * `&quest;`). Go's `decodeSeparators`.
+ * separator, decoded in at most {@link REFERENCE_PASSES} passes that change it; `undefined` where
+ * the field still changes on the pass after them. A named reference needs its `;`, as a page's
+ * reader takes it, but for `&amp`, which a reader also takes as the start of a longer name
+ * (`&ampquest;` is `&quest;`). Go's `decodeSeparators`.
  */
-function decodeSeparators(field: string): string {
-  for (;;) {
+function decodeSeparators(field: string): string | undefined {
+  for (let pass = 0; ; pass++) {
     const decoded = field
       .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
       .replace(CHARACTER_REFERENCE, separatorReference);
     if (decoded === field) return field;
+    if (pass === REFERENCE_PASSES) return undefined;
     field = decoded;
   }
 }
+
+/** The longest field, in bytes of UTF-8, the rule reads: a longer field is not readable. Go's
+ *  `redact.FieldLimit`, whose comment says why it is 1 MiB. */
+const FIELD_LIMIT = 1024 * 1024;
+
+/** UTF-8, which the rule measures a field in ({@link FIELD_LIMIT}), as Go's `len` does. */
+const UTF8 = new TextEncoder();
 
 /**
  * The rule for one field another party wrote. It answers the field with each URL's user
  * information removed, each query and fragment value removed (the names stay), each bare query
  * or fragment segment removed and each path parameter's value removed (`;jsessionid=`), only when
- * it can read every URL in the field with certainty, and `undefined` otherwise. The grammar is
- * Go's `redact.Remote`, step for step:
+ * it can read every URL in the field with certainty, and `undefined` otherwise. A field longer
+ * than {@link FIELD_LIMIT} bytes is not readable, before any step reads it. The grammar is Go's
+ * `redact.Remote`, step for step:
  *  0. The field is first read with each full-width form of printable ASCII as that character and
  *     each HTML character reference of a URL's separator, or of its full-width form, as that
- *     separator, until none is left
- *     ({@link decodeSeparators}). Where that reading differs from the field, steps 1 to 8 read it:
- *     a field they cannot read is not readable, and one whose reading removes anything prints as
- *     that reading. Otherwise steps 1 to 8 read the field as it came.
+ *     separator, in at most {@link REFERENCE_PASSES} passes that change it
+ *     ({@link decodeSeparators}); a field that still changes on the pass after them, its
+ *     references nested deeper than a page writes them, is not readable. Where that reading
+ *     differs from the field, steps 1 to 8 read it: a field they cannot read is not readable, and
+ *     one whose reading removes anything prints as that reading. Otherwise steps 1 to 8 read the
+ *     field as it came.
  *  1. A URL starts at a scheme (`[A-Za-z][A-Za-z0-9+.-]*`), `:` and two slashes, or at two
  *     slashes not preceded by a scheme character, `:` or a slash. Either slash may be a
  *     backslash; step 3 rejects such a start. A `:` and two slashes that no scheme comes before
@@ -160,7 +186,11 @@ function decodeSeparators(field: string): string {
  * Its answer is not meant to be read by the rule again.
  */
 export function readRemoteText(field: string): string | undefined {
+  // A field of more UTF-16 code units than FIELD_LIMIT is longer than it in UTF-8 too, each code
+  // unit being at least one byte of UTF-8, so only a field of at most that many is encoded.
+  if (field.length > FIELD_LIMIT || UTF8.encode(field).length > FIELD_LIMIT) return undefined;
   const decoded = decodeSeparators(field);
+  if (decoded === undefined) return undefined;
   if (decoded !== field) {
     const read = readField(decoded);
     if (read !== decoded) return read;

@@ -1,9 +1,12 @@
 // Package oauth2calltest is the probe of internal/redact/redacttest for a module outside this one,
-// which cannot import an internal package. It holds two parts:
+// which cannot import an internal package. It holds three parts:
 //
 //   - The box print test: a type of that module that holds an oauth2call.RemoteText is a holder
 //     the gate's holder census lists (cmd/redact-gate), and the holder's print row runs PrintTest
 //     in that module's own package, as a holder of this module runs redacttest.PrintTest.
+//   - The kept print test: a value of that module that keeps an answer, and with it the record of
+//     the credentials its request carried, is printed by KeptPrintTest, as one of this module is
+//     by redacttest.KeptPrintTest.
 //   - The status-line probe: a server whose reason phrase quotes a URL carrying made-up
 //     credentials, and the check's designated assertion, RequireNone, which a print-site row of
 //     that module calls as a row of this module calls redacttest.RequireNone; RequireNoPiece is
@@ -37,6 +40,17 @@ const Reason = redacttest.Reason
 func PrintTest(t *testing.T, h Holder) {
 	t.Helper()
 	redacttest.PrintTest(t, h)
+}
+
+// Token is redacttest.Token, a made-up credential, for a request whose stand-in echoes it.
+const Token = redacttest.Token
+
+// KeptPrintTest is redacttest.KeptPrintTest: v, which keeps one of the made-up credentials where
+// no printer may reach it (an answer's record of its request), printed under every fmt verb and a
+// bad verb, at every holding, beside twin, a plain string that holds one.
+func KeptPrintTest(t *testing.T, name string, v any, twin string) {
+	t.Helper()
+	redacttest.KeptPrintTest(t, name, v, twin)
 }
 
 // StatusLineServer is redacttest.StatusLineServer: a server that answers every request with

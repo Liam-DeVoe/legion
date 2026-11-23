@@ -172,7 +172,7 @@ func TestReadSessionRegistrationReadsA404AsNoRegistration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadSessionRegistration = %v, want a registry holding none taken as no failure", err)
 	}
-	if registration != (SessionRegistration{}) {
+	if registration.Registered || !registration.ClientInstanceID.IsEmpty() || registration.LastSeen != 0 {
 		t.Fatalf("ReadSessionRegistration = %+v, want no registration at all", registration)
 	}
 }

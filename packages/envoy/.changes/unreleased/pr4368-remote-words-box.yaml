@@ -15,7 +15,10 @@ body: |-
   each one it cannot classify. `redact.Answer.Decode` holds every box encoding/json fills with the
   record of the answer's request - one promoted from an embedded struct of an unexported type, and
   one behind an interface value the caller set to a pointer, among them - and refuses a
-  destination that would take the body whole behind any number of pointers.
+  destination that would take the body whole behind any number of pointers, one whose map key
+  holds a box, and one that holds, at any depth encoding/json decodes to, a member it would fill
+  with the answer's text as it came: a byte slice, a `json.RawMessage`, or an interface value the
+  caller did not set to a pointer.
 time: 2026-11-18T10:48:14Z
 custom:
     Issue: pr4368

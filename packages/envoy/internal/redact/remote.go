@@ -12,10 +12,22 @@ import (
 // that is not clean prints in place of every word; cipheraddr.Address.Words prints both.
 const WordsNotReadable = "(not printed: the answer's words hold a URL the rule cannot read as clean)"
 
+// FieldLimit is the longest field, in bytes, the rule reads (Remote): a longer field is not
+// readable, so it prints as WordsNotReadable, and the status and the code beside it still print.
+// It is 1 MiB, the largest body any client here reads and then shows (githubapp's responseLimit:
+// TestAnErrorShowsGitHubsBodyToABound shows the start of such a body). Each step of the rule is
+// linear in the field. The slowest field of that length is one long numeric reference
+// (&amp;amp;amp;amp;amp;&#000...01;), whose digits each pass of decodeSeparators matches whole and
+// which cannot be cut short, since a page's reader reads &#0000047; with any number of zeros as
+// '/'. Its read took 0.47 s at a load average of 150 on 288 CPUs; a 64 MiB answer of that shape,
+// which githubrest reads, took 34 s at a load average of 110 to 130, and is now not read at all.
+const FieldLimit = 1 << 20
+
 // Remote is the rule for one field another party wrote - a refusal's words, a code, a body. It
 // fails closed: it answers the field with each URL's user information removed, each query and
 // fragment value removed (the names stay) and each bare query or fragment segment removed, and
-// true, only when it can read every URL in the field with certainty; otherwise "" and false.
+// true, only when it can read every URL in the field with certainty; otherwise "" and false. A
+// field longer than FieldLimit is not readable, before any step reads it.
 //
 // The grammar, applied to the field:
 //  0. A page can write a URL's separators as HTML character references and a field can write
@@ -23,11 +35,13 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 //     reads the field with each full-width form of printable ASCII (U+FF01 to U+FF5E) as that
 //     ASCII character, and each character reference of '/', ':', '@', '?', '#', '=', '&', '%' or
 //     '\', or of its full-width form - decimal, hexadecimal or named, its ';' optional where a
-//     page's reader takes it without one - as that separator, until none is left
-//     (decodeSeparators). Where that reading differs
-//     from the field, the rule reads it by steps 1 to 8: a field it cannot read is not readable,
-//     and one whose reading removes anything prints as that reading. Otherwise the field is read
-//     by steps 1 to 8 as it came, so a field whose references hide nothing prints as before.
+//     page's reader takes it without one - as that separator, in at most ReferencePasses passes
+//     that change it (decodeSeparators); a field that still changes on the pass after them, its
+//     references nested deeper than a page writes them, is not readable. Where that reading
+//     differs from the field, the rule reads it by steps 1 to 8: a field it cannot read is not
+//     readable, and one whose reading removes anything prints as that reading. Otherwise the field
+//     is read by steps 1 to 8 as it came, so a field whose references hide nothing prints as
+//     before.
 //  1. A URL starts at a scheme ([A-Za-z][A-Za-z0-9+.-]*) followed by ':' and two slashes, or at
 //     two slashes not preceded by a scheme character, ':' or a slash. Either slash may be a
 //     backslash, since a browser reads one as a slash; step 3 rejects such a start. A ':' and two
@@ -84,7 +98,14 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 // value was removed can end in '=' with text after it. The TypeScript half is readRemoteText in
 // packages/contracts/src/remote-text.ts; both are held to the fixture at testdata/remote.json.
 func Remote(field string) (string, bool) {
-	if decoded := decodeSeparators(field); decoded != field {
+	if len(field) > FieldLimit {
+		return "", false
+	}
+	decoded, readable := decodeSeparators(field)
+	if !readable {
+		return "", false
+	}
+	if decoded != field {
 		shown, ok := readField(decoded)
 		if !ok || shown != decoded {
 			return shown, ok
@@ -541,8 +562,14 @@ func braceEscape(lower string) bool {
 }
 
 // characterReference is an HTML character reference as a page's reader takes it: hexadecimal,
-// decimal or named, its ';' optional.
-var characterReference = regexp.MustCompile(`&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]+));?`)
+// decimal or named, its ';' optional. A name is at most 32 letters: HTML's longest named reference
+// has 31 letters and its ';'. A longer run of letters is no one reference: the match takes its
+// first 32 letters as the name and the rest is copied as it came, so the run reads as it would
+// whole: one that begins with amp loses those three letters (separatorReference), and any other
+// stays as it is. The cap keeps each match short: each pass of decodeSeparators matches a name
+// twice (here and in separatorReference), and over one name 256 KiB long its passes took 117 ms
+// with no cap and 2.2 ms with it (TestALongReferenceNameIsReadInBoundedTime).
+var characterReference = regexp.MustCompile(`&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z]{1,32}));?`)
 
 // namedSeparators are the named character references of separators.
 var namedSeparators = map[string]byte{
@@ -550,16 +577,31 @@ var namedSeparators = map[string]byte{
 	"AMP": '&', "percnt": '%', "bsol": '\\',
 }
 
+// ReferencePasses is the most passes that change a text the rule's decodings of character
+// references make (decodeSeparators, UnescapeHTML), each pass decoding one level of nesting. A
+// page writes a URL's separator as a reference (&quest;, one pass), and a page whose text was
+// escaped once more writes the reference's '&' as a reference too (&amp;quest;, two passes): the
+// deepest any page, answer or test the rule is held to writes. Four leaves room for two more
+// escapes. Each pass is O(n) in the text, so a decoding costs at most ReferencePasses+1 passes,
+// O(n), where decoding until no reference was left cost a pass for each level a hostile text
+// nests (&amp;amp;amp;... or &ampampamp...;), quadratic in its length. A text that still changes
+// on the pass after the last is not readable.
+const ReferencePasses = 4
+
 // decodeSeparators is field as a reader sees it (Remote's step 0): each full-width form of
 // printable ASCII as that character, and each character reference of one of separators as that
-// separator, until none is left. A named reference needs its ';', as a page's reader takes it,
-// but for &amp, which a reader also takes as the start of a longer name (&ampquest; is &quest;).
-// Each pass that changes the field shortens it, so the loop ends.
-func decodeSeparators(field string) string {
-	for {
+// separator, decoded in at most ReferencePasses passes that change it, and true; or "" and false
+// where the field still changes on the pass after them. A named reference needs its ';', as a
+// page's reader takes it, but for &amp, which a reader also takes as the start of a longer name
+// (&ampquest; is &quest;).
+func decodeSeparators(field string) (string, bool) {
+	for pass := 0; ; pass++ {
 		decoded := characterReference.ReplaceAllStringFunc(fullWidthASCII(field), separatorReference)
 		if decoded == field {
-			return field
+			return field, true
+		}
+		if pass == ReferencePasses {
+			return "", false
 		}
 		field = decoded
 	}
