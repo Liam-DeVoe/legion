@@ -436,3 +436,120 @@ test("with a chip pressed, a check the chip leaves out, named on a new address u
     cleanup();
   }
 });
+
+/** The Spec view's rows of the spec's statement and of the second thread's head. */
+const SPEC_STATEMENT_ROW = `[data-spec-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
+const SPEC_COMMENT_ROW = '[data-spec-body] [data-node-row][data-node-id="head-b"]';
+
+// The Spec view draws a node the address names that is no statement as a row of its own, after
+// the statements, so a comment of the issue keeps the view, which lands on the comment's row once
+// every read the tree's rows come from has settled, and has told the stage it draws the node.
+test("a comment of the issue, named on the Spec view's address, keeps the view, which draws it as a row, with the focus on that row", async () => {
+  answerVerificationReads();
+  const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "spec" });
+  await rowTakesFocus(view, SPEC_COMMENT_ROW, "the comment's address under Spec");
+  expect(drawnSlot(view), "the stage drew the outline in place of the Spec view").toBe("the view");
+});
+
+// A comment the issue holds none of is no node of the tree, so the Spec view draws no row for it.
+// Once every read is held the view tells the stage so, and the stage draws the outline in the
+// view's place: the comment's own read finds none, and the outline's line says so, with the focus
+// on it.
+test("a comment the issue holds none of, named on the Spec view's address, draws the outline's line that says so in the view's place, with the focus on it", async () => {
+  answerVerificationReads();
+  const read = commentGone();
+  try {
+    const view = drawStage(`?comment=${GONE_COMMENT}`, { issue: verifiedIssue(), preset: "spec" });
+    await goneLineTakesFocus(view, "the address of a comment the issue holds none of, under Spec");
+    expect(
+      view.container.querySelector("[data-spec-body]"),
+      "the Spec view was drawn beside the line"
+    ).toBeNull();
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// The Spec view draws a line of its own for the spec's blocks, the statements' line, so with that
+// read refused it tells the stage nothing, and the stage keeps it: a comment named on its address
+// lands on the comment's row in the view, under that line, and no outline is drawn.
+test("the spec's blocks refused, a comment of the issue named on the Spec view's address keeps the view, with the view's own line that the statements could not be loaded", async () => {
+  answerVerificationReads();
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) => {
+    if (id === "artifact-spec") throw REFUSED;
+    return [...(BLOCKS[id] ?? [])];
+  });
+  // The messages read, which answers last: with it every read has settled, and the view has had
+  // its chance to tell the stage it draws no node.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "spec" });
+  const line = await waitFor(() => {
+    const drawn = [...view.container.querySelectorAll("[data-spec-body] [data-failed-read]")].find(
+      (each) => each.textContent?.includes(STATE_LINES.statements_unreadable)
+    );
+    expect(
+      drawn,
+      `the Spec view drew no line "${STATE_LINES.statements_unreadable}"; the stage drew ${drawnSlot(view)}`
+    ).toBeDefined();
+    return drawn;
+  });
+  await act(async () => messagesOut.resolve([]));
+  await rowTakesFocus(
+    view,
+    SPEC_COMMENT_ROW,
+    "the comment's address with the spec's blocks refused"
+  );
+  expect(line, "the statements' line left the Spec view").toBeInTheDocument();
+  expect(drawnSlot(view), "the stage drew the outline in place of the Spec view").toBe("the view");
+});
+
+// The Spec view draws no line for the comments read, so with it refused a comment named on its
+// address lands on nothing there: the stage draws the outline in the view's place, which says the
+// comments could not be loaded, with the focus on its Retry.
+test("the comments read refused, a comment named on the Spec view's address draws the outline in its place, with the comments' line and the focus on its Retry", async () => {
+  answerVerificationReads();
+  spyOn(api, "listComments").mockRejectedValue(REFUSED);
+  const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "spec" });
+  await retryTakesFocus(view, STATE_LINES.comments_unreadable, "the comment's address under Spec");
+  expect(
+    view.container.querySelector("[data-spec-body]"),
+    "the Spec view was drawn beside the outline"
+  ).toBeNull();
+});
+
+// The Spec view lands on the row an address names only once every read the tree's rows come from
+// has settled: the statements are drawn above a comment's row as the spec's blocks answer, and
+// would push a row that took the focus before them out of view. The coverage read holds the
+// statement, whose row the stage gives the focus as the view's tab stop; the comments answer after
+// it, so with the spec's blocks still out the comment's row is drawn without the focus. Once those
+// blocks answer with the statement, the comment's row takes the focus, under the statement's row.
+test("the spec's blocks out, a comment of the issue named on the Spec view's address is drawn without the focus, which it takes under the statement once they answer", async () => {
+  answerVerificationReads();
+  const blocksOut = Promise.withResolvers<ArtifactBlock[]>();
+  spyOn(api, "getArtifactBlocks").mockImplementation(async (id: string) =>
+    id === "artifact-spec" ? blocksOut.promise : [...(BLOCKS[id] ?? [])]
+  );
+  const commentsOut = Promise.withResolvers<Comment[]>();
+  spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
+  const view = drawStage("?comment=head-b", { issue: verifiedIssue(), preset: "spec" });
+  await rowTakesFocus(view, SPEC_STATEMENT_ROW, "the Spec view with its blocks and comments out");
+  await act(async () => commentsOut.resolve([...TWO_THREADS]));
+  const comment = await waitFor(() => {
+    const row = view.container.querySelector<HTMLElement>(SPEC_COMMENT_ROW);
+    expect(
+      row,
+      `the Spec view drew no row for the comment; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull();
+    return row as HTMLElement;
+  });
+  expect(comment, "the comment's row took the focus with the spec's blocks out").not.toHaveFocus();
+  await act(async () => blocksOut.resolve([typedBlock(STATEMENT, "requirement")]));
+  await rowTakesFocus(view, SPEC_COMMENT_ROW, "the spec's blocks answering");
+  expect(
+    [...view.container.querySelectorAll<HTMLElement>("[data-spec-body] [data-node-row]")].map(
+      (row) => row.dataset.nodeId
+    ),
+    "the statement's row does not stand above the comment's"
+  ).toEqual([blockNodeId(SPEC_SLUG, STATEMENT), "head-b"]);
+});

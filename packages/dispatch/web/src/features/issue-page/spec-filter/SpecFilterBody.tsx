@@ -136,6 +136,7 @@ export function SpecFilterBody({
   issue,
   namesFailure,
   reader,
+  readsSettled,
   request,
   reveal,
   root,
@@ -157,6 +158,10 @@ export function SpecFilterBody({
   namesFailure?: NamesFailure;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   reader: string | undefined;
+  /** Whether every read the tree's rows come from has answered, with its data or with its
+   *  failure (`useOutlineReads`'s `readsSettled`), which the node the address names waits on
+   *  before it takes the focus (`reveal`). */
+  readsSettled: boolean;
   /** What the page last asked of the outline: go to a node. The page acts on each ask once,
    *  whichever outline or body took it (`useTakeOutlineRequest`). */
   request?: OutlineRequest;
@@ -432,14 +437,18 @@ export function SpecFilterBody({
     if (request === undefined || !takeRequest(request) || request.id === undefined) return;
     tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
   }, [request, takeRequest]);
-  // An address that names a statement puts the focus on it, once per address (R19): the row is
-  // not on the page until the reads that hold it have answered, so this looks again on every
-  // drawing of the columns.
+  // An address that names a row puts the focus on it, once per address (R19), and only after
+  // every read the tree's rows come from has settled (`readsSettled`): a row drawn above it after
+  // it took the focus would push it out of view, as the statements are drawn above a comment's
+  // row once the spec's blocks answer. The focus then brings it on screen (`goTo`). The row is not
+  // on the page until the reads that hold it have answered, so this looks again on every drawing
+  // of the columns.
   const taken = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (reveal === undefined || taken.current === reveal || statements.length === 0) return;
+    if (reveal === undefined || taken.current === reveal) return;
+    if (!readsSettled || statements.length === 0) return;
     if (goTo(reveal)) taken.current = reveal;
-  }, [goTo, reveal, statements]);
+  }, [goTo, readsSettled, reveal, statements]);
 
   useTreeKeymap({
     container: tree,

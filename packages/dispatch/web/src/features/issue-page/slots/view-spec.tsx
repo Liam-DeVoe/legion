@@ -35,10 +35,10 @@ export function ViewSpecSlot({ issue, onAddressDrawn, route }: ViewSlotProps): R
   // (`useOutlineReads`), under the keys and with the freshness the tree reads them by, so they
   // cost no request of their own and build no second tree. The names reads are the tree's, and
   // the view draws from them too - the three sentences, and the name of every reference a plain
-  // line cites - so their line while they stand failed (the names' entry of `failed`) is passed
-  // on for the body to draw.
-  const { failed, readsSettled, root } = useOutlineReads(issue);
-  const namesFailure = failed.find(({ key }) => key === "names");
+  // line cites - so their line while they stand failed (`namesFailure`) is passed on for the body
+  // to draw. The body lands on the node the address names once every read the tree's rows come
+  // from has settled (`readsSettled`), since the node may come from any of them.
+  const { failed, namesFailure, readsSettled, root } = useOutlineReads(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5), read as the tree reads
   // it (`useIssueTree`, `EVENT_FRESH`): staleness is per observer, so under the app's 30 s
   // `staleTime` the view opened later would ask for it again.
@@ -90,6 +90,7 @@ export function ViewSpecSlot({ issue, onAddressDrawn, route }: ViewSlotProps): R
           issue={issue}
           reader={viewer}
           {...(namesFailure === undefined ? {} : { namesFailure })}
+          readsSettled={readsSettled}
           {...(request === undefined ? {} : { request })}
           {...(revealed === undefined ? {} : { reveal: revealed })}
           root={root}

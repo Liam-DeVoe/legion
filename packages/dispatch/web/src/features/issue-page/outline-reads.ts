@@ -12,6 +12,7 @@ import {
   issueAsksQuery,
   issueCommentsQuery,
   issueMessagesQuery,
+  type NamesFailure,
   treeDocumentIds,
   useIssueTree,
 } from "./useIssueTree";
@@ -62,6 +63,8 @@ export interface OutlineReads {
    *  given: the six reads (`reads`), each document's blocks (`treeDocumentIds`), and the names
    *  last, as the tree reads them last (`useIssueTree`). Empty while no line stands. */
   readonly failed: readonly FailedRead[];
+  /** The names reads' line while they stand failed (`IssueTreeView.namesFailure`). */
+  readonly namesFailure: NamesFailure | undefined;
   /** Whether the names the tree is built from are held (`IssueTreeView.namesHeld`): a plan
    *  task's or a callout's words come from them alone, so what a words filter matches waits on
    *  them, as well as on the reads the nodes come from (`readsHeld`). */
@@ -285,6 +288,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   );
   return {
     failed,
+    namesFailure,
     namesHeld,
     reads: own.reads,
     readsHeld: own.reads.held && blocksHeld,

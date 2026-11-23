@@ -23,7 +23,6 @@ import {
 } from "../../../api/queries";
 import type {
   Actor,
-  ArtifactBlock,
   CheckBlock,
   Decision,
   IssueCheckResults,
@@ -46,7 +45,6 @@ import {
   node,
   openAsk,
   READER,
-  SPEC_SLUG,
 } from "../decisions-filter/decisions-fixtures";
 import { conversationPath } from "../decisions-filter/decisions-parts";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
@@ -69,9 +67,6 @@ import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot, ViewStage } from "../slots/stage";
-import { GONE_COMMENT } from "../slots/stage-fixtures";
-import { ViewSpecSlot } from "../slots/view-spec";
-import { blockNodeId } from "../tree-drafts";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
 import {
@@ -326,6 +321,8 @@ function drawBody(
       holdsEscape={false}
       issue={over}
       reader={reader}
+      // The case holds each read as it says, so an address lands as soon as its row is drawn.
+      readsSettled
       {...(request === undefined ? {} : { request })}
       {...(reveal === undefined ? {} : { reveal })}
       root={tree}
@@ -893,6 +890,37 @@ function AddressedStage({ issue }: { issue: IssueDetails }): ReactNode {
   );
 }
 
+/** `client` holding every read the page's tree is built from, answered: the issue holds two
+ *  threads of comments and nothing else, as the outline's own cases seed them
+ *  (`IssueTree.test.tsx`'s `seedBodyReads`). Who is reading is each case's own. */
+function holdTreeReads(client: QueryClient): void {
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
+  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, {
+    decisions: [],
+    document: null,
+    open_questions: [],
+  });
+  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
+  client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
+  client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
+}
+
+/** The page's stage at the Spec view's address (`AddressedStage`), over `client`'s reads. */
+function drawSpecStage(client: QueryClient, issue: IssueDetails): RenderResult {
+  return render(
+    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <AddressedStage issue={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
 // The Spec view's slot is filled (`SLOT_FILLED`), so an address that names an item beside the
 // view's own - `/spec?comment=<id>`, as `documentItemPath` writes the address of an item of the
 // spec - is the view's to draw: the stage draws the Spec view and no outline, and the view lands
@@ -903,16 +931,8 @@ test("with the Spec view's slot filled, a spec item's address lands on the item 
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  // Every read the page's tree is built from, answered: the issue holds two threads of comments
-  // and nothing else, as the outline's own cases seed them (`IssueTree.test.tsx`'s
-  // `seedBodyReads`).
+  holdTreeReads(client);
   client.setQueryData(["whoami"], { kind: "user", login: READER });
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
-  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
-  client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  client.setQueryData(["asks", KEY], []);
-  client.setQueryData(["comments", KEY], TWO_THREADS);
-  client.setQueryData(["issue-messages", KEY], []);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const view = render(
     <MemoryRouter initialEntries={[`/issues/${KEY}/spec?comment=reply-b`]}>
@@ -974,17 +994,7 @@ test("a failed names read says so in its own line, after the view's own, and its
   client.setQueryData(["issue-messages", KEY], []);
   const decisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("offline"));
   const names = spyOn(api, "getReferenceTargets").mockRejectedValue(new Error("offline"));
-  const view = render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const view = drawSpecStage(client, issue);
   try {
     const line = await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
     const lines = '[data-spec-body] [data-failed-read] [role="alert"]';
@@ -1009,37 +1019,6 @@ test("a failed names read says so in its own line, after the view's own, and its
     names.mockRestore();
   }
 });
-
-/** `client` holding every read the page's tree is built from, answered: the issue holds two
- *  threads of comments and nothing else, as the stage's cases above seed them. Who is reading is
- *  each case's own. */
-function holdTreeReads(client: QueryClient): void {
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
-  client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
-  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, {
-    decisions: [],
-    document: null,
-    open_questions: [],
-  });
-  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
-  client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
-  client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
-}
-
-/** The page's stage at the Spec view's address (`AddressedStage`), over `client`'s reads. */
-function drawSpecStage(client: QueryClient, issue: IssueDetails): RenderResult {
-  return render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-}
 
 // The Spec view's slot reads who is reading as the tree reads it, kept fresh by events and never
 // read again by its age (`EVENT_FRESH`). Under the app's 30 s `staleTime` (`main.tsx`) the view
@@ -1119,181 +1098,6 @@ test("a names line that stands again in the Spec view for a refusal it counted i
   } finally {
     view.unmount();
     names.mockRestore();
-  }
-});
-
-/** The block id of the one statement of the spec the Spec view's slot is drawn over
- *  (`heldSlotReads`). */
-const SLOT_STATEMENT = "r1";
-
-/** A statement of the spec as the spec's blocks read answers it: one `requirement` block. */
-function requirementBlock(id: string): ArtifactBlock {
-  return {
-    attributes: [],
-    from: 0,
-    id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type: "requirement",
-  };
-}
-
-/** A client holding every read the Spec view's slot is drawn from: the page's tree's reads
- *  (`holdTreeReads`), the spec's blocks with its one statement, which the coverage names, the
- *  decisions document's blocks, and who is reading. A case refuses a read by taking it out. */
-function heldSlotReads(): QueryClient {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  holdTreeReads(client);
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([SLOT_STATEMENT]));
-  client.setQueryData(artifactBlocksQuery("artifact-spec").queryKey, [
-    requirementBlock(SLOT_STATEMENT),
-  ]);
-  client.setQueryData(artifactBlocksQuery("artifact-dec").queryKey, []);
-  client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
-  return client;
-}
-
-/** A spy standing in for the stage's `onAddressDrawn`, which records what the slot tells it. */
-function stageSpy(): Mock<(drawn: boolean) => void> {
-  const stage = { onAddressDrawn: (_drawn: boolean): void => undefined };
-  return spyOn(stage, "onAddressDrawn");
-}
-
-/** The Spec view's slot at the address the router holds, under the page's providers, as the
- *  stage draws it (`AddressedStage`), handed `onAddressDrawn` as the stage hands it. */
-function AddressedSpecSlot({
-  issue,
-  onAddressDrawn,
-}: {
-  issue: IssueDetails;
-  onAddressDrawn: (drawn: boolean) => void;
-}): ReactNode {
-  const { pathname, search } = useLocation();
-  const route = parseIssuePath(pathname, search) ?? ({ key: KEY, kind: "issue" } as const);
-  return (
-    <ProvidersSlot issue={issue} route={route}>
-      <IssueScope />
-      <ViewSpecSlot issue={issue} onAddressDrawn={onAddressDrawn} route={route} />
-    </ProvidersSlot>
-  );
-}
-
-/** The Spec view's slot at the issue's Spec address with `after` after it, a search or a
- *  fragment (`AddressedSpecSlot`), over `client`'s reads, with `told` in the stage's place. */
-function drawSpecSlot(
-  client: QueryClient,
-  after: string,
-  told: (drawn: boolean) => void
-): RenderResult {
-  return render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec${after}`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedSpecSlot issue={issueDetails()} onAddressDrawn={told} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-}
-
-// An address beside the Spec view's own that names a comment the issue holds none of names no
-// node of the tree, so the view draws no row for it. Once every read is held the view tells the
-// stage so, and the stage draws the outline in its place, which says the issue holds none.
-test("the Spec view's slot tells the stage it draws no row for a comment the issue holds none of", async () => {
-  const told = stageSpy();
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = drawSpecSlot(heldSlotReads(), `?comment=${GONE_COMMENT}`, told);
-  try {
-    await waitFor(() =>
-      expect(
-        told,
-        "the view did not tell the stage it draws no row for the comment"
-      ).toHaveBeenCalledWith(false)
-    );
-    expect(
-      told,
-      "the view told the stage it draws a comment the issue holds none of"
-    ).not.toHaveBeenCalledWith(true);
-  } finally {
-    view.unmount();
-    names.mockRestore();
-  }
-});
-
-// An address naming a statement draws that statement's row in the Spec view, so once every read
-// is held the view tells the stage it draws the node, and the stage keeps the view.
-test("the Spec view's slot tells the stage it draws the statement the address names", async () => {
-  const told = stageSpy();
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = drawSpecSlot(heldSlotReads(), `#b-${SLOT_STATEMENT}`, told);
-  try {
-    await waitFor(() =>
-      expect(told, "the view did not tell the stage it draws the statement").toHaveBeenCalledWith(
-        true
-      )
-    );
-    expect(
-      view.container.querySelector(
-        `[data-spec-tree] ${nodeRowSelectorOf(blockNodeId(SPEC_SLUG, SLOT_STATEMENT))}`
-      ),
-      "the view drew no row for the statement it told the stage it draws"
-    ).not.toBeNull();
-    expect(
-      told,
-      "the view told the stage it draws no row for the statement"
-    ).not.toHaveBeenCalledWith(false);
-  } finally {
-    view.unmount();
-    names.mockRestore();
-  }
-});
-
-// A refused read the Spec view draws no line of its own for, such as the comments read, is no row
-// of the view: the view tells the stage it draws no node, though it draws the statement the
-// address names, and the stage draws the outline in its place with that read's line. Where only a
-// read the view draws its own line for stands refused, such as the decisions read, the view keeps
-// its line and tells the stage nothing.
-test("the Spec view's slot tells the stage it draws no node while a read it draws no line for stands refused, and nothing while only its own reads do", async () => {
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const comments = spyOn(api, "listComments").mockRejectedValue(new Error("offline"));
-  const decisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("offline"));
-  let view: RenderResult | undefined;
-  try {
-    const foreign = heldSlotReads();
-    foreign.removeQueries({ queryKey: issueCommentsQuery(KEY).queryKey });
-    const toldForeign = stageSpy();
-    view = drawSpecSlot(foreign, `#b-${SLOT_STATEMENT}`, toldForeign);
-    await waitFor(() =>
-      expect(
-        toldForeign,
-        "with the comments read refused the view did not tell the stage it draws no node"
-      ).toHaveBeenCalledWith(false)
-    );
-    expect(
-      toldForeign,
-      "with the comments read refused the view told the stage it draws the statement"
-    ).not.toHaveBeenCalledWith(true);
-    view.unmount();
-    const own = heldSlotReads();
-    own.removeQueries({ queryKey: issueDecisionsQuery(KEY, true).queryKey });
-    const toldOwn = stageSpy();
-    const drawn = drawSpecSlot(own, `#b-${SLOT_STATEMENT}`, toldOwn);
-    view = drawn;
-    await waitFor(() => alertSaying(drawn, STATE_LINES.issue_decisions_unreadable));
-    expect(
-      toldOwn,
-      "with only the decisions read refused, whose line the view draws, the view told the stage"
-    ).not.toHaveBeenCalled();
-  } finally {
-    view?.unmount();
-    names.mockRestore();
-    comments.mockRestore();
-    decisions.mockRestore();
   }
 });
 

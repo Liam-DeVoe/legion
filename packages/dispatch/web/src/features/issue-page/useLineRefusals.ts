@@ -71,20 +71,16 @@ export function useLineRefusals(lines: readonly (readonly LineRead[])[]): readon
     let failing = false;
     let refused = false;
     for (const read of reads) {
+      const last = seen.get(read.hash);
+      if (read.errorUpdateCount > 0) seen.set(read.hash, read.errorUpdateCount);
+      else seen.delete(read.hash);
       if (!read.failing) continue;
       failing = true;
       refused ||= read.errorUpdateCount > 0;
-      const last = seen.get(read.hash);
       refusals +=
         last === undefined || read.errorUpdateCount < last
           ? read.errorUpdateCount
           : read.errorUpdateCount - last;
-    }
-    // Written once every read of the line is counted, so two reads of the line on one key each
-    // count against the count seen before this draw.
-    for (const read of reads) {
-      if (read.errorUpdateCount > 0) seen.set(read.hash, read.errorUpdateCount);
-      else seen.delete(read.hash);
     }
     const stands = failing && (refused || (was?.stands ?? false));
     const speaks = stands && (refusals > (was?.refusals ?? 0) || (was?.speaks ?? false));
