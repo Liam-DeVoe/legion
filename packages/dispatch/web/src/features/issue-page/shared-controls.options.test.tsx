@@ -6917,8 +6917,7 @@ test("inside NoTooltips Ask back keeps the focus until the ask is read again", a
         expectAnswerBoxReadOnly(scope);
         expect(focus.moved).toHaveLength(0);
       } else {
-        expect(askBack.hasAttribute("disabled")).toBe(true);
-        expect(askBack.hasAttribute("aria-disabled")).toBe(false);
+        expectDisabledAsOnMain(askBack);
         expect(document.activeElement).toBe(row);
         expect(focus.moved).toHaveLength(1);
       }

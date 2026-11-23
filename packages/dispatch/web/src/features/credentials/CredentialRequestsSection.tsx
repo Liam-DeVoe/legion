@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { waitingForPausedReads } from "../../api/query-client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { CredentialPendingRow } from "../../api/types";
 import { heldPress } from "../../components/held-press";
@@ -121,13 +121,10 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
     // settles either way, and a failed one lets the button go. A read that has not settled by the
     // request deadline (`REQUEST_DEADLINE_MS`) - one paused while the browser is offline - lets
     // it go then, and the row says why the list is not read yet (`useReadBound`).
-    // The read waits on a fetch the network had already paused, which that deadline ends too.
+    // The read waits on a fetch the network had already paused, which that deadline ends too
+    // (`invalidateWaitingForPaused`).
     onSuccess: () =>
-      holdThrough(
-        waitingForPausedReads(queryClient, () =>
-          queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey })
-        )
-      ),
+      holdThrough(invalidateWaitingForPaused(queryClient, credentialPendingQuery().queryKey)),
     method: "POST",
     write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });

@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import {
   customRange,
+  isPreset,
   lastUtcDate,
   PRESET_LABELS,
   utcDate,
@@ -50,9 +51,11 @@ function draftDates(value: WindowChoice): { from: string; to: string } {
 
 /** The Delivery page's window: a rolling preset (the last 7, 14, 28 or 84 days) or a custom range
  *  of whole UTC days, picked from the shared list's single pick (`MultiSelect`), whose text box
- *  narrows the options as the reader types. A custom range is applied only once both dates are set
- *  and it spans at most 84 days, the server's limit; a longer one is refused here with the limit
- *  stated. The list's trigger takes `size`, the page's (`ControlSize`). */
+ *  narrows the options as the reader types. A pick of the option the list shows does nothing, as
+ *  a `<select>` set to the value it holds fires nothing, so the page keeps its brush. A custom
+ *  range is applied only once both dates are set and it spans at most 84 days, the server's
+ *  limit; a longer one is refused here with the limit stated. The list's trigger takes `size`,
+ *  the page's (`ControlSize`). */
 export function WindowControl({
   size = "comfortable",
   value,
@@ -79,6 +82,7 @@ export function WindowControl({
     setDates(draftDates(value));
     setRefused(null);
   }
+  const shown = custom || value.kind === "custom" ? CUSTOM : value.preset;
 
   const apply = () => {
     const range = customRange(dates.from, dates.to);
@@ -101,25 +105,22 @@ export function WindowControl({
         mode="single"
         onOpenChange={setListOpen}
         onPick={(next) => {
-          const preset = WINDOW_PRESETS.find((candidate) => candidate === next);
-          if (preset === undefined) {
+          if (next === shown) return;
+          if (!isPreset(next)) {
             setCustom(true);
             return;
           }
           setCustom(false);
           setRefused(null);
-          onChange({ kind: "preset", preset });
+          onChange({ kind: "preset", preset: next });
         }}
         open={listOpen}
-        optionLabel={(option) => {
-          const preset = WINDOW_PRESETS.find((candidate) => candidate === option);
-          return preset === undefined ? "Custom range…" : PRESET_LABELS[preset];
-        }}
+        optionLabel={(option) => (isPreset(option) ? PRESET_LABELS[option] : "Custom range…")}
         options={WINDOW_OPTIONS}
         searchLabel="Search windows"
         size={size}
         triggerClassName={`${fieldLook} text-left`}
-        value={custom || value.kind === "custom" ? CUSTOM : value.preset}
+        value={shown}
       />
       {custom ? (
         <>

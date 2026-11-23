@@ -18,6 +18,7 @@ import { AnchoredPanel } from "./AnchoredPanel";
 import { Chip } from "./Chip";
 import { CONTROL, type ControlSize, controlIn } from "./control-names";
 import { useFocusPlace } from "./focus-place";
+import { PANEL_FRAME } from "./PanelTrigger";
 
 /** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
  *  the chips rather than narrowing anything. It keeps the row's touch target. */
@@ -30,9 +31,9 @@ const CLEAR_FILTERS: Record<ControlSize, string> = {
   compact: `${CLEAR_FILTERS_CLASS} md:min-h-8`,
 };
 
-/** The panel `+N more` opens: a card over the page, as a filter panel is (`PanelTrigger`), that
+/** The panel `+N more` opens: a card over the page, as a filter panel is (`PANEL_FRAME`), that
  *  lists the chips the line has no room for one under another, each at its own width. */
-const MORE_PANEL_CLASS = `flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col items-start gap-2 overflow-y-auto rounded-lg border p-2 shadow-lg ${card}`;
+const MORE_PANEL_CLASS = `${PANEL_FRAME} items-start gap-2 p-2 ${card}`;
 
 /** How far past its room a line of chips may reach and still fit. The widths read are rounded to
  *  the layout's own units, so their sum can miss the laid-out line by a fraction of a pixel. */
@@ -125,6 +126,10 @@ function readLine(
   const room = box.getBoundingClientRect().width;
   const strip = box.firstElementChild;
   if (room === 0 || !(strip instanceof HTMLElement)) return null;
+  // Read before the strip is widened, since neither the gap nor `+N more`, which never shrinks,
+  // changes with the strip's width: read after it, they would lay the page out once more.
+  const gap = Number.parseFloat(getComputedStyle(strip).columnGap) || 0;
+  const moreWidth = more?.getBoundingClientRect().width;
   strip.style.flex = "none";
   strip.style.width = "max-content";
   const widths = new Map<string, number>();
@@ -134,12 +139,7 @@ function readLine(
   }
   strip.style.flex = "";
   strip.style.width = "";
-  return {
-    gap: Number.parseFloat(getComputedStyle(strip).columnGap) || 0,
-    more: more?.getBoundingClientRect().width,
-    room,
-    widths,
-  };
+  return { gap, more: moreWidth, room, widths };
 }
 
 /** `reading` with `before`'s widths kept for the chips of `keys` it did not draw, or `before`
@@ -384,9 +384,9 @@ export function ControlRow({
   const inLine = all.slice(0, shown);
   const inPanel = all.slice(shown);
   // `+N more` goes once every chip fits the line, and its panel with it: the next `+N more` opens
-  // a panel afresh rather than one left open.
+  // a panel afresh rather than one left open. The row draws again at once with the panel shut,
+  // before anything is committed, so no drawn row holds the panel open with no chip in it.
   if (open && inPanel.length === 0) setOpen(false);
-  const panelOpen = open && inPanel.length > 0;
   const moreName = `${inPanel.length} more ${inPanel.length === 1 ? "filter" : "filters"}`;
 
   // Reads the line again, against what this commit drew. A read lays the page out, so a commit
@@ -513,7 +513,7 @@ export function ControlRow({
             </div>
             {inPanel.length === 0 ? null : (
               <Chip
-                aria-expanded={panelOpen}
+                aria-expanded={open}
                 aria-haspopup="dialog"
                 aria-label={moreName}
                 onClick={() => setOpen((was) => !was)}
@@ -523,7 +523,7 @@ export function ControlRow({
                 {`+${inPanel.length} more`}
               </Chip>
             )}
-            {panelOpen ? (
+            {open ? (
               <AnchoredPanel
                 anchorRef={moreRef}
                 className={MORE_PANEL_CLASS}

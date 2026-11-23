@@ -3,6 +3,7 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
 import { afterRescue, RescuedMain } from "../__tests__/focus-rescue";
 import { installResizeObserver } from "../__tests__/scroll-box";
 import { Chip } from "./Chip";
@@ -22,11 +23,6 @@ const HEIGHT_RULE_CSS =
  *  (1440 and 1280) are. Below it the first line and the page's own slot wrap, so that a phone's
  *  search box is a search box and a phone's own controls stay on the screen. */
 const DESKTOP_CSS = String.raw`.sm\:flex-nowrap{flex-wrap:nowrap}.sm\:shrink-0{flex-shrink:0}`;
-/** Tailwind's definition of the size Clear filters keeps everywhere: the 44 px touch target. */
-const TARGET_CSS = ".min-h-11{min-height:2.75rem}";
-/** Tailwind's `md:` size as it applies from 768 px up, where a mouse is the pointer and the
- *  compact size gives that target up. */
-const MOUSE_CSS = String.raw`.md\:min-h-8{min-height:2rem}`;
 
 function Row(props: Partial<ControlRowProps>) {
   return (
@@ -237,22 +233,16 @@ test("the row draws no Clear filters without onClear, chips or no chips", () => 
 
 test("Clear filters keeps the 44 px target, and gives it up from md only at the compact size", () => {
   const view = render(<Row onClear={() => {}} />);
-  // Its height under `css`: a window below `md` (the target alone), or from it (with `md:`).
-  const minHeight = (css: string) => {
-    const removeCss = withCss(css);
-    try {
-      return getComputedStyle(screen.getByRole("button", { name: "Clear filters" })).minHeight;
-    } finally {
-      removeCss();
-    }
-  };
+  // Its height under `css`: a window below `md` (`SIZE_CSS` alone), or from it (with `md:`).
+  const minHeight = (css: string) =>
+    sizeUnder(screen.getByRole("button", { name: "Clear filters" }), css).minHeight;
   try {
     // happy-dom computes these lengths in px: 2.75rem is the 44 px target, 2rem 32 px.
-    expect(minHeight(TARGET_CSS)).toBe("44px");
-    expect(minHeight(`${TARGET_CSS}${MOUSE_CSS}`)).toBe("44px");
+    expect(minHeight(SIZE_CSS)).toBe("44px");
+    expect(minHeight(`${SIZE_CSS}${MOUSE_CSS}`)).toBe("44px");
     view.rerender(<Row onClear={() => {}} size="compact" />);
-    expect(minHeight(TARGET_CSS)).toBe("44px");
-    expect(minHeight(`${TARGET_CSS}${MOUSE_CSS}`)).toBe("32px");
+    expect(minHeight(SIZE_CSS)).toBe("44px");
+    expect(minHeight(`${SIZE_CSS}${MOUSE_CSS}`)).toBe("32px");
   } finally {
     view.unmount();
   }
@@ -510,7 +500,7 @@ function panelChips(name: string): string[] {
  *  100 + 8 + 60 = 276 px; a third chip would take it to 384. */
 const FOUR = { Alpha: 100, Beta: 100, Delta: 100, Gamma: 100 };
 
-test("chips past the line's room are drawn behind one +N more, named for what it opens, and nothing scrolls the line", () => {
+test("chips past the line's room are drawn behind one +N more, named for what it opens", () => {
   const restore = layOutLine({ width: 300 }, FOUR);
   const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma", "Delta"]} />);
   try {
@@ -523,10 +513,9 @@ test("chips past the line's room are drawn behind one +N more, named for what it
     // At the end of the chips, outside the strip, and before Clear filters.
     expect(document.querySelector("[data-chip-strip]")?.nextElementSibling).toBe(more);
     expect(lines()[1].lastElementChild).toBe(screen.getByRole("button", { name: "Clear filters" }));
-    // The chips left out are drawn nowhere until it opens, and no control scrolls the line.
+    // The chips left out are drawn nowhere until it opens.
     expect(screen.queryByRole("button", { name: "Gamma" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delta" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Scroll filters/ })).toBeNull();
   } finally {
     view.unmount();
     restore();

@@ -4,6 +4,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
+import { drawnSize } from "../../__tests__/control-size";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
@@ -14,7 +15,6 @@ import { ApiError, api, REQUEST_DEADLINE_MS } from "../../api/client";
 import { boardMoveMutationKey, meInboxQuery, projectIssuesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../api/types";
-import { type ControlSize, controlPadding } from "../../components/control-names";
 import { readLayout } from "../../components/table-storage";
 import { oneReadAnswer } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -564,17 +564,6 @@ test("Clear filters also clears Needs you, Unread and the lapsed-claim filter", 
     );
   }
 });
-
-/** The size `control` draws (`controlPadding`): the one whose every class it carries, else
- *  none of the two. */
-function drawnSize(control: Element): ControlSize | "a size of its own" {
-  const drawn = control.className.split(/\s+/);
-  const sizes: ControlSize[] = ["compact", "comfortable"];
-  return (
-    sizes.find((size) => controlPadding[size].split(" ").every((name) => drawn.includes(name))) ??
-    "a size of its own"
-  );
-}
 
 // R2: each control takes its size from the page, comfortable or compact, as a value the page
 // passes. The project List is compact, as its row's controls and its bar's steps are, so the

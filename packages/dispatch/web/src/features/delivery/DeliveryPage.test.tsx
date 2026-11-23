@@ -5,9 +5,10 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { drawnSize } from "../../__tests__/control-size";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { pickIn } from "../../__tests__/issue-picks";
-import { panelOf, pickNamed, textBoxes } from "../../__tests__/list-picks";
+import { panelOf, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -26,7 +27,6 @@ import type {
   LiveServerFrame,
   LiveSubscribe,
 } from "../../api/types";
-import { type ControlSize, controlPadding } from "../../components/control-names";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { DeliveryPage } from "./DeliveryPage";
 
@@ -152,9 +152,15 @@ const RELEASE_CREW_SESSIONS = {
   session_titles: { s1: "Planner one", s2: "Planner two", s3: "Reviewer" },
 };
 
-/** The router's query string, where a test reads what the page wrote to the URL. */
+/** The router's query string, where a test reads what the page wrote to the URL, and the key of
+ *  its location, which every write of the address makes anew, even one of the same query. */
 function LocationProbe() {
-  return <output data-testid="location">{useLocation().search}</output>;
+  const location = useLocation();
+  return (
+    <output data-key={location.key} data-testid="location">
+      {location.search}
+    </output>
+  );
 }
 
 /** The unit DOM lays nothing out, so the box the list's rows scroll in reports a height and
@@ -533,11 +539,13 @@ test("the facet column offers each value with its count, subscribes a pick and k
 
   const colorBy = screen.getByLabelText("Color merges by");
   await user.click(colorBy);
-  expect(
-    within(panelOf(colorBy))
-      .getAllByRole("option")
-      .map((option) => option.textContent)
-  ).toEqual(["✓Repository", "Author", "Priority", "Component", "Parent agent"]);
+  expect(rows(panelOf(colorBy))).toEqual([
+    "✓Repository",
+    "Author",
+    "Priority",
+    "Component",
+    "Parent agent",
+  ]);
   await user.click(within(panelOf(colorBy)).getByRole("option", { name: "Component" }));
   expect(colorBy).toHaveAccessibleName("Color merges by Component");
   // The list's dot follows the colour-by facet, and the row reads its issue with its priority.
@@ -784,7 +792,8 @@ test("colouring by Parent agent offers the values to give their own colour and l
   await user.click(listbox.getByRole("option", { name: /^Reviewer/ }));
   await waitFor(() => expect(currentSearch().getAll("agents")).toEqual(["group:g1", "Reviewer"]));
 
-  await pickIn(user, () => screen.getByLabelText("Color merges by"), "Repository");
+  const colorBy = screen.getByLabelText("Color merges by");
+  await pickIn(user, () => colorBy, "Repository");
   expect(screen.queryByRole("button", { name: /^Own colour and lane/ })).not.toBeInTheDocument();
 });
 
@@ -804,11 +813,7 @@ test("the Color merges by list opens with a text box, a typed word narrows the c
   expect(textBoxes().length).toBe(boxes + 1);
   expect(within(panel).getByRole("combobox", { name: "Search color choices" })).toHaveFocus();
   await user.keyboard("agent");
-  expect(
-    within(panel)
-      .getAllByRole("option")
-      .map((option) => option.textContent)
-  ).toEqual(["Parent agent"]);
+  expect(rows(panel)).toEqual(["Parent agent"]);
   await user.keyboard("{Enter}");
   await waitFor(() => expect(currentSearch().get("colorBy")).toBe("parentAgent"));
   expect(colorBy).toHaveAccessibleName("Color merges by Parent agent");
@@ -817,16 +822,23 @@ test("the Color merges by list opens with a text box, a typed word narrows the c
   expect(screen.getByRole("button", { name: /^Own colour and lane/ })).toBeDefined();
 });
 
-/** The size `control` draws (`controlPadding`): the one whose every class it carries, else
- *  none of the two. */
-function drawnSize(control: Element): ControlSize | "a size of its own" {
-  const drawn = control.className.split(/\s+/);
-  const sizes: ControlSize[] = ["compact", "comfortable"];
-  return (
-    sizes.find((size) => controlPadding[size].split(" ").every((name) => drawn.includes(name))) ??
-    "a size of its own"
-  );
-}
+// A `<select>` set to the value it holds fires no change when that value is picked again. The
+// list opens on the choice it shows, so Enter at once picks that choice, and the page writes
+// nothing to the address: the router's location keeps its key (`LocationProbe`).
+test("a pick of the choice Color merges by shows writes nothing to the address", async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await answered(emptyTimeline);
+  const colorBy = await screen.findByRole("button", { name: pickNamed("Color merges by") });
+  const location = screen.getByTestId("location");
+  const before = location.getAttribute("data-key");
+  await user.click(colorBy);
+  await user.keyboard("{Enter}");
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(colorBy).toHaveAccessibleName("Color merges by Repository");
+  expect(colorBy).toHaveFocus();
+  expect(location.getAttribute("data-key")).toBe(before);
+});
 
 // R2: each control takes its size from the page, comfortable or compact, as a value the page
 // passes. The Delivery page is compact, as its search box and its Filter trigger are, so its
@@ -949,7 +961,7 @@ test("the window control: a preset rolls and clears the brush, a custom range wr
   await subscriptionTo(socket, { kind: "timeline", window: { preset: 7 }, query: "" });
   expect(socket.sent).toContainEqual({ type: "unsubscribe", sub: brushed.sub });
 
-  await pickIn(user, () => screen.getByLabelText("Window"), "Custom range…");
+  await pickIn(user, () => windowList, "Custom range…");
   await user.click(screen.getByLabelText("From"));
   await user.paste("2026-01-01");
   await user.click(screen.getByLabelText("To"));

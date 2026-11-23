@@ -3,7 +3,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { pickIn } from "../../__tests__/issue-picks";
-import { panelOf, textBoxes } from "../../__tests__/list-picks";
+import { panelOf, rows, textBoxes } from "../../__tests__/list-picks";
 import { WindowControl } from "./WindowControl";
 
 test("a preset calls back with that preset", async () => {
@@ -13,6 +13,26 @@ test("a preset calls back with that preset", async () => {
   try {
     await pickIn(user, () => screen.getByLabelText("Window"), "Last 7 days");
     expect(onChange).toHaveBeenCalledWith({ kind: "preset", preset: "7d" });
+  } finally {
+    cleanup();
+  }
+});
+
+// A `<select>` set to the value it holds fires no change when that value is picked again. The
+// list opens on the window it shows, so Enter at once picks that window, and the page is called
+// back with nothing: it keeps its brush.
+test("a pick of the window the list shows calls back with nothing", async () => {
+  const user = userEvent.setup();
+  const onChange = mock();
+  render(<WindowControl onChange={onChange} value={{ kind: "preset", preset: "28d" }} />);
+  try {
+    const trigger = screen.getByLabelText("Window");
+    await user.click(trigger);
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(trigger).toHaveAccessibleName("Window Last 28 days");
+    expect(trigger).toHaveFocus();
   } finally {
     cleanup();
   }
@@ -35,11 +55,7 @@ test("the Window list opens with a text box, a typed word narrows the windows, a
     const panel = panelOf(trigger);
     expect(textBoxes().length).toBe(1);
     expect(within(panel).getByRole("combobox", { name: "Search windows" })).toHaveFocus();
-    const shown = () =>
-      within(panel)
-        .getAllByRole("option")
-        .map((option) => option.textContent);
-    expect(shown()).toEqual([
+    expect(rows(panel)).toEqual([
       "Last 7 days",
       "Last 14 days",
       "✓Last 28 days",
@@ -47,18 +63,14 @@ test("the Window list opens with a text box, a typed word narrows the windows, a
       "Custom range…",
     ]);
     await user.keyboard("14");
-    expect(shown()).toEqual(["Last 14 days"]);
+    expect(rows(panel)).toEqual(["Last 14 days"]);
     await user.keyboard("{Enter}");
     expect(onChange).toHaveBeenCalledWith({ kind: "preset", preset: "14d" });
     expect(trigger).toHaveFocus();
 
     await user.click(trigger);
     await user.keyboard("cust");
-    expect(
-      within(panelOf(trigger))
-        .getAllByRole("option")
-        .map((option) => option.textContent)
-    ).toEqual(["Custom range…"]);
+    expect(rows(panelOf(trigger))).toEqual(["Custom range…"]);
     await user.keyboard("{Enter}");
     expect(trigger).toHaveAccessibleName("Window Custom range…");
     expect(screen.getByLabelText("From")).toBeDefined();

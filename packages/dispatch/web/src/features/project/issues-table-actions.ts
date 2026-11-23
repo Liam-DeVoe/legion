@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { advancesIssuesParams, openAsksKey } from "../../api/queries";
-import { waitingForPausedReads } from "../../api/query-client";
+import { invalidateWaitingForPaused } from "../../api/query-client";
 import { useReadBound } from "../../api/read-bound";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { beginAnswerHold } from "../../components/focus-place";
@@ -246,10 +246,8 @@ export function useIssueTableActions({
       // (`useLastMarkedPlace`). Where the row marked last is still listed, the focus goes to its
       // checkbox. An action that failed or changed nothing keeps the selection.
       // Read again waiting on a fetch the network has paused, since the hold below has a bound
-      // of its own (`waitingForPausedReads`, `useReadBound`).
-      const listed = waitingForPausedReads(client, () =>
-        client.invalidateQueries({ queryKey: ["issues"] })
-      );
+      // of its own (`invalidateWaitingForPaused`, `useReadBound`).
+      const listed = invalidateWaitingForPaused(client, ["issues"]);
       void client.invalidateQueries({ queryKey: ["issue"] });
       void client.invalidateQueries({ queryKey: openAsksKey });
       // The Inbox draws the reader's own asks, which carry their issue's fields, from the one read.

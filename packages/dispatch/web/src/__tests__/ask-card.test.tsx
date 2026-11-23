@@ -2712,7 +2712,7 @@ test("AskCard compact variant keeps the focus on Answer while its answer is out,
     await pressHeld(user, answer, { name: "Answer", sent: () => sent });
     answering.resolve(answered(input, ["Ship"]));
     await view.findByRole("img", { name: "Selected" });
-    expect(document.activeElement?.getAttribute("data-testid")).toBe("row");
+    expect(view.getByTestId("row")).toHaveFocus();
   } finally {
     view.unmount();
   }

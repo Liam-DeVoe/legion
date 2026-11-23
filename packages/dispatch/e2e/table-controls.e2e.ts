@@ -91,6 +91,7 @@ import {
   askControls,
   hasReadingPane,
   inboxList,
+  inboxPane,
   inboxRow,
   paneScroller,
   selectedRow,
@@ -115,6 +116,7 @@ import {
   valuesOf,
 } from "./inbox-view";
 import { focusThePage } from "./issue-page-g";
+import { rowSnooze } from "./keyboard-inbox";
 import { searchPath } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
@@ -436,8 +438,8 @@ test("however many narrowings are on, their chips take at most one more line of 
     await page.goto(NINE_NARROWINGS);
     await expect(firstRow).toBeVisible();
     // One chip per value picked, as the row draws them, so nine chips: the ones the chips line
-    // has room for, each whole, and the rest in the panel its `+N more` opens.
-    const chips = await chipsInLineAndPanel(row, 9, `${size.width}x${size.height}`);
+    // has room for, each whole, and the rest behind its `+N more`.
+    const chips = await settledChipsLine(row, 9, `${size.width}x${size.height}`);
     // Nothing in the row scrolls sideways. The chips were read above from a settled line, so
     // the boxes read here are the narrowed row's.
     const scrolling = await row.evaluate(sidewaysScrollers);
@@ -447,7 +449,7 @@ test("however many narrowings are on, their chips take at most one more line of 
     const narrowed = await topOf(firstRow);
     const where = `${size.width}x${size.height}: nine narrowings moved the first item from ${Math.round(plain)}px to ${Math.round(narrowed)}px, ${Math.round(narrowed - plain)}px down`;
     readings.push(
-      `${where}, with ${chips.line.length} chips in the line and ${chips.panel.length} behind +N more`
+      `${where}, with ${chips.line.length} chips in the line and ${chips.left} behind +N more`
     );
     if (narrowed - plain > CHIP_LINE) over.push(where);
   }
@@ -699,8 +701,8 @@ test("Clear filters stays in view in the Inbox's row however many narrowings are
     await page.setViewportSize(size);
     await page.goto(NINE_NARROWINGS);
     // One chip per narrowing, so nine chips: the ones the chips line has room for, each whole,
-    // and the rest in the panel its `+N more` opens.
-    await chipsInLineAndPanel(row, 9, `${size.width}x${size.height}`);
+    // and the rest behind its `+N more`.
+    await settledChipsLine(row, 9, `${size.width}x${size.height}`);
     const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
     await expect(clear).toHaveCount(1);
     // The nine chips and Clear filters were waited for above; how much of it shows is the reading.
@@ -757,18 +759,16 @@ const SIXTEEN_NARROWINGS = `/?${[
  *  and of the panel it opens. */
 const MORE_FILTERS = /^\d+ more filters?$/;
 
-/** The chips of the `count` narrowings that are on in the control row `row`, by name and in their
- *  order: the ones its chips line draws, then the ones its `+N more` lists in the panel it opens.
- *  The line is read until its chips and the number `+N more` names add up to `count`, and the
- *  panel is then opened by a pointer and shut by Escape, which hands the focus back to `+N more`.
- *  A chip the line draws in part is in neither place for the reader, so a control the line cuts
- *  fails the row by its name (`cutInChipsLine`), as another count or a chip drawn twice does. */
-async function chipsInLineAndPanel(
+/** The chips line of the control row `row` once it stands for the `count` narrowings that are on:
+ *  the chips it draws, by name and in their order, and how many its `+N more` names (`left`). The
+ *  line is read until its chips and that number add up to `count`. A chip the line draws in part
+ *  is in neither place for the reader, so a control the line cuts fails the row by its name
+ *  (`cutInChipsLine`). The panel of `+N more` is not opened. */
+async function settledChipsLine(
   row: Locator,
   count: number,
   where: string
-): Promise<{ line: string[]; panel: string[] }> {
-  const page = row.page();
+): Promise<{ left: number; line: string[] }> {
   const more = row.getByRole("button", { name: MORE_FILTERS });
   let left = 0;
   await expect
@@ -790,10 +790,25 @@ async function chipsInLineAndPanel(
   // room or a chip changes size, so what it cuts is read from a settled line.
   const cut = await row.evaluate(cutInChipsLine, shownOf.toString());
   expect(cut, `${where}: the chips line cuts ${cut.join(", ")}`).toEqual([]);
-  let line = await chipNames(row);
+  return { left, line: await chipNames(row) };
+}
+
+/** The chips of the `count` narrowings that are on in the control row `row`, by name and in their
+ *  order: the ones its chips line draws, then the ones its `+N more` lists in the panel it opens.
+ *  The line is read once it stands for them all (`settledChipsLine`), and the panel is then opened
+ *  by a pointer and shut by Escape, which hands the focus back to `+N more`. Another count, or a
+ *  chip drawn twice, fails the row. */
+async function chipsInLineAndPanel(
+  row: Locator,
+  count: number,
+  where: string
+): Promise<{ line: string[]; panel: string[] }> {
+  const page = row.page();
+  const settled = await settledChipsLine(row, count, where);
+  let { line } = settled;
   let listed: string[] = [];
-  if (left > 0) {
-    await more.click();
+  if (settled.left > 0) {
+    await row.getByRole("button", { name: MORE_FILTERS }).click();
     const panel = page.getByRole("dialog", { name: MORE_FILTERS });
     await expect(panel, `${where}: +N more opened no panel named for it`).toBeVisible();
     // The panel lists the chips the line leaves out in the commit that draws it, which was waited
@@ -2227,8 +2242,7 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   await pager.getByRole("button", { name: "Next" }).click();
   await expect(page).toHaveURL(/[?&]page=2/);
   const perPage = listTrigger(pager, "Rows per page");
-  await perPage.click();
-  await listOf(perPage).getByRole("option", { exact: true, name: "100 per page" }).click();
+  await pickFromList(perPage, "100 per page");
   await expect(page).toHaveURL(/[?&]size=100/);
 
   // The grouping, from the display menu.
@@ -4783,7 +4797,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // A Snooze pick: the row stays in its band while the snooze saves, and folds into Later,
     // which starts folded, once the snooze lands.
     await page.goto("/");
-    const snooze = listTrigger(await askControls(page, snoozed.askId), /^Snooze /);
+    const snooze = await rowSnooze(page, snoozed.askId);
     await snooze.focus();
     await pickFromList(snooze, "Later today");
     await expect(inboxRow(page, snoozed.askId), `${where}: the snooze kept its row`).toHaveCount(0);
@@ -5040,8 +5054,7 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
   const pager = control(main, CONTROL.pager);
   await expect(pager).toContainText("120 of 120 issues");
   const perPage = listTrigger(pager, "Rows per page");
-  await perPage.click();
-  await listOf(perPage).getByRole("option", { exact: true, name: "250 per page" }).click();
+  await pickFromList(perPage, "250 per page");
   await expect(page).toHaveURL(/[?&]size=250/);
   const listBox = control(main, CONTROL.dataTable);
   const listRows = listBox.locator("[data-issue-row]");
@@ -6109,8 +6122,11 @@ async function seedPickLists(): Promise<PickListSeed> {
   await patchIssue(header.key, { assignee: "alice" });
   const priorities: { ask: string; issue: string }[] = [];
   for (const width of [1440, 390]) {
-    const owner = await createIssue({ project: "CORE", title: `Priority picked at ${width}` });
-    await patchIssue(owner.key, { priority: 3 });
+    const owner = await createIssue({
+      priority: 3,
+      project: "CORE",
+      title: `Priority picked at ${width}`,
+    });
     const ask = await createAsk(
       owner.key,
       { question: `How urgent is it at ${width}?` },
@@ -6205,7 +6221,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   // the row the column shows; without it, in the row itself.
   const snoozed = seed.snoozes[step] ?? { after: "", bulk: "", row: "" };
   const rowSnooze = listTrigger(
-    hasReadingPane(page) ? page.getByTestId("inbox-pane") : inboxRow(page, snoozed.row),
+    hasReadingPane(page) ? inboxPane(page) : inboxRow(page, snoozed.row),
     /^Snooze /
   );
   const bulkSnooze = listTrigger(
@@ -6240,7 +6256,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const listPriority = priorityOf(main.locator(`[data-issue-row="${prioritized.issue}"]`));
   const cardPriority = priorityOf(main.locator(`[data-board-card="${prioritized.issue}"]`));
   const inboxPriority = priorityOf(
-    hasReadingPane(page) ? page.getByTestId("inbox-pane") : inboxRow(page, prioritized.ask)
+    hasReadingPane(page) ? inboxPane(page) : inboxRow(page, prioritized.ask)
   );
   // The Delivery page over the fixture's custom range, so the Window starts on Custom range….
   const deliveryPage = `/delivery?${DELIVERY_WINDOW}&mode=list`;

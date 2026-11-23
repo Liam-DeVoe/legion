@@ -180,13 +180,17 @@ export function BroadcastComposer({
           onPick={(picked) => {
             if (held) return;
             const mode = deliveryMode(picked);
-            if (mode !== undefined) onDelivery(mode);
+            // A pick of the mode the trigger shows changes nothing, as a select set to the value it
+            // holds fires nothing: a restored broadcast stays the one refused, and a mode the
+            // selection takes stays unpicked.
+            if (mode !== undefined && mode !== delivery) onDelivery(mode);
           }}
           open={modeListOpen}
           optionLabel={capabilityLabel}
           options={DELIVERY_CAPABILITIES}
           searchLabel="Search delivery modes"
-          triggerClassName={`min-h-11 rounded-lg border px-3 py-2 text-left text-sm ${inputClasses(true)}`}
+          size="comfortable"
+          triggerClassName={`rounded-lg border text-left text-sm ${inputClasses(true)}`}
           value={delivery}
         />
       </div>

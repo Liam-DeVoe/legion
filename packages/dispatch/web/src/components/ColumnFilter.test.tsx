@@ -10,9 +10,10 @@ import { render, screen } from "@testing-library/react";
 import { type ReactNode, useState } from "react";
 
 import { MOUSE_CSS, SIZE_CSS, sizeUnder } from "../__tests__/control-size";
+import { DEPLOY_NAMES, DEPLOY_NOUN } from "../__tests__/deploy-table";
 import { ColumnFilter } from "./ColumnFilter";
 import type { ControlSize } from "./control-names";
-import { type DataTableNames, type RowNoun, useDataTable } from "./DataTable";
+import { useDataTable } from "./DataTable";
 import { type LayoutColumns, useTableLayout } from "./table-layout";
 
 /** A row that is not an issue. */
@@ -40,27 +41,6 @@ const LAYOUT_COLUMNS: LayoutColumns = {
   rowAttribute: "data-deploy-row",
 };
 
-const NAMES: DataTableNames = {
-  groupAttribute: "data-deploy-group",
-  keymap: {
-    next: { id: "deploys-next", keys: "j", label: "Next deploy" },
-    open: { id: "deploys-open", keys: "o", label: "Open deploy" },
-    openOnEnter: { id: "deploys-open-enter", keys: "Enter", label: "Open the focused deploy" },
-    previous: { id: "deploys-previous", keys: "k", label: "Previous deploy" },
-    scope: "agents",
-    select: { id: "deploys-select", keys: "x", label: "Select or deselect the focused deploy" },
-  },
-  linkAttribute: "data-deploy-link",
-  rowAttribute: "data-deploy-row",
-};
-
-const NOUN: RowNoun = {
-  group: { many: "groups", one: "group" },
-  line: { many: "rows", one: "row" },
-  many: "deploys",
-  one: "deploy",
-};
-
 const DEPLOYS: Deploy[] = [
   { id: "d1", region: "eu", service: "billing" },
   { id: "d2", region: "us", service: "search" },
@@ -84,7 +64,7 @@ function Funnels({ size }: { size?: ControlSize }): ReactNode {
     columns: COLUMNS,
     getRowId: (row) => row.id,
     layout,
-    names: NAMES,
+    names: DEPLOY_NAMES,
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     onGroupingChange: setGrouping,
@@ -101,7 +81,7 @@ function Funnels({ size }: { size?: ControlSize }): ReactNode {
         column={column}
         counts={COUNTS}
         key={column.id}
-        noun={NOUN}
+        noun={DEPLOY_NOUN}
         onOpenChange={() => undefined}
         open={false}
         size={size}

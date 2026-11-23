@@ -849,7 +849,8 @@ export function DeliveryPage(): ReactNode {
               />
               <div className={`flex items-center gap-2 ${textMutedOnCanvas}`}>
                 {/* The list is named for the field itself, so its words here are for the eye
-                    alone. */}
+                    alone. A pick of the choice it shows writes nothing, as a select set to the
+                    value it holds fires nothing. */}
                 <span aria-hidden="true">Color merges by</span>
                 <MultiSelect
                   emptyMessage="No choice matches that."
@@ -858,7 +859,9 @@ export function DeliveryPage(): ReactNode {
                   onOpenChange={setColorListOpen}
                   onPick={(picked) => {
                     const colorBy = COLOR_FACETS.find((facet) => facet === picked);
-                    if (colorBy !== undefined) setView({ ...state.view, colorBy });
+                    if (colorBy !== undefined && colorBy !== state.view.colorBy) {
+                      setView({ ...state.view, colorBy });
+                    }
                   }}
                   open={colorListOpen}
                   optionLabel={(facet) =>

@@ -42,12 +42,13 @@ test("a read that fails ends the wait at once with no reason", async () => {
   });
 });
 
-// `DispatchQueryClient` answers an invalidation of an idle query with the query's own fetch, which
-// TanStack pauses while the browser is offline: that fetch does not settle until the network
-// returns, and no request deadline runs while it is paused. The bound is the wait's own timer, so
-// the wait ends at the request deadline (`REQUEST_DEADLINE_MS`) all the same, and says the network
-// is why.
-test("an invalidation paused offline is let go at the request deadline, saying Dispatch could not be reached", async () => {
+/** Runs `body` on the fake clock with a client of its own whose issues list an observer reads,
+ *  once that read has settled and the browser has gone offline. The client is cleared before the
+ *  browser comes back online, so a read still paused goes with it and starts no request after the
+ *  test. */
+async function onOfflineIssues(
+  body: (queryClient: DispatchQueryClient) => Promise<void>
+): Promise<void> {
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.mount();
   const observer = new QueryObserver(queryClient, {
@@ -59,27 +60,47 @@ test("an invalidation paused offline is let go at the request deadline, saying D
     await onFakeClock(async () => {
       await settle();
       onlineManager.setOnline(false);
-      const invalidation = queryClient.invalidateQueries({ queryKey: ["issues"] });
-      const invalidated = watch(invalidation);
-      const answer = watch(readWithinBound(invalidation));
-      await tick(REQUEST_DEADLINE_MS - 2);
-      expect({
-        answer: answer(),
-        fetch: queryClient.getQueryState(["issues"])?.fetchStatus,
-        invalidation: invalidated(),
-      }).toEqual({ answer: "waiting", fetch: "paused", invalidation: "waiting" });
-
-      await tick(1);
-      expect({ answer: answer(), invalidation: invalidated() }).toEqual({
-        answer: "Dispatch could not be reached",
-        invalidation: "waiting",
-      });
+      await body(queryClient);
     });
   } finally {
-    onlineManager.setOnline(true);
     unsubscribe();
+    queryClient.clear();
     queryClient.unmount();
+    onlineManager.setOnline(true);
   }
+}
+
+/** Asks for the issues list again while the browser is offline, as the live feed does before a
+ *  write's own read, and waits until the network has paused that fetch. */
+async function pauseIssuesRead(queryClient: DispatchQueryClient): Promise<void> {
+  void queryClient.invalidateQueries({ queryKey: ["issues"] });
+  await settle();
+  expect(queryClient.getQueryState(["issues"])?.fetchStatus).toBe("paused");
+}
+
+// `DispatchQueryClient` answers an invalidation of an idle query with the query's own fetch, which
+// TanStack pauses while the browser is offline: that fetch does not settle until the network
+// returns, and no request deadline runs while it is paused. The bound is the wait's own timer, so
+// the wait ends at the request deadline (`REQUEST_DEADLINE_MS`) all the same, and says the network
+// is why.
+test("an invalidation paused offline is let go at the request deadline, saying Dispatch could not be reached", async () => {
+  await onOfflineIssues(async (queryClient) => {
+    const invalidation = queryClient.invalidateQueries({ queryKey: ["issues"] });
+    const invalidated = watch(invalidation);
+    const answer = watch(readWithinBound(invalidation));
+    await tick(REQUEST_DEADLINE_MS - 2);
+    expect({
+      answer: answer(),
+      fetch: queryClient.getQueryState(["issues"])?.fetchStatus,
+      invalidation: invalidated(),
+    }).toEqual({ answer: "waiting", fetch: "paused", invalidation: "waiting" });
+
+    await tick(1);
+    expect({ answer: answer(), invalidation: invalidated() }).toEqual({
+      answer: "Dispatch could not be reached",
+      invalidation: "waiting",
+    });
+  });
 });
 
 // A query whose own fetch the network has already paused is read again no sooner for a caller
@@ -89,68 +110,31 @@ test("an invalidation paused offline is let go at the request deadline, saying D
 // after the press where the list's read was already paused, and the bar went with nothing said
 // (INFRA-3135, round 24).
 test("a read waiting on a paused fetch is let go at the request deadline, not at once", async () => {
-  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.mount();
-  const observer = new QueryObserver(queryClient, {
-    queryFn: () => Promise.resolve("listed"),
-    queryKey: ["issues"],
+  await onOfflineIssues(async (queryClient) => {
+    await pauseIssuesRead(queryClient);
+    // The action's own read of the list, asked while that fetch is still paused.
+    const invalidation = waitingForPausedReads(queryClient, () =>
+      queryClient.invalidateQueries({ queryKey: ["issues"] })
+    );
+    const answer = watch(readWithinBound(invalidation));
+    await tick(REQUEST_DEADLINE_MS - 2);
+    expect(answer()).toBe("waiting");
+
+    await tick(1);
+    expect(answer()).toBe("Dispatch could not be reached");
   });
-  const unsubscribe = observer.subscribe(() => {});
-  try {
-    await onFakeClock(async () => {
-      await settle();
-      onlineManager.setOnline(false);
-      // The read the live feed asked for before the action, which the network paused.
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-      await settle();
-      expect(queryClient.getQueryState(["issues"])?.fetchStatus).toBe("paused");
-
-      // The action's own read of the list, asked while that fetch is still paused.
-      const invalidation = waitingForPausedReads(queryClient, () =>
-        queryClient.invalidateQueries({ queryKey: ["issues"] })
-      );
-      const answer = watch(readWithinBound(invalidation));
-      await tick(REQUEST_DEADLINE_MS - 2);
-      expect(answer()).toBe("waiting");
-
-      await tick(1);
-      expect(answer()).toBe("Dispatch could not be reached");
-    });
-  } finally {
-    onlineManager.setOnline(true);
-    unsubscribe();
-    queryClient.unmount();
-  }
 });
 
 // Every other caller keeps TanStack's own answer for a query whose fetch is already paused: the
 // invalidation resolves at once, so a hold with no bound of its own does not wait on that fetch.
 // Only the call that asks waits (`waitingForPausedReads`).
 test("an invalidation that does not ask to wait resolves at once for a query whose fetch is paused", async () => {
-  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.mount();
-  const observer = new QueryObserver(queryClient, {
-    queryFn: () => Promise.resolve("listed"),
-    queryKey: ["issues"],
+  await onOfflineIssues(async (queryClient) => {
+    await pauseIssuesRead(queryClient);
+    const invalidated = watch(queryClient.invalidateQueries({ queryKey: ["issues"] }));
+    await settle();
+    expect(invalidated()).toBeUndefined();
   });
-  const unsubscribe = observer.subscribe(() => {});
-  try {
-    await onFakeClock(async () => {
-      await settle();
-      onlineManager.setOnline(false);
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-      await settle();
-      expect(queryClient.getQueryState(["issues"])?.fetchStatus).toBe("paused");
-
-      const invalidated = watch(queryClient.invalidateQueries({ queryKey: ["issues"] }));
-      await settle();
-      expect(invalidated()).toBeUndefined();
-    });
-  } finally {
-    onlineManager.setOnline(true);
-    unsubscribe();
-    queryClient.unmount();
-  }
 });
 
 // Online, a read can still be out at the bound - a Dispatch slow to answer, a read retried - and

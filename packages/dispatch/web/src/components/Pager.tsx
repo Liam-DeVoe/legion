@@ -40,7 +40,8 @@ const sentence = (word: string) => `${word.charAt(0).toLocaleUpperCase()}${word.
  *
  * How many rows a page holds is picked from the shared single pick (`MultiSelect`), whose text
  * box narrows the page sizes. The list holds each size as a string, and a pick hands the table
- * the number back.
+ * the number back. A pick of the size a page holds sets nothing, as a `<select>` set to the value
+ * it holds fires nothing.
  */
 export function Pager<TData>({
   allRows = Number.MAX_SAFE_INTEGER,
@@ -99,7 +100,9 @@ export function Pager<TData>({
         label={`${sentence(line.many)} per page`}
         mode="single"
         onOpenChange={setChoosing}
-        onPick={(picked) => table.setPageSize(Number(picked))}
+        onPick={(picked) => {
+          if (picked !== String(pageSize)) table.setPageSize(Number(picked));
+        }}
         open={choosing}
         optionLabel={(value) =>
           Number(value) >= allRows ? `All ${line.many}` : `${value} per page`

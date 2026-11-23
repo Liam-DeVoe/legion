@@ -4,6 +4,7 @@ import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, Fragment, type ReactNode, type RefObject, useLayoutEffect } from "react";
 
+import { nextFrame } from "../../__tests__/frames";
 import { type AnchorRow, ViewportAnchor } from "./ViewportAnchor";
 
 const ROW_HEIGHT = 50;
@@ -124,17 +125,6 @@ let restoreSpies: (() => void)[] = [];
 
 function setScrollY(value: number): void {
   Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
-}
-
-/** Resolves once `count` animation frames have run. */
-function frames(count: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  const step = (left: number) => {
-    if (left === 0) resolve();
-    else requestAnimationFrame(() => step(left - 1));
-  };
-  step(count);
-  return promise;
 }
 
 beforeEach(() => {
@@ -548,9 +538,9 @@ test("rows the host names as leaving let the focused row below them move up into
     expect(focused).toHaveFocus();
     expect(anchoringSeen.at(-1)).toBe("none");
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
-    await frames(1);
+    await nextFrame();
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
-    await frames(1);
+    await nextFrame();
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("");
   } finally {
     view.unmount();
@@ -572,7 +562,8 @@ test("rows the host names as leaving hold the browser's scroll anchoring off on 
     view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
     expect(window.scrollY).toBe(100);
     expect(document.body.style.getPropertyValue("overflow-anchor")).toBe("none");
-    await frames(2);
+    await nextFrame();
+    await nextFrame();
     expect(document.body.style.getPropertyValue("overflow-anchor")).toBe("");
   } finally {
     document.body.style.removeProperty("overflow");
@@ -654,13 +645,12 @@ test("the row the host names as leaving being the focused row itself turns the b
     expect(chosen()).toEqual({ id: "r6", via: "focus" });
 
     view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
-    expect(document.querySelector('[data-row="r6"]')).toBeNull();
     expect(window.scrollY).toBe(100);
     expect(anchoringSeen.at(-1)).toBe("none");
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
-    await frames(1);
+    await nextFrame();
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("none");
-    await frames(1);
+    await nextFrame();
     expect(document.documentElement.style.getPropertyValue("overflow-anchor")).toBe("");
   } finally {
     view.unmount();

@@ -12,6 +12,7 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { realClock } from "../../__tests__/fake-clock";
+import { heldNotDisabled } from "../../__tests__/held-press";
 import { bodies } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { listOf, openList, pick, pickNamed, rows, textBoxes } from "../../__tests__/list-picks";
@@ -545,8 +546,7 @@ test("PriorityControl keeps mouse, pointer and touch presses on its trigger and 
     expect(reached, "a bare press on the trigger reached the card").toEqual([]);
     expect(openPriorityList(), "a bare press opened the list").toBeNull();
 
-    await user.click(trigger());
-    const list = await screen.findByRole("listbox", { name: `${PRIORITY} options` });
+    const list = await openList(user, PRIORITY);
     expect(reached, "the press that opened the list reached the card").toEqual([]);
     await user.click(within(list).getByRole("option", { name: "P2" }));
     expect(reached, "the press in the list reached the card").toEqual([]);
@@ -581,8 +581,7 @@ test("the host's disabled holds the priority's trigger by aria-disabled: it keep
     await user.click(within(list).getByRole("option", { name: "P2" }));
     expect(trigger()).toHaveFocus();
 
-    expect(trigger()).toHaveAttribute("aria-disabled", "true");
-    expect(trigger().disabled).toBe(false);
+    expect(heldNotDisabled(trigger(), "the priority's trigger")).toBe(true);
     await user.keyboard("{Enter}");
     await user.keyboard("1");
     await user.click(trigger());
