@@ -1107,31 +1107,11 @@ func TestCensusAdmitsTheSplitProjectKeyMigrationsAndRefusesTheOldIndexShape(t *t
 	}
 }
 
-// TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough holds the census to admitting the two indexes
-// the erase's reads under its owner locks probe (20261119020000 on comment_deliveries.reply_id,
-// 20261119020100 on asks.handed_back_reply_id) and the one an address's personal tokens are read
-// through (20261119020200 on canonical_login(agent_tokens.owner)), over production before this
-// release (requireCensusAdmitsConcurrentIndexes).
-func TestCensusAdmitsTheReplyIndexesTheEraseReadsThrough(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261119020000, 20261119020100, 20261119020200)
-}
-
-// TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough holds the census to admitting three
-// indexes: the two the erase's reads of a block's related-item checks probe (20261119020300 on
-// related_checks.source_block_id, 20261119020400 on the source_issue_key of the issues' own
-// checks), and the one the record of a check probes graph_erasures through for an erase of its
-// source (20261119020500 on the document of each erased block), over production before this
-// release (requireCensusAdmitsConcurrentIndexes).
-func TestCensusAdmitsTheRelatedCheckIndexesTheEraseReadsThrough(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261119020300, 20261119020400, 20261119020500)
-}
-
-// TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough holds the census to admitting the
-// index a person's erase reads comments through for the comments a session the server proved
-// theirs wrote (20261119020600, on user_threads_login(author->>'owner') of those comments), over
+// TestCensusAdmitsTheCanonicalOwnerIndex holds the census to admitting the index an address's
+// personal tokens are read through (20261119020200 on canonical_login(agent_tokens.owner)), over
 // production before this release (requireCensusAdmitsConcurrentIndexes).
-func TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261119020600)
+func TestCensusAdmitsTheCanonicalOwnerIndex(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261119020200)
 }
 
 // TestCensusAdmitsTheBackfillIndexes holds the census to admitting the four indexes envoy-dispatch

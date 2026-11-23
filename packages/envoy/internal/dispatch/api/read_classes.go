@@ -58,7 +58,7 @@ var probeObjects = []probeObject{
 	probePriority, probeDeliveryRun, probeBroadcast, probeGoingRun, probeRepositoryOwner,
 	probeRepositoryName, probeLivePause, probeNearCopyCheck,
 	probeResult, probeThread, probeAttempt, probeEmail, probeGroup, probeAgentToken, probeSessionGroup,
-	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeMappedRepository, probeStep,
+	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeStep,
 }
 
 // reads is one entry of readClasses.

@@ -113,7 +113,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"delivery_pull_requests.sessions":           {deploymentColumn, "a pull request's own sessions, which the Delivery timeline and measures (class project) name to whoever is shown that pull request: a reader who sees its issue, or an open viewer for one that names no issue (readDeliveryRows)"},
 	"delivery_session_group_members.session_id": {deploymentColumn, "the sessions of a Delivery session group, which the timeline and measures (class project) answer only in a group whose every session passes SessionClause for the reader (groupsShown)"},
 	"design_gates.artifact_id":                  {filteredReference, "a document id the write stores unread: issueDesignGatesStatement leaves out a gate naming a document its reader does not see"},
-	"design_gates.issue":                        {ownColumn, "the gate's issue"},
+	"design_gates.issue":                        {filteredReference, "the issue whose gate records a document, which can be an issue of another project than the document's: the superseded-approval advice of a document write (storeArtifact, editArtifact) reads the gates recording the written document (supersededApprovalGates) and leaves out a gate whose issue its writer does not see, by access.ProjectClause on the issue's project with the writer's viewer; the issue read answers an issue's own gates without this column (issueDesignGatesStatement)"},
 	"doc_ask_block_authors.artifact_id":         {internalColumn, "settlement bookkeeping"},
 	"doc_checkpoints.artifact_id":               {internalColumn, "the document's CRDT checkpoint"},
 	"doc_closed_edit_sources.artifact_id":       {internalColumn, "settlement bookkeeping"},
@@ -272,7 +272,8 @@ type crossReferences struct {
 // writes append: each issue waits on an issue of the other project and is routed to a session that
 // acted in the other alone; each issue's new ask is followed by that session; each issue's comment
 // mentions that session and cites the other's issue and document; each issue messages that
-// session; and each issue's design gate names the other's document. PUB's issue is assigned to bob,
+// session; and each issue's design gate names the other's document, so each document is recorded
+// by a gate of the other project's issue (design_gates.issue). PUB's issue is assigned to bob,
 // whom its new ask then waits on; PRIV's issue is assigned to dana, PRIV's default assignee, whom a
 // reader that sees PRIV alone does not see, and its ask, which waits on dana as the assignee (an
 // ask asked of its issue's assignee stores no asked_of), is handed to alice, whom that reader does
@@ -291,7 +292,7 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 	cross := crossReferences{publicPerson: seedBob, privatePerson: hiddenPerson,
 		privateRole: "legion-" + strings.ToLower(seedPrivate) + "-reviewer", privateRepository: "acme/" + strings.ToLower(seedPrivate) + "-app"}
 	carol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/default-assignee", map[string]any{"assignee": cross.privatePerson})
-	carol(http.MethodPut, "/api/v1/settings/repo-projects/"+cross.privateRepository, map[string]any{"project": seedPrivate, "default": true})
+	carol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/default-repository", map[string]any{"repo": cross.privateRepository})
 	// session-priv, which acted in PRIV, holds the claim on PUB's issue, so that issue's reads and
 	// the payloads of its later writes name a holder the walkers that do not see PRIV may not see.
 	fixture.asSession(t, sessionOfPrivate, seedPublic, http.MethodPost, "/api/v1/issues/"+fixture.public.issue+"/claim", map[string]any{}, http.StatusOK)

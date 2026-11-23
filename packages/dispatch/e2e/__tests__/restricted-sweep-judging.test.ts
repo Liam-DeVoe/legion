@@ -407,10 +407,12 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     rowLimit("short")
   );
 
+  // The cookie is the proxy's alone: without it each proxy read is UNKNOWN, while the direct
+  // messages and the agent view, the full member's token's, still run and hold.
   test(
-    "without the full member's cookie, a proxy that reads no token leaves the run UNKNOWN, naming each read",
+    "without the full member's cookie, a proxy that reads no token leaves the run UNKNOWN, naming each read, and the token's rows still hold",
     async () => {
-      const { code, stdout } = await sweep([], {
+      const { code, directBy, stdout } = await sweep([], {
         ...served,
         env: {},
         proxyReadsCookies: true,
@@ -419,9 +421,14 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       expect(failures(stdout)).toEqual([]);
       for (const shape of proxyReads()) {
         expect(stdout).toContain(
-          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, as a repository the App is not installed on, but the full member is answered 503 for TGT's repository as for one the App is not installed on (503), so the read could not fail: the proxy reads the browser's person alone, whom SWEEP_FULL_COOKIE names\n`
+          `\nUNKNOWN GET /api/github/rest/repos/{owner}/{repo}/${shape}: the member is answered 503, as a repository the App is not installed on, but SWEEP_FULL_COOKIE is not given, and the proxy reads the browser's person alone, so the full member's read of it was not made\n`
         );
       }
+      expect(stdout).toMatch(/^ok {6}\/ws\/live: .* \(controls\)$/m);
+      expect(stdout).toContain(
+        "\nok      /ws/live agent view of {session_id}: no one answers for it (can fail)\n"
+      );
+      expect(directBy).toEqual(["token"]);
       expect(stdout).not.toContain("PASS");
       expect(verdictOf(stdout)).toBe(
         `UNKNOWN: nothing reached the member, but this run did not prove it, for the ${proxyReads().length} reasons above`

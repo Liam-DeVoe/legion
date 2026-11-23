@@ -165,11 +165,12 @@ type Rig struct {
 type Option func(*rigConfig)
 
 type rigConfig struct {
-	lease         time.Duration
-	maxConns      int
-	minters       map[string]requests.Minter
-	personPods    []personPod
-	projectAccess *projectaccess.Client
+	lease          time.Duration
+	maxConns       int
+	minters        map[string]requests.Minter
+	accessLifetime time.Duration
+	personPods     []personPod
+	projectAccess  *projectaccess.Client
 	// projectAccessNow is the clock WithDispatchAccess gives the client and the gate; nil is the
 	// wall clock.
 	projectAccessNow func() time.Time
@@ -223,6 +224,9 @@ func WithEdgeDeviceLogin(wrap func(api.DeviceLoginFunc) api.DeviceLoginFunc) Opt
 type ProviderOption func(*providerConfig)
 
 type providerConfig struct {
+	// accessLifetime is how long the access tokens the provider issues live; zero is fifteen
+	// minutes, as main sets it where BROKER_ACCESS_TOKEN_SECONDS is unset.
+	accessLifetime      time.Duration
 	projectAccess       projectaccess.Access
 	hold                *hold.Gate
 	google              *oidctest.Issuer
@@ -307,6 +311,12 @@ func WithPersonSignIns(google *oidctest.Issuer, machineAccount string) Option {
 	}
 }
 
+// WithAccessLifetime makes every access token the broker issues live d, a machine login's and an
+// exchanged one's alike, as BROKER_ACCESS_TOKEN_SECONDS sets it; fifteen minutes by default.
+func WithAccessLifetime(d time.Duration) Option {
+	return func(c *rigConfig) { c.accessLifetime = d }
+}
+
 // WithProfiles serves file as the deployment's profiles file, the JSON BROKER_PROFILES_FILE
 // names (policytest.ProfilesFile builds one), so a test asks for a profile by its name as a session
 // of a deployment that lists it does. Every github-app secret the policy serves is a profile's
@@ -345,7 +355,7 @@ func WithPersonPod(account, service, person string) Option {
 // (storetest.Open's own contract).
 func NewRig(t *testing.T, options ...Option) *Rig {
 	t.Helper()
-	config := rigConfig{lease: time.Hour}
+	config := rigConfig{lease: time.Hour, accessLifetime: 15 * time.Minute}
 	for _, option := range options {
 		option(&config)
 	}
@@ -497,6 +507,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		// hold gate.
 		providerOptions = append(providerOptions, func(c *providerConfig) { c.projectAccess = config.projects })
 	}
+	providerOptions = append(providerOptions, func(c *providerConfig) { c.accessLifetime = config.accessLifetime })
 	provider := NewOAuthProvider(t, st, issuer, providerOptions...)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -613,6 +624,10 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 	for _, opt := range opts {
 		opt(&config)
 	}
+	accessLifetime := config.accessLifetime
+	if accessLifetime == 0 {
+		accessLifetime = 15 * time.Minute
+	}
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
 	secret, err := oauthStore.Secret(context.Background())
@@ -645,7 +660,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 		exchangeConfig.PersonSignIns = config.personSignInRecords
 	}
 	provider, err := oauth.New(oauth.Config{
-		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute,
+		Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: accessLifetime,
 		RefreshLifetime: 7 * 24 * time.Hour, VerificationURL: MachineLoginURL, ProofSkew: time.Minute,
 		Exchange: exchangeConfig,
 	}, oauthStore)

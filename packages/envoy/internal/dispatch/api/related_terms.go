@@ -130,11 +130,10 @@ from search_term_totals where project_key = $1 for update`
 // A row whose owner is gone names no project. No pass can tell whose counts held that item, so
 // searchTermQueueSweep drops the row, and the counts it was to correct stay as they are: a
 // project that holds a snapshot is counted by step passes alone (searchTermTotalsMode), and
-// nothing in this build but the erase (TakeErasedTermTotalsTx, ForgetErasedTermsTx) clears a
-// snapshot, so no full build comes to repair them. Clearing the project's snapshot is what asks
-// for one - `update search_term_totals set snapshot = null where project_key = $1`, after which the
-// next pass counts every item of that project again. No production code path deletes an issue or
-// an artifact, so no row reaches this sweep today.
+// nothing in this build clears a snapshot, so no full build comes to repair them. Clearing the
+// project's snapshot is what asks for one - `update search_term_totals set snapshot = null where
+// project_key = $1`, after which the next pass counts every item of that project again. No
+// production code path deletes an issue or an artifact, so no row reaches this sweep today.
 const searchTermQueueProjectSQL = `coalesce(
            (select i.project_key from issues i where i.key = q.issue_key),
            (select a.project_key from artifacts a where a.id = q.artifact_id and (q.kind <> 'document' or a.kind = 'doc')))`
@@ -307,21 +306,13 @@ const (
 	searchTermModeFull = "full"
 )
 
-// searchTermStatsDB is what one project's refresh begins its transaction on: the server's pool,
-// or the one connection the erase holds (grapherase.Erase), which counts again after its commit
-// the projects it took erased words out of (RefreshSearchTermStats).
-type searchTermStatsDB interface {
-	Begin(ctx context.Context) (pgx.Tx, error)
-}
-
 // refreshSearchTermStats brings the project's search_term_stats rows and its search_term_totals
 // row up to date in one transaction, and answers what that took. It applies the queued changes
 // where a pass of this build wrote the totals row last, and counts every item of the project
 // again where one did not: a project with no totals row (one created since the last pass), one no
-// pass of this build has counted, one whose refreshed_at another writer moved, and one whose
-// snapshot an erase cleared (TakeErasedTermTotalsTx, ForgetErasedTermsTx).
-func refreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project string) (searchTermRefresh, error) {
-	tx, err := db.Begin(ctx)
+// pass of this build has counted, and one whose refreshed_at another writer moved.
+func refreshSearchTermStats(ctx context.Context, pool *store.Pool, project string) (searchTermRefresh, error) {
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return searchTermRefresh{}, err
 	}
@@ -344,36 +335,13 @@ func refreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project s
 		}
 		return searchTermRefresh{Items: items, Mode: searchTermModeStep, Changes: changes}, tx.Commit(ctx)
 	}
-	items, err = rebuildSearchTermStats(ctx, tx, project)
-	if err != nil {
+	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
+		return searchTermRefresh{}, err
+	}
+	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
 		return searchTermRefresh{}, err
 	}
 	return searchTermRefresh{Items: items, Mode: searchTermModeFull, Changes: items}, tx.Commit(ctx)
-}
-
-// RefreshSearchTermStats is refreshSearchTermStats, one project of a refresh pass in a
-// transaction of its own on db, for the erase (grapherase.Erase): it runs it after its commit and
-// outside its locks for each project ForgetErasedTermsTx answered. The erase cleared each one's
-// snapshot (TakeErasedTermTotalsTx, ForgetErasedTermsTx), so the pass counts the project in full
-// from its items as the erase left them, unless a pass of the project counted it so since the
-// commit, in which case this one applies what was queued after that pass.
-func RefreshSearchTermStats(ctx context.Context, db searchTermStatsDB, project string) error {
-	_, err := refreshSearchTermStats(ctx, db, project)
-	return err
-}
-
-// rebuildSearchTermStats counts every item of project again inside tx, which holds the project's
-// totals row (searchTermTotalsMode), and answers the project's item count: the project's rows go
-// and searchTermStatsRebuild writes them again.
-func rebuildSearchTermStats(ctx context.Context, tx pgx.Tx, project string) (int, error) {
-	if _, err := tx.Exec(ctx, searchTermStatsClear, project); err != nil {
-		return 0, err
-	}
-	var items int
-	if err := tx.QueryRow(ctx, searchTermStatsRebuild, project, searchTermItemsTSStat).Scan(&items); err != nil {
-		return 0, err
-	}
-	return items, nil
 }
 
 // RefreshEverySearchTermStats is one pass of RunSearchTermStatsRefresh: every project, each in its

@@ -130,11 +130,11 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 // alice may make that names it: the row, the path of an object she sees (PUB's issue, project or
 // conversation), and the body with %s where the named object goes. Every row refuses an object
 // nobody holds, so it refuses PRIV's alike: the design gates refuse a document their writer may
-// not see as one naming no document (refuseUnseenGateDocuments). An external reference names a
-// repository PRIV maps, acme/p_x, or acme/p.x, which no mapping holds: a mapping of a project the
-// caller cannot see answers as no mapping. A broadcast's session names privateSession, which has
-// acted in PRIV, to alice, and s-pub, which has acted in no project, to her token that lists PUB
-// (probeFill.hiddenValue).
+// not see as one naming no document (refuseUnseenGateDocuments). A broadcast's session names
+// privateSession, which has acted in PRIV, to alice, and s-pub, which has acted in no project, to
+// her token that lists PUB (probeFill.hiddenValue). An import's external reference names no object
+// of a project: since #4457 an import names its project in its body and reads no repository
+// mapping, so a repository a mapping of PRIV holds is a name like any other there.
 var bodyReferences = []struct {
 	row, field, path string
 	object           probeObject
@@ -151,8 +151,6 @@ var bodyReferences = []struct {
 	{"POST /api/v1/agents/{session_id}/messages", "in_reply_to", "/api/v1/agents/s1/messages", probeMessage, `{"body":"A walked reply.","delivery":"btw","in_reply_to":"%s"}`},
 	{"PUT /api/v1/issues/{key}/design-gates", "gates[].artifact_id", "/api/v1/issues/PUB-1/design-gates", probeDocument, `{"gates":[{"step":"spec","artifact_id":"%s"}]}`},
 	{"POST /api/v1/projects/{key}/related", "exclude_issue", "/api/v1/projects/PUB/related", probeIssue, `{"text":"walked","exclude_issue":"%s"}`},
-	{"POST /api/v1/issues", "external", "/api/v1/issues", probeMappedRepository, `{"project":"PUB","title":"A walked import","external":"acme/%s#7"}`},
-	{"POST /api/v1/issues", "external (no project)", "/api/v1/issues", probeMappedRepository, `{"title":"A walked import","external":"acme/%s#7"}`},
 	{"POST /api/v1/broadcasts", "session_ids", "/api/v1/broadcasts", probeSession, `{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`},
 }
 
