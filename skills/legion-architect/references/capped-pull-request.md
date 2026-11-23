@@ -7,7 +7,7 @@ A request for changes and the fail of a review step are what it counts, except a
 Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
 
 - **Narrow**: the change is sound but each round finds more around it.
-  Tell the implementer, and a reviewer step where there is one, which checks the next round answers, dropping no requirement.
+  Tell the implementation step's agent, and a reviewer step's where there is one, which checks the next round answers, dropping no requirement.
   A correctness finding or a clear fix in a touched file stays in this pull request.
 
 - **Split**: part of the work cannot settle here.
