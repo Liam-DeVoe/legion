@@ -6,11 +6,15 @@ import { bandKind } from "./band";
 import { gridKind } from "./grid";
 import type { ChartKind } from "./kind";
 import { lanesKind } from "./lanes";
+import { numberKind } from "./number";
+import { textKind } from "./text";
 import { xyKind } from "./xy";
 
 export const chartKinds: Readonly<Record<string, ChartKind>> = {
   band: bandKind,
   grid: gridKind,
   lanes: lanesKind,
+  number: numberKind,
+  text: textKind,
   xy: xyKind,
 };
