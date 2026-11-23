@@ -86,23 +86,28 @@ func TestATopicPublishWhoseAckTheDropLostCostsOne(t *testing.T) {
 }
 
 // A topic publish no sender limit counts, whose acknowledgement the connection's drop lost,
-// answers 200 naming the stored copy's event, as the route answered it before this change: the
-// route reads no duplicate verdict for it, so it publishes it through PublishWithin, which the bus
-// sends again on the new connection after the loss (sendStored), and the stream, which holds the
-// first send's copy under the message's id, answers the second as that copy's duplicate. So the
-// stream holds one copy, and the answer's event_id is that copy's. That holds for each id form: a
-// key the route mints for the request (publish.<id>), which names its event and is the id, and a
-// dedupe_key the caller chose that names no event (caller.<name>), whose id is the envelope's own
-// event id (bus.envelopeMsgID). The hold withholds the first send's acknowledgement, so that send
-// reached the stream, and then drops the connection, which the client reconnects through
-// (testnats.ReplyHold.Drop): the second send is answered inside the route's own budget
-// (sendRequestBudget) once the client has reconnected, about a second after the drop.
+// answers 200 naming the stored copy's event, with no duplicate, as the route answered it before
+// this change: the route publishes it through PublishResendingWithin, which the bus sends again
+// on the new connection after the loss (sendStored), and the stream, which holds the first send's
+// copy under the message's id, answers the second as that copy's duplicate, at its sequence, Resent
+// (bus.StoredAck). publishHeld reads that copy back, finds the request's own event id on it, and
+// answers it as this request's own copy, not as a repeat (requestRecord.answerStored). So the
+// stream holds one copy, the answer's event_id is that copy's, and duplicate is false. That holds
+// for each id form: a key the route mints for the request (publish.<id>), which names its event
+// and is the id, and a dedupe_key the caller chose that names no event (caller.<name>), whose id is
+// the envelope's own event id (bus.envelopeMsgID). The hold withholds the first send's
+// acknowledgement, so that send reached the stream, and then drops the connection, which the
+// client reconnects through (testnats.ReplyHold.Drop): the second send is answered inside the
+// route's own budget (sendRequestBudget) once the client has reconnected, about a second after the
+// drop. A real repeat of another request under the same key is answered duplicate, with the copy
+// the stream holds (TestAPublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy).
 //
 // The controls: this row with the route publishing every message through PublishAckWithin, as it
-// publishes one its sender limit counts, where the publish is sent once and answers 503; and the
-// caller-key row with envelopeMsgID giving such a key no id, where the bus sends the publish once,
-// as it sends every write with no id (sendStored), so the route answers 503 and the stream holds
-// the one copy the first send stored.
+// publishes one its sender limit counts, where the publish is sent once and answers 503; this row
+// with publishHeld taking every duplicate verdict for a repeat, where the 200 says duplicate; and
+// the caller-key row with envelopeMsgID giving such a key no id, where the bus sends the publish
+// once, as it sends every write with no id (sendStored), so the route answers 503 and the stream
+// holds the one copy the first send stored.
 func TestATopicPublishNoLimitCountsAnswersItsStoredCopyAcrossALostAck(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -126,6 +131,9 @@ func TestATopicPublishNoLimitCountsAnswersItsStoredCopyAcrossALostAck(t *testing
 				t.Fatalf("the hold withheld no acknowledgement of the publish, so no drop took it; body %s", answer.raw)
 			}
 			answer.requireStatus(t, "the uncounted publish whose acknowledgement the drop lost", http.StatusOK)
+			if answer.Duplicate {
+				t.Fatalf("the publish sent again after the lost acknowledgement answered duplicate, want its own copy with no duplicate; body %s", answer.raw)
+			}
 			var published contracts.Envelope
 			if err := json.Unmarshal([]byte(answer.raw), &published); err != nil || published.EventID == "" {
 				t.Fatalf("the publish's answer %s names no event (%v)", answer.raw, err)
