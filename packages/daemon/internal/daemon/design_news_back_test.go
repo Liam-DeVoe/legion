@@ -9,7 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/plan"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -22,7 +22,7 @@ func (r *newsReconcileRig) planSteps(key string, position int, words ...string) 
 		GivenBy: mustClaimToken(r.t, reconcileRoot, claim.RoleArchitect), GivenAt: time.Now().UTC().Add(-time.Hour)}
 	task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.",
 		State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: position}}
-	roles := plan.BuiltinRoles()
+	roles := planwords.BuiltinRoles()
 	steps := make([]record.PlanStep, 0, len(words))
 	for i, word := range words {
 		role, agent, _ := strings.Cut(word, ":")
