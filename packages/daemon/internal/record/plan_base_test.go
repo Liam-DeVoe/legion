@@ -1,6 +1,7 @@
 package record
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/plan"
@@ -61,13 +62,38 @@ func TestTheBaseOfATask(t *testing.T) {
 		{"e", "main", false},
 		{"r", "main", false},
 	} {
-		if base, join := stored.BaseOf(issue, tc.task); base != tc.base || join != tc.join {
-			t.Errorf("BaseOf(%s) = %s, %t, want %s, %t", tc.task, base, join, tc.base, tc.join)
+		if base, join, err := stored.BaseOf(issue, tc.task); err != nil || base != tc.base || join != tc.join {
+			t.Errorf("BaseOf(%s) = %s, %t, %v, want %s, %t", tc.task, base, join, err, tc.base, tc.join)
 		}
 	}
 
 	one := basePlan(baseTask{"a", nil, "", []string{"implementer", "reviewer"}})
-	if base, join := one.BaseOf(issue, "a"); base != "main" || join {
-		t.Errorf("BaseOf(a) of a plan of one task = %s, %t, want main, false", base, join)
+	if base, join, err := one.BaseOf(issue, "a"); err != nil || base != "main" || join {
+		t.Errorf("BaseOf(a) of a plan of one task = %s, %t, %v, want main, false", base, join, err)
+	}
+}
+
+// The base of a task the plan does not hold, and of a task with one need the plan does not hold, is
+// an error naming it, never the default branch: plan.Validate refuses such a plan, so a plan that
+// holds one is a defect, and the default branch would be a silent wrong base. Of A, which needs
+// nothing, C, which needs B, and z, which needs C, the base of x is an error naming x, and the base
+// of C, whose one need B the plan does not hold, an error naming B.
+//
+// The fault it catches is a wrong base answered with no error (its control: BaseOf answering the
+// default branch for both, as it did).
+func TestTheBaseOfATaskOrANeedThePlanDoesNotHoldIsAnError(t *testing.T) {
+	issue := Issue{Key: planIssue, DefaultBranch: "main"}
+	stored := basePlan(
+		baseTask{"a", nil, "", []string{"implementer"}},
+		baseTask{"c", []string{"b"}, "legion/LEGION-208.c", []string{"implementer"}},
+		baseTask{"z", []string{"c"}, "legion/LEGION-208.z", []string{"implementer"}})
+	for _, tc := range []struct{ task, names string }{
+		{"x", "task x"},
+		{"c", "needs b"},
+	} {
+		base, join, err := stored.BaseOf(issue, tc.task)
+		if err == nil || !strings.Contains(err.Error(), tc.names) {
+			t.Errorf("BaseOf(%s) = %q, %t, %v, want an error naming %q", tc.task, base, join, err, tc.names)
+		}
 	}
 }

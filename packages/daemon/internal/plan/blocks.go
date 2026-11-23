@@ -84,9 +84,11 @@ func taskOf(block Block) (Task, error) {
 // resolveNeeds is p, the plan of issue, with each task's Needs as task ids: each word's id after its
 // last "#b-", decoded as Dispatch encodes a block id (neededID), or the word itself where it holds
 // no "#b-". The ids keep the order the block writes the words in, and a task a block names twice is
-// needed once. A reference into another issue (issueOf) names no task of p, whatever its block id,
-// and stays in Task.IntoOtherIssue; any other word whose id is no task of p stays in
-// Task.Unresolved. Validate refuses both.
+// needed once. The plan's document is a document of issue (register_plan refuses any other), so a
+// `dispatch://` reference names a task of p only when it is of issue (issueOf): one into another
+// issue, and one that starts with no issue key, names no task of p, whatever its block id, and
+// stays in Task.OutsideIssue; any other word whose id is no task of p stays in Task.Unresolved.
+// Validate refuses both.
 func resolveNeeds(p Plan, issue string) Plan {
 	ids := make(map[string]bool, len(p.Tasks))
 	for _, task := range p.Tasks {
@@ -95,11 +97,11 @@ func resolveNeeds(p Plan, issue string) Plan {
 	tasks := make([]Task, len(p.Tasks))
 	for i, task := range p.Tasks {
 		words := task.Needs
-		task.Needs, task.Unresolved, task.IntoOtherIssue = nil, nil, nil
+		task.Needs, task.Unresolved, task.OutsideIssue = nil, nil, nil
 		for _, word := range words {
-			if other := issueOf(word); other != "" && other != issue {
-				if !slices.Contains(task.IntoOtherIssue, word) {
-					task.IntoOtherIssue = append(task.IntoOtherIssue, word)
+			if of, reference := issueOf(word); reference && of != issue {
+				if !slices.Contains(task.OutsideIssue, word) {
+					task.OutsideIssue = append(task.OutsideIssue, word)
 				}
 				continue
 			}
@@ -121,21 +123,22 @@ func resolveNeeds(p Plan, issue string) Plan {
 
 // issueOf is the issue a `needs` word names when it is a `dispatch://` reference, as Dispatch reads
 // one (parseDispatch in packages/envoy/internal/dispatch/text): the key the reference starts with,
-// before its first `/` or `#`, when that key is an issue key; "" for a word with no `dispatch://`,
-// which names a task or a block of the plan's own document, and for a reference that starts with a
-// project's key or anything else. The document a reference of the plan's own issue names is not
-// read: register_plan holds no slug of the plan's document to compare it with.
-func issueOf(word string) string {
-	reference, ok := strings.CutPrefix(word, "dispatch://")
+// before its first `/` or `#`, when that key is an issue key, and "" for a reference that starts
+// with a project's key, `agent` or anything else, which names no issue. reference says whether the
+// word is a `dispatch://` reference at all: a word with none names a task or a block of the plan's
+// own document. The document a reference of the plan's own issue names is not read: register_plan
+// holds no slug of the plan's document to compare it with.
+func issueOf(word string) (issue string, reference bool) {
+	rest, ok := strings.CutPrefix(word, "dispatch://")
 	if !ok {
-		return ""
+		return "", false
 	}
-	key, _, _ := strings.Cut(reference, "#")
+	key, _, _ := strings.Cut(rest, "#")
 	key, _, _ = strings.Cut(key, "/")
 	if !claim.IsIssueKey(key) {
-		return ""
+		return "", true
 	}
-	return key
+	return key, true
 }
 
 // pin is the `@v<N>` that pins a reference to version N, as Dispatch reads one.

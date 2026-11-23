@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -46,15 +48,13 @@ func agentToken(t *testing.T, issue string, agent claim.Agent) claim.Token {
 	return token
 }
 
-// The start of a step names the branch of the step's task, so the step's agent adopts that task's
-// working copy: tasks a and b each run their implementation step, a's by the agent k1 and b's by
-// k2, and the start of k2 names b's branch. Task ab, whose implementation step waits for k2 and
-// comes before b in task id order, runs no step yet, so the start of k2 is still b's. The start of
-// a, whose task holds the issue's own branch, names none, as every start of a task on the issue's
-// own branch did before tasks had branches of their own.
-func TestAStartOfATaskNamesItsBranch(t *testing.T) {
+// seedStartBranchPlan writes on startBranchIssue, a child of LEGION-208 in implementing, the plan
+// of tasks a, ab and b, one implementation step each: a's by the agent k1, ab's and b's by k2. Each
+// takes its branch in the order a, b, ab, so a holds the issue's own branch and b
+// legion/LEGION-209.b; a's and b's steps run, and ab's waits for k2. It answers each task's branch.
+func seedStartBranchPlan(t *testing.T, pool *pgxpool.Pool) map[string]string {
+	t.Helper()
 	ctx := t.Context()
-	pool := migratedPool(t)
 	openTree(t, pool)
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: startBranchIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: parent,
@@ -99,6 +99,19 @@ func TestAStartOfATaskNamesItsBranch(t *testing.T) {
 	if branches["a"] != "legion/LEGION-209" || branches["b"] != "legion/LEGION-209.b" {
 		t.Fatalf("the branches given are %v, want a on the issue's own and b on legion/LEGION-209.b", branches)
 	}
+	return branches
+}
+
+// The start of a step names the branch of the step's task, so the step's agent adopts that task's
+// working copy: tasks a and b each run their implementation step, a's by the agent k1 and b's by
+// k2, and the start of k2 names b's branch. Task ab, whose implementation step waits for k2 and
+// comes before b in task id order, runs no step yet, so the start of k2 is still b's. The start of
+// a, whose task holds the issue's own branch, names none, as every start of a task on the issue's
+// own branch did before tasks had branches of their own.
+func TestAStartOfATaskNamesItsBranch(t *testing.T) {
+	pool := migratedPool(t)
+	parent := "LEGION-208"
+	branches := seedStartBranchPlan(t, pool)
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		start := record.SuperviseRequest{Op: "start", Tree: parent, Role: claim.RoleImplementer, Task: "Implement it.", Generation: 1, Phase: phase.Implementing}
 		start.Claim = agentToken(t, startBranchIssue, "k2")
@@ -108,6 +121,42 @@ func TestAStartOfATaskNamesItsBranch(t *testing.T) {
 		start.Claim = agentToken(t, startBranchIssue, "k1")
 		if got := startRowOf(t, tx, startBranchIssue, start).Branch; got != "" {
 			t.Fatalf("the start of k1 names the branch %q, want none: a's task holds the issue's own branch", got)
+		}
+		return nil
+	})
+}
+
+// A start of a phase worker whose step the plan does not run is refused, naming it, where the
+// plan's tasks work on branches of their own: no branch would name the issue's own, which another
+// task holds, so the agent would adopt that task's working copy. Of the plan seedStartBranchPlan
+// writes, the start in implementing of the agent k3, which runs no step, is refused naming its
+// claim and the phase. A start that serves no step's phase names no branch, as before: the
+// architect's, which names no phase, its start at the owner's acceptance, which works no task's
+// working copy, and a production check's look, which names no phase.
+//
+// The fault it catches is a step's start whose step is unknown queued as a start on the issue's own
+// branch (its control: startBranch answering no branch for it, as it did).
+func TestAStartOfAStepThePlanDoesNotRunIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	parent := "LEGION-208"
+	seedStartBranchPlan(t, pool)
+	k3 := agentToken(t, startBranchIssue, "k3")
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		start := record.SuperviseRequest{Op: "start", Tree: parent, Role: claim.RoleImplementer, Claim: k3, Task: "Implement it.", Generation: 1,
+			Phase: phase.Implementing}
+		row, err := queuedRow(t.Context(), tx, record.NewStore(), startBranchIssue, start, time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC))
+		if err == nil || !strings.Contains(err.Error(), string(k3)) || !strings.Contains(err.Error(), string(phase.Implementing)) {
+			t.Errorf("the start of k3, which runs no step, = %+v, %v, want refused naming %s and implementing", row, err, k3)
+		}
+		for name, other := range map[string]record.SuperviseRequest{
+			"the architect's": {Op: "start", Tree: parent, Role: claim.RoleArchitect, Task: "Own it.", Generation: 1},
+			"the architect's at the owner's acceptance": {Op: "start", Tree: parent, Role: claim.RoleArchitect, Task: "Accept it.", Generation: 1,
+				Phase: phase.Accepting},
+			"a production check's look": {Op: "start", Tree: parent, Role: claim.RoleImplementer, Claim: k3, Task: "Look.", Generation: 1, CheckLook: 1},
+		} {
+			if got := startRowOf(t, tx, startBranchIssue, other).Branch; got != "" {
+				t.Errorf("%s start names the branch %q, want none", name, got)
+			}
 		}
 		return nil
 	})
