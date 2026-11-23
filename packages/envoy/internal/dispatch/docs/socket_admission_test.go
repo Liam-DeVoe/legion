@@ -705,7 +705,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 // A socket's upgrade made through upgradeHeadersWriter, as ServeHTTP makes it in a process that
 // knows its host name, answers with the process's line among the upgrade's headers, and the
 // frames after that answer pass through the connection unchanged.
-func TestTheUpgradeThroughTheProcessHeaderWriterNamesTheProcess(t *testing.T) {
+func TestTheUpgradeThroughTheUpgradeHeadersWriterNamesTheProcess(t *testing.T) {
 	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
