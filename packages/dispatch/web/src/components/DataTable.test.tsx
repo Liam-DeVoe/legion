@@ -12,6 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { type LayoutColumns, useTableLayout } from "../features/project/issues-table-layout";
 import { tableStorageKey } from "../features/project/issues-table-storage";
+import { appKeymap } from "../features/shell/keymap";
 import { DataTable, DataTableGroupRow, SORT_MARK_WIDTH, useDataTable } from "./DataTable";
 
 /** A row that is not an issue: the core knows nothing of what its rows are. */
@@ -65,7 +66,9 @@ const DEPLOYS: Deploy[] = [
 
 const NO_COUNTS: ReadonlyMap<string, number> = new Map();
 
-/** A caller of the core: it holds the view itself, as the issue table holds it in the URL. */
+/** A caller of the core: it holds the view itself, as the issue table holds it in the URL. A
+ *  `plain` caller's rows are no issues: they carry `data-row`, every one is drawn, and the table
+ *  has no pager and no row keys. */
 function Deploys({
   columns = COLUMNS,
   grouping: initialGrouping = [],
@@ -73,6 +76,7 @@ function Deploys({
   layoutColumns = LAYOUT_COLUMNS,
   layoutKey = "deploys",
   pageSize = 25,
+  plain = false,
   rows = DEPLOYS,
 }: {
   columns?: ColumnDef<Deploy>[];
@@ -81,6 +85,7 @@ function Deploys({
   layoutColumns?: LayoutColumns;
   layoutKey?: string;
   pageSize?: number;
+  plain?: boolean;
   rows?: Deploy[];
 }): ReactNode {
   const [sorting, setSorting] = useState<SortingState>([]);
@@ -108,9 +113,11 @@ function Deploys({
     onGroupingChange: setGrouping,
     onPaginationChange: setPagination,
     onSortingChange: setSorting,
+    rowKeys: !plain,
     rows,
     state,
     viewKey: JSON.stringify(state),
+    virtual: !plain,
   });
   return (
     <section aria-label={layoutKey}>
@@ -122,6 +129,7 @@ function Deploys({
         noun={{ many: "deploys", one: "deploy" }}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
+        pager={!plain}
         renderGroup={({ entry: { row }, index, measure }) => (
           <DataTableGroupRow
             columns={model.table.getVisibleLeafColumns().length}
@@ -136,12 +144,18 @@ function Deploys({
           />
         )}
         renderRow={({ row, index, measure }) => (
-          <tr data-index={index} data-issue-row={row.id} ref={measure} tabIndex={-1}>
+          <tr
+            data-index={index}
+            {...{ [plain ? "data-row" : "data-issue-row"]: row.id }}
+            ref={measure}
+            tabIndex={-1}
+          >
             {row.getVisibleCells().map((cell) => (
               <td key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
             ))}
           </tr>
         )}
+        rowAttribute={plain ? "data-row" : undefined}
         scrollTestId={`${layoutKey}-scroll`}
       />
     </section>
@@ -241,6 +255,39 @@ test("pages its rows and moves to the next page", async () => {
 
   expect(listed(table)).toEqual(["d11", "d12"]);
   expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+});
+
+/** Sixty deploys: more rows than a 600 px box draws at once. */
+const MANY = Array.from({ length: 60 }, (_, index) => ({
+  id: `d${index + 1}`,
+  minutes: index,
+  region: "eu",
+  service: `service ${index + 1}`,
+  state: "live",
+}));
+
+test("by default it draws the issue tables' rows: the ones in view, each with data-issue-row, the pager under them and the row keys bound", async () => {
+  draw(<Deploys pageSize={100} rows={MANY} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(listed(table).length).toBeGreaterThan(0);
+  expect(listed(table).length).toBeLessThan(MANY.length);
+  expect(screen.getByTestId("issues-table-pager")).toBeInTheDocument();
+  expect(appKeymap.describe().map((binding) => binding.id)).toContain("list-next");
+});
+
+test("a table whose rows are no issues draws every row under its own attribute, with no pager and no row keys", async () => {
+  draw(<Deploys pageSize={100} plain rows={MANY} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(table.querySelectorAll("[data-issue-row]")).toHaveLength(0);
+  expect(
+    [...table.querySelectorAll("[data-row]")].map((row) => row.getAttribute("data-row"))
+  ).toEqual(MANY.map((row) => row.id));
+  expect(screen.queryByTestId("issues-table-pager")).toBeNull();
+  expect(appKeymap.describe().map((binding) => binding.id)).not.toContain("list-next");
+  // As tall as its rows: the box takes no height of its own.
+  expect(screen.getByTestId("deploys-scroll").style.height).toBe("");
 });
 
 test("groups its rows with the headings in the caller's order", async () => {

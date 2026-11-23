@@ -107,6 +107,14 @@ export interface DataTableOptions<Row> {
   /** Where the group headings go. Read once, when the table is made, as TanStack reads its row
    *  models once; without it the headings keep TanStack's own order. */
   readonly groupOrder?: GroupOrder<Row>;
+  /** Whether the issue tables' row keys walk the rows (`useRowKeymap`: `j`, `k`, `o`, Enter and
+   *  `x`, over the rows' `data-issue-row`). The default, `true`, is the issue tables'; a table
+   *  whose rows are no issues, a chart's, binds none. */
+  readonly rowKeys?: boolean;
+  /** Whether the box draws only the rows in its view, as tall as the window leaves it (the
+   *  default, `true`, the issue tables'), or every row at its own height, the box as tall as
+   *  they are: a chart's table, which holds every number its graph draws in the page. */
+  readonly virtual?: boolean;
 }
 
 /** One line the table draws: a row, or a group's heading. */
@@ -123,6 +131,8 @@ export interface DataTableModel<Row> {
   readonly layout: TableLayoutModel;
   readonly displayRows: readonly DisplayRow<Row>[];
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
+  /** Whether `virtualizer` draws the rows (`DataTableOptions.virtual`), else every row is drawn. */
+  readonly virtual: boolean;
   /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
   readonly anchorEnabled: () => boolean;
   /** Takes the width column `columnId`'s header draws at with nothing cut, which the column is
@@ -179,11 +189,13 @@ export function useDataTable<Row>({
   onGroupingChange,
   onPaginationChange,
   onSortingChange,
+  rowKeys = true,
   rows,
   search,
   selection,
   state,
   viewKey,
+  virtual = true,
 }: DataTableOptions<Row>): DataTableModel<Row> {
   const [expanded, setExpanded] = useState<ExpandedState>(true);
   // Each column's header width, by column id, as `measureHeader` last took it.
@@ -287,9 +299,10 @@ export function useDataTable<Row>({
     }),
   ];
   // The box measures itself: `useTableLayout` observes its size and the section around it, so
-  // neither the rows this page holds nor a notice above the table is measured from here.
+  // neither the rows this page holds nor a notice above the table is measured from here. A box
+  // that draws every row has no virtual row.
   const virtualizer = useVirtualizer({
-    count: displayRows.length,
+    count: virtual ? displayRows.length : 0,
     getScrollElement: () => layout.scrollRef.current,
     estimateSize: (index) => (displayRows[index]?.row.getIsGrouped() ? 48 : 64),
     getItemKey: (index) =>
@@ -300,6 +313,7 @@ export function useDataTable<Row>({
 
   useRowKeymap({
     displayRows,
+    enabled: rowKeys,
     rowsById: table.getCoreRowModel().rowsById,
     scrollRef: layout.scrollRef,
     scrollToIndex: (index) => virtualizer.scrollToIndex(index, { align: "auto" }),
@@ -316,6 +330,7 @@ export function useDataTable<Row>({
     layout,
     measureHeader,
     table,
+    virtual,
     virtualizer,
   };
 }
@@ -351,8 +366,8 @@ export interface DataTableProps<Row> {
    *  than a count. Kept apart from the column definitions: a new definition is a new component
    *  to React, so a change there would draw every cell anew. */
   readonly filterUnloaded?: ReadonlyMap<string, readonly string[]>;
-  /** Draws one row: a `<tr>` carrying `data-issue-row`, which the keys and the box's height
-   *  read, `data-index` and `ref={measure}`. */
+  /** Draws one row: a `<tr>` carrying `rowAttribute`, which the keys and the box's height read,
+   *  `data-index` and `ref={measure}`. */
   readonly renderRow: (props: LineProps & { readonly row: TableRow<Row> }) => ReactNode;
   /** Draws one group's heading, with `data-index` and `ref={measure}`. */
   readonly renderGroup: (props: LineProps & { readonly entry: DisplayRow<Row> }) => ReactNode;
@@ -363,11 +378,23 @@ export interface DataTableProps<Row> {
   readonly noun: RowNoun;
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
+  /** The attribute each drawn row carries its id in, which `ViewportAnchor` holds the row in hand
+   *  by: `data-issue-row`, the issue tables', by default, which their row keys and their box's
+   *  height read too. A table whose rows are no issues names its own, so no reader of the issue
+   *  tables' rows reads its rows. */
+  readonly rowAttribute?: string;
+  /** Whether the pager (`IssueTablePager`: the count, the page size and the pages) stands under
+   *  the box: the issue tables' default. A table that draws every row on one page has none. */
+  readonly pager?: boolean;
 }
+
+/** A line drawn outside the virtualizer, whose height nothing measures. */
+const NO_MEASURE = (): void => undefined;
 
 /**
  * The table `useDataTable` describes: its scroll box, with the headers that sort, filter,
- * resize and reorder the columns, the virtual rows the caller draws, and the pager under it.
+ * resize and reorder the columns, the rows the caller draws (the virtual ones, or every one), and
+ * the pager under it where the caller keeps one.
  */
 export function DataTable<Row>({
   empty,
@@ -378,8 +405,10 @@ export function DataTable<Row>({
   model,
   onOpenFilterChange,
   openFilter,
+  pager = true,
   renderGroup,
   renderRow,
+  rowAttribute = "data-issue-row",
   scrollTestId,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
@@ -391,6 +420,18 @@ export function DataTable<Row>({
   // The space the rows above and below the drawn window would take.
   const first = virtualRows[0];
   const last = virtualRows.at(-1);
+  // Every line the box draws: the virtual ones, or each of the page's.
+  const lines = model.virtual
+    ? virtualRows.map((row) => ({
+        index: row.index,
+        key: row.key,
+        measure: virtualizer.measureElement,
+      }))
+    : displayRows.map((entry, index) => ({
+        index,
+        key: `${entry.continued ? "continued-" : ""}${entry.row.id}`,
+        measure: NO_MEASURE,
+      }));
 
   return (
     <>
@@ -400,12 +441,12 @@ export function DataTable<Row>({
         data-testid={scrollTestId}
         style={{
           overflowAnchor: "none",
-          height: layout.boxHeight,
+          height: model.virtual ? layout.boxHeight : undefined,
           scrollPaddingTop: 64,
         }}
       >
         <ViewportAnchor
-          item="data-issue-row"
+          item={rowAttribute}
           className="w-max min-w-full"
           group="data-issue-group"
           scroller={layout.scrollRef}
@@ -448,12 +489,12 @@ export function DataTable<Row>({
             </thead>
             <tbody>
               {first ? <tr aria-hidden style={{ height: first.start }} /> : null}
-              {virtualRows.map((virtual) => {
-                const entry = displayRows[virtual.index];
+              {lines.map(({ index, key, measure }) => {
+                const entry = displayRows[index];
                 if (entry === undefined) return null;
-                const line = { index: virtual.index, measure: virtualizer.measureElement };
+                const line = { index, measure };
                 return (
-                  <Fragment key={virtual.key}>
+                  <Fragment key={key}>
                     {entry.row.getIsGrouped()
                       ? renderGroup({ ...line, entry })
                       : renderRow({ ...line, row: entry.row })}
@@ -471,7 +512,7 @@ export function DataTable<Row>({
         ) : null}
       </div>
 
-      <IssueTablePager noun={noun} table={table} pagerRef={layout.pagerRef} />
+      {pager ? <IssueTablePager noun={noun} table={table} pagerRef={layout.pagerRef} /> : null}
     </>
   );
 }

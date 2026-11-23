@@ -1,14 +1,6 @@
-import {
-  type ColumnDef,
-  type ColumnFiltersState,
-  flexRender,
-  type GroupingState,
-  type PaginationState,
-  type SortingState,
-} from "@tanstack/react-table";
+import type { ColumnDef } from "@tanstack/react-table";
 import { type ReactNode, useId, useMemo, useState } from "react";
 
-import { DataTable, useDataTable } from "../../components/DataTable";
 import {
   borderStrong,
   dangerText,
@@ -21,8 +13,6 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { lastUtcDate, utcDate } from "../delivery/lib/window";
-import { type LayoutColumns, useTableLayout } from "../project/issues-table-layout";
-import { ALL_ROWS } from "../project/issues-table-model";
 import type {
   ChartModel,
   ChartPoint,
@@ -31,6 +21,7 @@ import type {
   ChartValue,
   ValueState,
 } from "./chart-model";
+import { EvalTable } from "./EvalTable";
 
 /** A drawn value's colour by its state: its own verdict, or muted where there is nothing to
  *  measure. */
@@ -190,15 +181,8 @@ function tableColumns(model: ChartModel, compare: boolean): ColumnDef<TableRow>[
   return columns;
 }
 
-/** The height of one row of a chart's table, which its rows are drawn at (`h-7`). */
-const ROW_HEIGHT = 28;
-/** Room for the table's header row and its border. */
-const HEAD_HEIGHT = 48;
-const NO_COUNTS: ReadonlyMap<string, number> = new Map();
-
-/** A chart's table: the one table core (`components/DataTable.tsx`, plan D5), one row per place on
- *  the chart's axis. Its box is as tall as its rows, so every row is drawn and the table holds
- *  every number the graph draws in the page, as well as on the screen. */
+/** A chart's table: one row per place on the chart's axis, every row drawn (`EvalTable`), so the
+ *  table holds every number the graph draws in the page, as well as on the screen. */
 function ChartTable({ compare, model }: { compare: boolean; model: ChartModel }): ReactNode {
   const columns = useMemo(() => tableColumns(model, compare), [model, compare]);
   const rows = useMemo(
@@ -210,58 +194,15 @@ function ChartTable({ compare, model }: { compare: boolean; model: ChartModel })
       })),
     [model]
   );
-  const layoutColumns = useMemo(
-    (): LayoutColumns => ({
-      ids: columns.flatMap((column) => (column.id === undefined ? [] : [column.id])),
-    }),
-    [columns]
-  );
-  const [sorting, setSorting] = useState<SortingState>([]);
-  const [grouping, setGrouping] = useState<GroupingState>([]);
-  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
-  const [globalFilter, setGlobalFilter] = useState("");
-  const [pagination, setPagination] = useState<PaginationState>({
-    pageIndex: 0,
-    pageSize: ALL_ROWS,
-  });
-  const [openFilter, setOpenFilter] = useState<string>();
-  const layout = useTableLayout(
-    `eval-chart:${model.name}${compare ? ":compare" : ""}`,
-    layoutColumns
-  );
-  const state = { columnFilters, globalFilter, grouping, pagination, sorting };
-  const table = useDataTable<TableRow>({
-    columns,
-    getRowId: (row) => row.id,
-    layout: { ...layout, boxHeight: HEAD_HEIGHT + rows.length * ROW_HEIGHT },
-    onColumnFiltersChange: setColumnFilters,
-    onGlobalFilterChange: setGlobalFilter,
-    onGroupingChange: setGrouping,
-    onPaginationChange: setPagination,
-    onSortingChange: setSorting,
-    rows,
-    state,
-    viewKey: JSON.stringify(sorting),
-  });
   return (
-    <DataTable
+    <EvalTable
+      columns={columns}
       empty={`No ${model.axis.many}.`}
-      filterCounts={NO_COUNTS}
+      getRowId={(row) => row.id}
       label={`${model.title} per ${model.axis.one}`}
-      model={table}
+      layoutKey={`eval-chart:${model.name}${compare ? ":compare" : ""}`}
       noun={{ many: model.axis.many, one: model.axis.one }}
-      onOpenFilterChange={setOpenFilter}
-      openFilter={openFilter}
-      renderGroup={() => null}
-      renderRow={({ index, measure, row }) => (
-        <tr className="h-7" data-index={index} data-issue-row={row.id} key={row.id} ref={measure}>
-          {row.getVisibleCells().map((cell) => (
-            <td className="px-2 text-right tabular-nums first:text-left" key={cell.id}>
-              {flexRender(cell.column.columnDef.cell, cell.getContext())}
-            </td>
-          ))}
-        </tr>
-      )}
+      rows={rows}
       scrollTestId={`${model.name}-table-scroll`}
     />
   );

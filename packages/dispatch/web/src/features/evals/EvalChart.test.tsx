@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, test as bunTest, expect } from "bun:test";
+import { afterEach, test as bunTest, expect } from "bun:test";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -160,24 +160,7 @@ const MINUTES_SPEC: SeriesSpec = {
   ],
 };
 
-// The unit DOM lays nothing out: each table's box is given the height a window would give it, as
-// DataTable.test.tsx gives it, tall enough to draw each of a chart's rows.
-let restoreHeight: () => void = () => undefined;
-beforeEach(() => {
-  const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
-  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
-    configurable: true,
-    get(this: HTMLElement) {
-      return this.dataset.testid?.endsWith("-scroll") ? 4000 : (descriptor?.get?.call(this) ?? 0);
-    },
-  });
-  restoreHeight = () => {
-    if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
-    else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
-  };
-});
 afterEach(() => {
-  restoreHeight();
   localStorage.clear();
 });
 
@@ -328,7 +311,7 @@ test("a chart with one point shows a table with one row", async () => {
   );
   await user.click(within(figure()).getByRole("button", { name: "Table" }));
   const table = within(figure()).getByRole("table", { name: "Merge to production per day" });
-  const rows = table.querySelectorAll("[data-issue-row]");
+  const rows = table.querySelectorAll("[data-row]");
   expect(rows).toHaveLength(1);
   expect(rows[0]?.textContent).toBe("2026-11-013.0/day");
 });

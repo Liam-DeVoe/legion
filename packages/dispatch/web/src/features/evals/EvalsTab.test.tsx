@@ -531,3 +531,76 @@ test("the tab lists no issues", async () => {
   expect(screen.queryByRole("table", { name: /issue/i })).toBeNull();
   expect(listIssues).not.toHaveBeenCalled();
 });
+
+/** `item` with one listed primary series `name` in `unit`, whose first window day holds
+ *  `statistics`, as do the window's figures: an eval each section draws a chart of. */
+function charted(
+  item: EvalListItem,
+  name: string,
+  unit: string,
+  statistics: Record<string, number>
+): EvalListItem {
+  return {
+    ...item,
+    series: [
+      {
+        agg: "quantile",
+        change: null,
+        compare: null,
+        compare_days: [],
+        created_at: "2026-10-01T00:00:00Z",
+        data_since: "2026-09-01",
+        days: [{ day: WINDOW.from.slice(0, 10), statistics }],
+        eval_id: item.id,
+        is_primary: true,
+        links: [],
+        listed: true,
+        min_n: null,
+        role: "headline",
+        series: name,
+        unit,
+        version: 1,
+        via_repository: 0,
+        window: statistics,
+      },
+    ],
+  };
+}
+
+test("in Table mode the tab holds no [data-issue-row]", async () => {
+  const user = userEvent.setup();
+  renderTab();
+  const socket = await openSocket();
+  const timing = { median: 12, n: 4, p90: 20 };
+  await answerView(
+    socket,
+    "delivery",
+    answer([
+      charted(evalItem("deploy-frequency", "delivery"), "deploys", "deploys", {
+        deploys: 3,
+        per_day: 3,
+      }),
+      charted(evalItem("merge-to-production", "delivery"), "minutes", "minutes", timing),
+    ])
+  );
+  await answerView(
+    socket,
+    "legion",
+    answer([charted(evalItem("legion-work-time", "legion"), "hours", "hours", timing)])
+  );
+  await answerView(
+    socket,
+    "ci",
+    answer([charted(evalItem("pr-ci", "ci"), "minutes", "minutes", timing)])
+  );
+  await answerView(socket, "experiment");
+  const toggles = await waitFor(() => {
+    const found = screen.getAllByRole("button", { name: "Table" });
+    expect(found.length).toBeGreaterThan(0);
+    return found;
+  });
+  for (const toggle of toggles) await user.click(toggle);
+  expect(document.querySelectorAll("figure table")).toHaveLength(toggles.length);
+  expect(document.querySelector("[data-issue-row]")).toBeNull();
+  expect(document.querySelectorAll("table [data-row]").length).toBeGreaterThan(0);
+});
