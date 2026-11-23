@@ -283,3 +283,39 @@ test("outside bun test with no usable LEGION_PROOF_DEADLINE_MS a wait refuses to
     'LEGION_PROOF_DEADLINE_MS is "soon", not epoch milliseconds after 0 reads'
   );
 });
+
+// The preload's own afterEach marks the end of a row's file and describe afterEach hooks, so a
+// describe's beforeAll that follows the row counts from there. Here the row's describe has two
+// afterEach hooks that spend 2000 ms between the row's own mark and that one, which is more than
+// the 1600 ms its guard leaves after the newest mark. Counted from the preload's afterEach mark,
+// the next describe's 100 ms span has 1500 ms to spare; counted from the row's own mark, as
+// without that afterEach, the deadline has passed and the span is refused. The afterEach work
+// sleeps rather than spans: a span counts against the row's own mark there, which this work
+// outlasts on purpose. Each sleep is 1000 ms, so Bun's 2600 ms guard of each hook keeps 1600 ms,
+// and the hooks are the first describe's, so the second describe's row does not pay them again.
+// The verdict is what the child printed.
+test("a describe's beforeAll that follows a row counts from the end of the row's afterEach hooks", () => {
+  const guard = "--timeout=2600";
+  const file = `
+describe("a describe whose afterEach hooks work", () => {
+  afterEach(async () => {
+    await Bun.sleep(1_000);
+  });
+  afterEach(async () => {
+    await Bun.sleep(1_000);
+  });
+  test("a row before the next describe", () => {});
+});
+describe("a describe", () => {
+  beforeAll(async () => {
+    await span(100, "the describe's hook work");
+  });
+  test("a row the describe's hook serves", () => {});
+});
+`;
+  const run = runBunTest({ "after-each.test.ts": file }, [guard, "--preload", PRELOAD]);
+  expect(run.output).not.toContain("would end after the deadline");
+  expect(run.output).not.toContain(BUN_TIMED_OUT);
+  expect(run.output).toContain("(pass) a describe > a row the describe's hook serves");
+  expect(run.exitCode).toBe(0);
+});
