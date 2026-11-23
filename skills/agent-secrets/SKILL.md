@@ -6,6 +6,7 @@ description: Use when a command needs a token, a key or a password, when you sto
 # agent-secrets
 
 A command gets a secret in its environment, and your shell and your transcript never hold the value. `agent-secrets`, the secrets broker's client, asks the broker for it and gives it to that one command.
+**Done when:** you read the body of each answer, not its exit status alone, and you report a service unreachable only with the command you ran and the output you saw.
 `agent-secrets --help` lists every form, flag, environment variable and exit code.
 Every message the client prints is explained at https://cybermonklabs.github.io/legion/broker/guides/troubleshooting/.
 
@@ -81,19 +82,7 @@ A deployment can keep a secret's value back. The name then holds `agent-secrets-
 
 ## What the exit status means
 
-After a grant the client writes `agent-secrets: <names> from <source>` to stderr. The status is then the command's own. If a line `agent-secrets: exec <command>: …` follows the grant line, the status is 1. Without the grant line the status is the client's:
-
-| Status | Means | Do |
-| --- | --- | --- |
-| 1 | A refusal or a failure that the message names | |
-| 1, `UNKNOWN_SECRET` | Final | Do not ask again, and do not try a name of your own |
-| 1, `PENDING_VALUE` | Its owner is storing the value now | Ask again in a few minutes |
-| 1, `REQUEST_PENDING` | A waiting request of this session shares a name with this one | |
-| 2 | A usage error, such as no `AGENT_SECRETS_URL` or no `--` | |
-| 75 | Still undecided when `--wait` runs out, and nothing ran. The message gives the `agent-secrets status <request_id>` that reads it | |
-| 77 | Denied; the message gives the broker's reason when it recorded one | Final, except in the next two rows: ask for none of it again, and try no name of your own |
-| 77, `ask again with --reason` | | Ask again with `--reason` |
-| 77, `requester-group-unread` | | Ask again later |
+After a grant the client writes `agent-secrets: <names> from <source>` to stderr. The status is then the command's own. If a line `agent-secrets: exec <command>: …` follows the grant line, the status is 1. Without the grant line the status is the client's: read `skill://agent-secrets/references/exit-status.md` for what each status means and what to do.
 
 ## Where a name comes from
 

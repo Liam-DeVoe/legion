@@ -5,8 +5,10 @@ description: Use when you message or reply to another agent session, find a sess
 
 # Envoy
 
-Envoy carries events and messages between agent sessions.
+Use Envoy, which carries events and messages between agent sessions, so that each message reaches the session you mean and each event you wait on wakes you.
 Each Envoy tool's description holds the topic guide, the session states and what each answer means. This skill holds what they leave out.
+
+**Done when:** each send's `recipient` is the session you meant, and `envoy_list` shows each topic you subscribed to.
 
 ## Send a message
 
@@ -96,13 +98,7 @@ Every topic starts with `notifications.`.
 | A kept answer or a publish error | Neither releases the claim: an `unresponsive` holder keeps its role |
 
 - Read a role's holder with `envoy_role_get(role=...)`.
-- Read a role's holder in bash from a shell with no Envoy tools, such as one in a Legion pod (the `<(...)` keeps the token out of `curl`'s arguments):
-
-  ```sh
-  curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$ENVOY_TOKEN_FILE")") "$ENVOY_URL/v1/roles/<role>" | jq -c '{holder, holder_state, reason, error}'
-  ```
-
-- Read `skill://envoy/references/roles.md` when a role you held is gone after a resume, fork or restart, or when `envoy_role_set` is refused.
+- Read `skill://envoy/references/roles.md` when a role you held is gone after a resume, fork or restart, when `envoy_role_set` is refused, or when you read a role's holder from a shell with no Envoy tools.
 - Read `skill://envoy/references/legion.md` before you claim, release or publish to a role in a Legion pane, or when a Legion role message fails: in a Legion pane the plugin claims your role for you.
 
 | Who | What |

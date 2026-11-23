@@ -1,6 +1,6 @@
 # How a role claim lives
 
-Read this when a role you held is gone after a resume, fork or restart, or when `envoy_role_set` is refused.
+Read this when a role you held is gone after a resume, fork or restart, when `envoy_role_set` is refused, or when you read a role's holder from a shell with no Envoy tools.
 
 - A claim belongs to the session, not the process. `omp --resume` claims again the role its transcript records, also after the reaper removed the old session's row.
 - `/fork`, `/branch`, `/handoff` and any other switch that carries the transcript move the previous session's role to the new id. `/new` and `/resume` install an unrelated transcript and carry no role.
@@ -12,3 +12,11 @@ Read this when a role you held is gone after a resume, fork or restart, or when 
   The Oh My Pi plugin takes the role at its next session event once the holder is no longer live; the Claude Code channel takes it at an explicit claim. `envoy_role_get` names the holder now.
 - Only an explicit `envoy_role_set` is last-claim-wins. Running it again for a role this session holds is harmless.
 - `envoy_role_set` to another role is refused while another plugin holds subscriptions that depend on your current role; the refusal names them.
+
+## A role's holder from a shell with no Envoy tools
+
+Read a role's holder in bash from a shell with no Envoy tools, such as one in a Legion pod (the `<(...)` keeps the token out of `curl`'s arguments):
+
+```sh
+curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$ENVOY_TOKEN_FILE")") "$ENVOY_URL/v1/roles/<role>" | jq -c '{holder, holder_state, reason, error}'
+```
