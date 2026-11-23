@@ -471,49 +471,6 @@ func TestProposePlanTellsHowAChangeNamesANewIssue(t *testing.T) {
 	}
 }
 
-// TestAnUploadedTextFileReadsAsItsBytes: dispatch_doc_read of an uploaded file, whose text route
-// answers 400 NOT_DOCUMENT, reads the bytes of its latest version, which its summary names, as
-// the person's own `dispatch doc-read` does, and the model is given them where they are text; of
-// a file that is not text it is told what the file is, without its bytes.
-func TestAnUploadedTextFileReadsAsItsBytes(t *testing.T) {
-	for _, c := range []struct {
-		name, contentType, body string
-		holds                   string
-		refused                 bool
-	}{
-		{name: "a text file", contentType: "text/plain; charset=utf-8", body: "PUT /upload answered 413 Request Entity Too Large for 24.1 MB", holds: "413 Request Entity Too Large"},
-		{name: "a file that is not text", contentType: "application/octet-stream", body: "\xff\xfe\x00binary", holds: "is not text", refused: true},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			server, client := newFakeServer(t, func(call agentwire.CallRequest) agentwire.CallAnswer {
-				var arguments map[string]any
-				_ = json.Unmarshal(call.Arguments, &arguments)
-				switch {
-				case call.Tool == dispatchRead:
-					return agentwire.CallAnswer{Status: http.StatusOK, Body: []byte(`{"name":"upload-error.txt","kind":"file","versions":[{"number":1,"size":61},{"number":2,"size":61}]}`)}
-				case call.Tool == dispatchDocRead && arguments["version"] == float64(2):
-					return agentwire.CallAnswer{Status: http.StatusOK, ContentType: c.contentType, Body: []byte(c.body)}
-				}
-				return agentwire.CallAnswer{Status: http.StatusBadRequest, Body: []byte(`{"code":"NOT_DOCUMENT","error":"artifact is not a document"}`)}
-			})
-			a := &agent{client: client, held: map[string]*worker{}, claimed: make(chan struct{}, 1), exit: make(chan struct{})}
-			w := newWorker(t.Context(), a, &agentwire.ClaimedRun{ID: "run-1", Level: "fast", LeaseToken: "lease-1"}, func() {})
-			told, refused := w.callTool(t.Context(), 8, json.RawMessage(`{"tool":"dispatch_doc_read","arguments":{"issue":"DEMO-23","artifact":"upload-error-txt"}}`))
-			if refused != c.refused || !strings.Contains(told, c.holds) {
-				t.Fatalf("the model was told %q (refused %t), want it to hold %q (refused %t)", told, refused, c.holds, c.refused)
-			}
-			if c.refused && strings.Contains(told, "binary") {
-				t.Errorf("the model was given the bytes of a file that is not text: %q", told)
-			}
-			server.mu.Lock()
-			defer server.mu.Unlock()
-			if len(server.calls) != 3 || server.calls[2].Call != 3 {
-				t.Errorf("the read made the calls %+v, want the text read, the summary and the latest version as calls 1 to 3 of its step", server.calls)
-			}
-		})
-	}
-}
-
 // TestARunLeavesNoGoroutineBehind: a run's turn - a search, a model call the content filter
 // refuses, the same call made again and refused again, and the call made with the result
 // withheld, which answers - starts no goroutine that outlives it, once the idle connections the

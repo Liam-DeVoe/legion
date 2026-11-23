@@ -13,7 +13,9 @@ package api
 // A read tool's rows are translated the same way: a search's words are its route's `q`, and a read
 // whose command picks what it reads from what its arguments name - dispatch_read and
 // dispatch_doc_read, an item named by its dispatch:// reference above all - picks its row as that
-// command does (goingPickRead, goingPickDocRead).
+// command does (goingPickRead, goingPickDocRead). dispatch_doc_read reads the record of the item
+// it names first, as its command does, and reads an uploaded file at one of its versions
+// (goingChooseDocRead).
 //
 // What the bar can never send - a picture or a file the CLI reads off the machine it runs on, which
 // the bar has no way to reach, a `ref` where the bar places a write by issue, project and document
@@ -42,9 +44,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/going/agentwire"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -77,8 +81,9 @@ type goingTranslator func(ctx context.Context, read goingReader, call goingCallI
 
 // goingCall is what a translation makes of a call: the value of each placeholder of the row's
 // path, the query, the body - JSON, a multipart upload, or none - any write that must land before
-// the row's own, and the compare-and-set the row's own request carries to its route on its
-// context (going_conditions.go), nil for none.
+// the row's own, the compare-and-set the row's own request carries to its route on its context
+// (going_conditions.go), nil for none, and the uploaded file a read of one of its versions reads,
+// whose answer the model is told in words of its own (goingUploadedFile), nil for any other call.
 type goingCall struct {
 	path      map[string]string
 	query     url.Values
@@ -86,6 +91,7 @@ type goingCall struct {
 	form      *goingUpload
 	first     []goingSend
 	condition *goingCondition
+	file      *goingUploadedFile
 }
 
 // goingUpload is a multipart body: its fields, and the one file part, named `file`.
@@ -101,7 +107,9 @@ type goingUpload struct {
 // is drawn at random - nil where the body is its own (digest). condition is the compare-and-set
 // the request carries to its route on its context (build), nil for none. what is what a request a
 // call sends before its own writes, in the words a row tells its person where the call failed in
-// the server after it landed (goingPanickedText); it is no part of what the request sends.
+// the server after it landed (goingPanickedText); it is no part of what the request sends. file
+// is the uploaded file whose version the request reads, whose answer the call tells as
+// goingUploadedFile.told words it, nil for any other request; it is no part of what is sent.
 type goingSend struct {
 	method      string
 	path        string
@@ -111,6 +119,7 @@ type goingSend struct {
 	stable      []byte
 	condition   *goingCondition
 	what        string
+	file        *goingUploadedFile
 }
 
 // digest is the hex SHA-256 of what the request sends, its condition included, which a landing
@@ -445,9 +454,9 @@ func goingJSONRequest(method, path string, body any) (goingSend, error) {
 }
 
 // requests is every request the call sends: the writes that land first, then the row's own, which
-// carries the call's condition.
+// carries the call's condition and the file it reads.
 func (c goingCall) requests(route GoingRoute) ([]goingSend, error) {
-	own := goingSend{method: route.Method, path: goingPath(route.Pattern, c.path), query: c.query, condition: c.condition}
+	own := goingSend{method: route.Method, path: goingPath(route.Pattern, c.path), query: c.query, condition: c.condition, file: c.file}
 	switch {
 	case c.form != nil:
 		body, contentType, err := c.form.encode()
@@ -794,20 +803,30 @@ func goingIssueEvents(issue string, arguments map[string]any) (string, goingCall
 	return "GET /api/v1/issues/{key}/events", call, nil
 }
 
-// goingPickDocRead is the row of dispatch_doc_read a call reads, and what that row's route takes
-// of the call, as `dispatch doc-read` reads a document
+// goingDocRead is the item a dispatch_doc_read call names, as `dispatch doc-read` names it
 // (packages/envoy-client/src/dispatch-commands/documents.ts): the document a reference names, or
-// the artifact the call names on its issue - the issue's spec where it names none - or on its
-// project, or by the document's id; its text, with its blocks where blocks is set, or the version
-// the call or the reference names. A file of an agent's conversation is read at the version named,
-// and its record, which names its versions, where none is.
-func goingPickDocRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
+// the artifact the call names on its issue - the issue's spec where it names none - on its
+// project, by the document's id, or in an agent's conversation, which only a reference names.
+// record is the pattern of the route that reads the item's record, and path the value of each of
+// its placeholders; version is the version the call or the reference names, where versioned is
+// set; blocks is whether the call asks for the document's blocks.
+type goingDocRead struct {
+	record    string
+	path      map[string]string
+	version   string
+	versioned bool
+	blocks    bool
+}
+
+// goingDocReadOf is the item arguments name (goingDocRead), refused where they name none, or name
+// blocks at a version.
+func goingDocReadOf(arguments map[string]any, serverURL string) (goingDocRead, error) {
 	issue, project, artifact, session := goingText(arguments, "issue"), goingText(arguments, "project"), goingText(arguments, "artifact"), ""
 	version, versioned := goingArgumentText(arguments["version"])
 	if value := strings.TrimSpace(goingText(arguments, "ref")); value != "" {
 		ref, parsed := goingParseReadRef(value, serverURL)
 		if !parsed || ref.Kind != "artifact" {
-			return "", goingCall{}, goingUntranslatable(fmt.Sprintf("ref %q is no reference to a document", value))
+			return goingDocRead{}, goingUntranslatable(fmt.Sprintf("ref %q is no reference to a document", value))
 		}
 		issue, project, session = ref.IssueKey, ref.Project, ref.Session
 		if artifact == "" {
@@ -817,37 +836,165 @@ func goingPickDocRead(arguments map[string]any, serverURL string) (string, going
 			version, versioned = ref.version, true
 		}
 	}
-	blocks := arguments["blocks"] == true
-	if blocks && versioned {
-		return "", goingCall{}, goingUntranslatable("blocks lists the live document's blocks, and takes no version")
+	item := goingDocRead{version: version, versioned: versioned, blocks: arguments["blocks"] == true}
+	if item.blocks && versioned {
+		return goingDocRead{}, goingUntranslatable("blocks lists the live document's blocks, and takes no version")
 	}
-	var row string
-	var path map[string]string
 	switch {
 	case session != "":
-		row, path = "GET /api/v1/agents/{session_id}/artifacts/{slug}", map[string]string{"session_id": session, "slug": artifact}
+		item.record, item.path = "/api/v1/agents/{session_id}/artifacts/{slug}", map[string]string{"session_id": session, "slug": artifact}
 	case issue != "":
-		row, path = "GET /api/v1/issues/{key}/artifacts/{slug}", map[string]string{"key": issue, "slug": cmp.Or(artifact, "spec")}
+		item.record, item.path = "/api/v1/issues/{key}/artifacts/{slug}", map[string]string{"key": issue, "slug": cmp.Or(artifact, "spec")}
 	case project != "" && artifact != "":
-		row, path = "GET /api/v1/projects/{key}/artifacts/{slug}", map[string]string{"key": project, "slug": artifact}
+		item.record, item.path = "/api/v1/projects/{key}/artifacts/{slug}", map[string]string{"key": project, "slug": artifact}
 	case project == "" && artifact != "":
-		row, path = "GET /api/v1/artifacts/{id}", map[string]string{"id": artifact}
+		item.record, item.path = "/api/v1/artifacts/{id}", map[string]string{"id": artifact}
 	default:
-		return "", goingCall{}, goingUntranslatable("name ref; an issue, with its artifact or for its spec; a project with its artifact; or a document's id as artifact")
+		return goingDocRead{}, goingUntranslatable("name ref; an issue, with its artifact or for its spec; a project with its artifact; or a document's id as artifact")
 	}
-	call := goingCall{path: path}
+	return item, nil
+}
+
+// goingPickDocRead is the row of dispatch_doc_read a call reads where its item is a document, and
+// what that row's route takes of the call, with no read made (goingDocRead.pick). A call is sent
+// to the row goingChooseDocRead chooses, which reads the item's record first.
+func goingPickDocRead(arguments map[string]any, serverURL string) (string, goingCall, error) {
+	item, err := goingDocReadOf(arguments, serverURL)
+	if err != nil {
+		return "", goingCall{}, err
+	}
+	row, call := item.pick()
+	return row, call, nil
+}
+
+// pick is the row that reads the item where it is a document, and what that row's route takes of
+// the call: its text, with its blocks where blocks is set, or the version named. A file of an
+// agent's conversation is read at the version named, and its record, which names its versions,
+// where none is.
+func (d goingDocRead) pick() (string, goingCall) {
+	row, call := http.MethodGet+" "+d.record, goingCall{path: d.path}
 	switch {
-	case versioned:
-		row, path["number"] = row+"/versions/{number}", version
-	case session != "":
+	case d.versioned:
+		row, call.path = row+"/versions/{number}", maps.Clone(d.path)
+		call.path["number"] = d.version
+	case d.path["session_id"] != "":
 		// A conversation holds files alone, which no text route reads.
 	default:
 		row += "/text"
-		if blocks {
+		if d.blocks {
 			call.query = url.Values{"blocks": {"true"}}
 		}
 	}
-	return row, call, nil
+	return row, call
+}
+
+// goingChooseDocRead is the row of dispatch_doc_read a call is sent to, and what that row's route
+// takes of the call, as `dispatch doc-read` reads the item the call names (goingDocReadOf): it
+// reads the item's record through read first, as the command's resolveDocument does, and reads a
+// document as pick picks it. An uploaded file or picture, whose text route answers 400
+// NOT_DOCUMENT, is read as the command's readUploadedFile reads one: at the version the call
+// names, else at its latest, through the row of that version, whose answer the model is told in
+// the command's words (goingUploadedFile.told); a call for its blocks is refused in the command's
+// words. Where the read of the record is refused, the call keeps the row pick picks, whose route
+// answers its own refusal, as before any record was read.
+func goingChooseDocRead(ctx context.Context, read goingReader, arguments map[string]any, serverURL string) (string, goingCall, error) {
+	item, err := goingDocReadOf(arguments, serverURL)
+	if err != nil {
+		return "", goingCall{}, err
+	}
+	row, call := item.pick()
+	var record struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		Kind     string `json:"kind"`
+		Versions []struct {
+			Number int  `json:"number"`
+			Size   *int `json:"size"`
+		} `json:"versions"`
+	}
+	if err := read.get(ctx, goingPath(item.record, item.path), &record); err != nil {
+		var refused goingRefusal
+		if errors.As(err, &refused) {
+			return row, call, nil
+		}
+		return "", goingCall{}, err
+	}
+	if record.Kind != "file" && record.Kind != "image" {
+		return row, call, nil
+	}
+	if item.blocks {
+		return "", goingCall{}, goingUntranslatable(fmt.Sprintf(
+			"%s is an uploaded %s, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks.", record.Name, record.Kind))
+	}
+	file := goingUploadedFile{id: record.ID, name: record.Name, kind: record.Kind}
+	for _, version := range record.Versions {
+		file.latest = max(file.latest, version.Number)
+	}
+	file.version = file.latest
+	if item.versioned {
+		if file.version, err = strconv.Atoi(item.version); err != nil {
+			// The version's route refuses a version that is no number, in its own words.
+			return row, call, nil
+		}
+	}
+	for _, version := range record.Versions {
+		if version.Number == file.version && version.Size != nil {
+			file.size = *version.Size
+		}
+	}
+	item.path["number"] = strconv.Itoa(file.version)
+	return http.MethodGet + " " + item.record + "/versions/{number}", goingCall{path: item.path, file: &file}, nil
+}
+
+// goingUploadedFile is the uploaded file or picture whose version a dispatch_doc_read reads
+// (goingChooseDocRead): its id, name and kind, the version read and its latest version, and the
+// bytes its record states that version holds, 0 where it states none.
+type goingUploadedFile struct {
+	id, name, kind  string
+	version, latest int
+	size            int
+}
+
+// told is the answer of the version's route as the model is told it, in the words `dispatch
+// doc-read` writes (readUploadedFile): a file whose bytes are UTF-8 text is that text, after a line
+// that names the file, its type, the version and its size; any other file, and every picture, is
+// those facts and the route that serves its bytes, which are not sent. A refusal is told as the
+// route answered it. The text of an answer the server cut ends at its last whole character, and
+// its size is the one its record states.
+func (f goingUploadedFile) told(answer agentwire.CallAnswer) agentwire.CallAnswer {
+	if answer.Status != http.StatusOK {
+		return answer
+	}
+	media, size, content := cmp.Or(answer.ContentType, "application/octet-stream"), len(answer.Body), answer.Body
+	if answer.Cut {
+		size, content = max(size, f.size), goingWholeRunes(content)
+	}
+	of := ""
+	if f.version != f.latest {
+		of = fmt.Sprintf(" of %d", f.latest)
+	}
+	told := agentwire.CallAnswer{Status: http.StatusOK, ContentType: "text/plain; charset=utf-8"}
+	if f.kind == "image" || !utf8.Valid(content) {
+		told.Body = fmt.Appendf(nil, "%s is an uploaded %s file (version %d%s, %d bytes) that is not UTF-8 text, so dispatch doc-read cannot show it. GET %s serves its bytes.",
+			f.name, media, f.version, of, size, goingArtifactPath(f.id, "versions", strconv.Itoa(f.version)))
+		return told
+	}
+	header := fmt.Sprintf("File %s: %s, version %d%s, %d bytes.\n\n", f.name, media, f.version, of, size)
+	told.Body, told.Cut = append(append(make([]byte, 0, len(header)+len(content)), header...), content...), answer.Cut
+	return told
+}
+
+// goingWholeRunes is content less the first bytes of a character its end cuts through.
+func goingWholeRunes(content []byte) []byte {
+	for back := 1; back <= min(utf8.UTFMax, len(content)); back++ {
+		if at := len(content) - back; utf8.RuneStart(content[at]) {
+			if utf8.FullRune(content[at:]) {
+				return content
+			}
+			return content[:at]
+		}
+	}
+	return content
 }
 
 // goingTranslateArchitectureSyncRepo imports one architecture source, named by its owner/name

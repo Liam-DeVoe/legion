@@ -418,7 +418,9 @@ func (s *server) goingCallLandings(ctx context.Context, key goingCallKey) ([]*go
 // nothing takes over what an earlier try of the row landed before the row waited again
 // (adoptLandings), before a translation that reads what of its first requests landed refuses, so
 // the refusal says what landed. A refusal of the tool's after only requests it sends before its
-// own (a close's reason) landed is the call's refusal, which says they stand.
+// own (a close's reason) landed is the call's refusal, which says they stand. A read of an
+// uploaded file's version answers what its file's words make of the route's answer
+// (goingUploadedFile.told).
 func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallRequest, login string, doer goingInProcess) (answer agentwire.CallAnswer, refusal *agentwire.Error) {
 	key := goingCallKey{run: request.Run, step: request.Step, call: request.Call}
 	release, held := a.keys.lock(ctx, key, a.callKeyWait)
@@ -519,6 +521,9 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 		}
 		recorded := doer.serve(sent)
 		answer = goingCallAnswerOf(recorded)
+		if spec.file != nil {
+			answer = spec.file.told(answer)
+		}
 		if answer.Status < http.StatusMultipleChoices || !write {
 			if answer.Status >= http.StatusMultipleChoices {
 				return answer, nil
@@ -691,11 +696,20 @@ func goingReadSends(ctx context.Context, tool string, arguments map[string]any, 
 }
 
 // goingReadCall is the row of routes, the rows of the read tool named tool, that a call of it
-// reads (goingReadRow), and what that row's route takes of the call: what the tool's Pick made of
-// it, where it has one, and otherwise the call translated by the row's own translation where it
-// has one, and otherwise with each argument the path does not take sent in the query of a GET, a
-// list as one parameter per item, or in the JSON body of any other method (goingTranslateRead).
+// reads, and what that row's route takes of the call: what the tool's Choose made of it after its
+// read, where it has one; else what its Pick made of it (goingReadRow); else the call translated
+// by the row's own translation where it has one, and otherwise with each argument the path does
+// not take sent in the query of a GET, a list as one parameter per item, or in the JSON body of
+// any other method (goingTranslateRead).
 func goingReadCall(ctx context.Context, tool string, routes []GoingRoute, arguments map[string]any, read goingReader, serverURL string) (GoingRoute, goingCall, error) {
+	if choose := goingReadTools[tool].Choose; choose != nil {
+		row, call, err := choose(ctx, read, arguments, serverURL)
+		if err != nil {
+			return GoingRoute{}, goingCall{}, err
+		}
+		route, err := goingPickedRoute(tool, routes, row)
+		return route, call, err
+	}
 	route, call, picked, err := goingReadRow(tool, routes, arguments, serverURL)
 	if err != nil || picked {
 		return route, call, err
@@ -719,11 +733,8 @@ func goingReadRow(tool string, routes []GoingRoute, arguments map[string]any, se
 		if err != nil {
 			return GoingRoute{}, goingCall{}, true, err
 		}
-		at := slices.IndexFunc(routes, func(route GoingRoute) bool { return route.Method+" "+route.Pattern == row })
-		if at < 0 {
-			return GoingRoute{}, goingCall{}, true, fmt.Errorf("%s picked %s, which is no row of its own", tool, row)
-		}
-		return routes[at], call, true, nil
+		route, err := goingPickedRoute(tool, routes, row)
+		return route, call, true, err
 	}
 	route, values, chosen := chooseGoingRoute(GoingAction{Action: tool, Routes: routes}, arguments, "")
 	if !chosen {
@@ -732,11 +743,23 @@ func goingReadRow(tool string, routes []GoingRoute, arguments map[string]any, se
 	return route, goingCall{path: values}, false, nil
 }
 
+// goingPickedRoute is the row of routes, the rows of the read tool named tool, that row names as
+// "<METHOD> <pattern>", and an error where it names none of them.
+func goingPickedRoute(tool string, routes []GoingRoute, row string) (GoingRoute, error) {
+	at := slices.IndexFunc(routes, func(route GoingRoute) bool { return route.Method+" "+route.Pattern == row })
+	if at < 0 {
+		return GoingRoute{}, fmt.Errorf("%s picked %s, which is no row of its own", tool, row)
+	}
+	return routes[at], nil
+}
+
 // GoingReadRoute is the row of the table, as "<METHOD> <pattern>", that a call of the read tool
 // named tool with arguments reads: the row the server picks for it (goingReadRow), with no read
-// made and nothing sent. serverURL is the server's own address, under which a dashboard URL names
-// an item. It is false for a tool that is no read tool of the server, and for a call the server
-// refuses before it picks a row.
+// made and nothing sent. A tool whose row hangs on what its item is names the row its Pick picks:
+// dispatch_doc_read names the row of a document, where the server sends a read of an uploaded
+// file to one of its versions once it has read the file's record (goingChooseDocRead). serverURL
+// is the server's own address, under which a dashboard URL names an item. It is false for a tool
+// that is no read tool of the server, and for a call the server refuses before it picks a row.
 func GoingReadRoute(tool string, arguments map[string]any, serverURL string) (string, bool) {
 	if _, reads := goingReadTools[tool]; !reads {
 		return "", false

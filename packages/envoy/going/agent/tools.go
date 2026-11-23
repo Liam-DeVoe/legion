@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -558,76 +557,11 @@ func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) 
 	case toolDrawBlock:
 		call.Kind, call.Block = agentwire.KindBlock, arguments.Arguments
 		return w.drawBlock(ctx, call)
-	case dispatchDocRead:
-		call.Kind, call.Tool, call.Arguments = agentwire.KindRoute, arguments.Tool, arguments.Arguments
-		return w.docRead(ctx, call)
 	default:
 		call.Kind, call.Tool, call.Arguments = agentwire.KindRoute, arguments.Tool, arguments.Arguments
 	}
 	return w.callServer(ctx, call)
 }
-
-// dispatchDocRead is the tool of Dispatch that reads a document's text, or an uploaded file's
-// (docRead).
-const dispatchDocRead = "dispatch_doc_read"
-
-// docRead is dispatch_doc_read as the person's own `dispatch doc-read` reads an item: a document's
-// text through the route call names; and an uploaded file, whose text route answers 400
-// NOT_DOCUMENT, as the bytes of the version call names, else of its latest - which the item's
-// summary names (dispatch_read, the step's next call) - through the version route that serves
-// them, the step's call after that. The model is given a file's bytes only where they are text
-// (textFile), at most modelResultLimit bytes of them as of any answer (resultText); of any other
-// file it is told what it is.
-func (w *worker) docRead(ctx context.Context, call agentwire.CallRequest) (string, bool) {
-	answer, told, refused := w.serverCall(ctx, call)
-	if told != "" {
-		return told, refused
-	}
-	var named map[string]any
-	if answer.Status != http.StatusBadRequest || !refusedAs(answer.Body, "NOT_DOCUMENT") || json.Unmarshal(call.Arguments, &named) != nil {
-		return resultText(call, answer), answer.Status/100 != 2
-	}
-	item := map[string]any{}
-	for _, name := range []string{"issue", "project", "artifact", "ref"} {
-		if value, held := named[name]; held {
-			item[name] = value
-		}
-	}
-	encoded, _ := json.Marshal(item)
-	summary, told, refused := w.serverCall(ctx, agentwire.CallRequest{Step: call.Step, Call: call.Call + 1, Kind: agentwire.KindRoute, Tool: dispatchRead, Arguments: encoded})
-	var record struct {
-		Name     string `json:"name"`
-		Kind     string `json:"kind"`
-		Versions []struct {
-			Number int `json:"number"`
-		} `json:"versions"`
-	}
-	if told != "" || refused || summary.Status/100 != 2 || json.Unmarshal(summary.Body, &record) != nil || record.Kind != "file" || len(record.Versions) == 0 {
-		return resultText(call, answer), true
-	}
-	if _, versioned := named["version"]; !versioned {
-		latest := 0
-		for _, version := range record.Versions {
-			latest = max(latest, version.Number)
-		}
-		named["version"] = latest
-	}
-	bytesCall := call
-	bytesCall.Call += 2
-	bytesCall.Arguments, _ = json.Marshal(named)
-	file, told, refused := w.serverCall(ctx, bytesCall)
-	switch {
-	case told != "":
-		return told, refused
-	case file.Status/100 == 2 && !textFile(file):
-		return fmt.Sprintf("%s is an uploaded file of %s, %d bytes, %s: no tool of the agent's reads it", record.Name, cmp.Or(file.ContentType, "no stated type"), len(file.Body), fileNotText), true
-	}
-	return resultText(bytesCall, file), file.Status/100 != 2
-}
-
-// fileNotText is what the model is told of an uploaded file that is not text (docRead), which a
-// step's words read back (failedReason).
-const fileNotText = "which is not text"
 
 // refusedAs reports whether body is a refusal of Dispatch's with code.
 func refusedAs(body []byte, code string) bool {
@@ -635,15 +569,6 @@ func refusedAs(body []byte, code string) bool {
 		Code string `json:"code"`
 	}
 	return json.Unmarshal(body, &refusal) == nil && refusal.Code == code
-}
-
-// textFile reports whether a file's answer is text the model may be given: a text content type,
-// or JSON, XML or YAML, and UTF-8.
-func textFile(answer agentwire.CallAnswer) bool {
-	media, _, _ := strings.Cut(strings.ToLower(answer.ContentType), ";")
-	media = strings.TrimSpace(media)
-	text := strings.HasPrefix(media, "text/") || slices.Contains([]string{"application/json", "application/xml", "application/yaml", "application/x-yaml", "application/x-ndjson"}, media)
-	return text && utf8.Valid(answer.Body)
 }
 
 // drawBlock asks the server to draw the block call names from the run's saved tool results, and

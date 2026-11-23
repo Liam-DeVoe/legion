@@ -666,7 +666,7 @@ func slipWords(label contracts.ToolLabel, arguments map[string]any, result strin
 			return "", false
 		}
 	case strings.HasPrefix(result, callCutOff), strings.HasPrefix(result, callNotMade), strings.HasPrefix(result, planUnread),
-		strings.Contains(result, toolPanicked), strings.Contains(result, fileNotText):
+		strings.Contains(result, toolPanicked):
 		return "", false
 	}
 	return cutWords("Tried to "+didWords(label, arguments)+" the wrong way", labelLimit), true
@@ -718,8 +718,6 @@ func failedReason(result string, answer SavedResult, answered bool) string {
 		return "the server could not make the call"
 	case strings.Contains(result, toolPanicked):
 		return "the tool failed"
-	case strings.Contains(result, fileNotText):
-		return "it is a file that is not text"
 	}
 	return "the request was not valid"
 }

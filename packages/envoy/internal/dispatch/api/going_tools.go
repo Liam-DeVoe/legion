@@ -204,6 +204,12 @@ type goingReadTool struct {
 	// reads its first row whose guard the arguments satisfy and whose placeholders they fill
 	// (goingReadCall).
 	Pick func(arguments map[string]any, serverURL string) (string, goingCall, error)
+	// Choose is the row of Routes a call is sent to, and what that row's route takes of it, for a
+	// tool whose row hangs on what the item its arguments name is, which Choose reads through
+	// read first: dispatch_doc_read reads an uploaded file at one of its versions where it reads
+	// a document's text (goingChooseDocRead). Pick names the row such a call reads with no read
+	// made (GoingReadRoute). Nil for a tool whose row its arguments pick alone.
+	Choose func(ctx context.Context, read goingReader, arguments map[string]any, serverURL string) (string, goingCall, error)
 }
 
 // goingToolRows is the rows of the tool spec names: the rows its entry names, or, for a spec that
@@ -780,11 +786,12 @@ var goingReadTools = map[string]goingReadTool{
 		{Method: http.MethodGet, Pattern: "/api/v1/messages/{id}", Path: map[string]string{"id": "message"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/references", Path: map[string]string{}},
 	}},
-	// dispatch_doc_read reads the document its arguments name (goingPickDocRead); the reference
-	// that names a file of an agent's conversation fills those rows' session and slug. The list of
-	// an issue's documents and the blocks rows are reads its command makes beside the text, which
-	// no call picks.
-	"dispatch_doc_read": {Pick: goingPickDocRead, Routes: []goingToolRoute{
+	// dispatch_doc_read reads the document its arguments name (goingPickDocRead), or a version of
+	// the uploaded file they name, which a read of its record tells (goingChooseDocRead); the
+	// reference that names a file of an agent's conversation fills those rows' session and slug.
+	// The list of an issue's documents and the blocks rows are reads its command makes beside the
+	// text, which no call picks.
+	"dispatch_doc_read": {Pick: goingPickDocRead, Choose: goingChooseDocRead, Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/artifacts", Path: map[string]string{"key": "issue"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/text", Path: map[string]string{"key": "issue", "slug": "artifact"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/artifacts/{slug}/blocks", Path: map[string]string{"key": "issue", "slug": "artifact"}},

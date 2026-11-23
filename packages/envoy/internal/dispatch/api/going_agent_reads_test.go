@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -485,4 +486,125 @@ func TestTheAgentReadsWhatItsArgumentsName(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheAgentReadsAnUploadedFileAsDocReadDoes: dispatch_doc_read of an uploaded file reads it as
+// `dispatch doc-read` does, once the server read its record: through the route of one of its
+// versions, the latest where the call names none and the one the call or its reference names
+// otherwise, the model told a text file's text after a line that names the file, its type, the
+// version and its size; and a file whose bytes are not UTF-8 text, and a picture, by those facts
+// and the route that serves the bytes, never the bytes themselves. A call for a file's blocks is
+// refused in the command's words, and no route of the file is read. A document still reads its
+// markdown.
+func TestTheAgentReadsAnUploadedFileAsDocReadDoes(t *testing.T) {
+	writes := newGoingWritesRig(t)
+	record := &goingServedRecord{mux: writes.mux.(*http.ServeMux)}
+	writes.served.inProcess = record.wrap(writes.served.inProcess)
+	rig := newGoingAgentRigOver(t, writes, nil)
+	loop := newGoingLoop(t, rig)
+	// read runs a run of alice's whose model calls dispatch_doc_read with arguments and then
+	// answers, and answers what the model was told of the call and the requests the route table
+	// served for it.
+	read := func(t *testing.T, words string, arguments map[string]any) (string, []goingServedRequest) {
+		t.Helper()
+		loop.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return toolCall("call_tool", map[string]any{"tool": "dispatch_doc_read", "arguments": arguments})
+			}
+			return answered("Read.")
+		})
+		record.take()
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		if ended := rig.ended(t, run, time.Minute); ended.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", ended.state, ended.reason)
+		}
+		results := rig.toolResults(t, run)
+		if len(results) != 1 {
+			t.Fatalf("the run saved %d tool results, want 1: %q", len(results), results)
+		}
+		return results[0], record.take()
+	}
+
+	issue := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "DEMO", "title": "Large uploads fail", "spec": "# Uploads\n\nThe proxy refuses a large upload.\n", "force": true,
+	})).Key
+	owner := "/api/v1/issues/" + issue
+	lines := [][]byte{[]byte("PUT /upload answered 413 for 24.1 MB\n"), []byte("PUT /upload answered 413 Request Entity Too Large for 24.1 MB\n")}
+	errorFile := uploadVersions(t, rig.mux, owner, "upload-error.txt", "text/plain", lines...)
+	dump := []byte("\xff\xfe\x00binary dump")
+	binary := uploadVersions(t, rig.mux, owner, "dump.bin", "application/octet-stream", dump)
+	shot := pngBytes("a chart of uploads")
+	chart := uploadVersions(t, rig.mux, owner, "chart.png", "image/png", shot)
+	errorRef := "dispatch://" + issue + "/artifact/" + errorFile.Slug
+	const recordRow = "GET /api/v1/issues/{key}/artifacts/{slug}"
+	const versionRow = recordRow + "/versions/{number}"
+
+	for _, c := range []struct {
+		name      string
+		arguments map[string]any
+		// route is the row the call reads, after the read of the item's record, and number the
+		// version that row reads, "" for none.
+		route, number string
+		holds, lacks  []string
+	}{
+		{name: "a text file read with no version reads the text of its latest version", arguments: map[string]any{"issue": issue, "artifact": errorFile.Slug},
+			route: versionRow, number: "2",
+			holds: []string{"File upload-error.txt: text/plain", fmt.Sprintf(", version 2, %d bytes.\n\n%s", len(lines[1]), lines[1])}},
+		{name: "a text file's reference reads the text of its latest version", arguments: map[string]any{"ref": errorRef},
+			route: versionRow, number: "2", holds: []string{fmt.Sprintf(", version 2, %d bytes.\n\n%s", len(lines[1]), lines[1])}},
+		{name: "a text file read at a version reads that version", arguments: map[string]any{"issue": issue, "artifact": errorFile.Slug, "version": 1},
+			route: versionRow, number: "1", holds: []string{fmt.Sprintf(", version 1 of 2, %d bytes.\n\n%s", len(lines[0]), lines[0])}, lacks: []string{"Request Entity Too Large"}},
+		{name: "a text file's reference at a version reads that version", arguments: map[string]any{"ref": errorRef + "@v1"},
+			route: versionRow, number: "1", holds: []string{fmt.Sprintf(", version 1 of 2, %d bytes.\n\n%s", len(lines[0]), lines[0])}},
+		{name: "a file that is not UTF-8 text is described and not sent", arguments: map[string]any{"issue": issue, "artifact": binary.Slug},
+			route: versionRow, number: "1",
+			holds: []string{
+				fmt.Sprintf("dump.bin is an uploaded application/octet-stream file (version 1, %d bytes) that is not UTF-8 text", len(dump)),
+				"GET /api/v1/artifacts/" + binary.ID + "/versions/1 serves its bytes.",
+			},
+			lacks: []string{"binary dump"}},
+		{name: "a picture is described and not sent", arguments: map[string]any{"issue": issue, "artifact": chart.Slug},
+			route: versionRow, number: "1",
+			holds: []string{
+				fmt.Sprintf("chart.png is an uploaded image/png file (version 1, %d bytes)", len(shot)),
+				"GET /api/v1/artifacts/" + chart.ID + "/versions/1 serves its bytes.",
+			},
+			lacks: []string{"a chart of uploads"}},
+		{name: "a document still reads its markdown", arguments: map[string]any{"issue": issue},
+			route: "GET /api/v1/issues/{key}/artifacts/{slug}/text", holds: []string{"The proxy refuses a large upload."}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			result, served := read(t, c.name, c.arguments)
+			if len(served) != 2 || served[0].route != recordRow {
+				t.Fatalf("the call read %v, want the item's record and then %s; the model was told %q", served, c.route, result)
+			}
+			if sent := served[1]; sent.route != c.route || sent.path["number"] != c.number {
+				t.Fatalf("the call read %s at version %q, want %s at version %q; the model was told %q", sent.route, sent.path["number"], c.route, c.number, result)
+			}
+			if !strings.Contains(result, "status 200") {
+				t.Errorf("the model was told %q, want status 200", result)
+			}
+			for _, held := range c.holds {
+				if !strings.Contains(result, held) {
+					t.Errorf("the model was told %q, which does not hold %q", result, held)
+				}
+			}
+			for _, lacked := range c.lacks {
+				if strings.Contains(result, lacked) {
+					t.Errorf("the model was told %q, which holds %q", result, lacked)
+				}
+			}
+		})
+	}
+
+	t.Run("a file's blocks are refused in the command's words", func(t *testing.T) {
+		result, served := read(t, "list the blocks of the upload error", map[string]any{"issue": issue, "artifact": errorFile.Slug, "blocks": true})
+		const refusal = "upload-error.txt is an uploaded file, not a document, so it has no blocks. Read it with dispatch doc-read without --blocks."
+		if !strings.Contains(result, agentwire.CodeCallRefused) || !strings.Contains(result, refusal) {
+			t.Errorf("the model was told %q, want the refusal %q", result, refusal)
+		}
+		if len(served) != 1 || served[0].route != recordRow {
+			t.Errorf("the call read %v, want the item's record alone", served)
+		}
+	})
 }
