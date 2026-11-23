@@ -89,7 +89,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //   - Its tree's architect: only its tree's admission starts it, whoever suspended it. A notice to a
 //     suspended one is held until it holds its role again, which nothing in the daemon brings
 //     about, and a notice to a failed or a retired one finishes undelivered (the notice executor).
-//     An owner-step is the exception: that architect is told its step again when it runs again.
+//     An owner-step is the exception: that architect is told its step again when it runs again,
+//     where the session it runs in has not had it (claimReady's toldThisSession).
 //     Its tree moves through its phases without it, and stops at the first decision that needs it.
 //     One the daemon or its own exit suspended, one that failed, and one a close retired while its
 //     tree runs again, are each stranded once no admission start is queued (StartFor).
