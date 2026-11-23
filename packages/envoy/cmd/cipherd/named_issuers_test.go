@@ -964,7 +964,7 @@ func TestAnAccountIsAcceptedFromTheIssuersItsEntryNames(t *testing.T) {
 	})
 
 	broker.Terminate(t)
-	if err := broker.AwaitExit(t, stopTimeout); err != nil {
+	if err := broker.AwaitExit(t); err != nil {
 		t.Fatalf("the first broker's exit = %v, want a clean one:\n%s", err, broker.Log())
 	}
 	restarted := startBroker(t, brokerOptions{Binary: binary, Env: env("=a")})

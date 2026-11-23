@@ -8,6 +8,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -113,11 +114,11 @@ func TestANatsServiceIsAdmittedFromTheIssuersItsEntryNames(t *testing.T) {
 		notListed   = `kind="service",outcome="refused",reason="service_not_listed"`
 		notVerified = `kind="service",outcome="refused",reason="service_token_not_verified"`
 	)
-	var decisions map[string]float64
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		decisions = scrapeMetric(t, broker.MetricsAddr(t), "broker_nats_callout_decisions_total")
-		return decisions[notListed] >= float64(refused)
-	}) || decisions[notListed] != float64(refused) || decisions[notVerified] != 0 {
+	decisions := testwait.Until(t, fmt.Sprintf("broker_nats_callout_decisions_total to count %d refusals %s", refused, notListed), func() (map[string]float64, bool) {
+		decisions := scrapeMetric(t, broker.MetricsAddr(t), "broker_nats_callout_decisions_total")
+		return decisions, decisions[notListed] >= float64(refused)
+	})
+	if decisions[notListed] != float64(refused) || decisions[notVerified] != 0 {
 		t.Fatalf("broker_nats_callout_decisions_total = %v, want %d refusals %s and none %s", decisions, refused, notListed, notVerified)
 	}
 }
