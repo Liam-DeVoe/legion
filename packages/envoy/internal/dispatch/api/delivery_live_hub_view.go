@@ -16,10 +16,13 @@ import (
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	classes, known := deliveryLiveKinds[view.Kind]
 	if !known {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion or evals")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion, evals or items")
 	}
 	if view.Project != nil && !classes.reads.namesProject() {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion or an evals view names a project")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion, an evals or an items view names a project")
+	}
+	if view.Slug != nil && !classes.reads.namesEval() {
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only an items view names a slug")
 	}
 	spec := deliveryLiveSpec{kind: view.Kind}
 	if refusal := classes.parse(&spec, view); refusal != nil {
@@ -140,8 +143,36 @@ func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErro
 	return nil
 }
 
-// evalsQuery is the query an evals view's read sends GET /api/v1/projects/{key}/evals at now: the
-// view's own query, with its window's from and to, a preset's ending at now.
+// parseEvalItemsLiveView reads an items view: the project and the slug of the eval whose rows it
+// shows, its window, as a timeline view names one, and its query, the query string
+// GET /api/v1/projects/{key}/evals/{slug}/items would be sent without from and to: the compare
+// range (compare_from and compare_to), the series, the row kind and row (row_kind, row), the
+// repositories (repo), the order (sort) and the page (limit and offset). A query the route refuses
+// is refused here, by the route's own reading of the query the view's read sends it (evalsQuery,
+// parseEvalItemsQuery), before the view is held, as an evals view's is (parseEvalsLiveView). A
+// project or a slug no row holds is the read's to refuse, as the route's is (readEvalItems).
+func parseEvalItemsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
+	project, refusal := readLiveProject(view, "an items view", "INVALID_QUERY")
+	if refusal != nil {
+		return refusal
+	}
+	if view.Slug == nil || *view.Slug == "" {
+		return invalidLiveView("INVALID_FRAME", "an items view names the slug of its eval")
+	}
+	named, refusal := spec.readWindowAndQuery(view, "an items view")
+	if refusal != nil {
+		return refusal
+	}
+	if _, err := parseEvalItemsQuery(spec.evalsQuery(time.Now().UTC())); err != nil {
+		return invalidLiveView("INVALID_QUERY", err.Error())
+	}
+	spec.project, spec.slug = project, *view.Slug
+	spec.key = evalItemsView + "|" + project + "|" + url.PathEscape(spec.slug) + "|" + named + "|" + spec.query.Encode()
+	return nil
+}
+
+// evalsQuery is the query an evals or items view's read sends its GET route at now: the view's own
+// query, with its window's from and to, a preset's ending at now.
 func (spec deliveryLiveSpec) evalsQuery(now time.Time) url.Values {
 	from, to := spec.from, spec.to
 	if spec.preset > 0 {

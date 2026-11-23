@@ -165,11 +165,15 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 		if classes.read == nil {
 			t.Errorf("%s: no read: a view of this kind answers nothing", kind)
 		}
-		// A view reads the deployment's delivery rows, one project's daemon, or one project's
-		// eval registry; the first names no project, and every other view names the one project
-		// it shows (viewReads.namesProject).
-		if classes.reads != viewReadsDelivery && classes.reads != viewReadsLegion && classes.reads != viewReadsEvals {
-			t.Errorf("%s: reads = %d: a view reads the deployment's delivery rows, one project's daemon or one project's evals", kind, classes.reads)
+		// A view reads the deployment's delivery rows, one project's daemon, one project's eval
+		// registry, or one eval's rows; the first names no project, and every other view names
+		// the one project it shows (viewReads.namesProject).
+		if classes.reads != viewReadsDelivery && classes.reads != viewReadsLegion && classes.reads != viewReadsEvals && classes.reads != viewReadsEvalItems {
+			t.Errorf("%s: reads = %d: a view reads the deployment's delivery rows, one project's daemon, one project's evals or one eval's rows", kind, classes.reads)
+		}
+		// The items view alone names an eval, by its slug, beside its project (viewReads.namesEval).
+		if classes.reads.namesEval() != (kind == evalItemsView) {
+			t.Errorf("%s: names an eval %t, want the items view alone to", kind, classes.reads.namesEval())
 		}
 	}
 	if deliveryLiveKinds[legionBoardView].unownedP0 {
@@ -179,6 +183,19 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 	// that daemon marks by the board's project (dirtyLegionBoard), so the board names its project.
 	if board := deliveryLiveKinds[legionBoardView].reads; board != viewReadsLegion || !board.namesProject() {
 		t.Error("the Legion board does not read its project's daemon, so the sampler's read of that daemon marks no board")
+	}
+	// The items view (dispatch://INFRA-2918, D9) answers the items route's body, its rows sent
+	// whole, since they carry no id; it reads one eval's rows of one project, which it names, and
+	// no P0 write nor any version of another eval marks it.
+	items := deliveryLiveKinds[evalItemsView]
+	if items.body != reflect.TypeFor[evalItemsResponse]() || len(items.lists)+len(items.maps)+len(items.counts) != 0 ||
+		!slices.Equal(slices.Sorted(maps.Keys(items.whole)), []string{"compare", "items", "limit", "offset", "total", "window"}) {
+		t.Errorf("the items view sends %v of %v whole, lists %v, maps %v, counts %v; want every field of the items route's body whole",
+			slices.Sorted(maps.Keys(items.whole)), items.body, items.lists, items.maps, items.counts)
+	}
+	if items.reads != viewReadsEvalItems || !items.reads.namesProject() || items.unownedP0 || len(items.evalVersions) != 0 {
+		t.Errorf("the items view reads %d, names its project %t, shows the unowned P0 list %t and reads the versions of %v; want one eval's rows of the project it names alone",
+			items.reads, items.reads.namesProject(), items.unownedP0, items.evalVersions)
 	}
 }
 
@@ -1018,6 +1035,30 @@ func liveEvalsOf(updated time.Time, age int, items ...evalListItem) evalListResp
 	}
 }
 
+// liveFailingJob is one of pr-ci's jobs that failed in the 24 hours before the end of the evals
+// fixture's window, as the items read answers it with sort=failures: failures of its results
+// failed, the last of them in run, hours before that end.
+func liveFailingJob(name string, failures, results int, run int64, hours int) evalItemRow {
+	at := liveEvalsWindow.To.Add(-time.Duration(hours) * time.Hour)
+	runURL := "https://github.com/" + liveRepo + "/actions/runs/" + strconv.FormatInt(run, 10)
+	return evalItemRow{
+		RowKey: name, RowKind: evalRowJob,
+		Cols: map[string]any{
+			"name": name, "failures": failures, "results": results, "last_failed_at": at, "last_run_url": runURL,
+		},
+		MeasuredAt: at, Source: "measures.FailingJobs", Href: runURL, Links: []evals.Link{}, Range: evals.RangeWindow,
+	}
+}
+
+// liveItemsOf is the items read of ACME's pr-ci with sort=failures over the evals fixture's window
+// and compare range, answering rows.
+func liveItemsOf(rows ...evalItemRow) evalItemsResponse {
+	return evalItemsResponse{
+		Items: rows, Total: len(rows), Limit: evalPageMax,
+		Window: newEvalRange(liveEvalsWindow), Compare: evalCompareRange(&liveEvalsCompare),
+	}
+}
+
 // TestAnEvalWhoseNumbersMovedIsTheOneItemSent: an evals view sends its list eval by eval, by id. A
 // reading that moves one eval's numbers sends that eval alone; a registered eval is upserted with
 // the total that counts it; a new version of a definition sends its eval whole; a day that turned
@@ -1101,8 +1142,10 @@ func TestAnEvalWhoseNumbersMovedIsTheOneItemSent(t *testing.T) {
 // a page subscribing afterwards gets (applying the delta to the first gives its body, but for the
 // freshness a delta never carries), a freshness verdict, an error, the event feed's start, one of
 // its events and its end, an agent view's responder verdict, the one agent frame whose data
-// Dispatch writes itself, and an evals view's snapshot, the delta of a reading and a
-// registration, and the snapshot after them, which applying that delta to the first gives whole.
+// Dispatch writes itself, an evals view's snapshot, the delta of a reading and a registration,
+// and the snapshot after them, which applying that delta to the first gives whole, and an items
+// view's snapshot of pr-ci's failing jobs, the delta of a job's second failure and another job's
+// first, and the snapshot after them.
 // `go test ./internal/dispatch/api -run TestTheLiveFixturesAreWhatTheDiffWrites -update`
 // rewrites them.
 func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
@@ -1148,6 +1191,18 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 	}
 	evalsDelta.Sub, evalsDelta.Seq, evalsDelta.ChangedAt = "evals-1", "44", &evalsAt
 	evalsHeldAt := evalsAt.Add(-time.Hour)
+
+	// ACME's pr-ci failing jobs: build failed again in run 52, and lint failed for the first time
+	// in it; the rows carry no id, so they go whole, with the total that counts them.
+	itemsHeld := mustEncodeLive(t, evalItemsView, liveItemsOf(liveFailingJob("build / unit", 1, 3, 51, 5)))
+	itemsNext := mustEncodeLive(t, evalItemsView, liveItemsOf(liveFailingJob("build / unit", 2, 4, 52, 1), liveFailingJob("lint", 1, 4, 52, 1)))
+	itemsDelta, ok := liveDiff(t, itemsHeld, itemsNext)
+	if !ok {
+		t.Fatal("the items fixture's change sent no delta")
+	}
+	itemsAt := liveEvalsWindow.To.Add(-time.Hour)
+	itemsHeldAt := itemsAt.Add(-4 * time.Hour)
+	itemsDelta.Sub, itemsDelta.Seq, itemsDelta.ChangedAt = "items-1", "46", &itemsAt
 	event := liveFixtureEventFrame(t)
 	frames := map[string]any{
 		"snapshot.json":  held.snapshot("timeline-1", 41, &snapshotAt),
@@ -1172,6 +1227,9 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 		"evals_snapshot.json": evalsHeld.snapshot("evals-1", 43, &evalsHeldAt),
 		"evals_delta.json":    evalsDelta,
 		"evals_after.json":    evalsNext.snapshot("evals-1", 44, &evalsAt),
+		"items_snapshot.json": itemsHeld.snapshot("items-1", 45, &itemsHeldAt),
+		"items_delta.json":    itemsDelta,
+		"items_after.json":    itemsNext.snapshot("items-1", 46, &itemsAt),
 	}
 	for name, frame := range frames {
 		got, err := json.MarshalIndent(frame, "", "  ")
@@ -1219,6 +1277,7 @@ func TestTheClientLiveFixturesAreFramesTheSocketReads(t *testing.T) {
 	for name, kind := range map[string]string{
 		"subscribe_timeline.json": deliveryLiveTimeline,
 		"subscribe_evals.json":    evalsView,
+		"subscribe_items.json":    evalItemsView,
 		"subscribe_events.json":   liveEventsView,
 		"subscribe_agent.json":    liveAgentView,
 	} {
@@ -1229,15 +1288,16 @@ func TestTheClientLiveFixturesAreFramesTheSocketReads(t *testing.T) {
 		}
 		// Each fixture carries every member its view's kind takes: a delivery or events view its
 		// resume, an agent view its session_id and no resume. A delivery view's is one the hub
-		// holds (parseDeliveryLiveView).
+		// holds (parseDeliveryLiveView), an evals view's names its project, and an items view's
+		// its project and its eval's slug.
 		var err error
 		complete := false
 		switch kind {
-		case deliveryLiveTimeline, evalsView:
+		case deliveryLiveTimeline, evalsView, evalItemsView:
 			var resume *DeliveryLiveResume
 			resume, err = decodeLiveResume[DeliveryLiveResume](frame.Resume)
 			complete = resume != nil && frame.View.Window != nil && frame.View.Query != nil &&
-				(kind != evalsView || frame.View.Project != nil)
+				(kind == deliveryLiveTimeline || frame.View.Project != nil) && (kind != evalItemsView || frame.View.Slug != nil)
 			if _, refusal := parseDeliveryLiveView(frame.View.DeliveryLiveView); refusal != nil {
 				t.Errorf("%s: the hub refuses its view: %+v", name, refusal)
 			}

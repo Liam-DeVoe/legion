@@ -300,6 +300,26 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 	return answer, nil
 }
 
+// readEvalItemsView is an items view's read: the items read of
+// GET /api/v1/projects/{key}/evals/{slug}/items, through the function the route answers with
+// (readProjectEvalItems), from the query the route would be sent (evalsQuery). So the body is the
+// route's for the same query, byte for byte. A project or an eval no row holds is the route's
+// PROJECT_NOT_FOUND or EVAL_NOT_FOUND, which the view refuses as the route answers it
+// (viewReads.refusal): its subscribers are told so once and stay open, and the version change of
+// the eval's registration marks the view, whose next read answers it.
+//
+// It names no issue and no session, reads the settings its rows stand built under in the items
+// read's own snapshot, and sets no expiry: what moves it is a write of its eval's readings,
+// versions or day rows and, for pr-ci's run and job rows, a change of a pull-request checks run of
+// its ranges, each of which the change log carries (touchedBy).
+func (h *deliveryHub) readEvalItemsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, _ *deliveryViewRead) (any, error) {
+	answer, err := h.server.readProjectEvalItems(ctx, spec.evalsQuery(now), spec.project, spec.slug)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
+}
+
 // readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
 // of the seven days ending on its at, or on the present for a view that names none, with the
 // min_n its slowest jobs are ranked by, through the GET route's own read and compute

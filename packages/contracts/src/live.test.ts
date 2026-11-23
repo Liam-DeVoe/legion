@@ -11,10 +11,14 @@ import event from "../fixtures/live/event.json";
 import eventsStart from "../fixtures/live/events_start.json";
 import freshness from "../fixtures/live/freshness.json";
 import heartbeat from "../fixtures/live/heartbeat.json";
+import itemsAfter from "../fixtures/live/items_after.json";
+import itemsDelta from "../fixtures/live/items_delta.json";
+import itemsSnapshot from "../fixtures/live/items_snapshot.json";
 import snapshot from "../fixtures/live/snapshot.json";
 import subscribeAgent from "../fixtures/live/subscribe_agent.json";
 import subscribeEvals from "../fixtures/live/subscribe_evals.json";
 import subscribeEvents from "../fixtures/live/subscribe_events.json";
+import subscribeItems from "../fixtures/live/subscribe_items.json";
 import subscribeTimeline from "../fixtures/live/subscribe_timeline.json";
 import unsubscribe from "../fixtures/live/unsubscribe.json";
 import { AGENT_STREAM_PROTOCOL, type AgentStreamResponder } from "./agent-stream";
@@ -33,6 +37,8 @@ import {
   type DeliveryLiveView,
   type DeliveryTimelineWithMeasures,
   type DispatchEvent,
+  type EvalItemRow,
+  type EvalItemsResponse,
   type EvalListItem,
   type EvalListResponse,
   type EventsLiveResume,
@@ -111,6 +117,7 @@ const VIEW_KINDS = allOf<LiveView["kind"]>()([
   "pipeline",
   "legion",
   "evals",
+  "items",
   "events",
   "agent",
 ]);
@@ -197,6 +204,25 @@ const MAPS = allOf<DeliveryLiveMap>()([
   "components",
 ]);
 const COUNTS = allOf<DeliveryLiveCounts>()(["facet_counts", "color_counts"]);
+/** An items body's fields, every one sent whole: its rows carry no id. */
+const ITEMS_KEYS = allOf<keyof EvalItemsResponse>()([
+  "items",
+  "total",
+  "limit",
+  "offset",
+  "window",
+  "compare",
+]);
+const ITEM_ROW_KEYS = allOf<keyof EvalItemRow>()([
+  "row_key",
+  "row_kind",
+  "cols",
+  "measured_at",
+  "source",
+  "href",
+  "links",
+  "range",
+]);
 
 const REVISION = /^[0-9a-f]{16}$/;
 
@@ -322,6 +348,35 @@ test("an evals delta upserts the evals that moved by id and sets the fields that
   }
 });
 
+test("an items snapshot is the items route's body, every field of it whole", () => {
+  for (const frame of [itemsSnapshot, itemsAfter]) {
+    expect(keysOf(frame)).toEqual(sorted(SNAPSHOT_KEYS));
+    expect(frame.type).toBe("snapshot");
+    expect(frame.seq).toMatch(/^\d+$/);
+    expect(keysOf(frame.body)).toEqual(sorted(ITEMS_KEYS));
+    for (const row of frame.body.items) expect(keysOf(row)).toEqual(sorted(ITEM_ROW_KEYS));
+    expect(keysOf(frame.revs)).toEqual(sorted(REVS_KEYS));
+    expect(frame.revs.items).toEqual({});
+    expect(frame.revs.maps).toEqual({});
+    expect(frame.revs.counts).toEqual({});
+    expect(keysOf(frame.revs.fields)).toEqual(sorted(ITEMS_KEYS));
+    for (const revision of leaves(frame.revs.fields, 1)) expect(revision).toMatch(REVISION);
+  }
+});
+
+test("an items delta sets the rows whole, with the fields that moved beside them", () => {
+  expect(keysOf(itemsDelta)).toEqual(sorted(DELTA_KEYS));
+  // A job failed again and another failed for the first time: the rows go whole, in the body's
+  // order, with the total that counts them, and no list is sent item by item.
+  expect(itemsDelta.items).toEqual({});
+  expect(itemsDelta.maps).toEqual({});
+  expect(itemsDelta.counts).toEqual({});
+  expect(keysOf(itemsDelta.set)).toEqual(["items", "total"]);
+  expect(itemsDelta.set.items.map((row) => row.row_key)).toEqual(["build / unit", "lint"]);
+  expect(itemsDelta.set.items).toEqual(itemsAfter.body.items);
+  for (const revision of leaves(itemsDelta.revs.fields, 1)) expect(revision).toMatch(REVISION);
+});
+
 test("an error frame names its code and its message", () => {
   expect(keysOf(error)).toEqual(sorted(SERVER_FRAME_KEYS.error));
   expect(error).toEqual({
@@ -410,6 +465,13 @@ test("the page's frames carry every key of their types, and the socket reads eac
     "window",
     "query",
   ]);
+  const itemsViewKeys = allOf<keyof Extract<DeliveryLiveView, { kind: "items" }>>()([
+    "kind",
+    "project",
+    "slug",
+    "window",
+    "query",
+  ]);
   const eventsViewKeys = allOf<keyof EventsLiveView>()(["kind"]);
   const agentViewKeys = allOf<keyof AgentLiveView>()(["kind", "session_id"]);
   const subscribeKeys = sorted(CLIENT_FRAME_KEYS.subscribe);
@@ -421,6 +483,9 @@ test("the page's frames carry every key of their types, and the socket reads eac
   expect(keysOf(subscribeEvals)).toEqual(subscribeKeys);
   expect(keysOf(subscribeEvals.view)).toEqual(sorted(evalsViewKeys));
   expect(keysOf(subscribeEvals.resume)).toEqual(sorted(DELIVERY_RESUME_KEYS));
+  expect(keysOf(subscribeItems)).toEqual(subscribeKeys);
+  expect(keysOf(subscribeItems.view)).toEqual(sorted(itemsViewKeys));
+  expect(keysOf(subscribeItems.resume)).toEqual(sorted(DELIVERY_RESUME_KEYS));
   expect(keysOf(subscribeEvents)).toEqual(subscribeKeys);
   expect(keysOf(subscribeEvents.view)).toEqual(sorted(eventsViewKeys));
   expect(keysOf(subscribeEvents.resume)).toEqual(sorted(EVENTS_RESUME_KEYS));

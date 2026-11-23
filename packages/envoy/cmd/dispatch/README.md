@@ -4534,6 +4534,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each row's `measured_at` is when its value was measured, the moment its eval dates it by: a reading's own, a pull request's merge, a deploy run's and a CI run's start, a Legion issue's close, a filing's filing, a day row's day, a job's newest day and a failing job's latest failure; an open P0 issue with no owner is measured at the read.
   `400 INVALID_QUERY` names a malformed key or one the route does not take, as the list read does.
   Every read of one answer, the project, the eval, the settings the rows stand built under, its day rows, the items they counted and the pull requests, runs, issues and readings behind them, runs in one read-only repeatable-read transaction, so a refresher pass that commits while the answer reads is in the whole answer or in none of it.
+  The `/ws/live` `items` view (its `project`, the eval's `slug`, its window and the rest of this query) carries the same body, every field of it sent whole, since a row carries no id; a write of the eval's readings, versions or day rows moves it, and so does, for `pr-ci`'s run and job rows, which are read from the runs themselves, a change of a pull-request checks run or job on a day of its window or compare range.
 
 - `/api/v1/projects/{key}/evals/{slug}/readings` (POST; cookie, trusted header, or bearer)
 

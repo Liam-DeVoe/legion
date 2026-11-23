@@ -3,6 +3,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalItemsResponse,
   EvalListResponse,
   LegionBoardResponse,
 } from "./dispatch-api.generated";
@@ -26,7 +27,11 @@ export type DeliveryLiveWindow =
  *  and the rest of what `GET /api/v1/projects/{key}/evals` would be sent as its `query`: the
  *  compare range (`compare_from`, `compare_to`), the repositories (`repo`), the kind (`kind`) and
  *  the page (`limit`, `offset`). Its snapshot and deltas carry an `EvalListResponse`, its evals
- *  sent by id. */
+ *  sent by id. An items view names the project and the `slug` of the eval whose rows it shows, its
+ *  window, and the rest of what `GET /api/v1/projects/{key}/evals/{slug}/items` would be sent as
+ *  its `query`: the compare range, the series (`series`), the row kind and row (`row_kind`,
+ *  `row`), the repositories, the order (`sort`) and the page. Its snapshot and deltas carry an
+ *  `EvalItemsResponse`, every field of it sent whole, since its rows carry no id. */
 export type DeliveryLiveView =
   | { readonly kind: "timeline"; readonly window: DeliveryLiveWindow; readonly query: string }
   | { readonly kind: "measures"; readonly window: DeliveryLiveWindow; readonly query: string }
@@ -35,6 +40,13 @@ export type DeliveryLiveView =
   | {
       readonly kind: "evals";
       readonly project: string;
+      readonly window: DeliveryLiveWindow;
+      readonly query: string;
+    }
+  | {
+      readonly kind: "items";
+      readonly project: string;
+      readonly slug: string;
       readonly window: DeliveryLiveWindow;
       readonly query: string;
     };
@@ -140,7 +152,8 @@ export type DeliveryLiveBody =
   | DeliveryMeasuresResponse
   | DeliveryPipelineResponse
   | LegionBoardResponse
-  | EvalListResponse;
+  | EvalListResponse
+  | EvalItemsResponse;
 
 export interface DeliveryLiveSnapshot {
   readonly type: "snapshot";

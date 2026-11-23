@@ -127,6 +127,15 @@ func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
 	return request, nil
 }
 
+// keeps is whether request keeps the rows of kind: the kind row_kind names, every kind where it
+// names none, and pr-ci's job rows alone where it names a sort.
+func (request evalItemsRequest) keeps(kind string) bool {
+	if request.sort != "" {
+		return kind == evalRowJob
+	}
+	return request.rowKind == "" || request.rowKind == kind
+}
+
 // evalItemsRange is one range an items read reads: its days, the instants it was asked for,
 // [start, end), and its name in the answer (evals.RangeWindow, evals.RangeCompare).
 type evalItemsRange struct {
@@ -208,24 +217,31 @@ func listedSource(rows []evalItemRow) evalItemSource {
 }
 
 // listProjectEvalItems answers GET /api/v1/projects/{key}/evals/{slug}/items: one page of the rows
-// behind the eval's numbers over the window and the compare range, filtered by series, row_kind,
-// row and repo, and for pr-ci's jobs ranked by sort (readEvalItems). 404 PROJECT_NOT_FOUND and
-// EVAL_NOT_FOUND as the detail read answers them.
+// behind the eval's numbers (readProjectEvalItems).
 func (s *server) listProjectEvalItems(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	request, err := parseEvalItemsQuery(r.URL.Query())
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	answer, err := s.readEvalItems(r.Context(), r.PathValue("key"), r.PathValue("slug"), request)
+	answer, err := s.readProjectEvalItems(r.Context(), r.URL.Query(), r.PathValue("key"), r.PathValue("slug"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// readProjectEvalItems is the body of GET /api/v1/projects/{key}/evals/{slug}/items for query: one
+// page of the rows behind the eval's numbers over the window and the compare range, filtered by
+// series, row_kind, row and repo, and for pr-ci's jobs ranked by sort (readEvalItems), after the
+// query is read (parseEvalItemsQuery). 404 PROJECT_NOT_FOUND and EVAL_NOT_FOUND as the detail read
+// answers them. The live hub's items view reads its body through this too, so the two answer one
+// query alike.
+func (s *server) readProjectEvalItems(ctx context.Context, query url.Values, project, slug string) (evalItemsResponse, error) {
+	request, err := parseEvalItemsQuery(query)
+	if err != nil {
+		return evalItemsResponse{}, err
+	}
+	return s.readEvalItems(ctx, project, slug, request)
 }
 
 // readEvalItems is one items answer of slug's eval of project for request, read in one snapshot
@@ -293,19 +309,13 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 	if err != nil {
 		return nil, err
 	}
-	kept := func(kind string) bool {
-		if request.sort != "" {
-			return kind == evalRowJob
-		}
-		return request.rowKind == "" || request.rowKind == kind
-	}
 	definition := entry.Definition
 	var sources []evalItemSource
 	for _, rng := range ranges {
 		read := evalItemsRead{project: project, entry: entry, request: request, rng: rng, settings: settings, shared: &evalRangeReads{}, tx: tx}
 		if definition.Computed() {
 			for _, kind := range evalComputedItems[definition.Source] {
-				if !kept(kind.kind) {
+				if !request.keeps(kind.kind) {
 					continue
 				}
 				if kind.source != nil {
@@ -342,7 +352,7 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 			}
 			return rows, page.Total, nil
 		})
-		if kept(evalRowDay) {
+		if request.keeps(evalRowDay) {
 			days, err := s.evalDaysOf(ctx, read)
 			if err != nil {
 				return nil, err

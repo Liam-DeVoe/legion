@@ -23,16 +23,18 @@ import (
 // key, counts two levels deep, and the other fields whole. The events view is the event feed,
 // event by event, and the agent view one session's live conversation.
 
-// The five delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
+// The six delivery-hub views a page can subscribe to, by the GET route each mirrors. The first
 // three answer the Delivery and Pipeline pages' bodies; the fourth is the Legion board of one
 // project (legion_board.go), which has no window: it shows what the daemon's state says now; the
-// fifth is one project's evals (evals.go), the list read over a window and a compare range.
+// fifth is one project's evals (evals.go), the list read over a window and a compare range; the
+// sixth is the rows behind one eval's numbers (evals_items.go), the items read over the same.
 const (
 	deliveryLiveTimeline = "timeline"
 	deliveryLiveMeasures = "measures"
 	deliveryLivePipeline = "pipeline"
 	legionBoardView      = "legion"
 	evalsView            = "evals"
+	evalItemsView        = "items"
 )
 
 // The two views beside the delivery views: the event feed, and one session's live conversation.
@@ -54,13 +56,17 @@ type DeliveryLiveWindow struct {
 // facet); a pipeline view names at most an At; a legion view names its Project and nothing else,
 // since the board has no window; an evals view names its Project, its Window and its Query, the
 // query string the page would send to GET /api/v1/projects/{key}/evals without from/to (the
-// compare range, the repositories, the kind and the page).
+// compare range, the repositories, the kind and the page); and an items view names its Project,
+// the Slug of the eval whose rows it shows, its Window and its Query, what the page would send to
+// GET /api/v1/projects/{key}/evals/{slug}/items without from/to (the compare range, the series, the
+// row kind and row, the repositories, the sort and the page).
 type DeliveryLiveView struct {
 	Kind    string              `json:"kind"`
 	Window  *DeliveryLiveWindow `json:"window,omitempty"`
 	Query   *string             `json:"query,omitempty"`
 	At      *string             `json:"at,omitempty"`
 	Project *string             `json:"project,omitempty"`
+	Slug    *string             `json:"slug,omitempty"`
 }
 
 // DeliveryLiveRevs is what a page holds, as revisions (deliveryLiveRevision) in the frame's own
@@ -219,9 +225,10 @@ func liveEnded(sub, reason string) LiveEnded {
 
 // LiveError refuses a frame or a subscription, by the code the matching GET route would answer
 // (INVALID_QUERY, DELIVERY_NOT_CONFIGURED, the board's INVALID_PROJECT, PROJECT_NOT_FOUND and
-// LEGION_NOT_CONFIGURED, and the evals view's INVALID_QUERY, for a project that is no project key
-// as for a query its route refuses, and PROJECT_NOT_FOUND for a project no row holds), the
-// socket's own (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent view's (OAUTH_SCOPE_REQUIRED,
+// LEGION_NOT_CONFIGURED, the evals and items views' INVALID_QUERY, for a project that is no project
+// key as for a query its route refuses, and PROJECT_NOT_FOUND for a project no row holds, and the
+// items view's EVAL_NOT_FOUND for a slug no eval of the project holds), the socket's own
+// (INVALID_FRAME, TOO_MANY_SUBSCRIPTIONS) or an agent view's (OAUTH_SCOPE_REQUIRED,
 // SESSION_ID_INPUT, STREAM_UNAVAILABLE). Sub names the subscription it refuses, and is empty for a
 // frame Dispatch could not read a sub from.
 type LiveError struct {
@@ -261,12 +268,26 @@ const (
 	// changes that touch it are its project's readings, versions and day rows (touchedBy), it
 	// judges no freshness, and a project no row holds is the read's PROJECT_NOT_FOUND.
 	viewReadsEvals
+	// viewReadsEvalItems is the rows behind one eval's numbers: its registry rows and the
+	// delivery, CI, Legion and readings rows they count. The view names the eval's project and
+	// the eval, the changes that touch it are its eval's readings, versions and day rows and, for
+	// pr-ci's run and job rows, which it reads from the pull-request checks runs themselves, a
+	// change of such a run of its ranges (touchedBy), it judges no freshness, and a project or an
+	// eval no row holds is the read's PROJECT_NOT_FOUND or EVAL_NOT_FOUND.
+	viewReadsEvalItems
 )
 
 // namesProject is whether a subscribed view that reads r names the project it shows: the Legion
-// board and the evals list are each one project's, and the delivery views are the deployment's.
+// board, the evals list and an eval's items are each one project's, and the delivery views are
+// the deployment's.
 func (r viewReads) namesProject() bool {
-	return r == viewReadsLegion || r == viewReadsEvals
+	return r == viewReadsLegion || r == viewReadsEvals || r == viewReadsEvalItems
+}
+
+// namesEval is whether a subscribed view that reads r names, by its slug, the eval whose rows it
+// shows: an eval's items alone.
+func (r viewReads) namesEval() bool {
+	return r == viewReadsEvalItems
 }
 
 // refusal is the code and message a view's subscribers are refused with when its read answered
@@ -434,6 +455,21 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads: viewReadsEvals,
 		parse: parseEvalsLiveView,
 		read:  (*deliveryHub).readEvalsView,
+	},
+	// One eval's rows: the body of GET /api/v1/projects/{key}/evals/{slug}/items, read by the
+	// route's own function (readProjectEvalItems). Its rows carry no id, and one row key can stand
+	// in both ranges, or for a reading and a day row alike, so its items are sent whole, as every
+	// other field is: a page of at most 200 rows, which a change of one eval's rows moves at once.
+	// The CI section's job lists, an eval's rows and the readings a declared chart draws come
+	// through it (dispatch://INFRA-2918, D9).
+	evalItemsView: {
+		body: reflect.TypeFor[evalItemsResponse](),
+		whole: map[string][]string{
+			"items": nil, "total": nil, "limit": nil, "offset": nil, "window": nil, "compare": nil,
+		},
+		reads: viewReadsEvalItems,
+		parse: parseEvalItemsLiveView,
+		read:  (*deliveryHub).readEvalItemsView,
 	},
 }
 

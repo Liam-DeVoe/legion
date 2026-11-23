@@ -427,21 +427,22 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
 // table), by the change's kind: a write of the stored facts, of an eval's rows or of a filing is
 // answered by its own arm, and every other kind is a delivery row, which moves only a view that
-// reads the delivery rows (touchedByDeliveryRow, behind that test).
+// reads the delivery rows (touchedByDeliveryRow, behind that test) and pr-ci's items views
+// (touchedByItemsRun).
 //
 // The rows the named kinds write are rows no delivery view reads, but for one: the timeline, the
 // measures and the Pipeline read the current versions of the evals that judge or rank their
 // figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them here.
 //
-// A change of the delivery settings row marks no evals view. Such a view reads the settings and
-// the day rows together: the deploy repository chooses the rows of the evals that read it
-// (evals.DeployRepoOf), and the judged names are what the refresher built the rows under. A
+// A change of the delivery settings row marks no evals or items view. Such a view reads the
+// settings and the day rows together: the deploy repository chooses the rows of the evals that
+// read it (evals.DeployRepoOf), and the judged names are what the refresher built the rows under. A
 // recompute at the settings change would answer the new settings over rows the refresher has not
 // rewritten yet, a state the inputs never had where one save moves the deploy repository and a
 // judged name together. The refresher's page that reads the change logs, in the transaction that
 // leaves the rows standing at the settings (its rewrite's, or its own commit where the change
 // moved no row), one eval_days change of no eval (delivery.SettingsApplied), which marks every
-// evals view, at once (markChangesLocked).
+// evals and items view, at once (markChangesLocked).
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
@@ -459,7 +460,9 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		return view.spec.kind == legionBoardView && view.spec.project == change.Repo
 	case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions, delivery.ChangeKindEvalDays:
 		// One eval's readings, a new version of its definition, or its day rows: what the evals
-		// view of the eval's project reads (readEvalList). The change's repo holds that project
+		// view of the eval's project reads (readEvalList), and the items view of that eval
+		// (readEvalItems), whose rows its readings and day rows are and whose definition names its
+		// series and its min_n. The change's repo holds that project and its ref the eval
 		// (migrations 20261117100012 to 20261117100014).
 		//
 		// No other kind marks an evals view. A computed eval's value moves when the refresher
@@ -467,7 +470,8 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// fact, a filing, the settings row) was logged: a view woken by the input would read the
 		// rows before the rewrite, and the eval_days change of the rewrite is what wakes it. The
 		// eval_days change of no eval is the refresher's word that the rows stand at the delivery
-		// settings (delivery.SettingsApplied), which every evals view reads, whatever its project.
+		// settings (delivery.SettingsApplied), which every evals and items view reads, whatever its
+		// project.
 		//
 		// A new version of an eval a delivery view reads (its definition or one of its series)
 		// marks every view of that kind too, and readings and day rows mark none: the timeline's
@@ -478,8 +482,11 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// writes. Which project that is, no view holds, so the version in any project marks it,
 		// and a recompute that reads the same evals sends nothing; a write of a project's default
 		// repository is an event, which marks every delivery view (applyEventLocked).
-		if view.spec.kind == evalsView {
+		switch view.spec.classes().reads {
+		case viewReadsEvals:
 			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
+		case viewReadsEvalItems:
+			return change.Ref == evals.EvalID(view.spec.project, view.spec.slug) || delivery.SettingsApplied(change)
 		}
 		return change.Kind == delivery.ChangeKindEvalVersions && slices.ContainsFunc(view.spec.classes().evalVersions, func(slug string) bool {
 			return change.Ref == evals.EvalID(change.Repo, slug)
@@ -499,9 +506,55 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	default:
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read
 		// of its daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked),
-		// and an evals view by the eval kinds above.
-		return view.spec.classes().reads == viewReadsDelivery && view.touchedByDeliveryRow(change, now)
+		// and an evals view by the eval kinds above; an items view reads pr-ci's runs and their
+		// jobs themselves besides (touchedByItemsRun).
+		switch view.spec.classes().reads {
+		case viewReadsDelivery:
+			return view.touchedByDeliveryRow(change, now)
+		case viewReadsEvalItems:
+			return view.touchedByItemsRun(change, now)
+		}
+		return false
 	}
+}
+
+// touchedByItemsRun is whether a change of a delivery row can move the answer of an items view:
+// pr-ci's run and job rows are read from the pull-request checks runs and their jobs themselves
+// (runItemRows, jobItemRows, failingJobRows), not only from the day rows the refresher rewrites
+// after them, so a change of such a run or of one of its jobs marks a view of pr-ci that keeps
+// either kind of row where the change's time, the run's start or its head commit's time where that
+// is later (migration 0100), falls on a day of one of the view's ranges as it reads them at now,
+// and where the change carries no time. The other evals' delivery rows (a delivery eval's pull
+// requests and deploys, a deploy card's runs) mark nothing here: what a change of one moves in
+// them moves the day rows the refresher rewrites after it, whose eval_days change marks the view.
+func (view *deliveryView) touchedByItemsRun(change delivery.Change, now time.Time) bool {
+	if change.Kind != delivery.ChangeKindRun && change.Kind != delivery.ChangeKindRunJob ||
+		change.RunKind != string(delivery.DeliveryRunKindPRChecks) || view.spec.slug != evals.SlugPRCI {
+		return false
+	}
+	request, err := parseEvalItemsQuery(view.spec.evalsQuery(now))
+	if err != nil {
+		// The view's query was read as the route reads it when it was subscribed
+		// (parseEvalItemsLiveView), and only a preset's window moves with now, so this is no
+		// view the hub holds; its read would refuse it all the same.
+		return true
+	}
+	if !request.keeps(evalRowRun) && !request.keeps(evalRowJob) {
+		return false
+	}
+	ranges := []evals.Range{request.ranges.window}
+	if request.ranges.compare != nil {
+		ranges = append(ranges, *request.ranges.compare)
+	}
+	var times []time.Time
+	for _, t := range []*time.Time{change.TOld, change.TNew} {
+		if t != nil {
+			times = append(times, *t)
+		}
+	}
+	return len(times) == 0 || slices.ContainsFunc(times, func(t time.Time) bool {
+		return slices.ContainsFunc(ranges, func(r evals.Range) bool { return !t.Before(r.From) && t.Before(r.To) })
+	})
 }
 
 // touchedByDeliveryRow is whether a change of a delivery row can move the answer of a view that

@@ -351,18 +351,20 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, a legion or
-// evals view's project, and the canonical key identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, a legion, evals
+// or items view's project, an items view's eval, and the canonical key identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	// project is the project a legion view's board or an evals view's list shows; every other
-	// kind names none.
+	// project is the project a legion view's board, an evals view's list or an items view's eval
+	// is of; every other kind names none.
 	project string
-	key     string
+	// slug is the eval, of project, whose rows an items view shows; every other kind names none.
+	slug string
+	key  string
 }
 
 // deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's
