@@ -8,8 +8,7 @@ body: |-
   before it, by place. A completion is held to the step whose run it reports, and its key names
   that step where the role stands at two steps. A late report of the earlier step, or of the later
   one after a return before it, goes to the record of its own step. A return to an earlier step
-  refuses a handoff record the same agent wrote at its later step (`HANDOFF_NOT_NEW`). Two agents
-  that start with the same role are still refused.
+  refuses a handoff record the same agent wrote at its later step (`HANDOFF_NOT_NEW`).
 
   A turn of one of an agent's steps that completes after the task moved on to the agent's other
   step of that role is refused `HANDOFF_STALE_ENTRY`, even at the head the record holds, because
