@@ -52,8 +52,9 @@ type roleForReader struct {
 // move into accepting starts, a child's failed architect again and the accepting step's run
 // (ReturnFromChildren, through start and startStandingStep in internal/workflow's effects.go), and
 // the stop holds accepting with no role told (StopForChildren), since the architect's notice tells
-// it. The release of a hold reads the held phase's role twice (retryPhase), for the entry that
-// phase stands on and for the restart, and a held phase is never admitted; so do the return of a
+// it. The release of a hold reads the held phase's role three times (retryPhase), for the entry
+// that phase stands on and for the restart, or, for a return to work, for the start at a new entry
+// every return's worker is given, and a held phase is never admitted; so do the return of a
 // held issue (ReturnToWork) and the carried run of a held root (StartCarriedRun), each naming the
 // role whose claim it leaves for the hold's retry. The owner of the phase a return or a carried run
 // resumes (runOwner) is read past a guard that answers no owner for admitted, as for every phase
@@ -84,7 +85,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.claimFailed"}:                   {calls: 1, test: "TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice"},
 	{file: "internal/workflow/engine.go", fn: "Engine.leftItsPhase"}:                  {calls: 1, test: "TestArchitectUnchangedByAWorkersCompletionAtAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.restartPhase"}:                  {calls: 1, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
-	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                    {calls: 2, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
+	{file: "internal/workflow/engine.go", fn: "Engine.retryPhase"}:                    {calls: 3, test: "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask"},
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}:                      {calls: 2, test: "TestArchitectUnchangedByABackwardMoveFromAdmitted"},
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:                    {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                            {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
