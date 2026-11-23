@@ -2390,7 +2390,8 @@ func TestProbeImageTakesTheNoVerdictExitWhenTheDeadlineCutsCurlsTimingRun(t *tes
 // R3), uses Go's x509 primitives and not x509.Certificate.Verify, which refuses both chains
 // whatever the roots. Each chain, with its CA-published root, passes at a time inside every
 // certificate's validity; at a time before its leaf's start, or past the first end of a
-// certificate's validity, it is outside, naming that certificate, and is unasked; and it fails
+// certificate's validity, or inside its leaf's validity but outside that of the certificate above
+// its leaf, it is outside, naming that certificate, and is unasked; and it fails
 // against the fixture root of its root's name, which has another key, for a host its leaf does not
 // name, and without the certificate between its leaf and its root. A failure wins over a time
 // outside the validity. The site's check fails where it cannot read the CA-published root its site
@@ -2445,6 +2446,22 @@ func TestTLSVendoredChainCheckInTheProbesOwnCode(t *testing.T) {
 				t.Fatalf("the vendored emSign chain holds %d certificates, want its leaf, EM DV TLS CA - G3B and emSign Root TLS CA - G3", len(chain))
 			}
 			rows = append(rows, checkRow{name: "without its middle certificate", chain: []*x509.Certificate{chain[0], chain[2]}, root: root, host: host, now: inside, err: "is not signed by"})
+		}
+		// A certificate above the leaf outside its validity at a time inside the leaf's: each
+		// vendored leaf starts last and ends first, so the row moves the validity of a copy of the
+		// certificate above the leaf, which no signature check reads from the parsed certificate. The
+		// AAA chain's EM DV TLS CA - G3B ends on 2028-12-31, so a leaf vendored late in 2028 outlives it.
+		for _, moved := range []struct {
+			name string
+			move func(cert *x509.Certificate)
+		}{
+			{"inside its leaf's validity, a second past the end of the certificate above it", func(cert *x509.Certificate) { cert.NotAfter = inside.Add(-time.Second) }},
+			{"inside its leaf's validity, a second before the start of the certificate above it", func(cert *x509.Certificate) { cert.NotBefore = inside.Add(time.Second) }},
+		} {
+			above := *chain[1]
+			moved.move(&above)
+			rows = append(rows, checkRow{name: moved.name, chain: append([]*x509.Certificate{chain[0], &above}, chain[2:]...), root: root, host: host, now: inside,
+				outside: []string{above.Subject.String(), above.NotBefore.UTC().Format(time.RFC3339), above.NotAfter.UTC().Format(time.RFC3339)}})
 		}
 		for _, row := range rows {
 			t.Run(name+": "+row.name, func(t *testing.T) {
