@@ -661,7 +661,9 @@ func TestAProjectNotTheTokensIsRefused(t *testing.T) {
 // the project's default repository, so its files are no files of the project. The run is whole,
 // its workflow_ref under that repository, as the broker mints one. A project with no default
 // repository takes the result of no run, and the refusal says the run's repository is not the
-// project's default.
+// project's default. The run's repository being another project's default makes it no repository
+// of the token's project: OTHER's default is the run's repository, ACME's is another, and the
+// token names ACME.
 func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 	t.Run("another repository", func(t *testing.T) {
 		rig := newSpecResultsRig(t)
@@ -680,6 +682,18 @@ func TestARepositoryTheProjectDoesNotMapIsRefused(t *testing.T) {
 			t.Fatalf("clear %s's default repository: status=%d body=%s", specResultsProject, cleared.Code, cleared.Body.String())
 		}
 		rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+	})
+	t.Run("the default repository of another project", func(t *testing.T) {
+		rig := newSpecResultsRig(t)
+		for _, set := range []struct{ project, repository string }{{specResultsProject, "example-org/another-repo"}, {"OTHER", specResultsRepository}} {
+			if written := rig.asPerson(t, http.MethodPut, "/api/v1/projects/"+set.project+"/default-repository", map[string]any{"repo": set.repository}); written.Code != http.StatusOK {
+				t.Fatalf("set %s's default repository to %s: status=%d body=%s", set.project, set.repository, written.Code, written.Body.String())
+			}
+		}
+		refusal := rig.refusedWith(t, rig.post(t, specResultsProject, rig.token(nil), passOf(probeCheck)), http.StatusForbidden, "REPOSITORY_NOT_THE_PROJECTS")
+		if want := "is not the default repository of project " + specResultsProject; !strings.Contains(refusal.Error, want) {
+			t.Fatalf("the refusal reads %q, want it to say %q", refusal.Error, want)
+		}
 	})
 }
 
