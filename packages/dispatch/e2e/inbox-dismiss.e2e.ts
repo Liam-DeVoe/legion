@@ -453,14 +453,19 @@ test("Select all dismisses every row of the group in one request that names each
     expect(await inboxThreads()).toBe(0);
     expect(distinctKeys(posted)).toEqual([expect.any(String)]);
 
-    // The Dismissed view reads them a page at a time, and **Show more** reads the next page.
+    // The Dismissed view reads them a page at a time, and **Show more** reads the next page. The
+    // view's window draws only the rows near sight, so the rows it has loaded are read from the
+    // count each drawn row states (`aria-setsize`), not counted.
     await chooseShow(page, "Dismissed");
     await expect(page).toHaveURL(/show=dismissed/);
-    await expect(rows).toHaveCount(INBOX_DISMISSED_PAGE);
+    await expect(rows.first()).toHaveAttribute("aria-setsize", String(INBOX_DISMISSED_PAGE));
     const more = page.locator('[data-inbox-show-more="dismissed"]');
     await expect(more).toHaveText(`Show ${INBOX_DISMISSED_PAGE} more`);
-    await more.click();
-    await expect(rows).toHaveCount(THREADS);
+    // Show more is pressed by key, as the window's own test presses it. Bringing it into view
+    // reaches the end of the loaded rows, and that reads the next page as any scroll there does,
+    // so the control is held and then gone before a click could land on it.
+    await more.press("Enter");
+    await expect(rows.first()).toHaveAttribute("aria-setsize", String(THREADS));
     await expect(more).toHaveCount(0);
   } finally {
     await alice.close();
