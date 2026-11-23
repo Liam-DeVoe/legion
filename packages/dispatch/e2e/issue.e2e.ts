@@ -1319,6 +1319,8 @@ test("an issue's whole title wraps at every width, whether prose or one unbroken
 
 // Whether Details is open is the reader's, and nothing else's: closed until they open it, then
 // open for them on every issue they go to, until they close it, and then closed on every issue.
+// Open, it draws a pull request under "Pull requests" and any other link under "Links", each a
+// list the layout rule caps (`pull-requests`, `links`).
 test("Details stays as the reader left it, open or closed, from one issue to the next", async ({
   browser,
 }) => {
@@ -1326,6 +1328,13 @@ test("Details stays as the reader left it, open or closed, from one issue to the
   const first = await createIssue({ project: "CORE", title: "First issue" });
   const second = await createIssue({ project: "CORE", title: "Second issue" });
   const third = await createIssue({ project: "CORE", title: "Third issue" });
+  const notes = "https://example.com/design-notes/issue-header-details";
+  await patchIssue(second.key, {
+    external_links: [
+      { kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/2051" },
+      { kind: "url", url: notes },
+    ],
+  });
 
   const context = await asUser(browser, "alice");
   try {
@@ -1342,6 +1351,19 @@ test("Details stays as the reader left it, open or closed, from one issue to the
     await expect(heading("Second issue")).toBeVisible();
     await expect(issueDetailsButton(page)).toHaveAttribute("aria-expanded", "true");
     await expect(issueDetailsRow(page, "repository")).toBeVisible();
+    // The pull request is a row of its own, and the plain link is under Links, as its address.
+    const pullRequests = issueDetailsRow(page, "pull-requests");
+    await expect(pullRequests.locator("dt")).toHaveText("Pull requests");
+    await expect(pullRequests.locator('[data-layout-group="pull-requests"] a')).toHaveAttribute(
+      "href",
+      "https://github.com/sjawhar/legion/pull/2051"
+    );
+    const links = issueDetailsRow(page, "links");
+    await expect(links.locator("dt")).toHaveText("Links");
+    await expect(
+      links.locator('[data-layout-group="links"]').getByRole("link", { name: notes })
+    ).toHaveAttribute("href", notes);
+    await expect(pullRequests.getByRole("link", { name: notes })).toHaveCount(0);
 
     await issueDetailsButton(page).click();
     await expect(page.getByTestId("issue-details")).toHaveCount(0);

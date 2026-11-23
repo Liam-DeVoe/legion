@@ -348,7 +348,9 @@ export function RepoControl({
   // full width, goes onto the line under it.
   const placeLayout =
     page === null
-      ? "inline-flex shrink-0"
+      ? inHeaderDetails
+        ? "inline-flex w-full min-w-0"
+        : "inline-flex shrink-0"
       : showsText
         ? "inline-flex min-w-0 max-w-full"
         : inDetails
@@ -361,12 +363,16 @@ export function RepoControl({
   // box's own width, which cuts a name the value has room for.
   const lineLayout =
     page === null
-      ? "shrink-0"
+      ? inHeaderDetails
+        ? "w-full min-w-0"
+        : "shrink-0"
       : inDetails
         ? "w-full min-w-0 max-w-full flex-wrap"
         : "min-w-0 max-w-full flex-wrap";
-  // The box's width, and in a row of Details the room it gives a name: `main`'s 200 px, and
-  // inside `NoTooltips` its place's width. In a row of Details the box draws no datalist arrow
+  // The box's width, and in a row of Details the room it gives a name: `main`'s 200 px; in today's
+  // header's Details the row's width up to 28 rem, with an ellipsis for a name longer still (the
+  // project's default repository it shows as a placeholder among them); and inside `NoTooltips`
+  // its place's width. In a row of Details the box draws no datalist arrow
   // (Chromium's `::-webkit-calendar-picker-indicator`, some 22 px of a narrow row's box), so a
   // name that fits the row's value shows whole; the list stays bound, and Chromium still opens
   // its suggestions on a click in the box, on ArrowDown and as the reader types. Its padding is
@@ -375,7 +381,9 @@ export function RepoControl({
   // clear control, which keeps the name off the × laid over the box's right end.
   const boxWidth =
     page === null
-      ? "w-[200px]"
+      ? inHeaderDetails
+        ? "w-full min-w-0 max-w-md text-ellipsis"
+        : "w-[200px]"
       : inDetails
         ? "w-full min-w-0 [&::-webkit-calendar-picker-indicator]:hidden"
         : "w-full min-w-0";

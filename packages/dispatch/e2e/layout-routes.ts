@@ -172,8 +172,56 @@ const allAgentsSelected: LayoutState = {
 
 /** The lists of chips today's issue page draws from the stress issue's data: its 13 labels, its
  *  13 components, its 15 pull requests, and its links that are no pull request. Each is a list of
- *  R3, which `components/CappedGroup.tsx` marks with these names. */
-const ISSUE_GROUPS = ["labels", "components", "pull-requests", "links"];
+ *  R3, which `components/CappedGroup.tsx` marks with these names. The header draws the labels as
+ *  the page loads; the components, the pull requests and the links are rows of its Details, which
+ *  the reader opens (`issueDetailsOpen`). */
+const ISSUE_HEADER_GROUPS = ["labels"];
+const ISSUE_DETAILS_GROUPS = [...ISSUE_HEADER_GROUPS, "components", "pull-requests", "links"];
+
+/** Opens today's issue header's Details as a reader does. Whether it is open is the reader's
+ *  choice, kept in this browser (`issue.details`), so once Details is drawn the choice is
+ *  forgotten again: the row's next fresh load reads the page as it loads for a reader who never
+ *  opened it. */
+async function openIssueHeaderDetails(page: Page): Promise<void> {
+  await page
+    .getByTestId("issue-header")
+    .getByRole("button", { exact: true, name: "Details" })
+    .click();
+  await page.getByTestId("issue-details").waitFor();
+  await page.evaluate(() => {
+    for (const key of Object.keys(window.localStorage)) {
+      if (key.startsWith("dispatch.issue.details:")) window.localStorage.removeItem(key);
+    }
+  });
+}
+
+/** Today's issue header with its Details open. */
+const issueDetailsOpen: LayoutState = {
+  act: openIssueHeaderDetails,
+  name: "details-open",
+  requiredGroups: ISSUE_DETAILS_GROUPS,
+};
+
+/** Details open, and every capped group on the page opened by its "+N", each then showing every
+ *  entry by the reader's own choice (`data-layout-open`). */
+const issueGroupsExpanded: LayoutState = {
+  act: async (page) => {
+    await openIssueHeaderDetails(page);
+    const closed = page.locator(
+      'button[data-layout-more][aria-expanded="false"], [data-layout-more] > button[aria-expanded="false"]'
+    );
+    // Each press redraws its group, so the next closed control is looked up afresh.
+    for (let pressed = 0; (await closed.count()) > 0; pressed += 1) {
+      if (pressed > 50) throw new Error("a +N control did not open its group");
+      await closed.first().click();
+    }
+  },
+  name: "groups-expanded",
+  requiredGroups: ISSUE_DETAILS_GROUPS,
+};
+
+/** The states every route of today's issue page is read in, after its plain load. */
+const ISSUE_STATES = [issueDetailsOpen, issueGroupsExpanded];
 
 /** A short page's floor: four fifths of what its own region drew at its narrowest width on the
  *  stress seed, so a page that drew a heading and nothing else still fails. */
@@ -193,7 +241,10 @@ const additions: Readonly<
   broadcast: { minElements: shortPage(48) },
   broadcasts: { minElements: shortPage(14) },
   "credentials-machine": { minElements: shortPage(24) },
-  "issue-children": { requiredGroups: [...ISSUE_GROUPS, "child-links"] },
+  "issue-children": {
+    requiredGroups: [...ISSUE_HEADER_GROUPS, "child-links"],
+    states: ISSUE_STATES,
+  },
   machine: { minElements: shortPage(46) },
   machines: { minElements: shortPage(15) },
   "not-found": { minElements: shortPage(4) },
@@ -213,8 +264,11 @@ const reviewed: readonly LayoutRoute[] = reviewRoutes
     path,
     pattern,
     ready,
-    // Today's issue page, whichever tab: the header draws the three lists on every one.
-    ...(name.startsWith("issue-") ? { requiredGroups: ISSUE_GROUPS } : {}),
+    // Today's issue page, whichever tab: the header draws the labels as it loads, and its Details
+    // the components and the pull requests.
+    ...(name.startsWith("issue-")
+      ? { requiredGroups: ISSUE_HEADER_GROUPS, states: ISSUE_STATES }
+      : {}),
     ...additions[name],
   }));
 
