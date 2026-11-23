@@ -71,7 +71,7 @@ func noticeWriters(t *testing.T) map[string][]string {
 				continue
 			}
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
-				if kind := noticeKind(node); kind != "" && !slices.Contains(writers[kind], fn.Name.Name) {
+				if kind := noticeLiteralKind(node); kind != "" && !slices.Contains(writers[kind], fn.Name.Name) {
 					writers[kind] = append(writers[kind], fn.Name.Name)
 				}
 				return true
@@ -81,9 +81,9 @@ func noticeWriters(t *testing.T) map[string][]string {
 	return writers
 }
 
-// noticeKind is the kind node names where it is a record.Notice literal whose Kind is a string,
-// and "" otherwise.
-func noticeKind(node ast.Node) string {
+// noticeLiteralKind is the kind node names where it is a record.Notice literal whose Kind is a
+// string, and "" otherwise.
+func noticeLiteralKind(node ast.Node) string {
 	literal, ok := node.(*ast.CompositeLit)
 	if !ok {
 		return ""
