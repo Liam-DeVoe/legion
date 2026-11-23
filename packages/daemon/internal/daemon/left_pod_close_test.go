@@ -614,11 +614,17 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 		if got := rig.storedClaim(t, rig.token); got.State == supervise.StateSuspended || got.Locator == nil {
 			t.Fatalf("the stored planner = %s with process %+v, want it live with the process it had", got.State, got.Locator)
 		}
-		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue"}) {
-			t.Fatalf("teardowns asked = %v, want the park's alone: the close's Sandbox suspension finished with its stop", asked)
+		// The runtime asks the store under its pod lock before every teardown, and records the ask
+		// (releaseRuntime.teardown): the close's Sandbox suspension asks once, the store refuses it
+		// for the turn after the check, and it is not asked again.
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue", "SuspendIssue"}) {
+			t.Fatalf("teardowns asked = %v, want the park's and the close's one ask", asked)
 		}
 		if _, suspended := rig.rt.reads(); suspended != 1 {
 			t.Fatalf("Sandbox teardowns the store authorized = %d, want the park's one", suspended)
+		}
+		if refused := rig.rt.refusals(); refused != 1 {
+			t.Fatalf("Sandbox teardowns the store refused = %d, want the close's one: its suspension finishes with its held stop", refused)
 		}
 		if rows := rig.rows(t); slices.Contains(rows, "supervise:suspend") || slices.Contains(rows, "issue_suspend") {
 			t.Fatalf("rows after the drain = %v, want the close's stop and its Sandbox suspension finished without acting", rows)
@@ -636,12 +642,15 @@ func TestALeftPodCloseStopHoldsOnATurnThatStartedAfterItsCheck(t *testing.T) {
 			t.Fatalf("the planner after the operator's suspension = %s by %s, want it suspended by the operator", got.State, got.SuspendedBy)
 		}
 		rig.drain(t)
-		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue"}) {
-			t.Fatalf("teardowns asked after the operator's suspension = %v, want the park's alone: the held close deleted the pod with no read",
-				asked)
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue", "SuspendIssue"}) {
+			t.Fatalf("teardowns asked after the operator's suspension = %v, want the park's and the close's one ask, and no other", asked)
 		}
 		if _, suspended := rig.rt.reads(); suspended != 1 {
-			t.Fatalf("Sandbox teardowns the store authorized after the operator's suspension = %d, want the park's one", suspended)
+			t.Fatalf("Sandbox teardowns the store authorized after the operator's suspension = %d, want the park's one: the held close deleted the pod with no read",
+				suspended)
+		}
+		if refused := rig.rt.refusals(); refused != 1 {
+			t.Fatalf("Sandbox teardowns the store refused after the operator's suspension = %d, want the close's one and no other ask", refused)
 		}
 	})
 
