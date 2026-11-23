@@ -38,6 +38,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 // defaultTimeout is the window every broker call gets, matching envoy.Client's default.
@@ -83,7 +84,9 @@ func New(baseURL, tokenFile string, options ...Option) *Client {
 	client := &Client{
 		URL:     strings.TrimSuffix(baseURL, "/"),
 		Account: ciphertoken.NewAccountToken(tokenFile),
-		HTTP:    &http.Client{Timeout: defaultTimeout},
+		// The client follows no redirect: every call carries Dispatch's own token, and a Location
+		// is the answering party's words (redirects.Refused).
+		HTTP: redirects.Refused(&http.Client{Timeout: defaultTimeout}),
 	}
 	for _, option := range options {
 		option(client)
@@ -135,7 +138,10 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := c.HTTP.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), so it prints as the broker's address allows
+		// (redact.Cause): a transport failure's own text, or its class.
+		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, redact.Cause(err, c.URL))
 	}
 	defer response.Body.Close()
 	answer, err := redact.ReadAnswer(response, maxAnswerBytes)

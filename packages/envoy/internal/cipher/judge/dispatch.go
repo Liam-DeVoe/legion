@@ -238,7 +238,9 @@ func (d Dispatch) get(ctx context.Context, endpoint, token string, into any) (in
 	}
 	answer, err := client.Do(request)
 	if err != nil {
-		return 0, fmt.Errorf("dispatch did not answer: %w", err)
+		// net/http's error can quote the answering party's words (a Location that does not parse,
+		// read before any redirect policy), so it is named by its class alone (redact.Class).
+		return 0, fmt.Errorf("dispatch did not answer: %w", redact.Class(err))
 	}
 	defer answer.Body.Close()
 	if answer.StatusCode != http.StatusOK {
