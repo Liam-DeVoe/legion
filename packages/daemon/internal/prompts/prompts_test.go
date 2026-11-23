@@ -42,11 +42,13 @@ func TestComposeStepIsTheHeadlessMechanicsThePromptFileAndWorkerCommon(t *testin
 // reports instead: with handoff_complete, the verdict, its commit and a summary, and return_to on a
 // fail. The part of that composition that is Legion's own, go/worker-common.md, says so where it
 // lists the phases that end with a handoff record. It also says which report the `Handoff:` line
-// names after a return, and that such a step's summary follows its reported line. No `Reason:`
-// line comes with such a fail, so no part promises one. The owner's part says where to read such a
-// role's report on a `worker-died`. The implementer's parts say where to read the round such a role
-// sent back, and that implementing answers such a fail. Each part is read alone, so one part's
-// words cannot stand for another's. This shows the text is loaded, never that an agent follows it.
+// names after a return, that such a step's summary follows its reported line, and which step that
+// line names, by a place other than the reader's own step `<i>`. Only a reported line that ends
+// with a version names a handoff. No `Reason:` line comes with such a fail, so no part promises
+// one. The owner's part says where to read such a role's report on a `worker-died`. The
+// implementer's parts say where to read the round such a role sent back, and that implementing
+// answers such a fail. Each part is read alone, so one part's words cannot stand for another's.
+// This shows the text is loaded, never that an agent follows it.
 func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 	stateDir := t.TempDir()
 	composer, err := New(stateDir)
@@ -76,16 +78,17 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 		want, retired []string
 	}{
 		{"go/worker-common.md", goPart(t, "worker-common.md"), []string{
-			"ends with a handoff record on the Dispatch issue, under the phase's word (`plan`, `implement`, `test` or `review`); `step`, the phase of a role of the deployment, writes none",
-			"the `Handoff:` line names the report of the step that failed, where that step wrote one. A step of a role of the deployment writes none: its `Step <i> (<role>) reported: <verdict>.` line, with that step's summary after it, says what it found.",
-		}, []string{"and the `Reason:` line say what it found"}},
+			"ends with a handoff record on the Dispatch issue, under the phase's word (`plan`, `implement`, `test` or `review`). `step`, the phase of a role of the deployment, writes none",
+			"A `reported:` line that ends with a version, `Step <j> (<role>) reported: <word> version <v>.`, names the handoff an earlier step of the task recorded.",
+			"the `Handoff:` line names the report of the step that failed, where that step wrote one. A step of a role of the deployment writes none. Its `Step <k> (<role>) reported: <verdict>.` line, with that step's summary after it, says what it found. `<k>` is the step before yours, which passed, or, after a return, the step that failed.",
+		}, []string{"and the `Reason:` line say what it found", "`Step <i> (<role>) reported:", "Each `Step <j> (<role>) reported: <word> version <v>.` names"}},
 		{"go/architect-common.md", goPart(t, "architect-common.md"), []string{"or, for a role of the deployment, which writes none, the verdict of its step"}, nil},
 		{"go/implementer.md", goPart(t, "implementer.md"), []string{
 			"answer a review, a failed test, the fail of a step of a role of the deployment, or a send-back",
 		}, []string{"a failed test or a send-back"}},
 		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{
-			"its `Step <i> (<role>) reported:` line and that step's summary after it, since that step writes no handoff",
-		}, []string{"line and the `Reason:` line"}},
+			"its `Step <k> (<role>) reported:` line and that step's summary after it, since that step writes no handoff",
+		}, []string{"line and the `Reason:` line", "`Step <i> (<role>) reported:"}},
 		{"go/reviewer.md", goPart(t, "reviewer.md"), []string{
 			"A `verdict` is the tester's or a role of the deployment's, never yours, and the daemon refuses one from you (`VERDICT_ROLE_FORBIDDEN`)",
 		}, []string{"the tester's and a role of the deployment's"}},
@@ -147,7 +150,7 @@ func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
 // before `return_to` would tell its reader the move goes through. This shows the text is loaded,
 // never that an owner follows it.
 func TestAMoveBackToStepIsToldWithReturnTo(t *testing.T) {
-	const rule = "`request_backward_move` to `step` works where one earlier step of the task runs as `step`; with two, name `return_to`."
+	const rule = "`request_backward_move` to `step` works where one earlier step of the task runs as `step`. Where two do, name `return_to`."
 	for _, part := range []struct{ name, text string }{
 		{"go/architect-common.md", goPart(t, "architect-common.md")},
 		{"go/architect.md", goPart(t, "architect.md")},
