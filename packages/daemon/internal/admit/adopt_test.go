@@ -56,7 +56,7 @@ func joinedNotices(t *testing.T, pool *pgxpool.Pool, child string) []string {
 // (workflow.ChildStartedNotice).
 const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
 	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
-	"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
+	"worker-stalled of its architect, and its other notices but an owner-step while its architect does not hold its role, which the daemon's " +
 	"holdsRole decides"
 
 // assertJoinedAndPlanning asserts child left admission's queue for tree's run: recorded in tree

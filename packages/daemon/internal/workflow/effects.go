@@ -18,14 +18,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// PhaseFinished says whether issue's phase is over by its own terminating fact rather than by its
-// worker's completion, so no worker of it is started or resumed for it. Merging's fact is the pull
-// request being merged: the merger merges, the daemon merges nothing, and a merged root then
-// stands in merging until the rest of its tree leaves the workflow (closeMerged), which can be
-// days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
-// records it, so an issue standing in accepting is always still waiting for it; every other
-// phase ends with its worker's completion, which moves the issue too. A recorded completion
-// answers nothing here: the merger's is recorded and moves no issue.
+// PhaseFinished says whether issue's phase is over by its own terminating fact rather than by the
+// completion of the agent of its place, so no worker of it is started or resumed for it. Merging's
+// fact is the pull request being merged: the merger merges, the daemon merges nothing, and a merged
+// root then stands in merging until the rest of its tree leaves the workflow (closeMerged), which
+// can be days. Accepting's is its acceptance — the owner's sign-off, or the verdict of the fresh
+// agent of acceptance — which moves the issue on in the transaction that records it, so an issue
+// standing in accepting is always still waiting for it; every other phase ends with the completion
+// of the agent of its place, the owner's report of a step of its own among them, which moves the
+// issue too. A recorded completion answers nothing here: the merger's is recorded and moves no
+// issue.
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
@@ -37,8 +39,9 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 	return pr.State == record.PullRequestMerged, nil
 }
 
-// RoleFor is phase.RoleFor, which is where the role that works a phase is decided
-// (dispatch://INFRA-2800 moved it there, because the state projection reads it and
+// RoleFor is phase.RoleFor, which decides the role of each phase of today's line (the role that
+// works a task's place is the issue's, record.Issue.PlaceRole, which record.Issue.RoleAt reads;
+// dispatch://INFRA-2800 moved phase.RoleFor there, because the state projection reads it and
 // internal/workflow's own tests import internal/projection). This forwarder is kept under the
 // name this package carried it under for one reader that no build of this module reaches:
 // packages/pi-legion/scripts/skill-scenarios/daemon-pane.go, which `go run -overlay` builds as a
@@ -231,7 +234,8 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 // reviewing; merging back to retro) or has none, still posts its reason, as a message of its own:
 // carried only on a status row, the reason would reach no issue, which would then show nothing of
 // the move at all. A status that reads as out of the workflow is the daemon's own close — the
-// done a merge writes — and it goes as a close row, fenced on the run it ends
+// done a merge writes, or the end of the retro of an issue with no pull request — and it goes as a
+// close row, fenced on the run it ends
 // (record.CloseStatusWrite): the ordinary rule drops a row whose issue has left the workflow, which
 // is every close, so a close judged by it would be lost on its first ISSUE_CHANGED and leave the
 // issue open in Dispatch for good.
@@ -298,8 +302,9 @@ func backwardReasonRefusal(from, to phase.Phase, by claim.Role, reason string) (
 	return "BACKWARD_REASON_TOO_LONG", fmt.Sprintf("the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason", over)
 }
 
-// notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
-// that tells it nothing) enqueues nothing.
+// notice tells the architect that owns the issue, and an owner-step the issue's own architect alone
+// (the outbox routes each: internal/daemon's noticeArchitect); a notice of no kind (noticeFor's,
+// for a move that tells it nothing) enqueues nothing.
 func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
 	if notice.Kind == "" {
 		return nil
@@ -349,9 +354,10 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 // always its current phase's: the implementer's round-1 commit cannot advance round 2, a reviewer
 // starting round 2 or a tester starting a new round reads as not completed until it completes
 // again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
-// round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
-// its phases row holds only the entry it was handed work on (EnterArchitect), which no move
-// between phases clears.
+// round inherits an earlier decision. The architect's own row holds no handoff, so it has none to
+// clear: a step of its own that it reports with complete_step is recorded on the row of that step's
+// role (api's complete_step), and its own row holds only the entry it was handed work on
+// (EnterArchitect), which no move between phases clears.
 func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -514,8 +520,10 @@ func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
 // claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
-// starts again at its child's next phase start (dispatch://INFRA-3915 R2), and until then its
-// child's notices go to the architect above it (record.OwningArchitect). The outbox's start
+// starts again at its child's next phase start (dispatch://INFRA-3915 R2), and one that failed while
+// its child stands at a step of its own waits for the operator's retry, which the stranded list
+// names; until then its child's notices but an owner-step, which waits for that architect
+// (record.OwnerClaim), go to the architect above it (record.OwningArchitect). The outbox's start
 // retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
 // or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
 // session itself. A tree root's architect is admission's, started with its tree,
@@ -1010,8 +1018,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // delivery while one is pending), and the row already names this one.
 //
 // Three starts raise one, each handing its role work it was not already on: a transition's start
-// of the phase the issue has moved into (start), the promotion's start of a mid-phase worker a
-// re-admitted tree brings back (StartPromotedWorker), and a root architect's start of work it was
+// of the phase the issue has moved into (start, and startOwnersStep where the place is the owner's,
+// which writes the task the owner's notice carries and starts no claim), the promotion's start of a
+// mid-phase worker a re-admitted tree brings back (StartPromotedWorker), and a root architect's
+// start of work it was
 // not on (EnterArchitect: StartArchitect and ResumeAwaitedRoot). Every other start carries the
 // entry its role's phases row already names — the send of an owed entry (SendOwedEntry), the
 // sweep's start of a root architect behind its entry (SendArchitectStart), the held phase's retry
@@ -1047,8 +1057,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 //
 // For an issue with plan rows, a phase worker's raise is on the row of the step the entry is a run
 // of (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue
-// stands in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the
-// merge on the merger's, so the row's facts are the facts of that step's run. A role can stand at
+// stands in (placeOnWalk), from 1 for a step, and 0 for the retro, on the row of the role its agent
+// runs as (the role of the task's last step of the type implementation, the implementer for the
+// owner's), and for the merge on the merger's, so the row's facts are the facts of that step's run.
+// A role can stand at
 // two steps of a task, and each step's run keeps its own row: a run of a step that ran before
 // raises the row its earlier runs wrote, and a step's first run raises a row of its own, which
 // starts as the role's row now (record.PhaseRowOf) with no handoff (phaseHandoff), so it carries
@@ -1248,9 +1260,11 @@ const (
 	reasonLabel      = "Reason"
 )
 
-// task is what a started worker is told. It names the phase the worker starts, which the issue
-// record already holds: one role runs several phases (the implementer runs implementing and
-// retro), and a resumed session cannot otherwise tell a new phase from its last. at is where the
+// task is what a started worker is told, and what an owner-step notice tells the owner of a step
+// of its own (tellOwner). It names the phase the worker starts, which the issue record already
+// holds: one role runs several phases (the implementer runs implementing and, where its step is
+// the task's last of the type implementation, the retro), and a resumed session cannot otherwise
+// tell a new phase from its last. at is where the
 // worker's work stands (standingPart): its lines are placed right after that line, and the text
 // of its task's block, which the owner of the issue wrote, last of all (Standing.owners).
 // The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
@@ -1262,9 +1276,10 @@ const (
 // the tester's report, never as a field of its own completion. Every other role's verdict is
 // named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its summary
 // after it: a role the deployment defines, which writes no handoff record, and the steps of the
-// type review whose verdict ends them because no review on GitHub decides them (the reviewer of
-// an issue with no pull request, a review step the owner does; api/handoff.go takes the verdict
-// from those alone, and refuses one from Legion's other roles, VERDICT_ROLE_FORBIDDEN). <i> is
+// type review whose verdict ends them because no review on GitHub decides them (the fresh agent of
+// acceptance, the reviewer of an issue with no pull request, a review step the owner does;
+// api/handoff.go takes a verdict from those, the tester and a role of the deployment or the plan,
+// and refuses one from Legion's other roles, VERDICT_ROLE_FORBIDDEN). <i> is
 // the place of the step the row's entry was raised for (StepPlace).
 //
 // A merger started in merging at the head a merge forward landed past the review, while the
@@ -1405,7 +1420,8 @@ func ChildReenteredNotice(child, root string) record.Notice {
 // architect owns it — its decomposition, its children and its acceptance — while that architect
 // holds its role. So the reader hears the child's child-status and child-closed and that
 // architect's worker-died and worker-stalled, and, while that architect does not hold its role,
-// every other notice of the child too (record.OwningArchitect).
+// every other notice of the child too (record.OwningArchitect) but an owner-step, which goes to the
+// child's own architect alone, the owner of the child's task by rule (record.OwnerClaim).
 //
 // A start nobody hears of is the silent state the hold's report exists to remove, so no child
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
@@ -1419,7 +1435,7 @@ func ChildStartedNotice(child, root string, first phase.Phase, waited []string) 
 	}
 	reason := fmt.Sprintf("%s starts %s under %s: %s. Its own architect starts with it and owns it while that architect "+
 		"holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed "+
-		"notices, a worker-died or worker-stalled of its architect, and its other notices while its architect does not "+
+		"notices, a worker-died or worker-stalled of its architect, and its other notices but an owner-step while its architect does not "+
 		"hold its role, which the daemon's holdsRole decides", child, first, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
