@@ -5,10 +5,12 @@
 import { bandKind } from "./band";
 import type { ChartKind } from "./kind";
 import { numberKind } from "./number";
+import { textKind } from "./text";
 import { xyKind } from "./xy";
 
 export const chartKinds: Readonly<Record<string, ChartKind>> = {
   band: bandKind,
   number: numberKind,
+  text: textKind,
   xy: xyKind,
 };
