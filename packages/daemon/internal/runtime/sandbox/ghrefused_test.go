@@ -187,7 +187,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 // a directory no role's gh volume projects, and every role would start unable to reach GitHub.
 func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			bundle, err := staticCredential(ctx, issue, role, repo)
 			if err != nil {
 				return bundle, err
@@ -200,7 +200,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 			}
 			delete(bundle.Dirs, "acme")
 			return bundle, nil
-		}
+		})
 	}))
 
 	_, err := g.r.Spawn(g.ctx, workerSpec(t))

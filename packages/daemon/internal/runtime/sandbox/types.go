@@ -341,14 +341,15 @@ type Options struct {
 	// AdoptTimeout bounds a working-copy adoption (slow_command_timeout_seconds).
 	AdoptTimeout time.Duration
 	Tokens       ProvisionTokens
-	// GitHubCredential is the daemon's function for a role's gh files
-	// (runtime.GitHubCredential): hosts.yml and config.yml rendered from the role's App token. It
+	// GitHubCredential is the daemon's function for a role's gh files (appauth.Credential,
+	// appauth.GitHubCredential): hosts.yml and config.yml rendered from the role's App token. It
 	// is called for every launcher role when the pod's role Secrets are written
 	// (writeLauncherSecrets), and again for each by the refresher (refreshGitHubCredentials), which
 	// rewrites the Secret when the render changed: every workflow role of an issue pod and the
-	// controller's, which acts as the review App. Required: configure refuses nil as it refuses a
-	// nil Tokens.
-	GitHubCredential runtime.GitHubCredential
+	// controller's, which acts as the review App. A walk of either reads a role's App once per ask
+	// and builds through its ForApp (appauth.Bundles). Required: configure refuses nil as it
+	// refuses a nil Tokens.
+	GitHubCredential *appauth.Credential
 	// ActsAs answers the role whose App a claim's slot holds while the claim does work other than
 	// its stored role's (runtime.ActsAs), which runtime.SlotRole reads at each write of a slot's gh
 	// files. Optional: nil gives every slot its claim's stored role.

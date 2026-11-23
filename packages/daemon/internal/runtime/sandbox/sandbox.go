@@ -123,7 +123,7 @@ type Runtime struct {
 	probeInterval           time.Duration
 	adoptTimeout            time.Duration
 	tokens                  ProvisionTokens
-	gitHubCredential        runtime.GitHubCredential
+	gitHubCredential        *appauth.Credential
 	actsAs                  runtime.ActsAs
 	// launchedApp is, for each slot of each pod (by its Sandbox's name), the App of the last
 	// start this runtime made in it (writeLaunchCredential), which says whether a start's slot gh

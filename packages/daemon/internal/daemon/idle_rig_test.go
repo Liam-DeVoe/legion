@@ -581,7 +581,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
-	opts.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	opts.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		app, err := appauth.AppRoleFor(role, opts.RoleApps.Deployed, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
@@ -589,7 +589,7 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 		rendered := ghconfig.Render("ghs_idle_rig", string(app), time.Now().Add(time.Hour))
 		owner := strings.ToLower(repo.Owner())
 		return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
-	}
+	})
 	// The controller's own bundle, which its launch and its refresh both ask for by owner
 	// (sandbox.Options.ControllerCredential, appauth.ControllerCredential): the review App's, over
 	// liveRepo's owner, the rig's one.

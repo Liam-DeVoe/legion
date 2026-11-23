@@ -459,36 +459,30 @@ type lostStepAt struct {
 }
 
 // lostAt says whether place is a step of w's task that no role may start (stopLostRole): a step
-// whose role neither d nor the plan in force (Roles) defines, a role the deployment lost; or a
-// step whose role the plan in force defines with a model d does not list, a model the deployment
-// no longer lists. Legion's own roles are in every deployment (config.Config.Deployment, and New's
-// default), and a role of the plan is kept with the version that defines it, so only a role of a
-// deployment's own can be lost. A role of the plan is read before a role of d of its name, as the
-// daemon reads it for a claim of the issue, and its model is checked whether d defines that name
-// or not: register_plan judged the model against the models listed then, and the plan's role,
-// carried into each later generation (record.Store.CarryPlan), keeps it while the settings change
-// under it. A role of no model starts on the default model, which every deployment runs.
+// whose role's name nobody defines for the issue (plan.RoleOf: neither d nor the plan in force,
+// Roles), a role the deployment lost; or a step whose role the plan in force defines with a model
+// d does not list (plan.Deployment.Lists), a model the deployment no longer lists. Legion's own
+// roles are in every deployment, and a role of the plan is kept with the version that defines it,
+// so only a role of a deployment's own can be lost. register_plan judged a plan role's model
+// against the models listed then, and the role, carried into each later generation
+// (record.Store.CarryPlan), keeps it while the settings change under it.
 func (w Walk) lostAt(place record.TaskPlace, d plan.Deployment) (lostStepAt, bool) {
 	step, ok := w.planStepAt(place)
 	if !w.Stored || !ok {
 		return lostStepAt{}, false
 	}
+	var planned *plan.PlanRole
 	if i := slices.IndexFunc(w.Roles, func(role record.PlanRole) bool { return role.Role == step.Role }); i >= 0 {
-		model := w.Roles[i].Model
-		if model == "" || slices.Contains(d.Models, model) {
-			return lostStepAt{}, false
-		}
-		listed := "it lists none"
-		if len(d.Models) > 0 {
-			listed = "it lists " + strings.Join(d.Models, ", ")
-		}
+		planned = &plan.PlanRole{Name: w.Roles[i].Role, Type: plan.Type(w.Roles[i].Type), Model: w.Roles[i].Model}
+	}
+	switch def, source := plan.RoleOf(step.Role, planned, d); {
+	case source == plan.SourceNone:
+		return lostStepAt{place: place, why: fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", place.Position, step.Role)}, true
+	case source == plan.SourcePlan && !d.Lists(def.Model):
 		return lostStepAt{place: place, why: fmt.Sprintf("step %d names the role %s, whose model %s the deployment no longer lists; %s",
-			place.Position, step.Role, model, listed)}, true
+			place.Position, step.Role, def.Model, d.Listed())}, true
 	}
-	if _, defined := d.Roles[step.Role]; defined {
-		return lostStepAt{}, false
-	}
-	return lostStepAt{place: place, why: fmt.Sprintf("step %d names the role %s, which the deployment no longer defines", place.Position, step.Role)}, true
+	return lostStepAt{}, false
 }
 
 // lostStep is the first step w's task still has to run that no role may start (lostAt): the step
