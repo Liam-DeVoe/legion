@@ -169,7 +169,7 @@ itself, whose tests import its sources by relative path.
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
   cache that exists to be shared by both languages and either fills for the other. The Go build and
-  module caches of the `go run` in `runDaemonPane`
+  module caches of the `go run` and `go test` in `goInDaemonModule`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
   `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
