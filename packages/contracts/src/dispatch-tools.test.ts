@@ -1106,12 +1106,10 @@ describe("dispatchToolSpecs", () => {
     expect(both.error?.issues.map((issue) => issue.message)).toEqual([
       "labels_add goes without labels: labels replaces every label the issue holds and labels_add adds to them, so name the labels to add in labels_add alone, or the whole set in labels alone.",
     ]);
-    expect(
-      schema.safeParse({ issue: "DSP-1", labels_add: ["api"], priority: 2 }).success
-    ).toBe(true);
-    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["x".repeat(41)] }).success).toBe(
-      false
+    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["api"], priority: 2 }).success).toBe(
+      true
     );
+    expect(schema.safeParse({ issue: "DSP-1", labels_add: ["x".repeat(41)] }).success).toBe(false);
     const update: DispatchToolSpec = specFor("dispatch_issue_update");
     expect(update.validation?.message).toContain("; labels_add goes without labels.");
     expect(update.description).toContain("labels_add adds labels and keeps every label");
