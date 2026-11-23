@@ -115,6 +115,8 @@ export const realStackReasons: Record<string, string> = {
   "delivery-live.e2e.ts": "`sql` writes delivered as live frames",
   "delivery-queued.e2e.ts":
     "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; a message to a session no store holds is queued by the server's own publish",
+  "delivery-settings.e2e.ts":
+    "each project's settings are what the server stores from the save, which proves the fake GitHub App reads each source's repository, read back through the route and on the reopened tab; the pipeline's count of a project turned off is the server's aggregation; the agent bearer's save is the server's admission",
   "delivery.e2e.ts":
     "facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows; a KPI's target and verdict are the server's reading of the eval a person registers",
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
