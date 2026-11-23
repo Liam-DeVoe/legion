@@ -991,10 +991,13 @@ there has less than a minute left, or when the broker refuses it as a token it n
 lapses), keeps the rotated login, and trades. A refusal of the trade's session or projects is
 not refreshed: a refresh cures none of those. A refresh the broker did not answer is sent once
 more at once: the broker redeems the spent refresh token again within its five-minute grace, and
-past it the login ends. The broker's `invalid_grant` to a refresh is final (`DeviceLoginEndedError`
-in `token-errors.ts`): the login was revoked or ran out, and only a new `dispatch login --device`
-cures it. A trade whose time ran out while another process of the machine held the lock says so
-(`LockHeldError`), and not that the broker did not answer.
+past it the login ends. The broker's 400 or 401 `invalid_grant` to a refresh is final
+(`DeviceLoginEndedError` in `token-errors.ts`, decided by `endsGrant` in `oauth-refusal.ts`): the
+login was revoked or ran out, and only a new `dispatch login --device` cures it. An
+`invalid_grant` at another status, a 403 or a 429, is a refusal like any other
+(`BrokerRefusedError`), and a later refresh gets past a 429. A trade whose time ran out while
+another process of the machine held the lock says so (`LockHeldError`), and not that the broker
+did not answer.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
@@ -1206,10 +1209,14 @@ not upstream OpenSSH, which refuses every directory its group may write to. The 
 command's own choice: it takes a sticky directory, which OpenSSH refuses, and it checks each link
 on the way and the directory each is in, where OpenSSH resolves the path first. It exits 1 when
 the broker refuses the login, the person denies it, its code expires, or the broker answers a
-poll with any other 4xx, with an OAuth error or without one (a proxy's page, a bare challenge),
-naming its status; a poll the broker did not answer, its 429 and a 5xx are polled again, at the
-broker's interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s),
-and 5 s where it names none. It then writes no file. It exits 1 too when a login that was approved
+poll with any other 4xx, with another OAuth error or without one (a proxy's page, a bare
+challenge), naming its status. The status decides first (`oauth-refusal.ts` in
+`@legion/cipher-client`): a poll the broker did not answer, a 408, its 429 and a 5xx are polled
+again, whatever OAuth error they name, and only in another 4xx does the error count:
+`access_denied`, which the broker answers 403, is the denial, `expired_token` and `invalid_grant`
+the expiry, and `authorization_pending` and `slow_down` poll again. It polls at the broker's
+interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s), and 5 s
+where it names none. It then writes no file. It exits 1 too when a login that was approved
 cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
 it in Machine logins on the page the code was typed into. Where it wrote a copy of the login whole,
 the copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message

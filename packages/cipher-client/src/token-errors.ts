@@ -254,12 +254,13 @@ export class SignInEndedError extends Error {
 export const DEVICE_LOGIN_COMMAND = "dispatch login --device";
 
 /**
- * A device login the broker no longer honours: its refresh was answered `invalid_grant`, because
- * its credential was revoked or ran out, or its refresh token was presented again after its
- * rotation's grace, which revokes the login (`oauthstore.Store.RevokeRefreshToken`). Like a
- * sign-in the issuer ended it is final ({@link isFinalRefusal}): only a new
- * {@link DEVICE_LOGIN_COMMAND} cures it. `login` names the login as its source describes it, and
- * it keeps no cause: the library's error holds the broker's answer.
+ * A device login the broker no longer honours: its refresh was answered 400 or 401
+ * `invalid_grant` (`endsGrant`, `oauth-refusal.ts`), because its credential was revoked or ran
+ * out, or its refresh token was presented again after its rotation's grace, which revokes the
+ * login (`oauthstore.Store.RevokeRefreshToken`). Like a sign-in the issuer ended it is final
+ * ({@link isFinalRefusal}): only a new {@link DEVICE_LOGIN_COMMAND} cures it. `login` names the
+ * login as its source describes it, and it keeps no cause: the library's error holds the broker's
+ * answer.
  */
 export class DeviceLoginEndedError extends Error {
   constructor(login: string) {

@@ -49,7 +49,6 @@ import {
   genericGrantRequest,
   initiateDeviceAuthorization,
   None,
-  ResponseBodyError,
   type TokenEndpointResponse,
 } from "openid-client";
 import {
@@ -68,6 +67,7 @@ import {
 } from "./device-login-lock";
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
+import { endsGrant, outage, refusalCode } from "./oauth-refusal";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BROKER_URL_SETTING,
@@ -423,19 +423,24 @@ export interface KeptDeviceLogin extends DeviceLogin {
  * approval issues at `path` ({@link saveDeviceLogin}, under {@link withDeviceLoginLock}), answering
  * it with the credential it replaced ({@link KeptDeviceLogin}), which is read under the same lock
  * as the save, so a login another `dispatch login` kept there while this one waited for its
- * approval is the one named. Each poll waits the interval first (RFC 8628 Section 3.5), five
- * seconds longer after each `slow_down`, and proves the login's key. `authorization_pending` and
- * `slow_down` poll again, and so does a poll the broker did not answer, its 429 and a 5xx, as the
- * Go helper's `pollLogin` does; `access_denied` is a denial, and `expired_token`, `invalid_grant`
- * (a code the broker no longer knows) or the code's own lifetime passing is an expiry. Any other
- * answer of a 4xx, with an OAuth error or without one (a proxy's HTML page, a bare
- * `WWW-Authenticate` challenge), is one no later poll answers differently, so it stops the poll at
- * once, naming the status, rather than polling until the code lapses and saying it expired. Each
- * refusal names {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that
- * cannot be kept is refused naming its credential, which the broker holds live, and where to
- * revoke it, and a copy of it written whole is kept beside the file ({@link KeptCopyError}), which
- * the refusal names whatever fails after it, letting go of the lock included. One kept whose lock
- * is then not let go is answered as kept: the machine uses that login, so it is not one to revoke.
+ * approval is the one named. Each poll waits the interval first (RFC 8628 Section 3.5) and proves
+ * the login's key. The status decides first, as the Go helper's `pollLogin` decides it
+ * (`oauthrefusal.Refusal`): a poll the broker did not answer, or answered with an {@link outage}
+ * (a 408, its 429, a 5xx), polls again whatever OAuth error it names, since no person decided and
+ * a later poll may be answered. Only in any other 4xx does the OAuth error count
+ * ({@link refusalCode}): `authorization_pending` polls again, `slow_down` polls again five seconds
+ * further apart from then on, `access_denied` is a denial (the broker answers it 403), and
+ * `expired_token` or `invalid_grant` (a code the broker no longer knows) is an expiry, as is the
+ * code's own lifetime passing. Any other answer of a 4xx, with another OAuth error or without one
+ * (a proxy's HTML page, a bare `WWW-Authenticate` challenge), stops the poll at once, naming the
+ * status, rather than polling until the code lapses and saying it expired. That is the one place
+ * this poll and `pollLogin` differ: the helper polls on there until the code lapses, as it records
+ * the login's state in the background, where a person waits on this poll. Each refusal names
+ * {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that cannot be kept is
+ * refused naming its credential, which the broker holds live, and where to revoke it, and a copy
+ * of it written whole is kept beside the file ({@link KeptCopyError}), which the refusal names
+ * whatever fails after it, letting go of the lock included. One kept whose lock is then not let
+ * go is answered as kept: the machine uses that login, so it is not one to revoke.
  */
 export async function finishDeviceLogin(
   started: DeviceAuthorization,
@@ -464,7 +469,8 @@ export async function finishDeviceLogin(
         device_code: started.deviceCode,
       });
     } catch (error) {
-      const code = error instanceof ResponseBodyError ? error.error : "";
+      // The status decides first: an answer that is an outage names no code that counts.
+      const code = refusalCode(error);
       if (code === "access_denied") {
         throw new Error(
           `this machine's device login was denied, not approved as ${started.person}; ask again with: ${DEVICE_LOGIN_COMMAND}`
@@ -474,11 +480,7 @@ export async function finishDeviceLogin(
       if (code === "slow_down") interval += 5;
       const status = statusOf(error);
       const pollAgain =
-        code === "authorization_pending" ||
-        code === "slow_down" ||
-        status === 0 ||
-        status === 429 ||
-        status >= 500;
+        code === "authorization_pending" || code === "slow_down" || status === 0 || outage(status);
       if (!pollAgain) {
         const refusal = brokerRefusal(
           "poll the code of",
@@ -668,9 +670,10 @@ export class DeviceLoginIdentity implements TokenSource {
  * grace. So a refresh token lost to an answer that never arrived is cured only within that grace;
  * past it, its redeem is a reuse, which ends the login.
  *
- * `invalid_grant` — the credential revoked or run out, or the refresh token already rotated away —
- * is {@link DeviceLoginEndedError}, final; any other refusal is worded as every broker refusal is
- * (`brokerRefusal`).
+ * A 400 or 401 `invalid_grant` ({@link endsGrant}, the rule of Go's `oauthrefusal.EndsGrant`) —
+ * the credential revoked or run out, or the refresh token already rotated away — is
+ * {@link DeviceLoginEndedError}, final. Any other refusal, an `invalid_grant` at a 403 or a 429
+ * among them, is worded as every broker refusal is (`brokerRefusal`).
  */
 export async function refreshDeviceLogin(
   path: string,
@@ -690,9 +693,7 @@ export async function refreshDeviceLogin(
         refresh_token: login.refreshToken,
       });
     } catch (error) {
-      if (error instanceof ResponseBodyError && error.error === "invalid_grant") {
-        throw new DeviceLoginEndedError(options.describe);
-      }
+      if (endsGrant(error)) throw new DeviceLoginEndedError(options.describe);
       if (sent === 0 && statusOf(error) === 0) continue;
       throw brokerRefusal("refresh", options.describe, endpoint, error);
     }

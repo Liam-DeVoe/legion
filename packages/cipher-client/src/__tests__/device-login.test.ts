@@ -221,6 +221,48 @@ test("a poll the broker answers with its 429 or a 5xx is polled again", async ()
   expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
 });
 
+// The status decides first: a 408 (the broker did not take the poll) and a 429 (it will not take
+// one yet) are an outage, as Go's `oauthrefusal.Outage` reads them, so whatever code their body
+// names is no person's decision and no lapse of the code, and the poll goes on.
+test.each([
+  ["429 naming access_denied", "deny", 429],
+  ["429 naming expired_token", "expired", 429],
+  ["429 naming invalid_grant", "invalid_grant", 429],
+  ["408 naming access_denied", "deny", 408],
+  ["408 with no body", "empty-408", undefined],
+] as const)("a poll answered %s is polled again, and the login completes", async (_, answer, status) => {
+  const stub = broker({ polls: [answer, "approve"], oauthErrorStatus: status });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const outcome = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
+    (login) => login.credentialId,
+    (error: unknown) => (error as Error).message
+  );
+  expect(outcome).toBe(STAND_IN_CREDENTIAL);
+  expect(stub.polls).toHaveLength(2);
+});
+
+test("a poll answered 400 authorization_pending, or 429 with no body, is polled again", async () => {
+  const stub = broker({ polls: ["pending", "empty-429", "approve"] });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const login = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep });
+  expect(stub.polls).toHaveLength(3);
+  expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
+});
+
+test("slow_down adds its 5 s only where its code counts: one answered 429 polls again at the interval", async () => {
+  const stub = broker({ polls: ["slow_down", "approve"], oauthErrorStatus: 429 });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const waits: number[] = [];
+  await finishDeviceLogin(started, {
+    path: loginPath(),
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  });
+  expect(stub.polls).toHaveLength(2);
+  expect(waits).toEqual([1000, 1000]);
+});
+
 test("a poll the broker did not answer is polled again", async () => {
   const stub = broker();
   const path = loginPath();
@@ -370,7 +412,9 @@ test("what the broker answers for a person to read is refused where it holds a c
 });
 
 test("a login nobody approves is refused, and writes no file", async () => {
-  // Denied, expired, and a code the broker no longer knows (`invalid_grant`), which is an expiry.
+  // Denied, expired, and a code the broker no longer knows (`invalid_grant`), which is an expiry,
+  // each at the broker's own status: `access_denied` 403, as its OAuth library answers it, and
+  // the others 400.
   for (const answer of ["deny", "expired", "invalid_grant"] as const) {
     const stub = broker({ polls: [answer] });
     const path = loginPath();
@@ -380,7 +424,10 @@ test("a login nobody approves is refused, and writes no file", async () => {
       (error: unknown) => error as Error
     );
     expect(stub.polls, answer).toHaveLength(1);
-    expect(refusal?.message, answer).toContain(answer === "deny" ? "denied" : "expired");
+    // The denial's own words: a refusal naming `HTTP 403 access_denied` holds "denied" too.
+    expect(refusal?.message, answer).toContain(
+      answer === "deny" ? `denied, not approved as ${PERSON}` : "expired before"
+    );
     expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
     expect(await stat(path).catch(() => null)).toBeNull();
   }
@@ -396,6 +443,26 @@ test("a login nobody approves is refused, and writes no file", async () => {
   );
   expect(stub.polls).toHaveLength(0);
   expect(lapsed?.message).toContain("expired");
+});
+
+// Go's `oauthrefusal.Refusal`, which the helper's `pollLogin` reads: RFC 6749 Section 5.2 has an
+// error answer be 400 unless specified otherwise, and an OAuth library may specify otherwise.
+test.each([
+  ["access_denied at 400", "deny", 400],
+  ["access_denied at 401", "deny", 401],
+  ["expired_token at 403", "expired", 403],
+  ["invalid_grant at 403", "invalid_grant", 403],
+] as const)("a poll's OAuth error counts at any refusal status: %s", async (_, answer, status) => {
+  const stub = broker({ polls: [answer], oauthErrorStatus: status });
+  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+  const refusal = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.polls).toHaveLength(1);
+  expect(refusal?.message).toContain(
+    answer === "deny" ? `denied, not approved as ${PERSON}` : "expired before"
+  );
 });
 
 test("the identity trades the login's access token with no actor, proved with the login's key", async () => {
@@ -786,6 +853,40 @@ test("a refresh refused other than invalid_grant is that refusal, and one unansw
   );
   expect(unanswered).toBeInstanceOf(BrokerTradeFailedError);
   expect(unanswered?.message).toContain("refresh this machine's device login at");
+});
+
+// Only a 400 or a 401 `invalid_grant` ends a grant (Go's `oauthrefusal.EndsGrant`). At a 403 it is
+// the broker's refusal, worded as every other is; at a 429 it is the broker's rate limit, which a
+// later refresh gets past.
+test.each([
+  [400, true],
+  [401, true],
+  [403, false],
+  [429, false],
+] as const)("a refresh answered %i invalid_grant ends the login: %p", async (status, ends) => {
+  const stub = broker({ refuseRefresh: true, oauthErrorStatus: status });
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const refused = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+    describe: "this machine's device login",
+    held: async () => true,
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(stub.refreshes).toHaveLength(1);
+  if (ends) {
+    expect(refused).toBeInstanceOf(DeviceLoginEndedError);
+    expect(refused?.message).toContain(DEVICE_LOGIN_COMMAND);
+    expect(isFinalRefusal(refused)).toBe(true);
+    return;
+  }
+  expect(refused).not.toBeInstanceOf(DeviceLoginEndedError);
+  expect(refused).toBeInstanceOf(BrokerRefusedError);
+  expect(refused?.message).toContain(
+    `the secrets broker refused this machine's device login: HTTP ${status} invalid_grant`
+  );
+  expect(isFinalRefusal(refused)).toBe(status === 403);
 });
 
 test("a trade refused after its holder lost the lock is one a later trade cures, refreshed or not", async () => {
