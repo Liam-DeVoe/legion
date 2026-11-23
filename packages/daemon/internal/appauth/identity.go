@@ -41,9 +41,11 @@ var stepRoles = plan.BuiltinRoles()
 // SetFor is the one role-to-set decision: the set every token of role's claim is minted with. The
 // three roles no step names hold their own sets: the owner of an issue (the architect) and the
 // project controller the review set, and the merger the implementation set. A role a step can
-// name takes the default set of its type (setForStep), so a role a plan defines needs no set of
-// its own. Any other role has no set: SetFor answers ErrNoTokenSet naming it, and never panics,
-// so the mint asked for it fails and the daemon does not. No role maps to SetVerdict.
+// name — one of the built-in roles (plan.BuiltinRoles), read once — takes the default set of its
+// type (setForStep). A role a plan defines is not among them, and plan validation refuses a plan
+// that defines one, so no claim holds such a role today. Any other role has no set: SetFor answers
+// ErrNoTokenSet naming it, and never panics, so the mint asked for it fails and the daemon does
+// not. No role maps to SetVerdict.
 func SetFor(role claim.Role) (TokenSet, error) {
 	switch role {
 	case claim.RoleArchitect:
