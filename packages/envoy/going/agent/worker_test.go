@@ -1219,7 +1219,9 @@ func TestAReadTheRulesNameNeedsNoLookup(t *testing.T) {
 // values such as "(medium)" and session ids in code. The system prompt says how an answer reads
 // (state 4 of the bar's design): each priority and time as the page shows it, which the reads give
 // beside the value (shownResult); and each model call is told the time now, from which a time is
-// written as the issue page writes it.
+// written as the issue page writes it. A time is a link whose words are the page's and whose
+// address is the time the read gives, which the page shows with its full date on hover, and its
+// words are the time itself, with its zone and year, where the words ask when.
 func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 	for _, said := range []string{
 		"the direct answer in one or two sentences, then at most a short list",
@@ -1231,11 +1233,14 @@ func TestTheAnswerReadsAsTheIssuePageShowsIt(t *testing.T) {
 		"without saying what you read or how",
 		"a priority as P0, P1, P2 or P3",
 		"The reads give each priority and each time also as the page shows it, in the field after it named for it with _shown",
-		"write that form whole, never the raw value beside it",
+		"as its priority_shown says, never its raw value",
 		`a status, where no chip shows it, by its words, such as "In progress" for in_progress`,
 		`never as the result's raw value, and never in parentheses: "an ask of medium urgency", not "(medium)"`,
-		`"last seen at 09:40 UTC, 2 hours ago"`,
-		"never as a result writes it, such as 2026-11-12T09:00:00Z",
+		"each time as a link the page shows with its full date on hover, such as [5 days ago](dispatch-time:2026-11-18T11:35:00Z): its words the _shown form",
+		`the time with its zone and year where the words ask when or the minute matters, such as "at 11:35 UTC on 18 Nov 2026"`,
+		"its address the time in RFC 3339 as the read gives it",
+		"A time no _shown follows, such as one a text writes, is written so too, its words from the time now in the person's message",
+		"never write a time in words as a result writes it, such as 2026-11-12T09:00:00Z",
 		"Name an agent session by its title as the roster gives it",
 		"never in backticks",
 		"call ask_person with the question in place of an answer: the question is all the person reads",
@@ -1374,23 +1379,31 @@ func TestThePromptNamesTheArgumentsOfAMessageAnAnswerAndAQuote(t *testing.T) {
 // beside it, "this one" for the page's issue, a time with no zone, a postmortem's follow-ups left
 // out, a session named by its id or its role though the roster gives its title, words with no
 // author or cut mid-clause, a document's words with no read or link of it, an epic's done children
-// left out, a gone holder left out, and an open ask with nothing of what it asks. Each is a clause
-// of the rule it belongs to.
+// left out, a gone holder left out, and an open ask with nothing of what it asks. At 8465df75 it
+// failed them for a count of asks with none of the asks, quotes and summaries with no author
+// (the largest cause), an issue's priority and assignee left out, the page's issue and a
+// document's project not named, a section not named, done children left out again, and a holder
+// named by neither title nor id. Each is a clause of the rule it belongs to, the author's and the
+// children's with an example.
 func TestThePromptSaysWhatAnAnswerAndAStatusGive(t *testing.T) {
 	for _, said := range []string{
-		`a count with the total it is of, such as "21 open issues of 31", and with the items it counts, each linked, where they fit`,
-		"a cause with its effect, its times and each follow-up or action it names",
-		"all of an issue's children, the done ones too, by status, unless the words ask for some",
-		"each empty field that bears on the words, such as no priority or no assignee",
+		`a count of any items - issues, asks, comments, documents, sessions - with the total it is of, such as "21 open issues of 31", and with the items it counts, each linked, where they fit`,
+		"a cause with its effect, its times and each follow-up or action it names, and the section that says it",
+		`all of an issue's children, the done ones too, each linked under its status, such as "open: ACME-2 and ACME-4; done: ACME-5, ACME-8 and ACME-9", unless the words ask for some`,
+		"the priority and the assignee of an issue it is about, or that it has none, and each other empty field that bears on the words",
+		"and who wrote each thing it quotes or sums up",
 		"a count beside a list is the number of its items",
-		`the page's own too, never as "this one" or "here"`,
+		`never name one without its link, the one the answer is about and the page's own too, never as "this one" or "here"`,
+		`an ask, a comment or a document with the issue or project it belongs to, such as "the ask on ACME-3" or "a document of ACME"`,
 		"a person by the login the reads give, never by a name of your own",
-		`a time of day a text writes with its zone, such as "11:30 UTC"`,
+		"the time with its zone and year",
 		"by its role only where it has no title, and never by its id where the roster gives its title",
+		"A claim gives its holder's title as its actor.origin.session_title: name the holder by it",
 		"an open ask with what it asks, not only whom it waits on",
-		"say each holder's state, a gone one too",
+		`Name each holder by its title and say its state, a gone one with its id too, such as "ACME-26 is held by Implementer of ACME-26, session-impl-09, which is gone"`,
 		"read in this run (dispatch_doc_read for a document or a file), not only from the issue that lists it, and the answer links it",
-		"are given with their author, by login or a session's title, and in whole clauses",
+		"A quote or a summary of words someone wrote - a comment, a thread, a suggestion, a message, an ask's answer - starts with who wrote them, by the login or session title the read gives, in whole clauses",
+		`"kim@example.com wrote that the deploy raised the latency, and lee@example.com answered that the rollback fixed it"`,
 	} {
 		if !strings.Contains(systemPrompt, said) {
 			t.Errorf("the system prompt does not say %q", said)

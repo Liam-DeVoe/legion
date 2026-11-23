@@ -30,7 +30,7 @@ type shownRow struct {
 // it. The agent gives its model the same words beside each such value of a result, in the field
 // after it named for it with _shown, so the answer the model writes from them and the page say
 // each value alike: a priority of 1, 0 and null reads P1, P0 and "No priority", and a time 13
-// days before now ends as the web writes it, "2 weeks ago", after its clock time (clockTime).
+// days before now reads as the web writes it, "2 weeks ago".
 func TestTheModelIsGivenEachValueInTheWebsWords(t *testing.T) {
 	raw, err := os.ReadFile("../../../contracts/fixtures/shown-values.json")
 	if err != nil {
@@ -51,43 +51,13 @@ func TestTheModelIsGivenEachValueInTheWebsWords(t *testing.T) {
 		}
 		body := []byte(`{"key":"A-1","` + field + `":` + string(row.Value) + `,"title":"A title"}`)
 		members := shownMembers(body, row.Now)
-		words := row.Shown
-		if row.Kind == "time" {
-			var at time.Time
-			if err := json.Unmarshal(row.Value, &at); err != nil {
-				t.Fatal(err)
-			}
-			words = clockTime(at, row.Now) + ", " + row.Shown
-		}
-		want := "," + jsonString(field+shownSuffix) + ":" + jsonString(words)
+		want := "," + jsonString(field+shownSuffix) + ":" + jsonString(row.Shown)
 		if len(members) != 1 || members[0].text != want || string(body[members[0].at-len(row.Value):members[0].at]) != string(row.Value) {
 			t.Errorf("the %s %s at %s is followed by %+v, want %s after it, as the web writes it", row.Kind, row.Value, row.Now.Format(time.RFC3339), members, want)
 		}
 	}
 	if kinds["priority"] != 5 || kinds["time"] == 0 {
 		t.Errorf("the fixture holds %d priorities and %d times, want each of 0 to 3 and null, and times", kinds["priority"], kinds["time"])
-	}
-}
-
-// TestATimesWordsGiveItsClockTime: the eval's answers that wrote a time as the page's relative
-// words alone - "last seen 2 hours ago", "closed last week" - left out the time the person asked
-// for (status-02's 09:40, answer-20's 10 Nov). A time's words open with its time of day in UTC,
-// its day before it where that is not today's in UTC, and its year too where that is not this
-// year's; a time written with an offset is read in UTC, and one after now reads as one to come.
-func TestATimesWordsGiveItsClockTime(t *testing.T) {
-	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
-	for value, want := range map[string]string{
-		"2026-11-18T09:40:00Z":      "09:40 UTC, 2 hours ago",
-		"2026-11-18T10:40:00+01:00": "09:40 UTC, 2 hours ago",
-		"2026-11-17T15:00:00Z":      "17 Nov 15:00 UTC, 21 hours ago",
-		"2026-11-18T00:30:00+01:00": "17 Nov 23:30 UTC, 12 hours ago",
-		"2026-11-10T09:00:00Z":      "10 Nov 09:00 UTC, last week",
-		"2025-12-01T08:00:00Z":      "1 Dec 2025 08:00 UTC, 12 months ago",
-		"2026-11-18T15:00:00Z":      "15:00 UTC, in 3 hours",
-	} {
-		if got, shown := shownWords("last_seen", value, now); !shown || got != want {
-			t.Errorf("the time %s at %s reads %q (%t), want %q", value, now.Format(time.RFC3339), got, shown, want)
-		}
 	}
 }
 
@@ -106,10 +76,10 @@ func TestOnlyAPriorityOrATimeOfAFieldTakesWords(t *testing.T) {
 		return strings.Join(out, "")
 	}
 	for body, want := range map[string]string{
-		`{"issue":{"priority":2,"claim":{"since":"2026-11-18T11:00:00Z"}},"children":[{"priority":3},{"priority":null}]}`: `,"priority_shown":"P2","since_shown":"11:00 UTC, 1 hour ago","priority_shown":"P3","priority_shown":"No priority"`,
+		`{"issue":{"priority":2,"claim":{"since":"2026-11-18T11:00:00Z"}},"children":[{"priority":3},{"priority":null}]}`: `,"priority_shown":"P2","since_shown":"1 hour ago","priority_shown":"P3","priority_shown":"No priority"`,
 		`{"priority":4,"other":{"priority":"1"},"rank":{"priority":1.0},"due":"2026-11-20","closed_at":null}`:             ``,
 		`{"labels":["2026-11-18T11:00:00Z"],"ok":true,"count":2}`:                                                         ``,
-		`[{"updated_at":"2026-11-17T12:00:00Z"},{"updated_at":"2026-11-1`:                                                 `,"updated_at_shown":"17 Nov 12:00 UTC, yesterday"`,
+		`[{"updated_at":"2026-11-17T12:00:00Z"},{"updated_at":"2026-11-1`:                                                 `,"updated_at_shown":"yesterday"`,
 		`The issue is P1 and closed 2026-11-17T12:00:00Z.`:                                                                ``,
 	} {
 		if got := words(body); got != want {
@@ -155,7 +125,7 @@ func TestTheWordsStayWithinTheBoundOfAResult(t *testing.T) {
 	small := bodyOf(2)
 	result := resultText(call, agentwire.CallAnswer{Status: http.StatusOK, Body: small})
 	body, _, total := given(t, shownResult(result, now))
-	if want := strings.ReplaceAll(string(small), `:1,`, `:1,"priority_shown":"P1",`); total != 0 || body != strings.ReplaceAll(want, `11:00:00Z"`, `11:00:00Z","updated_at_shown":"11:00 UTC, 1 hour ago"`) {
+	if want := strings.ReplaceAll(string(small), `:1,`, `:1,"priority_shown":"P1",`); total != 0 || body != strings.ReplaceAll(want, `11:00:00Z"`, `11:00:00Z","updated_at_shown":"1 hour ago"`) {
 		t.Errorf("a small result is given as %q, shortened to %d, want each value followed by its words and no note", body, total)
 	}
 
@@ -166,7 +136,7 @@ func TestTheWordsStayWithinTheBoundOfAResult(t *testing.T) {
 	body, _, total = given(t, shownResult(result, now))
 	issues, priorities, times := strings.Count(string(whole), `"priority":1`), strings.Count(body, `"priority_shown":"P1"`), strings.Count(body, `"updated_at_shown"`)
 	if stripped := words.ReplaceAllString(body, ""); total != 0 || stripped != string(whole) || priorities != issues || times == 0 || times >= issues ||
-		!strings.HasPrefix(body, "["+strings.Repeat(`{"key":"A-1","priority":1,"priority_shown":"P1","updated_at":"2026-11-18T11:00:00Z","updated_at_shown":"11:00 UTC, 1 hour ago"},`, times)) {
+		!strings.HasPrefix(body, "["+strings.Repeat(`{"key":"A-1","priority":1,"priority_shown":"P1","updated_at":"2026-11-18T11:00:00Z","updated_at_shown":"1 hour ago"},`, times)) {
 		t.Errorf("a whole body of %d issues is given as %d bytes, shortened to %d, with %d priorities and %d times in words, want it whole, every priority and the first times in words",
 			issues, len(body), total, priorities, times)
 	}
@@ -197,8 +167,9 @@ func TestTheWordsStayWithinTheBoundOfAResult(t *testing.T) {
 // TestTheModelReadsEachPriorityAndTimeAsThePageShowsIt: a run whose agent is given a time now
 // (Config.Now, DISPATCH_TEST_AGENT_NOW under a test's server) tells its model that time in the
 // person's message, and gives it each priority and time of a result in the page's words beside
-// the value, the times by their clock and relative to that now: priority 1, 0 and null read P1,
-// P0 and "No priority", a closed_at 13 days before now "10 Nov 12:00 UTC, 2 weeks ago". The step
+// the value, the times relative to that now: priority 1, 0 and null read P1, P0 and "No
+// priority", a closed_at 13 days before now "2 weeks ago". Each time's words follow the time
+// itself, as the result holds it, which the answer writes as its time link's address. The step
 // saves the result as the server answered it, which ReadSavedResult reads, and a draw_block over
 // that list counts its raw values.
 func TestTheModelReadsEachPriorityAndTimeAsThePageShowsIt(t *testing.T) {
@@ -234,8 +205,8 @@ func TestTheModelReadsEachPriorityAndTimeAsThePageShowsIt(t *testing.T) {
 		`"priority":1,"priority_shown":"P1"`,
 		`"priority":0,"priority_shown":"P0"`,
 		`"priority":null,"priority_shown":"No priority"`,
-		`"closed_at":"2026-11-10T12:00:00Z","closed_at_shown":"10 Nov 12:00 UTC, 2 weeks ago"`,
-		`"updated_at":"2026-11-23T11:55:00Z","updated_at_shown":"11:55 UTC, 5 minutes ago"`,
+		`"closed_at":"2026-11-10T12:00:00Z","closed_at_shown":"2 weeks ago"`,
+		`"updated_at":"2026-11-23T11:55:00Z","updated_at_shown":"5 minutes ago"`,
 	} {
 		if !strings.Contains(told, want) {
 			t.Errorf("the model is given the result %q, which does not hold %s", told, want)

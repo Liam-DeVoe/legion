@@ -11,7 +11,5 @@ body: |-
   names the arguments of a message to a session (`body`) and of an answer to an ask (its id as its
   read gives it), says a suggestion's quote matches one place and a list written into an item nests
   under it, and says what an answer gives: a count's items, the page's item by its link, a
-  session's title, the author of quoted words, every child and every holder asked about. Each time
-  the agent gives its model is now its clock time in UTC beside the relative words, such as
-  "09:40 UTC, 2 hours ago", so an answer states the time itself. The eval's facts name each person
-  by login, as Dispatch shows them.
+  session's title, the author of quoted words, every child and every holder asked about. The
+  eval's facts name each person by login, as Dispatch shows them.

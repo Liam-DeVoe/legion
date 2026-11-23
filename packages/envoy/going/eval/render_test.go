@@ -61,6 +61,54 @@ func TestAnAnswerIsRenderedAsTheBarDrawsItsLinks(t *testing.T) {
 	}
 }
 
+// TestATimeLinkIsRenderedWithTheDateItsHoverShows: the agent writes a time as a link whose words
+// are the time as the page writes it and whose address is the instant, under dispatch-time:, and
+// the bar shows the words with the instant's full date on hover (the web's dispatch-time.tsx). The
+// judge reads the words and then that date in UTC, its seconds where it has some, so a fact that
+// names the time holds only where the link's instant is right. An instant written with an offset
+// or to the minute is read as the web reads it, and the scheme in any case with spaces around the
+// address. An address that names no instant - no time's shape, a date alone, a day no month has -
+// gives the words alone, as the bar draws them; a time link in code stays as written.
+func TestATimeLinkIsRenderedWithTheDateItsHoverShows(t *testing.T) {
+	seed, err := LoadSeed(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, answer, want string }{
+		{
+			"a time in relative words beside a chip",
+			"[DEMO-11](dispatch://DEMO-11) closed [5 days ago](dispatch-time:2026-11-18T11:35:00Z).",
+			"[DEMO-11 · Done · Board: card titles cut off at two lines] closed 5 days ago (18 Nov 2026, 11:35 UTC).",
+		},
+		{
+			"an exact time with seconds and an offset",
+			"It started [at 08:59:01 UTC on 15 Nov 2026](dispatch-time:2026-11-15T09:59:01.250+01:00).",
+			"It started at 08:59:01 UTC on 15 Nov 2026 (15 Nov 2026, 08:59:01 UTC).",
+		},
+		{
+			"a time to the minute, its scheme in capitals, and an autolink",
+			"Seen [yesterday]( DISPATCH-TIME:2026-11-17T09:40-05:00 ) and <dispatch-time:2026-11-18T11:35:00Z>.",
+			"Seen yesterday (17 Nov 2026, 14:40 UTC) and dispatch-time:2026-11-18T11:35:00Z (18 Nov 2026, 11:35 UTC).",
+		},
+		{
+			"addresses that name no instant",
+			"[soon](dispatch-time:tomorrow), [that day](dispatch-time:2026-11-18), [never](dispatch-time:2026-11-31T09:00:00Z) and [then](dispatch-time:).",
+			"soon, that day, never and then.",
+		},
+		{
+			"a time link in code",
+			"`[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`",
+			"`[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := RenderAnswer(c.answer, seed); got != c.want {
+				t.Errorf("RenderAnswer(%q)\n= %q\nwant %q", c.answer, got, c.want)
+			}
+		})
+	}
+}
+
 // TestATrysStoreRendersAnAnswerAsTheSeedDoes: the seeded store, as a try's grade reads it, renders
 // every calibration answer of labels.json as the seed does, and a store renders an issue it holds
 // in the status it holds.

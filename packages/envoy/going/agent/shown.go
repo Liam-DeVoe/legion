@@ -2,14 +2,14 @@ package agent
 
 // shown.go gives the model each value of a tool result that the issue page writes in words, beside
 // the value as the result holds it: a priority, 0 to 3 or null, as P0 to P3 or "No priority", and
-// a time, an RFC 3339 string, as its time in UTC (clockTime) and then relative to the run's time
-// now, as the web's relativeTimeLabel (packages/dispatch/web/src/features/refs/Timestamp.tsx)
-// writes it: "09:40 UTC, 2 hours ago". The answer writes that form, so the answer and the page
-// say each value alike and the model does no sum of its own. The time itself is given too: the
-// eval's answers that wrote only "last seen 2 hours ago" or "closed last week" left out the 09:40
-// or the 10 Nov the person asked for. packages/contracts/fixtures/shown-values.json holds the
-// priority words and the relative ones, written by hand from the web's, and a test of the web and
-// one of this package each hold their side to it.
+// a time, an RFC 3339 string, relative to the run's time now, as the web's relativeTimeLabel
+// (packages/dispatch/web/src/features/refs/Timestamp.tsx) writes it. The answer writes that form,
+// so the answer and the page say each value alike and the model does no sum of its own. The time
+// itself stays beside its words, as the result holds it: the answer writes a time as a link whose
+// words are these and whose address is that time (dispatch-time:2026-11-18T11:35:00Z), which the
+// page draws with the full date on hover. packages/contracts/fixtures/shown-values.json holds both
+// rules, written by hand from the web's, and a test of the web and one of this package each hold
+// their side to it.
 
 import (
 	"bytes"
@@ -111,7 +111,7 @@ var timeShape = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?
 // shownWords is the words the issue page writes for value, a token of a decoder that reads
 // numbers as json.Number, the value of the field named key, and whether it writes any: for a
 // priority that holds 0 to 3 or null, P0 to P3 or "No priority"; for any field that holds an RFC
-// 3339 time, the time in UTC and then relative to now: "17 Nov 15:00 UTC, 21 hours ago".
+// 3339 time, the time relative to now.
 func shownWords(key string, value any, now time.Time) (string, bool) {
 	switch value := value.(type) {
 	case nil:
@@ -127,24 +127,10 @@ func shownWords(key string, value any, now time.Time) (string, bool) {
 			return "", false
 		}
 		if at, err := time.Parse(time.RFC3339Nano, value); err == nil {
-			return clockTime(at, now) + ", " + relativeTime(at, now), true
+			return relativeTime(at, now), true
 		}
 	}
 	return "", false
-}
-
-// clockTime is at as a person reads it beside how long ago it was: its time of day in UTC, after
-// its day where that is not now's day in UTC, and the year too where that is not now's year:
-// "09:40 UTC", "17 Nov 15:00 UTC", "17 Nov 2025 15:00 UTC".
-func clockTime(at, now time.Time) string {
-	at, now = at.UTC(), now.UTC()
-	switch {
-	case at.Year() != now.Year():
-		return at.Format("2 Jan 2006 15:04 UTC")
-	case at.YearDay() != now.YearDay():
-		return at.Format("2 Jan 15:04 UTC")
-	}
-	return at.Format("15:04 UTC")
 }
 
 // shownMember is one field shownMembers writes into a body: text, a JSON member, which follows the
@@ -157,10 +143,9 @@ type shownMember struct {
 
 // shownMembers is the field that follows each value of body, a tool result's JSON, that the issue
 // page writes in words (shownWords): `,"priority_shown":"P1"` after a priority of 1, and
-// `,"closed_at_shown":"16 Nov 12:00 UTC, 2 days ago"` after a closed_at two days before now. A
-// value in a list names no field and is followed by none. Body is read as far as it is JSON, so a
-// body cut short (shortenedNote) gives the members of the values before its cut, and one that is
-// no JSON none.
+// `,"closed_at_shown":"2 days ago"` after a closed_at two days before now. A value in a list names
+// no field and is followed by none. Body is read as far as it is JSON, so a body cut short
+// (shortenedNote) gives the members of the values before its cut, and one that is no JSON none.
 func shownMembers(body []byte, now time.Time) []shownMember {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()

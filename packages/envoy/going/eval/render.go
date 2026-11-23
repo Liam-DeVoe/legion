@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -15,7 +16,9 @@ import (
 // conversation draws an answer with chips (the web's MarkdownBody with chips, ItemChip and
 // RefLink): each link to an item shows the item, read from Dispatch, in place of the words the
 // model gave the link. The judge reads the answer so, and a fact the person reads in a chip is
-// stated, and words the chip replaced are not.
+// stated, and words the chip replaced are not. A time the model wrote as a link
+// ([5 days ago](dispatch-time:2026-11-18T11:35:00Z), the web's dispatch-time.tsx) shows its words
+// and its full date on hover, so the judge reads both.
 
 // Items is what RenderAnswer reads of a store: an issue's status and title by its key, the name of
 // a document or a file by its owner (an issue's key or a project's key) and its slug, and the text
@@ -36,8 +39,10 @@ type Items interface {
 // project, its name; to an ask, a comment or a message, the head of its text, cut as the bar cuts
 // a link's title (itemHeadline). A link to an item that items does not hold, and a link to a block
 // or to an agent's file, which items holds no words of, is its bare reference, such as [DEMO-404],
-// so it carries no fact the store does not hold. Every other link - a web address, a picture, a
-// reference the bar does not read - and all other text, code included, stays as written.
+// so it carries no fact the store does not hold. A time link is its words and then the full date
+// its hover shows (timeLinkWords): [5 days ago](dispatch-time:2026-11-18T11:35:00Z) is "5 days ago
+// (18 Nov 2026, 11:35 UTC)". Every other link - a web address, a picture, a reference the bar does
+// not read - and all other text, code included, stays as written.
 //
 // The links are markdown's inline links, [words](href), and its autolinks, <dispatch://...>; a
 // dashboard path names its item as it does on the dashboard's own origin. A web address names no
@@ -106,19 +111,19 @@ func renderInline(out *strings.Builder, markdown string, items Items) {
 			at = end
 		case c == '!' && strings.HasPrefix(markdown[at+1:], "["):
 			end := at + 2
-			if linkEnd, _, ok := inlineLink(markdown, at+1); ok {
+			if linkEnd, _, _, ok := inlineLink(markdown, at+1); ok {
 				end = linkEnd
 			}
 			out.WriteString(markdown[at:end])
 			at = end
 		case c == '[':
-			end, href, ok := inlineLink(markdown, at)
+			end, words, href, ok := inlineLink(markdown, at)
 			if !ok {
 				out.WriteByte(c)
 				at++
 				continue
 			}
-			writeLink(out, markdown[at:end], href, items)
+			writeLink(out, markdown[at:end], words, href, items)
 			at = end
 		case c == '<':
 			end := strings.IndexByte(markdown[at:], '>')
@@ -127,7 +132,8 @@ func renderInline(out *strings.Builder, markdown string, items Items) {
 				at++
 				continue
 			}
-			writeLink(out, markdown[at:at+end+1], markdown[at+1:at+end], items)
+			autolinked := markdown[at+1 : at+end]
+			writeLink(out, markdown[at:at+end+1], autolinked, autolinked, items)
 			at += end + 1
 		default:
 			out.WriteByte(c)
@@ -136,15 +142,65 @@ func renderInline(out *strings.Builder, markdown string, items Items) {
 	}
 }
 
-// writeLink writes a link, written as written, as its chip's words where href names an item the
-// bar draws, and as written otherwise.
-func writeLink(out *strings.Builder, written, href string, items Items) {
+// writeLink writes a link, written as written with words its words, as its chip's words where
+// href names an item the bar draws, as its time where href is a time's address, and as written
+// otherwise.
+func writeLink(out *strings.Builder, written, words, href string, items Items) {
+	if timed, ok := timeLinkWords(words, href); ok {
+		out.WriteString(timed)
+		return
+	}
 	named, ok := parseTarget(href)
 	if !ok {
 		out.WriteString(written)
 		return
 	}
 	out.WriteString("[" + named.words(items) + "]")
+}
+
+// timeScheme is the scheme of the address of a time the model writes as a link.
+const timeScheme = "dispatch-time:"
+
+// timeInstant is an instant as a time link's address writes it, the shape the web reads (its
+// INSTANT): a date, a time to the minute or finer, and its zone.
+var timeInstant = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$`)
+
+// timeLinkWords is what the bar shows for a link whose words are words and whose address is
+// href, and whether href is a time's address at all, of any case and spaces around it, as the
+// web's isTimeAddress reads it. For an address that names an instant, the words and then, in
+// parentheses, the instant's full date and time in UTC, as the hover shows it: "5 days ago (18
+// Nov 2026, 11:35 UTC)", its seconds too where it has some. For an address that names none, such
+// as dispatch-time:last week, the words alone, as the bar draws them.
+func timeLinkWords(words, href string) (string, bool) {
+	href = strings.TrimSpace(href)
+	if len(href) < len(timeScheme) || !strings.EqualFold(href[:len(timeScheme)], timeScheme) {
+		return "", false
+	}
+	at, ok := linkInstant(href[len(timeScheme):])
+	if !ok {
+		return words, true
+	}
+	layout := "2 Jan 2006, 15:04 UTC"
+	if at.Second() != 0 {
+		layout = "2 Jan 2006, 15:04:05 UTC"
+	}
+	return words + " (" + at.Format(layout) + ")", true
+}
+
+// linkInstant is the instant written, a time link's address after its scheme, names, in UTC, and
+// false where it names none: where it has no time's shape or no such time is, such as a 31 Nov.
+// A time to the minute is read at its minute's start.
+func linkInstant(written string) (time.Time, bool) {
+	match := timeInstant.FindStringSubmatchIndex(written)
+	if match == nil {
+		return time.Time{}, false
+	}
+	if match[2] < 0 {
+		zone := match[6]
+		written = written[:zone] + ":00" + written[zone:]
+	}
+	at, err := time.Parse(time.RFC3339Nano, written)
+	return at.UTC(), err == nil
 }
 
 // autolink is the inside of a markdown autolink: a scheme, a colon and no space or angle bracket.
@@ -177,9 +233,9 @@ func codeSpanEnd(markdown string, start int) int {
 
 // inlineLink reads the inline link whose words open at the '[' at open: its words to their
 // matching ']', then '(', the href (in angle brackets or bare, its parentheses balanced), an
-// optional title, and ')'. It answers where the link ends and its href, and false where open
-// starts no inline link.
-func inlineLink(markdown string, open int) (int, string, bool) {
+// optional title, and ')'. It answers where the link ends, its words as written and its href, and
+// false where open starts no inline link.
+func inlineLink(markdown string, open int) (int, string, string, bool) {
 	depth, at := 0, open
 	for ; at < len(markdown); at++ {
 		switch markdown[at] {
@@ -197,14 +253,15 @@ func inlineLink(markdown string, open int) (int, string, bool) {
 		}
 	}
 	if at+1 >= len(markdown) || markdown[at+1] != '(' {
-		return 0, "", false
+		return 0, "", "", false
 	}
+	words := markdown[open+1 : at]
 	at = skipSpace(markdown, at+2)
 	var href string
 	if at < len(markdown) && markdown[at] == '<' {
 		end := strings.IndexAny(markdown[at+1:], ">\n")
 		if end < 0 || markdown[at+1+end] != '>' {
-			return 0, "", false
+			return 0, "", "", false
 		}
 		href, at = markdown[at+1:at+1+end], at+end+2
 	} else {
@@ -235,14 +292,14 @@ func inlineLink(markdown string, open int) (int, string, bool) {
 		}
 		end := strings.IndexByte(markdown[at+1:], closing)
 		if end < 0 {
-			return 0, "", false
+			return 0, "", "", false
 		}
 		at = skipSpace(markdown, at+end+2)
 	}
 	if at >= len(markdown) || markdown[at] != ')' {
-		return 0, "", false
+		return 0, "", "", false
 	}
-	return at + 1, href, true
+	return at + 1, words, href, true
 }
 
 // skipSpace is the first byte at or after at that is no space, tab or line feed.

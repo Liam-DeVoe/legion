@@ -15,20 +15,24 @@
  */
 
 /** The frame carrying the next piece of the answer's text, in the order the model wrote it.
- *  The text is plain text: every ASCII punctuation byte in it is backslash-escaped, which
- *  closes markdown's own constructs, so nothing a renderer is given can become a link, an
- *  image, a tag or a code span - not by itself, and not by the end of one frame meeting the
- *  start of the next. An escape closes none of GFM's literal autolinks, which a renderer finds
- *  after it has decoded the escapes, so a word a renderer would link on its own - a `www.`
- *  host, a scheme's `://`, a `mailto:` or `xmpp:`, an address - is dropped from the answer
- *  instead, whole and however many pieces of the model's text it was written in. A `text` frame
- *  therefore never carries a link; the `item` frame is where the links of an answer live.
+ *  The text is plain text: every ASCII punctuation byte of the model's words in it is
+ *  backslash-escaped, which closes markdown's own constructs, so nothing a renderer is given can
+ *  become a link, an image, a tag or a code span - not by itself, and not by the end of one
+ *  frame meeting the start of the next. An escape closes none of GFM's literal autolinks, which
+ *  a renderer finds after it has decoded the escapes, so a word a renderer would link on its own
+ *  - a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address - is dropped from the
+ *  answer instead, whole and however many pieces of the model's text it was written in. The one
+ *  link a `text` frame carries is a time, `[5 days ago](dispatch-time:2026-11-18T11:35:00Z)`,
+ *  whose target is `dispatch-time:` and an RFC 3339 time: it names no place to go, and the page
+ *  draws it as its words with the full date on hover. The server passes it on whole, its words
+ *  escaped, and no frame carries its `[` without its closing markup; the `item` frame is where
+ *  the links of an answer to items live.
  *  Generated into Go as `contracts.GoingEventText`. */
 export const GOING_EVENT_TEXT = "text";
 
 /** The frame naming one thing the answer cites, so the page can link it. Its `href` is the
- *  cited item's own href, and it is the one link the stream carries: the server emits the
- *  link's visible text as escaped plain text and this frame beside it.
+ *  cited item's own href, and it is the one link to an item the stream carries: the server
+ *  emits the link's visible text as escaped plain text and this frame beside it.
  *  Generated into Go as `contracts.GoingEventItem`. */
 export const GOING_EVENT_ITEM = "item";
 
@@ -123,17 +127,18 @@ export const GOING_RUN_MS = 30_000;
  *  finished run is not kept for ever. Generated into Go as `contracts.GoingRequestTTL`. */
 export const GOING_REQUEST_TTL_MS = 3_600_000;
 
-/** The next piece of the answer's text, as plain text whose every ASCII punctuation byte is
- *  backslash-escaped, so a renderer makes no link, image, tag or code span of any of it, and
- *  with every word a renderer would link on its own dropped rather than sent. */
+/** The next piece of the answer's text, as plain text whose every ASCII punctuation byte of the
+ *  model's words is backslash-escaped, so a renderer makes no link, image, tag or code span of
+ *  any of it but a time link (`GOING_EVENT_TEXT`), and with every word a renderer would link on
+ *  its own dropped rather than sent. */
 export interface GoingTextEvent {
   readonly event: typeof GOING_EVENT_TEXT;
   readonly data: { readonly text: string };
 }
 
 /** One thing the answer cites: its kind and id name it, `href` links it and `title` names it to a
- *  reader. This is the one frame of the stream that carries a link. `title`, `kind` and `id` are
- *  plain text, which a reader is shown as text and never read as markdown. */
+ *  reader. This is the one frame of the stream that carries a link to an item. `title`, `kind`
+ *  and `id` are plain text, which a reader is shown as text and never read as markdown. */
 export interface GoingItemEvent {
   readonly event: typeof GOING_EVENT_ITEM;
   readonly data: {
