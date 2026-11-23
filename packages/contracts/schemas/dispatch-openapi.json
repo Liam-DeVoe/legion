@@ -12678,6 +12678,168 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/projects/{key}/timeline": {
+      "get": {
+        "description": "One page of the delivery timeline's rows the project its path names counts, newest first, {items, total, limit, offset} (limit 1-500, default 200; offset from 0), within [from, to) (default the last 7 days), the search q and the facets the delivery timeline takes (repeatable repo, parent_agent, session, issue, priority, component, author, rework, deployed): each row a merge (kind merge, every field of the delivery timeline's prs[]) or a deploy run started in the window (kind deploy, or failed_run for a run with a failed job or a failed production job, every field of its runs[], with repo, the repository the run is in, and created_at), in one order: by the row's time (a merge's merged_at, a run's created_at), newest first, then by kind (merge, deploy, failed_run), then by id. The rows are those the project counts as the eval registry's day rows count them: a pull request for its issue's project, a deploy run for the projects of the pull requests it ships first. Beside them facet_counts and color_counts over the whole window on every page; waiting, the project's pull requests waiting at the window's start, on the page that reaches that start and null on every other; issue_titles, session_titles, session_pr_counts, components and session_groups over the whole window on the first page and null on every other; window and freshness. No measures: the eval routes answer those. The /ws/live project-timeline view carries the same body for its limit of rows from the newest. 400 INVALID_PROJECT for a key that is no project key, 400 INVALID_QUERY for a malformed query, 404 PROJECT_NOT_FOUND, 404 DELIVERY_NOT_CONFIGURED.",
+        "operationId": "getApiV1ProjectsByKeyTimeline",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "parent_agent",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "component",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "author",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "rework",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "deployed",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTimelineResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/reference-targets": {
       "get": {
         "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, once an id it writes short is resolved, which carries no name. A caller that sent Dispatch-Trees: 1 is also given text_tree on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references kept and nothing cut, a typed block's being of what stands between its opening line and its closing one. The lines between a typed block's fences are read by the block's kind: a document's block has the closing fence's indentation taken out of each line, which a block in a list item or a footnote definition carries, and a block of a comment, a message or an ask, stored from the start of its line, has its opening line's indentation, up to three spaces, taken off before the directive is read and up to as many columns taken off each later line, as its own text's parse reads them, the indentation left on a line, and the spaces or tabs after a list marker or a quote marker, written as spaces with each tab counted to the next multiple of four from its own column. With its opening line at column 0, such a block keeps every line as written; an opening line four spaces or a tab in opens no typed block, so that text is given the tree of its whole stored text. A typed block in a quote is given the tree of its whole stored text, its opening line included, and so is a block of a comment, a message or an ask whose closing fence stands four spaces or a tab in, since that fence closes nothing in its text. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. An item id or a block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference names, as GET /api/v1/references resolves its ?to=, and ref still echoes it as written: a prefix that nothing carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: true, which no other member carries, and every other member is answered; GET /api/v1/references refuses such a prefix with 409 ID_AMBIGUOUS, and this read refuses none. Under an ETag over the whole answer, each tree and each ambiguous included (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
@@ -29184,6 +29346,402 @@
         "required": [
           "project",
           "issues"
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineMergeRow": {
+        "properties": {
+          "additions": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "author": {
+            "type": "string"
+          },
+          "components": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deletions": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "deploy_run": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deployed_status": {
+            "type": "string"
+          },
+          "first_commit_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "issue_title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "merge"
+            ],
+            "type": "string"
+          },
+          "merged_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "number": {
+            "type": "integer"
+          },
+          "parent_agent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "priority": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "rework": {
+            "type": "boolean"
+          },
+          "sessions": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "unfetchable_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "repo",
+          "number",
+          "title",
+          "url",
+          "author",
+          "created_at",
+          "merged_at",
+          "first_commit_at",
+          "additions",
+          "deletions",
+          "partial",
+          "rework",
+          "issue",
+          "issue_title",
+          "priority",
+          "components",
+          "sessions",
+          "parent_agent",
+          "deploy_run",
+          "deployed_at",
+          "deployed_status",
+          "unfetchable_reason"
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineResponse": {
+        "properties": {
+          "color_counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "components": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DeliveryComponent"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "facet_counts": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/DeliveryFreshnessView"
+          },
+          "issue_titles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectTimelineRow"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "session_groups": {
+            "items": {
+              "$ref": "#/components/schemas/DeliverySessionGroup"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "session_pr_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session_titles": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          },
+          "waiting": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryWaitingPR"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "window": {
+            "$ref": "#/components/schemas/DeliveryWindowView"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset",
+          "window",
+          "waiting",
+          "facet_counts",
+          "color_counts",
+          "components",
+          "issue_titles",
+          "session_groups",
+          "session_titles",
+          "session_pr_counts",
+          "freshness"
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineRow": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ProjectTimelineMergeRow"
+          },
+          {
+            "$ref": "#/components/schemas/ProjectTimelineRunRow"
+          }
+        ],
+        "type": "object"
+      },
+      "ProjectTimelineRunRow": {
+        "properties": {
+          "completed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "conclusion": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "failed_jobs": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryRunJob"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "head_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "head_sha": {
+            "type": "string"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "deploy",
+              "failed_run"
+            ],
+            "type": "string"
+          },
+          "production": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryRunProduction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prs": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryShippedPRView"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "root_failing_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryRunJob"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "url",
+          "head_sha",
+          "head_at",
+          "started_at",
+          "completed_at",
+          "conclusion",
+          "production",
+          "failed_jobs",
+          "root_failing_job",
+          "prs",
+          "repo",
+          "created_at"
         ],
         "type": "object"
       },

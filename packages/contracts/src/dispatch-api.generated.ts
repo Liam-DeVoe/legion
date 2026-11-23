@@ -2979,6 +2979,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/timeline": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One page of the delivery timeline's rows the project its path names counts, newest first, {items, total, limit, offset} (limit 1-500, default 200; offset from 0), within [from, to) (default the last 7 days), the search q and the facets the delivery timeline takes (repeatable repo, parent_agent, session, issue, priority, component, author, rework, deployed): each row a merge (kind merge, every field of the delivery timeline's prs[]) or a deploy run started in the window (kind deploy, or failed_run for a run with a failed job or a failed production job, every field of its runs[], with repo, the repository the run is in, and created_at), in one order: by the row's time (a merge's merged_at, a run's created_at), newest first, then by kind (merge, deploy, failed_run), then by id. The rows are those the project counts as the eval registry's day rows count them: a pull request for its issue's project, a deploy run for the projects of the pull requests it ships first. Beside them facet_counts and color_counts over the whole window on every page; waiting, the project's pull requests waiting at the window's start, on the page that reaches that start and null on every other; issue_titles, session_titles, session_pr_counts, components and session_groups over the whole window on the first page and null on every other; window and freshness. No measures: the eval routes answer those. The /ws/live project-timeline view carries the same body for its limit of rows from the newest. 400 INVALID_PROJECT for a key that is no project key, 400 INVALID_QUERY for a malformed query, 404 PROJECT_NOT_FOUND, 404 DELIVERY_NOT_CONFIGURED. */
+    get: operations["getApiV1ProjectsByKeyTimeline"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/reference-targets": {
     parameters: {
       query?: never;
@@ -6778,6 +6795,94 @@ export interface components {
     ProjectPlans: {
       issues: components["schemas"]["FinishedIssue"][] | null;
       project: string;
+    };
+    ProjectTimelineMergeRow: {
+      additions: null | number;
+      author: string;
+      components: string[] | null;
+      /** Format: date-time */
+      created_at: null | string;
+      deletions: null | number;
+      deploy_run: null | number;
+      /** Format: date-time */
+      deployed_at: null | string;
+      deployed_status: string;
+      /** Format: date-time */
+      first_commit_at: null | string;
+      id: string;
+      issue: null | string;
+      issue_title: null | string;
+      /** @enum {string} */
+      kind: "merge";
+      /** Format: date-time */
+      merged_at: null | string;
+      number: number;
+      parent_agent: null | string;
+      partial: boolean;
+      priority: null | string;
+      repo: string;
+      rework: boolean;
+      sessions: string[] | null;
+      title: string;
+      unfetchable_reason: null | string;
+      url: string;
+    };
+    ProjectTimelineResponse: {
+      color_counts: {
+        [key: string]: {
+          [key: string]: number;
+        };
+      } | null;
+      components: {
+        [key: string]: components["schemas"]["DeliveryComponent"];
+      } | null;
+      facet_counts: {
+        [key: string]: {
+          [key: string]: number;
+        };
+      } | null;
+      freshness: components["schemas"]["DeliveryFreshnessView"];
+      issue_titles: {
+        [key: string]: string;
+      } | null;
+      items: components["schemas"]["ProjectTimelineRow"][] | null;
+      limit: number;
+      offset: number;
+      session_groups: components["schemas"]["DeliverySessionGroup"][] | null;
+      session_pr_counts: {
+        [key: string]: number;
+      } | null;
+      session_titles: {
+        [key: string]: string;
+      } | null;
+      total: number;
+      waiting: components["schemas"]["DeliveryWaitingPR"][] | null;
+      window: components["schemas"]["DeliveryWindowView"];
+    };
+    ProjectTimelineRow:
+      | components["schemas"]["ProjectTimelineMergeRow"]
+      | components["schemas"]["ProjectTimelineRunRow"];
+    ProjectTimelineRunRow: {
+      /** Format: date-time */
+      completed_at: null | string;
+      conclusion: null | string;
+      /** Format: date-time */
+      created_at: string;
+      failed_jobs: components["schemas"]["DeliveryRunJob"][] | null;
+      /** Format: date-time */
+      head_at: string;
+      head_sha: string;
+      /** Format: int64 */
+      id: number;
+      /** @enum {string} */
+      kind: "deploy" | "failed_run";
+      production: components["schemas"]["DeliveryRunProduction"] | null;
+      prs: components["schemas"]["DeliveryShippedPRView"][] | null;
+      repo: string;
+      root_failing_job: components["schemas"]["DeliveryRunJob"] | null;
+      /** Format: date-time */
+      started_at: string;
+      url: string;
     };
     PutArchitectureSourceInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -15324,6 +15429,53 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyTimeline: {
+    parameters: {
+      query?: {
+        from?: string;
+        to?: string;
+        q?: string;
+        repo?: string[];
+        parent_agent?: string[];
+        issue?: string[];
+        priority?: string[];
+        component?: string[];
+        author?: string[];
+        rework?: string[];
+        deployed?: string[];
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectTimelineResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ReferenceTargets: {
     parameters: {
       query?: {
@@ -16407,6 +16559,10 @@ export type ProjectDefaultRepositoryInput = components["schemas"]["ProjectDefaul
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
 export type ProjectPlans = components["schemas"]["ProjectPlans"];
+export type ProjectTimelineMergeRow = components["schemas"]["ProjectTimelineMergeRow"];
+export type ProjectTimelineResponse = components["schemas"]["ProjectTimelineResponse"];
+export type ProjectTimelineRow = components["schemas"]["ProjectTimelineRow"];
+export type ProjectTimelineRunRow = components["schemas"]["ProjectTimelineRunRow"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
 export type PutLegionSettingInput = components["schemas"]["PutLegionSettingInput"];
 export type QueuedMessage = components["schemas"]["QueuedMessage"];

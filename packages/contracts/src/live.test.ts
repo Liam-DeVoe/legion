@@ -423,7 +423,8 @@ test("a project timeline snapshot is its route's body, rows newest first by id, 
       expect(PROJECT_TIMELINE_ROW_KINDS).toContain(row.kind as string);
       expect(row).not.toHaveProperty("measures");
       // A run's row names its repository and when GitHub created it, which orders it.
-      if (row.kind !== "merge") expect(Object.keys(row)).toEqual(expect.arrayContaining(["repo", "created_at"]));
+      if (row.kind !== "merge")
+        expect(Object.keys(row)).toEqual(expect.arrayContaining(["repo", "created_at"]));
       times.push(Date.parse(String(row.kind === "merge" ? row.merged_at : row.created_at)));
     }
     expect(times).toEqual([...times].sort((a, b) => b - a));
