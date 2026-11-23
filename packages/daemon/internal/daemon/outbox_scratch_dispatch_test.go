@@ -3,11 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -406,14 +402,14 @@ func startScratchDispatchWithNATS(t *testing.T, natsURL string) (string, string)
 type scratchDispatchOptions struct {
 	// natsURL is the NATS server the server publishes its events on; empty runs it with NATS off.
 	natsURL string
-	// github is the GitHub the server's App calls (DISPATCH_GITHUB_API_BASE), a fake such as
-	// githubtest.Checks. The server then holds a throwaway App of its own to call it with, as
-	// packages/dispatch/e2e/run-server.sh gives it one: a client id and a key made for this
-	// server alone. Empty runs it with no App, so it reads GitHub for nothing: a check its CI
-	// job proves is then unread at every head. With natsURL set, the App is what the delivery
-	// settings need (writeDeliverySettings), and they are what Dispatch's delivery intake waits
-	// for before it reads a settlement of a pull request's checks.
-	github string
+	// github is the fake GitHub the server's App calls (DISPATCH_GITHUB_API_BASE). The server
+	// then holds that fake's App (githubtest.App) to call it with, as
+	// packages/dispatch/e2e/run-server.sh gives it a throwaway App: a client id and a key made for
+	// that fake alone, whose JWT and tokens the fake checks. Nil runs it with no App, so it reads
+	// GitHub for nothing: a check its CI job proves is then unread at every head. With natsURL
+	// set, the App is what the delivery settings need (writeDeliverySettings), and they are what
+	// Dispatch's delivery intake waits for before it reads a settlement of a pull request's checks.
+	github *githubtest.Checks
 	// root is the checkout whose packages/envoy the server runs in and whose
 	// packages/dispatch/web/dist it serves; empty is this one, four directories above the
 	// package's. The binary is not built from it: testbuild.EnvoyBinary builds the checkout
@@ -437,10 +433,10 @@ type scratchDispatch struct {
 	token    string
 	home     string
 	log      io.Writer
-	// github is the GitHub the server's App calls, and appKey that App's private key, a PEM;
-	// both empty for a server with no App.
+	// github is the GitHub the server's App calls, and app that App; both empty for a server with
+	// no App.
 	github  string
-	appKey  string
+	app     githubtest.App
 	port    int
 	base    string
 	command *exec.Cmd
@@ -466,10 +462,10 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 		t: t, binary: testbuild.EnvoyBinary(t, "./cmd/dispatch"), dir: filepath.Join(root, "packages", "envoy"),
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
-		log: options.log, github: options.github,
+		log: options.log,
 	}
-	if d.github != "" {
-		d.appKey = scratchAppKey(t)
+	if options.github != nil {
+		d.github, d.app = options.github.URL, options.github.App
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -530,12 +526,12 @@ func (d *scratchDispatch) start() {
 		"DISPATCH_WEB_DIST="+d.webDist,
 		"HOME="+d.home,
 	)
-	// The App, where the test gave the server a GitHub: a client id and a key of this server's
-	// own, which sign each call to that GitHub alone, as run-server.sh's throwaway App does.
+	// The App, where the test gave the server a GitHub: the fake's own client id and key, which
+	// sign each call to that GitHub alone, as run-server.sh's throwaway App does.
 	if d.github != "" {
 		command.Env = append(command.Env,
-			"DISPATCH_APP_CLIENT_ID=Iv1.scratchdispatch",
-			"DISPATCH_APP_PEM_B64="+d.appKey,
+			"DISPATCH_APP_CLIENT_ID="+d.app.ClientID,
+			"DISPATCH_APP_PEM_B64="+d.app.Key,
 			"DISPATCH_GITHUB_API_BASE="+d.github,
 		)
 	}
@@ -624,17 +620,6 @@ func (d *scratchDispatch) stop() {
 		<-d.exited
 		d.t.Error("scratch Dispatch did not stop after SIGINT")
 	}
-}
-
-// scratchAppKey is a throwaway GitHub App private key, a PEM, made for one scratch server: nothing
-// secret, since it signs calls to the test's own GitHub alone, as run-server.sh makes one per run.
-func scratchAppKey(t *testing.T) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("make the scratch Dispatch's App key: %v", err)
-	}
-	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 }
 
 // writeDeliverySettings writes the server's delivery settings, deploying from repo, "owner/name",

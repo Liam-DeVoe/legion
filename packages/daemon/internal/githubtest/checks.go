@@ -2,7 +2,15 @@ package githubtest
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"slices"
@@ -23,19 +31,37 @@ import (
 // GET /repos/{owner}/{repo}/commits/{ref}/check-runs. Dispatch reads a check its CI job proves
 // there, through its App client (packages/envoy/internal/dispatch/githubapp): it looks the
 // installation up with the App's JWT, mints a token, and reads the commit's check runs with it,
-// and it reads the repository with that token before it stores its delivery settings. No call
-// is checked for a credential.
+// and it reads the repository with that token before it stores its delivery settings.
 //
-// Every other request is answered 404 and kept (Unanswered): a Dispatch that holds an App calls
+// It checks each credential as GitHub does. The installation and the token mint take only a JWT
+// the App's own key signed for the App's client id (App), and the repository and its check runs
+// only a token the fake minted, which expires an hour after its mint. Each other request is
+// answered 401 and kept (Refused).
+//
+// Every other route is answered 404 and kept (Unanswered): a Dispatch that holds an App calls
 // GitHub for more than a test plans, such as its webhook redelivery sweep, so such a request is
 // what a test that waited for nothing names, never a failure of its own.
 type Checks struct {
 	// URL is the server's root, which Dispatch is given as its DISPATCH_GITHUB_API_BASE.
 	URL string
+	// App is the one GitHub App the fake has an installation of, made for this server alone.
+	App App
 
+	public     *rsa.PublicKey
 	mu         sync.Mutex
 	runs       map[string][]CheckRun // by "owner/name@sha"
+	tokens     map[string]time.Time  // each token minted, with its expiry
 	unanswered []string
+	refused    []string
+}
+
+// App is a GitHub App as its client holds it: its client id, which its JWT names as the issuer,
+// and its private key, a PEM, which signs that JWT. GitHub keeps the key's public half and checks
+// each JWT against it, and so does the fake. Nothing of it is secret: it signs calls to the
+// test's own fake alone.
+type App struct {
+	ClientID string
+	Key      string
 }
 
 // CheckRun is one check run of a commit, with the fields Dispatch reads of each run it lists:
@@ -62,15 +88,27 @@ type CheckRunOutput struct {
 // checksInstallation is the id of the App's one installation, which covers every repository.
 const checksInstallation = 1
 
-// ServeChecks starts Checks with no check run on any commit; it is closed when the test ends.
+// checksAppClientID is the client id of the App ServeChecks makes.
+const checksAppClientID = "Iv1.scratchdispatch"
+
+// ServeChecks starts Checks with an App of its own and no check run on any commit; it is closed
+// when the test ends.
 func ServeChecks(t *testing.T) *Checks {
 	t.Helper()
-	c := &Checks{runs: map[string][]CheckRun{}}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("make the fake GitHub's App key: %v", err)
+	}
+	c := &Checks{
+		App: App{ClientID: checksAppClientID,
+			Key: string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))},
+		public: &key.PublicKey, runs: map[string][]CheckRun{}, tokens: map[string]time.Time{},
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", c.installation)
-	mux.HandleFunc("POST /app/installations/{id}/access_tokens", c.token)
-	mux.HandleFunc("GET /repos/{owner}/{repo}", c.repository)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", c.checkRuns)
+	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", c.withAppJWT(c.installation))
+	mux.HandleFunc("POST /app/installations/{id}/access_tokens", c.withAppJWT(c.token))
+	mux.HandleFunc("GET /repos/{owner}/{repo}", c.withToken(c.repository))
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{ref}/check-runs", c.withToken(c.checkRuns))
 	mux.HandleFunc("/", c.notFound)
 	c.URL = Server(t, Spec{Handle: mux.ServeHTTP})
 	return c
@@ -96,20 +134,126 @@ func (c *Checks) Unanswered() []string {
 	return slices.Clone(c.unanswered)
 }
 
+// Refused is each request the server answered 401, as "METHOD /path: why", in the order it came.
+func (c *Checks) Refused() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.refused)
+}
+
+// withAppJWT serves a route of the App's own, which GitHub answers only for a JWT the App's key
+// signed: RS256, the App's client id as its issuer, issued by now and expiring within ten
+// minutes. Any other request is answered 401 as GitHub answers it.
+func (c *Checks) withAppJWT(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if why := c.appJWTRefusal(r.Header.Get("Authorization")); why != "" {
+			c.refuse(w, r, "A JSON web token could not be decoded", why)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// appJWTRefusal is why authorization is no App JWT GitHub would take, or "" where it is one.
+func (c *Checks) appJWTRefusal(authorization string) string {
+	jwt, ok := strings.CutPrefix(authorization, "Bearer ")
+	parts := strings.Split(jwt, ".")
+	if !ok || len(parts) != 3 {
+		return "no App JWT"
+	}
+	var header struct {
+		Algorithm string `json:"alg"`
+	}
+	if encoded, err := base64.RawURLEncoding.DecodeString(parts[0]); err != nil || json.Unmarshal(encoded, &header) != nil {
+		return "the JWT's header does not decode"
+	}
+	if header.Algorithm != "RS256" {
+		return fmt.Sprintf("the JWT is signed with %q, not RS256", header.Algorithm)
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "the JWT's signature does not decode"
+	}
+	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
+	if rsa.VerifyPKCS1v15(c.public, crypto.SHA256, digest[:], signature) != nil {
+		return "the JWT does not verify against the App's key"
+	}
+	var claims struct {
+		Issuer  string `json:"iss"`
+		Issued  int64  `json:"iat"`
+		Expires int64  `json:"exp"`
+	}
+	if encoded, err := base64.RawURLEncoding.DecodeString(parts[1]); err != nil || json.Unmarshal(encoded, &claims) != nil {
+		return "the JWT's claims do not decode"
+	}
+	switch now := time.Now().Unix(); {
+	case claims.Issuer != c.App.ClientID:
+		return fmt.Sprintf("the JWT's issuer is %q, not the App's client id %q", claims.Issuer, c.App.ClientID)
+	case claims.Issued == 0 || claims.Issued > now:
+		return fmt.Sprintf("the JWT's issue time %d is not by now, %d", claims.Issued, now)
+	case claims.Expires <= now || claims.Expires > now+int64((10*time.Minute).Seconds()):
+		return fmt.Sprintf("the JWT expires at %d, not within ten minutes of now, %d", claims.Expires, now)
+	}
+	return ""
+}
+
+// withToken serves a read GitHub answers only for an installation token it minted: a request
+// with no token is answered 401 Requires authentication, and one with a token the fake did not
+// mint, or one past its expiry, 401 Bad credentials.
+func (c *Checks) withToken(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authorization := r.Header.Get("Authorization")
+		if authorization == "" {
+			c.refuse(w, r, "Requires authentication", "no token")
+			return
+		}
+		token, ok := strings.CutPrefix(authorization, "Bearer ")
+		if !ok {
+			token, ok = strings.CutPrefix(authorization, "token ")
+		}
+		c.mu.Lock()
+		expires, minted := c.tokens[token]
+		c.mu.Unlock()
+		switch {
+		case !ok || !minted:
+			c.refuse(w, r, "Bad credentials", "a token the fake did not mint")
+			return
+		case !time.Now().Before(expires):
+			c.refuse(w, r, "Bad credentials", "a token past its expiry")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// refuse answers r 401 with GitHub's message and keeps it, with why.
+func (c *Checks) refuse(w http.ResponseWriter, r *http.Request, message, why string) {
+	c.mu.Lock()
+	c.refused = append(c.refused, r.Method+" "+r.URL.Path+": "+why)
+	c.mu.Unlock()
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"message": message, "documentation_url": "https://docs.github.com/rest"})
+}
+
 // installation answers the App's installation on any repository, with the permissions a read of
 // a repository's contents and check runs needs.
 func (c *Checks) installation(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": checksInstallation, "app_slug": "scratch-dispatch", "permissions": checksPermissions})
 }
 
-// token mints an installation token of the one installation, valid for an hour.
+// token mints an installation token of the one installation, a new one at each mint, valid for
+// an hour.
 func (c *Checks) token(w http.ResponseWriter, r *http.Request) {
 	if r.PathValue("id") != strconv.Itoa(checksInstallation) {
 		c.notFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"token": "ghs_scratch_dispatch",
-		"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339), "permissions": checksPermissions})
+	random := make([]byte, 18)
+	_, _ = rand.Read(random)
+	token, expires := "ghs_"+hex.EncodeToString(random), time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	c.mu.Lock()
+	c.tokens[token] = expires
+	c.mu.Unlock()
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "expires_at": expires.Format(time.RFC3339), "permissions": checksPermissions})
 }
 
 // checksPermissions is what the installation and each token it mints may read.
@@ -168,23 +312,24 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 // ChecksSettlement is what the listener's CI summary loop settles once every check run of a
 // commit of a pull request has finished: the repository, "owner/name", the pull request's
-// number, the commit, and the newest attempt of each check run there.
+// number, the commit, the newest attempt of each check run there, one run of each name, and the
+// newest commit status of each context.
 type ChecksSettlement struct {
-	Repo   string
-	Number int
-	SHA    string
-	Runs   []CheckRun
-	// Statuses are the commit statuses the listener's record holds for the commit, the newest of
-	// each context.
+	Repo     string
+	Number   int
+	SHA      string
+	Runs     []CheckRun
 	Statuses []CommitStatus
 	// Generation numbers the listener's settlements of one commit from 1; zero is 1.
 	Generation uint64
-	// Superseded says the listener settled the commit before.
+	// Superseded says the listener settled the commit before, which the payload's
+	// superseded_settlement says.
 	Superseded bool
 }
 
 // CommitStatus is one commit status of a commit: its context, its state, success, failure or
-// error, and when GitHub created it.
+// error, and when GitHub created it, which the payload carries as GitHub writes it, RFC 3339 text
+// in UTC.
 type CommitStatus struct {
 	Context   string
 	State     string
@@ -200,10 +345,13 @@ const DispatchDeliveryDurable = "delivery-events"
 // loop publishes a settlement (packages/envoy/internal/cistore, settlementEnvelope): an Envoy
 // envelope on notifications.github.<owner>.<name>.pr.<number>.checks whose payload is the
 // settlement in the shape of cistore.Summary, kind "checks" with its repo, number and sha, each
-// run's name, id and conclusion, and the groups of check names the listener's own rule puts each
-// run in (cistore's classify). It is stored on the notification stream, ENVOY_NOTIFICATIONS,
-// which Dispatch's delivery intake and the daemon's intake both read; the call returns the
-// stream sequence of the message once the stream has taken it.
+// run's name, id and conclusion, the groups of check names the listener's own rule puts each run
+// in (cistore's classify), each commit status with its state and created_at, and
+// superseded_settlement for a commit the listener settled before. It is stored on the
+// notification stream, ENVOY_NOTIFICATIONS, which Dispatch's delivery intake and the daemon's
+// intake both read; the call returns the stream sequence of the message once the stream has
+// taken it. The shared fixture packages/contracts/fixtures/checks-settlement/published.json holds
+// what the listener publishes, and this package's test holds the copy to it.
 func PublishChecksSettlement(t *testing.T, natsURL string, s ChecksSettlement) uint64 {
 	t.Helper()
 	published, err := publishedSettlementOf(s)
@@ -263,20 +411,22 @@ func publishedSettlementOf(s ChecksSettlement) (publishedSettlement, error) {
 
 // settlement is cistore.Summary's JSON, member for member and in its order.
 type settlement struct {
-	Kind          string             `json:"kind"`
-	Repo          string             `json:"repo"`
-	Number        string             `json:"number"`
-	SHA           string             `json:"sha"`
-	CheckRuns     []settledRun       `json:"check_runs"`
-	Generation    uint64             `json:"generation"`
-	Snapshot      string             `json:"snapshot"`
-	Failed        settledGroup       `json:"failed"`
-	Running       settledGroup       `json:"running"`
-	Passed        settledGroup       `json:"passed"`
-	Queued        settledGroup       `json:"queued"`
-	Cancelled     settledGroup       `json:"cancelled"`
-	Skipped       settledGroup       `json:"skipped"`
-	FailingChecks []settledFailedRun `json:"failing_checks"`
+	Kind                 string             `json:"kind"`
+	Repo                 string             `json:"repo"`
+	Number               string             `json:"number"`
+	SHA                  string             `json:"sha"`
+	CheckRuns            []settledRun       `json:"check_runs"`
+	Generation           uint64             `json:"generation"`
+	Snapshot             string             `json:"snapshot"`
+	SupersededSettlement string             `json:"superseded_settlement,omitempty"`
+	Failed               settledGroup       `json:"failed"`
+	Running              settledGroup       `json:"running"`
+	Passed               settledGroup       `json:"passed"`
+	Queued               settledGroup       `json:"queued"`
+	Cancelled            settledGroup       `json:"cancelled"`
+	Skipped              settledGroup       `json:"skipped"`
+	FailingChecks        []settledFailedRun `json:"failing_checks"`
+	Statuses             []settledStatus    `json:"statuses,omitempty"`
 }
 
 type settledRun struct {
@@ -295,15 +445,28 @@ type settledFailedRun struct {
 	URL  string `json:"url"`
 }
 
+type settledStatus struct {
+	Context   string `json:"context"`
+	State     string `json:"state"`
+	CreatedAt string `json:"created_at"`
+}
+
 // settlementOf is s as the listener renders it (cistore's renderSummary): its runs sorted by
-// name, each group's names sorted, and every group present.
+// name, each group's names sorted, every group present, its commit statuses in context order and
+// left out where it has none, and its snapshot the listener's fingerprint of its runs and
+// statuses (settlementSnapshot).
 func settlementOf(s ChecksSettlement, generation uint64) settlement {
 	runs := slices.Clone(s.Runs)
 	slices.SortFunc(runs, func(a, b CheckRun) int { return strings.Compare(a.Name, b.Name) })
+	statuses := slices.Clone(s.Statuses)
+	slices.SortFunc(statuses, func(a, b CommitStatus) int { return strings.Compare(a.Context, b.Context) })
 	groups := map[string][]string{}
 	failing := []settledFailedRun{}
 	settled := settlement{Kind: "checks", Repo: s.Repo, Number: strconv.Itoa(s.Number), SHA: s.SHA, CheckRuns: []settledRun{},
-		Generation: generation, Snapshot: fmt.Sprintf("%s-g%d", s.SHA, generation)}
+		Generation: generation, Snapshot: settlementSnapshot(runs, statuses)}
+	if s.Superseded {
+		settled.SupersededSettlement = "true"
+	}
 	for _, run := range runs {
 		settled.CheckRuns = append(settled.CheckRuns, settledRun{Name: run.Name, ID: run.ID, Conclusion: run.Conclusion})
 		group := settledGroupOf(run)
@@ -320,7 +483,25 @@ func settlementOf(s ChecksSettlement, generation uint64) settlement {
 	settled.Failed, settled.Running, settled.Passed = named("failed"), named("running"), named("passed")
 	settled.Queued, settled.Cancelled, settled.Skipped = named("queued"), named("cancelled"), named("skipped")
 	settled.FailingChecks = failing
+	for _, status := range statuses {
+		settled.Statuses = append(settled.Statuses, settledStatus{Context: status.Context, State: status.State,
+			CreatedAt: status.CreatedAt.UTC().Format(time.RFC3339)})
+	}
 	return settled
+}
+
+// settlementSnapshot is the listener's fingerprint of a record (cistore's State.Hash) of runs,
+// sorted by name, and statuses, sorted by context, and of no check suite: each run's name, id,
+// status and conclusion, then each status's context and state.
+func settlementSnapshot(runs []CheckRun, statuses []CommitStatus) string {
+	hash := sha256.New()
+	for _, run := range runs {
+		hash.Write([]byte("check\x00" + run.Name + "\x00" + strconv.FormatInt(run.ID, 10) + "\x00" + run.Status + "\x00" + run.Conclusion + "\x01"))
+	}
+	for _, status := range statuses {
+		hash.Write([]byte("status\x00" + status.Context + "\x00" + status.State + "\x01"))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // settledGroupOf is the group the listener puts run in (cistore's classify): a completed run by

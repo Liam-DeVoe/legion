@@ -105,7 +105,7 @@ func newScratchCIRig(t *testing.T, withApp bool) *scratchCIRig {
 	r := &scratchCIRig{t: t, natsURL: testnats.URL(t), github: githubtest.ServeChecks(t), logs: &syncBuffer{}}
 	options := scratchDispatchOptions{natsURL: r.natsURL}
 	if withApp {
-		options.github = r.github.URL
+		options.github = r.github
 	}
 	r.dispatch = startScratchDispatchOn(t, options)
 	var err error
@@ -430,8 +430,8 @@ func (r *scratchCIRig) resultsName(page string) (bool, string) {
 }
 
 // readout is what a read that judged nothing could read: each state the daemon holds of the issue,
-// each state Dispatch published of it, each request the fake GitHub answered 404, and the lines of
-// Dispatch's log and of the daemon's that name check states or the delivery intake.
+// each state Dispatch published of it, each request the fake GitHub answered 401 or 404, and the
+// lines of Dispatch's log and of the daemon's that name check states or the delivery intake.
 func (r *scratchCIRig) readout() string {
 	r.t.Helper()
 	ctx := context.Background()
@@ -469,8 +469,8 @@ func (r *scratchCIRig) readout() string {
 			daemonLines = append(daemonLines, line)
 		}
 	}
-	return fmt.Sprintf("the daemon holds of %s: [%s]; Dispatch published of it: [%s]; the fake GitHub answered 404 to: %v\nthe daemon's log of check states:\n%s\n%s",
-		r.issue, strings.Join(daemonRows, "; "), strings.Join(dispatchRows, "; "), r.github.Unanswered(),
+	return fmt.Sprintf("the daemon holds of %s: [%s]; Dispatch published of it: [%s]; the fake GitHub refused %v and answered 404 to %v\nthe daemon's log of check states:\n%s\n%s",
+		r.issue, strings.Join(daemonRows, "; "), strings.Join(dispatchRows, "; "), r.github.Refused(), r.github.Unanswered(),
 		strings.Join(scratchCILast(daemonLines, 20), "\n"), r.dispatchLog())
 }
 
