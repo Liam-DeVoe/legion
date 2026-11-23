@@ -1,0 +1,144 @@
+package workflow
+
+import (
+	"context"
+	"slices"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// owedStep is a step or a retro of the owner's that an issue stands in and whose run started and
+// has not ended (owedOwnersStep): the step, its open run and the task the run's entry holds.
+type owedStep struct {
+	step standing
+	run  record.IssueStepRun
+	task string
+}
+
+// owedOwnersStep is the step of the owner's that issue stands in (standingStep, standing.owner)
+// whose run started at the issue's generation and has no end yet, with the task the entry of that
+// run holds: the text the start told the owner (startStep), which enter wrote on the step's
+// phases row (record.PhaseRow.EntryTask). It answers false where nothing is owed: the issue has
+// left the workflow; it stands in no step of the owner's (a worker's or a fresh agent's place, a
+// held issue, one its plan holds, or a run with no plan rows, whose acceptance the reviewer's
+// phase-finished tells as before); the run there has ended, since the owner's report or a move
+// ended it; or an owner-step of the issue is still queued (record.Store.NoticePending), which
+// tells the owner when it publishes, so a second would only repeat it.
+//
+// The owner's step is the one place of a task that no worker holds and no start re-sends: its
+// one notice told the owner, and a notice that reached no turn — dropped, or delivered to an
+// agent that died or lost its session before reading it — leaves the step waiting with nothing
+// that will tell anyone. Its two readers tell it again: the periodic pass over an owner idle past
+// the silence bound (ownerSilent) and the owner's catch-up at each launch (claimReady). Both tell
+// through the one writer of the notice (tellOwner), which goes to the issue's own architect, so a
+// child's step reaches the child's own architect.
+func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Issue) (owedStep, bool, error) {
+	if !InWorkflow(issue) {
+		return owedStep{}, false, nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return owedStep{}, false, err
+	}
+	step, ok := standingStep(w, issue)
+	if !ok || !step.owner {
+		return owedStep{}, false, nil
+	}
+	runs, err := e.store.StepRuns(ctx, tx, []string{issue.Key})
+	if err != nil {
+		return owedStep{}, false, err
+	}
+	open := slices.IndexFunc(runs, func(run record.IssueStepRun) bool {
+		return run.Place == step.place && run.Run == record.RunOpen && run.Generation == issue.Generation
+	})
+	if open < 0 {
+		return owedStep{}, false, nil
+	}
+	if pending, err := e.store.NoticePending(ctx, tx, issue.Key, record.OwnerStepNotice); err != nil || pending {
+		return owedStep{}, false, err
+	}
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return owedStep{}, false, err
+	}
+	// The row is the one the step's start raised (startOwnersStep): its role is the plan's step's
+	// role at a step and the retro's role at the retro, at the step's own place of the task.
+	role := w.RoleAt(w.Place)
+	if planned, ok := w.planStepAt(w.Place); ok {
+		role = claim.Role(planned.Role)
+	}
+	var task string
+	for _, row := range rows {
+		if row.Role == role && row.StepTask == step.place.Task && row.StepPlace == step.place.Place {
+			task = row.EntryTask
+		}
+	}
+	if task == "" {
+		at, err := e.standingPart(ctx, tx, issue, w)
+		if err != nil {
+			return owedStep{}, false, err
+		}
+		task = resumeText(issue, at)
+	}
+	return owedStep{step: step, run: runs[open], task: task}, true, nil
+}
+
+// tellOwedStep tells the owner of issue again the step owed names, with the task its entry holds,
+// through the one writer of the notice (tellOwner), and logs it as the fact commits. by names the
+// reader that found the step owed, for the log line.
+func (e *Engine) tellOwedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, owed owedStep, by string) error {
+	if err := e.tellOwner(ctx, tx, issue, owed.step, owed.task); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: the owner of a step that started and has not ended is told it again",
+		"issue", issue.Key, "task", owed.step.place.Task, "kind", owed.step.place.Kind, "place", owed.step.place.Place,
+		"started", owed.run.StartedAt, "by", by)
+	return nil
+}
+
+// ownerSilent applies one intake.WorkerSilent of an architect's claim (the daemon's
+// tellSilentPhaseWorkers mints one for an architect idle past the silence bound since both its
+// last step and the start of the open run of its issue, keyed on that run): the owner of a step
+// that started and has not ended (owedOwnersStep) is told that step again, once for each such
+// silence. It decides on the record read inside the fact's own transaction, as workerSilent does.
+// The claim is the issue's own architect (record.OwnerClaim), the one the notice goes to: up and
+// between turns, in no update round, with no step after the one the sweep read and no report of
+// its own session explaining its quiet, which leaves the fact unspent as workerSilent leaves it.
+// A run that started within the bound is another run than the one the sweep read: the start told
+// that one, and its own silence is a later fact's.
+func (e *Engine) ownerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	owner, err := record.OwnerClaim(*issue)
+	if err != nil {
+		return intake.Result{}, nil
+	}
+	run, err := e.store.RoleRun(ctx, tx, owner, issue.Key, claim.RoleArchitect, issue.Generation)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	c := run.Claim
+	if c == nil || (c.State != supervise.StateReady && c.State != supervise.StateIdle) || c.UpdateRound != "" ||
+		c.Step.LastStep().After(fact.LastStep) {
+		return intake.Result{}, nil
+	}
+	now := e.now()
+	if ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
+		return intake.Result{Unspent: true}, nil
+	}
+	owed, ok, err := e.owedOwnersStep(ctx, tx, *issue)
+	if err != nil || !ok {
+		return intake.Result{}, err
+	}
+	if started := owed.run.StartedAt; !started.IsZero() && !PastBound(started, fact.Bound, now) {
+		return intake.Result{}, nil
+	}
+	return intake.Result{}, e.tellOwedStep(ctx, tx, *issue, owed, "the periodic pass over an idle owner")
+}

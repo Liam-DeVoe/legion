@@ -1639,6 +1639,29 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 	return first
 }
 
+// openRuns is, for each of issues that holds one, the run of a step that started and has not
+// ended whose start wrote the latest moment, read in one read-only transaction: what the silence
+// sweep keys an idle owner's fact on (supervision.openRuns).
+func (w *workflowRuntime) openRuns(ctx context.Context, issues []string) (map[string]record.IssueStepRun, error) {
+	open := make(map[string]record.IssueStepRun, len(issues))
+	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		runs, err := w.records.StepRuns(ctx, tx, issues)
+		if err != nil {
+			return err
+		}
+		for _, run := range runs {
+			if run.Run != record.RunOpen {
+				continue
+			}
+			if kept, ok := open[run.Issue]; !ok || run.StartedAt.After(kept.StartedAt) {
+				open[run.Issue] = run
+			}
+		}
+		return nil
+	})
+	return open, err
+}
+
 // attach gives the workflow what only supervision has: the outbox, built on its supervisor and
 // its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
@@ -1669,6 +1692,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
+	supervision.openRuns = w.openRuns
 	if w.pauses != nil {
 		// The flag is read again at each sweep (decision 18), so a pause made or ended through
 		// another daemon of a rolling restart reaches this daemon's machines within one sweep.

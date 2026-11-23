@@ -2368,6 +2368,10 @@ type Store interface {
 	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
 	// tellStalledTrees), on every fact, every tick and every boot.
 	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
+	// NoticePending says whether the outbox still holds an unpublished architect notice of kind
+	// on issue (OutboxKindNotice), so a notice told again is never queued behind the one it
+	// repeats (workflow's owedOwnersStep, for an owner-step).
+	NoticePending(ctx context.Context, tx pgx.Tx, issue string, kind NoticeKind) (bool, error)
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row

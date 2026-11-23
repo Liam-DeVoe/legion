@@ -87,7 +87,18 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	if fact.Paced && e.cfg.Reserve != nil {
 		paced = e.cfg.Reserve(now)
 	}
-	return intake.Result{}, QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, now, paced)
+	if err := QueueCatchUp(ctx, tx, e.store, e.cfg.Steps, *issue, fact.Launch, fact.Relaunch, now, paced); err != nil {
+		return intake.Result{}, err
+	}
+	// The catch-up names the owner's own step (treeCatchUp) and points at its owner-step notice,
+	// which a launch's agent may never have read: the step is told again after it, once for the
+	// launch, where it started and has not ended and no owner-step of it is still queued
+	// (owedOwnersStep).
+	owed, ok, err := e.owedOwnersStep(ctx, tx, *issue)
+	if err != nil || !ok {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.tellOwedStep(ctx, tx, *issue, owed, "the owner's catch-up at its launch")
 }
 
 // QueueCatchUp is the one composer of an architect's catch-up, which both the ready (claimReady)

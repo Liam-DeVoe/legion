@@ -2359,6 +2359,17 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 	return pending, nil
 }
 
+// NoticePending reads whether issue's outbox still holds an unpublished architect notice of kind:
+// a published row is finished and deleted, so any row of it is one still to publish.
+func (s *Postgres) NoticePending(ctx context.Context, tx pgx.Tx, issue string, kind NoticeKind) (bool, error) {
+	var pending bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)`,
+		string(OutboxKindNotice), issue, string(kind)).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s has a %s notice pending: %w", issue, kind, err)
+	}
+	return pending, nil
+}
+
 func (s *Postgres) PersonHandoverPending(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
 	var pending bool
 	if err := tx.QueryRow(ctx, "select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)",

@@ -1560,6 +1560,12 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// openRuns reads, for each of issues, the latest run of a step that started and has not ended
+	// (workflowRuntime.openRuns), in one read-only transaction; nil in a deployment with no
+	// workflow. The silence sweep reads it for the issues of the architects it finds idle, so the
+	// fact it mints for such an owner is keyed on the run it is silent over (ownerSilentEventID):
+	// a run that starts later is a new fact, and a run that has not started mints none.
+	openRuns func(ctx context.Context, issues []string) (map[string]record.IssueStepRun, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
