@@ -282,7 +282,7 @@ type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 	names := make([]string, 0, len(types))
 	for name := range types {
-		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeAirlockPlaceholder {
+		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeProxyPlaceholder {
 			names = append(names, name)
 		}
 	}
@@ -301,9 +301,9 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
 		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
-		// The airlock placeholder, the one other type a caller may ask for: a person's sign-in
+		// The proxy placeholder, the one other type a caller may ask for: a person's sign-in
 		// traded for the approve capability (exchangeGrant, grantApprove). It is no subject type.
-		oauthwire.TokenTypeAirlockPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeAirlockPlaceholder},
+		oauthwire.TokenTypeProxyPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeProxyPlaceholder},
 	}
 	if c.Kubernetes.configured() {
 		types[oauthwire.SubjectTokenTypeKubernetes] = &rfc8693.JWTType{
@@ -542,7 +542,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		p.writeError(ctx, w, request, err)
 		return
 	}
-	if request.GetRequestForm().Get(formRequestedTokenType) == oauthwire.TokenTypeAirlockPlaceholder {
+	if request.GetRequestForm().Get(formRequestedTokenType) == oauthwire.TokenTypeProxyPlaceholder {
 		// A trade for the approve capability's placeholder (grantApprove): a person's sign-in
 		// alone, on a broker that serves the capability. The library mints nothing for it; the
 		// grant is written, and its session name claimed, in this transaction.

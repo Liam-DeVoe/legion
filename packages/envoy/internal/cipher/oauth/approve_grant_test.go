@@ -1,10 +1,12 @@
 // approve_grant_test.go drives the token exchange's approve grant: a person's sign-in traded for the
-// approve capability's airlock placeholder, never for a token that can approve. The fixture is
+// approve capability's proxy placeholder, never for a token that can approve. The fixture is
 // person_signin_test.go's.
 package oauth_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -21,21 +23,21 @@ import (
 func approveSettings() *oauth.ApproveSettings {
 	return &oauth.ApproveSettings{
 		Name: "DISPATCH_APPROVE_TOKEN", Word: "approve", EntryDigest: strings.Repeat("ab", 32),
-		ProxyURL: "http://airlock.test:3128", CACertificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n", Host: "dispatch.test",
+		ProxyURL: "http://proxy.test:3128", CACertificate: "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n", Host: "dispatch.test",
 	}
 }
 
-// placeholderForm is the sign-in trade asking for the airlock placeholder.
+// placeholderForm is the sign-in trade asking for the proxy placeholder.
 func (f *signInFixture) placeholderForm(t *testing.T, session string) map[string][]string {
 	t.Helper()
 	form := signInForm(f.personToken(t, person, deviceAudience, true, signInDomain), f.machineToken(t, signInMachine, machineAudience, true), session)
-	form.Set("requested_token_type", oauthwire.TokenTypeAirlockPlaceholder)
+	form.Set("requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 	return form
 }
 
 // TestASignInIsTradedForAnApprovePlaceholderAndNeverAToken: a person's sign-in that asks for the
-// airlock placeholder is answered the placeholder of a fresh approve grant - no access token, the
-// placeholder type, N_A, at most 900 seconds, the grant's id and the airlock release naming the
+// proxy placeholder is answered the placeholder of a fresh approve grant - no access token, the
+// placeholder type, N_A, at most 900 seconds, the grant's id and the proxy release naming the
 // capability's one host - and the placeholder is no token introspection reads as live. The grant
 // it wrote is live by that placeholder, holds the scope approve alone, the person, the session and
 // the capability's entry digest, and the token the broker mints for it introspects as an
@@ -47,18 +49,18 @@ func TestASignInIsTradedForAnApprovePlaceholderAndNeverAToken(t *testing.T) {
 	before := f.count(t, "oauth_access_tokens")
 	status, body := f.exchange(t, f.placeholderForm(t, "ada-box-1"), key)
 	held, _ := body["access_token"].(string)
-	if status != http.StatusOK || body["issued_token_type"] != oauthwire.TokenTypeAirlockPlaceholder || body["token_type"] != "N_A" ||
+	if status != http.StatusOK || body["issued_token_type"] != oauthwire.TokenTypeProxyPlaceholder || body["token_type"] != "N_A" ||
 		!strings.HasPrefix(held, placeholder.MintedPrefix("approve")) {
 		t.Fatalf("the placeholder trade = %d %v; want 200, the placeholder type, N_A and an approve placeholder", status, body)
 	}
 	if seconds, _ := body["expires_in"].(float64); seconds <= 0 || seconds > 900 {
 		t.Errorf("expires_in = %v; want at most 900 seconds", body["expires_in"])
 	}
-	release, _ := body[oauthwire.ExtraAirlock].(map[string]any)
+	release, _ := body[oauthwire.ExtraProxy].(map[string]any)
 	names, _ := release["names"].(map[string]any)
 	name, _ := names["DISPATCH_APPROVE_TOKEN"].(map[string]any)
-	if release["proxy_password"] != held || name["value"] != held || release["proxy_url"] != "http://airlock.test:3128" {
-		t.Errorf("the airlock release = %v; want the placeholder as the proxy password and DISPATCH_APPROVE_TOKEN's value", release)
+	if release["proxy_password"] != held || name["value"] != held || release["proxy_url"] != "http://proxy.test:3128" {
+		t.Errorf("the proxy release = %v; want the placeholder as the proxy password and DISPATCH_APPROVE_TOKEN's value", release)
 	}
 	if after := f.count(t, "oauth_access_tokens"); after != before {
 		t.Fatalf("the trade stored %d access tokens; want none", after-before)
@@ -111,12 +113,89 @@ func TestOnlyASignInIsTradedForTheApprovePlaceholder(t *testing.T) {
 	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Approve = approveSettings() })
 	key := newKey(t)
 	form := exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-box-3")
-	form.Set("requested_token_type", oauthwire.TokenTypeAirlockPlaceholder)
+	form.Set("requested_token_type", oauthwire.TokenTypeProxyPlaceholder)
 	status, body = f.exchange(t, form, key)
 	if status != http.StatusBadRequest || body["error"] != "invalid_request" {
 		t.Fatalf("a machine token's placeholder trade = %d %v; want 400 invalid_request", status, body)
 	}
 	if n := f.count(t, "approve_grants"); n != 0 {
 		t.Fatalf("the refused trades wrote %d approve grants; want none", n)
+	}
+}
+
+// TestAnApproveGrantEndsAtItsEndOrWithItsSignIn: the approve_grants table of migration 0042 as its
+// two reads answer it. A grant is live by its placeholder's hash and by its id while it lasts. Past
+// its end it is live by neither, and so is a grant whose sign-in's credential has passed its own
+// expiry; an id that is no uuid is no grant. The row holds the placeholder's SHA-256 and never the
+// placeholder, and the delete of the sign-in's credential removes the grant made from it.
+func TestAnApproveGrantEndsAtItsEndOrWithItsSignIn(t *testing.T) {
+	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Approve = approveSettings() })
+	ctx := context.Background()
+	grants := oauthstore.ApproveGrants{Store: oauthstore.New(f.pool)}
+	trade := func(session string) (string, oauthstore.MintedGrant) {
+		t.Helper()
+		status, body := f.exchange(t, f.placeholderForm(t, session), newKey(t))
+		held, _ := body["access_token"].(string)
+		id, _ := body[oauthwire.ExtraGrantID].(string)
+		if status != http.StatusOK || held == "" {
+			t.Fatalf("the placeholder trade for %s = %d %v; want 200 and a placeholder", session, status, body)
+		}
+		grant, err := grants.MintedByID(ctx, strings.TrimPrefix(id, "approve:"))
+		if err != nil {
+			t.Fatalf("the fresh grant %s: %v; want it live", id, err)
+		}
+		if byHash, err := grants.MintedByPlaceholder(ctx, grant.PlaceholderSHA256); err != nil || byHash.ID != grant.ID {
+			t.Fatalf("the fresh grant by its placeholder's hash = %+v, %v; want %s", byHash, err, grant.ID)
+		}
+		return held, grant
+	}
+	exec := func(statement, id string) {
+		t.Helper()
+		if _, err := f.pool.Exec(ctx, statement, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notLive := func(what string, grant oauthstore.MintedGrant) {
+		t.Helper()
+		if _, err := grants.MintedByID(ctx, grant.ID); !errors.Is(err, oauthstore.ErrMintedGrantNotLive) {
+			t.Errorf("%s by its id = %v; want ErrMintedGrantNotLive", what, err)
+		}
+		if _, err := grants.MintedByPlaceholder(ctx, grant.PlaceholderSHA256); !errors.Is(err, oauthstore.ErrMintedGrantNotLive) {
+			t.Errorf("%s by its placeholder's hash = %v; want ErrMintedGrantNotLive", what, err)
+		}
+	}
+
+	held, ended := trade("ada-box-ended")
+	var row string
+	if err := f.pool.QueryRow(ctx, `select row_to_json(a)::text from approve_grants a where id = $1`, ended.ID).Scan(&row); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(held))
+	if strings.Contains(row, held) || !strings.Contains(row, hex.EncodeToString(sum[:])) {
+		t.Errorf("the grant's row holds the placeholder, or not its SHA-256: %d bytes read", len(row))
+	}
+	exec(`update approve_grants set expires_at = now() - interval '1 second' where id = $1`, ended.ID)
+	notLive("a grant past its end", ended)
+
+	_, lapsed := trade("ada-box-lapsed")
+	exec(`update launcher_credentials set expires_at = now() - interval '1 second'
+		where id = (select credential_id from approve_grants where id = $1)`, lapsed.ID)
+	notLive("a grant whose sign-in's credential has expired", lapsed)
+
+	if _, err := grants.MintedByID(ctx, "not-a-uuid"); !errors.Is(err, oauthstore.ErrMintedGrantNotLive) {
+		t.Errorf("an id that is no uuid = %v; want ErrMintedGrantNotLive", err)
+	}
+
+	// Each trade here proves a box key of its own, so each grant hangs from a credential of its
+	// own, and the delete of one credential takes its one grant and leaves the other two.
+	_, deleted := trade("ada-box-deleted")
+	before := f.count(t, "approve_grants")
+	exec(`delete from launcher_credentials where id = (select credential_id from approve_grants where id = $1)`, deleted.ID)
+	var left int
+	if err := f.pool.QueryRow(ctx, `select count(*) from approve_grants where id = $1`, deleted.ID).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if after := f.count(t, "approve_grants"); before != 3 || after != 2 || left != 0 {
+		t.Fatalf("approve grants before and after the credential's delete = %d and %d, the deleted one's rows %d; want 3, 2 and 0", before, after, left)
 	}
 }

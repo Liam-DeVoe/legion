@@ -1,9 +1,10 @@
 -- packages/envoy/internal/cipher/store/migrations/0042_approve_grants.up.sql
 -- A person's approve grant: what the token exchange decided when a session on a box where the
--- person signed in traded that sign-in for an airlock placeholder of the approve capability
--- (requests.MintedKind DISPATCH_APPROVE_TOKEN). The session holds only the placeholder; every
--- broker pod reads the grant by that placeholder's SHA-256 and mints the approve token itself,
--- bound to its own key, so the grant lives here rather than in one pod's memory.
+-- person signed in traded that sign-in for a placeholder of Cipher's proxy for the approve
+-- capability (requests.MintedKind DISPATCH_APPROVE_TOKEN). The session holds only the
+-- placeholder; every broker pod reads the grant by that placeholder's SHA-256 and mints the
+-- approve token itself, bound to its own key, so the grant lives here rather than in one pod's
+-- memory.
 --
 -- The row holds the session the exchange decided: its subject and principal, the scopes (approve
 -- alone) and the extra claims a minted token carries, the digest of the dpop block and private

@@ -28,10 +28,10 @@ const ApproveGrantMaxLifetime = 15 * time.Minute
 const ApproveScope = oauthwire.ScopeApprove
 
 // ApproveSettings is the approve capability (requests.MintedKind DISPATCH_APPROVE_TOKEN) as the
-// token exchange grants it: the capability's airlock name and word, the digest of the dpop block
-// and private destination every grant is made under (config.MintedEntryDigest), and what the
-// session is handed beside its placeholder - where the broker's proxy is, the certificate authority
-// to trust it by, and the one host the capability's dpop block binds.
+// token exchange grants it: the capability's name and word, the digest of the dpop block and
+// private destination every grant is made under (config.MintedEntryDigest), and what the session
+// is handed beside its placeholder - where Cipher's proxy is, the certificate authority to trust
+// it by, and the one host the capability's dpop block binds.
 type ApproveSettings struct {
 	Name, Word    string
 	EntryDigest   string
@@ -49,7 +49,7 @@ func (p *Provider) approveGrantLifetime() time.Duration {
 	return ApproveGrantMaxLifetime
 }
 
-// grantApprove answers a trade that asked for the airlock placeholder, on the exchange's open
+// grantApprove answers a trade that asked for the proxy placeholder, on the exchange's open
 // transaction txCtx. Only a person's sign-in is granted it, and only by a broker that serves the
 // approve capability: every other trade is refused invalid_request, the subject token being sound
 // and the request asking for what its identity is not given. The grant holds the session the
@@ -59,11 +59,11 @@ func (p *Provider) approveGrantLifetime() time.Duration {
 // authority. The session name is claimed until the grant's end, the transaction commits, and the
 // answer is the placeholder as access_token, its type as issued_token_type, the token_type N_A of
 // a token that is no access token (RFC 8693 Section 2.2.1), the seconds the grant lasts, the
-// grant's id and the airlock release a session runs with, with no-store. The library mints
+// grant's id and the proxy release a session runs with, with no-store. The library mints
 // nothing, and no approve-capable token ever leaves the broker.
 func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, session *oauthstore.ExchangeSession, subjectTokenType, credentialID string, committed *bool) {
 	if subjectTokenType != oauthwire.SubjectTokenTypePerson || p.approve == nil || credentialID == "" {
-		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHint("Only a person's sign-in is traded for the approve capability's airlock placeholder, on a broker that serves it."))
+		p.writeError(ctx, w, request, oauth2.ErrInvalidRequest.WithHint("Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it."))
 		return
 	}
 	person, _ := session.Extra[ClaimPerson].(string)
@@ -104,11 +104,11 @@ func (p *Provider) grantApprove(ctx, txCtx context.Context, w http.ResponseWrite
 	*committed = true
 	answer := map[string]any{
 		"access_token":         held,
-		"issued_token_type":    oauthwire.TokenTypeAirlockPlaceholder,
+		"issued_token_type":    oauthwire.TokenTypeProxyPlaceholder,
 		"token_type":           "N_A",
 		"expires_in":           int64(lifetime / time.Second),
 		oauthwire.ExtraGrantID: p.approve.Word + ":" + grant.ID,
-		oauthwire.ExtraAirlock: oauthwire.AirlockRelease{
+		oauthwire.ExtraProxy: oauthwire.AirlockRelease{
 			ProxyURL: p.approve.ProxyURL, CACertificate: p.approve.CACertificate, ProxyPassword: held,
 			Names: map[string]oauthwire.AirlockName{p.approve.Name: {Value: held, Slots: map[string]string{"value": held}, Hosts: []string{p.approve.Host}}},
 		},

@@ -12,9 +12,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ApproveGrants is the approve capability's grants (approve_grants, migration 0042), read as the
-// airlock reads every minted kind's grants (requests.MintedGrants): a grant is live while its end
-// is after the database's now() and the person's sign-in it was made from - its launcher
+// ApproveGrants is the approve capability's grants (approve_grants, migration 0042), read as
+// Cipher's proxy reads every minted kind's grants (requests.MintedGrants): a grant is live while its
+// end is after the database's now() and the person's sign-in it was made from - its launcher
 // credential - is neither revoked nor past its expiry, so revoking the sign-in ends the grant.
 type ApproveGrants struct {
 	Store *Store
