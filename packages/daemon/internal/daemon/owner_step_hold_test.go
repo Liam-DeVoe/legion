@@ -1,0 +1,221 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// ownerHoldRig is LEGION-1 standing at place of its task a, whose steps are words (`role` or
+// `role:key`), with its owner's claim working and an outbox that publishes to a holder.
+type ownerHoldRig struct {
+	pool    *store.Pool
+	records record.Store
+	rt      *fake.Runtime
+	owner   claim.Token
+	runner  *outbox
+	pub     *holderPublisher
+	logged  *syncBuffer
+	now     time.Time
+}
+
+func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words ...string) *ownerHoldRig {
+	t.Helper()
+	ctx := context.Background()
+	r := &ownerHoldRig{pool: isolatedOutboxPool(t), records: record.NewStore(), owner: mustClaimToken(t, "LEGION-1", claim.RoleArchitect),
+		now: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), pub: &holderPublisher{}, logged: &syncBuffer{}}
+	issue := record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1", Project: "LEGION",
+		Title: "LEGION-1", Phase: at, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", LastDispatchSeq: 1}
+	roles := stepplan.BuiltinRoles()
+	steps := make([]record.PlanStep, 0, len(words))
+	for i, word := range words {
+		role, key, _ := strings.Cut(word, ":")
+		steps = append(steps, record.PlanStep{Issue: "LEGION-1", Generation: 1, Task: "a", Position: i + 1, Role: role, AgentKey: key, Type: roles[role].Type})
+	}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		version := record.PlanVersion{Issue: "LEGION-1", Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: r.owner, GivenAt: r.now}
+		task := record.PlanTask{Issue: "LEGION-1", Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
+			State: record.TaskRunning, Place: place}
+		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		return r.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, steps))
+	}); err != nil {
+		t.Fatalf("seed LEGION-1: %v", err)
+	}
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	r.rt = rt
+	architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
+	r.runner = &outbox{log: slog.New(slog.NewJSONHandler(r.logged, nil)), pool: r.pool, dispatchProject: "LEGION", records: r.records, notices: r.pub,
+		supervisor: sup, project: "legion", now: time.Now}
+	return r
+}
+
+// started counts a start of LEGION-1's place kind/at and leaves its run open, as a start does
+// (record.Store.RaiseStepStarts), and ends it where ended, as an end does (EndStepStart).
+func (r *ownerHoldRig) started(t *testing.T, kind string, at int, ended bool) {
+	t.Helper()
+	ctx := context.Background()
+	place := record.StepPlace{Task: "a", Kind: kind, Place: at}
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if _, err := r.records.RaiseStepStarts(ctx, tx, "LEGION-1", place, func(starts int64) record.StepRecord {
+			return record.StepRecord{Task: "a", Kind: kind, Step: at, Agent: string(r.owner), Generation: 1, StartedAt: new(r.now)}
+		}); err != nil {
+			return err
+		}
+		if ended {
+			_, _, err := r.records.EndStepStart(ctx, tx, "LEGION-1", place)
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("start LEGION-1's %s %d: %v", kind, at, err)
+	}
+}
+
+// told runs one notice of LEGION-1 through the executor as the runner does, and deletes the row
+// where the executor finished it, as the runner does. It answers the executor's error.
+func (r *ownerHoldRig) told(t *testing.T, notice record.Notice) error {
+	t.Helper()
+	row := leasedOutboxRow(t, r.pool, r.records, mustOutboxRow(t, "LEGION-1", notice, r.now))
+	err := r.runner.execute(context.Background(), row)
+	if err == nil {
+		if _, err := r.pool.Exec(context.Background(), "delete from outbox where id = $1", row.ID); err != nil {
+			t.Fatalf("finish row %d: %v", row.ID, err)
+		}
+	}
+	return err
+}
+
+// published is the kind of each notice published, in order.
+func (r *ownerHoldRig) published() []string {
+	_, delivered := r.pub.snapshot()
+	kinds := make([]string, 0, len(delivered))
+	for _, d := range delivered {
+		kinds = append(kinds, d.topic)
+	}
+	return kinds
+}
+
+// A stale owner-step is not delivered: the notice names the run it tells, and once that run has
+// ended it finishes unpublished with the log line of a step that no longer runs, asking the runtime
+// nothing. The owner's retro of `implementer:owner`: its notice while the retro runs is published;
+// the same notice once the retro ended is not. A role at two steps, `implementer:owner reviewer
+// implementer:owner` standing at step 3: the notice of step 1, whose run ended, is not delivered,
+// and the notice of step 3 is.
+//
+// The control: the hold that judged the App alone published the retro's notice after the retro
+// ended (the architect's App is what the slot holds wherever the owner does no step), and the
+// notice of step 1 at step 3 (both steps are the implementer's).
+func TestAStaleOwnerStepIsNotDelivered(t *testing.T) {
+	retro := record.NoticeStep{Task: "a", Kind: "retro", Place: 0, Starts: 1}
+
+	t.Run("the owner's retro, running then ended", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, "implementer:owner")
+		r.started(t, "retro", 0, false)
+		notice := record.Notice{Kind: record.OwnerStepNotice, Phase: phase.Retro, Reason: "LEGION-1 retro. Task: a.", OwnerStep: &retro}
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("the retro's notice while it runs = %v", err)
+		}
+		if got := r.published(); len(got) != 1 {
+			t.Fatalf("the retro's notice while it runs published %v, want one", got)
+		}
+		if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+			_, _, err := r.records.EndStepStart(context.Background(), tx, "LEGION-1", retro.StepPlace())
+			return err
+		}); err != nil {
+			t.Fatalf("end the retro: %v", err)
+		}
+		if err := r.told(t, notice); err != nil {
+			t.Fatalf("the retro's notice after it ended = %v, want it finished", err)
+		}
+		if got := r.published(); len(got) != 1 {
+			t.Fatalf("the notices published = %v after the retro ended, want the one of the running retro alone", got)
+		}
+		if lines := strings.Count(r.logged.String(), "outbox owner-step finished undelivered: its step no longer runs"); lines != 1 {
+			t.Fatalf("the log holds %d lines of the stale notice, want one:\n%s", lines, r.logged.String())
+		}
+		if calls := slotCalls(r.rt, r.owner); len(calls) != 0 {
+			t.Fatalf("the retro's notices asked the runtime %q of the owner's slot, want nothing: the retro is done as the owner's own App", calls)
+		}
+	})
+
+	t.Run("a role at two steps", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 3}, "implementer:owner", "reviewer", "implementer:owner")
+		r.started(t, "step", 1, true)
+		r.started(t, "step", 3, false)
+		r.rt.ScriptSlotHolds(nil)
+		first := record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason: "Step 1 of 3: implementer:owner.", OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 1}}
+		if err := r.told(t, first); err != nil {
+			t.Fatalf("the notice of step 1 at step 3 = %v, want it finished", err)
+		}
+		if got := r.published(); len(got) != 0 {
+			t.Fatalf("the notice of step 1 at step 3 published %v, want nothing", got)
+		}
+		third := first
+		third.Reason, third.OwnerStep = "Step 3 of 3: implementer:owner.", &record.NoticeStep{Task: "a", Kind: "step", Place: 3, Starts: 1}
+		if err := r.told(t, third); err != nil {
+			t.Fatalf("the notice of step 3 = %v", err)
+		}
+		if got := r.published(); len(got) != 1 {
+			t.Fatalf("the notice of step 3 published %v, want one", got)
+		}
+	})
+}
+
+// R20: no notice waits on a credential the owner's slot already holds. The owner's acceptance of
+// the default steps acts as the review App, the App of the owner's own role, so with the pod on the
+// image before this release (its launcher cannot say what the slot holds,
+// runtime.ErrAwaitsPodUpdate) the acceptance's owner-step is published without asking the slot,
+// and the reviewer's phase-finished queued after it is published too, held behind nothing. A step
+// whose App the slot does not hold, the owner's `implementer:owner`, still waits for the slot.
+//
+// The control: the hold that asked the slot of every owner-step held the acceptance's notice on
+// the pod's update round, and the phase-finished behind it.
+func TestAnOwnersStepWhoseAppTheSlotHoldsWaitsForNothing(t *testing.T) {
+	t.Run("the acceptance of the default steps", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Accepting, record.TaskPlace{Kind: record.PlaceStep, Position: 4}, "implementer", "tester", "reviewer", "acceptance:owner")
+		r.started(t, "step", 4, false)
+		r.rt.ScriptSlotHolds(runtime.ErrAwaitsPodUpdate)
+		if err := r.told(t, record.Notice{Kind: record.OwnerStepNotice, Role: "acceptance", Phase: phase.Accepting, Reason: "Step 4 of 4: acceptance:owner.",
+			OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 4, Starts: 1}}); err != nil {
+			t.Errorf("the acceptance's owner-step on a pod of the image before = %v, want it published", err)
+		}
+		if err := r.told(t, record.Notice{Kind: "phase-finished", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "approved"}); err != nil {
+			t.Errorf("the reviewer's phase-finished after it = %v, want it published", err)
+		}
+		if got := r.published(); len(got) != 2 {
+			t.Fatalf("the notices published = %v, want the owner-step and the phase-finished", got)
+		}
+		if calls := slotCalls(r.rt, r.owner); len(calls) != 0 {
+			t.Fatalf("the acceptance's owner-step asked the runtime %q of the owner's slot, want nothing", calls)
+		}
+	})
+
+	t.Run("a step of another App", func(t *testing.T) {
+		r := newOwnerHoldRig(t, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, "implementer:owner", "reviewer")
+		r.started(t, "step", 1, false)
+		r.rt.ScriptSlotHolds(runtime.ErrAwaitsPodUpdate)
+		err := r.told(t, record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing, Reason: "Step 1 of 2: implementer:owner.",
+			OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 1}})
+		if !errors.Is(err, errNoticeWaits) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+			t.Fatalf("the implementer's owner-step on a pod of the image before = %v, want it held for the slot", err)
+		}
+	})
+}

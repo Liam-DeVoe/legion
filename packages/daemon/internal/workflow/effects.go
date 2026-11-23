@@ -506,16 +506,23 @@ func (e *Engine) startOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Is
 
 // tellOwner queues the one notice owner-step of step, a step or a retro the owner of issue's task
 // does (standing.owner), to the owner (record.OwnerStepNotice): the step's role ("" for the retro,
-// which is no step of the plan), the phase the issue stands in and task, the text the owner is
-// told to work. It is the one writer of the notice. The start of every run of the owner's tells
-// through it (startStep), and so does the retry of the owner's step, which starts no run
-// (restart).
+// which is no step of the plan), the phase the issue stands in, task, the text the owner is told
+// to work, and the run it tells — the step's place and the count of starts that began its run
+// (record.Notice.OwnerStep), which the daemon's executor holds the notice to, so a notice of a run
+// that ended is never delivered. It is the one writer of the notice. The start of every run of the
+// owner's tells through it (startStep), and so do the retry of the owner's step, which starts no
+// run (restart), and the telling again of a step no turn heard (tellOwedStep).
 func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, task string) error {
 	role := claim.Role(step.role)
 	if step.place.Kind == record.PlaceRetro {
 		role = ""
 	}
-	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.OwnerStepNotice, Role: role, Phase: issue.Phase, Reason: task})
+	run, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+	if err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.OwnerStepNotice, Role: role, Phase: issue.Phase, Reason: task,
+		OwnerStep: &record.NoticeStep{Task: step.place.Task, Kind: step.place.Kind, Place: step.place.Place, Starts: run.Starts}})
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its

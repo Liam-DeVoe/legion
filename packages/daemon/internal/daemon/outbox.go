@@ -138,6 +138,10 @@ type outbox struct {
 	// update's ReplacePod, which starts the next pod at once. Set by attach after newOutbox; a test
 	// that builds the outbox by hand leaves it nil, and the end of a pod then runs nothing.
 	podEnded func(context.Context, []string)
+	// roleApps is the one reader of a role's App (workflowRuntime.roleApps), which the hold of an
+	// owner-step reads to tell a step whose App the owner's slot already holds (ownApp). A test
+	// that builds the outbox by hand leaves it zero, which answers Legion's own roles.
+	roleApps appauth.RoleApps
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
@@ -1950,29 +1954,48 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 }
 
 // ownerSlotHolds is the hold of a notice owner-step, told to owner, the issue's own architect: it
-// answers true once owner's slot holds the gh credential of the App of the step the notice tells
-// (its Role; the architect's own for the retro, whose Role is ""), so the owner's gh never acts as
-// another App in the step. The role whose App the slot holds is runtime.SlotRole over the daemon's
-// ActsAs (ownerActsAs), read from the record now: where it is not the notice's role, the step no
-// longer runs — the issue moved on, or the owner reported it already — and the notice finishes
-// undelivered with one log line (false, nil). Else the runtime writes the slot for that App
+// answers true once the notice's run still runs and owner's slot holds the gh credential of the
+// App of the step the notice tells (its Role; the architect's own for the retro, whose Role is
+// ""), so the owner's gh never acts as another App in the step.
+//
+// The run first (ownerStepRuns): a notice names the run it tells (record.Notice.OwnerStep), and a
+// run that ended — the retro over, the owner's report in, the earlier of a role's two steps — makes
+// the notice stale, and it finishes undelivered with one log line (false, nil), as a stale notice
+// of any kind does. Then the App: the role whose App the slot holds is runtime.SlotRole over the
+// daemon's ActsAs (ownerActsAs), read from the record now, and where it is not the notice's role
+// the step no longer runs either, the one test of a row that names no run.
+//
+// A step whose App is the App of the owner's own role (ownApp: the review App of the owner's
+// acceptance, and the owner's retro) needs no write: the owner's slot holds that App whenever the
+// owner does no other step, and the end of any other step writes it back before the next notice to
+// the owner publishes. So it is told without asking the slot or its launcher, and a pod whose
+// launcher cannot say holds nothing of it. Else the runtime writes the slot for that App
 // (runtime.SlotCredentials.WriteSlotCredential) and is asked whether the slot's gh files hold it
 // (SlotHoldsCredential): a wait, and a pod whose launcher cannot say (runtime.ErrAwaitsPodUpdate),
 // hold the row on its backoff as a notice held for its architect still (errNoticeWaits), and any
 // other failure is the row's error. A runtime that holds no slots writes none and holds nothing.
 func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, payload record.Notice, owner claim.Token) (bool, error) {
+	runs, err := r.ownerStepRuns(ctx, row.Issue, payload.OwnerStep)
+	if err != nil {
+		return false, err
+	}
 	step := payload.Role
 	if step == "" {
 		step = claim.RoleArchitect
 	}
-	role, err := runtime.SlotRole(ctx, ownerActsAs(r.pool, r.records), owner, claim.RoleArchitect)
-	if err != nil {
-		return false, err
+	role := step
+	if runs {
+		if role, err = runtime.SlotRole(ctx, ownerActsAs(r.pool, r.records), owner, claim.RoleArchitect); err != nil {
+			return false, err
+		}
 	}
-	if role != step {
+	if !runs || role != step {
 		r.log.Info("outbox owner-step finished undelivered: its step no longer runs", "row", row.ID, "issue", row.Issue,
-			"owner", owner, "role", payload.Role, "phase", payload.Phase, "slot", role)
+			"owner", owner, "role", payload.Role, "phase", payload.Phase, "slot", role, "run", payload.OwnerStep)
 		return false, nil
+	}
+	if r.ownApp(ctx, row.Issue, role) {
+		return true, nil
 	}
 	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)
 	if !ok {
@@ -1988,6 +2011,41 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 		return false, fmt.Errorf("ask whether %s's slot holds the App of %s: %w", owner, role, err)
 	}
 	return true, nil
+}
+
+// ownerStepRuns is whether the run an owner-step notice names is still the open run of its place
+// on issue: the place's latest start is the one the notice counted (record.NoticeStep.Starts) and
+// its run has no end. A notice that names no run (a row written before the notice named one) is
+// judged by its App alone (ownerSlotHolds), so it answers true.
+func (r *outbox) ownerStepRuns(ctx context.Context, issue string, step *record.NoticeStep) (bool, error) {
+	if step == nil {
+		return true, nil
+	}
+	var runs bool
+	err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		start, err := r.records.StepStarts(ctx, tx, issue, step.StepPlace())
+		runs = err == nil && start.Run == record.RunOpen && start.Starts == step.Starts
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("read whether the run of %s's owner-step still runs: %w", issue, err)
+	}
+	return runs, nil
+}
+
+// ownApp is whether role acts as the App of the owner's own role, the architect's, on issue
+// (appauth.RoleApps.Of): the App the owner's slot holds whenever the owner does no other step. A
+// role whose App cannot be read is not known to be that App, and the slot is written and asked.
+func (r *outbox) ownApp(ctx context.Context, issue string, role claim.Role) bool {
+	if role == claim.RoleArchitect {
+		return true
+	}
+	app, err := r.roleApps.Of(ctx, issue, role)
+	if err != nil {
+		return false
+	}
+	own, err := r.roleApps.Of(ctx, issue, claim.RoleArchitect)
+	return err == nil && app == own
 }
 
 // roleMessage publishes one message to a role's topic, keyed by the row so a retried row is one

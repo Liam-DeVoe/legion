@@ -494,6 +494,28 @@ type Notice struct {
 	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
 	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
 	Volume *VolumeNearFull `json:"volume,omitempty"`
+	// OwnerStep is the run an owner-step notice tells (OwnerStepNotice): the place of the step or
+	// the retro and the count of starts that began its run, carried by no other kind
+	// (validateOutboxPayload). The notice is delivered only while that run is open: a notice of a
+	// run that ended — the retro over, the owner's report in, a role's earlier step of two — is
+	// stale, and the daemon's executor finishes it undelivered. A row written before this field
+	// names none, and the executor judges it by the App its step needs alone.
+	OwnerStep *NoticeStep `json:"ownerStep,omitempty"`
+}
+
+// NoticeStep is one run of a step of an issue as an owner-step notice names it: the place of
+// the step in its task (StepPlace) and the count of starts of that place that began the run
+// (StepStart.Starts).
+type NoticeStep struct {
+	Task   string `json:"task"`
+	Kind   string `json:"kind"`
+	Place  int    `json:"place"`
+	Starts int64  `json:"starts"`
+}
+
+// StepPlace is the place of the step the run is of.
+func (s NoticeStep) StepPlace() StepPlace {
+	return StepPlace{Task: s.Task, Kind: s.Kind, Place: s.Place}
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -2313,6 +2335,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Pause != nil {
 			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
+		}
+		if value.OwnerStep != nil && value.Kind != OwnerStepNotice {
+			return fmt.Errorf("a %s notice carries the run of an owner's step; only an owner-step notice does", value.Kind)
 		}
 		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
 			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)
