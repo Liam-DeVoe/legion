@@ -100,8 +100,8 @@ import {
 import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-import { credentialDeadline, type RequestCredential } from "./bearer";
-import { reachedNothing } from "./errors";
+import { type ApproveRoute, credentialDeadline, type RequestCredential } from "./bearer";
+import { LoggableError, reachedNothing } from "./errors";
 import { bodyForText, excerpt, redirectOrigin, SentTokens } from "./excerpt";
 import { type WriteEvent, type WriteState, writeStep } from "./write-outcome";
 
@@ -1521,12 +1521,67 @@ export class DispatchClient {
     // reach the wire; JSON leaves out a reason that is undefined.
     const body = { state: input.state, reason: input.reason };
     try {
+      const route = await this.#credential.approveRoute?.(this.#credentialSignal(this.#signal));
+      if (route !== undefined) {
+        const url = this.#url(path);
+        return await this.#noRoute(async () =>
+          this.#response<ArtifactReview>(
+            "POST",
+            url,
+            await this.#sendThroughProxy(route, url, body)
+          )
+        );
+      }
       return await this.#json("POST", path, body);
     } catch (error) {
       if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
       const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
       throw reviewNoRouteRefusal(this.#baseUrl, route, version);
     }
+  }
+
+  /**
+   * Sends `body` to `url` through Cipher's proxy on `route`, the approve route of a person's
+   * sign-in (`RequestCredential.approveRoute`): the proxy's URL with the placeholder as its
+   * password, the route's authority as the one certificate the proxy is trusted by, and
+   * `Authorization: DPoP <placeholder>`, which the proxy swaps for the approve token it mints and
+   * signs a proof for with its own key. No proof of any key of this process goes with it: the
+   * token is bound to the broker pod's key, and the proxy replaces any proof a request carries.
+   * The proxy reaches the hosts the route names, on https and port 443 alone, so a Dispatch URL of
+   * any other host, scheme or port is refused here and nothing is sent. The placeholder is noted
+   * among the tokens this client sent, so an excerpt of any answer redacts it.
+   */
+  async #sendThroughProxy(route: ApproveRoute, url: string, body: unknown): Promise<Response> {
+    const target = new URL(url);
+    if (
+      target.protocol !== "https:" ||
+      target.port !== "" ||
+      !route.hosts.includes(target.hostname)
+    ) {
+      throw new LoggableError(
+        `a person's review goes through Cipher's proxy, which reaches https://${route.hosts.join(" and https://")} alone, and the Dispatch URL is ${urlForText(this.#baseUrl, DISPATCH_URL_SETTING)}, so no review was sent`
+      );
+    }
+    const proxy = new URL(route.proxyUrl);
+    proxy.username = "agent";
+    proxy.password = route.placeholder;
+    const headers = {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `DPoP ${route.placeholder}`,
+    };
+    this.#sent.note(headers);
+    // Bun's fetch takes the proxy and the authority per request (`proxy`, `tls.ca`), so this one
+    // request trusts the proxy's authority and nothing else of this process does.
+    const init: RequestInit & { readonly proxy: string; readonly tls: { readonly ca: string } } = {
+      method: "POST",
+      signal: this.#signal,
+      headers,
+      body: JSON.stringify(body),
+      proxy: proxy.toString(),
+      tls: { ca: route.caCertificate },
+    };
+    return await this.#fetch(url, init);
   }
 
   /**

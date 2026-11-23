@@ -71,6 +71,11 @@ export const TOKEN_TYPE_NOT_APPLICABLE = "N_A";
  *  client checks a placeholder by before it sends it anywhere. */
 export const PLACEHOLDER_PREFIX = "agent-secrets-placeholder-";
 
+/** The name a person's approve capability is held under behind Cipher's proxy
+ *  (`oauth.ApproveName`): the dpop block that binds Dispatch's host, which a placeholder trade's
+ *  release names with the hosts it reaches. */
+export const PROXY_APPROVE_NAME = "DISPATCH_APPROVE_TOKEN";
+
 /** The `subject_token_type` a machine login's own access token is traded under: RFC 8693's own
  *  name for an access token (`oauthwire.SubjectTokenTypeAccessToken`), which a device login
  *  presents with no actor, since the login already names the person who approved it. */
