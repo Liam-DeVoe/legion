@@ -3,10 +3,12 @@
 // The rules this package reads a token endpoint's answer by: the TypeScript statement of Go's
 // `oauthrefusal` (`packages/envoy/internal/oauthrefusal`). The status alone decides whether the
 // endpoint answered: a 5xx, a 408 and a 429 are a server that could not answer now (`outage`),
-// whatever their body names. An OAuth error code (RFC 6749 Section 5.2) counts only in a refusal,
-// a 4xx that is no outage (`refusalCode`), and ending a grant is narrower still (`endsGrant`). A
-// person's sign-in (`person-identity.ts`) and a machine's device login (`device-login.ts`) read
-// their answers through these, so each rule has one definition in this language.
+// whatever their body names. An OAuth error code (RFC 6749 Section 5.2) that decides something
+// counts only in a refusal, a 4xx that is no outage (`refusalCode`), and ending a grant is
+// narrower still (`endsGrant`). A device code's `slow_down`, which decides nothing but the poll's
+// interval, is read at any status (`slowsDown`). A person's sign-in (`person-identity.ts`) and a
+// machine's device login (`device-login.ts`) read their answers through these, so each rule has
+// one definition in this language.
 
 import { ResponseBodyError } from "openid-client";
 
@@ -44,6 +46,19 @@ export function refusalCode(error: unknown): string {
   if (!(error instanceof ResponseBodyError)) return "";
   const refuses = error.status >= 400 && error.status < 500 && !outage(error.status);
   return refuses ? error.error : "";
+}
+
+/**
+ * Whether `error` is a token endpoint's `slow_down` to a device code's poll, in any 4xx answer
+ * the library read an OAuth error from (oauth4webapi, under `openid-client`, reads one from every
+ * 4xx), a 408 and a 429 included. RFC 8628 Section 3.5 has the interval grow by 5 s "for this and
+ * all subsequent requests" on it, and it decides nothing else, so no status gates it: x/oauth2's
+ * `DeviceAccessToken`, under the Go helper's `pollLogin`, adds the 5 s before any rule of
+ * `oauthrefusal` reads the answer (golang.org/x/oauth2 v0.37.0, deviceauth.go:212-217), and
+ * `openid-client`'s own poll adds it at any 4xx too (6.8.7, build/index.js:691-693).
+ */
+export function slowsDown(error: unknown): boolean {
+  return error instanceof ResponseBodyError && error.error === "slow_down";
 }
 
 /**

@@ -249,8 +249,10 @@ test("a poll answered 400 authorization_pending, or 429 with no body, is polled 
   expect(login.credentialId).toBe(STAND_IN_CREDENTIAL);
 });
 
-test("slow_down adds its 5 s only where its code counts: one answered 429 polls again at the interval", async () => {
-  const stub = broker({ polls: ["slow_down", "approve"], oauthErrorStatus: 429 });
+// RFC 8628 Section 3.5: each `slow_down` grows the interval by 5 s, at whatever status it comes, as
+// x/oauth2 under the Go helper's `pollLogin` and `openid-client`'s own poll grow it.
+test.each([429, 408])("a slow_down answered %i polls again 5 s further apart", async (status) => {
+  const stub = broker({ polls: ["slow_down", "approve"], oauthErrorStatus: status });
   const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
   const waits: number[] = [];
   await finishDeviceLogin(started, {
@@ -260,7 +262,7 @@ test("slow_down adds its 5 s only where its code counts: one answered 429 polls 
     },
   });
   expect(stub.polls).toHaveLength(2);
-  expect(waits).toEqual([1000, 1000]);
+  expect(waits).toEqual([1000, 6000]);
 });
 
 test("a poll the broker did not answer is polled again", async () => {
@@ -863,6 +865,7 @@ test.each([
   [401, true],
   [403, false],
   [429, false],
+  [408, false],
 ] as const)("a refresh answered %i invalid_grant ends the login: %p", async (status, ends) => {
   const stub = broker({ refuseRefresh: true, oauthErrorStatus: status });
   const path = loginPath();

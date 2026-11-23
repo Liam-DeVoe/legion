@@ -1212,13 +1212,14 @@ the broker refuses the login, the person denies it, its code expires, or the bro
 poll with any other 4xx, with another OAuth error or without one (a proxy's page, a bare
 challenge), naming its status. The status decides first (`oauth-refusal.ts` in
 `@legion/cipher-client`): a poll the broker did not answer, a 408, its 429 and a 5xx are polled
-again, whatever OAuth error they name, and only in another 4xx does the error count:
+again, whatever OAuth error they name, and only in another 4xx does a deciding error count:
 `access_denied`, which the broker answers 403, is the denial, `expired_token` and `invalid_grant`
 the expiry, and `authorization_pending` and `slow_down` poll again. It polls at the broker's
-interval, from 1 s and at most 60 s before any `slow_down` (each of which adds 5 s), and 5 s
-where it names none. It then writes no file. It exits 1 too when a login that was approved
-cannot be kept: it names the login's credential, which the broker holds live, and says to revoke
-it in Machine logins on the page the code was typed into. Where it wrote a copy of the login whole,
+interval, from 1 s and at most 60 s before any `slow_down`, and 5 s where it names none; each
+`slow_down` adds 5 s, at whatever status it comes, as RFC 8628 has it. It then writes no file. It
+exits 1 too when a login that was approved cannot be kept: it names the login's credential, which
+the broker holds live, and says to revoke it in Machine logins on the page the code was typed
+into. Where it wrote a copy of the login whole,
 the copy is kept beside the file, under the file's name with `.kept-<uuid>` added, and the message
 names that suffix, whatever fails after it, letting go of the lock included: moved over the file,
 the copy is the login and its credential needs no revoke; unused, the person deletes it, since it

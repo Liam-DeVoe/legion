@@ -67,7 +67,7 @@ import {
 } from "./device-login-lock";
 import { type DpopKey, dpopKeyOf } from "./dpop";
 import { messageOf } from "./error-text";
-import { endsGrant, outage, refusalCode } from "./oauth-refusal";
+import { endsGrant, outage, refusalCode, slowsDown } from "./oauth-refusal";
 import type { SubjectToken, TokenSource } from "./source";
 import {
   BROKER_URL_SETTING,
@@ -424,16 +424,18 @@ export interface KeptDeviceLogin extends DeviceLogin {
  * it with the credential it replaced ({@link KeptDeviceLogin}), which is read under the same lock
  * as the save, so a login another `dispatch login` kept there while this one waited for its
  * approval is the one named. Each poll waits the interval first (RFC 8628 Section 3.5) and proves
- * the login's key. The status decides first, as the Go helper's `pollLogin` decides it
+ * the login's key, and each `slow_down`, at whatever status it comes ({@link slowsDown}), polls
+ * five seconds further apart from then on, as RFC 8628 has it and as the Go helper's `pollLogin`
+ * does through x/oauth2. Otherwise the status decides first, as `pollLogin` decides it
  * (`oauthrefusal.Refusal`): a poll the broker did not answer, or answered with an {@link outage}
  * (a 408, its 429, a 5xx), polls again whatever OAuth error it names, since no person decided and
- * a later poll may be answered. Only in any other 4xx does the OAuth error count
- * ({@link refusalCode}): `authorization_pending` polls again, `slow_down` polls again five seconds
- * further apart from then on, `access_denied` is a denial (the broker answers it 403), and
- * `expired_token` or `invalid_grant` (a code the broker no longer knows) is an expiry, as is the
- * code's own lifetime passing. Any other answer of a 4xx, with another OAuth error or without one
- * (a proxy's HTML page, a bare `WWW-Authenticate` challenge), stops the poll at once, naming the
- * status, rather than polling until the code lapses and saying it expired. That is the one place
+ * a later poll may be answered. Only in any other 4xx does a deciding OAuth error count
+ * ({@link refusalCode}): `authorization_pending` and `slow_down` poll again, `access_denied` is a
+ * denial (the broker answers it 403), and `expired_token` or `invalid_grant` (a code the broker no
+ * longer knows) is an expiry, as is the code's own lifetime passing. Any other answer of a 4xx,
+ * with another OAuth error or without one (a proxy's HTML page, a bare `WWW-Authenticate`
+ * challenge), stops the poll at once, naming the status, rather than polling until the code
+ * lapses and saying it expired. That is the one place
  * this poll and `pollLogin` differ: the helper polls on there until the code lapses, as it records
  * the login's state in the background, where a person waits on this poll. Each refusal names
  * {@link DEVICE_LOGIN_COMMAND}, and none writes a file. An approved login that cannot be kept is
@@ -469,7 +471,7 @@ export async function finishDeviceLogin(
         device_code: started.deviceCode,
       });
     } catch (error) {
-      // The status decides first: an answer that is an outage names no code that counts.
+      // A deciding code counts only in a refusal: an answer that is an outage decides nothing.
       const code = refusalCode(error);
       if (code === "access_denied") {
         throw new Error(
@@ -477,7 +479,7 @@ export async function finishDeviceLogin(
         );
       }
       if (code === "expired_token" || code === "invalid_grant") throw expired;
-      if (code === "slow_down") interval += 5;
+      if (slowsDown(error)) interval += 5;
       const status = statusOf(error);
       const pollAgain =
         code === "authorization_pending" || code === "slow_down" || status === 0 || outage(status);
