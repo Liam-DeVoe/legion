@@ -1527,7 +1527,7 @@ type supervision struct {
 	// planRole is the daemon's one reader of a role an issue's plan defines (planRoleOf), which the
 	// stall backstop reads for a role the deployment gives a bound of its own (stallBackstopOf);
 	// nil in a supervision a test builds by hand reads no plan.
-	planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)
+	planRole planRoleReader
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
