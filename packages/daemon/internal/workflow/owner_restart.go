@@ -30,59 +30,64 @@ func ownerAlone(issue record.Issue) bool {
 
 // restartFailedOwner starts again issue's own architect, a child's, whose claim failed while issue
 // stands at a place only that architect ends (ownerAlone), and answers the reason of the
-// worker-died that tells the architect above of the failure (claimFailed). The start is the plain
-// one a phase start queues (childArchitectStart), and the launch's ready tells the owner its step
-// again (claimReady's owed step). A start already queued is the start, and counts nothing
-// (architectStartQueued). Each other start spends one of the OwnerRestarts of the step's run
-// (record.Store.CountOwnerRestart); once they are spent nothing is queued, and the reason names
-// the operator's retry, which the stranded list names too. Anywhere else the child's next phase
-// start brings the claim back (reviveArchitect), as the reason says.
-func (e *Engine) restartFailedOwner(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
+// worker-died that tells the architect above of the failure (claimFailed), and whether the
+// controller must be told too. The start is the plain one a phase start queues
+// (childArchitectStart), and the launch's ready tells the owner its step again (claimReady's owed
+// step). A start already queued is the start, and counts nothing (architectStartQueued). Each other
+// start spends one of the OwnerRestarts of the step's run (record.Store.CountOwnerRestart). Once
+// they are spent nothing is queued, and the architect above can do nothing about it: complete_step
+// takes the step's report from the owner alone, and no route of an architect's retries a claim.
+// So the controller is told too, as it is of a tree architect's failure, the daemon warns, and the
+// reason names the two moves that start the claim again: the operator's retry and the controller's
+// fresh_session, which the stranded list offers too. Anywhere else the child's next phase start
+// brings the claim back (reviveArchitect), as the reason says.
+func (e *Engine) restartFailedOwner(ctx context.Context, tx pgx.Tx, issue record.Issue) (reason string, tellController bool, err error) {
 	next := fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start",
 		issue.Key, issue.Key)
 	if !ownerAlone(issue) {
-		return next, nil
+		return next, false, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	step, ok := standingStep(w, issue)
 	if !ok || !step.owner {
-		return next, nil
+		return next, false, nil
 	}
 	run, child, err := e.ownArchitectRun(ctx, tx, issue)
 	if err != nil || !child {
-		return next, err
+		return next, false, err
 	}
 	where, err := ownersPlaceWords(ctx, tx, e.store, issue)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if architectStartQueued(run, issue.Phase) {
 		return fmt.Sprintf("%s's own architect failed at %s, which only it reports: a start of it is queued already, and its notices come to you until it runs again",
-			issue.Key, where), nil
+			issue.Key, where), false, nil
 	}
 	spent, counted, err := e.store.CountOwnerRestart(ctx, tx, issue.Key, step.place, OwnerRestarts)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !counted {
 		owner, err := record.OwnerClaim(issue)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		e.logOnCommit(ctx, "workflow: a failed owner's restarts at its step are spent; it waits for the operator's retry",
-			"issue", issue.Key, "task", step.place.Task, "kind", step.place.Kind, "place", step.place.Place, "restarts", OwnerRestarts)
+		e.warnOnCommit(ctx, "workflow: a failed owner's restarts at its step are spent; it waits for the operator's retry",
+			"issue", issue.Key, "claim", owner, "task", step.place.Task, "kind", step.place.Kind, "place", step.place.Place, "restarts", OwnerRestarts)
 		return fmt.Sprintf("%s's own architect failed at %s, which only it reports, and the daemon has started it again %d times at this step: "+
-			"it stays failed, and the stranded list names it for the operator's retry (legion claims retry %s); its notices come to you until it runs again",
-			issue.Key, where, OwnerRestarts, owner), nil
+			"it stays failed, and the stranded list names it, until the operator's retry (legion claims retry %s) or the controller's fresh_session starts it again; "+
+			"until then the child's notices go to the architect above it",
+			issue.Key, where, OwnerRestarts, owner), true, nil
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
-		return "", err
+		return "", false, err
 	}
 	e.logOnCommit(ctx, "workflow: a child's own architect that failed at its own step starts again",
 		"issue", issue.Key, "task", step.place.Task, "kind", step.place.Kind, "place", step.place.Place, "restart", spent, "of", OwnerRestarts)
 	return fmt.Sprintf("%s's own architect failed at %s, which only it reports: the daemon starts it again now (%d of %d at this step), and its notices come to you until it runs again",
-		issue.Key, where, spent, OwnerRestarts), nil
+		issue.Key, where, spent, OwnerRestarts), false, nil
 }

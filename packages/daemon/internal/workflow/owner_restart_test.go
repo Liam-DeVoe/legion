@@ -1,9 +1,12 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -118,25 +121,44 @@ func TestAChildsOwnArchitectThatFailsAtItsOwnStepIsStartedAgainAndToldTheStep(t 
 
 // The daemon starts a failed owner again at most OwnerRestarts times in one run of its step: a
 // launch that always fails is started that many times, and then left failed, where the stranded
-// list names it for the operator's retry, as the last worker-died says. A start already queued is
-// the start, and counts nothing. The operator's retry of the owner's claim (intake.RestartPhase of
-// the architect, what `legion claims retry` applies) tells the owner its step again with one more
+// list names it for the operator's retry, as the last worker-died says. Only the controller and the
+// operator can start it then — the architect above cannot report the step, and has no retry of a
+// claim — so that worker-died goes to the controller as well, and the daemon warns; a failure the
+// daemon starts again tells neither. A start already queued is the start, and counts nothing. The
+// operator's retry of the owner's claim (intake.RestartPhase of the architect, what `legion claims
+// retry` and the controller's fresh_session apply) tells the owner its step again with one more
 // owner-step, and gives the daemon its restarts again: the next failure is started again.
 func TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
+	var logged bytes.Buffer
+	engine.log = slog.New(slog.NewTextHandler(&logged, nil))
 	child := ownerAtItsStep(t, pool, engine)
+	const spentLine = "workflow: a failed owner's restarts at its step are spent; it waits for the operator's retry"
 
 	started := 0
 	for n := 1; n <= OwnerRestarts+2; n++ {
+		logged.Reset()
 		ownerFailed(t, pool, engine, child.Key, n)
 		starts := len(architectStartsOf(t, pool, child.Key))
-		if want := 1; n > OwnerRestarts {
+		spent := n > OwnerRestarts
+		if want := 1; spent {
 			if starts != 0 {
 				t.Fatalf("failure %d queued %d starts, want none: the daemon started the owner again %d times at this step already", n, starts, OwnerRestarts)
 			}
 		} else if starts != want {
 			t.Fatalf("failure %d queued %d starts, want %d", n, starts, want)
+		}
+		copies, wantCopies := controllerWorkerDied(t, pool, child.Key), 0
+		if spent {
+			wantCopies = n - OwnerRestarts
+		}
+		if copies != wantCopies {
+			t.Fatalf("after failure %d the controller holds %d worker-died copies of %s, want %d", n, copies, child.Key, wantCopies)
+		}
+		warned := strings.Contains(logged.String(), "level=WARN") && strings.Contains(logged.String(), spentLine)
+		if warned != spent {
+			t.Fatalf("failure %d warned %t, want %t: the log reads %q", n, warned, spent, logged.String())
 		}
 		if n == 1 {
 			// A second report while the first start waits queues none beside it and counts nothing.
@@ -153,8 +175,9 @@ func TestAFailedOwnersRestartsAtOneStepAreBoundedAndTheOperatorsRetryResetsThem(
 	}
 	token := claim.Token(treeRoleToken(t, child.Key, claim.RoleArchitect))
 	if got, want := lastWorkerDied(t, pool, child.Key), fmt.Sprintf("LEGION-209's own architect failed at step 1 (implementer) of task a, "+
-		"which only it reports, and the daemon has started it again %d times at this step: it stays failed, and the stranded list names it "+
-		"for the operator's retry (legion claims retry %s); its notices come to you until it runs again", OwnerRestarts, token); got != want {
+		"which only it reports, and the daemon has started it again %d times at this step: it stays failed, and the stranded list names it, "+
+		"until the operator's retry (legion claims retry %s) or the controller's fresh_session starts it again; "+
+		"until then the child's notices go to the architect above it", OwnerRestarts, token); got != want {
 		t.Fatalf("the spent worker-died's reason = %q, want %q", got, want)
 	}
 
@@ -210,4 +233,15 @@ func TestStrandedNamesAFailedChildArchitectAtAPlaceOnlyItEnds(t *testing.T) {
 	if want := []supervise.Claim{stuck, retro}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("stranded = %v, want %v", names(got), names(want))
 	}
+}
+
+// controllerWorkerDied counts the worker-died copies the controller's outbox holds for key.
+func controllerWorkerDied(t *testing.T, pool *pgxpool.Pool, key string) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = $1 and issue = $2 and payload->>'kind' = 'worker-died'`,
+		string(record.OutboxKindControllerNotice), key).Scan(&rows); err != nil {
+		t.Fatalf("count the controller's worker-died copies of %s: %v", key, err)
+	}
+	return rows
 }

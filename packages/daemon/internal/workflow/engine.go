@@ -1348,12 +1348,14 @@ func (e *Engine) endByVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue
 // (admit's startMidPhaseMembers) and an operator's retry. A child that stands at a step of its
 // owner's or its owner's retro, which only its own architect reports, has no next phase start
 // until that report, so the daemon starts the architect again at once, at most OwnerRestarts
-// times in the step's run, and then leaves it for the operator's retry, which the stranded list
-// names (restartFailedOwner); the worker-died's reason says which of these comes. The worker-died
-// names the failure, as a finished role's does, so the architect above it reads why the child's
-// architect stopped; no controller copy goes with it, since an architect inside the tree is left
-// to act on it. A child that left the workflow or a member of a lingering tree tells nobody,
-// as below.
+// times in the step's run, and then leaves it for the operator's retry or the controller's
+// fresh_session, which the stranded list names (restartFailedOwner); the worker-died's reason says
+// which of these comes. The worker-died names the failure, as a finished role's does, so the
+// architect above it reads why the child's architect stopped. No controller copy goes with it,
+// since an architect inside the tree is left to act on it, but for the failure that spends the
+// last restart: the architect above cannot report the owner's step nor retry a claim, so the
+// controller hears that one, as it hears a tree architect's. A child that left the workflow or a
+// member of a lingering tree tells nobody, as below.
 //
 // A phase role that finished its phase stays live until its issue closes, so its claim can fail
 // while another role works the issue's phase, or while the issue waits on a person: the architect
@@ -1382,12 +1384,15 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 			return intake.Result{}, err
 		}
-		reason, err := e.restartFailedOwner(ctx, tx, *issue)
+		reason, tellController, err := e.restartFailedOwner(ctx, tx, *issue)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
-			Reason: reason})
+		died := record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact), Reason: reason}
+		if tellController {
+			return intake.Result{}, e.noticeWithController(ctx, tx, issue.Key, died)
+		}
+		return intake.Result{}, e.notice(ctx, tx, issue.Key, died)
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
