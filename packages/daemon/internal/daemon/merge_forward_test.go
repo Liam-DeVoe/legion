@@ -177,7 +177,9 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 	// daemon writes from the reviewer's verdict there, only where the landing asked the reviewer for
 	// it, which the record keeps (record.MergeForward.ReviewAsked) and the attempt reads: a landing
 	// on a task with no reviewer step asks no review, and its merger is told to go on at the new
-	// head. The control is the same row over a record whose landing asked the review.
+	// head. The control is the same row over a record whose landing asked the review. The issue
+	// stands in merging, since a message to the merger ends once it stands elsewhere
+	// (cybermonklabs/legion#4979, leftMergeForwardAt).
 	for _, tc := range []struct {
 		name        string
 		reviewAsked bool
@@ -189,7 +191,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 			publisher := &holderPublisher{}
 			asked := *landed
 			asked.Phase, asked.ReviewAsked = phase.Merging, tc.reviewAsked
-			runner, _, pool, _ := mergeForwardRunner(t, publisher, &asked)
+			runner, _, pool, _ := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, &asked)
 			told := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
 				Base: "main", Phase: phase.Merging, PullRequest: 86}
 			merger := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
