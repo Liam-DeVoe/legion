@@ -461,8 +461,13 @@ EOF
   note "PostgreSQL at $(kind_k -n postgres get service postgres -o jsonpath='{.spec.clusterIP}:5432') in the cluster, node port $(kind_k -n postgres get service postgres -o jsonpath='{.spec.ports[0].nodePort}'), accepting connections"
 }
 
+# kind_sandbox_teardown STATUS EVIDENCE: names each name CoreDNS refused and each image the nodes
+# pulled, keeps the cluster's state in EVIDENCE when STATUS is not 0, then deletes the cluster and
+# the registry. It returns 3 when a node pulled an image that is neither
+# ghcr.io/cybermonklabs/legion/ci by digest nor the rig's registry (localhost:<port>), after the
+# deletes, which the rig reports as the test's failure.
 kind_sandbox_teardown() {
-  local status=$1 evidence=$2 namespace pod clusters refused
+  local status=$1 evidence=$2 namespace pod clusters refused node pulled ref outside=0 pulls=0
   [ -n "$kind_cluster" ] || return 0
   # Read whole, not piped into grep -q, whose early exit is the pipeline's failure under pipefail.
   clusters=$("$kind_bin" get clusters 2>/dev/null || true)
@@ -475,6 +480,27 @@ kind_sandbox_teardown() {
       while read -r count name; do note "CoreDNS refused $name: NXDOMAIN to $count queries"; done <<<"$refused"
     else
       note "CoreDNS refused no name"
+    fi
+    # Each image a node's containerd pulled, from the CRI plugin's line for a pull that succeeded
+    # (`PullImage "<ref>" returns image reference "<id>"`): images kind load put in the node and the
+    # node image's own are no pull, and a refused pull returns no reference.
+    for node in $("$kind_bin" get nodes --name "$kind_cluster" 2>/dev/null); do
+      pulled=$(docker exec "$node" journalctl -u containerd --no-pager -o cat 2>/dev/null |
+        sed -n 's/.*PullImage \\"\([^\\"]*\)\\" returns image reference.*/\1/p' | sort -u || true)
+      while read -r ref; do
+        [ -n "$ref" ] || continue
+        pulls=$((pulls + 1))
+        case "$ref" in
+          ghcr.io/cybermonklabs/legion/ci@sha256:*) note "the node $node pulled $ref" ;;
+          localhost:[0-9]*/*) note "the node $node pulled $ref from the rig's registry" ;;
+          *) note "the node $node pulled $ref, which is neither ghcr.io/cybermonklabs/legion/ci by digest nor the rig's registry"; outside=1 ;;
+        esac
+      done <<<"$pulled"
+    done
+    if [ "$outside" -ne 0 ]; then
+      note "CHECK kind-node-pulls: FAIL: a node pulled an image from outside ghcr.io/cybermonklabs/legion/ci and the rig's registry, each line above"
+    else
+      note "CHECK kind-node-pulls: PASS: each of the $pulls images the nodes pulled is ghcr.io/cybermonklabs/legion/ci by digest or the rig's registry"
     fi
     if [ "$status" -ne 0 ]; then
       mkdir -p "$evidence"
@@ -498,4 +524,5 @@ kind_sandbox_teardown() {
       echo "could not delete kind cluster $kind_cluster; delete it with: $kind_bin delete cluster --name $kind_cluster" >&2
   fi
   docker rm -f "$kind_registry" >/dev/null 2>&1 || true
+  [ "$outside" -eq 0 ] || return 3
 }

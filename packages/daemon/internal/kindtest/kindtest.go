@@ -25,6 +25,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -796,7 +797,9 @@ func (r *Rig) push(t *testing.T, image, repository string) string {
 }
 
 // teardown keeps what the cluster held and the stand-ins' requests when the test failed, then
-// deletes the cluster and the registry.
+// deletes the cluster and the registry. The script's status 3 is kind_sandbox_teardown's
+// verdict that a node pulled an image from outside ghcr.io/cybermonklabs/legion/ci and the rig's
+// registry, which fails the test; any other failure of the teardown is logged.
 func (r *Rig) teardown(t *testing.T) {
 	status := "0"
 	if t.Failed() {
@@ -824,7 +827,12 @@ kind_sandbox_use "$2" "$3"
 kind_sandbox_teardown "$4" "$5"`
 	command := exec.CommandContext(ctx, "bash", "-c", script, "kind-rig", r.lib, r.Name, r.work, status, r.Evidence)
 	command.Env = append(os.Environ(), "LEGION_E2E_KIND="+r.kind)
-	if out, err := command.CombinedOutput(); err != nil || len(out) > 0 {
+	out, err := command.CombinedOutput()
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit) && exit.ExitCode() == 3:
+		t.Errorf("teardown of %s: a node pulled an image from outside ghcr.io/cybermonklabs/legion/ci and the rig's registry:\n%s", r.Name, out)
+	case err != nil || len(out) > 0:
 		t.Logf("teardown of %s: %v: %s", r.Name, err, out)
 	}
 }
