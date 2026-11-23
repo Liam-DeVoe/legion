@@ -203,7 +203,9 @@ func TestTheCacheReloadsOnASaveAndOnADefaultRepositoryMove(t *testing.T) {
 	waitFor(t, 5*time.Second, func() bool {
 		_, ok := cache.Load().For(deliveryRepo)
 		return ok
-	}, func() string { return fmt.Sprintf("the cache never held the rule of %s: %+v", deliveryRepo, cache.Load()) })
+	}, func() string {
+		return fmt.Sprintf("the cache never held the rule of %s: %+v", deliveryRepo, cache.Load())
+	})
 
 	const release = ".github/workflows/release.yml"
 	seeded.DeployWorkflowPath = release

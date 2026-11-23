@@ -603,9 +603,9 @@ func TestARenameMovesEachProjectsExcludedRepositories(t *testing.T) {
 		t.Fatalf("the pass = %+v (%v), want 2 rows deleted, no failure and nothing left", pass, pass.Err())
 	}
 	for query, want := range map[string]string{
-		`select string_agg(project_key || '=' || excluded_repos::text, ' ' order by project_key) from project_delivery_settings`: "INFRA={sjawhar/dotfiles} SMOKE={} TOOLS={acme/sandbox,cybermonklabs/legion,sjawhar/legion-smoke}",
+		`select string_agg(project_key || '=' || excluded_repos::text, ' ' order by project_key) from project_delivery_settings`:                                "INFRA={sjawhar/dotfiles} SMOKE={} TOOLS={acme/sandbox,cybermonklabs/legion,sjawhar/legion-smoke}",
 		`select string_agg(project_key || '#' || position || '=' || coalesce(repo, 'default'), ' ' order by project_key, position) from project_deploy_sources`: "INFRA#0=default SMOKE#1=cybermonklabs/legion SMOKE#2=default TOOLS#0=acme/tools TOOLS#1=cybermonklabs/legion",
-		`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`: "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke TOOLS=acme/tools",
+		`select string_agg(key || '=' || default_repo, ' ' order by key) from projects`:                                                                         "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke TOOLS=acme/tools",
 		`select string_agg(step || '=' || scope || '@' || to_char(through at time zone 'UTC', 'MM-DD'), ' | ' order by step) from delivery_reconcile_progress`: "" +
 			"backfill/created_at/deploy/cybermonklabs/legion=cybermonklabs/legion deploy.yml@01-04 | " +
 			"backfill/runs/pr_checks/cybermonklabs/legion=cybermonklabs/legion pr.yml@01-02 | " +
