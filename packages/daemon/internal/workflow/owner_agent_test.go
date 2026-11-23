@@ -14,11 +14,12 @@ import (
 )
 
 // A step of the key owner is run, and named on its record, by the architect that owns its issue
-// when the step starts (ownerAgent), as the accepting step is: the child's own architect while its
-// claim holds its role, or while a start of it the outbox will act on is queued (the move into the
-// step starts a failed one again, reviveArchitect), and the nearest architect above it whose claim
-// holds its role otherwise, here the tree's. The owner by rule stays the child's own architect
-// (record.OwnerClaim) in every case; only the agent that runs the step follows who can act.
+// when the step starts (ownerAgent), as an acceptance the owner does is (startAgent): the child's
+// own architect while its claim holds its role, or while a start of it the outbox will act on is
+// queued (the move into the step starts a failed one again, reviveArchitect), and the nearest
+// architect above it whose claim holds its role otherwise, here the tree's. The owner by rule stays
+// the child's own architect (record.OwnerClaim) in every case; only the agent that runs the step
+// follows who can act.
 //
 // The child LEGION-209 runs `implementer reviewer:owner`. A move into its step 2 starts the step:
 // its record names the child's own architect when that claim is idle or failed (and so started

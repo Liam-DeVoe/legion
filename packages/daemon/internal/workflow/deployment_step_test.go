@@ -61,7 +61,7 @@ func stepReports(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, r
 	}
 }
 
-// stepRoleOf is key's running role as the store reads it.
+// stepRoleOf is the role of key's running step as the store reads it (record.Issue.StepRole).
 func stepRoleOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) claim.Role {
 	t.Helper()
 	return issueOf(t, pool, engine, key).StepRole
