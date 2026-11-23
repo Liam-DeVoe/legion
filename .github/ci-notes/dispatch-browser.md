@@ -207,10 +207,18 @@ retry arithmetic rather than its measured maximum.
 ## Why the binaries job restores go-dispatch-browser
 
 go-dispatch-browser, restored only: a family of this job's own, which
-.github/workflows/ci-caches.yaml's dispatch-browser job fills on a push to main, on this job's
-runner, by running this job's go commands as this job runs them: the build step's two `go
+.github/workflows/ci-caches.yaml's dispatch-browser job fills on every push to main, on this
+job's runner, by running this job's go commands as this job runs them: the build step's two `go
 build`s over the same packages and the connections step's `go run`, each with CGO_ENABLED=0.
-No job here saves it.
+That fill restores the family's newest entry, runs the commands on it, which compile only what
+changed since that entry was saved, and saves the result under this job's key followed by the
+commit (`-${{ github.sha }}`); ci-caches.yaml's refill-superseded job then deletes the entries
+the new one superseded, so the family keeps one. No entry carries this job's key itself, so
+GitHub's matching, which takes the key as a prefix too, gives this job's restore the last fill's
+entry. The restore-keys, the key's `go-dispatch-browser-<os>-<arch>-` part, are what the
+restores of go-daemon, go-envoy and go-envoy-test in ci.yaml's jobs carry: after a Go bump and
+before the next fill they find the entry of the Go before, whose modules still serve. No job
+here saves it.
 
 It restored go-envoy-test until dispatch://INFRA-1109 measured what that bought. ci-caches.yaml's
 envoy job fills go-envoy-test with `go test -c -o /dev/null ./...` over the whole envoy module on
@@ -232,6 +240,20 @@ took 108 to 150 s across the full lanes of #3513 on 2026-11-19 and 20, and in ru
 beside them on the same four CPUs, and on a build cache that held almost none of its objects it
 is the cold build those Jobs time at a minute and more. That job's restore of go-envoy-test read
 723,666,370 bytes, in 19 s.
+
+Why each push to main fills it, and not once per Go version, as the fill first did. That fill
+ran only when the key, which names the Go version alone, was missing, on the ground that this
+build is small enough for an aged entry to spare most of it: the 16 s above, against 69 s cold.
+But the build cache behind the 16 s was filled at 278138ea, 171 of main's commits older than
+8a954068, the main commit b1634bff had merged, and an entry filled once per Go version only ages
+further until the next Go bump. ci.yaml's own families showed where that ends: the go-daemon,
+go-envoy and go-envoy-test entries every job restored on 2026-11-22 had been saved on
+2026-11-18, and from them a job at main's e7381b7d4c9 had to compile again 573 of the envoy
+module's 618 packages
+(.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, its
+"Caches" paragraph). Main's #5141 made those families fill on every push, and this family
+follows the same design, so the entry this job restores is the last push's, which is as near as
+an entry of main comes to the 5 s reading of one filled at the commit built.
 
 The connections step's `go run` carries CGO_ENABLED=0 too, so it reuses the build step's
 objects, the store package's closure among them, and the fill runs it as that step does.

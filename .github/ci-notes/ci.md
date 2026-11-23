@@ -1100,37 +1100,40 @@ go-notices puts the architecture before the OS in its key and the other families
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
 starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
-go-envoy and go-envoy-test are filled on every push to main: the fill restores the newest entry
-of the family, runs on it the build the job runs, which compiles only what changed since, and
-saves the result under the job's key followed by the commit (`-${{ github.sha }}`). No entry
-carries the job's key itself, so GitHub's matching gives each job the newest entry whose key
-starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every
-other entry of the family, so each family keeps one entry per runner, as before. A job that is
-downloading a deleted entry at that moment gets a cache miss: actions/cache/restore warns and the
-job goes on, compiling what the entry would have given it, slower but not failed. Their keys
-named only the Go version before, and the fill saved only when that exact key was missing, so an
-entry was filled once per Go version: on 2026-11-22 every job restored go-daemon, go-envoy and
-go-envoy-test entries saved on 2026-11-18, and at main's e7381b7d4c9 a job that restored them
-compiled again 312 of the daemon module's 335 packages and 573 of the envoy module's 618, against
-135 and 321 from an entry five merges old. The key still holds no go.sum hash: a go.sum change
-downloads only the changed modules, and Go's build cache is content-addressed, so the next fill
-compiles only what changed. go-envoy-infra keeps a key with the hash of its module files, filled
-only when that key is missing, and ci-caches.yaml deletes the entry each such fill replaces (its
+go-envoy, go-envoy-test and go-dispatch-browser are filled on every push to main: the fill
+restores the newest entry of the family, runs on it the build the job runs, which compiles only
+what changed since, and saves the result under the job's key followed by the commit
+(`-${{ github.sha }}`). No entry carries the job's key itself, so GitHub's matching gives each
+job the newest entry whose key starts with it, the last fill's, and ci-caches.yaml's
+refill-superseded job then deletes every other entry of the family, so each family keeps one
+entry per runner, as before. A job that is downloading a deleted entry at that moment gets a
+cache miss: actions/cache/restore warns and the job goes on, compiling what the entry would have
+given it, slower but not failed. Their keys named only the Go version before, and the fill saved
+only when that exact key was missing, so an entry was filled once per Go version: on 2026-11-22
+every job restored go-daemon, go-envoy and go-envoy-test entries saved on 2026-11-18, and at
+main's e7381b7d4c9 a job that restored them compiled again 312 of the daemon module's 335
+packages and 573 of the envoy module's 618, against 135 and 321 from an entry five merges old.
+go-dispatch-browser was filled that way longer, on the ground that its build is small enough for
+an aged entry to spare most of it (69 s on an empty build cache, 16 s on one filled at main's
+278138ea, 5 s on one filled at the commit built:
+.github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser), but
+278138ea was 171 of main's commits older than 8a954068, the main commit the built one had merged,
+and an entry filled once per Go version only ages further until the next Go bump, toward the cold
+build, as the envoy module's had. The key still holds no go.sum hash: a go.sum change downloads
+only the changed modules, and Go's build cache is content-addressed, so the next fill compiles
+only what changed. go-envoy-infra keeps a key with the hash of its module files, filled only when
+that key is missing, and ci-caches.yaml deletes the entry each such fill replaces (its
 envoy-infra job says how); its save takes the key its lookup computed, since a hash of the module
 files taken after the build drifted from the lookup's and made every push build it again (run
-45088325195). What changed under it in eleven days had cost its linux vet 83 to 85%
-of what the same vet for darwin took with nothing cached. go-dispatch-browser keeps a key of its
-Go version alone, filled only when that key is missing, as the four were before: its build is
-small enough that an aged entry still spares most of it (69 s on an empty build cache, 16 s on
-one filled at an older main commit, 5 s on one filled at the commit built:
-.github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-dispatch-browser). Since no
-entry of the four refilled families carries a job's key itself, every restore of them takes the
-newest entry by prefix, on main too: the key is a prefix of the fill's keys, so
-dispatch-browser-nightly.yaml's re-record job, which holds its go-envoy-test restore-keys off
-main, still finds the last fill's entry. Those restore-keys were held off
-main so that the entry a run saved after a Go bump held nothing the older Go built, and no step
-of this workflow saves a family any more (the two check actions below fall back only to an entry
-of their own Go version, and a ci-caches.yaml fill builds only on an entry of its own Go, so an
+45088325195). What changed under it in eleven days had cost its linux vet 83 to 85% of what the
+same vet for darwin took with nothing cached. Since no entry of the five refilled families
+carries a job's key itself, every restore of them takes the newest entry by prefix, on main too:
+the key is a prefix of the fill's keys, so dispatch-browser-nightly.yaml's re-record job, which
+holds its go-envoy-test restore-keys off main, still finds the last fill's entry. Those
+restore-keys were held off main so that the entry a run saved after a Go bump held nothing the
+older Go built, and no step of this workflow saves a family any more (the two check actions below
+fall back only to an entry of their own Go version, and a ci-caches.yaml fill builds only on an
+entry of its own Go, so an
 entry either one saves holds nothing an older Go built). There is no browser cache beside the Go
 families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
 repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
