@@ -44,9 +44,9 @@ your claim stops as workflow's `leave` decides. A start resumes this session, an
 new session, which has read none of your earlier work, only once supervise's `forgetSession` has
 dropped this one.
 
-You open no `dispatch ask` yourself. Send each question for a person to the architect above you
-with `envoy_publish`, and the root architect asks it on the root (`skill://legion-architect`,
-"Every turn").
+You open no `dispatch ask` yourself, whatever another part of this prompt says. Send each question
+for a person to the architect above you with `envoy_publish`, and the root architect asks it on the
+root (`skill://legion-architect`, "Every turn").
 
 ## Ownership
 
