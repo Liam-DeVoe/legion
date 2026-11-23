@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -140,8 +141,9 @@ func TestTheFirstTaskOfANewAgentOnAHeldNameSaysItIsNewOnTheStep(t *testing.T) {
 			h := newHarnessOf(t, c)
 			h.reach(StateIdle)
 			tc.leave(h)
-			if got := h.claim().Abandoned; got.Session != session || got.AnotherAgent != tc.another {
-				t.Fatalf("the claim records the abandoned session %+v, want %q left behind as another agent's = %v", got, session, tc.another)
+			if got := h.claim(); got.Abandoned.Session != session || got.Abandoned.Agent != stepAgentA || got.Abandoned.OfAnotherAgent(got.SessionAgent) != tc.another {
+				t.Fatalf("the claim of agent %q records the abandoned session %+v, want %q left behind as %s's, another agent's = %v",
+					got.SessionAgent, got.Abandoned, session, stepAgentA, tc.another)
 			}
 			h.registerFresh()
 			base := len(h.prompts())
@@ -166,6 +168,57 @@ func TestTheFirstTaskOfANewAgentOnAHeldNameSaysItIsNewOnTheStep(t *testing.T) {
 					newOnTheStep, repeats, tc.another, !tc.another, first)
 			}
 		})
+	}
+}
+
+// A start for another step's agent can find the claim holding no session at all: the session of
+// the agent before was found in no store and forgotten, and every launch of that agent's fresh
+// session failed before one registered. The claim then records that agent still, an abandoned
+// session nobody was told of, and the cause of the forget that agent's launches were built with.
+// The start for the new agent leaves no session behind, but what the claim keeps of that loss is
+// the other agent's: the new agent's launch is built with no cause of a forget
+// (Claim.SessionLost), and its first task says it is new on the step and that the session before
+// was another agent's. The fault: the new agent was told, in its prompt and in its first task,
+// that a session of its own was lost, and to check what it did before it repeated work it never
+// did.
+func TestANewAgentIsNotToldAnotherAgentsLostSessionAsItsOwn(t *testing.T) {
+	c := byIDClaim(StateRetired, 3)
+	c.SessionAgent = stepAgentA
+	r := newByIDRig(t, c, nil)
+	r.rt.ScriptResume(fake.SpawnResult{Err: noSuchSession()})
+	r.rt.ScriptSpawn(fake.SpawnResult{Err: errBoom}, fake.SpawnResult{Err: errBoom}, fake.SpawnResult{Err: errBoom})
+	if err := r.handle(RequestRetry{Claim: testToken, Start: StartWork{Agent: stepAgentA}}); !errors.Is(err, errBoom) {
+		t.Fatalf("the retry of %s whose fresh spawns the runtime refused = %v; want the runtime's last refusal", stepAgentA, err)
+	}
+	r.wantState(StateFailed)
+	if got := r.claim(); got.Abandoned.Session != idSession || got.Session != "" || got.SessionAgent != stepAgentA {
+		t.Fatalf("the failed claim abandoned %q, records session %q of agent %q; want %s abandoned, no session, and %s's",
+			got.Abandoned.Session, got.Session, got.SessionAgent, idSession, stepAgentA)
+	}
+	from := len(r.rt.Calls())
+
+	r.must(RequestRetry{Claim: testToken, Start: StartWork{Agent: keyAgentB}})
+
+	starts := r.starts(from)
+	if len(starts) != 1 || starts[0].Method != "Spawn" {
+		t.Fatalf("the retry for %s made %s; want one Spawn", keyAgentB, startsText(starts))
+	}
+	if built := r.specs.last(t); built.Generation != starts[0].Spec.Generation || built.SessionLost != "" {
+		t.Errorf("the spawn for %s was built at generation %d with SessionLost %q; want the spawn's, at %d, with no cause: the session lost was %s's",
+			keyAgentB, built.Generation, built.SessionLost, starts[0].Spec.Generation, stepAgentA)
+	}
+	if got := r.claim().SessionAgent; got != keyAgentB {
+		t.Fatalf("the claim records the agent %q of its session, want %q", got, keyAgentB)
+	}
+	r.registerFresh()
+	base := len(r.prompts())
+
+	r.must(RequestDeliver{Claim: testToken, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
+
+	first := r.wantPrompts(base + 1)[base].Message
+	if !strings.Contains(first, "You are a new agent on this step") || !strings.Contains(first, strconv.Quote(idSession)) ||
+		strings.Contains(first, "This session is a new one") || strings.Contains(first, "Before you repeat any of that work") {
+		t.Errorf("the first task of %s does not say it is new on the step and that %s was another agent's:\n%s", keyAgentB, idSession, first)
 	}
 }
 

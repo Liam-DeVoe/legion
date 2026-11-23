@@ -42,8 +42,8 @@ func TestASpawnOfAReleasedLaunchForAnotherAgentLeavesItsSessionBehind(t *testing
 					t.Fatalf("the spawn for %s of a claim whose session is %s's made %d spawns and %d resumes, the claim recording session %q; want one spawn of a new session",
 						tc.agent, stepAgentA, spawned, resumed, got.Session)
 				}
-				if got.Abandoned.Session != session || !got.Abandoned.AnotherAgent {
-					t.Fatalf("the claim records the abandoned session %+v, want %q left behind as another agent's", got.Abandoned, session)
+				if got.Abandoned.Session != session || got.Abandoned.Agent != stepAgentA || !got.Abandoned.OfAnotherAgent(got.SessionAgent) {
+					t.Fatalf("the claim of agent %q records the abandoned session %+v, want %q left behind as %s's", got.SessionAgent, got.Abandoned, session, stepAgentA)
 				}
 			} else if resumed != 1 || spawned != 0 || got.Session != session {
 				t.Fatalf("the spawn for %s of a claim whose session is %s's made %d spawns and %d resumes, the claim recording session %q; want the session %q resumed",

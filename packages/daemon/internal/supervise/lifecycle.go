@@ -105,15 +105,14 @@ func (m *Machine) revive(ctx context.Context, request string, exempt bool, start
 		held := m.claim.SessionAgent
 		m.log.Info("supervise: the step this start is for is another agent's than the one whose session the claim holds, so it starts in a new session",
 			"request", request, "agent", start.Agent, "sessionAgent", held, "session", m.claim.Session)
-		had := m.claim.Session != ""
+		// The session it drops is recorded as the earlier agent's (AbandonedSession.Agent), so the
+		// new agent's first task tells it as another agent's (abandonedTask), as it tells one that
+		// agent lost before this start, where the claim holds no session to drop.
 		m.forgetSession(fmt.Sprintf("the step it was started for is another agent's (%s) than the one whose session it held (%s)",
 			start.Agent, held))
-		// The agent that replaces the session is new on the step, and its first task says so
-		// rather than that a session of its own was lost (AbandonedSession.AnotherAgent,
-		// abandonedTask).
-		if had {
-			m.claim.Abandoned.AnotherAgent = true
-		}
+		// The cause of a forget the machine keeps is the earlier agent's too, where its fresh
+		// session never registered (Machine.lostCause): the new agent's launch is built with none.
+		m.lostCause = ""
 	}
 	if start.Agent != "" {
 		m.claim.SessionAgent = start.Agent
