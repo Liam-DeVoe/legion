@@ -532,19 +532,21 @@ ci_tools__tempfile() {
 # not connected in 30 s, so a host that accepts and sends nothing, one that sends a byte now and
 # then, one that stops mid-body and one that never answers the connection are each cut 30 s into
 # the stall. `--max-time <max_time>`, the row's own bound, is what is left of the clock: it ends
-# an attempt that keeps moving above the floor and still has not finished, and it is set so that
-# the slowest download that kept moving lands (.github/ci-tools.yaml's `max_time` says how).
+# an attempt that keeps moving above the floor and still has not finished. It is twice the row's
+# slowest green fetch, rounded up to the minute, and .github/ci-tools.yaml names each row's.
 # Until 2026-11-23 the clock was the only cut, at 60 s, and it failed a download that was still
 # moving: in job 137969866080 (run 45253427255) PyPI served uv's 17,211,825-byte wheel at about
 # 257 kB/s, curl had read 15,412,215 bytes of it when the 60 s ended the attempt (`curl: (28)
 # Operation timed out after 59879 milliseconds with 15412215 out of 17211825 bytes received`),
-# and the install failed with `no source served the bytes`.
-# The floor and the window are measured against the fetches that land: every row's bytes, 4 MB
-# to 120 MB, were read in 0.6 s to 3.2 s in jobs 137969866080 and 137995673550 (2026-11-23), at
-# 4 MB/s or more, through the fault proxy too, and the one slow fetch that kept moving read
-# 257 kB/s. 10,000 bytes a second is a twenty-fifth of that slowest moving rate, and 30 s is
-# nine times the longest whole fetch a green run made; a stall reads 0, or 0.2 bytes a second for
-# a host that sends a byte every 5 s, so it is under the floor from its first second.
+# and the install failed with `no source served the bytes`. That wheel's 67 s whole is the uv
+# row's slowest fetch, so its bound is 180 s; every other row's slowest is under 11 s, so 60 s.
+# The floor and the window are measured against the fetches that land: in the green
+# tool-fallback and tool-fallback-arm jobs of 2026-11-23 the manifest names, every row's
+# slowest fetch, 4 MB to 120 MB with its digest check, took 0.7 s to 10.8 s (the slowest jj's
+# copy, three requests), and the one slow fetch that kept moving read 257 kB/s.
+# 10,000 bytes a second is a twenty-fifth of that slowest moving rate, and 30 s is nearly three
+# times the longest green fetch; a stall reads 0, or 0.2 bytes a second for a host that sends a
+# byte every 5 s, so it is under the floor from its first second.
 #
 # `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
 # may start: an attempt already running when the minute is over still finishes under its own
@@ -566,7 +568,7 @@ ci_tools__tempfile() {
 # THE WORST CASE A JOB'S LIMIT COUNTS IS 92 s PLUS THE ROW'S `max_time`: an attempt can start up
 # to the minute plus the back-off before it, which is at most 32 s (the 64 s back-off comes after
 # 63 s of back-off already slept, past the minute), and it may then move above the floor for its
-# whole `max_time`. For a row's 180 s that is 272 s.
+# whole `max_time`. For a row's 60 s that is 152 s, and for uv's 180 s, 272 s.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3

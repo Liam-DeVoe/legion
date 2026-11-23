@@ -33,7 +33,11 @@
 #     and the script exits 1, which fails the RUN under `set -eu` or an `&&` chain.
 #   * It is a POSIX sh script that needs only curl, so a RUN runs it on Debian's dash as on Ubuntu's.
 #
-# Run from anywhere: .github/scripts/fetch.sh tools 300 https://example.com/a.tar.gz -o a.tar.gz
+# THE BOUND A CALLER PASSES is twice the slowest green fetch of that download, rounded up to the
+# minute, the rule network-install.sh's kinds follow; the Dockerfile that calls this names each
+# download's measurement (.github/ci-notes/worker-image.md, .github/ci-notes/browser-image.md).
+#
+# Run from anywhere: .github/scripts/fetch.sh tools 60 https://example.com/a.tar.gz -o a.tar.gz
 # Its tests: .github/scripts/fetch.test.sh, in ci.yaml's test job.
 set -eu
 

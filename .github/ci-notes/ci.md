@@ -2512,18 +2512,20 @@ The actions that install a tool through `.github/scripts/ci-tools.sh` run no ins
 network-install.sh, and carry bounds of their own, which a job's sum counts at their worst. One
 fetch of a row's source is `ci_tools_curl` (`--retry 7 --retry-all-errors --retry-max-time 60
 --connect-timeout 30 --speed-limit 10000 --speed-time 30 --max-time <the row's max_time>`): a
-stall is cut 30 s in, and an attempt that keeps moving runs up to the row's `max_time` of 180 s,
-so one fetch fails by name inside 92 s + 180 s = 272 s (the comment above that function says
-why). A row whose second source is the copy in ghcr.io/cybermonklabs/legion/ci reads three more
-after its primary fails: the pull token, the blob, and the store the blob's redirect names.
+stall is cut 30 s in, and an attempt that keeps moving runs up to the row's `max_time`, twice its
+slowest green fetch rounded up to the minute (`.github/ci-tools.yaml` names each), so one fetch
+fails by name inside 92 s + `max_time` (the comment above that function says why): 152 s for
+every row's 60 s, and 272 s for uv's 180 s. A row whose second source is the copy in
+ghcr.io/cybermonklabs/legion/ci reads three more after its primary fails: the pull token, the
+blob, and the store the blob's redirect names.
 
-- 1,088 s: `.github/actions/install-crane`, and install-jj's own install of mise: the release
-  asset, 272 s, then the copy, 3 × 272 s.
+- 608 s: `.github/actions/install-crane`, and install-jj's own install of mise: the release
+  asset, 152 s, then the copy, 3 × 152 s.
 - 544 s: `.github/actions/install-uv`: the release asset, then PyPI's wheel, 2 × 272 s.
-- 2,480 s: `.github/actions/install-jj`: its mise, 1,088 s; then `mise install` of the jj spec,
+- 1,640 s: `.github/actions/install-jj`: its mise, 608 s; then `mise install` of the jj spec,
   whose API reads gave up after 336 s behind a proxy that accepted and never answered (mise
   2026.8.12: 30 s a request, each tried 3 more times), and whose download the action bounds at
-  60 s, tried 4 times, 240 s; then the copy of the jj binary, 3 × 272 s, 816 s:
-  1,088 s + 336 s + 240 s + 816 s.
+  60 s, tried 4 times, 240 s; then the copy of the jj binary, 3 × 152 s, 456 s:
+  608 s + 336 s + 240 s + 456 s.
 - 304 s: `.github/actions/install-zsh`, which fetches each of its two pinned files the Actions
   cache lacks through `ci_tools_curl` with a bound of its own of 60 s: 2 × (92 s + 60 s).

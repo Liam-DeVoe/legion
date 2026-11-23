@@ -438,17 +438,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 # Every curl download of this file goes through one form, .github/scripts/fetch.sh, which each RUN
 # that downloads bind-mounts into /usr/local/bin (its header says the form): at most a bounded time
-# an attempt (300 s for an archive, 60 s for a key or a text file), up to two more attempts after
-# any failure (curl's --retry-all-errors: a 429, a 5xx, a reset, or a stall the bound cut), no new
-# attempt once the retries have run past twice that bound, honouring a Retry-After; then one line
-# naming the stage, the address and curl's exit status. Any checksum check stays after its fetch.
-# A single 503 from GitHub failed this image's build in job 137719519443 (2026-11-23). The file's
-# other installs (apt-get, bun install, go install, go mod download, npm ci and uv) do not go
-# through it.
+# an attempt, up to two more attempts after any failure (curl's --retry-all-errors: a 429, a 5xx, a
+# reset, or a stall the bound cut), no new attempt once the retries have run past twice that bound,
+# honouring a Retry-After; then one line naming the stage, the address and curl's exit status. Any
+# checksum check stays after its fetch. A single 503 from GitHub failed this image's build in job
+# 137719519443 (2026-11-23). The file's other installs (apt-get, bun install, go install, go mod
+# download, npm ci and uv) do not go through it.
+# Each call's bound is twice the slowest green fetch of that download, rounded up to the minute,
+# which is 60 s for every one of them: the slowest, read off BuildKit's own clock in the 27 green
+# builds .github/ci-notes/worker-image.md names, was Oh My Pi's archive at 3.1 s, and the toolchain
+# RUN's seven downloads took 6.7 s together (that note gives each download's figure and job).
 RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
     set -eu; \
     t=/tmp/mise; mkdir -p "$t"; \
-    fetch.sh tools 300 "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz" -o "$t/mise.tar.gz"; \
+    fetch.sh tools 60 "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz" -o "$t/mise.tar.gz"; \
     printf '%s  %s\n' "$MISE_SHA256" "$t/mise.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/mise.tar.gz" -C "$t" --no-same-owner; \
@@ -505,7 +508,7 @@ RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetc
     fetch() { \
       tool=$1; arg=$2; want=$3; url=$4; file=$5; \
       printf '%s\n' "$want" | grep -Eqx '[0-9a-f]{64}' || { echo "tools: $tool: ARG $arg is '$want', which is no 64-hex sha256, so the archive at $url is not fetched" >&2; exit 1; }; \
-      fetch.sh tools 300 "$url" -o "$file"; \
+      fetch.sh tools 60 "$url" -o "$file"; \
       got=$(sha256sum "$file"); got=${got%% *}; \
       [ "$got" = "$want" ] || { echo "tools: $tool: the archive from $url has sha256 $got, and ARG $arg pins $want" >&2; exit 1; }; \
       echo "tools: $tool: $url, sha256 $got"; \
@@ -727,13 +730,13 @@ COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker
 RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
     set -eu; \
     t=/tmp/toolchain; mkdir -p "$t" /out/bin /opt/node; \
-    fetch.sh toolchain 300 "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o "$t/uv.tar.gz"; \
-    fetch.sh toolchain 300 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "$t/node.tar.xz"; \
-    fetch.sh toolchain 300 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip" -o "$t/awscli.zip"; \
-    fetch.sh toolchain 300 "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o "$t/go.tar.gz"; \
-    fetch.sh toolchain 300 "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o "$t/kubectl"; \
-    fetch.sh toolchain 300 "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" -o "$t/yq"; \
-    fetch.sh toolchain 300 "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip" -o "$t/chromium.zip"; \
+    fetch.sh toolchain 60 "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o "$t/uv.tar.gz"; \
+    fetch.sh toolchain 60 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "$t/node.tar.xz"; \
+    fetch.sh toolchain 60 "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip" -o "$t/awscli.zip"; \
+    fetch.sh toolchain 60 "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o "$t/go.tar.gz"; \
+    fetch.sh toolchain 60 "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o "$t/kubectl"; \
+    fetch.sh toolchain 60 "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" -o "$t/yq"; \
+    fetch.sh toolchain 60 "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip" -o "$t/chromium.zip"; \
     printf '%s  %s\n' "$UV_SHA256" "$t/uv.tar.gz" "$NODE_SHA256" "$t/node.tar.xz" \
       "$AWS_CLI_SHA256" "$t/awscli.zip" "$GO_SHA256" "$t/go.tar.gz" \
       "$KUBECTL_SHA256" "$t/kubectl" "$YQ_SHA256" "$t/yq" \
@@ -805,7 +808,7 @@ ARG GCLOUD_SHA256
 RUN --mount=type=bind,source=.github/scripts/fetch.sh,target=/usr/local/bin/fetch.sh \
     set -eu; \
     t=/tmp/gcloud; mkdir -p "$t"; export CLOUDSDK_CONFIG="$t/config"; \
-    fetch.sh gcloud 300 "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" -o "$t/sdk.tar.gz"; \
+    fetch.sh gcloud 60 "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" -o "$t/sdk.tar.gz"; \
     printf '%s  %s\n' "$GCLOUD_SHA256" "$t/sdk.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/sdk.tar.gz" -C /opt --no-same-owner; \

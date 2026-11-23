@@ -307,7 +307,7 @@ DEAD_ADDRESS="127.0.0.1:1"
 # measured every fetch of the job, read that case at 63 s. The floor is those 63 s less the
 # headroom a slow runner needs, and the ceiling is the worst the bound allows: a last attempt
 # may start a minute plus a back-off of up to 32 s in, and run the row's own `max_time` of
-# 180 s while it keeps moving above ci_tools_curl's speed floor, 272 s, with headroom on top.
+# 60 s while it keeps moving above ci_tools_curl's speed floor, 152 s, with headroom on top.
 # Job 129743677408 ran without the stand-in, so it measured no fetch at all and can say
 # nothing about how long a fetch takes. Job 129874475871 did measure them: of its 36 fetches
 # that kept the pinned ladder, the npm fetch of the 107 MB Bun tarball reads 0 s, the PyPI
@@ -319,7 +319,7 @@ DEAD_ADDRESS="127.0.0.1:1"
 # A fetch that merely rode out a flap of its source reads as the warning `ladder-report` prints
 # below and not as a refusal.
 LADDER_FLOOR=45
-LADDER_CEILING=300
+LADDER_CEILING=180
 
 # How many fetches of one run may carry CI_TOOLS_PROOF_FULL_LADDER, read by `ladder-report`
 # over the log the stand-in wrote.
@@ -1749,7 +1749,7 @@ ladder_report() {
     echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, under the floor of $LADDER_FLOOR s, so it stopped driving the real ladder: its fetch now ends before the back-off of 1+2+4+8+16+32 s does, and nothing in this job measures the ladder an outage is ridden out on." >&2
     problems=$((problems + 1))
   elif [ "$longest" -gt "$LADDER_CEILING" ]; then
-    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is more than a last attempt started a minute and 32 s of back-off in and run for a row's max_time of 180 s: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 63 s, one that hangs about 61 s, and one that keeps moving at most 272 s, so a reading over this ceiling is a ladder those flags no longer bound." >&2
+    echo "::error::ci-tools-proof: the case that kept the pinned ladder ($kept) measured $longest s, over the ceiling of $LADDER_CEILING s, which is more than a last attempt started a minute and 32 s of back-off in and run for a row's max_time of 60 s: read that fetch's flags against the ladder ci_tools_curl pins, because under them a source that refuses at once costs 63 s, one that hangs about 61 s, and one that keeps moving at most 152 s, so a reading over this ceiling is a ladder those flags no longer bound." >&2
     problems=$((problems + 1))
   fi
   # This reading stands on its own and is no further arm of the chain above: a job whose kept

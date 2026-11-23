@@ -51,8 +51,8 @@ jobs:
     # decide step's read and of the record step's three, the builder's pull of its BuildKit image,
     # and the measured maximum of every other step.
     # why: .github/ci-notes/browser-image.md#the-jobs-limit-held-to-the-reads-it-makes
-    # 780 s + 1,088 s + 245 s + 240 s + 735 s + 20.4 s = 3,108.4 s -> 52 min.
-    timeout-minutes: 52
+    # 780 s + 608 s + 245 s + 240 s + 735 s + 20.4 s = 2,628.4 s -> 44 min.
+    timeout-minutes: 44
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of

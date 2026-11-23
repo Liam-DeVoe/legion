@@ -38,7 +38,7 @@ forced-order step's download:
 - 490 s: the two apt commands of `.github/scripts/runner-tmux.sh`, 245 s each (three attempts of
   apt's 60 s, each killed 15 s after its SIGTERM, with two 10 s pauses). They run only on a runner
   image without tmux, which a later image can be, so they count.
-- 2,480 s: `.github/actions/install-jj`, at the worst case `.github/ci-notes/ci.md`'s "The worst
+- 1,640 s: `.github/actions/install-jj`, at the worst case `.github/ci-notes/ci.md`'s "The worst
   case of the tool installs that read .github/scripts/ci-tools.sh" derives.
 - 1,207 s: `.github/actions/install-omp`'s download of the pinned Oh My Pi, `curl --retry 3
   --retry-all-errors --max-time 300`: four attempts of 300 s, with curl's own pauses of 1, 2 and
@@ -53,10 +53,10 @@ forced-order step's download:
   sum: the plain step's slowest green run and its -timeout, 15.0 min + 15 min = 1,800 s, and the
   race-impossible step's, 0.5 min + 10 min = 630 s.
 
-daemon-go: 240 s + 490 s + 2,480 s + 1,207 s + 544 s + 425 s + 1,800 s + 630 s + 425 s = 8,241 s,
-which its 138 minutes (8,280 s) hold.
-daemon-go-race: 240 s + 490 s + 2,480 s + 1,207 s + 1,275 s = 5,692 s, which its 95 minutes
-(5,700 s) hold.
+daemon-go: 240 s + 490 s + 1,640 s + 1,207 s + 544 s + 425 s + 1,800 s + 630 s + 425 s = 7,401 s,
+which its 124 minutes (7,440 s) hold.
+daemon-go-race: 240 s + 490 s + 1,640 s + 1,207 s + 1,275 s = 4,852 s, which its 81 minutes
+(4,860 s) hold.
 
 The 60 and 70 minutes main gives the two jobs (3,600 s and 4,200 s) end before those sums, so a
 stalled install there would end in GitHub's cancellation, which names nothing.
