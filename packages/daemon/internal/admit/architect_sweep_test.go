@@ -424,7 +424,7 @@ func TestTheArchitectSweepWritesOneStartOverRepeatedPasses(t *testing.T) {
 
 // The task the rule sends is derived again from the record as it stands, rather than read off
 // the phases row the entry was raised with. The reason is measured: a kept decision is claimed by
-// the outbox row that names it, and record.Postgres.UnclaimedKept locks and reads only what
+// the outbox row that names it, and record.Postgres.UnclaimedKeptOf locks and reads only what
 // nothing claims, so a text composed once and sent again could name a decision another telling
 // has already claimed. The row's own stored text is a different string here, which is what makes
 // the two readings tell apart.

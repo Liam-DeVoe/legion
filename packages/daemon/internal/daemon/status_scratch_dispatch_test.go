@@ -112,7 +112,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 		t.Fatalf("Dispatch shows %s at %q, want the person's done: the daemon wrote nothing over it", issue, got)
 	}
 	recorded := recordOf(t, pool, records, issue)
-	if !workflow.InWorkflow(recorded) {
+	if !record.InWorkflow(recorded) {
 		t.Fatalf("the record of %s = %+v, want it where the workflow left it: the row's read decides its own write and tells the engine nothing", issue, recorded)
 	}
 	if rows := statusRowsOf(t, pool, issue); rows != 0 {

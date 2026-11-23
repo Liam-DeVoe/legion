@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -15,11 +16,13 @@ import (
 // retentionEnd is the retention_end executor (record.RetentionEnd, decision 17 of
 // dispatch://INFRA-4730): at the deadline a linger of the release before left one issue
 // (record.Issue.RetainedUntil), for that issue while it stays out of Legion's work, and after any
-// production check it owes, it does what that linger's expiry did for it alone — each suspended
-// claim of it retires with its session kept (supervise.RequestIssueClose), the workspace bundle a
-// release saved for it goes, and its workspace on the daemon's own host is removed
-// (removeRetainedWorkspace), called here directly, with no workspace_remove row. Nothing of any
-// other issue is touched. The row is fenced by the run and the phase entry it was queued at
+// production check it owes, it does what that linger's expiry did for it alone — each suspended or
+// failed claim of it retires with its session kept (supervise.RequestIssueClose), as that expiry's
+// close retired every claim it could stop, the workspace bundle a release saved for it goes, and
+// its workspace on the daemon's own host is removed (removeRetainedWorkspace), called here
+// directly, with no workspace_remove row, which waits for every claim of the issue to retire. A
+// failed claim left standing would hold that removal, and the row, for good. Nothing of any other
+// issue is touched. The row is fenced by the run and the phase entry it was queued at
 // (record.FenceOf, run): an issue that came back to work since stands at a later entry, and the
 // row finishes there without acting; one in Legion's work at this entry finishes too.
 func (r *outbox) retentionEnd(ctx context.Context, row record.OutboxRow, payload record.RetentionEnd) error {
@@ -36,13 +39,13 @@ func (r *outbox) retentionEnd(ctx context.Context, row record.OutboxRow, payload
 		return nil
 	}
 	if until := issue.RetainedUntil; until != nil && r.now().Before(*until) {
-		return wait.Errorf("the retention of %s ends at %s", issue.Key, until.UTC().Format("2006-01-02T15:04:05Z"))
+		return wait.Errorf("the retention of %s ends at %s", issue.Key, until.UTC().Format(time.RFC3339))
 	}
 	check, err := r.productionCheck(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
-	if check != nil && check.ClosedAt == nil {
+	if check != nil && check.Open() {
 		return wait.Errorf("the retention of %s ends after the production check it owes", issue.Key)
 	}
 	for _, role := range claim.Roles {
@@ -51,7 +54,7 @@ func (r *outbox) retentionEnd(ctx context.Context, row record.OutboxRow, payload
 			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 		}
 		machine, found := r.supervisor.Machine(token)
-		if !found || machine.Claim().State != supervise.StateSuspended {
+		if !found || machine.Claim().State != supervise.StateSuspended && machine.Claim().State != supervise.StateFailed {
 			continue
 		}
 		if err := machine.Handle(ctx, supervise.RequestIssueClose{Claim: token}); err != nil {
@@ -62,7 +65,7 @@ func (r *outbox) retentionEnd(ctx context.Context, row record.OutboxRow, payload
 	if err := r.removeRetainedWorkspace(ctx, *issue); err != nil {
 		return err
 	}
-	r.log.Info("outbox retention end: the issue's suspended claims retired, its bundle and workspace removed", "row", row.ID, "issue", issue.Key,
+	r.log.Info("outbox retention end: the issue's suspended and failed claims retired, its bundle and workspace removed", "row", row.ID, "issue", issue.Key,
 		"generation", payload.Generation, "entry", payload.Entry)
 	return nil
 }

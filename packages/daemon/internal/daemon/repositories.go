@@ -1883,11 +1883,8 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, told := range notices {
-			row, err := record.NewFencedRow(scoped, tx, w.records, told.issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now)
-			if err != nil {
-				return err
-			}
-			if err := w.records.Enqueue(scoped, tx, row); err != nil {
+			if err := record.EnqueueFenced(scoped, tx, w.records, told.issue,
+				record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: told.reason}, now); err != nil {
 				return err
 			}
 		}

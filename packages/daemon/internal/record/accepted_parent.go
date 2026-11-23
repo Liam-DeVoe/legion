@@ -1,11 +1,6 @@
 package record
 
-import (
-	"context"
-	"slices"
-
-	"github.com/jackc/pgx/v5"
-)
+import "slices"
 
 // OpenBeneath is the sorted keys of the issues in Legion's work whose Dispatch chains pass
 // through key (Chains.Under), and nothing at all when none is. It is the one set the two
@@ -38,36 +33,18 @@ func OpenBeneath(chains *Chains, key string) []string {
 	return open
 }
 
-// AcceptedAncestorOf is the issue above key in Legion's work that the daemon has already accepted
-// (AcceptedAncestor), and "" when none has been. It reads the chains of project with key and
-// parent named (ReadChains), three queries, and it is what the workflow asks when an issue it
-// records enters the workflow beneath such an issue (engine's enterChild), which is the one caller
-// that holds no read of the chains already. The two doors into the workflow — release_children
-// and rerun_child, which refuse CHILD_UNDER_ACCEPTED_PARENT — read the chains once for the whole
-// request and ask AcceptedAncestorIn of them instead.
+// AcceptedAncestorIn is the issue above key in Legion's work that the daemon has already accepted
+// (AcceptedAncestor), and "" when none has been, over chains the caller has already read with key
+// and parent named: a handler that reads the chains for a request of its own asks this of each
+// child it answers for, rather than reading them again per child (api's release_children, which
+// answers a whole wave, and its rerun_child), and the workflow asks it when an issue it records
+// enters the workflow beneath such an issue (engine's enterChild), over the child's own chain.
 //
 // parent is the Dispatch parent the caller read for an issue the copy may hold no row of yet,
-// which is every child release_children releases before the reading of it reaches the copy: the
-// chain starts there instead, so the rule reaches such a child exactly as it reaches one the copy
-// holds.
-func AcceptedAncestorOf(ctx context.Context, store Store, tx pgx.Tx, project, key, parent string) (string, error) {
-	named := []string{key}
-	if parent != "" {
-		named = append(named, parent)
-	}
-	chains, err := ReadChains(ctx, tx, store, project, named)
-	if err != nil {
-		return "", err
-	}
-	return AcceptedAncestorIn(chains, key, parent), nil
-}
-
-// AcceptedAncestorIn is AcceptedAncestorOf over chains the caller has already read, with key and
-// parent named: a handler that reads the chains for a request of its own asks this of each child
-// it answers for, rather than reading them again per child (api's release_children, which answers
-// a whole wave, and its rerun_child). Where the copy holds no row of key and the caller read its
-// parent, the walk starts at that parent: the parent itself where it is in Legion's work and
-// accepted, else the issue above it that is.
+// which is every child release_children releases before the reading of it reaches the copy: where
+// the copy holds no row of key and the caller read its parent, the walk starts at that parent
+// instead, so the rule reaches such a child exactly as it reaches one the copy holds: the parent
+// itself where it is in Legion's work and accepted, else the issue above it that is.
 func AcceptedAncestorIn(chains *Chains, key, parent string) string {
 	if chain := chains.Chain(key); parent == "" || chain.Cause != ChainMissingRow || chain.At != key {
 		return AcceptedAncestor(chains, key)

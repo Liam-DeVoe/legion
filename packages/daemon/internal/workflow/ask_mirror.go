@@ -31,13 +31,6 @@ import (
 // nothing is (itemLeft). These decisions read the record beside the row (the gate's document,
 // gateArtifact); the row itself never does.
 
-// recordedRoot is the record of key when it holds its own design gate on the Dispatch chain
-// (gateHolder), with the chains that read it, and nil otherwise: the asks of a root's own wait are
-// mirrored, and a session of its tree is one whose issue's gate root it is.
-func (e *Engine) recordedRoot(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, *record.Chains, error) {
-	return e.gateHolder(ctx, tx, key)
-}
-
 // askState is what an event says of whether an ask is open.
 type askState int
 
@@ -188,7 +181,7 @@ func (e *Engine) answersWait(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // approval request hands back nothing a root waits on here, and a restored ask arrives as
 // DispatchAskRestored instead.
 func (e *Engine) dispatchAskOpened(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskOpened) (intake.Result, error) {
-	root, chains, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, chains, err := e.gateHolder(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
@@ -212,7 +205,7 @@ func (e *Engine) dispatchAskOpened(ctx context.Context, tx pgx.Tx, fact intake.D
 // person's act and declares nothing; a close that takes an ask of the root's wait away from the
 // person moves the wait (itemLeft).
 func (e *Engine) dispatchAskRestored(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskRestored) (intake.Result, error) {
-	root, _, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, _, err := e.gateHolder(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}
@@ -260,7 +253,7 @@ func (e *Engine) dispatchAskClosed(ctx context.Context, tx pgx.Tx, fact intake.D
 // Admission's answeredSince reads the row instead, for a decline that falls before the pass that
 // would put the root in the wait.
 func (e *Engine) closeAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) error {
-	root, chains, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, chains, err := e.gateHolder(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return err
 	}
@@ -341,7 +334,7 @@ func (e *Engine) dispatchAskReply(ctx context.Context, tx pgx.Tx, fact intake.Di
 // person hands it back (declare), unless a newer turn of the ask is already recorded (handsTurn). Any other reply that takes an ask of the root's wait away from the person —
 // a session's progress note handing it to the agent's turn — moves the wait (itemLeft).
 func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskReply) error {
-	root, chains, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, chains, err := e.gateHolder(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return err
 	}
@@ -391,7 +384,7 @@ func (e *Engine) replyToAsk(ctx context.Context, tx pgx.Tx, fact intake.Dispatch
 // version's own artifact.version event answers a root waiting on its gate (answerAwaitedGate), and
 // a root at admitted finds the request no longer with the person at the next pass (withHuman).
 func (e *Engine) dispatchApprovalMoved(ctx context.Context, tx pgx.Tx, fact intake.DispatchApprovalMoved) (intake.Result, error) {
-	root, _, err := e.recordedRoot(ctx, tx, fact.Key)
+	root, _, err := e.gateHolder(ctx, tx, fact.Key)
 	if err != nil || root == nil {
 		return intake.Result{}, err
 	}

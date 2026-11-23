@@ -174,12 +174,11 @@ func (s *memoryClaims) ClaimByBootTokenHash(_ context.Context, hash []byte) (sup
 }
 
 // The lifecycle barrier is the store's, held to its own tests: here every tree and issue is open at
-// epoch 1, and a close's cleanup releases each issue through the runtime at once. No tree is ever
+// epoch 1, and a close's cleanup releases each issue through the runtime at once. No issue is ever
 // created here (treelifecycle.Lifecycle.Created), so the open runs its created for none of them:
 // this fake holds no transaction for one to write in.
-func (s *memoryClaims) OpenOperatorTreeLifecycle(_ context.Context, project, tree string,
-	_ func(context.Context, pgx.Tx) error) (treelifecycle.Lifecycle, error) {
-	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: treelifecycle.AuthorityOperator}, nil
+func (s *memoryClaims) OpenTreeLifecycle(_ context.Context, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
+	return treelifecycle.Lifecycle{Project: project, Tree: tree, Epoch: 1, Authority: authority}, nil
 }
 
 // The issue barrier is the store's as well: every issue is open at epoch 1, under the operator's

@@ -76,7 +76,7 @@ func TestTheCopyHoldsLabelsAndRank(t *testing.T) {
 			t.Fatalf("write the status of %s: %v", key, err)
 		}
 
-		// The fact api's recordOwnStatusWrite applies for a write Dispatch answered at a sequence.
+		// The fact api's ApplyOwnStatusWrite applies for a write Dispatch answered at a sequence.
 		event := intake.OwnStatusWrite(written)
 		fact := intake.ObservedIssue(written)
 		fact.Delivered = &event

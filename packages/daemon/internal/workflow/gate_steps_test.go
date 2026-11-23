@@ -68,8 +68,8 @@ func seedGatedTree(t *testing.T, pool *pgxpool.Pool) {
 		Tree: gatedRoot, Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U",
 		HandedOver: true, LastDispatchSeq: 1})
 	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
-	// The lifecycle, not the slot, is what says the tree runs: a slot counts one issue at work
-	// (record.TreeLive), so the waiting line reads nothing of this tree without it.
+	// The tree lifecycle is opened beside the slot, as admission's promotion opens it: the shadow
+	// the release before reads (R22 of dispatch://INFRA-3320).
 	seedTreeLifecycle(t, pool, gatedRoot)
 	seedArchitectClaim(t, pool, gatedRoot)
 }
@@ -155,7 +155,15 @@ func reconcileAwaiting(t *testing.T, pool *pgxpool.Pool, engine *Engine) []strin
 		if err != nil {
 			return err
 		}
-		entered, _, err = engine.ReconcileAwaiting(scoped, tx, "LEGION", issues, nil)
+		keys := make([]string, len(issues))
+		for i, issue := range issues {
+			keys[i] = issue.Key
+		}
+		chains, err := record.ReadChains(scoped, tx, store, "LEGION", keys)
+		if err != nil {
+			return err
+		}
+		entered, _, err = engine.ReconcileAwaiting(scoped, tx, "LEGION", chains, issues, nil)
 		return err
 	})
 	return entered
@@ -266,7 +274,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		if entry.Kind != record.LineFirstPhase || len(blockers.Holds(rows, facts.Chains, entry.Issue)) > 0 {
 			continue
 		}
-		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, facts.Chains.HoldsOwnGate(entry.Issue.Key), rows[entry.Issue.Key].Blockers); err != nil {
+		if err := engine.StartFirstPhase(scoped, tx, entry.Issue, facts.Chains, rows[entry.Issue.Key].Blockers); err != nil {
 			t.Fatalf("StartFirstPhase %s: %v", entry.Issue.Key, err)
 		}
 	}

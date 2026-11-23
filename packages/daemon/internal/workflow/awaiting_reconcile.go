@@ -24,12 +24,14 @@ import (
 // same decision, and admission calls it on every pass (Admission.promoteHolds): a guard that
 // clears on any path — a member leaving, a claim released, the label put back, the architect's
 // start taken — is seen at the next fact. issues is the caller's snapshot of project's records
-// (admission's LiveIssues, which names the project), and held names each root the caller still
-// holds for the Dispatch consumer to catch up (nil holds none): a root whose listing is ahead of
-// the record decides nothing until the consumer has reached it, so a question already answered on
-// Dispatch does not start a wait here first. It returns the roots that entered awaiting_person,
-// which keep the slots they hold, and whether it wrote any issue of the snapshot, which the caller
-// then reads again.
+// (admission's LiveIssues, which names the project), chains the caller's reading of the Dispatch
+// chains with each of issues named (the pass's own, record.LineFacts.Chains), and held names each
+// root the caller still holds for the Dispatch consumer to catch up (nil holds none): a root whose
+// listing is ahead of the record decides nothing until the consumer has reached it, so a question
+// already answered on Dispatch does not start a wait here first. It returns the roots that entered
+// awaiting_person, which keep the slots they hold, and whether it wrote any issue of the snapshot,
+// which the caller then reads again. Nothing it writes moves an issue into or out of Legion's work
+// or changes which issue holds its own gate, so every answer chains gives stands through it.
 //
 // It reads the slot rows once for the pass, because a root waits on a person only while the
 // daemon has started it, which is what its slot row says (record.CanWaitOnPerson,
@@ -37,34 +39,19 @@ import (
 // root the work it hands over is the architect writing the spec, before
 // the design gate first opens. That is the spec's own condition, and the boot's catch-up reads
 // the roots this pass can move (the daemon's catchesUp) by that same predicate.
-func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
-	changed, err := e.answerOpenGates(ctx, tx, issues, held)
+func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project string, chains *record.Chains, issues []record.Issue, held func(string) bool) ([]string, bool, error) {
+	changed, err := e.answerOpenGates(ctx, tx, chains, issues, held)
 	if err != nil {
 		return nil, false, err
 	}
-	var candidates []record.Issue
-	var keys []string
+	// A root here is an issue that holds its own design gate on Dispatch's chain as the copy shows
+	// it (record.Chains.HoldsOwnGate), and its tree the issues in Legion's work under it.
+	var roots []record.Issue
 	for _, issue := range issues {
 		if held != nil && held(issue.Key) {
 			continue
 		}
-		if issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 {
-			candidates = append(candidates, issue)
-			keys = append(keys, issue.Key)
-		}
-	}
-	if len(candidates) == 0 {
-		return nil, changed, nil
-	}
-	// A root here is an issue that holds its own design gate on Dispatch's chain as the copy shows
-	// it (record.Chains.HoldsOwnGate), and its tree the issues in Legion's work under it.
-	chains, err := record.ReadChains(ctx, tx, e.store, project, keys)
-	if err != nil {
-		return nil, false, err
-	}
-	var roots []record.Issue
-	for _, issue := range candidates {
-		if chains.HoldsOwnGate(issue.Key) {
+		if issue.Phase == phase.Admitted && issue.DeclaredSeq != 0 && chains.HoldsOwnGate(issue.Key) {
 			roots = append(roots, issue)
 		}
 	}
@@ -77,7 +64,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 	}
 	// A root whose key yields no claim token has no architect claim to read (record.RoleRun's
 	// zero value), so it owes its start and keeps its slot.
-	keys = make([]string, len(roots))
+	keys := make([]string, len(roots))
 	tokens := make([]claim.Token, len(roots))
 	var runKeys []record.RoleRunKey
 	for i, root := range roots {
@@ -111,17 +98,18 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 		if err != nil {
 			return nil, false, err
 		}
-		unresumable, err := Unresumable(ctx, e.store, tx, root)
+		unresumable, err := Unresumable(ctx, e.store, tx, chains, root)
 		if err != nil {
 			return nil, false, err
 		}
 		_, holds := slotted[root.Key]
-		view := awaitView{Root: root, HoldsGate: chains.HoldsOwnGate(root.Key), Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
+		// Every root here holds its own gate (the filter above), and every issue under it on the
+		// chain is one the read records (record.Chains.Under).
+		view := awaitView{Root: root, HoldsGate: true, Slotted: holds, Unresumable: unresumable, Run: runs[tokens[i]], Asks: asks[root.Key],
 			Steps: e.cfg.Steps, Gates: gates}
 		for _, under := range chains.Under(root.Key) {
-			if member, recorded := chains.Record(under); recorded {
-				view.Members = append(view.Members, member)
-			}
+			member, _ := chains.Record(under)
+			view.Members = append(view.Members, member)
 		}
 		decision := decideAwait(view)
 		switch decision.Act {
@@ -166,16 +154,13 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 // waited on it) whose gate is not open is decided in the same pass, since no approval request
 // counts then (gateRequestArtifact): the wait moves to a question of the tree still with the
 // person, and is otherwise answered, so the architect resumes and registers its spec, which
-// opens the gate. It reports whether it answered or moved any root's wait.
-func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record.Issue, held func(string) bool) (bool, error) {
+// opens the gate. It reports whether it answered or moved any root's wait. chains is the caller's
+// reading of the Dispatch chains with each of issues named, which says which of them hold their
+// own gate (record.Chains.HoldsOwnGate).
+func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, chains *record.Chains, issues []record.Issue, held func(string) bool) (bool, error) {
 	answered := false
 	for _, root := range issues {
-		if (held != nil && held(root.Key)) || !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil {
-			continue
-		}
-		if holds, err := e.holdsOwnGate(ctx, tx, root); err != nil {
-			return answered, err
-		} else if !holds {
+		if (held != nil && held(root.Key)) || !root.AwaitingPerson() || root.Awaiting.AnsweredAt != nil || !chains.HoldsOwnGate(root.Key) {
 			continue
 		}
 		gates, err := e.store.GatesOf(ctx, tx, root.Key)

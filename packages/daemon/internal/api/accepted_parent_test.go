@@ -158,7 +158,7 @@ func TestWaveReleaseIsRefusedForAGrandchildUnderADoneParent(t *testing.T) {
 }
 
 // A6. The refusal is the daemon's own reading of the Dispatch chain, so the ancestor it names is
-// the one record.AcceptedAncestorOf finds over the copy of Dispatch's issues: the nearest issue
+// the one record.AcceptedAncestorIn finds over the copy of Dispatch's issues: the nearest issue
 // above the child in retro or merging, found by walking past a parent that is already done.
 func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 	h, _, _ := statusHarness(t)
@@ -178,9 +178,12 @@ func TestTheAcceptedAncestorIsFoundByWalkingThePartlyDoneChain(t *testing.T) {
 				return err
 			}
 		}
-		var err error
-		ancestor, err = record.AcceptedAncestorOf(context.Background(), record.NewStore(), tx, testDispatchProject, "LEGION-300", "")
-		return err
+		chains, err := record.ReadChains(context.Background(), tx, record.NewStore(), testDispatchProject, []string{"LEGION-300"})
+		if err != nil {
+			return err
+		}
+		ancestor = record.AcceptedAncestorIn(chains, "LEGION-300", "")
+		return nil
 	}); err != nil {
 		t.Fatalf("read the accepted ancestor: %v", err)
 	}

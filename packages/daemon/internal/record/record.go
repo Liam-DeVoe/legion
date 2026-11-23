@@ -534,7 +534,7 @@ func ReturnsAsTestingInstead(held phase.Phase) bool {
 // start task or catch-up that claimed it (ClaimedBy, the outbox row whose payload names it:
 // workflow.Engine.ParkedDecisionTask names only rows nothing counting claims or holds) has told
 // an architect of its issue's tree, and is deleted then — by that catch-up's publish
-// (Store.ForgetKeptDecisions) or by the confirmation of the delivery that holds it (HeldBy). A
+// (Store.ForgetKeptDecisionsOf) or by the confirmation of the delivery that holds it (HeldBy). A
 // claiming row that reached no architect hands it over instead (workflow.HandOverKept): it goes
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
 // a release never leaves it kept with nobody to name it again.
@@ -2041,7 +2041,7 @@ type Store interface {
 	// LiveIssues is every record of project that is not finished, by key: each not in phase done,
 	// each set back to todo, and each done one that still holds a slot. It is what admission and
 	// every per-fact read take, so a fact's cost does not grow with the done records a project
-	// keeps; a done record is read only by key (Issue, IssuesOf) or by tree (TreeIssues).
+	// keeps; a done record is read only by key (Issue, IssuesOf, IssuesByKey).
 	LiveIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	// IssuesOf is the record of each of keys that is an issue of project, by key, leaving out a key
 	// with no record; no keys read nothing.
@@ -2049,12 +2049,6 @@ type Store interface {
 	// IssuesByKey is the record of each of keys, whatever its project, by key, leaving out a key
 	// with no record; no keys read nothing. It is Issue for many keys in one query.
 	IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]Issue, error)
-	// AncestorsOf is the record of each of keys and of every issue above it on the chain of
-	// recorded parents, by key, for the issues of project; it walks the chain in one query
-	// whatever its depth. It is what the waiting line's pass reads of the issues its live read
-	// leaves out, so the one chain walk (Ancestors) crosses a parent already done. No keys read
-	// nothing.
-	AncestorsOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]Issue, error)
 	// SlottedIssues is the record of each issue of project that holds an admission slot, in slot
 	// order, in one read: another project's slot in the shared table, and every issue holding no
 	// slot, are left out of the read rather than of the caller's loop.
@@ -2208,19 +2202,17 @@ type Store interface {
 	PutProductionCheck(ctx context.Context, tx pgx.Tx, check ProductionCheck) error
 	// OpenProductionChecks is every open check, oldest opened first, then by issue.
 	OpenProductionChecks(ctx context.Context, tx pgx.Tx) ([]ProductionCheck, error)
-	// SessionClaimsTree says whether the agent session holds a claim in the tree.
-	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
 	// SessionClaimsOf says whether the agent session holds a claim of one of issues: the issues
-	// whose gate root is one issue's, which the caller reads from its Chains, in place of the tree
-	// SessionClaimsTree reads off the claims (R18 of dispatch://INFRA-3320). No issues reads false.
+	// whose gate root is one issue's, which the caller reads from its Chains, never the tree a
+	// claim stores (R18 of dispatch://INFRA-3320). No issues reads false.
 	SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []string, session string) (bool, error)
 	// HeldSessionWriteIssues is every issue of the Dispatch project whose record holds session
 	// writes the repair held on an unknown chain (Issue.HeldSessionWrites), by key: the issues the
 	// admission pass judges once their chains are known.
 	HeldSessionWriteIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
-	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
-	// records. It is what tells a holder the daemon records in another tree from one it records
-	// nowhere, which SessionClaimsTree's one boolean cannot.
+	// SessionClaimsAnywhere says whether the agent session holds a claim the daemon records,
+	// on any issue. It is what tells a holder the daemon records under another gate root from one
+	// it records nowhere, which SessionClaimsOf's one boolean cannot.
 	SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error)
 	// ProjectClaims is every claim of the project that stands on an issue, as the quiet measure
 	// reads one (TreeClaim): the issue, the claim's state and its two step times, in no order. It
@@ -2236,8 +2228,7 @@ type Store interface {
 	// one of them per issue would make a query per issue of the project.
 	//
 	// project is the claim project token (claim.ProjectToken): `claims.project` holds the token,
-	// lowercased and alphanumeric, not the Dispatch project key the issue records carry (the
-	// claim store's IssueRunsElsewhere reads the same column the same way), so the caller
+	// lowercased and alphanumeric, not the Dispatch project key the issue records carry, so the caller
 	// converts. A claim on no issue — the project's own controller holds one — is left out by the
 	// query, since it stands in no tree and the measure could place it nowhere.
 	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
@@ -2542,15 +2533,6 @@ type Store interface {
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.
 	OpenTreeLifecycle(ctx context.Context, tx pgx.Tx, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error)
-	// TreeLifecycle is the tree's lifecycle under the project token, and whether it has one, read
-	// without opening anything (treelifecycle.Read).
-	TreeLifecycle(ctx context.Context, tx pgx.Tx, project, tree string) (treelifecycle.Lifecycle, bool, error)
-	// TreeLifecycles is the lifecycle of each of trees, by tree, in one read, opening nothing: the
-	// lifecycles a single look over many trees needs, rather than a read per tree under the fact
-	// lock. A tree with no row has no entry, and no trees reads nothing. project is the claim
-	// project token the tree_lifecycles table is keyed by, the value OpenTreeLifecycle takes, not
-	// the Dispatch project key.
-	TreeLifecycles(ctx context.Context, tx pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error)
 	// OpenIssueLifecycle binds an admission fact's start of one issue to a durable epoch of that
 	// issue's own lifecycle (treelifecycle.Issues) before the fact commits, as OpenTreeLifecycle
 	// does for a tree. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
@@ -2628,7 +2610,7 @@ type Store interface {
 	// its fact's fenced rows (WithFencedRows), is kept for that fact's settle (RefenceFactRows).
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
-	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
+	// (ClaimKeptDecisionsOf). It refuses a ready_merge row, whose insert may update another.
 	EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int64, error)
 	// EnqueueStart writes a phase worker's start as a row of its own, taking out the issue's
 	// oldest pending start of a phase worker — the supervise start that names a phase and
@@ -2679,9 +2661,6 @@ type Store interface {
 	// NextDue is the earliest next_at after now among issue's rows of kinds no live lease holds;
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
-	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
-	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
-	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
@@ -2729,7 +2708,7 @@ type Store interface {
 	// fresh catch-up, written in the same transaction, to name again — telling the architect that
 	// already has the publish in its hands a person's decision twice. Such a row is left for its own
 	// ending to settle what it claims: its publish forgets exactly what it named
-	// (ForgetKeptDecisions), a newer catch-up that supersedes it hands those rows over
+	// (ForgetKeptDecisionsOf), a newer catch-up that supersedes it hands those rows over
 	// (workflow.HandOverKept), and every other ending leaves them to the row's deletion, for the
 	// architect's next ready to name. A claim of one of the issue's catch-ups and this drop are
 	// serialized by an advisory lock keyed by the issue, which ClaimRow takes too: a claim either

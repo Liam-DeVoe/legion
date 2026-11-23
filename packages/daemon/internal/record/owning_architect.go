@@ -200,22 +200,21 @@ func OwnerWalkOver(ctx context.Context, store Store, tx pgx.Tx, project string, 
 }
 
 // ReadOwnerWalk reads in tx, once, what the owner walk from each of keys weighs: the Dispatch
-// chains of dispatchProject with keys named (ReadChains) and the architect claims on them as the
-// store records them (OwnerWalkOver).
+// chains of keys (ReadChainsOf: the walk asks of each key its links, the issues above it in
+// Legion's work and, once its chain is known, the state tree of the key or of its first such
+// issue, each a question of the key's own chain) and the architect claims on them as the store
+// records them (OwnerWalkOver).
 func ReadOwnerWalk(ctx context.Context, store Store, tx pgx.Tx, dispatchProject string, keys []string) (OwnerWalk, error) {
 	project, err := claim.ProjectToken(dispatchProject)
 	if err != nil {
 		return OwnerWalk{}, err
 	}
-	chains, err := ReadChains(ctx, tx, store, dispatchProject, keys)
+	chains, err := ReadChainsOf(ctx, tx, store, dispatchProject, keys)
 	if err != nil {
 		return OwnerWalk{}, err
 	}
 	return OwnerWalkOver(ctx, store, tx, project, chains, keys)
 }
-
-// Chains is the read of the Dispatch chains the walk runs over.
-func (w OwnerWalk) Chains() *Chains { return w.chains }
 
 // Owner is the key of the issue whose architect owns key, one of the keys the walk was read for
 // (OwningIssue), "" where the walk meets an unknown chain.

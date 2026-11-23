@@ -997,10 +997,12 @@ func TestTheGateArchitectWakeIsNotRaisedForARootAHandoverCarriedIn(t *testing.T)
 		t.Fatalf("the architect wakes of the carried root = %q, want none: the gate arm reads a root standing at admitted", reasons)
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
-		reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root),
-			record.PhaseEntry{}, record.RoleRun{})
-		if err != nil || !reached {
-			t.Fatalf("the architect reach over the carried root = %t, %v, want the root inside it: the quiet above must be the arm's own reading", reached, err)
+		chains, err := record.ReadChains(context.Background(), tx, record.NewStore(), testProject, []string{root})
+		if err != nil {
+			t.Fatalf("read the chain of %s: %v", root, err)
+		}
+		if !workflow.ArchitectAtWork(issue(t, pool, root), chains.HoldsOwnGate(root), record.PhaseEntry{}, record.RoleRun{}) {
+			t.Fatal("the architect reach over the carried root leaves it out, want the root inside it: the quiet above must be the arm's own reading")
 		}
 	})
 }

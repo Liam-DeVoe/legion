@@ -118,15 +118,15 @@ func (r *outbox) readNoticeTree(ctx context.Context, row record.OutboxRow) (reco
 
 // readNoticeRoute reads in tx the route of the notices of the issues keys names, all of
 // dispatchProject: the project's claim token and the Dispatch chains of every key, in one read
-// (record.ReadChains), so a caller routing many notices reads the copy a fixed number of times
-// however many there are. A project that makes no claim token routes nothing
-// (errNoticeUnroutable).
+// (record.ReadChainsOf, which walks the keys' own chains), so a caller routing many notices reads
+// the copy a fixed number of times however many there are. A project that makes no claim token
+// routes nothing (errNoticeUnroutable).
 func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, dispatchProject string, keys []string) (noticeRoute, error) {
 	project, err := claim.ProjectToken(dispatchProject)
 	if err != nil {
 		return noticeRoute{}, fmt.Errorf("%w: %w", errNoticeUnroutable, err)
 	}
-	chains, err := record.ReadChains(ctx, tx, r.records, dispatchProject, keys)
+	chains, err := record.ReadChainsOf(ctx, tx, r.records, dispatchProject, keys)
 	if err != nil {
 		return noticeRoute{}, err
 	}

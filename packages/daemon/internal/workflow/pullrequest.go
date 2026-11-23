@@ -474,9 +474,23 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 // dispatch://INFRA-3320, childrenNotDone), in icebox or the backlog included, since Dispatch
 // refuses the close of a parent over any such child. The departure of a child the daemon records
 // reads this wait again (leave's closeAwaitingMerge), and so does every decision pass
-// (WriteDueClose), which sees a child the daemon records nothing of reach done, so the close is
-// queued as soon as the last child is done.
+// (WriteDueCloses), which sees a child the daemon records nothing of reach done, so the close is
+// queued as soon as the last child is done. The children are read from issue's own chain
+// (record.ReadChainsOf: its children are the walk's start's).
 func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest) ([]string, error) {
+	if !awaitsMerge(issue) || !record.InLegionsWork(issue) {
+		return nil, nil
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	if err != nil {
+		return nil, err
+	}
+	return e.closeMergedOn(ctx, tx, chains, issue, pr)
+}
+
+// closeMergedOn is closeMerged over chains a caller has already read with issue's Dispatch
+// children in them (WriteDueCloses, over the pass's chains).
+func (e *Engine) closeMergedOn(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, pr *record.PullRequest) ([]string, error) {
 	// An issue held from merging is awaiting its merge still (awaitsMerge, the one
 	// predicate written over that wait), and the close goes on from the phase itself, so every
 	// row below reads one shape.
@@ -484,11 +498,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return nil, nil
 	}
 	issue.Phase, issue.Hold = phase.Merging, nil
-	waiting, err := e.childrenNotDoneOf(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	if len(waiting) > 0 {
+	if waiting := childrenNotDone(chains, issue.Key); len(waiting) > 0 {
 		e.logOnCommit(ctx, "workflow: a merged issue's close waits for its children that are not done", "issue", issue.Key,
 			"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 		return waiting, nil

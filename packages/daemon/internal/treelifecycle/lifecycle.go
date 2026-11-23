@@ -159,14 +159,6 @@ func (l Lifecycle) HeldByOperator() bool {
 	return l.Authority == AuthorityOperator && l.CleanupConfirmedAt.IsZero()
 }
 
-// OpenUnderWorkflow says whether the workflow owns this lifetime and it is still running: an
-// admission fact opened it, and no cleanup has been reserved on it. A lifetime ends by reserving
-// its cleanup (ReserveCleanup), and only a fresh Open clears that reservation, so CleanupStarted is
-// the mark of a lifetime that has ended whether or not its release has confirmed yet.
-func (l Lifecycle) OpenUnderWorkflow() bool {
-	return l.Authority == AuthorityWorkflow && !l.CleanupStarted
-}
-
 // Open starts a fresh authorized lifetime of key or returns its current open epoch. It is called
 // in the admission fact transaction or before an explicit operator claim is created; a cleanup
 // reservation is a named wait, never an implicit zero authority.
@@ -318,20 +310,4 @@ func (u Unit) ConfirmCleanup(ctx context.Context, tx pgx.Tx, project, key string
 		return fmt.Errorf("confirm %s cleanup %s: reservation is not current", u.noun, key)
 	}
 	return nil
-}
-
-// Open, ReserveCleanup and ConfirmCleanup are Trees' operations under the names the tests of
-// admission and of the daemon still seed the release before's tree barrier with; each moves to
-// the unit it means with the code it tests (dispatch://INFRA-4730's t5 to t7), and these go with
-// the last of them.
-func Open(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority) (Lifecycle, error) {
-	return Trees.Open(ctx, tx, project, tree, authority)
-}
-
-func ReserveCleanup(ctx context.Context, tx pgx.Tx, project, tree string, authority Authority) (Lifecycle, error) {
-	return Trees.ReserveCleanup(ctx, tx, project, tree, authority)
-}
-
-func ConfirmCleanup(ctx context.Context, tx pgx.Tx, project, tree string, epoch uint64) error {
-	return Trees.ConfirmCleanup(ctx, tx, project, tree, epoch)
 }

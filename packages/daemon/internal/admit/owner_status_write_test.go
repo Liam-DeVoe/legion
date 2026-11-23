@@ -1232,6 +1232,19 @@ func TestTheRepairTakesTheWriteOfAnArchitectAboveOnTheChain(t *testing.T) {
 		rig.judgeHeld(ownerChild)
 		rig.assertJudged(ownerChild, record.DoneStatus)
 	})
+	// The legion label of the chain stands above a gap the copy cannot read past, so whether the
+	// write is anyone's to make is not known either, and the write is held with every other
+	// (sessionStatusWrite). Negative control, run when this was written: with the label read
+	// before the chain's knowledge, the unlabelled child's write is taken out of Legion's work.
+	t.Run("held on an unknown chain: an unlabelled child whose parent's row the copy lacks", func(t *testing.T) {
+		rig := seedOwnerTree(t, nil)
+		rig.putCopyRow(record.DispatchReading{Key: ownerChild, Project: testProject, Parent: record.Carry(missingTop)})
+		if chain := rig.chainOf(ownerChild); chain.Known() || len(chain.Links) != 0 {
+			t.Fatalf("the chain of %s = %+v, want it unknown at its parent, with no link read: this case proves nothing", ownerChild, chain)
+		}
+		done := rig.write(ownerChild, record.DoneStatus, rootArchitect)
+		rig.assertHeld(ownerChild, record.HeldSessionWrite{Session: rootArchitect, Status: record.DoneStatus, Seq: done.Seq})
+	})
 }
 
 // The missing top of the chain the held-write cases lose and find again: ownerRoot's parent in
@@ -1305,7 +1318,11 @@ func (r *ownerRig) judgeHeld(key string) {
 	if err != nil || held == nil {
 		r.t.Fatalf("read %s: %v, %v", key, held, err)
 	}
-	known, err := r.engine.JudgeHeldStatusWrites(scoped, tx, *held)
+	chains, err := record.ReadChainsOf(scoped, tx, record.NewStore(), testProject, []string{key})
+	if err != nil {
+		r.t.Fatalf("read the chain of %s: %v", key, err)
+	}
+	known, err := r.engine.JudgeHeldStatusWrites(scoped, tx, chains, *held)
 	if err != nil || !known {
 		r.t.Fatalf("judge the writes %s holds = known %t, %v; want them judged on its known chain", key, known, err)
 	}

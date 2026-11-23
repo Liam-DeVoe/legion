@@ -1911,11 +1911,10 @@ func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 // openTree opens tree's lifecycle under the workflow's authority, as admission's promotion of a
 // root does in the transaction that admits it, and the root's own issue lifecycle beside it, which
 // that promotion opens too and each claim of the root binds (store.Store.AdmitClaim). The tree's
-// row, and not a slot, is what says a tree runs (record.TreeLive) now that a slot counts one issue
-// at work rather than one tree, so every fixture that seeds a running tree opens it as well as
-// granting whatever slots its issues hold. project is the Dispatch project key its issues are
-// recorded under; the lifecycles are keyed by the claim token of it, as every claim and runtime
-// key is.
+// row is the shadow the release before reads (R22 of dispatch://INFRA-3320), so every fixture
+// that seeds a running tree opens it as well as granting whatever slots its issues hold. project
+// is the Dispatch project key its issues are recorded under; the lifecycles are keyed by the
+// claim token of it, as every claim and runtime key is.
 func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

@@ -1371,7 +1371,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	})
 
 	// The architect's retry of a parent held from implementing whose phases row a re-admission
-	// cleared (record.Store.ClearTreeGeneration): the clear empties the task of the entry and keeps
+	// cleared (record.Store.ClearGeneration): the clear empties the task of the entry and keeps
 	// the entry, and a held member is given no promoted worker, so the row stands on entry 3 with
 	// no task when the retry comes. The retry writes its own task as the one the implementer was
 	// given for entry 3 in the issue's generation, and leaves the row's empty task as it stands

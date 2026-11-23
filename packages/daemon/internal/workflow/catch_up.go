@@ -72,7 +72,7 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 	// An issue that holds its own design gate on the Dispatch chain (record.Chains.HoldsOwnGate) is
 	// told while its own status stands in the workflow; any other issue's architect is told while
 	// its issue is in the workflow.
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -129,7 +129,19 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // that wake writes when it runs (the daemon's wakeRan). The pair is written only where the
 // pacing reserved something: a catch-up it held to no moment reports no wait, having had none.
 func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue, launch uint64, relaunch string, now, paced time.Time) error {
-	catchUp, waits, err := treeCatchUp(ctx, tx, store, steps, issue)
+	chains, err := record.ReadChains(ctx, tx, store, issue.Project, []string{issue.Key})
+	if err != nil {
+		return err
+	}
+	return queueCatchUpOn(ctx, tx, store, steps, chains, issue, launch, relaunch, now, paced)
+}
+
+// queueCatchUpOn is QueueCatchUp over chains a caller has already read, the whole project's
+// (record.ReadChains) with issue named, which treeCatchUp asks what stands under issue
+// (CatchUpTheTreesOwed, which reads one for every tree it writes to).
+func queueCatchUpOn(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, chains *record.Chains, issue record.Issue,
+	launch uint64, relaunch string, now, paced time.Time) error {
+	catchUp, waits, err := treeCatchUp(ctx, tx, store, steps, chains, issue)
 	if err != nil {
 		return err
 	}
@@ -166,7 +178,7 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		at = paced
 		notice.PacedAt, notice.PacedFrom = paced, now
 	}
-	return EnqueueNaming(ctx, tx, store, issue.Key, issue.Tree, notice, kept, at)
+	return EnqueueNaming(ctx, tx, store, issue.Key, notice, kept, at)
 }
 
 // queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
@@ -176,8 +188,8 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 // liveness: this claim is live, which is precisely why it is being given its task. A start queued
 // for news alone carries no task of the phase (startsWork), so it covers nothing, and the worker is
 // given its task beside it.
-func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
-	stop := actingStop(run, root)
+func queuedRowCovers(run record.RoleRun, current phase.Phase) bool {
+	stop := actingStop(run)
 	return stop != 0 || queuedStartActs(run, stop, current)
 }
 
@@ -247,10 +259,6 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if role == "" || role == claim.RoleArchitect || role != fact.Role {
 		return nil
 	}
-	root, _, err := e.gateRootOf(ctx, tx, *issue)
-	if err != nil {
-		return err
-	}
 	finished, err := e.phaseFinished(ctx, tx, *issue)
 	if err != nil || finished {
 		return err
@@ -272,14 +280,14 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if held := run.Claim; held == nil || supervise.HoldsWork(held.Pending) {
 		return nil
 	}
-	if queuedRowCovers(run, root, issue.Phase) {
+	if queuedRowCovers(run, issue.Phase) {
 		return nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return err
 	}
-	if OwedEntry(run, root, row.Entry) {
+	if OwedEntry(run, row.Entry) {
 		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
 			return err
 		}
@@ -338,15 +346,11 @@ type treeWaits struct {
 // all of them at once (restingRootsOn): their work holds that issue's acceptance and its close,
 // and a resting-root notice that told of one is ended undelivered when the architect's claim has
 // failed, as the phase-finished notice is, so the reason names them beside the accepting list.
-func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, issue record.Issue) (record.CatchUp, treeWaits, error) {
+func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, chains *record.Chains, issue record.Issue) (record.CatchUp, treeWaits, error) {
 	catchUp := record.CatchUp{Generation: issue.Generation, Gates: []record.CatchUpGate{}}
 	// The issues it lists are the issue itself and every issue in Legion's work under it on the
 	// Dispatch chain (record.Chains.Under), in key order, and the gate it states is the issue's own
 	// where it holds one on that chain (record.Chains.HoldsOwnGate).
-	chains, err := record.ReadChains(ctx, tx, store, issue.Project, []string{issue.Key})
-	if err != nil {
-		return record.CatchUp{}, treeWaits{}, err
-	}
 	holdsGate := chains.HoldsOwnGate(issue.Key)
 	if holdsGate {
 		if carried, gate := ArchitectCarried(issue); carried {
@@ -403,6 +407,7 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 		}
 		live = append(live, member.Key)
 	}
+	var err error
 	if waits.accepting, err = awaitingAcceptance(ctx, tx, store, chains, issue, accepting); err != nil {
 		return record.CatchUp{}, treeWaits{}, err
 	}

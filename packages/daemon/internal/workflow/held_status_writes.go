@@ -35,15 +35,13 @@ func (e *Engine) holdSessionWrite(ctx context.Context, tx pgx.Tx, chains *record
 // Dispatch's order (judgeHeld), and clears them in tx, the transaction it judges them in, so no
 // later pass of the same transaction judges them again. Admission's decision pass calls it for
 // each issue that holds any, the pass that follows an event and the boot's Reconcile alike
-// (decision 24 of dispatch://INFRA-4730). While the chain is still unknown it judges nothing and
-// answers false, and the caller notes the key for the daemon to read Dispatch again.
-func (e *Engine) JudgeHeldStatusWrites(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+// (decision 24 of dispatch://INFRA-4730), with chains, its one reading of the held issues' own
+// chains: whether a chain is known is the copy's to say, which no judgement here writes. While the
+// chain is still unknown it judges nothing and answers false, and the caller notes the key for
+// the daemon to read Dispatch again.
+func (e *Engine) JudgeHeldStatusWrites(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue) (bool, error) {
 	if len(issue.HeldSessionWrites) == 0 {
 		return true, nil
-	}
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
-	if err != nil {
-		return false, err
 	}
 	if !chains.Chain(issue.Key).Known() {
 		return false, nil
@@ -73,14 +71,21 @@ func (e *Engine) judgeHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 	if err := e.store.PutIssue(ctx, tx, current); err != nil {
 		return err
 	}
+	// The chain a write is judged on is read once and again only after a write is taken, which
+	// moves records (applyStatus); a set-back writes none, so the next write reads what it read.
+	var chains *record.Chains
 	for _, write := range writes {
 		if write.Status == current.Status {
 			continue
 		}
-		chains, err := record.ReadChains(ctx, tx, e.store, current.Project, []string{current.Key})
-		if err != nil {
-			return err
+		if chains == nil {
+			read, err := record.ReadChains(ctx, tx, e.store, current.Project, []string{current.Key})
+			if err != nil {
+				return err
+			}
+			chains = read
 		}
+		var err error
 		verdict, agent := writeTaken, false
 		if legionOnChain(chains, current.Key) {
 			if verdict, agent, err = e.judgeSessionWrite(ctx, tx, chains, current, write); err != nil {
@@ -104,7 +109,7 @@ func (e *Engine) judgeHeld(ctx context.Context, tx pgx.Tx, issue record.Issue) e
 		if err != nil {
 			return err
 		}
-		current = *moved
+		current, chains = *moved, nil
 	}
 	// A move in work reads the held write as Dispatch's latest status (observedIssue); the record
 	// keeps what Dispatch shows now.

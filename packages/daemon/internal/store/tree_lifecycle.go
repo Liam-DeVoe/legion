@@ -12,23 +12,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// OpenTreeLifecycle opens a tree in a transaction of its own and runs nothing beside the open; a
-// test and a seed open a tree through it. Workflow admission opens a tree inside its fact
-// transaction through record.Store.OpenTreeLifecycle instead, and the operator route through
-// OpenOperatorTreeLifecycle, because its open runs the tree's draw.
+// OpenTreeLifecycle opens a tree in a transaction of its own and runs nothing beside the open: the
+// operator's spawn of a root opens its tree through it, under the operator's authority
+// (internal/api's spawn), and a test and a seed open a tree through it too. Workflow admission
+// opens a tree inside its fact transaction instead, through record.Store.OpenTreeLifecycle.
 func (s *Store) OpenTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
 	return s.openLifecycle(ctx, treelifecycle.Trees, project, tree, authority, runNothing)
-}
-
-// OpenOperatorTreeLifecycle is the authenticated operator route's open of a root's tree, before
-// its claim is persisted (internal/api's spawn). created runs in the same transaction as the open
-// and only where this call created the tree's row (treelifecycle.Lifecycle.Created): the tree's
-// experiments are drawn there (internal/experiment), so no crash between the two can leave a
-// lifecycle whose tree was never drawn for. A failing created fails the open, and the row goes
-// with the transaction.
-func (s *Store) OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
-	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
-	return s.openLifecycle(ctx, treelifecycle.Trees, project, tree, treelifecycle.AuthorityOperator, created)
 }
 
 // openLifecycle is the open every entry point of either unit shares: one transaction holding the
@@ -71,8 +60,8 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // issue this project records nothing of keeps the tree the operator named; and its tree epoch is
 // the epoch that tree's lifecycle stands at, 0 where the tree has none, whatever state its row is
 // in, since only the issue's lifecycle admits or refuses the claim. The record is the project's
-// own (lower(project) = project, the token), as IssueLive reads it: another project's record
-// of the same key is no record of this one's.
+// own (lower(project) = project, the token), as ReserveIssueCleanup and the issue's suspend read
+// it: another project's record of the same key is no record of this one's.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
 	var queued bool
 	err := s.Tx(ctx, func(tx pgx.Tx) (err error) {

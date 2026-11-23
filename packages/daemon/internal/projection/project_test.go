@@ -32,11 +32,11 @@ type projectionStore struct {
 	// key, which is the order the state's `blocked` is judged from. DispatchIssuesOf serves the rows
 	// of the keys asked for and of what they wait on, as the real store does.
 	mirror []record.DispatchIssueRow
-	// lifecycles names the trees whose lifecycle stands open under the workflow, which is what
-	// says a tree runs (record.TreeLive); gates is each issue's design gates by step, as
-	// record.Store.GatesOf and record.Store.Gates answer them; owed is the start each issue owes
-	// a worker of it, which is a returning issue's place in the waiting line. The three are what
-	// record.ReadLineFacts reads for the line.
+	// lifecycles names the trees whose lifecycle stands open under the workflow, the shadow the
+	// release before reads (R22 of dispatch://INFRA-3320); gates is each issue's design gates by
+	// step, as record.Store.GatesOf and record.Store.Gates answer them; owed is the start each
+	// issue owes a worker of it, which is a returning issue's place in the waiting line. The gates
+	// and the owed starts are what record.ReadLineFacts reads for the line.
 	lifecycles []string
 	gates      map[string]map[record.DesignStep]record.DesignGate
 	owed       []record.OwedStart

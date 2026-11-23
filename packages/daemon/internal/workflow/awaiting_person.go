@@ -21,8 +21,9 @@ import (
 // the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim). ReconcileAwaiting
 // keeps a root it answers no for at admitted, where it holds its slot unless it waits on another
 // issue (blockers.waitsOf), and admission removes an awaiting root, and skips an answered one,
-// that it answers no for.
-func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (string, error) {
+// that it answers no for. chains is the caller's reading of the Dispatch chains with issue named,
+// the whole project's (record.ReadChains), whose tree of issue it reads (record.Chains.GateTree).
+func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, chains *record.Chains, issue record.Issue) (string, error) {
 	switch {
 	case !issue.HandedOver:
 		return "the legion label was removed", nil
@@ -42,11 +43,7 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue recor
 	}
 	if kind == "session" {
 		// A session that claims within the root's tree is one of the issues whose gate root the
-		// root is on the Dispatch chain (record.Chains.GateTree), not of the tree its record stores.
-		chains, err := record.ReadChains(ctx, tx, store, issue.Project, []string{issue.Key})
-		if err != nil {
-			return "", err
-		}
+		// root is on the Dispatch chain (record.Chains.GateTree).
 		ownsTree, err := store.SessionClaimsOf(ctx, tx, chains.GateTree(issue.Key), id)
 		if err != nil || ownsTree {
 			return "", err

@@ -334,7 +334,7 @@ func TestACatchUpLeavesOutWhatAQueuedStartClaims(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.EnqueueNaming(ctx, tx, root.Key, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
+		return engine.EnqueueNaming(ctx, tx, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
 			Generation: 1, Task: task, Kept: kept}, kept, time.Now())
 	}); err != nil {
 		t.Fatalf("queue the start naming the answer: %v", err)
@@ -397,7 +397,7 @@ func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.EnqueueNaming(ctx, tx, root.Key, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
+		return engine.EnqueueNaming(ctx, tx, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
 			Generation: 2, Task: task, Kept: kept}, kept, time.Now())
 	}); err != nil {
 		t.Fatalf("queue generation 2's start naming the answer: %v", err)

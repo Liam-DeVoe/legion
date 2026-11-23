@@ -46,7 +46,7 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, at *recor
 // asking whether a start is a root architect's next move, and catch_up.go's queuedRowCovers,
 // asking whether a queued row covers a ready claim. One body is what keeps them from reading the
 // same rows differently.
-func actingStop(run record.RoleRun, _ record.Issue) int64 {
+func actingStop(run record.RoleRun) int64 {
 	lastStart := lastStartRow(run)
 	var stop int64
 	for _, queued := range run.Queued {
@@ -66,17 +66,17 @@ func lastStartRow(run record.RoleRun) int64 {
 }
 
 // StartFor is whether a start of the role of a child in phase current is owed, from run, the
-// role's queued rows and claim for generation, with root its gate root on the Dispatch chain. It
-// does not when the role is already started for this run: the newest of its operations that will
-// still act is a start. A stop that still acts (actingStop) undoes any older start, which may run
-// first, so past one only a newer queued start for current counts. With none, a queued start for
-// current counts, and so does a claim that may have a process: a live one, or one whose launch is
-// uncertain holding current's task for generation undelivered or unconfirmed (the task its start
-// gave it). The tree the claim stores is not read: a change of parent moves no claim (R17 of
-// dispatch://INFRA-3320). A failed, retired, suspended or queued claim runs nothing, so a start
-// reaches it whatever task it holds. Whether the start's resume task is delivered is the outbox
-// executor's decision when the start runs: not to a claim that holds a task for the same generation
-// and phase by then (record.SuperviseRequest's ResumeTask).
+// role's queued rows and claim for generation. It does not when the role is already started for
+// this run: the newest of its operations that will still act is a start. A stop that still acts
+// (actingStop) undoes any older start, which may run first, so past one only a newer queued start
+// for current counts. With none, a queued start for current counts, and so does a claim that may
+// have a process: a live one, or one whose launch is uncertain holding current's task for
+// generation undelivered or unconfirmed (the task its start gave it). The tree the claim stores is
+// not read: a change of parent moves no claim (R17 of dispatch://INFRA-3320). A failed, retired,
+// suspended or queued claim runs nothing, so a start reaches it whatever task it holds. Whether the
+// start's resume task is delivered is the outbox executor's decision when the start runs: not to a
+// claim that holds a task for the same generation and phase by then
+// (record.SuperviseRequest's ResumeTask).
 //
 // Stranded reads the same rule for a failed claim, and for a suspended one no operator suspended: a
 // claim for which StartFor is true has no queued start that will wake it. A
@@ -86,8 +86,8 @@ func lastStartRow(run record.RoleRun) int64 {
 //
 // Its reading of run.Queued is queuedStartActs, which unpromptedPhaseWorker and catch_up.go's
 // queuedRowCovers share.
-func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
-	stop := actingStop(run, root)
+func StartFor(run record.RoleRun, generation uint64, current phase.Phase) bool {
+	stop := actingStop(run)
 	if queuedStartActs(run, stop, current) {
 		return false
 	}
@@ -142,10 +142,10 @@ func startsWork(request record.SuperviseRequest) bool {
 }
 
 // OwedEntry is whether a role is owed the work the entry its phases row names stands for: entry
-// is that number (record.PhaseRow.Entry), run the role's queued rows and claim for the issue's
-// generation, and root the issue's tree root as recorded, which StopActs reads for a tree close.
-// Admission asks it of every role of an issue at work and sends the ones it answers true for the
-// work of that entry (admit's owedEntryRoles and resumeSlottedWorkers, SendOwedEntry).
+// is that number (record.PhaseRow.Entry), and run the role's queued rows and claim for the
+// issue's generation. Admission asks it of every role of an issue at work and sends the ones it
+// answers true for the work of that entry (admit's owedEntryRoles and resumeSlottedWorkers,
+// SendOwedEntry).
 //
 // It answers true when the entry the claim was given (GivenEntry: record.RoleClaim.GivenEntry,
 // and 0 for a role the daemon holds no claim row of at all, which was given nothing) is below
@@ -168,11 +168,11 @@ func startsWork(request record.SuperviseRequest) bool {
 // or idle claim holding none of entry's work is the very claim this exists to close the
 // difference for. The states no start may reach — an operator's suspension, a retirement — are
 // the caller's own skips.
-func OwedEntry(run record.RoleRun, root record.Issue, entry int64) bool {
+func OwedEntry(run record.RoleRun, entry int64) bool {
 	if GivenEntry(run) >= entry {
 		return false
 	}
-	stop := actingStop(run, root)
+	stop := actingStop(run)
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Entry >= entry && queued.ID > stop {
 			return false

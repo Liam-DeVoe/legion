@@ -1223,7 +1223,7 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 //
 // So this is where such a decision is dropped from the task, in one write: the rows whose issue
 // the chain no longer shows under the claim's issue lose this delivery's hold
-// (record.Store.ReleaseHeldDecisions), which leaves each KEPT for its own gate root to name, and
+// (record.Store.ReleasedHeldIssues), which leaves each KEPT for its own gate root to name, and
 // the architect of each gate root they are now owed to is written a fresh catch-up naming them
 // at once, exactly as a hand-over writes one (workflow.CatchUpTheTreesOwed). The decisions whose
 // issue the chain still shows under the claim's issue

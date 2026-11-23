@@ -184,11 +184,7 @@ func assertNotStranded(t *testing.T, pool *pgxpool.Pool, role claim.Role, token 
 		if err != nil {
 			return err
 		}
-		root, err := store.Issue(t.Context(), tx, returnIssue)
-		if err != nil {
-			return err
-		}
-		if StartFor(runs[token], *root, 1, stands) {
+		if StartFor(runs[token], 1, stands) {
 			t.Fatalf("StartFor says the %s needs a start, want the queued one the slot holds counted", role)
 		}
 		return nil

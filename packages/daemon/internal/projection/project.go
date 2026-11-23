@@ -465,7 +465,7 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, facts)
 	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
-	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
+	// record of this project the daemon holds in Legion's work (record.InLegionsWork) that stands in
 	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
 	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate
 	// no drop site saw, over the same facts and the same line these lists are built from, so one

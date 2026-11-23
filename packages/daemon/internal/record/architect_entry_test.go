@@ -121,9 +121,8 @@ func TestARootArchitectEntryIsHeldOnItsPhasesRowAsAPhaseWorkersIs(t *testing.T) 
 // as written (PhaseRow.EntryVerbatim), which only the resume of an answered root sets. The record
 // holds that fact as it holds the task: written with the row and read back with it, both ways,
 // and cleared with the task by a re-admission, whose promotion raises a new entry with work of
-// its own. Both clears a re-admission makes are read: of one issue (ClearGeneration) and of a
-// whole tree (ClearTreeGeneration). The entry and the moment it was raised stay, as they do for
-// every role.
+// its own. The clear a re-admission makes of each issue of the tree is read (ClearGeneration).
+// The entry and the moment it was raised stay, as they do for every role.
 func TestTheArchitectEntryMarkToSendAsWrittenRoundTripsAndGoesWithTheGeneration(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

@@ -189,7 +189,7 @@ func (v IdleView) Standing() Standing {
 // record.OutOfWorkflow — this package sits below record, so the rule is passed in rather than
 // restated) and its phase is short of done.
 //
-// It is the one statement of that rule in the daemon: workflow.InWorkflow is this call, which
+// It is the one statement of that rule in the daemon: record.InWorkflow is this call, which
 // is what admission, the production check and awaiting-person read, and it is the one gate every
 // path that acts on an idle or released pod reads — the idle rule, a wake applied inside a fact,
 // a wake the outbox takes for a delivery it holds, and the store's own authorization of a

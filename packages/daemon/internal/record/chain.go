@@ -116,10 +116,14 @@ func ReadChains(ctx context.Context, tx pgx.Tx, store Store, project string, ext
 
 // ReadChainsOf is ReadChains for a decision about keys alone: the walk starts from keys and from
 // no other issue (Store.ChainRowsOf), so the read costs the length of their chains whatever the
-// number of issues the project has at work. For each of keys and every link above it its Chains
-// answer as ReadChains's do (Chain, Above, IsRoot, HoldsOwnGate, GateRoot, TopIssue, and Children
-// of keys); Under and the issues at work cover only the issues this read holds, so a caller that
-// asks what stands under an issue reads ReadChains.
+// number of issues the project has at work. For each of keys its Chains answer as ReadChains's do
+// (Chain, Above, IsRoot, HoldsOwnGate, StartsAsRoot, TopIssue, and Children of keys), and so do
+// GateRoot and StateTree wherever the key's chain is known, which holds every link of it within
+// MaxChainLinks of the key, and so the same questions of each link of that known chain. A chain
+// longer than that, which only a stale copy makes, is read here no further than the walk's bound
+// above the key, so a link high on it can read as unread where ReadChains, which may start a walk
+// from that link, reads it. Under and the issues at work cover only the issues this read holds,
+// so a caller that asks what stands under an issue reads ReadChains.
 func ReadChainsOf(ctx context.Context, tx pgx.Tx, store Store, project string, keys []string) (*Chains, error) {
 	rows, err := store.ChainRowsOf(ctx, tx, keys)
 	if err != nil {

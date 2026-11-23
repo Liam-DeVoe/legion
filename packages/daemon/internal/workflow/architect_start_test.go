@@ -512,7 +512,7 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 // below it where the claim was never relaunched, whatever the tree has run. Each case is a root
 // re-admitted at generation 3, at admitted with no design gate row and no run of its own phase,
 // read from the record through ArchitectStartOf, which reads the claim's serving_generation and
-// served_entry (record.Store.ArchitectServed):
+// served_entry (record.Store.ArchitectServedOf):
 //   - a claim that launched five times and last served generation 2 ran the tree at an earlier
 //     generation, so the task is of the fourth rule's shape;
 //   - a claim that served nothing took no task of any run, so the tree is one nobody has
@@ -573,7 +573,7 @@ func TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches(t *testi
 }
 
 // Whether a member of the tree runs is read from the record (ArchitectStartOf, through
-// record.Store.TreeMembersRun): an issue of the root's tree other than the root, standing past
+// record.Store.MembersRunOf): an issue of the root's tree other than the root, standing past
 // phase.Admitted in the workflow. Each case is the root of architectEntryRoot at admitted, at
 // generation 2, whose architect claim served nothing, beside one other issue:
 //   - a child in planning, in the workflow, runs, so the tree ran at an earlier generation;

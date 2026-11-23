@@ -75,6 +75,42 @@ func TestSetStatusTakesAChildrenArgument(t *testing.T) {
 	}
 }
 
+// A child in work that the daemon does not record — one a person or an architect took into work
+// outside Legion — is a child the backlog would leave in work under an issue that is not, as a
+// recorded one is: set_status names it with the status its row of the copy holds, though no chain
+// the call reads passes through it.
+//
+// Negative control, run when this was written: with the child's status read only from the chains
+// the call walked, the unrecorded child reads no status and the refusal names the recorded child
+// alone.
+func TestSetStatusNamesAChildInWorkTheDaemonDoesNotRecord(t *testing.T) {
+	const unrecorded = "LEGION-210"
+	h, _, statuses := statusHarness(t)
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		if err := seedCopy(tx, statusRoot, "", "in_progress"); err != nil {
+			return err
+		}
+		if err := seedCopy(tx, statusChild, statusRoot, "in_progress"); err != nil {
+			return err
+		}
+		return seedCopy(tx, unrecorded, statusRoot, "testing")
+	}); err != nil {
+		t.Fatalf("seed the copy: %v", err)
+	}
+	grant := controllerGrant(t, h)
+	recorder := h.request(http.MethodPost, "/legion/v1/issues/status",
+		IssueStatusRequest{GrantID: grant.GrantID, Issue: statusRoot, Status: "backlog"}, nil)
+	message := refused(t, recorder, http.StatusConflict, "CHILDREN_ARGUMENT_REQUIRED")
+	for _, child := range []string{statusChild + " (in_progress)", unrecorded + " (testing)"} {
+		if !strings.Contains(message, child) {
+			t.Fatalf("the refusal = %q, want it to name %s", message, child)
+		}
+	}
+	if rows := statusRows(t, h, statusRoot); len(rows) != 0 || len(statuses.writes) != 0 {
+		t.Fatalf("the refused call queued %v and wrote %v, want nothing", rows, statuses.writes)
+	}
+}
+
 // A todo on an issue whose Dispatch parent is not in work would put it in work under a parent
 // that is not, which Dispatch's parent rule refuses (R24 of dispatch://INFRA-3320). The
 // controller's set_status and the architect's rerun_child each refuse it without a parent

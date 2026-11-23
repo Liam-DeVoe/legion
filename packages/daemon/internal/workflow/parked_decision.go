@@ -59,7 +59,7 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 	if err != nil || issue == nil {
 		return issue, err
 	}
-	root, _, err := e.gateRootOf(ctx, tx, *issue)
+	root, err := e.gateRootOf(ctx, tx, *issue)
 	if err != nil {
 		return nil, err
 	}
@@ -157,12 +157,14 @@ func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.
 }
 
 // EnqueueNaming enqueues payload for issue, due at, a root-architect start or a catch-up notice
-// whose task names kept of what tree is owed (ParkedDecisionTask), and claims those rows for that
-// outbox row in the same transaction (Store.ClaimKeptDecisions), so no other start or catch-up of
-// that tree names them until that row settles them: a catch-up that published tells them, a start
-// whose task the claim queued leaves them to that delivery's confirmation, and a row that reached
-// no architect hands them over (HandOverKept). A nil kept enqueues payload as enqueueAt does.
-func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
+// whose task names kept of what issue's architect is owed (ParkedDecisionTask), and claims those
+// rows for that outbox row in the same transaction (Store.ClaimKeptDecisionsOf), over the members
+// of issue's own key (record.KeptMembers), the key ParkedDecisionTask composed kept over, so no
+// other start or catch-up of that gate root names them until that row settles them: a catch-up
+// that published tells them, a start whose task the claim queued leaves them to that delivery's
+// confirmation, and a row that reached no architect hands them over (HandOverKept). A nil kept
+// enqueues payload as enqueueAt does.
+func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload,
 	kept *record.KeptDecisions, at time.Time) error {
 	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
@@ -175,16 +177,16 @@ func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tr
 	if err != nil {
 		return err
 	}
-	members, err := record.KeptMembers(ctx, tx, store, tree)
+	members, err := record.KeptMembers(ctx, tx, store, issue)
 	if err != nil {
 		return err
 	}
-	return store.ClaimKeptDecisionsOf(ctx, tx, tree, members, *kept, id)
+	return store.ClaimKeptDecisionsOf(ctx, tx, issue, members, *kept, id)
 }
 
 // EnqueueNaming is EnqueueNaming over the engine's store.
-func (e *Engine) EnqueueNaming(ctx context.Context, tx pgx.Tx, issue, tree string, payload record.OutboxPayload, kept *record.KeptDecisions, at time.Time) error {
-	return EnqueueNaming(ctx, tx, e.store, issue, tree, payload, kept, at)
+func (e *Engine) EnqueueNaming(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload, kept *record.KeptDecisions, at time.Time) error {
+	return EnqueueNaming(ctx, tx, e.store, issue, payload, kept, at)
 }
 
 // HandOverKept is the one rule a release of kept decisions follows: a release never leaves a kept
@@ -240,22 +242,42 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 	if err != nil {
 		return err
 	}
+	var roots []record.Issue
 	for _, key := range trees {
 		root, err := store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
 		}
-		if root == nil {
-			continue
+		if root != nil && record.InLegionsWork(*root) {
+			roots = append(roots, *root)
 		}
-		hears, err := ArchitectHears(ctx, tx, store, *root, steps)
+	}
+	// One read of the chains of each project, every root of it named, answers every question of
+	// each root and of its tree: a catch-up writes outbox and kept rows, which no answer of the
+	// chains reads.
+	read := map[string]*record.Chains{}
+	for _, root := range roots {
+		chains := read[root.Project]
+		if chains == nil {
+			var keys []string
+			for _, named := range roots {
+				if named.Project == root.Project {
+					keys = append(keys, named.Key)
+				}
+			}
+			if chains, err = record.ReadChains(ctx, tx, store, root.Project, keys); err != nil {
+				return err
+			}
+			read[root.Project] = chains
+		}
+		hears, err := architectHearsOn(ctx, tx, store, chains, root, steps)
 		if err != nil {
 			return err
 		}
 		if !hears {
 			continue
 		}
-		if err := QueueCatchUp(ctx, tx, store, steps, *root, launches[key], "", now, time.Time{}); err != nil {
+		if err := queueCatchUpOn(ctx, tx, store, steps, chains, root, launches[root.Key], "", now, time.Time{}); err != nil {
 			return err
 		}
 	}
@@ -269,16 +291,26 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 // question the daemon has, so the hand-over of what a row named (HandOverKept) and the hold of a
 // root architect's task that names decisions (supervise's Deps.RootHears, the daemon's rootHears)
 // never drift: a root that hears is told at once, and one that does not keeps what it is owed
-// until it runs again.
+// until it runs again. Each question is of root alone, so one read of root's own chain answers
+// both (record.ReadChainsOf), and a root out of Legion's work, which hears nothing, reads none.
 func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue, steps []record.DesignStep) (bool, error) {
-	chains, err := record.ReadChains(ctx, tx, store, root.Project, []string{root.Key})
+	if !record.InLegionsWork(root) {
+		return false, nil
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, store, root.Project, []string{root.Key})
 	if err != nil {
 		return false, err
 	}
+	return architectHearsOn(ctx, tx, store, chains, root, steps)
+}
+
+// architectHearsOn is ArchitectHears over chains a caller has already read with root's chain in
+// them, for a root in Legion's work (CatchUpTheTreesOwed).
+func architectHearsOn(ctx context.Context, tx pgx.Tx, store record.Store, chains *record.Chains, root record.Issue, steps []record.DesignStep) (bool, error) {
 	if !ArchitectHearsSlotted(root, chains.HoldsOwnGate(root.Key)) {
 		return false, nil
 	}
-	waits, err := record.WaitsForSlot(ctx, tx, store, root, steps)
+	waits, err := record.WaitsForSlotOn(ctx, tx, store, chains, root, steps)
 	return !waits, err
 }
 

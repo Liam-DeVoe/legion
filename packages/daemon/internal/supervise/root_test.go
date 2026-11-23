@@ -279,6 +279,32 @@ func TestAStopThatIsNotTheTreesCloseNeverRetiresItsRoot(t *testing.T) {
 	})
 }
 
+// An operator's close of a gate holder's claim that a workflow issue backs is refused naming that
+// issue, the one Deps.TreeClosable is asked about, never the tree the claim stores: a claim of an
+// issue first recorded under another root stores that root's tree.
+//
+// Negative control, run when this was written: with the refusal naming the claim's stored tree,
+// it reads "LEGION-100 is a workflow issue's tree".
+func TestAWorkflowIssuesCloseRefusalNamesTheClaimsIssue(t *testing.T) {
+	h := newBareHarness(t)
+	h.deps.TreeClosable = func(context.Context, Claim) (bool, error) { return false, nil }
+	root := rootClaim()
+	root.Tree = "LEGION-100"
+	h.token = root.Token
+	if err := h.store.PutClaim(h.ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	h.start(root)
+	h.reach(StateReady)
+	const want = "LEGION-208 is a workflow issue's tree, which ends with its issue's close"
+	var refusal *RefusedError
+	if err := h.handle(RequestOperatorClose{Claim: rootToken}); !errors.As(err, &refusal) || refusal.Err.Error() != want {
+		t.Fatalf("the close = %v, want refused: %s", err, want)
+	}
+	h.wantCalls("Release", 0)
+	h.wantState(StateReady)
+}
+
 // Suspend is what stops the root's process short of its tree's close, so it is accepted as soon as
 // the agent has registered: a registered agent holds a capability that mints grants and no timer
 // runs on it, so a claim that could be neither stopped nor suspended there would keep that

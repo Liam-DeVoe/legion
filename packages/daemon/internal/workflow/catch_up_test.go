@@ -167,6 +167,65 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 	}
 }
 
+// A gate holder whose record stores another issue's tree — an issue first recorded under a parent
+// that has since left Legion's work, so it holds its own gate on the Dispatch chain — is told what
+// a person decided on it while nobody could hear it, at its architect's ready and at its
+// architect's start alike: each composes the decisions over the gate holder's own key
+// (ParkedDecisionTask) and claims them over that same key (EnqueueNaming), never over the tree its
+// record stores (R15 and R18 of dispatch://INFRA-3320). The start keeps the stored tree in its
+// payload (decision 13 of dispatch://INFRA-4730), and a held task narrowed to that decision names
+// the gate holder's own tree.
+//
+// Negative control, run when this was written: with EnqueueNaming claiming over the stored tree,
+// the claim names a decision none of that tree's members holds, and the ready's transaction fails.
+func TestAGateHolderStoredUnderAnotherTreeIsToldWhatWasKeptForIt(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	const oldRoot, holder, ref = "LEGION-700", "LEGION-701", "dispatch://LEGION-701/ask/ask-1"
+	parent := oldRoot
+	seedIssue(t, pool, record.Issue{Key: oldRoot, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: oldRoot,
+		Project: "LEGION", Title: "Old root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "T"})
+	gateHolder := record.Issue{Key: holder, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: oldRoot,
+		Parent: &parent, Project: "LEGION", Title: "Gate holder", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U"}
+	seedIssue(t, pool, gateHolder)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		chains, err := record.ReadChains(ctx, tx, record.NewStore(), "LEGION", []string{holder})
+		if err != nil {
+			return err
+		}
+		if !chains.HoldsOwnGate(holder) || chains.GateRoot(holder) != holder {
+			t.Fatalf("%s holds its own gate %t, gate root %q; want it its own gate root: this case proves nothing", holder,
+				chains.HoldsOwnGate(holder), chains.GateRoot(holder))
+		}
+		return record.NewStore().AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: holder, Ref: ref,
+			Decision: record.DecisionAskAnswered, Actor: "user:alice", At: at})
+	})
+	told := fmt.Sprintf("While nobody in %s's tree could hear it, a person decided on the tree: %s (%s by user:alice). Read each before you continue.",
+		holder, ref, record.DecisionAskAnswered)
+
+	claimReady(t, pool, engine, holder, claim.RoleArchitect, 1)
+	if got := lastCatchUp(t, pool); got.Decided != told || got.Kept == nil || len(got.Kept.Decisions) != 1 || got.Kept.Decisions[0].Ref != ref {
+		t.Fatalf("the ready's catch-up names %q (kept %#v), want %q", got.Decided, got.Kept, told)
+	}
+
+	// The catch-up's delivery ended undelivered, which leaves the decision unclaimed for the start.
+	if _, err := pool.Exec(ctx, "delete from outbox"); err != nil {
+		t.Fatalf("end the queued catch-up: %v", err)
+	}
+	seedRecord(t, pool, func(tx pgx.Tx) error { return engine.StartArchitect(ctx, tx, gateHolder) })
+	start := architectStartOf(t, pool, holder)
+	if start.Tree != oldRoot || start.Kept == nil || len(start.Kept.Decisions) != 1 || start.Kept.Decisions[0].Ref != ref ||
+		!strings.Contains(start.Task, told) {
+		t.Fatalf("the architect's start = tree %q, kept %#v, task %q; want the stored tree %s and the task naming %q", start.Tree, start.Kept,
+			start.Task, oldRoot, told)
+	}
+	if narrowed := NarrowRootTask(ArchitectStart{Root: gateHolder}, 0, *start.Kept); !strings.Contains(narrowed, told) {
+		t.Fatalf("the held task narrowed to the decision = %q, want it to name %q", narrowed, told)
+	}
+}
+
 func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 	t.Helper()
 	var got *record.CatchUp

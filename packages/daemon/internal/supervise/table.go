@@ -912,8 +912,8 @@ var (
 	gone = []ClaimState{StateSuspended, StateFailed, StateRetired}
 	// runsNothing is where a claim has no process of its own, running or coming up: queued, for which
 	// nothing was launched, or gone. A launch whose outcome is uncertain may still run, so it is not
-	// here. It is the one statement of the set: Claim.RunsNothing reads it in memory, and the store's
-	// queries take it as a parameter (RunsNothingStates).
+	// here. It is the one statement of the set: Claim.RunsNothing reads it in memory, and
+	// RunsNothingStates copies it for a reader outside this package.
 	runsNothing = append([]ClaimState{StateQueued}, gone...)
 )
 
@@ -2879,7 +2879,9 @@ func operatorCloseRetired(m *Machine, ctx context.Context, _ Event) error {
 // closeRefusal is the refusal an operator's close earns, or nil. It is the two questions the
 // close turns on, asked where the close is decided rather than a round trip before it: whether
 // this claim is its tree's root, and whether a workflow issue backs the tree. Neither reads the
-// claim's state, so a retired claim answers them the same way a live one does.
+// claim's state, so a retired claim answers them the same way a live one does. The second refusal
+// names the claim's own issue, the one Deps.TreeClosable is asked about, never the tree the claim
+// stores (R15 of dispatch://INFRA-3320).
 func (m *Machine) closeRefusal(ctx context.Context) error {
 	if !m.claim.treeRoot() {
 		return &RefusedError{State: m.claim.State, Request: "close",
@@ -2891,7 +2893,7 @@ func (m *Machine) closeRefusal(ctx context.Context) error {
 	}
 	if !closable {
 		return &RefusedError{State: m.claim.State, Request: "close",
-			Err: fmt.Errorf("%s is a workflow issue's tree, which ends with its issue's close", m.claim.Tree)}
+			Err: fmt.Errorf("%s is a workflow issue's tree, which ends with its issue's close", m.claim.Issue)}
 	}
 	return nil
 }

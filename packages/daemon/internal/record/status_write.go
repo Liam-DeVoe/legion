@@ -3,8 +3,8 @@ package record
 // A Dispatch status write is the one outbox payload whose retry is judged differently for each
 // thing a write can be for, so what it is for is a value of its own (StatusRowKind), stored in
 // the row and set by one constructor per kind. They live here rather than beside the other
-// payloads because they are a vocabulary in their own right: five kinds, five constructors and
-// the rule that every reader of the list is held to the same five.
+// payloads because they are a vocabulary in their own right: four kinds, four constructors and
+// the rule that every reader of the list is held to the same four.
 
 // StatusRowKind is what a status row is for, and the one thing that decides the rule the outbox
 // judges its retry by (the daemon's stillWanted). It is stored in the payload rather than worked
@@ -26,6 +26,7 @@ const (
 	// queued at the triage, backlog or icebox that act found, to bring the issue into the
 	// workflow. The pending-row rule (Store.PersonHandoverPending) reads the kind to tell such a
 	// row from the workflow's other status rows, which suppress nothing: while one is pending for
+	// an issue, no second one is queued for it. The outbox's status executor also drops such a row
 	// at delivery when the re-read issue no longer carries the label: a person who took it off
 	// withdrew the handover.
 	PersonHandoverStatusRow StatusRowKind = "person-handover"
@@ -40,6 +41,7 @@ const (
 	// CloseStatusRow is the daemon's own close of an issue: the done a merge or an architect's
 	// close_root writes, queued in the transaction that takes the record out of the workflow. The
 	// ordinary rule cannot judge it, for the reason the re-assert's cannot: one refusal — an
+	// agent's comment, a handoff record, or the done reason this row itself just posted — sends
 	// it to its retry, which would find the record already out of the workflow and drop the write
 	// that puts Dispatch there, leaving the issue open in Dispatch for good while the record stands
 	// closed and frees its slot. Its own rule asks the question that matters instead: the close

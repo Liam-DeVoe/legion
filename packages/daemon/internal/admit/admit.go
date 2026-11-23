@@ -330,7 +330,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 	// An unrecorded todo issue on a chain the copy cannot read to its top starts nothing and is
 	// recorded by nothing (R16 of dispatch://INFRA-3320): its key is noted for the daemon to read
 	// Dispatch again (UnknownChains), and a later reading that makes the chain known decides it.
-	chains, err := record.ReadChains(ctx, tx, a.store, a.project, []string{observation.Key})
+	chains, err := record.ReadChainsOf(ctx, tx, a.store, a.project, []string{observation.Key})
 	if err != nil {
 		return nil, err
 	}
@@ -1094,7 +1094,7 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 				return nil
 			}
 		}
-		chains, err := record.ReadChains(ctx, tx, a.store, a.project, []string{summary.Key})
+		chains, err := record.ReadChainsOf(ctx, tx, a.store, a.project, []string{summary.Key})
 		if err != nil {
 			return err
 		}
@@ -1405,25 +1405,15 @@ func (a *Admission) childrenWaits(ctx context.Context, tx pgx.Tx, issues []recor
 	return wrote, nil
 }
 
-// dueCloses asks the engine, of every issue of this project that carries a close the daemon
-// queued or awaits its merge (workflow.ClosePassCandidate), whether its close is due on this
-// pass's copy (workflow.Engine.WriteDueClose, R24 of dispatch://INFRA-3320), and answers whether
-// it queued one. A close it queues is a status write and moves no issue into or out of any slot
-// or line, but it marks the issue's record (record.Issue.PendingClose), so the pass reads the
-// records again before any later step writes one.
+// dueCloses asks the engine, of every issue of the pass that carries a close the daemon queued or
+// awaits its merge (workflow.ClosePassCandidate), whether its close is due on this pass's copy
+// (workflow.Engine.WriteDueCloses, R24 of dispatch://INFRA-3320), and answers whether it queued
+// one. issues are this project's own (reread's LiveIssues). A close it queues is a status write
+// and moves no issue into or out of any slot or line, but it marks the issue's record
+// (record.Issue.PendingClose), so the pass reads the records again before any later step writes
+// one.
 func (a *Admission) dueCloses(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) (bool, error) {
-	wrote := false
-	for _, issue := range issues {
-		if issue.Project != a.project || !workflow.ClosePassCandidate(issue) {
-			continue
-		}
-		queued, err := a.engine.WriteDueClose(ctx, tx, issue, facts.Chains)
-		if err != nil {
-			return wrote, fmt.Errorf("queue the close %s owes: %w", issue.Key, err)
-		}
-		wrote = wrote || queued
-	}
-	return wrote, nil
+	return a.engine.WriteDueCloses(ctx, tx, issues, facts.Chains)
 }
 
 // logSlot logs a slot released or taken once the fact commits: the issue, the slots the project
@@ -1504,7 +1494,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if respectHolds {
 		heldKeys = func(key string) bool { return a.held(key) || a.catchingUpFor(key) }
 	}
-	_, changed, err := a.engine.ReconcileAwaiting(ctx, tx, a.project, issues, heldKeys)
+	_, changed, err := a.engine.ReconcileAwaiting(ctx, tx, a.project, facts.Chains, issues, heldKeys)
 	if err != nil {
 		return 0, nil, fmt.Errorf("reconcile the roots waiting on a person: %w", err)
 	}
@@ -1689,7 +1679,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// releaseUnslotted takes out of the workflow on this same pass. Its links hold
 				// nothing here: a root waiting on a person keeps its row through a wait
 				// (blockers.waitsOf).
-				reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
+				reason, err := workflow.Unresumable(ctx, a.store, tx, facts.Chains, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)
 				}
@@ -1871,7 +1861,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				opened = opened || facts.GatesOpen(issue.Key)
 			case record.LineFirstPhase:
-				if err := a.engine.StartFirstPhase(ctx, tx, issue, facts.Chains.HoldsOwnGate(issue.Key), rows[issue.Key].Blockers); err != nil {
+				if err := a.engine.StartFirstPhase(ctx, tx, issue, facts.Chains, rows[issue.Key].Blockers); err != nil {
 					return admitted, released, err
 				}
 			}
@@ -1916,11 +1906,21 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 // dispatch://INFRA-4730).
 func (a *Admission) judgeHeldStatusWrites(ctx context.Context, tx pgx.Tx) error {
 	held, err := a.store.HeldSessionWriteIssues(ctx, tx, a.project)
+	if err != nil || len(held) == 0 {
+		return err
+	}
+	// One read of the held issues' own chains says which the copy knows (record.ReadChainsOf):
+	// judging one issue's writes changes no copy row, so it changes no other issue's answer.
+	keys := make([]string, len(held))
+	for i, issue := range held {
+		keys[i] = issue.Key
+	}
+	chains, err := record.ReadChainsOf(ctx, tx, a.store, a.project, keys)
 	if err != nil {
 		return err
 	}
 	for _, issue := range held {
-		known, err := a.engine.JudgeHeldStatusWrites(ctx, tx, issue)
+		known, err := a.engine.JudgeHeldStatusWrites(ctx, tx, chains, issue)
 		if err != nil {
 			return fmt.Errorf("judge the session writes held on %s: %w", issue.Key, err)
 		}
@@ -1958,7 +1958,7 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 
 // readPass is the pass's shared reads alone: the project's live records, the slots, and the facts
 // the line, the release and the repair passes are all judged from. A reader in a read-only
-// transaction (OwesEntryWork, ArchitectStallArms, tickRows) takes these and writes nothing; an
+// transaction (OwesEntryWork, ArchitectStallArms) takes these and writes nothing; an
 // unmarked root still holds its own gate while it stands a root (record.Chains.HoldsOwnGate), so
 // its answers are the ones the next decision pass, which marks it, reads.
 func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) ([]record.Issue, []record.Slot, record.LineFacts, error) {
@@ -2127,24 +2127,39 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 // reason naming why). A key Reconcile holds is left for release to apply first, when respectHolds
 // is set. It reports whether it released any.
 //
+// A root here is the gate root of itself on the pass's chains (record.Chains.GateRoot), which is
+// in Legion's work, waiting on a person. It asks nothing of the slots because a row answers none of
+// what it asks: the question is whether the root may come back at all, which its label and its
+// Dispatch claim decide, and the root keeps its row through the whole wait either way
+// (record.KeepsSlot). Unresumable reads who stands in the root's tree on trees, the pass's chains
+// until a leave here takes a root out of Legion's work, which changes the trees, and the chains
+// read again after each such leave.
+//
 // No other issue in Legion's work is taken out here (R21 of dispatch://INFRA-3320): every issue in
 // it has one place, and a recorded issue at phase admitted whose status is in work and that holds
 // no slot waits in the line among the first starts (record.Waiting) rather than leaving it.
 func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts, respectHolds bool) (bool, error) {
 	released := false
+	trees := facts.Chains
 	for _, issue := range issues {
 		if respectHolds && a.held(issue.Key) {
 			continue
 		}
-		why, awaiting, err := a.awaitingUnresumable(ctx, tx, issue, facts.Chains)
+		if facts.Chains.GateRoot(issue.Key) != issue.Key || !issue.AwaitingPerson() {
+			continue
+		}
+		why, err := workflow.Unresumable(ctx, a.store, tx, trees, issue)
 		if err != nil {
 			return released, fmt.Errorf("check whether awaiting root %s can resume: %w", issue.Key, err)
 		}
-		if !awaiting {
+		if why == "" {
 			continue
 		}
 		if err := a.engine.LeaveUnslotted(ctx, tx, issue); err != nil {
 			return released, fmt.Errorf("release unslotted root %s: %w", issue.Key, err)
+		}
+		if trees, err = record.ReadChains(ctx, tx, a.store, a.project, nil); err != nil {
+			return released, err
 		}
 		reason := fmt.Sprintf("%s awaits a person, but %s; the daemon set its phase to done and starts nothing for it; todo with the legion label queues it again", issue.Key, why)
 		if err := a.enqueue(ctx, tx, issue.Key, record.ControllerNotice{Kind: record.UnslottedNotice, Reason: reason}, a.now()); err != nil {
@@ -2156,20 +2171,6 @@ func (a *Admission) releaseUnslotted(ctx context.Context, tx pgx.Tx, issues []re
 		released = true
 	}
 	return released, nil
-}
-
-// awaitingUnresumable returns why an awaiting root of this project may not resume (workflow's
-// Unresumable, the one rule ReconcileAwaiting also asks) and whether this pass must remove it. A
-// root here is the gate root of itself on the pass's chains (record.Chains.GateRoot), which is in
-// Legion's work. It asks nothing of the slots because a row answers none of what it asks: the
-// question is whether this root may come back at all, which its label and its Dispatch claim
-// decide, and the root keeps its row through the whole wait either way (record.KeepsSlot).
-func (a *Admission) awaitingUnresumable(ctx context.Context, tx pgx.Tx, issue record.Issue, chains *record.Chains) (string, bool, error) {
-	if chains.GateRoot(issue.Key) != issue.Key || !issue.AwaitingPerson() {
-		return "", false, nil
-	}
-	reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
-	return reason, reason != "", err
 }
 
 // Held reports whether any key currently waits on the Dispatch consumer reaching the stream
@@ -2316,7 +2317,7 @@ const (
 )
 
 // OwesEntryWork is whether the entry sweep's own pass would do anything for the project, read as
-// every admission pass reads the project (reread) and answered by the two selections that pass
+// every admission pass's shared reads read it (readPass) and answered by the two selections that pass
 // itself acts on: a role owed the work of the entry its phases row names (owedEntryRoles), and an
 // arm of the stall reading that holds for a root architect the selection holds (readSlotHolders
 // names the three kinds of root it holds), that no mark has told the controller yet, while a
@@ -2390,8 +2391,8 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // read from the records the pass already holds, so the widening costs no further read.
 //
 // The second half asks of the record the three terms the first half gets from the row itself,
-// and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in the
-// workflow and its tree running, while an issue past its review is in
+// and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in Legion's
+// work and a phase of it that keeps a row (record.KeepsSlot), while an issue past its review is in
 // the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
 // every record that is not done, a parked one included. So this half asks each of the three —
 // record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
@@ -2399,7 +2400,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // it. Without them the repair's bound would be the retired-claim skip further down rather than
 // the rule: a parked issue in its retro, or one whose tree left the workflow, would have its
 // worker started again. The three sibling passes carry the same guard
-// (startMidPhaseMembers, finishFencedStarts, workflow's booted).
+// (the promotion's own starts, finishFencedStarts, workflow's booted).
 //
 // record.TreeRuns is asked of each such issue's root rather than record.RunningRoots being
 // built once for the call: the set costs a walk of every record of the project and a map the
@@ -2580,7 +2581,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 			continue
 		}
 		// The root holds no row while it waits on another issue, and that wait is no wait for a
-		// slot (record.WaitsWithoutSlot), so this asks R4's rule as it stands.
+		// slot (record.TreeRuns reads it as none), so this asks R4's rule as it stands.
 		architect, selected := a.rootArchitectOf(project, issue, facts.Chains)
 		if !selected || !record.TreeRuns(issue, facts.Gates[issue.Key], false) {
 			continue
@@ -2626,7 +2627,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 				send = raiseArchitectEntry
 			}
 		}
-		if send != raiseArchitectEntry && !workflow.OwedEntry(run, held.root, entry.Entry) {
+		if send != raiseArchitectEntry && !workflow.OwedEntry(run, entry.Entry) {
 			continue
 		}
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
@@ -2666,14 +2667,8 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
 			continue
 		}
-		if held.role == claim.RoleArchitect {
-			reached, err := a.architectReached(ctx, tx, held.issue, entry, run, read.chains.HoldsOwnGate(held.issue.Key))
-			if err != nil {
-				return nil, err
-			}
-			if !reached {
-				continue
-			}
+		if held.role == claim.RoleArchitect && !architectReached(held.issue, entry, run, read.chains.HoldsOwnGate(held.issue.Key)) {
+			continue
 		}
 		// The role's phases row is read here, once the role is owed its entry's work, so a
 		// holder owed nothing costs no query of its own. The whole row is read and carried out
@@ -2702,13 +2697,11 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 //
 // The same three hold for an architect whose phases row names no entry at all, which the pass
 // hands an entry rather than resumes (raiseArchitectEntry, workflow.Engine.StartArchitect).
-func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record.Issue, entry record.PhaseEntry,
-	run record.RoleRun, holdsGate bool,
-) (bool, error) {
+func architectReached(root record.Issue, entry record.PhaseEntry, run record.RoleRun, holdsGate bool) bool {
 	if _, pending := workflow.ArchitectStartPending(root, entry.Entry, run); pending {
-		return false, nil
+		return false
 	}
-	return a.architectServed(ctx, tx, root, entry, run, holdsGate)
+	return architectServed(root, entry, run, holdsGate)
 }
 
 // architectServed is whether the own architect of a root the selection holds is one the sweep has
@@ -2730,19 +2723,9 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // has not been given, since its phase role owns the rest of its work. Both callers hand over the
 // entry and the run the pass read for the whole selection (slotReading), so the first arm reaches
 // the same roots the send does, which is R7's "the root is one the rule of R5 reaches"
-// (dispatch://INFRA-2614). The pure reading is asked first, so the reach's read of the hand-over
-// row is made only for a root that hears.
-func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.Issue, entry record.PhaseEntry,
-	run record.RoleRun, holdsGate bool,
-) (bool, error) {
-	if !workflow.ArchitectHearsSlotted(root, holdsGate) {
-		return false, nil
-	}
-	reached, err := workflow.ArchitectAtWork(ctx, tx, a.store, root, entry, run)
-	if err != nil {
-		return false, fmt.Errorf("read whether the architect of %s is the role at work there: %w", root.Key, err)
-	}
-	return reached, nil
+// (dispatch://INFRA-2614). Neither reading reads anything.
+func architectServed(root record.Issue, entry record.PhaseEntry, run record.RoleRun, holdsGate bool) bool {
+	return workflow.ArchitectHearsSlotted(root, holdsGate) && workflow.ArchitectAtWork(root, holdsGate, entry, run)
 }
 
 // resumeSlottedWorkers sends every role owedEntryRoles names the work of the entry its phases
@@ -3049,11 +3032,4 @@ func sameParent(left, right *string) bool {
 		return left == nil && right == nil
 	}
 	return *left == *right
-}
-
-func deref(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }

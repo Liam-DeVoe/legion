@@ -36,7 +36,8 @@ func legionOnChain(chains *record.Chains, key string) bool {
 // boot runs this, and so does the controller tick (statusRepairTick), so a lost write is put back
 // without a restart. issues are the project's own: the tick's LiveIssues names the project, and
 // the boot's read is the daemon's store, which holds no record of another project
-// (internal/daemon's projectRecords).
+// (internal/daemon's projectRecords). chains is the caller's one reading of the Dispatch chains
+// with every one of issues named, the reading its running roots were judged on.
 //
 // It skips an issue by these rules, in this order:
 //
@@ -77,7 +78,7 @@ func legionOnChain(chains *record.Chains, key string) bool {
 // The repair tells nobody. The record cannot tell a person's move on the board from a write the
 // daemon lost, so any notice would name both, and most of them would be the person's own move
 // arriving a moment before its event.
-func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record.Issue,
+func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, chains *record.Chains, issues []record.Issue,
 	running map[string]struct{}, trigger string) error {
 	pendingWrites, err := e.store.PendingStatusWrites(ctx, tx, e.cfg.Project)
 	if err != nil {
@@ -86,10 +87,6 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 	hasPendingWrite := make(map[string]bool, len(pendingWrites))
 	for _, row := range pendingWrites {
 		hasPendingWrite[row.Issue] = true
-	}
-	chains, err := record.ReadChains(ctx, tx, e.store, e.cfg.Project, nil)
-	if err != nil {
-		return err
 	}
 	passedOver, pending := []string{}, []string{}
 	queued := 0
@@ -154,18 +151,18 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 // fact's cost must not grow with the done records a project holds for good
 // (admit's TestAFactReadsAsManyRowsWhateverNumberOfFinishedRecordsTheProjectKeeps, which the tick
 // is one of the facts of). The repair selects the same issues from either list: every issue it can
-// act on is short of phase done, which LiveIssues holds, and a root LiveIssues leaves out is one
-// whose own record is done and holds no slot, which runs nothing — so an issue
-// under it is passed over either way, by the missing root rather than by the tree-runs rule. The
-// boot reads the whole table once for its resume and hands the repair that list (booted).
+// act on is short of phase done, which LiveIssues holds, and an issue under a root LiveIssues
+// leaves out, one whose own record is done, has no gate root there: a record out of Legion's work
+// is no gate root on the chain (record.Chains.GateRoot). The boot reads the whole table once for
+// its resume and hands the repair that list and its chains (booted).
 func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result, error) {
 	issues, err := e.store.LiveIssues(ctx, tx, e.cfg.Project)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	running, err := record.ReadRunningRoots(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
+	running, chains, err := record.ReadRunningRoots(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.correctStatuses(ctx, tx, issues, running, "tick")
+	return intake.Result{}, e.correctStatuses(ctx, tx, chains, issues, running, "tick")
 }

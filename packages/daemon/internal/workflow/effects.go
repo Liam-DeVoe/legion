@@ -140,7 +140,7 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
 		return false
 	}
-	stop := actingStop(run, root)
+	stop := actingStop(run)
 	return stop == 0 && !queuedStartActs(run, stop, issue.Phase)
 }
 
@@ -453,7 +453,7 @@ const testerVerdictLabel = "Tester's verdict"
 // in the workflow that does this, since the transitions and the return out of awaiting_children
 // (ReturnFromChildren) are the only phase starts. Outside the
 // workflow, a re-admission brings a mid-phase child's failed architect back with the member's
-// other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart of a held
+// other roles (admit's promotion), and so does an operator's retry. A restart of a held
 // phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry) and a
 // resume task each hand a role the work of a phase the issue already stands in, and the owed-entry
 // sweep runs every minute, so none of them revives the architect.
@@ -546,7 +546,7 @@ func (e *Engine) ownArchitectRun(ctx context.Context, tx pgx.Tx, issue record.Is
 // architectStartQueued is whether run, a child's own architect's, holds a queued start the outbox
 // will act on for the child standing in current: one of no phase, as a phase start queues
 // (childArchitectStart), or of current, as a re-admission brings a mid-phase child's architect
-// back (admit's startMidPhaseMembers). The outbox finishes, without acting, a start of a phase the
+// back (admit's promotion). The outbox finishes, without acting, a start of a phase the
 // issue has left, so a start of another phase does not count. It is queuedStartActs with no stop
 // weighed against it (a stop of 0, which every row's id is above): every such start counts,
 // whatever stop is queued beside it.
@@ -849,7 +849,7 @@ const (
 // entry a start hands and each of its marks are set, so production code adds no caller here: a
 // request composed at this call would carry no entry and no mark. Admission's start of a
 // mid-phase worker goes through started too, by way of Engine.StartPromotedWorker (admit's
-// startMidPhaseMembers).
+// promotion).
 //
 // A start whose phase holds one of the cap's slots is marked for it, and the outbox holds such
 // a row unclaimable while the issue holds no slot (store.go's outboxInOrder). The cap counts
@@ -915,7 +915,7 @@ const (
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
 // the cap counts is its root's, the production check's look (check.go), the pod wake (wake.go),
 // the resume of a cancelled idle release (the daemon's outbox), the roles admission brings back
-// beside a member's phase worker (admit's startMidPhaseMembers) and the phase's resume task a
+// beside a member's phase worker (admit's promotion) and the phase's resume task a
 // ready worker level with the entry its phases row names is given (catch_up.go's
 // readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five puts
 // a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for

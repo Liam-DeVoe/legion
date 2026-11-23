@@ -676,10 +676,9 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	parent := "LEGION-208"
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "child", Parent: &parent, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V", LastDispatchSeq: 1})
-	// The tree runs: its lifecycle is open (openTree), which is what says so (record.TreeLive),
-	// and each of its two issues holds the admission slot its work holds — the root implementing
-	// and the child testing. Without the lifecycle admission would find a root in the workflow
-	// that no slot can reach and take the whole tree out of it, which is not what this test moves.
+	// The tree runs: its lifecycle is open (openTree), as admission's promotion leaves it, and
+	// each of its two issues holds the admission slot its work holds — the root implementing and
+	// the child testing, which is what says they run (record.RunningRoots).
 	openTree(t, pool, "LEGION", "LEGION-208")
 	holdSlot(t, pool, "LEGION-208", "LEGION-209")
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {

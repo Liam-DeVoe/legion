@@ -163,10 +163,12 @@ func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testin
 	// are exactly what the gate arm reads.
 	for _, root := range []string{working, writing, holding} {
 		inTx(t, pool, func(tx pgx.Tx) {
-			reached, err := workflow.ArchitectAtWork(context.Background(), tx, record.NewStore(), issue(t, pool, root),
-				record.PhaseEntry{}, record.RoleRun{})
-			if err != nil || !reached {
-				t.Fatalf("the architect reach over %s = %t, %v, want the root inside it", root, reached, err)
+			chains, err := record.ReadChains(context.Background(), tx, record.NewStore(), testProject, []string{root})
+			if err != nil {
+				t.Fatalf("read the chain of %s: %v", root, err)
+			}
+			if !workflow.ArchitectAtWork(issue(t, pool, root), chains.HoldsOwnGate(root), record.PhaseEntry{}, record.RoleRun{}) {
+				t.Fatalf("the architect reach over %s leaves it out, want the root inside it", root)
 			}
 		})
 	}

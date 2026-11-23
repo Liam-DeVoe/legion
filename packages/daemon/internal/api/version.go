@@ -572,7 +572,7 @@ package api
 // so `api.Admission` on GET /legion/v1/state changes shape with it. `active` and `waiting` name
 // issues, a child as much as a root: a tree with three working children holds three slots, and a
 // tree whose issues only wait holds none. `trees` is new, the root of every live tree
-// (record.TreeLive), always emitted and never null, because a running tree may now hold no slot
+// (record.Chains.IsRoot), always emitted and never null, because a running tree may now hold no slot
 // and `active` alone no longer says which trees run — the controller reads it where it read
 // `active` as the running trees. Each issue record gains `tree`, the root of its tree, absent only
 // on an issue the workflow does not record, so a reader tells a child from a root and finds the

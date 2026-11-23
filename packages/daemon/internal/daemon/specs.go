@@ -95,11 +95,12 @@ type specs struct {
 	// whether or not a workflow is configured; a nil one, and a daemon with no GitHub Apps, names
 	// no owner, as an App installed nowhere does.
 	appOwners func(role claim.Role) []string
-	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
-	// store records the architect claims of the issue's tree at the launch
+	// owner is the architect that owns a claim's issue, the end of the owner walk over the Dispatch
+	// chain as the store records the architect claims on it at the launch
 	// (workflowRuntime.owningArchitect): what the claim's addressing names (ownerOf). It is nil
 	// for a daemon with no workflow, which records no issue to walk, and in a test whose specs
-	// literal leaves it out; every claim of such a specs is addressed to its tree's architect.
+	// literal leaves it out; every claim of such a specs is addressed to the architect of the tree
+	// the claim stores (c.Tree).
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
 	// runtimeName is cfg.Runtime.Name: a stale-plugin install (stalePluginInstall) is Kubernetes'
 	// alone, since a tmux pane always resumes on the plugin installed on the daemon's host.
@@ -206,7 +207,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	}
 	// An architect is a root's where the owner walk above its issue names no other architect
 	// (owningArchitect, R18 of dispatch://INFRA-3320): its prompt and its addressing say so, read
-	// on the Dispatch chain at this launch and never from the tree the claim stores.
+	// on the Dispatch chain at this launch (ownerOf).
 	root := c.Role == claim.RoleArchitect && architect == c.Token
 	promptPaths, err := s.rolePromptPaths(c, root)
 	if err != nil {
@@ -273,12 +274,12 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 }
 
 // ownerOf is the architect c's addressing names (addressingFragment), read again at each launch:
-// for a claim on its tree's root, whatever its role, the tree's architect, which is the root's
-// own; for a claim on any other issue, the end of the owner walk over the claims the store
-// records now (owner), so a planner launched while its child's own architect holds its role is
-// told that architect, and one launched while that architect does not hold its role (it failed,
-// for example) is told the architect above it. A specs with no owner reader addresses every claim
-// to its tree's architect. A read that fails fails the launch, as a repository read does.
+// the end of the owner walk over the Dispatch chain and the claims the store records now
+// (owner), so a planner launched while its child's own architect holds its role is told that
+// architect, and one launched while that architect does not hold its role (it failed, for
+// example) is told the architect above it. A specs with no owner reader, and a claim of an issue
+// the workflow does not record (owningArchitect), name the architect of the tree the claim stores
+// (c.Tree). A read that fails fails the launch, as a repository read does.
 func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, error) {
 	if s.owner == nil {
 		return claim.NewToken(s.project, c.Tree, claim.RoleArchitect)

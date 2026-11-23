@@ -570,9 +570,9 @@ func sortedTokens(claims []OperatorClaim) []string {
 }
 
 // openTree opens tree's lifecycle under the workflow's authority, as admission's promotion of a
-// root does. That row, and not a slot, is what says a tree runs (record.TreeLive) now that a
-// slot counts one issue at work, so every fixture that seeds a running tree opens it. project is
-// the Dispatch project key the tree's issues are recorded under.
+// root does. The row is the shadow the release before reads (R22 of dispatch://INFRA-3320), so
+// every fixture that seeds a running tree opens it and stands where a promoted root stands.
+// project is the Dispatch project key the tree's issues are recorded under.
 func (h *harness) openTree(t *testing.T, project, tree string) {
 	t.Helper()
 	token, err := claim.ProjectToken(project)

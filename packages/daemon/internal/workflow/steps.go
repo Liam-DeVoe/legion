@@ -224,7 +224,7 @@ func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Is
 // recordsSteps says whether issue's steps are recorded: its key is an issue key, which every key
 // Dispatch gives is, and so names claims (claim.NewToken) and an issue the route can hold. The
 // record has keys that are none only where a test wrote them, and those have no claims either,
-// as the promotion's own walk passes over them (admit's startMidPhaseMembers).
+// as the promotion's own walk passes over them (admit's promotion).
 func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) }
 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
@@ -305,7 +305,7 @@ func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (record.HoldsRole). Two moves queue such a start in the transaction that starts accepting: the
 // move into accepting, which starts a failed child architect again (reviveArchitect), and a
 // re-admission's promotion, which brings back a member's suspended architect (admit's
-// startMidPhaseMembers). Once that start runs, the child's own architect owns the child, and it
+// promotion). Once that start runs, the child's own architect owns the child, and it
 // signs it off. The start is one of no phase or of accepting (architectStartQueued).
 //
 // Two such starts do not count. One queued for a claim the operator suspended: that suspension is
@@ -385,7 +385,7 @@ func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.P
 
 // StartStepRecord writes the start of the step issue stands in, under the agent that step names
 // (startNamedStep): admission's promotion of a member whose phase worker it does not start (admit's
-// startMidPhaseMembers), whose step starts again all the same. A step whose latest run is still
+// promotion), whose step starts again all the same. A step whose latest run is still
 // open at the issue's own generation goes on, and nothing is written: a role the promotion found
 // already started for this run (workflow.StartFor), or an issue held from merging that came back
 // to work, whose merge step its stop left open and whose retry goes on with

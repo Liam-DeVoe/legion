@@ -541,11 +541,7 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		follow, told = rule.refused(r, row, value, cause)
 	case record.MessagePost:
 		follow = func(ctx context.Context, tx pgx.Tx) error {
-			notice, err := record.NewFencedRow(ctx, tx, r.records, row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
-			if err != nil {
-				return err
-			}
-			return r.records.Enqueue(ctx, tx, notice)
+			return record.EnqueueFenced(ctx, tx, r.records, row.Issue, messagePostRefused(row.Issue, value, cause), r.now().UTC())
 		}
 		told = func() {
 			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", kept)
@@ -730,11 +726,7 @@ func statusRefusalTold(r *outbox, row record.OutboxRow, payload record.StatusWri
 		wrote = failure.wrote
 	}
 	follow := func(ctx context.Context, tx pgx.Tx) error {
-		notice, err := record.NewFencedRow(ctx, tx, r.records, row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
-		if err != nil {
-			return err
-		}
-		return r.records.Enqueue(ctx, tx, notice)
+		return record.EnqueueFenced(ctx, tx, r.records, row.Issue, statusWriteRefused(row.Issue, payload, cause, wrote), r.now().UTC())
 	}
 	told := func() {
 		r.log.Error("outbox status write refused by Dispatch; its architect is told what the issue holds now",
@@ -1420,11 +1412,8 @@ func (r *outbox) tellStatusScopeOnce(ctx context.Context, row record.OutboxRow, 
 	}
 	scoped, run := r.committing(ctx)
 	if err := run(func(tx pgx.Tx) error {
-		queued, err := record.NewFencedRow(scoped, tx, r.records, row.Issue, record.ControllerNotice{Kind: record.StatusScopeNotice, Reason: reason}, r.now().UTC())
-		if err != nil {
-			return err
-		}
-		return r.records.Enqueue(scoped, tx, queued)
+		return record.EnqueueFenced(scoped, tx, r.records, row.Issue,
+			record.ControllerNotice{Kind: record.StatusScopeNotice, Reason: reason}, r.now().UTC())
 	}); err != nil {
 		r.scopeTold.Store(false)
 		return err
@@ -1943,7 +1932,7 @@ func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, pa
 		if err != nil {
 			return false, fmt.Errorf("judge the status write of %s: %w", row.Issue, err)
 		}
-		if issue != nil && workflow.InWorkflow(*issue) == record.OutOfWorkflow(payload.Status) {
+		if issue != nil && record.InWorkflow(*issue) == record.OutOfWorkflow(payload.Status) {
 			r.log.Info("outbox status write finished without writing: the record no longer stands where the write takes its issue",
 				"row", row.ID, "issue", row.Issue, "status", payload.Status, "record", issue.Status, "dispatch", read.Status)
 			return false, nil
@@ -1956,7 +1945,7 @@ func (r *outbox) statusStillWanted(ctx context.Context, row record.OutboxRow, pa
 		if err != nil {
 			return false, fmt.Errorf("judge the status write of %s: %w", row.Issue, err)
 		}
-		left = issue != nil && !workflow.InWorkflow(*issue)
+		left = issue != nil && !record.InWorkflow(*issue)
 	}
 	if left {
 		r.log.Info("outbox status write finished without writing: its issue left the workflow while the write was on its way",
@@ -2945,12 +2934,10 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 // project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
 // row's own key. It is of the run and phase entry of the row's issue when it was queued, as an
 // architect's notice is, and its delivery reads the run alone (record.LateAt): one of an earlier
-// run finishes here unpublished (outlived). A row keyed by the project, or by an issue the daemon
-// records nothing of, names the first fence and is never late.
+// run finishes unpublished at run's fence check (fencedHere, outlived), before this is reached. A
+// row keyed by the project, or by an issue the daemon records nothing of, names the first fence
+// and is never late.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
-	if late, err := r.outlived(ctx, row, payload); err != nil || late {
-		return err
-	}
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
@@ -3306,7 +3293,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A start that finds an architect running is a return of its issue while its session
 		// lived on: the issue's return to Legion's work, or, for a child's own, a start of the child's
-		// mid-phase work (admit's startMidPhaseMembers) or the child's next first phase start (a
+		// mid-phase work (admit's promotion) or the child's next first phase start (a
 		// rerun, or a person's move back to todo). A stop suspends every claim of its issue, and a
 		// child's leave suspends or closes the child's
 		// architect. After either, this happens only when the claim was mid-launch when the
@@ -3456,21 +3443,12 @@ func (r *outbox) stopActs(ctx context.Context, row record.OutboxRow, payload rec
 			"generation", payload.Generation, "entry", payload.Entry, "current_generation", fence.Generation, "current_entry", fence.Entry)
 		return false, nil
 	}
-	if pod := claimPod(held); record.OutlivesPod(payload.PodUID, pod) {
+	if pod := podOf(held.Locator); record.OutlivesPod(payload.PodUID, pod) {
 		r.log.Info("outbox stop of a pod its claim no longer runs in; finished without acting",
 			"row", row.ID, "op", payload.Op, "issue", row.Issue, "role", payload.Role, "pod", payload.PodUID, "current_pod", pod)
 		return false, nil
 	}
 	return true, nil
-}
-
-// claimPod is the pod held's process runs in, "" for a claim that records no Sandbox locator: a
-// tmux claim's, or one with no process.
-func claimPod(held supervise.Claim) string {
-	if held.Locator == nil || held.Locator.Sandbox == nil {
-		return ""
-	}
-	return held.Locator.Sandbox.PodUID
 }
 
 // keepsStartTask says whether held still holds a task of this start's phase and run that it will
@@ -3590,9 +3568,12 @@ func (r *outbox) cleanupClosedIssue(ctx context.Context, row record.OutboxRow, v
 	if err != nil {
 		return err
 	}
-	open := check != nil && check.ClosedAt == nil
-	lifecycle, reserved, err := r.trees.ReserveIssueCleanup(ctx, r.project, row.Issue, value.Generation, func(at phase.Phase, status string) bool {
-		return open || status != "done" || record.InLegionsWork(record.Issue{Phase: at, Status: status})
+	// The issue keeps what a cleanup would release while a look of its open production check can
+	// still start a role, or while it is not done: an issue a stop took out of work keeps its
+	// lifecycle (above).
+	open := check != nil && check.Open()
+	lifecycle, reserved, err := r.trees.ReserveIssueCleanup(ctx, r.project, row.Issue, value.Generation, func(_ phase.Phase, status string) bool {
+		return open || status != record.DoneStatus
 	})
 	if err != nil {
 		return fmt.Errorf("reserve the cleanup of closed issue %s: %w", row.Issue, err)
@@ -3665,7 +3646,7 @@ func (r *outbox) podStands(ctx context.Context, row record.OutboxRow, payload re
 // podDeleted ends the hold a project's pause has on issue's pod once a row has deleted that pod
 // (decision 13 of dispatch://INFRA-3759): the issue's suspension (suspendIssue) and a release's
 // teardown (releaseIssue). The tree's cleanup ends the holds of its pods in its own transaction
-// (store.CleanupReservedTree). The end takes the issue's lock (store.EndPausePodHoldTx), as every
+// (store.CleanupReservedIssue). The end takes the issue's lock (store.EndPausePodHoldTx), as every
 // writer of a pod hold does. A failed end fails the row, whose retry deletes nothing more, since
 // the pod is gone, and ends the hold.
 func (r *outbox) podDeleted(ctx context.Context, issue, why string) error {
@@ -4379,7 +4360,7 @@ type issueLaunch struct {
 func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch, error) {
 	var launch issueLaunch
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		chains, err := record.ReadChains(ctx, tx, r.records, issue.Project, []string{issue.Key})
+		chains, err := record.ReadChainsOf(ctx, tx, r.records, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
 		}
@@ -4406,7 +4387,7 @@ func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch,
 func (r *outbox) designGateClosed(ctx context.Context, issue record.Issue) (root string, closed bool, err error) {
 	var gates map[record.DesignStep]record.DesignGate
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		chains, err := record.ReadChains(ctx, tx, r.records, issue.Project, []string{issue.Key})
+		chains, err := record.ReadChainsOf(ctx, tx, r.records, issue.Project, []string{issue.Key})
 		if err != nil {
 			return err
 		}

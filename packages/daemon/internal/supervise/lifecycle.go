@@ -226,10 +226,11 @@ func (c Claim) Gone() bool { return IsGone(c.State) }
 // nothing.
 //
 // LaunchTree stays the tree the claim's process was launched under while one runs (a state that
-// holds the process's capability): such a claim is relaunched in its own session under the new
-// gate root by the GateRootMoved event the caller posts (relaunchUnder), so its plugin registers
-// the gate root again (R22 of dispatch://INFRA-3320). A claim with no process writes tree for the
-// launch its start makes.
+// holds the process's capability). An architect's such claim is relaunched in its own session
+// under the new gate root by the GateRootMoved event the caller posts for architects alone
+// (relaunchUnder), so its plugin registers the gate root again (R22 of dispatch://INFRA-3320); a
+// phase worker keeps the tree of its launch until a start finds it with no process. A claim with
+// no process writes tree for the launch its start makes.
 func (m *Machine) MarkLaunch(ctx context.Context, tree string, holds bool) error {
 	m.mu.Lock()
 	defer m.unlock()

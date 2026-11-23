@@ -3166,11 +3166,11 @@ type source struct {
 // outbox never does (record's DueRows reads the rows of its own project's keys); and a drop or a
 // write it led to would change that daemon's rows. So each read here that returns issue records
 // and names no project answers this project's alone: Issue answers no record, and no error, for
-// a record of another project, and Issues and QueuedRootsUnder leave such records
+// a record of another project, and Issues leaves such records
 // out. Every read that starts from them is within this filtered set, and so is every path of a
 // claim through the workflow: a claim of another project's issue reads no record at all, as a
 // claim of an issue nobody records reads none. The reads that name a project (LiveIssues,
-// IssuesOf, AncestorsOf, SlottedIssues, UnfilledIssues, UnnamedIssues) are scoped by their own
+// IssuesOf, SlottedIssues, UnfilledIssues, UnnamedIssues) are scoped by their own
 // SQL to the project their caller names, which every caller names as this one.
 //
 // Slots are not filtered here: a slot's index is unique across every project's slots, so
@@ -3342,7 +3342,7 @@ func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.
 //
 // Unlike the other writes, it refuses a row keyed by another project's issue with an error
 // (claim.ErrKeyOfAnotherProject), as the store's insertOutboxRow does: every caller names the row
-// by the id it answers — the decisions a start claims (ClaimKeptDecisions), the claims a re-held
+// by the id it answers — the decisions a start claims (ClaimKeptDecisionsOf), the claims a re-held
 // catch-up takes over (MoveKeptClaims), the start a pause's stop released — and an id of no row
 // would name nothing, so the caller's transaction rolls back instead.
 func (s projectRecords) EnqueueID(ctx context.Context, tx pgx.Tx, row record.OutboxRow) (int64, error) {

@@ -206,7 +206,7 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the branch a role's work is based on and merged into"},
 	{Field: "GitHubRepo", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Ancestry", Column: ColumnWithheld,
-		Reason: "no chain is stored (R19 of dispatch://INFRA-3320): the chain is read from the copy of Dispatch's issues, and this value is kept written for a rollback only"},
+		Reason: "no chain is stored (R15 of dispatch://INFRA-3320): the chain is read from the copy of Dispatch's issues, and nothing of this release writes this value; the column is kept for a rollback"},
 	{Field: "HandedOverFrom", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Awaiting", Column: ColumnAgents, Keys: []string{"waitingOn"},

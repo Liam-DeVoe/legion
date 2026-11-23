@@ -342,7 +342,7 @@ func (e *Engine) ancestorReached(ctx context.Context, tx pgx.Tx, key string) (bo
 	if err != nil || ancestor == nil {
 		return false, err
 	}
-	chains, err := record.ReadChains(ctx, tx, e.store, ancestor.Project, []string{key})
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, ancestor.Project, []string{key})
 	if err != nil {
 		return false, err
 	}
@@ -850,7 +850,11 @@ func (e *Engine) openPendingBasis(ctx context.Context, tx pgx.Tx, root record.Is
 	}
 	if current.AwaitingPerson() {
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its step's opening on the ancestor's approval by its resume", "issue", root.Key)
-		_, err := e.answerOpenGates(ctx, tx, []record.Issue{*current}, nil)
+		chains, err := record.ReadChainsOf(ctx, tx, e.store, current.Project, []string{current.Key})
+		if err != nil {
+			return opened, err
+		}
+		_, err = e.answerOpenGates(ctx, tx, chains, []record.Issue{*current}, nil)
 		return opened, err
 	}
 	return opened, e.notice(ctx, tx, root.Key, openedNotice(root.Key, opened, ""))

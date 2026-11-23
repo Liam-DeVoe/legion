@@ -63,13 +63,6 @@
 -- pending_basis_seed or reparent_seed would refuse every reconcile of a tree's news and every
 -- basis or re-parent seed, and fail the upgrade of a database that holds one pending.
 --
--- This file was 20261120095128_issue_facts, and the mark beside it 20261120091044_issue_holds_gate,
--- until the forward merge of 2026-11-22 brought in 20261122154643, which stood above both and left
--- retention_end out of its list. No release carries either earlier version and main never merged
--- them, so no deployment's database records them. Only a database a build of this branch migrated
--- before that merge does, and such a database is a test's own: it would apply both files a second
--- time and fail on their first alter table, so make it again rather than upgrade it.
---
 -- The design news's reads over the Dispatch chain. 20261119203047_design_news reads what each
 -- audience of a tree took (design_news_told_in) and whether a delivery's news still counts
 -- (design_news_current) over issues.tree, the tree the record stored, which no decision of this
@@ -204,7 +197,7 @@
 -- update issues set held_session_writes = '[]'::jsonb where project = '<PROJECT>' and held_session_writes <> '[]'::jsonb;
 -- -- The crossing times of the claims of one project, which the release before does not keep.
 -- update claims set published_since = null, unpublished_since = null
---   where split_part(issue, '-', 1) = '<PROJECT>' and (published_since is not null or unpublished_since is not null);
+--   where project = lower('<PROJECT>') and (published_since is not null or unpublished_since is not null);
 -- -- The record of the conversion of one project.
 -- delete from tree_conversions where project = '<PROJECT>';
 -- -- Each issue of one project with a claim not retired, and the tree it stores, for the relabel of its Sandbox.
@@ -217,6 +210,11 @@ alter table issues
     add column pending_close jsonb,
     add column seen_seq bigint not null default 0 check (seen_seq >= 0),
     add column held_session_writes jsonb not null default '[]'::jsonb;
+
+-- held_session_writes is empty on nearly every row, and every admission pass asks which issues of
+-- its project hold any (record.Store.HeldSessionWriteIssues): this partial index answers that from
+-- the few rows that hold some, rather than from a scan of every issue the project has recorded.
+create index issues_held_session_writes on issues (project, key) where held_session_writes <> '[]'::jsonb;
 
 alter table claims
     add column launch_tree text not null default '',

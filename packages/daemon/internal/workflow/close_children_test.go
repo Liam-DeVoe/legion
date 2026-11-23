@@ -81,13 +81,8 @@ func closePass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 	if err != nil {
 		t.Fatalf("read the chains: %v", err)
 	}
-	for _, issue := range issues {
-		if !ClosePassCandidate(issue) {
-			continue
-		}
-		if _, err := engine.WriteDueClose(scoped, tx, issue, chains); err != nil {
-			t.Fatalf("WriteDueClose %s: %v", issue.Key, err)
-		}
+	if _, err := engine.WriteDueCloses(scoped, tx, issues, chains); err != nil {
+		t.Fatalf("WriteDueCloses: %v", err)
 	}
 	if err := engine.SettleFact(scoped, tx); err != nil {
 		t.Fatalf("settle: %v", err)

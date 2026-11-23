@@ -778,7 +778,7 @@ func (r *subArchitectLive) answer(status int, body []byte) (int, api.Failure) {
 // echo publishes the event of the daemon's own status write on key as Dispatch delivers it: the
 // issue as the board holds it, the write applied, with its links and the daemon's own actor, on
 // the next sequence. The stand-in answers a status write with no sequence, so a route leaves the
-// record to that event (api's recordOwnStatusWrite), which the driver delivers as Dispatch would.
+// record to that event (api's ApplyOwnStatusWrite), which the driver delivers as Dispatch would.
 func (r *subArchitectLive) echo(key string) {
 	r.t.Helper()
 	r.board.mu.Lock()

@@ -372,7 +372,7 @@ func (r *ownerMoveRig) restored(after int64) {
 		r.t.Fatalf("Dispatch ends with the child at %s, want the record's in_progress", shown)
 	}
 	child := storedIssueOf(r.t, context.Background(), r.pool, r.records, ownerMoveChild)
-	if !workflow.InWorkflow(*child) || child.Phase != phase.Implementing || child.Status != "in_progress" {
+	if !record.InWorkflow(*child) || child.Phase != phase.Implementing || child.Status != "in_progress" {
 		r.t.Fatalf("the child's record = phase %s, status %s, want it still implementing at in_progress", child.Phase, child.Status)
 	}
 	if left := r.statusWritesLeft(); len(left) != 0 {

@@ -37,7 +37,7 @@ import (
 // tests work: what the refresher's first job prepares (prepareAtStart), so both repositories are
 // recorded on before a test's first admission where GitHub answers for them, and what GitHub
 // intake hears from the boot (heardAtBoot). Each is a tree past its review, in merging, with its
-// lifecycle open under the workflow and no slot: a live tree (record.LiveRoots) whose root waits in
+// lifecycle open under the workflow and no slot: a root in Legion's work that waits in
 // no line (record.Waiting) and holds none of the cap's slots, so admission neither takes it out of
 // the workflow as a root nothing will start (admit's unslotted) nor offers it a slot, and it moves
 // of its own nowhere in a test.

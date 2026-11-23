@@ -1127,7 +1127,7 @@ func keptOutcome(outcome record.RelayOutcome) string {
 // already closed — releases the slot its run held, as admission's own pass does for an issue that
 // needs none, and writes the architect's suspend as the workflow writes one (workflow's leave).
 // Its tree lifecycle is confirmed closed here, as its cleanup confirms it once every claim of it
-// has retired (store.CleanupReservedTree), since those rows are among the ones this run does not
+// has retired (store.CleanupReservedIssue), since those rows are among the ones this run does not
 // drive.
 func (r *keptRun) park() {
 	status := []string{"done", "backlog"}[r.rng.IntN(2)]
@@ -1174,8 +1174,8 @@ func (r *keptRun) readmitRoot() error {
 }
 
 // takeSlot gives key the admission slot and the open tree lifecycle its promotion gives a root it
-// admits (admit's promoteHolds writes both in one transaction): the lifecycle is what says the
-// tree runs (record.TreeLive) now that a slot counts one issue at work, and the slot is what keeps
+// admits (admit's promoteHolds writes both in one transaction): the lifecycle is the shadow the
+// release before reads (R22 of dispatch://INFRA-3320), and the slot is what keeps
 // admission's own pass from taking the root out of the workflow as one no slot can reach
 // (releaseUnslotted). The index is the lowest one no slot holds, which is admission's own rule
 // (its nextSlotIndex): the slots a run holds are not a run of indexes from zero once a root in
@@ -1202,15 +1202,15 @@ func (r *keptRun) takeSlot(key string) error {
 }
 
 // closeTreeLifecycle confirms the cleanup of key's tree, as the tree_close rows of a tree that has
-// ended confirm it once every claim of the tree has retired (store.CleanupReservedTree). Those
+// ended confirm it once every claim of the tree has retired (store.CleanupReservedIssue). Those
 // rows are among the ones this run does not drive, so their one lasting mark is written here.
 func (r *keptRun) closeTreeLifecycle(key string) {
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		lifecycle, err := treelifecycle.ReserveCleanup(r.ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow)
+		lifecycle, err := treelifecycle.Trees.ReserveCleanup(r.ctx, tx, "legion", key, treelifecycle.AuthorityWorkflow)
 		if err != nil {
 			return err
 		}
-		return treelifecycle.ConfirmCleanup(r.ctx, tx, "legion", key, lifecycle.Epoch)
+		return treelifecycle.Trees.ConfirmCleanup(r.ctx, tx, "legion", key, lifecycle.Epoch)
 	}); err != nil {
 		r.fatalf("close the tree lifecycle of %s: %v", key, err)
 	}
@@ -1242,7 +1242,7 @@ func (r *keptRun) enqueueStartRow() error {
 			return err
 		}
 		kept = named
-		return r.engine.EnqueueNaming(r.ctx, tx, r.root.issue.Key, r.root.issue.Key, record.SuperviseRequest{Op: "start",
+		return r.engine.EnqueueNaming(r.ctx, tx, r.root.issue.Key, record.SuperviseRequest{Op: "start",
 			Tree: r.root.issue.Tree, Role: claim.RoleArchitect, Generation: r.root.issue.Generation, Task: task, Kept: named}, named, now)
 	}); err != nil {
 		return err

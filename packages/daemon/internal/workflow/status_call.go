@@ -133,7 +133,7 @@ func (e *Engine) judgeCallIssue(ctx context.Context, tx pgx.Tx, chains *record.C
 			return callWrite{}, &intake.Refusal{Status: 404, Code: "ISSUE_NOT_FOUND", Message: fmt.Sprintf(
 				"%s is not recorded: rerun_child runs again an issue the daemon has run, and release_children releases one it has not", key)}, nil
 		case record.InLegionsWork(*write.record):
-			return callWrite{}, &intake.Refusal{Status: 409, Code: "CHILD_RUNNING", Message: ChildRunning(*write.record, observed)}, nil
+			return callWrite{}, &intake.Refusal{Status: 409, Code: "CHILD_RUNNING", Message: childRunning(*write.record, observed)}, nil
 		}
 		write.status = "todo"
 		write.newRun = observed == "backlog" || observed == "icebox"
@@ -206,11 +206,17 @@ func callStatus(chains *record.Chains, key string) string {
 
 // childrenInWork is each child of key on its Dispatch chain that is in work (record.InWorkStatus),
 // as "KEY (status)" in key order: the children a backlog or icebox of key would leave in work under
-// an issue that is not, which Dispatch's parent rule refuses.
+// an issue that is not, which Dispatch's parent rule refuses. A child's status is its record's
+// where the daemon records it, as callStatus reads it, and otherwise the status its row of the copy
+// holds (record.Chains.Children), which the walk of the chains need not have read.
 func childrenInWork(chains *record.Chains, key string) []string {
 	var breach []string
 	for _, child := range chains.Children(key) {
-		if status := callStatus(chains, child.Key); record.InWorkStatus(status) {
+		status := child.Status
+		if issue, recorded := chains.Record(child.Key); recorded {
+			status = issue.Status
+		}
+		if record.InWorkStatus(status) {
 			breach = append(breach, fmt.Sprintf("%s (%s)", child.Key, status))
 		}
 	}
@@ -342,7 +348,7 @@ func (e *Engine) keepDispatchStatus(ctx context.Context, tx pgx.Tx, key, status 
 	return e.store.PutIssue(ctx, tx, *issue)
 }
 
-// ChildRunning is why rerun_child refuses child, which the record holds in Legion's work
+// childRunning is why rerun_child refuses child, which the record holds in Legion's work
 // (CHILD_RUNNING), told as what the architect does next; shown is the status Dispatch shows of the
 // child as the copy holds it, which the route read of Dispatch just now. The restart of a running
 // child is the architect's backlog, then rerun_child, and the daemon takes that backlog from its
@@ -353,7 +359,7 @@ func (e *Engine) keepDispatchStatus(ctx context.Context, tx pgx.Tx, key, status 
 // kept (R20 of dispatch://INFRA-3320). That move can also be one the daemon sets back, and then
 // Dispatch stops showing it, so the reason also says which writes the daemon sets back and that the
 // architect then writes backlog first. Anywhere else the architect writes backlog first.
-func ChildRunning(child record.Issue, shown string) string {
+func childRunning(child record.Issue, shown string) string {
 	if record.OutOfWorkflow(shown) {
 		return fmt.Sprintf("Dispatch shows %s for %s, but the daemon has not taken that move yet. The record still shows %s in phase %s at status %s. "+
 			"Call rerun_child again when read_record shows %s at status %s. "+

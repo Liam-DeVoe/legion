@@ -789,9 +789,9 @@ func seedGate(t *testing.T, pool *pgxpool.Pool, gate record.DesignGate) {
 }
 
 // seedSlot grants the slot and opens the tree lifecycle of the issue holding it under the
-// workflow's authority, as promotion's own admission does in one transaction. The lifecycle, not
-// the slot row, is what says a tree runs (record.TreeLive), so a fixture that granted a slot and
-// nothing else would describe a tree the daemon reads as never opened.
+// workflow's authority, as promotion's own admission does in one transaction. The lifecycle is the
+// shadow the release before reads (R22 of dispatch://INFRA-3320), so a fixture that granted a slot
+// and nothing else would describe a tree that promotion never opened.
 func seedSlot(t *testing.T, pool *pgxpool.Pool, slot record.Slot) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutSlot(t.Context(), tx, slot) })

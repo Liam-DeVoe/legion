@@ -161,7 +161,7 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // held: that re-entry starts and stops nothing, so a child's own architect that held its role
 // still holds it (workflow's backInWork). Every site that starts, resumes or reports a phase's
 // worker skips the architect, so it skips both phases (workflow's start, admit's
-// startMidPhaseMembers, workflow's booted and Stranded).
+// promotion, workflow's booted and Stranded).
 //
 // It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
 // which starts the roles: the state projection names the role each issue's entry numbers are of

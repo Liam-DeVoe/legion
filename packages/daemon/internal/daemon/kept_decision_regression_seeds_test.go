@@ -18,7 +18,7 @@ import (
 // re-held copy of a catch-up while the row it copies was publishing, so the decisions the copy
 // claimed were named again (DropCatchUps now keeps every row of a telling one of whose rows is
 // leased); 262 named one decision in two catch-ups of one launch, so a composer named what another
-// telling owned (UnclaimedKept now locks the rows before it reads them, and ClaimKeptDecisions
+// telling owned (UnclaimedKeptOf now locks the rows before it reads them, and ClaimKeptDecisionsOf
 // claims everything a row names or fails), and later told one decision twice on a schedule the
 // model itself made: its runTogether leased a catch-up only once another row of the step had
 // started, so the lease committed inside that row's drop of the root's catch-ups, while the drop's

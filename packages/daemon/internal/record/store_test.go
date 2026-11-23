@@ -791,10 +791,10 @@ func TestClaimSessionAnswersTheSeededSessionOrEmpty(t *testing.T) {
 	})
 }
 
-// SessionClaimsTree and SessionClaimsAnywhere together separate the three answers a claim
-// release stands on (the outbox's releaseClaim): a session the daemon records in the tree being
-// asked about, a session it records only in another tree — which owns its own issue, not this
-// one — and a session it holds no claim row for at all, which it cannot attribute.
+// SessionClaimsOf and SessionClaimsAnywhere together separate the three answers a claim release
+// stands on (the outbox's releaseClaim): a session the daemon records on one of the issues being
+// asked about, a session it records only on another issue — which owns that issue, not these —
+// and a session it holds no claim row for at all, which it cannot attribute.
 func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -822,7 +822,7 @@ func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *test
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			inTx(t, st, func(tx pgx.Tx) {
-				inTree, err := records.SessionClaimsTree(ctx, tx, "LEGION-208", tc.session)
+				inTree, err := records.SessionClaimsOf(ctx, tx, []string{"LEGION-208"}, tc.session)
 				must(t, err)
 				claimed, err := records.SessionClaimsAnywhere(ctx, tx, tc.session)
 				must(t, err)
@@ -1119,9 +1119,9 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 // The reviewer's row keeps the commit its newest recorded review read (PhaseRow.ReviewedHead),
 // which the task of a later review round names. A row the release before wrote names no such
 // column and reads back with none. A new generation clears it with the rest of the generation's
-// facts, for one issue (ClearGeneration: the rerun of a child, an adoption) and for a whole tree
-// (ClearTreeGeneration: the re-admission of a root), so the first review of a new generation is
-// told no commit.
+// facts, of one issue at a time (ClearGeneration: the rerun of a child, an adoption, and the
+// re-admission of a root, which clears each issue of its tree), so the first review of a new
+// generation is told no commit.
 func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 	ctx := context.Background()
 	const reviewed = "aaa111"
@@ -2036,8 +2036,8 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 }
 
 // A lane finishing a catch-up and a transaction that locked the tree's decisions and then drops the
-// root's catch-ups (workflow.Adopt and spentKept, which lock them through UnclaimedKept before they
-// queue a catch-up) would take the same two locks in opposite orders if the drop locked the rows.
+// root's catch-ups (spentKept, which locks them through UnclaimedKeptOf before it queues a
+// catch-up) would take the same two locks in opposite orders if the drop locked the rows.
 // The finish deletes its row and then sets the decisions it claimed back to unclaimed (the foreign
 // key's on delete set null), which waits on the decisions the other transaction locked; a drop that
 // locked every catch-up of the issue, the finishing one included, would wait on the finish, and

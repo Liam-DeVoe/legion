@@ -530,11 +530,12 @@ type Notice struct {
 	// noticeArchitect).
 	To string `json:"to,omitempty"`
 	// Generation and Entry are the run and the phase entry of the row's issue the notice was
-	// queued at (Fence), which every notice names, a controller's too: NewOutboxRow stamps and
-	// requires both (R17 of dispatch://INFRA-3320). Its delivery reads the run alone (LateAt, the
-	// architect's ruling of 2026-11-21 on dispatch://INFRA-3320): a notice of an earlier phase
-	// entry of the run its issue stands in is delivered, and one of an earlier run is not. The
-	// publish keeps them, so a re-held copy is fenced as its row was (the daemon's reholdNotice).
+	// queued at (Fence), which every notice names, a controller's too: NewFencedRow stamps them
+	// and NewOutboxRow requires both (R17 of dispatch://INFRA-3320). Its delivery reads the run
+	// alone (LateAt, the architect's ruling of 2026-11-21 on dispatch://INFRA-3320): a notice of an
+	// earlier phase entry of the run its issue stands in is delivered, and one of an earlier run is
+	// not. The publish keeps them, so a re-held copy is fenced as its row was (the daemon's
+	// reholdNotice).
 	Generation uint64 `json:"generation,omitempty"`
 	Entry      int64  `json:"entry,omitempty"`
 }
@@ -867,7 +868,7 @@ type SilentIssue struct {
 // claim had ended, before this relaunch), in the words of workflow.Engine.ParkedDecisionTask;
 // empty when there is none, and on every child's catch-up, since what is kept for a tree is its
 // root architect's to hear. Kept is what Decided named, which a published catch-up forgets
-// (Store.ForgetKeptDecisions): a catch-up a newer one supersedes hands it over to a fresh catch-up
+// (Store.ForgetKeptDecisionsOf): a catch-up a newer one supersedes hands it over to a fresh catch-up
 // instead (workflow.HandOverKept), and one that finishes undelivered any other way leaves it all
 // for the architect's next ready to name again.
 type CatchUp struct {
@@ -1181,7 +1182,7 @@ type SuperviseRequest struct {
 	// Kept is what an architect start's Task named of the decisions its root keeps
 	// (workflow.Engine.ParkedDecisionTask). The start settles them once it has run (the outbox's
 	// settleKept): a task the root architect's claim queued forgets them
-	// (Store.ForgetKeptDecisions), and a start that reached no claim hands them over to a fresh
+	// (Store.ForgetKeptDecisionsOf), and a start that reached no claim hands them over to a fresh
 	// catch-up (workflow.HandOverKept). Every other request carries none.
 	Kept *KeptDecisions `json:"kept,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
@@ -1194,7 +1195,7 @@ type SuperviseRequest struct {
 	// child's own architect's plain start (workflow's childArchitectStart), and for a suspend or a
 	// tree's close, which must still act after the issue moves on. The start a re-admission writes
 	// to bring back a mid-phase child's own architect names the phase the child stands in (admit's
-	// startMidPhaseMembers), and finishes without acting once the child has left it.
+	// promotion), and finishes without acting once the child has left it.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -1217,7 +1218,7 @@ type SuperviseRequest struct {
 	// derivation serves no task (admit's promotion), a child's own architect's plain start
 	// (workflow's gateOpened, which a child's first phase start runs, and reviveArchitect, which
 	// each phase start of a child runs), the roles admission brings back beside a re-admitted
-	// member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
+	// member's phase worker (admit's promotion), the boot's resume by rule
 	// (workflow's booted), the boot's one-time start of a merger the `awaiting_merge` cutover left
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
@@ -1227,10 +1228,10 @@ type SuperviseRequest struct {
 	// design alone (News below, the daemon's design_changes reconcile). Each hands its role work
 	// it was already on, or work no phase entry numbers at all.
 	//
-	// A stop (StopOp: a suspend, an issue close or an idle release's role stop) carries in it the
-	// phase entry of its issue the stop was queued at instead (Fence.Entry), never zero, beside its
-	// Generation and PodUID: a stop of an earlier run or phase entry stops nothing of the run a
-	// return opened (R17 and R20 of dispatch://INFRA-3320).
+	// A stop (SuperviseRequest.Stops: a suspend, an issue close or an idle release's role stop)
+	// carries in it the phase entry of its issue the stop was queued at instead (Fence.Entry),
+	// never zero, beside its Generation and PodUID: a stop of an earlier run or phase entry stops
+	// nothing of the run a return opened (R17 and R20 of dispatch://INFRA-3320).
 	Entry int64 `json:"entry,omitempty"`
 	// News marks a start queued for news of the approved design alone: the reconcile of a tree's
 	// news (the daemon's design_changes executor) queues it as a row of its own (Store.Enqueue),

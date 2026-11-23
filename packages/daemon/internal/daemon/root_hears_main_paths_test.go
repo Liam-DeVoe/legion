@@ -369,7 +369,7 @@ func (r *mainPathRig) takeTheTask() {
 }
 
 // recordClaim writes the architect's claim as the daemon persists it, which is what the workflow
-// reads of it (record.Store.RoleRuns, SessionClaimsTree).
+// reads of it (record.Store.RoleRuns, SessionClaimsOf).
 func (r *mainPathRig) recordClaim() {
 	r.t.Helper()
 	if err := r.trees.PutClaim(r.ctx, r.machine().Claim()); err != nil {

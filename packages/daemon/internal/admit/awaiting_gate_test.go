@@ -52,7 +52,7 @@ func architectToken(t *testing.T, root string) claim.Token {
 }
 
 // seedArchitectClaim records session as the architect of the tree rooted at root, running a turn
-// it has taken its task for: the session SessionClaimsTree finds within that tree, and an
+// it has taken its task for: the session SessionClaimsOf finds within that tree, and an
 // architect that owes nothing (workflow's owed), so the root may wait on a person.
 //
 // It holds the architect's phases row at entry 1 with its claim given and serving that entry,

@@ -338,7 +338,7 @@ func readmissionRig(t *testing.T, suspend func(*supervisor, claim.Token)) (rt *f
 			t.Fatalf("apply the todo: %v", err)
 		}
 		// The re-admission writes the mid-phase child's start owing a slot (admit's
-		// startMidPhaseMembers through workflow.StartOrOwe), and that row is written after this
+		// promotion through workflow.StartOrOwe), and that row is written after this
 		// pass read its waiting line, so the slot it waits for is the next pass's to grant. Every
 		// fact and every tick makes such a pass; here the controller's tick is it.
 		if _, err := intake.ApplyFact(ctx, pool, "controller", "tick-after-the-readmission", intake.ControllerTick{}, engine, admission); err != nil {

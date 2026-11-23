@@ -32,36 +32,38 @@ type claimVerdict string
 
 const (
 	// claimLeft leaves the claim where it is with nothing logged: the issue runs again, the
-	// daemon records nothing for it, its tree is the operator's, or the holder is a session the
-	// daemon records in a tree of its own.
+	// daemon records nothing for it, the operator holds it, or the holder is a session the daemon
+	// records under another gate root.
 	claimLeft claimVerdict = "left"
-	// claimTakeable is a claim held by a session the daemon records in the issue's own tree,
-	// which is the one holder it takes a claim from.
+	// claimTakeable is a claim held by a session the daemon records on the issue or in the tree of
+	// its gate root on the Dispatch chain, which is the one holder it takes a claim from.
 	claimTakeable claimVerdict = "takeable"
 	// claimUnattributed is a holder no claims row of the daemon's accounts for.
 	claimUnattributed claimVerdict = "unattributed"
 )
 
 // releaseClaim releases the Dispatch claim of an issue the daemon took out of the workflow
-// without closing it (record.ClaimRelease). The row carries the issue key alone, and the order
-// below is what the row stands on: the holder comes from Dispatch and the issue from the
+// without closing it (record.ClaimRelease). The row carries the issue key and its fence, and the
+// order below is what the row stands on: the holder comes from Dispatch and the issue from the
 // daemon's own record when the row runs, never from when it was queued, because that is the
-// reading that is current when the DELETE is sent. A person who claimed the issue since, a
-// re-admission, a second park, or a holder that let the claim go on its own each end the row on
-// their own, with no generation or holder to fence it.
+// reading that is current when the DELETE is sent. A person who claimed the issue since, a second
+// park, or a holder that let the claim go on its own each end the row on their own; a return to
+// work or a new run stands at a later phase entry or run, at whose fence the row finishes unrun.
 //
-// Only a claim held by a session the daemon records in that issue's own tree, read on the Dispatch chain, is released. A
-// person's claim is theirs; the daemon's own session is a legitimate holder, as
-// workflow.Unresumable treats it; a session that claims in another tree owns the issue instead;
-// and a holder no claims row accounts for is one the daemon cannot attribute, which it leaves
-// and logs rather than take a claim from a session it knows nothing about.
+// Only a claim held by a session the daemon records on the issue itself, or in the tree of the
+// gate holder the issue stands under on the Dispatch chain (record.Chains.StateTree and GateTree,
+// R18 of dispatch://INFRA-3320), is released. A person's claim is theirs; the daemon's own session
+// is a legitimate holder, as workflow.Unresumable treats it; a session that claims under another
+// gate root owns the issue instead; and a holder no claims row accounts for is one the daemon
+// cannot attribute, which it leaves and logs rather than take a claim from a session it knows
+// nothing about.
 //
 // An issue the operator holds is left alone whoever holds the claim, on the predicate a park of
 // such an issue reads (record.OperatorHolds): the operator's lifetime shares the issue's key, so its
-// own session reads as a session of the issue's tree here, and the workflow may record nothing
-// that acts on such a tree's claims (treelifecycle.Lifecycle.HeldByOperator). The test is here
-// rather than where the row is queued because the operator can open the tree in the hour a row
-// waits out a holder.
+// own session reads as a session of the issue here, and the workflow may record nothing that acts
+// on such an issue's claims (treelifecycle.Lifecycle.HeldByOperator). The test is here rather than
+// where the row is queued because the operator can take the issue in the hour a row waits out a
+// holder.
 func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 	if r.dispatch == nil {
 		return errors.New("claim release executor has no Dispatch client")
@@ -85,8 +87,8 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 		return nil
 	}
 	holder := issue.Claim
-	// The record, the tree's lifecycle and the claims the holder is judged against are read in
-	// one transaction, so they are one state of the record.
+	// The record, the issue's lifecycle, the Dispatch chain and the claims the holder is judged
+	// against are read in one transaction, so they are one state of the record.
 	verdict := claimLeft
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		recorded, err := r.records.Issue(ctx, tx, row.Issue)
@@ -102,7 +104,14 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 		if err != nil || held {
 			return err
 		}
-		inTree, err := r.records.SessionClaimsTree(ctx, tx, recorded.Tree, holder.ID)
+		// The issue is out of Legion's work, so it is in no gate root's tree of its own: the
+		// holder is judged against the issue's own claims and the tree of the gate holder it
+		// stands under on the Dispatch chain (record.Chains.StateTree, GateTree).
+		chains, err := record.ReadChains(ctx, tx, r.records, recorded.Project, []string{recorded.Key})
+		if err != nil {
+			return err
+		}
+		inTree, err := r.records.SessionClaimsOf(ctx, tx, append([]string{recorded.Key}, chains.GateTree(chains.StateTree(recorded.Key))...), holder.ID)
 		if err != nil {
 			return err
 		}

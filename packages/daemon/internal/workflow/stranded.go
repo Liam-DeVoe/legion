@@ -160,24 +160,16 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 	for _, issue := range issues {
 		recorded[issue.Key] = issue
 	}
-	running, err := record.ReadRunningRoots(ctx, tx, s, project, issues, steps)
-	if err != nil {
-		return nil, err
-	}
 	// Each claim's issue stands under its gate root on the Dispatch chain (record.Chains.StateTree),
-	// not the tree its record stores: one read of the chains names every claim's issue.
-	keys := make([]string, 0, len(claims))
-	for _, c := range claims {
-		keys = append(keys, c.Issue)
-	}
-	chains, err := record.ReadChains(ctx, tx, s, project, keys)
+	// not the tree its record stores. The running roots' read names every recorded issue, so its
+	// chains answer that for each claim of a recorded issue, the only claims asked below.
+	running, chains, err := record.ReadRunningRoots(ctx, tx, s, project, issues, steps)
 	if err != nil {
 		return nil, err
 	}
 	type candidate struct {
 		claim   supervise.Claim
 		issue   record.Issue
-		root    record.Issue
 		current phase.Phase
 	}
 	candidates := make([]candidate, 0, len(claims))
@@ -198,11 +190,10 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// question asks (record.TreeRuns, R4 of dispatch://INFRA-3320): the root is in Legion's
 		// work and is not itself waiting in the line for a slot it does not hold. A root that
 		// waits there — one whose first start has still to come, or one whose work came back
-		// after a stop and waits for its slot — is live for the ancestry hold's purposes
-		// (record.TreeLive) but runs nothing yet: its architect's task comes with its promotion,
-		// and its phase worker's start is queued already, held until the slot comes, so nothing
-		// of it is stranded. Nor is anything of a root waiting on a person, whose architect its
-		// answer resumes.
+		// after a stop and waits for its slot — has started (record.TreeStarted) but runs nothing
+		// yet: its architect's task comes with its promotion, and its phase worker's start is
+		// queued already, held until the slot comes, so nothing of it is stranded. Nor is anything
+		// of a root waiting on a person, whose architect its answer resumes.
 		if _, runs := running[root.Key]; !runs {
 			continue
 		}
@@ -233,7 +224,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		default:
 			continue
 		}
-		candidates = append(candidates, candidate{claim: c, issue: issue, root: root, current: current})
+		candidates = append(candidates, candidate{claim: c, issue: issue, current: current})
 	}
 
 	var stranded []supervise.Claim
@@ -250,7 +241,7 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		}
 		for _, candidate := range batch {
 			run := runs[candidate.claim.Token]
-			if candidate.claim.RuleHolds() || StartFor(run, candidate.root, candidate.issue.Generation, candidate.current) {
+			if candidate.claim.RuleHolds() || StartFor(run, candidate.issue.Generation, candidate.current) {
 				stranded = append(stranded, candidate.claim)
 			}
 		}

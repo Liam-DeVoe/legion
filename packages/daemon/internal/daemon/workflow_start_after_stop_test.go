@@ -69,7 +69,7 @@ func startedAgainDispatch(t *testing.T, project string) string {
 // branch that is there already, which an issue that has been implementing has. A start of a
 // role waits while its issue's branch row is unfinished (record's outboxInOrder), and a
 // re-admitted tree's promotion writes one for every member it brings back (admit's
-// startMidPhaseMembers), so without these answers the starts this test reads would wait for
+// promotion), so without these answers the starts this test reads would wait for
 // ever. Every other call is answered 404, as repositoriesGitHub answers one.
 func startedAgainGitHub(t *testing.T) string {
 	t.Helper()

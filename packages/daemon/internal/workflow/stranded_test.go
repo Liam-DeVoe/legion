@@ -35,8 +35,8 @@ func (s *strandedStore) Issues(context.Context, pgx.Tx) ([]record.Issue, error) 
 func (s *strandedStore) Slots(context.Context, pgx.Tx) ([]record.Slot, error) { return s.slots, nil }
 
 // TreeLifecycles reports a lifecycle open under the workflow for each tree the fixture gave a
-// slot: a slot now counts one issue at work, and it is the lifecycle that says a tree runs
-// (record.TreeLive), so the fixture's slots stand for the trees this store has open.
+// slot, the shadow the release before reads (R22 of dispatch://INFRA-3320), so the fixture's
+// slots stand for the trees this store has open.
 func (s *strandedStore) TreeLifecycles(_ context.Context, _ pgx.Tx, _ string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
 	open := make(map[string]treelifecycle.Lifecycle, len(trees))
 	for _, slot := range s.slots {

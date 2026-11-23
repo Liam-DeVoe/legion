@@ -51,13 +51,24 @@ const (
 // still asked, after the rule rather than instead of it: a root at admitted whose gate has never
 // opened is a queued root by its record and holds the slot its architect is writing the design
 // in, and that architect hears a decision itself.
+//
+// The chain is root's own (ReadChainsOf): StartsAsRoot is a question of root alone.
 func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps []DesignStep) (bool, error) {
 	if !InLegionsWork(root) {
 		return false, nil
 	}
-	chains, err := ReadChains(ctx, tx, store, root.Project, []string{root.Key})
-	if err != nil || !chains.StartsAsRoot(root.Key) {
+	chains, err := ReadChainsOf(ctx, tx, store, root.Project, []string{root.Key})
+	if err != nil {
 		return false, err
+	}
+	return WaitsForSlotOn(ctx, tx, store, chains, root, steps)
+}
+
+// WaitsForSlotOn is WaitsForSlot over chains a caller has already read with root's chain in them,
+// for a root in Legion's work (workflow's ArchitectHears, which asks root's gate of the same read).
+func WaitsForSlotOn(ctx context.Context, tx pgx.Tx, store Store, chains *Chains, root Issue, steps []DesignStep) (bool, error) {
+	if !chains.StartsAsRoot(root.Key) {
+		return false, nil
 	}
 	rows, err := store.GatesOf(ctx, tx, root.Key)
 	if err != nil {
@@ -91,7 +102,7 @@ func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps
 //     that owes the person an answer is the tree that issue stands in whenever a start or a
 //     catch-up names it, so an issue whose Dispatch parent changed takes what was decided on it
 //     with it, and nothing has to move. It is kept until the start or catch-up that named it reached an
-//     architect of that tree (Store.ForgetKeptDecisions, or the confirmation of the delivery
+//     architect of that tree (Store.ForgetKeptDecisionsOf, or the confirmation of the delivery
 //     holding it); one that reached none hands it over to a fresh catch-up
 //     (workflow.HandOverKept), so it is never left unclaimed while its tree has an architect to
 //     tell. The root is read for the two answers that are the root's own: whether it waits for its
@@ -171,7 +182,7 @@ type KeptApproval struct {
 // latest versions of the document a person approved when it named one. It travels with the task
 // (SuperviseRequest.Kept, CatchUp.Kept) and is persisted with the delivery a claim queues it as,
 // which is what says which rows that delivery holds. A published catch-up tells exactly what it
-// named (Store.ForgetKeptDecisions), and a queued start's task tells it at its delivery's
+// named (Store.ForgetKeptDecisionsOf), and a queued start's task tells it at its delivery's
 // confirmation. A start whose task reached no claim, and a catch-up a newer one supersedes, hand
 // every row over instead (workflow.HandOverKept): a fresh catch-up names them while the tree each
 // is owed to has an architect to tell, and otherwise they wait, KEPT, for the next start or

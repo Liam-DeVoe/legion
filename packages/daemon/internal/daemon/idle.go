@@ -466,7 +466,7 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //
 // Each row carries the fence of the issue's run, phase entry and pod as tx holds them
 // (record.NewFencedRow): a row that runs after the issue was handed a later entry cancels the
-// release rather than acting (the outbox's releaseOutlived).
+// release rather than acting (the outbox's outlived and podStands, then cancelRelease).
 func idleReleaseRows(ctx context.Context, tx pgx.Tx, records record.Store, view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Role: decision.Roles[0]}
 	rows := make([]store.IdleReleaseRow, 0, len(decision.Roles)+2)

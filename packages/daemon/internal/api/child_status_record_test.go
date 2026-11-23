@@ -70,7 +70,21 @@ func statusHarness(t *testing.T, configure ...func(*Options)) (*harness, []intak
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: statusRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)}); err != nil {
 			return err
 		}
-		return records.PutGate(context.Background(), tx, record.DesignGate{Issue: statusRoot, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 1, ApprovedVersion: &approved})
+		if err := records.PutGate(context.Background(), tx, record.DesignGate{Issue: statusRoot, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
+			return err
+		}
+		// The copy of Dispatch's issues holds the chain as Dispatch shows it (statuses.issues below),
+		// as the mirror of a running daemon does: a chain the copy cannot show to its top is unknown,
+		// and a session's status write on it is held until it is known (R16 of dispatch://INFRA-3320).
+		for _, reading := range []record.DispatchReading{
+			{Key: statusRoot, Project: testDispatchProject, Seq: 3, Status: record.Carry("in_progress"), Parent: record.Carry(""), Labels: record.Carry([]string{"legion"})},
+			{Key: statusChild, Project: testDispatchProject, Seq: 4, Status: record.Carry("in_progress"), Parent: record.Carry(statusRoot), Labels: record.Carry([]string{})},
+		} {
+			if err := records.PutDispatchIssue(context.Background(), tx, reading); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		t.Fatalf("seed the live tree: %v", err)
 	}
@@ -443,22 +457,9 @@ func TestControllerStatusOnAnotherProjectsIssueRecordsNothing(t *testing.T) {
 // R6). Each check that refuses it says so: the route's check of the issue the request names
 // (rootArchitectOf), and the workflow's check of the close fact on the Dispatch chain it commits on
 // (workflow's closeRoot, architectCallRefusal), which the copy of Dispatch's issues holds here
-// (R18 of dispatch://INFRA-3320). Each row holds only that much of the wording.
+// (statusHarness; R18 of dispatch://INFRA-3320). Each row holds only that much of the wording.
 func TestTheRootRequiredRefusalNamesTheStatusWrite(t *testing.T) {
 	h, handlers, _ := statusHarness(t)
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		for _, reading := range []record.DispatchReading{
-			{Key: statusRoot, Project: testDispatchProject, Seq: 3, Status: record.Carry("in_progress"), Parent: record.Carry(""), Labels: record.Carry([]string{"legion"})},
-			{Key: statusChild, Project: testDispatchProject, Seq: 4, Status: record.Carry("in_progress"), Parent: record.Carry(statusRoot), Labels: record.Carry([]string{})},
-		} {
-			if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("seed the copy of the tree's chain: %v", err)
-	}
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	for _, tc := range []struct {
 		name string

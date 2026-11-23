@@ -64,10 +64,10 @@ func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 			if err := records.PutSlot(ctx, tx, record.Slot{Issue: root, Index: i, AdmittedAt: fixedNow}); err != nil {
 				t.Fatalf("slot %s: %v", root, err)
 			}
-			// The tree's lifecycle, open under the workflow, is what says the tree runs
-			// (record.TreeLive): a slot counts one issue at work now, so a running tree is not
-			// known by its root's slot any more, and a root the net found in no live tree is
-			// taken out of the workflow (releaseUnslotted).
+			// The tree's lifecycle, open under the workflow, is the shadow the release before
+			// reads (R22 of dispatch://INFRA-3320), written as admission's own promotion writes
+			// it; what says this root runs is its standing in Legion's work with the slot above
+			// (record.RunningRoots).
 			seedLifecycleTx(t, tx, root)
 		}
 		for i := range stillWaiting {

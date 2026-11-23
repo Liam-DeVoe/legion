@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -616,14 +617,16 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return false, err
 	}
+	// Who stands above the issue, and so whether the legion label stands on its chain, is known
+	// only once the chain is: a write on an unknown chain is held before either is read.
+	write := record.HeldSessionWrite{Session: fact.ActorSession, Status: fact.Status, Seq: fact.Seq, At: fact.At}
+	if !chains.Chain(issue.Key).Known() || len(issue.HeldSessionWrites) > 0 {
+		return true, e.holdSessionWrite(ctx, tx, chains, issue, fact, write)
+	}
 	if !legionOnChain(chains, issue.Key) {
 		e.logOnCommit(ctx, "workflow: a session wrote the status of an issue on whose chain no issue carries the legion label; the daemon re-asserts nothing",
 			"issue", issue.Key, "session", fact.ActorSession, "wrote", fact.Status)
 		return false, nil
-	}
-	write := record.HeldSessionWrite{Session: fact.ActorSession, Status: fact.Status, Seq: fact.Seq, At: fact.At}
-	if !chains.Chain(issue.Key).Known() || len(issue.HeldSessionWrites) > 0 {
-		return true, e.holdSessionWrite(ctx, tx, chains, issue, fact, write)
 	}
 	verdict, agent, err := e.judgeSessionWrite(ctx, tx, chains, issue, write)
 	if err != nil || verdict == writeTaken {
@@ -671,17 +674,36 @@ func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains *recor
 	}
 	if !agent {
 		// Whether the write lands on the root of a tree that is running now, by the one rule every
-		// reader of that question asks (record.TreeRunning, record.TreeRuns, R4 of
-		// dispatch://INFRA-3320): it is in Legion's work and not itself waiting in the line for a
+		// reader of that question asks (record.TreeRuns, R4 of dispatch://INFRA-3320): it is in
+		// Legion's work, its own gate root on chains, and not itself waiting in the line for a
 		// slot it does not hold, its first or the one its returned work needs. A root waiting for
 		// its slot runs nothing: where no tree runs, an outside session's write is a person's move,
 		// which is the whole of the question.
 		waiting := gateRoot == issue.Key && issue.AwaitingPerson()
-		if admitted, err := record.TreeRunning(ctx, e.store, tx, issue, e.cfg.Steps); err != nil || !admitted && !waiting {
+		if runs, err := e.gateRootRuns(ctx, tx, issue, gateRoot); err != nil || !runs && !waiting {
 			return writeTaken, false, err
 		}
 	}
 	return writeSetBack, agent, nil
+}
+
+// gateRootRuns says whether issue, whose gate root on the caller's chains is gateRoot, is a gate
+// root whose tree runs now (record.TreeRuns): in Legion's work, its own gate root, and holding
+// the slot its standing needs. It reads issue's design gate and the slot rows, and no chain.
+func (e *Engine) gateRootRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, gateRoot string) (bool, error) {
+	if !record.InLegionsWork(issue) || gateRoot != issue.Key {
+		return false, nil
+	}
+	gates, err := e.store.GatesOf(ctx, tx, issue.Key)
+	if err != nil {
+		return false, err
+	}
+	slots, err := e.store.Slots(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == issue.Key })
+	return record.TreeRuns(issue, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
 }
 
 // tellSetBack tells the architect of issue's tree that the daemon set back write, unless the
@@ -788,17 +810,18 @@ func (e *Engine) keepStatus(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // intake.ApplyFact, before admission, which records an unrecorded issue only where its chain makes
 // it a root (admit's putNewRoot).
 //
-// The chain is the copy's (record.ReadChains), which holds this event's own reading of the issue
-// (the mirror, which runs before this handler). An issue on an unknown chain is recorded by
-// nothing (R16): admission notes its key for the daemon to read Dispatch again. An issue whose
-// parent is not in Legion's work is recorded by nothing here either: with an issue above that
-// parent in Legion's work it is held `ancestry` (record.HeldReasonOf), and with none it is a root,
-// admission's to take on a person's handover.
+// The chain is the copy's, read over the issue's own chain (record.ReadChainsOf, whose known chain
+// answers every question asked here as the whole project's read would), which holds this event's
+// own reading of the issue (the mirror, which runs before this handler). An issue on an unknown
+// chain is recorded by nothing (R16): admission notes its key for the daemon to read Dispatch
+// again. An issue whose parent is not in Legion's work is recorded by nothing here either: with an
+// issue above that parent in Legion's work it is held `ancestry` (record.HeldReasonOf), and with
+// none it is a root, admission's to take on a person's handover.
 func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fact intake.DispatchIssue) (intake.Result, error) {
 	if fact.Status != "todo" || fact.Parent == "" {
 		return intake.Result{}, nil
 	}
-	chains, err := record.ReadChains(ctx, tx, e.store, e.cfg.Project, []string{fact.Key})
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, e.cfg.Project, []string{fact.Key})
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -813,21 +836,21 @@ func (e *Engine) recordChildUnderParentAtWork(ctx context.Context, tx pgx.Tx, fa
 	if !recorded {
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.recordChild(ctx, tx, root, fact)
+	return intake.Result{}, e.recordChild(ctx, tx, chains, root, fact)
 }
 
-// recordChild records an unrecorded todo child under root, its gate root, on the repository its
-// event resolves to, or, when that is none or one GitHub does not answer for as a repository a role
-// App reaches, records nothing and says why on the child and to the architect that owns its parent
-// (refuseChild). A child recorded on a repository nothing named before has that repository heard
-// and cached from here (Config.HearRepository).
+// recordChild records an unrecorded todo child under root, its gate root on chains, on the
+// repository its event resolves to, or, when that is none or one GitHub does not answer for as a
+// repository a role App reaches, records nothing and says why on the child and to the architect
+// that owns its parent (refuseChild). A child recorded on a repository nothing named before has
+// that repository heard and cached from here (Config.HearRepository).
 //
 // The daemon holds no record of this child, so this entry is the one moment the issue-unit
 // experiments the project declares are drawn for it (drawExperiments), in the transaction that
 // records it: a draw covers a unit from the moment the daemon records that unit, so a return and a
 // new run, each of a record the daemon already holds, draw nothing, and an experiment declared
 // after a child was recorded never reaches it.
-func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue) error {
+func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, chains *record.Chains, root record.Issue, fact intake.DispatchIssue) error {
 	resolution, err := e.ResolveIssueRepository(fact)
 	if err != nil {
 		return err
@@ -835,7 +858,7 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if resolution.Refusal != "" {
 		return e.refuseChild(ctx, tx, root, fact.Key, fact.Parent, fact.ResolvedRepo, resolution)
 	}
-	if err := e.enterChild(ctx, tx, root, fact, resolution); err != nil {
+	if err := e.enterChild(ctx, tx, chains, root, fact, resolution); err != nil {
 		return err
 	}
 	e.HearRepository(ctx, resolution.GitHubRepo)
@@ -868,14 +891,15 @@ func (e *Engine) HearRepository(ctx context.Context, repo string) {
 //
 // A child entering beneath an ancestor the daemon has already accepted waits for that ancestor
 // to close before anything starts it (record.AcceptedAncestor, which the waiting line reads),
-// and the architect above the child is told so here. The two doors an agent uses refuse such a
-// child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move
-// to todo, which the daemon records rather than undoes: the record is the honest one, and the
-// notice says what the daemon will and will not do with it.
+// and the architect above the child is told so here, read on chains, the child's chain its caller
+// read (record.AcceptedAncestorIn): the record written here changes nothing above the child. The
+// two doors an agent uses refuse such a child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so
+// what reaches this is a person's own move to todo, which the daemon records rather than undoes:
+// the record is the honest one, and the notice says what the daemon will and will not do with it.
 //
 // It draws nothing: recordChild draws the child's issue-unit experiments in this same transaction
 // once this has recorded it.
-func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue, at Resolution) error {
+func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, chains *record.Chains, root record.Issue, fact intake.DispatchIssue, at Resolution) error {
 	parentKey := fact.Parent
 	child := record.Issue{Key: fact.Key, Tree: root.Key, Project: root.Project, Title: fact.Title, Parent: &parentKey, Phase: phase.Admitted,
 		Generation: 1, Status: fact.Status, Rank: fact.Rank, HandedOver: fact.HandedOver, LastDispatchSeq: fact.Seq, DispatchStatus: fact.Status,
@@ -883,9 +907,9 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 	if err := e.store.PutIssue(ctx, tx, child); err != nil {
 		return err
 	}
-	ancestor, err := record.AcceptedAncestorOf(ctx, e.store, tx, child.Project, child.Key, parentKey)
-	if err != nil || ancestor == "" {
-		return err
+	ancestor := record.AcceptedAncestorIn(chains, child.Key, parentKey)
+	if ancestor == "" {
+		return nil
 	}
 	return e.notice(ctx, tx, child.Key, ChildUnderAcceptedParentNotice(child.Key, ancestor))
 }
@@ -1966,7 +1990,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 		return intake.Result{}, err
 	}
 	working := issue.WorkingPhase()
-	if !InWorkflow(*issue) || phase.RoleFor(working) != fact.Role {
+	if !record.InWorkflow(*issue) || phase.RoleFor(working) != fact.Role {
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
 	}
@@ -2538,9 +2562,6 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if mergedAlready {
 		return e.closeMergedTelling(ctx, tx, issue, pr)
 	}
-	if row.To == phase.Done {
-		return e.leave(ctx, tx, issue, "done")
-	}
 	return nil
 }
 
@@ -2641,11 +2662,14 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
-// waited, which the notice's reason says instead. An issue that holds its own design gate on the
-// Dispatch chain (holdsGate, record.Chains.HoldsOwnGate, which the admission pass reads on its
-// own chains) gets no notice: the architect this would tell is its own, which the phase-finished
-// of the move out of admitted already tells (noticeFor).
-func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, holdsGate bool, waited []string) error {
+// waited, which the notice's reason says instead. chains is the admission pass's own reading of
+// the Dispatch chains. An issue that holds its own design gate on them (record.Chains.HoldsOwnGate)
+// gets no notice: the architect this would tell is its own, which the phase-finished of the move
+// out of admitted already tells (noticeFor). Any other issue's notice and log lines name the tree
+// it starts in as the chain gives it (record.Chains.StateTree, its gate root), never the tree its
+// record stores (R15 of dispatch://INFRA-3320).
+func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, chains *record.Chains, waited []string) error {
+	holdsGate := chains.HoldsOwnGate(issue.Key)
 	if err := e.gateOpened(ctx, tx, issue, holdsGate); err != nil {
 		return err
 	}
@@ -2653,14 +2677,15 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 		e.logOnCommit(ctx, "workflow: an issue that holds its own gate takes its slot and starts its own first phase", "issue", issue.Key)
 		return nil
 	}
+	tree := chains.StateTree(issue.Key)
 	if len(waited) == 0 {
 		e.logOnCommit(ctx, "workflow: this child names no issue it waits on any longer, so it starts",
-			"issue", issue.Key, "tree", issue.Tree)
+			"issue", issue.Key, "tree", tree)
 	} else {
 		e.logOnCommit(ctx, "workflow: every issue this child waited on is done, so it starts",
-			"issue", issue.Key, "tree", issue.Tree, "blockers", waited)
+			"issue", issue.Key, "tree", tree, "blockers", waited)
 	}
-	return e.notice(ctx, tx, issue.Key, ChildStartedNotice(issue.Key, issue.Tree, waited))
+	return e.notice(ctx, tx, issue.Key, ChildStartedNotice(issue.Key, tree, waited))
 }
 
 // gateOpened moves an admitted member of a tree whose gate is open into planning, behind a row

@@ -236,7 +236,8 @@ func (s *server) recordedIssue(ctx context.Context, issue string) (*record.Issue
 // ownsOnChain authorizes an architect's call on issue, a recorded issue, by the ownership rule
 // over the Dispatch chain as the daemon's copy holds it (intake.CallRefusal, R18 of
 // dispatch://INFRA-3320): an architect's grant, the issue's record, and call's rule on the chains
-// read in one read-only transaction with issue named (record.ReadChains), whose refusal names the
+// read in one read-only transaction over issue's own chain (record.ReadChainsOf: the rule refuses
+// an unknown chain first, and asks the rest of the known one), whose refusal names the
 // architect that may act. No stored tree is read. It answers the grant and the record. The workflow
 // holds the call's fact to the same rule again where it commits, since a change of parent can land
 // between the two (decision 5 of dispatch://INFRA-4730).
@@ -257,7 +258,7 @@ func (s *server) ownsOnChain(w http.ResponseWriter, r *http.Request, grantID, is
 		if recorded, err = s.records.Issue(ctx, tx, issue); err != nil || recorded == nil {
 			return err
 		}
-		chains, err := record.ReadChains(ctx, tx, s.records, recorded.Project, []string{issue})
+		chains, err := record.ReadChainsOf(ctx, tx, s.records, recorded.Project, []string{issue})
 		if err != nil {
 			return err
 		}
@@ -1225,7 +1226,7 @@ func releaseOrder(children []releasedChild) []releasedChild {
 //
 // A child is started when this request started its first phase (startedByRelease): the request
 // records every child it releases, one it writes todo — out of backlog, or parked at done — by its
-// own write (recordOwnStatusWrite), and one Dispatch already shows todo by Dispatch's view of it
+// own write (ApplyOwnStatusWrite), and one Dispatch already shows todo by Dispatch's view of it
 // (enterTodoChild). Otherwise it is held when it waits on an issue that is not done, unless it is
 // running a phase it was already in: what it waits on is judged from the blockers Dispatch showed
 // the request (blockers.UnfinishedOf), which the workflow's enterChild held a recorded child at

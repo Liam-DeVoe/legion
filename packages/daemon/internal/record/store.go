@@ -143,32 +143,6 @@ func (s *Postgres) IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([
 	return issues, nil
 }
 
-// AncestorsOf is the record of each of keys and of every issue above it on the chain of recorded
-// parents, by key order, for the issues of project; a key with no record contributes nothing. No
-// keys read nothing.
-//
-// The chain is walked in the database, in one query whatever its depth, because its callers walk
-// it under the one fact lock every fact takes (intake.ApplyFact): a read per step would cost a
-// round trip per level on every fact of every consumer. The walk carries only the key and the
-// parent, and the records are read once at the end; `union` is what ends it, since a chain that
-// loops back on itself derives nothing new on its second turn.
-func (s *Postgres) AncestorsOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]Issue, error) {
-	if len(keys) == 0 {
-		return []Issue{}, nil
-	}
-	issues, err := queryIssues(ctx, tx, `with recursive chain as (
-			select key, parent from issues where project = $1 and key = any($2)
-			union
-			select above.key, above.parent from issues above
-				join chain on above.key = chain.parent and above.project = $1
-		)
-		select `+issueColumns+` from issues where project = $1 and key in (select key from chain) order by key`, project, keys)
-	if err != nil {
-		return nil, fmt.Errorf("read the issues above %v of project %s: %w", keys, project, err)
-	}
-	return issues, nil
-}
-
 // queryIssues is every issue record query selects with args, in its order.
 func queryIssues(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]Issue, error) {
 	rows, err := tx.Query(ctx, query, args...)
@@ -269,8 +243,8 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		}
 		childrenWaitChildren = issue.ChildrenWait.Children
 	}
-	// A refused close is one mark of four parts, set and cleared whole, so it is one nullable
-	// jsonb rather than four columns that could hold half of one: null is no close waiting.
+	// A queued close is one mark of five parts, set and cleared whole, so it is one nullable
+	// jsonb rather than five columns that could hold half of one: null is no close waiting.
 	var pendingClose []byte
 	if issue.PendingClose != nil {
 		encoded, err := json.Marshal(issue.PendingClose)
@@ -555,18 +529,6 @@ func (s *Postgres) OpenTreeLifecycle(ctx context.Context, tx pgx.Tx, project, tr
 	return treelifecycle.Trees.Open(ctx, tx, project, tree, authority)
 }
 
-// TreeLifecycle reads the tree's lifecycle without opening it.
-func (s *Postgres) TreeLifecycle(ctx context.Context, tx pgx.Tx, project, tree string) (treelifecycle.Lifecycle, bool, error) {
-	return treelifecycle.Trees.Read(ctx, tx, project, tree)
-}
-
-// TreeLifecycles reads the lifecycle of each of trees in one query, opening nothing; a tree with
-// no row has no entry. project is the claim project token the tree_lifecycles table is keyed by,
-// the value OpenTreeLifecycle takes, not the Dispatch project key.
-func (s *Postgres) TreeLifecycles(ctx context.Context, tx pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
-	return treelifecycle.Trees.ReadMany(ctx, tx, project, trees)
-}
-
 // OpenIssueLifecycle is the admission fact's transactional entry point into the issue's own
 // lifecycle barrier (treelifecycle.Issues).
 func (s *Postgres) OpenIssueLifecycle(ctx context.Context, tx pgx.Tx, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
@@ -574,7 +536,7 @@ func (s *Postgres) OpenIssueLifecycle(ctx context.Context, tx pgx.Tx, project, i
 }
 
 // IssueLifecycles reads the lifecycle of each of issues in one query, opening nothing; an issue
-// with no row has no entry. project is the claim project token, as for TreeLifecycles.
+// with no row has no entry. project is the claim project token, as for OpenTreeLifecycle.
 func (s *Postgres) IssueLifecycles(ctx context.Context, tx pgx.Tx, project string, issues []string) (map[string]treelifecycle.Lifecycle, error) {
 	return treelifecycle.Issues.ReadMany(ctx, tx, project, issues)
 }
@@ -603,7 +565,7 @@ const (
 // so the release before, which reads a root whose key has a row as one that ran as a tree of its
 // own, still holds it by its ancestry after a rollback. One statement does it however many trees:
 // a value with no row gets epoch one under the workflow, and one whose cleanup confirmed gets its
-// next epoch, as treelifecycle.Open would give either. It reserves no row, ever. A row it cannot
+// next epoch, as treelifecycle.Trees.Open would give either. It reserves no row, ever. A row it cannot
 // open is left as it stands and answered, by tree, with its reason (UnkeptTree): a cleanup the
 // release before reserved, which only that release's own cleanup confirms, and a lifetime the
 // operator holds. project is the Dispatch project key the issue records carry; the rows are keyed
@@ -1148,14 +1110,6 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
 	}
 	return nil
-}
-
-func (s *Postgres) SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error) {
-	var claims bool
-	if err := tx.QueryRow(ctx, "select exists (select 1 from claims where tree = $1 and session = $2 and session <> '')", tree, session).Scan(&claims); err != nil {
-		return false, fmt.Errorf("read the claims of session %s in %s: %w", session, tree, err)
-	}
-	return claims, nil
 }
 
 func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error) {
@@ -2837,7 +2791,7 @@ func (s *Postgres) IssuePodUID(ctx context.Context, tx pgx.Tx, issue string) (st
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
 // (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
 // reviveArchitect), the roles brought back beside a member's phase worker (admit's
-// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled idle
+// promotion), a production check's look, a pod wake and the resume of a cancelled idle
 // release — and each of them is a start of its own that must still run. None of them is ever
 // taken out here.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
@@ -3270,20 +3224,6 @@ func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds [
 	return *next, true, nil
 }
 
-// BranchQueued says whether the outbox still holds an issue_branch row of issue — due, running or
-// backing off — so the branch that row creates may not exist on GitHub yet. The ordering rule
-// (outboxInOrder) holds a start behind an older branch row of its issue; this is the read for a
-// start older than the branch row it must wait for (the outbox's first start of a child's own
-// architect, which can outlast a re-admission that queues the child's branch row again).
-func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
-	var queued bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2)`,
-		issue, string(OutboxKindIssueBranch)).Scan(&queued); err != nil {
-		return false, fmt.Errorf("read whether %s's branch row is still queued: %w", issue, err)
-	}
-	return queued, nil
-}
-
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,
 // backing off or held — by issue then lane: the lanes the runner needs an executor for. The kinds
 // left are read and sorted into lanes here (LaneOf), rather than mapped in SQL, so laneKinds stays
@@ -3507,8 +3447,8 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 	// waits here too.
 	//
 	// The lock takes no row: a lane finishing a catch-up deletes its row and then waits on the
-	// decisions it claimed, which the callers of this drop have locked first (workflow.Adopt and
-	// spentKept lock them through UnclaimedKept before they queue a catch-up), so a row lock here
+	// decisions it claimed, which the callers of this drop have locked first (spentKept locks
+	// them through UnclaimedKeptOf before it queues a catch-up), so a row lock here
 	// would close a deadlock (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting).
 	if err := LockCatchUps(ctx, tx, issue); err != nil {
 		return err
@@ -3701,7 +3641,7 @@ type roleRunIdentity struct {
 // delete stands for. Reading the rows first is therefore what keeps a caller from ever seeing a
 // queued start gone beside a claim that has not yet moved, which is the one pair a rule that
 // weighs a claim against rows it has read would take for a worker nothing is starting again
-// (workflow.StartFor, for admit's resumeSlottedWorkers and startMidPhaseMembers; RoleClaims
+// (workflow.StartFor, for admit's resumeSlottedWorkers and its promotion; RoleClaims
 // says what the same order means for a caller that reads the claims alone).
 func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error) {
 	runs := make(map[claim.Token]RoleRun, len(keys))

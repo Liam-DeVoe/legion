@@ -439,7 +439,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Tree == req.Issue && req.Role == claim.RoleArchitect {
-		if _, err := s.trees.OpenOperatorTreeLifecycle(ctx, s.project, req.Tree, func(context.Context, pgx.Tx) error { return nil }); errors.Is(err, treelifecycle.ErrCleanupReserved) {
+		if _, err := s.trees.OpenTreeLifecycle(ctx, s.project, req.Tree, treelifecycle.AuthorityOperator); errors.Is(err, treelifecycle.ErrCleanupReserved) {
 			s.refuse(w, r, http.StatusConflict, fmt.Sprintf("operator tree %s is waiting for durable cleanup: %v", req.Tree, err))
 			return
 		} else if err != nil {

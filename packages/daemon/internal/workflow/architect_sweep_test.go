@@ -118,6 +118,15 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			issue: waiting("LEGION-813"), entry: resume, claimed: true, given: 2,
 			why: "its architect handed the work back since that resume, and the answer to the new wait queues the next start",
 		},
+		{
+			name: "an issue that ran as a root, at admitted, whose record stores the tree it was first recorded in", issue: func() record.Issue {
+				held := root("LEGION-814", phase.Admitted, 1)
+				parent := "LEGION-800"
+				held.Tree, held.Parent, held.HoldsGate = "LEGION-800", &parent, true
+				return held
+			}(), reaches: true,
+			why: "it holds its own gate on the Dispatch chain (record.Chains.HoldsOwnGate), and the tree its record stores decides nothing (R15 of dispatch://INFRA-3320)",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := tc.issue
@@ -134,9 +143,12 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			}
 			var reaches bool
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				var err error
-				reaches, err = ArchitectAtWork(t.Context(), tx, store, issue, tc.entry, run)
-				return err
+				chains, err := record.ReadChains(t.Context(), tx, store, issue.Project, []string{issue.Key})
+				if err != nil {
+					return err
+				}
+				reaches = ArchitectAtWork(issue, chains.HoldsOwnGate(issue.Key), tc.entry, run)
+				return nil
 			})
 			if reaches != tc.reaches {
 				t.Fatalf("ArchitectAtWork(%s) = %t, want %t: %s", tc.issue.Key, reaches, tc.reaches, tc.why)

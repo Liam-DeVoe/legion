@@ -139,9 +139,10 @@ type claimReleaseRig struct {
 	row int64
 }
 
-// newClaimReleaseRig seeds the tree and its parked issue and builds the runner over them. Every
-// session the holder cases name is recorded: the tree's own architect, one that claims only in
-// another tree, and the project's controller, whose claims row carries no tree at all.
+// newClaimReleaseRig seeds the tree and its parked issue, each with its row of the copy of
+// Dispatch's issues the holder is judged on, and builds the runner over them. Every session the
+// holder cases name is recorded: the tree's own architect, one that claims only in another tree,
+// and the project's controller, whose claims row carries no tree at all.
 func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answer func(int) error) *claimReleaseRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -151,17 +152,18 @@ func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answ
 	rig := &claimReleaseRig{t: t, pool: pool, client: client, clock: microClock(), logs: logs}
 	rig.runner = &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client,
 		log: slog.New(slog.NewJSONHandler(logs, nil)), now: rig.clock.Now}
-	putOutboxIssue(t, pool, records, claimReleaseRoot())
+	putChainIssue(t, pool, records, claimReleaseRoot())
 	seedSessionClaim(t, pool, "architect-claim", "LEGION", claimTree, claimTree, claimTreeSession)
 	seedSessionClaim(t, pool, "other-tree-claim", "LEGION", "LEGION-9", "LEGION-9", "ses-elsewhere")
 	seedControllerClaim(t, pool, "LEGION", claimControllerSession)
 	return rig
 }
 
-// records writes issue as the daemon's own record of it.
+// records writes issue as the daemon's own record of it, with its row of the copy of Dispatch's
+// issues (putChainIssue).
 func (r *claimReleaseRig) records(issue record.Issue) {
 	r.t.Helper()
-	putOutboxIssue(r.t, r.pool, record.NewStore(), issue)
+	putChainIssue(r.t, r.pool, record.NewStore(), issue)
 }
 
 // heldByOperator opens the tree's lifecycle under the operator's authority, as an operator root
@@ -244,8 +246,8 @@ func parkedIssue() record.Issue {
 		Generation: 1, Status: "backlog"}
 }
 
-// seedSessionClaim records session working in tree, under project, the claim row
-// SessionClaimsTree and SessionClaimsAnywhere read.
+// seedSessionClaim records session working on issue in tree, under project, the claim row
+// SessionClaimsOf and SessionClaimsAnywhere read.
 func seedSessionClaim(t *testing.T, pool *store.Pool, token, project, tree, issue, session string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
@@ -258,7 +260,7 @@ func seedSessionClaim(t *testing.T, pool *store.Pool, token, project, tree, issu
 
 // seedControllerClaim records session as the project's controller: the one claims row with no
 // issue and no tree (migration 0032_controller_claim), which SessionClaimsAnywhere accounts for
-// while SessionClaimsTree, which matches on a tree, never can.
+// while SessionClaimsOf, which matches on an issue, never can.
 func seedControllerClaim(t *testing.T, pool *store.Pool, project, session string) {
 	t.Helper()
 	token, err := claim.ProjectToken(project)
@@ -280,6 +282,7 @@ func seedControllerClaim(t *testing.T, pool *store.Pool, project, session string
 func TestReleaseClaimRow(t *testing.T) {
 	t.Run("holders", testReleaseClaimHolders)
 	t.Run("the record", testReleaseClaimRecord)
+	t.Run("the chain", testReleaseClaimChain)
 	t.Run("answers", testReleaseClaimAnswers)
 	t.Run("its own lane", testReleaseClaimLane)
 }
@@ -379,6 +382,51 @@ func testReleaseClaimRecord(t *testing.T) {
 
 			if got := rig.client.releases(); len(got) != 0 {
 				t.Fatalf("claim releases = %v, want none", got)
+			}
+			if left := rig.left(); left != 0 {
+				t.Fatalf("rows left = %d, want the release row ended", left)
+			}
+			rig.loggedOnce("")
+		})
+	}
+}
+
+// The tree a holder is judged in is the Dispatch chain's, never the tree the issue's record stores
+// (R15 and R18 of dispatch://INFRA-3320): a parked issue Dispatch moved under another gate root,
+// whose record still stores the tree it was first recorded in, has its claim released from the
+// architect of the gate root it stands under now, and left with the architect of the tree it was
+// first recorded in, a session the daemon records on another issue, which owns that issue instead.
+//
+// Negative control, run when this was written: with the release judging the holder against the
+// issue's stored tree (record.Store.SessionClaimsOf over that tree), both cases fail.
+func testReleaseClaimChain(t *testing.T) {
+	const movedTo, movedToSession = "LEGION-5", "ses-moved-to"
+	for _, tc := range []struct {
+		name, holder string
+		released     bool
+	}{
+		{name: "the architect of the gate root Dispatch moved it under", holder: movedToSession, released: true},
+		{name: "the architect of the tree its record stores", holder: claimTreeSession},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newClaimReleaseRig(t, dispatch.Issue{Status: "backlog", Claim: sessionClaim(tc.holder)}, !tc.released, nil)
+			root := claimReleaseRoot()
+			root.Key, root.Tree, root.Title = movedTo, movedTo, "Another root"
+			rig.records(root)
+			seedSessionClaim(t, rig.pool, "moved-to-claim", "LEGION", movedTo, movedTo, movedToSession)
+			moved := parkedIssue()
+			parent := movedTo
+			moved.Parent = &parent
+			rig.records(moved)
+			rig.due(0)
+			rig.run()
+
+			want := []string{}
+			if tc.released {
+				want = append(want, claimIssue)
+			}
+			if got := rig.client.releases(); !slices.Equal(got, want) {
+				t.Fatalf("claim releases = %v, want %v", got, want)
 			}
 			if left := rig.left(); left != 0 {
 				t.Fatalf("rows left = %d, want the release row ended", left)

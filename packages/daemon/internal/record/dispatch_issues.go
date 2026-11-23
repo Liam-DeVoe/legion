@@ -200,8 +200,8 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 	return children, nil
 }
 
-// ChainRows walks the parent chains a decision pass reads in the database, in one statement
-// whatever their number and depth, as AncestorsOf walks the records' own: a read per link would
+// ChainRows walks the parent chains a decision pass reads in the database, in one recursive
+// statement whatever their number and depth: a read per link would
 // cost a round trip per level on every pass (R16 of dispatch://INFRA-3320). The walk starts from
 // every record of project not at phase done, which the issues_live index serves, every row of the
 // project's copy at todo and each of extra, and carries each walk's path, so a key it has passed

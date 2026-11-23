@@ -177,8 +177,9 @@ func (r *gatePublishRig) inTx(fn func(ctx context.Context, tx pgx.Tx) error) {
 }
 
 // seedRoot records key as a root of its own tree, running under a tree lifecycle the workflow
-// opened: what admission's promotion leaves, and what record.TreeLive reads as a live tree. Its row
-// of the copy stands it on a known Dispatch chain with no parent.
+// opened: what admission's promotion leaves, the shadow the release before reads as a live tree
+// (R22 of dispatch://INFRA-3320). Its row of the copy stands it on a known Dispatch chain with no
+// parent.
 func (r *gatePublishRig) seedRoot(key string, at phase.Phase, rank string) {
 	r.t.Helper()
 	token, err := claim.ProjectToken(gatePublishProject)

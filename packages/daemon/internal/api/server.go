@@ -313,8 +313,7 @@ type Options struct {
 // retired, by the issue's own identity (R17 of dispatch://INFRA-3320): nothing of a tree is
 // deleted whole.
 type TreeLifecycles interface {
-	OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
-		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
+	OpenTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error)
 	OpenOperatorIssueLifecycle(ctx context.Context, project, issue string,
 		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
 	ReserveOperatorIssueCleanup(ctx context.Context, project, issue string) (treelifecycle.Lifecycle, bool, error)

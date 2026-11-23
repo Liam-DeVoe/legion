@@ -637,10 +637,6 @@ func (s *Store) ClaimUnretired(ctx context.Context, token claim.Token) (bool, er
 	return unretired, nil
 }
 
-// runsNothingStates is supervise's runs-nothing set (supervise.RunsNothingStates), as the text
-// array a query binds: the store names no state of that set itself.
-func runsNothingStates() []string { return claimStateNames(supervise.RunsNothingStates()) }
-
 // goneStates is supervise's gone set (supervise.GoneStates: suspended, failed, retired), as the
 // text array a query binds: the store names no state of that set itself.
 func goneStates() []string { return claimStateNames(supervise.GoneStates()) }

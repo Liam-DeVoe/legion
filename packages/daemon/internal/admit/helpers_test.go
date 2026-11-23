@@ -422,8 +422,9 @@ func putCopyTx(t *testing.T, tx pgx.Tx, issue record.Issue) {
 }
 
 // seedSlotted records key as a running root of its own tree: its record, its admission slot and
-// its tree lifecycle, open under the workflow, which is what says the tree runs
-// (record.TreeLive) now that a slot counts one issue at work rather than one tree.
+// its tree lifecycle, open under the workflow, as admission's promotion writes all three. The slot
+// is what says the root runs (record.RunningRoots); the lifecycle is the shadow the release before
+// reads (R22 of dispatch://INFRA-3320).
 func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 	t.Helper()
 	seedSlottedForProject(t, pool, testProject, key, rank)
@@ -584,4 +585,13 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 		}
 	})
 	committed()
+}
+
+// deref is the string a pointer names, "" for nil: the parent a test's fact carries from a record
+// that may name none.
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

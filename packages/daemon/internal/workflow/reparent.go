@@ -108,8 +108,7 @@ func (e *Engine) forgetToldAcrossGateRoots(ctx context.Context, tx pgx.Tx, issue
 // TellParentAtFirstBoot is the first boot's notice of a root under a parent at work (step 9 of
 // the conversion, decision 21 of dispatch://INFRA-4730; R21 of dispatch://INFRA-3320): the
 // release before ran issue as a root of its own, and the copy its boot filled shows it under
-// parent, an issue in Legion's work. That release's own notice of the parent already set the
-// once-mark (record.Issue.ToldParent), so the mark is cleared and R18's notice is told through
+// parent, an issue in Legion's work. R18's notice is told through
 // the path a change of parent takes: one re-parent seed naming parent as the new parent and no
 // old parent, queued as the parent is written into told_parent, so the issue's own architect and
 // the one above it are told once, and a later listing or event that repeats the parent tells
@@ -119,7 +118,6 @@ func (e *Engine) TellParentAtFirstBoot(ctx context.Context, tx pgx.Tx, issue rec
 	if parent == "" || !record.InLegionsWork(issue) {
 		return false, nil
 	}
-	issue.ToldParent = ""
 	seed, err := e.reparentSeed(ctx, tx, issue, "", parent)
 	if err != nil {
 		return false, err

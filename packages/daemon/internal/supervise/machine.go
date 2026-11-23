@@ -838,13 +838,11 @@ type ClaimView struct {
 // in Legion's work. It is the claim the stop refusal, the exit suspension, the superseding of an
 // unconfirmed task and the root's hearing guard (asksRoot) treat as the gate holder's own, which
 // ends only at its issue's close. supervise holds no store, so it reads the mark the outbox writes
-// on the claim at each launch from the Dispatch chain (Claim.HoldsGate, record.Chains.HoldsOwnGate),
-// handing claim.IsTreeArchitect the issue as the gate root where the mark says it is one.
+// on the claim at each launch from the Dispatch chain (Claim.HoldsGate, record.Chains.HoldsOwnGate):
+// where the mark says the claim's issue holds its own gate, that issue is the gate root, so the
+// claim is its architect exactly when its role is the architect's.
 func (c Claim) treeRoot() bool {
-	if !c.HoldsGate {
-		return false
-	}
-	return claim.IsTreeArchitect(c.Role, c.Issue, c.Issue)
+	return c.HoldsGate && c.Role == claim.RoleArchitect
 }
 
 // Event is everything that reaches a machine: RuntimeObservation, StreamHello, StreamTurnStart,

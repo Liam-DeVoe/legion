@@ -245,7 +245,7 @@ func Accepted(issue Issue) bool {
 // gateRegistered), so it and an ancestor's sign-off or close, whose hold reads the roots that rest
 // on the ancestor (workflow's RestingRoots), apply in one order; the pending-basis seed's read and
 // the person's approval as its live event read it before either opens a step; and a step carried
-// onto a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
+// onto a child keeps a basis or a rest only on an ancestor it passes (the daemon's carriedGate).
 func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
 	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
 	if err != nil {
@@ -1522,29 +1522,11 @@ func AwaitsPromotion(root Issue, gate TreeGate, holds bool) bool {
 	return QueuedRoot(root, gate) && !holds
 }
 
-// TreeLive says whether root's tree is live (R15 of dispatch://INFRA-3320): root is a gate root in
-// Legion's work, an issue in work that holds its own gate (Chains.GateRoot), as Dispatch's chains
-// show it now. A root still waiting in the line for its first start is in Legion's work, so its
-// tree is live, and so is a root waiting on a person; a root a person stopped, or the daemon
-// closed, is not. It reads the chains of root's project with root named (ReadChains), three
-// queries; a pass that judges many roots reads them all at once instead (LiveRoots over
-// ReadLineFacts).
-func TreeLive(ctx context.Context, store Store, tx pgx.Tx, root Issue) (bool, error) {
-	if !InLegionsWork(root) {
-		return false, nil
-	}
-	chains, err := ReadChains(ctx, tx, store, root.Project, []string{root.Key})
-	if err != nil {
-		return false, err
-	}
-	return chains.GateRoot(root.Key) == root.Key, nil
-}
-
 // TreeRuns says whether root, a gate root, runs (R4 of dispatch://INFRA-3320 as R15 reads it): it
 // is in Legion's work and does not wait in the line for a slot it does not hold, holds being
 // whether it holds a slot row: for its first start (QueuedRoot, over gate, its own design gate),
 // or for the slot its work needs again, among the work that came back after a stop (R20,
-// WaitsWithoutSlot). Whether root is a gate root is the chain's question (Chains.GateRoot), which
+// waitsWithoutSlot). Whether root is a gate root is the chain's question (Chains.GateRoot), which
 // RunningRoots asks of every root of a pass and TreeRunning of one.
 //
 // It is the one statement of "the tree runs", and the readers that must agree all call it: the
@@ -1557,10 +1539,10 @@ func TreeLive(ctx context.Context, store Store, tx pgx.Tx, root Issue) (bool, er
 // readers that decide what a started root, or an issue under it, owes once its slot comes ask
 // TreeStarted instead.
 func TreeRuns(root Issue, gate TreeGate, holds bool) bool {
-	return TreeStarted(root, gate) && !WaitsWithoutSlot(root, holds)
+	return TreeStarted(root, gate) && !waitsWithoutSlot(root, holds)
 }
 
-// WaitsWithoutSlot says whether issue waits in the line for a slot it does not hold, holds being
+// waitsWithoutSlot says whether issue waits in the line for a slot it does not hold, holds being
 // whether it holds a slot row: it needs one where it stands (NeedsSlot), the rule the line offers
 // a returning issue a slot by (Waiting), it holds none, and it waits on no other issue
 // (Issue.ReleasedForWaitAt), whose wait the line passes over and whose work the issues it waits
@@ -1568,7 +1550,7 @@ func TreeRuns(root Issue, gate TreeGate, holds bool) bool {
 // and its return owes its phase's worker a start, or stands it at admitted with its gate open
 // (R20 of dispatch://INFRA-3320), and work sent back from past its review into a phase that keeps
 // a row waits the same way (KeepsSlot).
-func WaitsWithoutSlot(issue Issue, holds bool) bool {
+func waitsWithoutSlot(issue Issue, holds bool) bool {
 	return !holds && NeedsSlot(issue) && issue.ReleasedForWaitAt == nil
 }
 
@@ -1587,22 +1569,6 @@ func WaitsWithoutSlot(issue Issue, holds bool) bool {
 // the slot where the issue holds none.
 func TreeStarted(root Issue, gate TreeGate) bool {
 	return InLegionsWork(root) && !QueuedRoot(root, gate)
-}
-
-// TreeRunning is TreeRuns for a caller holding one root and no facts of a pass: it reads the
-// chains of root's project with root named and root's design gate (readChainFacts), and asks the
-// one rule of root where the chains make it a gate root. steps are the design-gate steps the
-// deployment gates.
-func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps []DesignStep) (bool, error) {
-	if !InLegionsWork(root) {
-		return false, nil
-	}
-	running, err := ReadRunningRoots(ctx, tx, store, root.Project, []Issue{root}, steps)
-	if err != nil {
-		return false, err
-	}
-	_, runs := running[root.Key]
-	return runs, nil
 }
 
 // OperatorHolds says whether the operator opened the lifetime of the issue itself (an operator
@@ -1661,29 +1627,17 @@ func StartedRoots(issues []Issue, facts LineFacts) map[string]struct{} {
 
 // ReadRunningRoots is RunningRoots for a caller that holds no facts of the pass: the chains of
 // project with every key of issues named and the gates on them (readChainFacts), and the slot
-// rows, five reads whatever the number of roots, and then the one rule. project is the Dispatch
-// project key and steps the design-gate steps the deployment gates.
-func ReadRunningRoots(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (map[string]struct{}, error) {
+// rows, five reads whatever the number of roots, and then the one rule. It answers the chains it
+// read with them, so a caller asks its other questions of the issues' chains of the same read.
+// project is the Dispatch project key and steps the design-gate steps the deployment gates.
+func ReadRunningRoots(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, steps []DesignStep) (map[string]struct{}, *Chains, error) {
 	chains, gates, err := readChainFacts(ctx, tx, store, project, issues, steps)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	slots, err := store.Slots(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return RunningRoots(issues, slots, LineFacts{Chains: chains, Gates: gates}), nil
-}
-
-// LiveRoots is the set of the keys among issues whose trees are live (TreeLive): each gate root
-// in Legion's work on the pass's chains (Chains.GateRoot), read from the records and the pass's
-// own facts already in hand.
-func LiveRoots(issues []Issue, facts LineFacts) map[string]struct{} {
-	live := make(map[string]struct{}, len(issues))
-	for _, issue := range issues {
-		if facts.Chains.GateRoot(issue.Key) == issue.Key {
-			live[issue.Key] = struct{}{}
-		}
-	}
-	return live
+	return RunningRoots(issues, slots, LineFacts{Chains: chains, Gates: gates}), chains, nil
 }

@@ -61,11 +61,11 @@ import (
 // for the issue's admission slot in a phase up to the review and for none past it. A role a start
 // already covers (StartFor) gets no second.
 //
-// The sweep runs first so the resume reads the issues it closed as out of Legion's work. The owners' read
-// (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
-// that read holds, before any start. The read writes nothing, and the repair writes none of the
-// pull requests, claims and queued starts the read takes beside the issues, so the read answers
-// what it would answer after the repair.
+// The sweep runs first, so the resume reads the closes it queued on the records. The owners' read
+// (suspendedPhaseOwners) comes next, and the status repair runs on the issues, the chains and the
+// running roots that read holds, before any start. The read writes nothing, and the repair writes
+// none of the pull requests, claims and queued starts the read takes beside the issues, so the
+// read answers what it would answer after the repair.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
@@ -74,12 +74,12 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.correctStatuses(ctx, tx, owners.issues, owners.running, "boot"); err != nil {
+	if err := e.correctStatuses(ctx, tx, owners.chains, owners.issues, owners.running, "boot"); err != nil {
 		return intake.Result{}, err
 	}
 	for _, owner := range owners.suspended {
 		issue, held := owner.issue, owner.run.Claim
-		if !held.SuspendedBy.ByRule() || !StartFor(owner.run, owner.root, issue.Generation, issue.Phase) {
+		if !held.SuspendedBy.ByRule() || !StartFor(owner.run, issue.Generation, issue.Phase) {
 			continue
 		}
 		row, err := e.phaseRow(ctx, tx, issue.Key, owner.role)
@@ -103,24 +103,24 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands
 // suspended (suspendedPhaseOwners), with what a start of it is weighed against and built from:
-// the issue; its tree root, which StartFor and OwedEntry read; the role that works the phase;
-// that role's claim token; and the role's queued rows and claim at the issue's generation, whose
-// Claim is never nil.
+// the issue; the role that works the phase; that role's claim token; and the role's queued rows
+// and claim at the issue's generation, whose Claim is never nil.
 type suspendedOwner struct {
 	issue record.Issue
-	root  record.Issue
 	role  claim.Role
 	token claim.Token
 	run   record.RoleRun
 }
 
 // phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, which the daemon's
-// store holds of the project alone (internal/daemon's projectRecords); the roots of the project's
-// trees that run (record.RunningRoots), which the boot's status repair reads (correctStatuses);
-// and the suspended owners of the project's unfinished phases in the trees that have started, in
-// the order the store lists the issues.
+// store holds of the project alone (internal/daemon's projectRecords); the one reading of the
+// Dispatch chains with each of them named; the roots of the project's trees that run
+// (record.RunningRoots), which the boot's status repair reads with those chains
+// (correctStatuses); and the suspended owners of the project's unfinished phases in the trees
+// that have started, in the order the store lists the issues.
 type phaseOwners struct {
 	issues    []record.Issue
+	chains    *record.Chains
 	running   map[string]struct{}
 	suspended []suspendedOwner
 }
@@ -172,7 +172,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, slots, facts)}
+	owners := phaseOwners{issues: issues, chains: facts.Chains, running: record.RunningRoots(issues, slots, facts)}
 	started := record.StartedRoots(issues, facts)
 	for _, issue := range issues {
 		role := phase.RoleFor(issue.Phase)
@@ -212,20 +212,20 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 		if held := run.Claim; held == nil || held.State != supervise.StateSuspended {
 			continue
 		}
-		owners.suspended = append(owners.suspended, suspendedOwner{issue: issue, root: root, role: role, token: token, run: run})
+		owners.suspended = append(owners.suspended, suspendedOwner{issue: issue, role: role, token: token, run: run})
 	}
 	return owners, nil
 }
 
 // startSuspendedOwner owes owner the start the boot gives a claim the daemon itself suspended,
 // built from the entry row names, and says whether the claim stands behind that entry. A claim
-// behind it (OwedEntry, which reads the owner's root for a tree close) is sent the work of that
-// entry at that entry (sendOwedEntry). A claim level with it is sent the phase's resume task
-// (ResumePhaseTask) at entry 0: that start hands the role the work it is already on rather than a
-// new entry, so it moves no phases row either. The boot's resume by rule (booted) and the
-// cutover's repair of a merger the `awaiting_merge` cutover left released (oweCutoverMerger) both
-// build their start here, so the two are built alike. Neither hands it a claim the operator
-// suspended: that suspension holds until the operator resumes the claim.
+// behind it (OwedEntry) is sent the work of that entry at that entry (sendOwedEntry). A claim
+// level with it is sent the phase's resume task (ResumePhaseTask) at entry 0: that start hands
+// the role the work it is already on rather than a new entry, so it moves no phases row either.
+// The boot's resume by rule (booted) and the cutover's repair of a merger the `awaiting_merge`
+// cutover left released (oweCutoverMerger) both build their start here, so the two are built
+// alike. Neither hands it a claim the operator suspended: that suspension holds until the
+// operator resumes the claim.
 //
 // Neither start raises an entry (Engine.enter is called on neither): the boot hands the role no
 // number the record does not already name. The ruleResume mark is what tells the outbox to
@@ -239,7 +239,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // marks a movement of the issue. sendOwedEntry sets the mark itself on the start it writes, and
 // the resume task's start sets it here.
 func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspendedOwner, row record.PhaseRow) (behind bool, err error) {
-	if OwedEntry(owner.run, owner.root, row.Entry) {
+	if OwedEntry(owner.run, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
 	work, err := e.resumePhaseTask(ctx, tx, owner.issue)
@@ -250,12 +250,11 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
-// sweepMerged closes every issue of the project that awaits a merge GitHub already reported
-// (booted). Each is re-read before its close: a child's close may have closed the merged issues
-// above it (closeAwaitingMerge). A merged issue with a Dispatch child that is not done
-// is left where it stands by closeMerged, which owns that
-// rule, and the sweep tells nobody of the wait: a restart must not repeat the architect's
-// notice, and a root can now wait for days across many boots.
+// sweepMerged queues the close of every issue of the project that awaits a merge GitHub already
+// reported (booted), on the record as it stands when its turn comes. A merged issue with a
+// Dispatch child that is not done is left where it stands by closeMerged, which owns that rule,
+// and the sweep tells nobody of the wait: a restart must not repeat the architect's notice, and a
+// root can now wait for days across many boots.
 func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 	issues, err := e.store.Issues(ctx, tx)
 	if err != nil {

@@ -158,6 +158,30 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	}
 }
 
+// The child-status notice a child's start tells the architect above it names the tree the child
+// starts in as the Dispatch chain gives it, never the tree its record stores (R15 of
+// dispatch://INFRA-3320): a child Dispatch moved under the live tree after it was recorded under
+// another root is told as starting under the live tree's root.
+//
+// Negative control, run when this was written: with the notice naming the record's stored tree,
+// it reads "starts planning under LEGION-100".
+func TestAChildsStartNamesTheTreeOfItsChainNotItsStoredTree(t *testing.T) {
+	pool := migratedPool(t)
+	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: "LEGION-100", Project: "LEGION", Title: "LEGION-209", Parent: new("LEGION-208"), Phase: phase.Admitted,
+		Generation: 4, Status: "todo", Rank: "V", LastDispatchSeq: 1})
+	startUnblockedChildren(t, pool, testEngine(config.DesignGateRootIssues, nil))
+
+	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
+		t.Fatalf("the child = %s once the line reached it, want planning", got)
+	}
+	want := "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership
+	if got := childStatusNotices(t, pool); len(got) != 1 || got[0] != want {
+		t.Fatalf("child-status notices = %#v, want one reading %q", got, want)
+	}
+}
+
 // A held child whose links a person takes off while it waits is held by nothing any longer, and
 // starts at the next look: left admitted, it would stand unstarted with nothing naming it, since
 // the state's `blocked` names only a child with an unfinished blocker and the edit, which changes

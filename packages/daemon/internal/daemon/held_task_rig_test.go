@@ -149,7 +149,7 @@ func (r *heldTaskRig) enqueueStart() int64 {
 		if err != nil {
 			return err
 		}
-		return r.engine.EnqueueNaming(r.ctx, tx, r.root.Key, r.root.Key, record.SuperviseRequest{Op: "start",
+		return r.engine.EnqueueNaming(r.ctx, tx, r.root.Key, record.SuperviseRequest{Op: "start",
 			Tree: r.root.Tree, Role: claim.RoleArchitect, Generation: r.root.Generation, Task: task, Kept: named},
 			named, time.Now())
 	}); err != nil {

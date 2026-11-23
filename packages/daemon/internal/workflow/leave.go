@@ -224,19 +224,6 @@ func (e *Engine) LeaveUnslotted(ctx context.Context, tx pgx.Tx, root record.Issu
 	return e.leave(ctx, tx, root, root.Status)
 }
 
-// openCheckIfMerged opens issue's production check when its pull request has merged: a done issue
-// with no merged pull request — a root closed before its first phase (close_root), a human's done
-// on an issue short of its merge — has nothing to check in production and opens none, and neither
-// does a merged one of a project that checks nothing in production, whose openCheck opens no
-// record, queues no bound row and starts no look (Engine.checkRole).
-func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.Issue, wake bool) error {
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
-		return err
-	}
-	return e.openCheck(ctx, tx, issue, *pr, wake)
-}
-
 // closeAwaitingMerge queues the close of merged when its own merge was waiting on its children: an
 // issue whose pull request merged stands in merging (or held from it) while a Dispatch child of it
 // is not done (closeMerged), and queues its close once the last of them is done. Which children
@@ -270,39 +257,4 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 // request (pullRequestOpened).
 func awaitsMerge(issue record.Issue) bool {
 	return issue.Phase == phase.Merging || issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == phase.Merging
-}
-
-// InWorkflow says whether an issue is in the workflow: its status is one the workflow runs in and
-// its phase short of done. One still admitted counts, since it will run. It is the production
-// check's "runs again" predicate (check.go) and the outbox's (checkLookHolds): a look of an issue
-// that runs again would resume the implementer and relaunch its Sandbox under the run, so none
-// starts.
-//
-// The rule itself is pods.Standing.InWorkflow, which the pod gate reads too:
-// one statement, so a terminal phase added to it moves admission, the production check and the
-// release gate together.
-func InWorkflow(issue record.Issue) bool {
-	return issue.Standing().InWorkflow(record.OutOfWorkflow)
-}
-
-// runningTree is issue's tree's root, and whether the daemon is running that tree: the root is
-// recorded and holds an admission slot. byKey and slotted are one read of the issues and one of the
-// slots, indexed (indexIssues). The boot's resume and the status repair both ask it, so the rule is
-// stated once: a root waiting for a slot can carry a workflow phase of its own.
-func runningTree(byKey map[string]record.Issue, slotted map[string]bool, issue record.Issue) (record.Issue, bool) {
-	root, ok := byKey[issue.Tree]
-	return root, ok && slotted[root.Key]
-}
-
-// indexIssues is issues by key and the keys slots holds, the pair runningTree reads.
-func indexIssues(issues []record.Issue, slots []record.Slot) (map[string]record.Issue, map[string]bool) {
-	byKey := make(map[string]record.Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	slotted := make(map[string]bool, len(slots))
-	for _, slot := range slots {
-		slotted[slot.Issue] = true
-	}
-	return byKey, slotted
 }

@@ -46,6 +46,9 @@ func Unfenced(payload record.OutboxPayload) record.OutboxPayload {
 	case record.ClaimRelease:
 		value.Generation, value.Entry = 0, 0
 		return value
+	case record.RetentionEnd:
+		value.Generation, value.Entry = 0, 0
+		return value
 	case record.CheckWakeDue:
 		value.Generation = 0
 		return value

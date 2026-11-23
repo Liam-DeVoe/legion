@@ -115,7 +115,7 @@ func TestAFirstAdmissionRaisesItsArchitectEntryAndCarriesItOnTheStart(t *testing
 // work again: it raises the entry from where the generation before left it, rather than writing
 // a number of its own, and the row carries this generation's own task. The re-admission cleared
 // the work the earlier entry named with the rest of that generation
-// (record.Store.ClearTreeGeneration), so the record would otherwise name an entry whose work
+// (record.Store.ClearGeneration), so the record would otherwise name an entry whose work
 // nothing could send.
 func TestAReadmittedQueuedRootRaisesItsArchitectEntryAgain(t *testing.T) {
 	pool := migratedPool(t)

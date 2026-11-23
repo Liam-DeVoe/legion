@@ -89,16 +89,16 @@ func (f Fence) Outlives(queued Fence) bool {
 // turn as well.
 func OutlivesPod(queued, pod string) bool { return runtime.OutlivesPod(queued, pod) }
 
-// ReportOnly says whether payload's kind only tells somebody something: an architect's notice
+// reportOnly says whether payload's kind only tells somebody something: an architect's notice
 // (Notice) or the project's controller's (ControllerNotice). It names the run and the phase entry
-// it was queued at, as every effect does (R17 of dispatch://INFRA-3320), and NewOutboxRow stamps
-// and requires both; its delivery is fenced by the run alone (the architect's ruling of
-// 2026-11-21 on dispatch://INFRA-3320): a notice of an earlier phase entry of the run its issue
+// it was queued at, as every effect does (R17 of dispatch://INFRA-3320): NewFencedRow stamps both
+// and NewOutboxRow requires them; its delivery is fenced by the run alone (the architect's ruling
+// of 2026-11-21 on dispatch://INFRA-3320): a notice of an earlier phase entry of the run its issue
 // stands in is still delivered, and one of an earlier run is not. Every other kind acts — it
 // changes a claim, a pod, Dispatch or GitHub — and does nothing at a later phase entry either.
 // A notice starts and resumes no claim: its delivery waits for an architect claim a stop
 // suspended, and wakes only one an idle release suspended (the daemon's deliverNotice).
-func ReportOnly(payload OutboxPayload) bool {
+func reportOnly(payload OutboxPayload) bool {
 	switch payload.(type) {
 	case Notice, ControllerNotice:
 		return true
@@ -108,14 +108,14 @@ func ReportOnly(payload OutboxPayload) bool {
 
 // LateAt says whether payload, an effect queued at the fence it names (FenceOf), does nothing to an
 // issue standing at now when its executor runs: the one statement of what delivery checks. A
-// report (ReportOnly) is late in a later run alone; every other fenced kind in a later run or at
+// report (reportOnly) is late in a later run alone; every other fenced kind in a later run or at
 // another phase entry (Fence.Outlives). A kind that carries no fence is late at nothing.
 func LateAt(now Fence, payload OutboxPayload) bool {
 	queued, carries := FenceOf(payload)
 	if !carries {
 		return false
 	}
-	if ReportOnly(payload) {
+	if reportOnly(payload) {
 		queued.Entry = 0
 	}
 	return now.Outlives(queued)
@@ -393,6 +393,17 @@ func NewFencedRow(ctx context.Context, tx pgx.Tx, store Store, issue string, pay
 		return row, err
 	}
 	return NewOutboxRow(issue, payload, nextAt)
+}
+
+// EnqueueFenced queues payload for issue in tx, due at nextAt, fenced as NewFencedRow fences it:
+// the two calls every writer of a fenced row makes, in the one place, since a writer that queued a
+// row the fence had not stamped would act on a run or a phase entry the issue has left.
+func EnqueueFenced(ctx context.Context, tx pgx.Tx, store Store, issue string, payload OutboxPayload, nextAt time.Time) error {
+	row, err := NewFencedRow(ctx, tx, store, issue, payload, nextAt)
+	if err != nil {
+		return err
+	}
+	return store.Enqueue(ctx, tx, row)
 }
 
 // fencedRowsKey is the context key of the rows one fact queued whose fence its settle sets again.

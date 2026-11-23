@@ -307,8 +307,8 @@ func (w *workflowRuntime) queueReservedCleanups(ctx context.Context, tx pgx.Tx, 
 			return err
 		}
 		for _, role := range live {
-			if err := w.enqueueFenced(ctx, tx, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: role,
-				Generation: max(issue.Generation, 1)}); err != nil {
+			if err := record.EnqueueFenced(ctx, tx, w.records, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree,
+				Role: role, Generation: max(issue.Generation, 1)}, w.clockNow()); err != nil {
 				return err
 			}
 		}
@@ -320,8 +320,8 @@ func (w *workflowRuntime) queueReservedCleanups(ctx context.Context, tx pgx.Tx, 
 		if root != nil {
 			treeGeneration = root.Generation
 		}
-		if err := w.enqueueFenced(ctx, tx, issue.Key, record.IssueSuspend{Tree: issue.Tree, Generation: max(issue.Generation, 1),
-			TreeGeneration: max(treeGeneration, 1)}); err != nil {
+		if err := record.EnqueueFenced(ctx, tx, w.records, issue.Key, record.IssueSuspend{Tree: issue.Tree,
+			Generation: max(issue.Generation, 1), TreeGeneration: max(treeGeneration, 1)}, w.clockNow()); err != nil {
 			return err
 		}
 	}
@@ -350,16 +350,6 @@ func (w *workflowRuntime) liveRoles(ctx context.Context, tx pgx.Tx, key string) 
 		}
 	}
 	return live, nil
-}
-
-// enqueueFenced queues payload for issue, due now, fenced at the run and the phase entry the
-// issue stands at (record.NewFencedRow).
-func (w *workflowRuntime) enqueueFenced(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
-	row, err := record.NewFencedRow(ctx, tx, w.records, issue, payload, w.clockNow())
-	if err != nil {
-		return err
-	}
-	return w.records.Enqueue(ctx, tx, row)
 }
 
 // convertHandOvers is step 7: the listing's reading of each hand-over's issue decides it. Where

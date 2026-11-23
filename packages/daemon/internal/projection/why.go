@@ -50,8 +50,8 @@ import (
 // for it; heldSentences states the rule, which covers the order of the blocked arm's three
 // sentences, the words each arm serves and what every such sentence may say.
 //
-// The scope is this project's own records that the record holds in the workflow
-// (record.InWorkflow). An issue the record does not hold there — done, backlog, icebox,
+// The scope is this project's own records that the record holds in Legion's work
+// (record.InLegionsWork). An issue the record does not hold there — done, backlog, icebox,
 // triage — carries no answer, an issue of another project carries none, since admission is
 // judged over this project's records alone, and an issue the workflow does not record at all,
 // an operator's claim, is in no record of own and so carries none either.

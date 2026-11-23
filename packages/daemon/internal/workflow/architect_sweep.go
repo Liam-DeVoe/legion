@@ -55,33 +55,30 @@ import (
 // It reaches no wider. Any other root past phase.Admitted was carried in by no hand-over at its
 // generation and stands there under its own power, with a phase role that owns its work; a root
 // in accepting is told by the notice that moved it there, and a root waiting on a person by the
-// resume the daemon composes when the answer lands. A child at phase.Admitted is not its tree's
-// root, so a child's own sub-architect claim is outside the rule, which ArchitectHears answers
-// for again before anything is sent.
+// resume the daemon composes when the answer lands. An issue that holds no gate of its own on the
+// Dispatch chain (holdsGate, record.Chains.HoldsOwnGate, which the caller reads on its pass's
+// chains) is no root, so a child's own sub-architect claim is outside the rule, which
+// ArchitectHears answers for again before anything is sent.
 //
 // Whether that architect can hear what the rule would send is a question of its own
 // (ArchitectHears), and whether a start is already on its way is a third (ArchitectStartPending).
 // entry and run are what the caller read for the whole pass (record.Store.PhaseEntries,
-// record.Store.RoleRuns). The store read is made for a slotted tree root past phase.Admitted that
-// no resume's entry keeps alone: a child, a root at phase.Admitted and a root owed a resume are
-// answered from the record in hand.
-func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue, entry record.PhaseEntry,
-	run record.RoleRun,
-) (bool, error) {
-	if !claim.IsTreeRoot(root.Key, root.Tree) {
-		return false, nil
+// record.Store.RoleRuns), so the reach is read from the record in hand and reads nothing.
+func ArchitectAtWork(root record.Issue, holdsGate bool, entry record.PhaseEntry, run record.RoleRun) bool {
+	if !holdsGate {
+		return false
 	}
 	if root.Phase == phase.Admitted {
-		return true, nil
+		return true
 	}
 	if !root.CarriesRun() {
-		return false, nil
+		return false
 	}
 	if resumeOwed(root, entry, run) {
-		return true, nil
+		return true
 	}
 	carried, _ := ArchitectCarried(root)
-	return carried, nil
+	return carried
 }
 
 // resumeOwed is the third root of ArchitectAtWork, asked of a root that stands in a phase that
@@ -223,8 +220,8 @@ const (
 // outbox runs it again on its backoff, so Stranded leaves such a claim out. The arm asks whether a
 // start can still cure the claim, and a start that has run against it and left it as it was cannot
 // (the architect's reading of R7 at dispatch://INFRA-2614).
-func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, floor, now time.Time) ArchitectRelaunch {
-	stop := actingStop(run, root)
+func ArchitectRelaunchOf(run record.RoleRun, floor, now time.Time) ArchitectRelaunch {
+	stop := actingStop(run)
 	lastStart := lastStartRow(run)
 	relaunch := RelaunchNone
 	for _, queued := range run.Queued {
@@ -346,6 +343,6 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
 	kept *record.KeptDecisions, entry int64,
 ) error {
-	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
+	return e.EnqueueNaming(ctx, tx, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree,
 		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept}, kept, e.now())
 }

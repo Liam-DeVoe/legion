@@ -158,8 +158,11 @@ func reconcileRoots(t *testing.T, pool *pgxpool.Pool, keys ...string) []string {
 			}
 			issues = append(issues, *issue)
 		}
-		var err error
-		entered, _, err = testEngine(config.DesignGateRootIssues, nil).ReconcileAwaiting(ctx, tx, "LEGION", issues, nil)
+		chains, err := record.ReadChains(ctx, tx, store, "LEGION", keys)
+		if err != nil {
+			return err
+		}
+		entered, _, err = testEngine(config.DesignGateRootIssues, nil).ReconcileAwaiting(ctx, tx, "LEGION", chains, issues, nil)
 		return err
 	})
 	return entered

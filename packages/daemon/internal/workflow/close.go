@@ -134,24 +134,59 @@ func (e *Engine) closeRefused(ctx context.Context, tx pgx.Tx, fact intake.CloseR
 			issue.Key, named, issue.Key, issue.Phase)})
 }
 
-// ClosePassCandidate says whether the decision pass asks WriteDueClose of issue: it carries a
+// ClosePassCandidate says whether the decision pass asks WriteDueCloses of issue: it carries a
 // close the daemon queued (record.PendingClose), or it awaits its merge (awaitsMerge).
 func ClosePassCandidate(issue record.Issue) bool {
 	return issue.PendingClose != nil || awaitsMerge(issue)
 }
 
-// WriteDueClose is the decision pass's reading of the close issue owes, once the pass's copy shows
-// each Dispatch child the issue has now done: a close Dispatch refused
-// (record.PendingClose.Refused) is queued again (writeClose), at the run and the phase entry it
-// was decided at and at no other, and a merged issue that waits in merging for its children
-// queues its close (closeMerged), which catches the child the daemon records nothing of whose
-// own done no departure reads. A child a person unlinked since holds the close no more, since the
-// copy no longer shows it under the issue. A close on its way, one of an earlier run or phase
-// entry and an issue out of Legion's work queue nothing. It answers whether it queued a close.
-func (e *Engine) WriteDueClose(ctx context.Context, tx pgx.Tx, issue record.Issue, chains *record.Chains) (bool, error) {
-	if !record.InLegionsWork(issue) || len(childrenNotDone(chains, issue.Key)) > 0 {
-		return false, nil
+// WriteDueCloses is the decision pass's reading of the close each of issues owes
+// (ClosePassCandidate), in the order given, once the pass's copy, chains, shows each Dispatch
+// child the issue has now done: a close Dispatch refused (record.PendingClose.Refused) is queued
+// again (writeClose), at the run and the phase entry it was decided at and at no other, and a
+// merged issue that waits in merging for its children queues its close (closeMergedOn), which
+// catches the child the daemon records nothing of whose own done no departure reads. A child a
+// person unlinked since holds the close no more, since the copy no longer shows it under the issue.
+// A close on its way, one of an earlier run or phase entry and an issue out of Legion's work queue
+// nothing. It answers whether it queued a close.
+//
+// The pull requests of the issues that await their merge are read in one statement
+// (record.Store.PullRequestsOf), and the merged path asks the children of chains: a close writes
+// only its own issue's record and its outbox rows, which neither read takes.
+func (e *Engine) WriteDueCloses(ctx context.Context, tx pgx.Tx, issues []record.Issue, chains *record.Chains) (bool, error) {
+	var due []record.Issue
+	var merging []string
+	for _, issue := range issues {
+		if !ClosePassCandidate(issue) || !record.InLegionsWork(issue) || len(childrenNotDone(chains, issue.Key)) > 0 {
+			continue
+		}
+		due = append(due, issue)
+		if awaitsMerge(issue) {
+			merging = append(merging, issue.Key)
+		}
 	}
+	prs, err := e.store.PullRequestsOf(ctx, tx, merging)
+	if err != nil {
+		return false, err
+	}
+	wrote := false
+	for _, issue := range due {
+		var pr *record.PullRequest
+		if found, recorded := prs[issue.Key]; recorded {
+			pr = &found
+		}
+		queued, err := e.writeDueClose(ctx, tx, issue, chains, pr)
+		if err != nil {
+			return wrote, fmt.Errorf("queue the close %s owes: %w", issue.Key, err)
+		}
+		wrote = wrote || queued
+	}
+	return wrote, nil
+}
+
+// writeDueClose is WriteDueCloses of one issue in Legion's work whose children chains shows done,
+// with pr its pull request, nil for none.
+func (e *Engine) writeDueClose(ctx context.Context, tx pgx.Tx, issue record.Issue, chains *record.Chains, pr *record.PullRequest) (bool, error) {
 	if pending := issue.PendingClose; pending != nil {
 		fence, err := record.ReadFence(ctx, tx, e.store, issue.Key, false)
 		if err != nil {
@@ -164,13 +199,9 @@ func (e *Engine) WriteDueClose(ctx context.Context, tx pgx.Tx, issue record.Issu
 			return true, e.writeClose(ctx, tx, issue, pending.Kind, pending.Reason)
 		}
 	}
-	if !awaitsMerge(issue) {
+	if !awaitsMerge(issue) || pr == nil || pr.State != record.PullRequestMerged {
 		return false, nil
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
-		return false, err
-	}
-	waiting, err := e.closeMerged(ctx, tx, issue, pr)
+	waiting, err := e.closeMergedOn(ctx, tx, chains, issue, pr)
 	return err == nil && len(waiting) == 0, err
 }

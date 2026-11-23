@@ -135,7 +135,11 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return engine.StartFirstPhase(ctx, tx, *issue, true, nil)
+			chains, err := record.ReadChains(ctx, tx, engine.store, issue.Project, []string{issue.Key})
+			if err != nil {
+				return err
+			}
+			return engine.StartFirstPhase(ctx, tx, *issue, chains, nil)
 		})
 	}
 	openTheGate()

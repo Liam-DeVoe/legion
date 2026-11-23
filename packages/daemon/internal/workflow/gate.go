@@ -671,7 +671,9 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 // approval request (record.DesignGate.PendingOnBasis) declares nothing: its architect registered
 // on that request rather than handing the root's own document to the person, so the root keeps
 // its slot and its phase, and the wait the request of the root's own document may raise is
-// admission's to read from the record as it stands (R1).
+// admission's to read from the record as it stands (R1). An issue that holds no gate of its own on
+// the Dispatch chain declares nothing either: its request was mirrored as no row
+// (mirrorRegisteredRequest), which stands open on nobody's turn.
 func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.GateRegistered, request record.RootAsk, gate record.DesignGate) error {
 	if gate.PendingOnBasis() {
 		e.logOnCommit(ctx, "workflow: a registration pending on an ancestor's request hands nothing to the person", "issue", root.Key,
@@ -682,9 +684,6 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 	if fact.RequestAsk == "" || since <= 0 || request.WaitingOnSeq > since || request.Seq > since ||
 		!request.WithHuman() || !request.GateRequestOf(gateRequestOf(gate, e.gatesStep(gate.Step))) {
 		return nil
-	}
-	if holds, err := e.holdsOwnGate(ctx, tx, root); err != nil || !holds {
-		return err
 	}
 	e.logOnCommit(ctx, "workflow: a registration hands a design document to the person", "issue", root.Key, "step", gate.Step,
 		"version", gate.LatestVersion, "since_seq", since)
@@ -701,7 +700,7 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 // waiting, keeping its slot, rather than standing at admitted until its architect registers again. A request the mirror already holds
 // is the mirror's; a gate of another generation or document is left as it is.
 func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.GateRequestFound) (intake.Result, error) {
-	root, _, err := e.recordedRoot(ctx, tx, fact.Issue)
+	root, _, err := e.gateHolder(ctx, tx, fact.Issue)
 	if err != nil || root == nil || root.Generation != fact.Generation || fact.RequestAsk == "" {
 		return intake.Result{}, err
 	}

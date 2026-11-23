@@ -103,7 +103,7 @@ type DispatchIssue struct {
 	// view shows never reaches a record without the actor of the event that wrote it.
 	Observed bool
 	// Delivered is the event an Observed fact was prepared in place of, as it was delivered, or the
-	// event a route's own status write made (api's recordOwnStatusWrite); nil for a view prepared in
+	// event a route's own status write made (api's ApplyOwnStatusWrite); nil for a view prepared in
 	// place of no event (release_children's view of a child Dispatch already showed todo).
 	Delivered *DispatchIssue
 	// StatusMove is a status Dispatch confirmed the daemon wrote: the fact an API route applies for
@@ -1801,11 +1801,13 @@ type Pool interface {
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes
 // back when any handler returns an error. An Observed issue fact is settled first, under the lock
-// (settleObserved): the handlers see its view only while the workflow records no such issue. A
-// fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
-// in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer), and a Dispatch event it delivered moves its issue's
-// cursor there too (recordSeen), once every handler has run, so a record the fact writes first is
+// (settleObserved): the handlers see its view as a plain fact only while the workflow records no
+// such issue, and for a recorded one the event it was prepared in place of, or the view itself
+// where it was prepared in place of none (Delivered). A fact a durable consumer delivered
+// (withStreamPosition) records that consumer's stream position in the same transaction
+// (recordStreamPosition), so a consumer found missing is created at the last message it applied
+// (openConsumer), and a Dispatch event it delivered moves its issue's cursor there too
+// (recordSeen), once every handler has run, so a record the fact writes first is
 // moved with it.
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span

@@ -384,7 +384,7 @@ func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) 
 
 // The start row claims what it names of what the tree is owed, so a row left for its backoff and
 // run again tells the architect each decision once and no pass composes a second telling
-// (workflow.EnqueueNaming, record.Store.ClaimKeptDecisions): the rows it holds are claimed, so
+// (workflow.EnqueueNaming, record.Store.ClaimKeptDecisionsOf): the rows it holds are claimed, so
 // the next pass finds nothing unclaimed to name.
 func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 	ctx := context.Background()
@@ -445,7 +445,7 @@ func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 }
 
 // putEarlierRootArchitect records the architect claim LEGION-ROOT's close left, which served the
-// generation before, the run record.Store.ArchitectServed reads. The claim token is written here
+// generation before, the run record.Store.ArchitectServedOf reads. The claim token is written here
 // rather than minted (putWorkerClaim), because LEGION-ROOT is no issue key.
 func putEarlierRootArchitect(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()

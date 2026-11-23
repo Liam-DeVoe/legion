@@ -35,7 +35,7 @@ import (
 //
 // An issue already in Legion's work moves only on a todo: a todo on a held issue releases its hold
 // (releaseHeldRoot), and a todo on a root whose architect claim failed starts that claim again
-// (RetryFailedArchitect). Any other status in work changes nothing here; admission records it.
+// (retryFailedArchitect). Any other status in work changes nothing here; admission records it.
 func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	switch {
 	case issue.Phase == phase.Done:
@@ -51,8 +51,7 @@ func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	case issue.Phase == phase.Held && issue.Hold != nil:
 		return e.releaseHeldRoot(ctx, tx, issue, fact)
 	}
-	_, err := e.RetryFailedArchitect(ctx, tx, issue)
-	return err
+	return e.retryFailedArchitect(ctx, tx, issue)
 }
 
 // opensNewRun says whether fact, a status in work, opens a new run of issue, a record at phase
@@ -234,7 +233,7 @@ func (e *Engine) queuedRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	if issue.Phase != phase.Admitted {
 		return false, nil
 	}
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil || !chains.StartsAsRoot(issue.Key) {
 		return false, err
 	}
@@ -289,7 +288,7 @@ func (e *Engine) reviveClaims(ctx context.Context, tx pgx.Tx, issue record.Issue
 // a child-status notice: the owner walk starts at the parent (record.NoticeStartsAtParent). An
 // issue with nothing above it in Legion's work has no architect above to tell.
 func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, reason string) error {
-	chains, err := record.ReadChains(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
 	if err != nil {
 		return err
 	}
@@ -417,38 +416,41 @@ func (e *Engine) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string) e
 	return e.store.DropReadmittedApproval(ctx, tx, key)
 }
 
-// RetryFailedArchitect starts again, in its session and with fresh budgets, the architect claim
+// retryFailedArchitect starts again, in its session and with fresh budgets, the architect claim
 // of issue, a root in Legion's work that holds its own gate, whose claim failed, as `legion claims
 // retry` does (R20 of dispatch://INFRA-3320: a failed role is not restarted through a status). It
 // is what a todo on such a root asks for: a person's todo the engine reads (backInWork), and the
 // controller's set_status of todo, which writes no status and moves no issue under the root. The
 // start is the plain one (childArchitectStart), with no phase, task or entry, which the outbox's
 // start runs through supervise's retry of a failed claim (supervise.RequestRetry); a start already
-// queued for that claim is that start, so no second one is queued. It answers whether the claim
-// had failed, and writes nothing for any other issue or claim.
-func (e *Engine) RetryFailedArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+// queued for that claim is that start, so no second one is queued. It writes nothing for any other
+// issue or claim.
+//
+// The claim is read before the chain: a root whose architect has not failed is the common case,
+// and the keyed reads answer it without reading the chain at all.
+func (e *Engine) retryFailedArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if !record.InLegionsWork(issue) {
-		return false, nil
-	}
-	holds, err := e.holdsOwnGate(ctx, tx, issue)
-	if err != nil || !holds {
-		return false, err
+		return nil
 	}
 	project, err := claim.ProjectToken(e.cfg.Project)
 	if err != nil {
-		return false, err
+		return err
 	}
 	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
 	if err != nil {
-		return false, nil
+		return nil
 	}
 	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
 	if err != nil || run.Claim == nil || run.Claim.State != supervise.StateFailed {
-		return false, err
+		return err
+	}
+	holds, err := e.holdsOwnGate(ctx, tx, issue)
+	if err != nil || !holds {
+		return err
 	}
 	if architectStartQueued(run, issue.Phase) {
-		return true, nil
+		return nil
 	}
 	e.logOnCommit(ctx, "workflow: a todo on a root whose architect failed starts that architect again", "issue", issue.Key, "phase", issue.Phase)
-	return true, e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue))
+	return e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue))
 }
