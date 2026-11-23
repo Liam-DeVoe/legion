@@ -2,9 +2,10 @@
 
 // The live proof's driver of an owner's plan: the owner of an issue writes its plan.md through the
 // real `dispatch` CLI and gives it to Legion with register_plan, and the whole daemon runs the steps
-// that plan names, in the order it names them and no other, then the retro and the merge, while an
-// issue whose owner gives no plan runs the project's default steps. scripts/e2e/owner-steps.sh
-// builds this driver with `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// that plan names, in the order it names them and no other, then the retro and the merge of the
+// pull request the plan's implementer opened, while an issue whose owner gives no plan runs the
+// project's default steps. scripts/e2e/owner-steps.sh builds this driver with `-tags e2e` and owns
+// the nats-server and the PostgreSQL it runs against.
 //
 // Nothing of the plan's path is stood in for. Dispatch is the real server this checkout builds
 // (startHandoffDispatch), on a database of its own on LEGION_TEST_PG_DSN's server. The daemon is the

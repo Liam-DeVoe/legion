@@ -433,7 +433,7 @@ func TestTheRetroOfARoleOfThePlanRunsOnItsModel(t *testing.T) {
 	r.finish(checker, "", api.HandoffCompleteRequest{Summary: "every check holds", Commit: stepRecordsHead, Verdict: "pass"}, phase.Retro)
 
 	// The retro reaches the coder's claim either as a task in the session it runs, or as a launch
-	// of the claim on another role, which resumes that session in a new process.
+	// of the claim, as the role coder still, which resumes that session in a new process.
 	launched := len(launchSpecsOf(r.rt, coder.token))
 	if !testwait.Holds(stepRecordsWait, 50*time.Millisecond, func() bool {
 		return len(coder.prompts) > 0 || len(launchSpecsOf(r.rt, coder.token)) > launched
