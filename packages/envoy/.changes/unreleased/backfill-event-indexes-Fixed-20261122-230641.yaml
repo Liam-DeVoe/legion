@@ -12,7 +12,10 @@ body: |-
   (`20261119020900`) and `block_refs_naming_no_node` (`20261119021000`), each of the last two
   partial on the rows naming no node. All four are built concurrently at boot, which holds off no
   write, and all four sort before this release's first migration that runs a DO block, so the
-  deploy census admits them whatever their tables' size.
+  deploy census admits them whatever their tables' size. Before its passes the run analyzes
+  `node_kind` of the three tables it walks, since the release adds those columns with no
+  statistics, and without them the planner read every row still naming no node for each batch.
+  The block batch resolves each document version's event once per batch in every plan.
 time: 2026-11-22T23:06:41Z
 custom:
     Issue: backfill-event-indexes

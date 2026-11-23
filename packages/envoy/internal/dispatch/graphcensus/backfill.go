@@ -149,6 +149,9 @@ func backfillAt(ctx context.Context, database *store.Store, out io.Writer, rule 
 		return report, err
 	}
 	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
+	if err := analyzeWalkedColumns(ctx, database); err != nil {
+		return report, err
+	}
 	blocks := func(ctx context.Context, database *store.Store) (KindBackfill, error) {
 		return backfillBlocks(ctx, database, rule)
 	}
@@ -266,4 +269,28 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 		case <-time.After(wait):
 		}
 	}
+}
+
+// walkedColumnsAnalysis is the statement that gives the planner statistics of the column each walk
+// of the backfill reads its rows by, node_kind of the three projected tables.
+//
+// Migration 20261109022248 adds those columns with the release that runs this backfill, after any
+// analysis of the tables, so until autovacuum next analyzes a table the planner holds no
+// statistics of its column and takes `node_kind is null` to match a fraction of a percent of the
+// rows. Where that guess is under one batch, a walk's plan reads every row still naming no node
+// through a bitmap and sorts them, once per batch, rather than reading one batch in order from the
+// cursor through the index that keeps it (document_blocks_naming_no_node,
+// block_refs_naming_no_node, comments_pkey): measured on a seeded copy of the schema the deploy
+// leaves, every comment batch read all 28,338 comments naming no node, and every block batch of a
+// tenth of that copy's blocks read all 27,405 of them. The statement samples each table's pages
+// as any analysis does, whatever the table's size, takes SHARE UPDATE EXCLUSIVE, which no read or
+// write waits on, and writes only the statistics catalog.
+const walkedColumnsAnalysis = `analyze document_blocks (node_kind), block_refs (node_kind), comments (node_kind)`
+
+// analyzeWalkedColumns runs walkedColumnsAnalysis.
+func analyzeWalkedColumns(ctx context.Context, database *store.Store) error {
+	if _, err := database.Pool.Exec(ctx, walkedColumnsAnalysis); err != nil {
+		return fmt.Errorf("analyze the columns the walks read their rows by: %w", err)
+	}
+	return nil
 }
