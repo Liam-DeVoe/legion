@@ -182,9 +182,10 @@ func URL(raw string) string {
 	return u.String()
 }
 
-// URLCredentials is text with the query of every URL written in it removed, the authority of
-// every URL whose authority holds an "@" written as URLWithCredentials, and every URL with an "@"
-// past its host written whole, after its "://", as URLWithCredentials.
+// URLCredentials is text with the query of every URL written in it removed, but for the query of
+// a `file:` URL, the authority of every URL whose authority holds an "@" written as
+// URLWithCredentials, and every URL with an "@" past its host written whole, after its "://", as
+// URLWithCredentials.
 //
 // A URL starts at <scheme>://, where the scheme is a letter followed by letters, digits, "+", "-"
 // or ".". It ends at the first white-space character, `"`, `'`, "`", "<" or ">" after the "://",
@@ -206,15 +207,21 @@ func URL(raw string) string {
 //   - the fragment starts at the first "#" after the authority, and it stays. A "?" after that "#"
 //     is the fragment's;
 //   - the query runs from the first "?" after the authority up to the fragment, or up to the end
-//     of the URL, and it is removed with its "?".
+//     of the URL, and it is removed with its "?". A URL whose scheme is `file`, in any case, keeps
+//     its query: no network request carries a `file:` URL, and its query is a module loader's own
+//     (`?mtime=1`), which a message naming the module it loaded must keep.
+//
+// The rule names no parameter it removes: a list of the names a credential goes by fails open, on
+// each name a service picks that the list lacks (`X-Amz-Signature`, `X-Goog-Credential`, `code`,
+// `state`, `client_assertion`), so every other URL loses its whole query.
 //
 // A URL written in the path or the fragment of another (a redirect's target, an archived page)
 // is a URL of its own, under the same rule; one holding an "@" puts that "@" past the other's
 // host too, so the other is written whole as the mark. One written in a query goes with that
-// query. Nothing else changes: the scheme, an authority with no "@", the path, the fragment and
-// every word around the URLs stay as written. Neither a part nor the length of a credential is
-// left, and URLCredentials(URLCredentials(s)) == URLCredentials(s): URLWithCredentials holds a
-// space, which ends the URL it stands in.
+// query, a `file:` URL's own query aside. Nothing else changes: the scheme, an authority with no
+// "@", the path, the fragment and every word around the URLs stay as written. Neither a part nor
+// the length of a credential is left, and URLCredentials(URLCredentials(s)) == URLCredentials(s):
+// URLWithCredentials holds a space, which ends the URL it stands in.
 //
 // A text the rule does not change, a text with no "://" above all, is returned as it is, with no
 // allocation. The rule takes time linear in the text's length, a run of "://" that nothing ends
@@ -297,6 +304,10 @@ func URLCredentials(text string) string {
 		// spans apart from one another, the whole text once at most.
 		if strings.IndexByte(text[at:host], '@') >= 0 {
 			replace(at, host, URLWithCredentials)
+		}
+		// A `file:` URL keeps its query; a URL in it is a URL of its own, as one in its path is.
+		if fileSchemeEndsAt(text, sep) {
+			continue
 		}
 		frag := min(hash.from(text, host), end)
 		if q := question.from(text, host); q < frag {

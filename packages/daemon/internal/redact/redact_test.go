@@ -170,7 +170,7 @@ var urlCredentialsCases = []struct {
 		// scoped package's "@" stays, as the plugin module URL `legion controller start` names.
 		name: "a file URL keeps its path's @",
 		text: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1 which",
-		want: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js which",
+		want: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1 which",
 	},
 	{
 		name: "a FILE URL in upper case keeps its path's @",
@@ -236,6 +236,53 @@ var urlCredentialsCases = []struct {
 		name: "a :// after no scheme",
 		text: "9://u@h.example/?q and ://u@h.example/?q",
 		want: "9://u@h.example/?q and ://u@h.example/?q",
+	},
+	{
+		name: "a file: URL's query kept",
+		text: "loaded file:///a.js?mtime=1, then",
+		want: "loaded file:///a.js?mtime=1, then",
+	},
+	{
+		name: "a FILE: URL's query kept",
+		text: "loaded FILE:///a.js?mtime=1, then",
+		want: "loaded FILE:///a.js?mtime=1, then",
+	},
+	{
+		name: "a file: URL's userinfo written as the mark, its query kept",
+		text: "file://" + planted + "@host.example/a.js?mtime=1",
+		want: "file://" + URLWithCredentials + "/a.js?mtime=1",
+	},
+	{
+		name: "two file: URLs as legion probe-image prints them",
+		text: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
+		want: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
+	},
+	{
+		name: "a query whose names are harmless and a credential's removed whole",
+		text: "get https://h/p?mtime=1&X-Amz-Signature=" + planted + " done",
+		want: "get https://h/p done",
+	},
+	{
+		name: "a scheme that ends in file is no file: URL",
+		text: "xfile://h.example/p?token=" + planted + " and profile://h.example/q?" + planted,
+		want: "xfile://h.example/p and profile://h.example/q",
+	},
+	{
+		name: "a URL in a file: URL's query is a URL of its own",
+		text: "file:///a.js?next=https://h.example/?token=" + planted + "#f",
+		want: "file:///a.js?next=https://h.example/#f",
+	},
+	{
+		// An "@" in a file: URL's query is past that URL's host, so the file: URL is the mark
+		// whole, as any URL with an "@" past its host is.
+		name: "a URL with userinfo in a file: URL's query marks the file: URL",
+		text: "file:///a.js?next=https://" + planted + "@h.example/?token=" + planted + "#f",
+		want: "file://" + URLWithCredentials,
+	},
+	{
+		name: "a file: URL in another's query goes with that query",
+		text: "https://h.example/p?a=file:///a.js?mtime=1&token=" + planted + " done",
+		want: "https://h.example/p done",
 	},
 }
 
@@ -404,6 +451,9 @@ func urlCredentialsQuadratic(text string) string {
 		if strings.IndexByte(text[at:host], '@') >= 0 {
 			replace(at, host, URLWithCredentials)
 		}
+		if fileSchemeEndsAt(text, sep) {
+			continue
+		}
 		frag := host + orLen(strings.IndexByte(text[host:end], '#'), end-host)
 		if q := strings.IndexByte(text[host:frag], '?'); q >= 0 {
 			query, fragment = host+q, frag
@@ -427,7 +477,7 @@ func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
 	for _, tc := range urlCredentialsCases {
 		texts = append(texts, tc.text)
 	}
-	pieces := []string{"https", "file", "localhost", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
+	pieces := []string{"https", "file", "FILE", "localhost", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
 	random := rand.New(rand.NewPCG(4193, 4463))
 	for range 5000 {
 		some := []string{"a", "://"}
