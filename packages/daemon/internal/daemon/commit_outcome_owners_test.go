@@ -63,6 +63,7 @@ func ownerFamilies() []ownerFamily {
 		{name: "idle release", match: "insert into issue_releases", retried: true, open: idleReleaseOwner},
 		{name: "unowned release", match: "insert into issue_releases", retried: true, open: unownedReleaseOwner, unknown: unownedReleaseUnknown},
 		{name: "release cancel", match: "delete from issue_releases", open: releaseCancelOwner, unknown: releaseCancelUnknown},
+		{name: "left pod close", match: "insert into outbox", open: leftPodCloseOwner, unknown: leftPodCloseUnknown},
 		{name: "news settle", match: newsSettleMatch, retried: true, open: newsSettleOwner, unknown: newsSettleUnknown},
 	}
 }
@@ -456,6 +457,116 @@ func releaseCancelUnknown(t *testing.T) {
 	if got := rig.holdRows(t); got != 1 {
 		t.Errorf("hold records after the store answered = %d, want 1", got)
 	}
+}
+
+// leftCloseLine is the line of a left pod's close whose workspace check read nothing that origin
+// does not hold, and so queued the close's stops.
+const leftCloseLine = "the close of the pod of an issue that left the workflow read its workspace and found nothing"
+
+// leftCloseRig is the rig of a left pod's close (workflow.LeftPodClose) whose workspace check is
+// queued and reads nothing that origin does not hold, so its run queues the close's stops and the
+// issue's Sandbox suspension (outbox.checkLeftPodWorkspace), with the outbox's store and pool
+// swapped together to faulted. row and payload are the check's row as the outbox lists it.
+type leftCloseRig struct {
+	*cancelRig
+	row     record.OutboxRow
+	payload record.IssueWorkspaceCheck
+}
+
+func newLeftCloseRig(t *testing.T) *leftCloseRig {
+	t.Helper()
+	ctx := context.Background()
+	rig := newLeftPodRig(t, false)
+	parkChild(t, rig)
+	rig.drain(t)
+	leftPodGone(rig)
+	resumeAsOperator(t, rig)
+	if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
+		t.Fatalf("the passes queued %v, want the close's workspace check alone", queued)
+	}
+	var row record.OutboxRow
+	var kind string
+	var payload []byte
+	if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload, lease_token from outbox where issue = $1 and kind = $2`,
+		rig.issue.Key, string(record.OutboxKindIssueBundle)).Scan(&row.ID, &kind, &row.Issue, &payload, &row.LeaseToken); err != nil {
+		t.Fatalf("read the close's workspace check: %v", err)
+	}
+	row.Kind, row.Payload = record.OutboxKind(kind), payload
+	decoded, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decode the close's workspace check: %v", err)
+	}
+	check, ok := decoded.(record.IssueWorkspaceCheck)
+	if !ok || len(check.CloseRoles) == 0 {
+		t.Fatalf("the queued check = %#v, want a close's workspace check", decoded)
+	}
+	faulted, fault := faultedStoreOf(t, rig.st)
+	rig.runner.trees, rig.runner.pool, rig.runner.supervisor.store = faulted, faulted.Pool(), faulted
+	logs, log := watchedLog()
+	rig.runner.log = log
+	return &leftCloseRig{cancelRig: &cancelRig{idleRig: rig, fault: fault, logs: logs}, row: row, payload: check}
+}
+
+// leftPodCloseOwner is the clean close's check, run as the lane runs its row. A close that
+// committed finished its check row with it, so no row is left to run again.
+func leftPodCloseOwner(t *testing.T) *ownerRig {
+	rig := newLeftCloseRig(t)
+	return &ownerRig{
+		fault: rig.fault,
+		run: func(*testing.T) error {
+			return rig.runner.checkIssueWorkspace(context.Background(), rig.row, rig.payload)
+		},
+		changed: func(t *testing.T) bool { return slices.Contains(rig.rows(t), "issue_suspend") },
+		work: func(t *testing.T) map[string]int {
+			return map[string]int{"close journal lines": count(rig.logs, leftCloseLine)}
+		},
+	}
+}
+
+// A clean close whose outcome the store cannot say has queued the close's stops and the issue's
+// Sandbox suspension in a transaction that committed. Once the store answers, the lane runs those
+// rows, and nothing reads the workspace again: a check row left for its retry would read it after
+// the stop took the role's shim away, and decline a close already done, with a workspace_unread
+// decline and a hold streak that no pass ends, since no pass visits a pod with no Sandbox.
+func leftPodCloseUnknown(t *testing.T) {
+	rig := newLeftCloseRig(t)
+	fired := rig.fault.Cut("insert into outbox", testdb.CutAfterCommitRefusing)
+	rig.later()
+	// One pass, not the drain: the drain's next list is refused while the store is, and the
+	// drain fails the test on a refused list.
+	if err := rig.runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+	testdb.Met(t, fired)
+	if !strings.Contains(rig.logs.String(), store.ErrCommitOutcomeUnknown.Error()) {
+		t.Errorf("the row's failure names no unknown outcome: %q", rig.logs.String())
+	}
+	// The close's stop ends the planner's process, and its shim with it: a read made after that
+	// fails, as a read through a gone shim does.
+	rig.rt.FailWorkspaceWork(rig.issue.Key, errors.New("the planner's shim is gone"))
+	rig.fault.Refuse(false)
+	rig.later()
+	rig.drain(t)
+	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
+		t.Errorf("the workspace was read through %v, want the close's one read through the planner", read)
+	}
+	if rig.declined(t) {
+		t.Error("the close that committed was declined after its stop ran")
+	}
+	if held := holdsOf(t, rig.idleRig, workflow.IdleHoldWorkspaceUnread); len(held) != 0 {
+		t.Errorf("holds = %+v, want no %s", held, workflow.IdleHoldWorkspaceUnread)
+	}
+	for _, left := range rig.rows(t) {
+		if left == "issue_bundle" || left == "supervise:suspend" || left == "issue_suspend" {
+			t.Errorf("rows after the drain = %v, want the check finished with the close and its stops run", rig.rows(t))
+			break
+		}
+	}
+	if got := rig.storedClaim(t, rig.token); got.State != supervise.StateSuspended {
+		t.Errorf("the stored planner = %s, want it suspended by the close's stop", got.State)
+	}
+	testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
+		"the close's line once the store says it committed", func() bool { return count(rig.logs, leftCloseLine) == 1 })
 }
 
 // podHoldRow is one pod_holds row as the late-hook test reads it.
