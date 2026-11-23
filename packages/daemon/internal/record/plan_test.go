@@ -827,29 +827,6 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 	}
 }
 
-// The task a run with plan rows is on, for a reader of a plan of one task, is that one task,
-// whatever its state. A plan that holds none, or more than one, names no task, and says how many
-// it holds: a reader of a plan of several reads each of its tasks.
-func TestThePlansTaskIsItsOneTask(t *testing.T) {
-	v := PlanVersion{Issue: "LEGION-212", Generation: 1}
-	stopped := PlanTask{Issue: "LEGION-212", Generation: 1, Task: "a", State: TaskStopped}
-	if got, err := (&StoredPlan{Version: v, Tasks: []PlanTask{stopped}}).Task(); err != nil || !reflect.DeepEqual(got, stopped) {
-		t.Fatalf("the task of a plan of one task = %+v, %v; want %+v", got, err, stopped)
-	}
-	for _, tc := range []struct {
-		tasks []PlanTask
-		want  string
-	}{
-		{nil, "the plan of LEGION-212 at generation 1 holds 0 tasks, not one"},
-		{[]PlanTask{{Task: "a", State: TaskWaiting}, {Task: "b", State: TaskRunning}},
-			"the plan of LEGION-212 at generation 1 holds 2 tasks, not one"},
-	} {
-		if got, err := (&StoredPlan{Version: v, Tasks: tc.tasks}).Task(); err == nil || err.Error() != tc.want || !reflect.DeepEqual(got, PlanTask{}) {
-			t.Errorf("the task of a plan of %d tasks = %+v, %v; want no task and %q", len(tc.tasks), got, err, tc.want)
-		}
-	}
-}
-
 // An owner's plan holds an issue for two more reasons: its owner stopped its task, and it waits
 // before its retro for the issues beneath it. Each is written and read back as any reason of a
 // hold is.

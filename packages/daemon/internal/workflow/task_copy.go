@@ -23,8 +23,10 @@ import (
 // (intake.TaskJoined). The task that holds the issue's own branch and needs none queues nothing:
 // the issue_branch row its first step queues makes that branch (gateOpened). Its one caller is the
 // start of every step (Engine.start), at each start of a task, the first and a start again. A task
-// the plan does not hold is refused, naming it.
-func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (bool, error) {
+// the plan does not hold is refused, naming it. The plan it reads after the give is s's plan from
+// then on, so the start's text reads the task's branch and the base of its pull request from it
+// (standingPart) and reads no plan again.
+func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s *TaskScope) (bool, error) {
 	issue, task := s.issue, s.walk.Task
 	branch, err := e.store.AssignTaskBranch(ctx, tx, issue.Key, issue.Generation, task)
 	if err != nil {
@@ -41,6 +43,7 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, s TaskScope) (boo
 	if !ok {
 		return false, fmt.Errorf("start the copy of task %s of %s: its plan holds no such task", task, issue.Key)
 	}
+	s.plan = stored
 	if branch == claim.IssueBranch(issue.Key) && len(row.Needs) == 0 {
 		return false, nil
 	}

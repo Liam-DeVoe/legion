@@ -1860,6 +1860,9 @@ a migration must not depend on that order, and one that needs another's effect i
 The release that reads the version cast to `bigint` goes out before any release that carries a timestamped migration:
 the release before it reads `max(version)` uncast, so a deployment that skips it costs the daemon it replaces one failed state read on each connection that prepared the uncast read, which pgx then drops.
 
+Upgrade the Envoy listener to `legion-envoy-v29.1.0` or later (an image whose `ENVOY_IMAGE_TAG` is that tag's commit or a later commit of `main`), the first listener release that names a pull request's head repository (`head_repo`) in its events, before the daemon release that records a pull request only from an event that names it:
+behind an earlier listener that daemon records no pull request at all, and logs at WARN, the first time at once and then at most once a minute with the running count, `intake: a pull request event of an issue's branch was dropped: it names no head repository, …`.
+
 A daemon of a release before migration `0058_catch_up_cursor` that runs on a database a later release has migrated applies Dispatch's events without moving any issue's catch-up cursor (`issues.caught_up_seq`).
 Before a later release starts on that database again, set every cursor to null (`update issues set caught_up_seq = null`), or its boot catch-up replays the events the earlier daemon already applied;
 a catch-up from a null cursor replays nothing and sets the cursor to the issue's latest event on Dispatch (the comment of `0058_catch_up_cursor.up.sql` says why).

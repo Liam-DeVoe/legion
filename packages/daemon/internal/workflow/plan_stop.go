@@ -114,7 +114,7 @@ func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, s TaskScope, why, said
 // (startAtFirstStep), and every other start of that role while the hold stands finishes without
 // acting where every start of a role is run (the daemon outbox's start).
 func StoppedStepRole(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
-	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	stopped, ok, err := copyStoppedStep(ctx, s, tx, issue)
 	if err != nil || !ok || stopped.Role == claim.RoleArchitect {
 		return "", err
 	}
@@ -135,7 +135,7 @@ func rolesAt(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Issue,
 	if record.StandsAt(issue) != p {
 		return roles, nil
 	}
-	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	stopped, ok, err := copyStoppedStep(ctx, s, tx, issue)
 	if err != nil || !ok {
 		return roles, err
 	}
