@@ -537,11 +537,15 @@ through redact.Error and redact.Cause; a call into one of those libraries made t
 reflection (reflect.Value.MethodByName(...).Call), which no census lists and review sees; the
 ways an answer's words leave it that no census reads from the types alone - the bytes StreamTo
 or StreamAnswer hands out, printed; a test given to Holds that keeps the bytes; a member decoded
-into a plain string, printed; a response's header, trailer or Location, printed; a response held
-only behind an unexported pointer field, which fmt prints as an address and encoding/json leaves
-out, printed by a printer that follows it (go-spew does; a census that walked every such pointer
-would refuse each *net/http.Transport handed out as a RoundTripper); and a response handed to a
-library function that takes it by its own type and prints it - which review sees; what a read
+into a plain string, printed; a response's header, trailer, Location or cookies (Cookies,
+Set-Cookie), printed; the URL of a response's request (Request.URL), printed, which after a
+followed redirect is the Location another party wrote; net/http.ReadResponse given a nil
+request through a variable, or a request that carries none of what was sent, whose answer then
+holds no record of the request's credentials; a response held only behind an unexported pointer
+field, which fmt prints as an address and encoding/json leaves out, printed by a printer that
+follows it (go-spew does; a census that walked every such pointer would refuse each
+*net/http.Transport handed out as a RoundTripper); and a response handed to a library function
+that takes it by its own type and prints it - which review sees; what a read
 that a guarded_package entry names holds at run time beyond what the reflection census reads in
 place of the types the read reaches - a reflect.Value.FieldByName with a constant name, run only
 under a guard that holds the value's type to the named package (the package path itself, or an
