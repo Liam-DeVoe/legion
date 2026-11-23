@@ -62,7 +62,7 @@
     "mode": "ask",
     "level": "fast",
     "grade": {
-      "facts": ["session-planner-01 holds the claim of DEMO-7, Board: drag to reorder columns."],
+      "facts": ["The planner agent session (Planner of DEMO-7) holds the claim of DEMO-7, Board: drag to reorder columns."],
       "links": ["DEMO-7"]
     }
   },
@@ -200,7 +200,7 @@
     "mode": "ask",
     "level": "fast",
     "grade": {
-      "facts": ["OPS-2 and OPS-6 route to session-oncall-01."],
+      "facts": ["OPS-2 and OPS-6 route to the on-call agent session (On-call agent of OPS)."],
       "links": ["OPS-2", "OPS-6"]
     }
   },
@@ -417,7 +417,7 @@
       "facts": [
         "DEMO-14, page breaks that split table rows, is in progress with Femi.",
         "DEMO-17, fonts missing on mobile, is in backlog with no assignee.",
-        "DEMO-18, the landscape page option, is in testing, and session-tester-01 holds its claim."
+        "DEMO-18, the landscape page option, is in testing, and the tester agent session (Tester of DEMO-18) holds its claim."
       ],
       "links": ["DEMO-14", "DEMO-17", "DEMO-18"]
     }
@@ -446,7 +446,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "OPS-2 is the alert on queue latency p95 over 400 ms, in progress with Eli and routed to session-oncall-01.",
+        "OPS-2 is the alert on queue latency p95 over 400 ms, in progress with Eli and routed to the on-call agent session (On-call agent of OPS).",
         "Latency rose after the 10:00 deploy of the worker image, which Eli rolled back at 10:05.",
         "p95 was 380 ms at 11:30Z, under the 400 ms threshold."
       ],
@@ -665,7 +665,7 @@
     "level": "standard",
     "grade": {
       "facts": [
-        "session-planner-01 holds the claim of DEMO-7, since 2026-11-17 at 15:00Z.",
+        "The planner agent session (Planner of DEMO-7) holds the claim of DEMO-7, since 2026-11-17 at 15:00Z.",
         "It says it is \"Writing the plan for DEMO-7: three tasks, the column drag handle first\" and is about half done.",
         "It waits on its open ask about saving the column order for each person."
       ],
@@ -681,7 +681,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "session-impl-02 holds the claim of OPS-4, and it is unresponsive, last seen at 09:40Z today.",
+        "The agent session titled Implementer of OPS-4 holds the claim of OPS-4, and it is unresponsive, last seen at 09:40Z today.",
         "Its ask about starting the nightly backup at 03:00 is still open."
       ],
       "links": ["OPS-4"]
@@ -696,7 +696,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "session-tester-01 holds the claim of DEMO-18 and says \"41 of 44 checks pass\".",
+        "The tester agent session (Tester of DEMO-18) holds the claim of DEMO-18 and says \"41 of 44 checks pass\".",
         "It says the 3 failures are page breaks inside table rows, which DEMO-14 covers."
       ],
       "links": ["DEMO-18"]
@@ -711,7 +711,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "session-impl-01 holds the claim of DEMO-15.",
+        "The agent session titled Implementer of DEMO-15 holds the claim of DEMO-15.",
         "It says \"The unit tests pass; the browser test on narrow screens still fails\", because the drag handle is hidden below 600 px."
       ],
       "links": ["DEMO-15"]
@@ -726,7 +726,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "session-reviewer-01 holds the claim of DEMO-22 and reviews its pull request.",
+        "The reviewer agent session (Reviewer of DEMO-22) holds the claim of DEMO-22 and reviews its pull request.",
         "It says it has \"2 comments so far, both about the wording of error messages\" and expects to finish today."
       ],
       "links": ["DEMO-22"]
@@ -741,7 +741,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "session-oncall-01 says it is \"Watching the queue latency alert on OPS-2\".",
+        "The on-call agent session (On-call agent of OPS) says it is \"Watching the queue latency alert on OPS-2\".",
         "It says p95 has stayed under 400 ms since 10:05Z, and OPS-6 is next."
       ],
       "links": ["OPS-2"]
@@ -777,7 +777,7 @@
     "level": "standard",
     "grade": {
       "facts": [
-        "session-impl-03 holds the claim of OPS-9 and says \"2 of 5 hosts done\" of the staging certificates.",
+        "The agent session titled Implementer of OPS-9 holds the claim of OPS-9 and says \"2 of 5 hosts done\" of the staging certificates.",
         "Production waits on its open ask about rotating in the same window as staging, tonight at 22:00."
       ],
       "links": ["OPS-9", "OPS-9/ask/a05"]
@@ -812,7 +812,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "session-architect-01 says it is \"Working on the spec of DEMO-20\".",
+        "The architect agent session (Architect of DEMO-3 and DEMO-20) says it is \"Working on the spec of DEMO-20\".",
         "It says DEMO-3 waits for a spec edit that puts the back-link first."
       ],
       "links": ["DEMO-20", "DEMO-3"]
@@ -827,9 +827,9 @@
     "level": "standard",
     "grade": {
       "facts": [
-        "session-planner-01 holds the claim of DEMO-7, session-impl-01 of DEMO-15, session-impl-03 of OPS-9, session-tester-01 of DEMO-18 and session-reviewer-01 of DEMO-22.",
-        "session-impl-02, which holds OPS-4, is unresponsive, and session-impl-04, which holds DEMO-26, is gone.",
-        "OPS-2 and OPS-6 route to session-oncall-01, and DEMO-3 and DEMO-20 to session-architect-01."
+        "The planner agent session (Planner of DEMO-7) holds the claim of DEMO-7, the agent session titled Implementer of DEMO-15 that of DEMO-15, the agent session titled Implementer of OPS-9 that of OPS-9, the tester agent session (Tester of DEMO-18) that of DEMO-18 and the reviewer agent session (Reviewer of DEMO-22) that of DEMO-22.",
+        "The agent session titled Implementer of OPS-4, which holds OPS-4, is unresponsive, and session-impl-04, which holds DEMO-26, is gone.",
+        "OPS-2 and OPS-6 route to the on-call agent session (On-call agent of OPS), and DEMO-3 and DEMO-20 to the architect agent session (Architect of DEMO-3 and DEMO-20)."
       ],
       "links": ["DEMO-7", "DEMO-15", "OPS-9", "DEMO-18", "DEMO-22", "OPS-4", "DEMO-26"]
     }
@@ -843,7 +843,7 @@
     "level": "fast",
     "grade": {
       "facts": [
-        "session-triage-01 is live and says it is idle.",
+        "The triage agent session (Triage agent) is live and says it is idle.",
         "It says \"I last triaged OPS-31 at 08:15Z\"."
       ]
     }
@@ -858,7 +858,7 @@
     "grade": {
       "facts": [
         "The 10:00 deploy of the worker image raised the latency, and Eli rolled it back at 10:05.",
-        "session-oncall-01 says \"p95 has stayed under 400 ms since 10:05Z\".",
+        "The on-call agent session (On-call agent of OPS) says \"p95 has stayed under 400 ms since 10:05Z\".",
         "p95 was 380 ms at 11:30Z."
       ],
       "links": ["OPS-2"]
@@ -873,7 +873,7 @@
     "level": "standard",
     "grade": {
       "facts": [
-        "session-tester-01 says the 3 failing checks of DEMO-18 are \"page breaks inside table rows, which DEMO-14 covers\".",
+        "The tester agent session (Tester of DEMO-18) says the 3 failing checks of DEMO-18 are \"page breaks inside table rows, which DEMO-14 covers\".",
         "DEMO-14 is in progress with Femi, who says rows taller than a page are the hard case."
       ],
       "links": ["DEMO-14", "DEMO-18"]
@@ -888,7 +888,7 @@
     "level": "standard",
     "grade": {
       "facts": [
-        "OPS-4, the nightly job that skips the attachments bucket, is P0 and in progress, and session-impl-02, which holds its claim, is unresponsive.",
+        "OPS-4, the nightly job that skips the attachments bucket, is P0 and in progress, and the agent session titled Implementer of OPS-4, which holds its claim, is unresponsive.",
         "The ask about starting the nightly job at 03:00 is open.",
         "OPS-15, the November restore drill, is in backlog with Femi."
       ],
