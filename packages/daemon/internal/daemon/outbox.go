@@ -1950,7 +1950,8 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// (workflow's ownerSlotCredential); a notice queued after it waits until that write ran, so
 	// nothing told the owner after its step ended reaches it while its gh files still hold the
 	// step's App. Under Kubernetes the kubelet's sync of the written Secret into the pod is not
-	// waited for: the next owner-step that needs another App waits for its own (ownerSlotHolds).
+	// waited for here: the next owner-step waits for the slot's gh files to hold its App, the
+	// owner's own App among them (ownerSlotHolds).
 	if pending, err := r.slotWritePending(ctx, architect, row.ID); err != nil {
 		return err
 	} else if pending {
@@ -1982,12 +1983,15 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // A step whose App is the App of the owner's own role (ownApp: the review App of the owner's
 // acceptance, and the owner's retro) needs no write: the owner's slot holds that App whenever the
 // owner does no other step, and the end of any other step writes it back before the next notice to
-// the owner publishes. So it is told without asking the slot or its launcher, and a pod whose
-// launcher cannot say holds nothing of it. Else the runtime writes the slot for that App
-// (runtime.SlotCredentials.WriteSlotCredential) and is asked whether the slot's gh files hold it
-// (SlotHoldsCredential): a wait, and a pod whose launcher cannot say (runtime.ErrAwaitsPodUpdate),
-// hold the row on its backoff as a notice held for its architect still (errNoticeWaits), and any
-// other failure is the row's error. A runtime that holds no slots writes none and holds nothing.
+// the owner publishes (slotWritePending). Each step is told once the slot's gh files hold its App:
+// the runtime writes the slot for an App of another role (runtime.SlotCredentials.WriteSlotCredential),
+// and for every step it is asked whether the slot's gh files hold the App (SlotHoldsCredential), so
+// the kubelet's sync of a write-back is waited for too. A wait holds the row on its backoff as a
+// notice held for its architect still (errNoticeWaits). A pod whose launcher cannot say
+// (runtime.ErrAwaitsPodUpdate) holds the row the same way for an App of another role, and holds
+// nothing for the owner's own App, which the slot of a pod built before the slot's write held from
+// its launch. Any other failure is the row's error. A runtime that holds no slots writes none and
+// holds nothing.
 func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, payload record.Notice, owner claim.Token) (bool, error) {
 	runs, err := r.ownerStepRuns(ctx, row.Issue, payload.OwnerStep)
 	if err != nil {
@@ -2008,18 +2012,21 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 			"owner", owner, "role", payload.Role, "phase", payload.Phase, "slot", role, "run", payload.OwnerStep)
 		return false, nil
 	}
-	if r.ownApp(ctx, row.Issue, role) {
-		return true, nil
-	}
+	own := r.ownApp(ctx, row.Issue, role)
 	slots, ok := r.supervisor.deps.Runtime.(runtime.SlotCredentials)
 	if !ok {
 		return true, nil
 	}
-	if err := slots.WriteSlotCredential(ctx, owner, role); err != nil {
-		return false, fmt.Errorf("write %s's slot for the App of %s: %w", owner, role, err)
+	if !own {
+		if err := slots.WriteSlotCredential(ctx, owner, role); err != nil {
+			return false, fmt.Errorf("write %s's slot for the App of %s: %w", owner, role, err)
+		}
 	}
 	if err := slots.SlotHoldsCredential(ctx, owner, role); err != nil {
-		if errors.Is(err, wait.ErrWaiting) || errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		switch {
+		case own && errors.Is(err, runtime.ErrAwaitsPodUpdate):
+			return true, nil
+		case errors.Is(err, wait.ErrWaiting) || errors.Is(err, runtime.ErrAwaitsPodUpdate):
 			return false, fmt.Errorf("%w: %s's notice row %d waits for its slot to hold the App of %s: %w", errNoticeWaits, owner, row.ID, role, err)
 		}
 		return false, fmt.Errorf("ask whether %s's slot holds the App of %s: %w", owner, role, err)
