@@ -26,7 +26,9 @@ import (
 // every new one for the rest of the test, which is how a bus that has gone away under the listener
 // looks; freeze stops moving bytes in either direction with every socket left open, as a lost node
 // or network leaves the server's side of the connection; delay holds every byte from the server for
-// a time before the listener reads it, a slow link. New connections forward normally.
+// a time before the listener reads it, a slow link. New connections forward normally. The relay
+// reads the requests the listener sends, so a multiprocess row can count those that name given KV
+// keys, over every link (countRequests, multiprocess_harness_test.go).
 type listenerRelay struct {
 	listener net.Listener
 	target   string
@@ -55,6 +57,10 @@ type listenerRelay struct {
 	gate chan struct{}
 	// latency is how long each byte from the server waits before the listener may read it.
 	latency time.Duration
+	// counted is the keys countRequests counts the requests to, nil while it counts none, and
+	// requests is what it counted so far, in the order the relay forwarded them.
+	counted  map[string]bool
+	requests []listenerRelayRequest
 
 	swallowed chan struct{}
 }
@@ -63,6 +69,8 @@ type listenerRelayLink struct {
 	client, server net.Conn
 	swallow        atomic.Bool
 	seen           []byte
+	// frames reads what the listener sends on this link, frame by frame, for countRequests.
+	frames listenerRelayFrames
 }
 
 func startListenerRelay(t *testing.T, uri string) *listenerRelay {
@@ -135,6 +143,7 @@ func (r *listenerRelay) relay(client net.Conn) {
 				}
 			} else {
 				r.pass()
+				r.sent(link, buffer[:n])
 				if _, writeErr := server.Write(buffer[:n]); writeErr != nil {
 					return
 				}
@@ -231,6 +240,22 @@ func (r *listenerRelay) pause(trigger string, occurrence int, hook func()) {
 	}
 }
 
+// sent reads data, bytes the relay is about to forward from the listener to the server on link, as
+// the frames of the NATS client protocol (listenerRelayFrames), and records each request among
+// them that countRequests counts.
+func (r *listenerRelay) sent(link *listenerRelayLink, data []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	link.frames.read(data, func(subject string, body []byte) {
+		if r.counted == nil {
+			return
+		}
+		if key := listenerRelayRequestKey(subject, body); r.counted[key] {
+			r.requests = append(r.requests, listenerRelayRequest{subject: subject, key: key})
+		}
+	})
+}
+
 func (r *listenerRelay) drop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -303,6 +328,148 @@ func (r *listenerRelay) close() {
 		_ = r.listener.Close()
 	})
 	r.drop()
+}
+
+// listenerRelayRequest is one request countRequests counted: the subject the listener sent it on,
+// and the KV key subject it names (listenerRelayRequestKey).
+type listenerRelayRequest struct {
+	subject, key string
+}
+
+// String is the request's subject, and the key its body names where the subject does not.
+func (q listenerRelayRequest) String() string {
+	if strings.Contains(q.subject, q.key) {
+		return q.subject
+	}
+	return q.subject + " (last_by_subj " + q.key + ")"
+}
+
+// listenerRelayRequestKey is the KV key subject, `$KV.<bucket>.<key>`, that a request on subject
+// with body names, or "" for a request that names none. A put, an update and a delete are
+// published on it; a direct get of a key's newest entry names it after the stream
+// (`$JS.API.DIRECT.GET.KV_<bucket>.$KV.<bucket>.<key>`, bus.KeyValue.Get); and a stream message
+// get, which the stream's leader answers (`$JS.API.STREAM.MSG.GET.KV_<bucket>`,
+// bus.KeyValue.NewestFromLeader), and a direct get on the stream alone name it in their body, as
+// last_by_subj. A consumer's create, a stream's info, an acknowledgement, a flow control reply and
+// a core NATS publish name none.
+func listenerRelayRequestKey(subject string, body []byte) string {
+	if strings.HasPrefix(subject, "$KV.") {
+		return subject
+	}
+	if stream, direct := strings.CutPrefix(subject, "$JS.API.DIRECT.GET."); direct {
+		if _, key, named := strings.Cut(stream, "."); named {
+			return key
+		}
+	}
+	if !listenerRelayKeyInBody(subject) {
+		return ""
+	}
+	var request struct {
+		LastBySubject string `json:"last_by_subj"`
+	}
+	if json.Unmarshal(body, &request) != nil {
+		return ""
+	}
+	return request.LastBySubject
+}
+
+// listenerRelayKeyInBody reports whether a request on subject names the key it reads in its body
+// rather than in its subject (listenerRelayRequestKey): a stream message get, and a direct get on
+// the stream alone.
+func listenerRelayKeyInBody(subject string) bool {
+	if strings.HasPrefix(subject, "$JS.API.STREAM.MSG.GET.") {
+		return true
+	}
+	stream, direct := strings.CutPrefix(subject, "$JS.API.DIRECT.GET.")
+	return direct && !strings.Contains(stream, ".")
+}
+
+// listenerRelayFrames reads the NATS client protocol a listener sends on one link, so the relay can
+// tell the requests it forwards apart (countRequests). nats.go sends a request as a PUB, or as an
+// HPUB where it carries headers (the expected revision of a conditional KV write): a control line
+// naming the subject, the reply subject and the payload's size, then the payload and a CRLF. Every
+// other line it sends - CONNECT, SUB, UNSUB, PING, PONG - carries no payload. A frame can span
+// reads, so what one read leaves unfinished, the control line so far or the payload still to come,
+// is kept for the next.
+type listenerRelayFrames struct {
+	line []byte
+	// subject, headers and rest are those of the PUB or HPUB whose payload is still to come: its
+	// subject, the header bytes that open its payload, and the payload bytes and CRLF not read yet.
+	// payload is that payload so far, kept only where keep says the request names its key there
+	// (listenerRelayKeyInBody).
+	subject string
+	headers int
+	rest    int
+	keep    bool
+	payload []byte
+}
+
+// read takes data, the link's next bytes, and calls sent with the subject and the body of each PUB
+// or HPUB that data completes, a body nil where it was not kept.
+func (f *listenerRelayFrames) read(data []byte, sent func(subject string, body []byte)) {
+	for len(data) > 0 {
+		if f.rest > 0 {
+			n := min(f.rest, len(data))
+			if f.keep {
+				f.payload = append(f.payload, data[:n]...)
+			}
+			f.rest -= n
+			data = data[n:]
+			if f.rest == 0 {
+				sent(f.subject, f.body())
+				f.subject, f.payload = "", nil
+			}
+			continue
+		}
+		end := bytes.IndexByte(data, '\n')
+		if end < 0 {
+			f.line = append(f.line, data...)
+			return
+		}
+		f.line = append(f.line, data[:end]...)
+		data = data[end+1:]
+		f.control(string(bytes.TrimSuffix(f.line, []byte("\r"))))
+		f.line = f.line[:0]
+	}
+}
+
+// control reads one control line: a PUB (`PUB <subject> [reply] <size>`) or an HPUB (`HPUB
+// <subject> [reply] <header size> <total size>`) starts its payload, and any other line is whole as
+// it stands.
+func (f *listenerRelayFrames) control(line string) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return
+	}
+	var headers, total int
+	var err error
+	switch strings.ToUpper(fields[0]) {
+	case "PUB":
+		total, err = strconv.Atoi(fields[len(fields)-1])
+	case "HPUB":
+		if len(fields) < 4 {
+			return
+		}
+		if headers, err = strconv.Atoi(fields[len(fields)-2]); err == nil {
+			total, err = strconv.Atoi(fields[len(fields)-1])
+		}
+	default:
+		return
+	}
+	if err != nil {
+		return
+	}
+	f.subject, f.headers, f.rest, f.keep = fields[1], headers, total+len("\r\n"), listenerRelayKeyInBody(fields[1])
+}
+
+// body is the kept payload of the frame just read, without its headers and its closing CRLF, or nil
+// where none was kept.
+func (f *listenerRelayFrames) body() []byte {
+	end := len(f.payload) - len("\r\n")
+	if !f.keep || f.headers > end {
+		return nil
+	}
+	return f.payload[f.headers:end]
 }
 
 // During the first roll onto the lease, a reconnect can interrupt the new pod's read of the durable

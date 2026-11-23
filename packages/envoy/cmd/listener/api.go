@@ -1927,7 +1927,8 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // A hard claim of a role no claim has held, by a claimant whose registration this listener's
 // cache does not hold yet, makes ten NATS round trips up to and including its claim write: the
 // read of the claimant's session (liveSessionEntry); the refresh of its registration, which is the
-// stream leader's read of the record, the write and its last-seen record's read and write
+// stream leader's read of the record, the write, the read of the registration back for the time
+// the server stamped on it, and the write of its last-seen record
 // (session.SessionRegistry.PutClearingGap, recordSeen), and whose leader read is also the read of
 // the claimant's record the predecessor rule's fallback takes its client instance id from; the
 // claim read and the read of the delete marker a role with no claim record may hold
@@ -1944,9 +1945,10 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // (7 s + 5L)/3 in above that. The claim write fits while 10L is within that end, so while L is at
 // most 280 ms; at 300 ms it would land at 3.0 s, past the tries' end at 2.83 s. A claimant the
 // cache holds makes nine, four of them before the store, and fits while 9L is within
-// (7 s + 4L)/3, so while L is at most 304 ms: at 300 ms its claim write lands at 2.7 s, before the
-// tries' end at 2.73 s (TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite's role set).
-// TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails runs this claim behind a 150 ms link.
+// (7 s + 4L)/3, so while L is at most 304 ms. TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite
+// runs that claim behind a 250 ms link and TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails
+// this one behind a 150 ms link; each counts the claim's requests up to its write, at most nine
+// and ten, since a trip more still lands inside the tries at those links.
 //
 // A claim that carries if_claim_revision is conditional: it lands only while the role's claim
 // record is still at that revision, the one GET /v1/roles/<role> reported as claim_revision, and

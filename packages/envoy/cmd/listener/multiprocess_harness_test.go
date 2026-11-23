@@ -15,11 +15,11 @@
 // the row's own clients connect as the server's admin.
 //
 // The rows use nothing but the binary cmdtest.Build builds, its environment, its HTTP API, NATS,
-// the relay in reconnect_shutdown_test.go and APIs of the internal packages that a build before
-// INFRA-557 (819dc283) has too, but for testnats' grant fixtures (grant.go and testdata/), so
-// these files compile there with that relay, cmdtest and those beside it and each row shows how
-// that build fails. The few places a row has to recognise such a build (a /healthz without
-// "role") say so.
+// the relay in reconnect_shutdown_test.go and the APIs of the internal packages, among them the
+// names INFRA-557 gave the listener's state bucket and its records (bus.ListenerStateBucket,
+// bus.ListenerLeaseKey, bus.LastSeenPrefix), which a build before INFRA-557 (819dc283) lacks, so
+// these files compile only from INFRA-557 on. The few places a row has to recognise a listener
+// binary of such a build (a /healthz without "role") say so.
 //
 // Its own build tag, and its own CI job, for the reason cmd/dispatch/multiprocess_test.go has
 // its: a row starts two processes and waits out a lease, an ack wait or a 140 s standby, tens of
@@ -117,6 +117,29 @@ func (r *listenerRelay) cut(d time.Duration) {
 	r.refuseUntil = time.Now().Add(d)
 	r.mu.Unlock()
 	r.drop()
+}
+
+// countRequests counts each request the listener sends from now on, over every link, that names
+// one of keys, KV key subjects `$KV.<bucket>.<key>` (listenerRelayRequestKey), until the returned
+// func is called, which stops the count and returns what it counted in the order the relay
+// forwarded it. A request is counted once its last byte has passed and before the server has it,
+// so a request the listener sends only on another's answer is counted after that one, whichever
+// connection each went out on.
+func (r *listenerRelay) countRequests(keys ...string) (stop func() []listenerRelayRequest) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counted = make(map[string]bool, len(keys))
+	for _, key := range keys {
+		r.counted[key] = true
+	}
+	r.requests = nil
+	return func() []listenerRelayRequest {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		counted := r.requests
+		r.counted, r.requests = nil, nil
+		return counted
+	}
 }
 
 // mpServerURL is natsURL without the admin user every row's own clients connect as: what a relay

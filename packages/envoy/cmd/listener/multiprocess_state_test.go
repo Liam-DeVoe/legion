@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dedupe"
 )
 
 // swallowNextAck has the pod's relay swallow the next acknowledgement the pod sends the durable
@@ -59,6 +60,72 @@ func (p *mpPod) setRoleAs(t *testing.T, sessionID, role, clientInstanceID string
 	answer := p.call(http.MethodPost, "/v1/roles/set", body+"}")
 	if answer.status != http.StatusOK {
 		t.Fatalf("claim %s for %s as process %q through %s: status %d %s %v", role, sessionID, clientInstanceID, p.instance, answer.status, answer.body, answer.err)
+	}
+}
+
+// mpRoleSet is the answer of a role set through a pod (countedRoleSet), with the requests the pod
+// sent to the records the role set reads and writes (roleSetKeys) from the moment the request went
+// out to the moment its answer was read, in the order the pod's relay forwarded them, and toClaim,
+// how many of them came up to and including the claim's write, or 0 where none was that write.
+type mpRoleSet struct {
+	mpAnswer
+	requests []listenerRelayRequest
+	toClaim  int
+}
+
+// roleSetKeys is the KV key subject of every record a role set of role by sessionID reads or
+// writes, each a key naming the session or the role (roleSetHandler counts the round trips to
+// them): the claimant's registration, which the claim reads where the pod's cache does not hold
+// it, and which the refresh reads from the stream's leader, writes and reads back; the claimant's
+// last-seen record in the listener state bucket, which the refresh writes
+// (session.SessionRegistry's recordSeen); the role's claim, which the claim reads, reads for its
+// delete marker and writes; and the claimant's interest record, which the claim reads and writes,
+// and reads once more after its tries to confirm the role's topic. The pod's own traffic names
+// none of them: its lease record's reads every half second are on lease.<durable> in the listener
+// state bucket, and its watchers' consumer creates, flow control replies and stream info reads
+// name no key at all.
+func roleSetKeys(sessionID, role string) []string {
+	return []string{
+		"$KV." + bus.SessionBucket + "." + sessionID,
+		"$KV." + bus.ListenerStateBucket + "." + bus.LastSeenPrefix + dedupe.SessionToken(sessionID),
+		"$KV." + bus.RoleClaimBucket + "." + role,
+		"$KV." + bus.InterestBucket + "." + sessionID,
+	}
+}
+
+// countedRoleSet claims role for sessionID through the pod, naming no process, counts through the
+// pod's relay the requests the pod sends to the role set's records (roleSetKeys) while it answers,
+// and logs them with the answer and the time it took. The claim's write is the request published
+// on the role's own key in the role bucket; the read that confirms the role's topic after the
+// claim's tries comes after it, so toClaim counts the round trips roleSetHandler counts, which
+// must land before those tries end.
+func (p *mpPod) countedRoleSet(t *testing.T, sessionID, role string) mpRoleSet {
+	t.Helper()
+	stop := p.relay.countRequests(roleSetKeys(sessionID, role)...)
+	set := mpRoleSet{mpAnswer: p.call(http.MethodPost, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, sessionID, role))}
+	set.requests = stop()
+	claimWrite := "$KV." + bus.RoleClaimBucket + "." + role
+	var named []string
+	for i, request := range set.requests {
+		if set.toClaim == 0 && request.subject == claimWrite {
+			set.toClaim = i + 1
+		}
+		named = append(named, fmt.Sprintf("[%d] %s", i+1, request))
+	}
+	t.Logf("role set requests: %s's claim of %s through %s answered %d in %s, after %d requests to its records up to its claim write and %d in all: %s",
+		sessionID, role, p.instance, set.status, set.took.Round(time.Millisecond), set.toClaim, len(set.requests), strings.Join(named, " "))
+	return set
+}
+
+// requireTrips fails the test unless the role set reached its claim write within trips of the
+// requests counted.
+func (s mpRoleSet) requireTrips(t *testing.T, sessionID string, trips int) {
+	t.Helper()
+	if s.toClaim == 0 {
+		t.Fatalf("role set trips: no claim write among %s's %d requests counted", sessionID, len(s.requests))
+	}
+	if s.toClaim > trips {
+		t.Fatalf("role set trips: %s's claim made %d requests to its records up to its claim write, want at most %d (roleSetHandler counts them)", sessionID, s.toClaim, trips)
 	}
 }
 
@@ -306,11 +373,10 @@ func TestTwoPodsReportARedeliveredNoHolderOnceUnderOneID(t *testing.T) {
 // request. It is no latency the claim is built for. The role set is a hard claim of a role
 // no claim has held, by a claimant the standby's cache does not hold yet: ten NATS round trips up
 // to its claim write, the read of the role's delete marker among them, which must land before the
-// claim's tries end, and one more after them (roleSetHandler counts them). That fits while a round
-// trip takes at most 280 ms: the tries end at the route's 3.5 s budget less a reserve of 1 s, or of a
-// third of the time left at the claim's store call when less (store's claimTriesContext), which at
-// 280 ms is 2.8 s in. The role set takes about 2.25 s behind a 200 ms link, and behind a 300 ms one
-// its claim write (3.0 s in) runs past the tries' end (2.83 s in).
+// claim's tries end (roleSetHandler counts them and says how slow a link they fit). The row counts
+// those requests through the standby's relay (countedRoleSet) and requires at most ten, a bound no
+// server's speed moves; the link alone would not tell an eleventh, which at 150 ms lands at 1.65 s,
+// well before that claim's own tries' end at (7 s + 6 x 0.15 s)/3 = 2.63 s.
 func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
@@ -321,13 +387,14 @@ func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, target)))
 	send := b.call(http.MethodPost, "/v1/messages/send", fmt.Sprintf(`{"target_session":%q,"message":"sent through the other pod","source":"agent","source_session":"ses_mp_sender"}`, target))
 	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, claimant)))
-	claim := b.call(http.MethodPost, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, claimant, role))
+	claim := b.countedRoleSet(t, claimant, role)
 	if send.status != http.StatusOK {
 		t.Fatalf("send to %s through %s at once after it registered through %s: %d %s %v, want 200", target, b.instance, a.instance, send.status, strings.TrimSpace(send.body), send.err)
 	}
 	if claim.status != http.StatusOK {
 		t.Fatalf("role set for %s through %s at once after it registered through %s: %d %s %v, want 200", claimant, b.instance, a.instance, claim.status, strings.TrimSpace(claim.body), claim.err)
 	}
+	claim.requireTrips(t, claimant, 10)
 	mpEventually(t, 5*time.Second, a.instance+" to answer "+claimant+" as "+role+"'s holder", func() bool {
 		answer := a.call(http.MethodGet, "/v1/roles/"+role, "")
 		return answer.status == http.StatusOK && strings.Contains(answer.body, `"holder":"`+claimant+`"`)
@@ -336,20 +403,26 @@ func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 }
 
 // Writes through the pod whose cache trails keep the other pod's newer write: the standby sits
-// behind a 300 ms slow link, so a write through the active pod reaches its cache 300 ms late (slow
-// enough to trail, fast enough that a role set's bucket round trips land before the claim's tries
-// end). The role set here is a hard claim of a role no claim has held, by a claimant the standby's
-// cache holds: nine NATS round trips up to its claim write, which lands 2.7 s in, before the tries'
-// end 2.73 s in, and fits while a round trip takes at most 304 ms (roleSetHandler counts them). A
-// heartbeat on the standby within that window, of a process that does not drive the session, keeps
-// the driving claim written through the active pod; a heartbeat on the standby keeps a topic added
-// through the active pod; and a role set on the standby keeps the newer host recorded through the
-// active pod. Before INFRA-557 the standby wrote its stale copy over each.
+// behind a 250 ms slow link, so a write through the active pod reaches its cache 250 ms late. The
+// role set here is a hard claim of a role no claim has held, by a claimant the standby's cache
+// holds: nine NATS round trips up to its claim write, four of them before the store
+// (roleSetHandler counts them and says how slow a link they fit). At 250 ms the ninth lands at
+// 2.25 s and the server's time, 0.42 s before the claim's tries end at (7 s + 4 x 0.25 s)/3 =
+// 2.67 s. The row counts those requests through the standby's relay (countedRoleSet) and requires
+// at most nine, because the link alone cannot tell a tenth: with the claimant's read put back
+// before the refresh, ten land at 2.5 s, 0.25 s before that claim's own tries' end at (7 s + 5 x
+// 0.25 s)/3 = 2.75 s, so it would pass on timing, and the count fails it by one request whatever
+// the server's speed. The row also requires the standby's cache to still hold the older host as
+// the role set begins, so the newer host the role set keeps is one that cache has not seen. A
+// heartbeat on the standby within that window, of a process that does not drive the session,
+// keeps the driving claim written through the active pod; a heartbeat on the standby keeps a topic
+// added through the active pod; and a role set on the standby keeps the newer host recorded
+// through the active pod. Before INFRA-557 the standby wrote its stale copy over each.
 func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 	a, b := mpStartPair(t, binary, uri)
-	b.relay.delay(300 * time.Millisecond)
+	b.relay.delay(250 * time.Millisecond)
 	publisher := mpConnectPublisher(t, uri)
 
 	t.Run("a topic", func(t *testing.T) {
@@ -380,7 +453,17 @@ func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 			return row != nil && row["host"] == "example-host-a"
 		})
 		register("example-host-b")
-		b.setRole(t, sessionID, role)
+		// The standby's cache must still hold example-host-a as the role set begins, the entry the
+		// claim reads its claimant from (liveSessionEntry): with the cache caught up, the role set
+		// would keep the newer host with nothing trailing, and the row would show nothing.
+		if row := b.cachedSession(sessionID); row == nil || row["host"] != "example-host-a" {
+			t.Fatalf("%s's cache holds %v for %s right before the role set, want example-host-a: it no longer trails %s's write of example-host-b", b.instance, row, sessionID, a.instance)
+		}
+		claim := b.countedRoleSet(t, sessionID, role)
+		if claim.status != http.StatusOK {
+			t.Fatalf("claim %s for %s through %s: status %d %s %v, want 200", role, sessionID, b.instance, claim.status, strings.TrimSpace(claim.body), claim.err)
+		}
+		claim.requireTrips(t, sessionID, 9)
 		if stored := publisher.stored(t, bus.SessionBucket, sessionID); stored["host"] != "example-host-b" || stored["self_subscribed"] != true {
 			t.Fatalf("%s's registration after a role set on %s: %v, want host example-host-b, self-subscribed", sessionID, b.instance, stored)
 		}
