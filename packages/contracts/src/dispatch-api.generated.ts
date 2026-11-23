@@ -2769,6 +2769,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/deploy-runs/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One run of a deploy source's repository with every job it ran, by start, each with its result and timings, as GET /api/v1/delivery/runs/{id} answers a run, for the project its path names: ?repo= (required) names the repository the run is in, as the project timeline's deploy and failed_run rows do, and must be the repository of a github_workflow deploy source of a project with delivery on; the run is answered where it counts for the project as the project timeline's rows are kept (a deploy run on main counts for the projects of the pull requests it ships first). 400 INVALID_PROJECT for a key that is no project key, 400 RUN_ID_INPUT for an id that is not a positive integer, 400 INVALID_QUERY for no repo or repo named twice, 404 PROJECT_NOT_FOUND, 404 NOT_FOUND for a repository no delivery-on project's source reads, no such run of it, or a run that counts for no project with this key. */
+    get: operations["getApiV1ProjectsByKeyDeployRunsById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{key}/evals": {
     parameters: {
       query?: never;
@@ -14632,6 +14649,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ProjectDefaultRepository"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeyDeployRunsById: {
+    parameters: {
+      query?: {
+        repo?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeliveryRunDetail"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */

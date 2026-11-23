@@ -11262,6 +11262,68 @@
         "x-write-scope": "deployment"
       }
     },
+    "/api/v1/projects/{key}/deploy-runs/{id}": {
+      "get": {
+        "description": "One run of a deploy source's repository with every job it ran, by start, each with its result and timings, as GET /api/v1/delivery/runs/{id} answers a run, for the project its path names: ?repo= (required) names the repository the run is in, as the project timeline's deploy and failed_run rows do, and must be the repository of a github_workflow deploy source of a project with delivery on; the run is answered where it counts for the project as the project timeline's rows are kept (a deploy run on main counts for the projects of the pull requests it ships first). 400 INVALID_PROJECT for a key that is no project key, 400 RUN_ID_INPUT for an id that is not a positive integer, 400 INVALID_QUERY for no repo or repo named twice, 404 PROJECT_NOT_FOUND, 404 NOT_FOUND for a repository no delivery-on project's source reads, no such run of it, or a run that counts for no project with this key.",
+        "operationId": "getApiV1ProjectsByKeyDeployRunsById",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "repo",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryRunDetail"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/projects/{key}/evals": {
       "get": {
         "description": "The project's evals, one page {items, total, limit, offset} by slug (limit 1-200, default 50), each its current definition (every field of eval_versions but charts, which the eval's own read answers, read through evals_current; answer, the short text that answers the eval's question, among them), its owner, each listed series with its statistics over the window [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84) and over compare_from..compare_to (both or neither, at most 84 days; the two need not be of one length), the change between them, data_since (the series' first day; a range that starts before it reads every statistic null, \"no data\", never 0), the count of rows that reached the project through a repository, and for a headline series a per-day array; and the verdict of its target (null where the target is off). Every figure is folded from the stored day rows of the UTC days the range covers, which end by 9999-12-31, through the one fold the eval's source names, or its series' agg for a logged eval; a figure past what a float holds is null; window and compare state those days, freshness the oldest row folded and the day-row refresher's age. ?kind= (delivery, legion, ci, experiment) keeps one kind; ?repo=, repeated, folds those repositories' rows in place of the project's. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
