@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'Envoy''s HTTP clients read a 408, a 429 and every 5xx as an outage (RFC 9110). Dispatch''s delivery to a session asks the listener again inside the take-over window on any of them but the listener''s own 500; an Azure embeddings 408 or 5xx is a throttle, which the embedding queue backs off on and never counts against a row; an agent loop model call answered 408 is retried once; the secrets broker reads a 408 or a 429 from Dispatch as Dispatch not answering, so a grant''s named approver may still revoke it; and the load test retries a 408.'
+time: 2026-11-23T13:10:37.841260594Z
+custom:
+    Issue: pr5230
