@@ -29,9 +29,9 @@ dropped this one. The agent of your child's first step may already be working wh
 Decide first whether your child needs children of its own
 (`skill://legion-architect/references/decomposition.md`, "Creating children").
 
-You open no `dispatch ask` yourself, whatever another part of this prompt says. Send each question
-for a person to the architect above you with `envoy_publish`, and the root architect asks it on the
-root (`skill://legion-architect`, "Every turn").
+You open no `dispatch ask` yourself. Send each question for a person to the architect above you
+with `envoy_publish`, and the root architect asks it on the root (`skill://legion-architect`,
+"Every turn").
 
 ## Ownership
 
