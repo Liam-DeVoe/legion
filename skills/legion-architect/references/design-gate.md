@@ -118,7 +118,9 @@ it decided since (an edit undone exactly), and over one whose every change is a 
 changed or removed inside a decision or an answered ask, a server-owned attribute of an ask block
 (a person's answer, resolve or decline writes only these), or the write of Dispatch's decisions
 step into the `## Decisions` part. It then records an `approved` review at that version, the
-daemon sends `design-approved`, and you request nothing.
+daemon sends `design-approved`, and you request nothing. An issue's close and reopen each write
+one version too: the close's carries no approval, so the approval reads stale until the reopen's
+version carries it.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as a decision block at the end of the section it
