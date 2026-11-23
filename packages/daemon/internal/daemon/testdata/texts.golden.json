@@ -10477,7 +10477,6 @@
         "first": "read_tree",
         "decide": [
           "ask_role_what_it_waits_on",
-          "move_issue_back_a_phase",
           "park_tree"
         ]
       }
@@ -10521,7 +10520,6 @@
         "first": "read_tree",
         "decide": [
           "ask_role_what_it_waits_on",
-          "move_issue_back_a_phase",
           "park_tree"
         ]
       }

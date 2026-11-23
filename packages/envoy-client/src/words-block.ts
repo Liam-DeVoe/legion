@@ -180,7 +180,7 @@ export class TextInFront {
 /** One block of a text as `drawnBlocks` found it: where its opening line starts and where its
  *  closing tag ends, the name of the field that holds the words (its tag without the `-n` a step
  *  past held tags added), the attributes of its opening tag as written, and its words. */
-interface DrawnBlock {
+export interface DrawnBlock {
   readonly start: number;
   readonly end: number;
   readonly name: string;
@@ -195,9 +195,10 @@ interface DrawnBlock {
  * words of a block hold that tag (`blockTags`), and the next block opens on the line after. The
  * run ends at the first line that opens no block. It is empty where the first line that starts
  * with `<` opens none, or opens a block that never closes, as in a text no card drew, which
- * `inFront` then joins as it is. One pass over `text`.
+ * `inFront` then joins as it is. One pass over `text`. A host that reads a card's words back
+ * (`readInboundCard`) reads them here too, past what the host wrote after the card's blocks.
  */
-function drawnBlocks(text: string): DrawnBlock[] {
+export function drawnBlocks(text: string): DrawnBlock[] {
   let at = 0;
   if (!text.startsWith("<")) {
     const line = text.indexOf("\n<");

@@ -657,7 +657,7 @@ var goldenKept = []goldenKeptOf{
 		keys:   []string{"nothing_held"},
 		values: func(map[string]string) map[string]string { return map[string]string{"nothing_held": "true"} }},
 	{kind: texts.TreeStalled, what: "the step the controller takes first, read the tree, and what it decides among once it has read it: ask a role what it waits on, " +
-		"move an issue back a phase, or park the tree",
+		"or park the tree (since cybermonklabs/legion#4622 main's notice names no move back, which no operation of the controller's makes)",
 		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-2560's R5",
 		keys:   []string{"first", "decide"},
 		values: func(map[string]string) map[string]string {

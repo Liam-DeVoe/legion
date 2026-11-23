@@ -15,11 +15,11 @@ import (
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
-// c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc or
-// 054cd5ca for a sentence main wrote since (a format verb, %s, %[1]s or %d, and … stand for any
-// text), the readers, and the passage of the readers' prompt (packages/daemon/internal/prompts)
-// that gives each of them its own rule for the step, quoted word for word from the one line of the
-// file that holds it.
+// c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc,
+// 054cd5ca or 74cb6855 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// stand for any text), the readers, and the passage of the readers' prompt
+// (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
+// word for word from the one line of the file that holds it.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -383,8 +383,8 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "A reason already posted (`reason_posted: true`) is on the issue, so no one need post it again"},
 	{texts.ChildStatus, "Its own architect starts with it and owns it while that architect holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed notices", "architect",
 		goPrompts + "architect-common.md", "The child's own architect starts with it and owns it while that architect holds its role: its decomposition, its children and its acceptance."},
-	{texts.ChildStatus, "Take %[2]s back with a backward move to run %[1]s under it now, unless the pull request of %[2]s has merged, or leave %[1]s where it is and it starts once %[2]s has closed.", "architect",
-		goPrompts + "architect-common.md", "take the ancestor back with `request_backward_move` to run it under the ancestor now, unless the ancestor's pull request has merged, or leave it to start at the ancestor's close."},
+	{texts.ChildStatus, "%s is beneath %s, whose own reviewed head the daemon has already accepted, so %s is recorded at admitted and nothing starts it while %s stands in retro or merging.", "architect",
+		goPrompts + "architect-common.md", "the issue is recorded and held at `admitted` while that ancestor stands in `retro` or `merging`."},
 	{texts.ChildStatus, "It runs under its own architect, and its work reaches the tree of %s only through that tree's own issues.", "architect",
 		goPrompts + "architect-common.md", "It runs under its own architect, and its work reaches your tree only through your tree's own issues."},
 	{texts.ChildrenFirst, "A child you released and a child you did not release leave by the same status write. ", "architect",
@@ -601,8 +601,8 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "controller-root.md", "the round waits for a claim of the issue to run again."},
 	{texts.ProviderErrors, "; the daemon keeps the task and sends it again every %s at most", "controller",
 		rolePrompts + "controller-root.md", "the daemon keeps the task and sends it again every `retry_every` at most."},
-	{texts.TreeStalled, "Read the tree and decide what it needs. You can ask a role what it waits on. You can move an issue back a phase. You can park the tree.", "controller",
-		rolePrompts + "controller-root.md", "`first: read_tree` says to read the tree first; then decide what it needs among the choices `decide` names: `ask_role_what_it_waits_on`, ask a role what it waits on; `move_issue_back_a_phase`, move an issue back a phase; and `park_tree`, park the tree, which you ask a person about first, as `skill://legion-controller` says."},
+	{texts.TreeStalled, "Read the tree and decide what it needs. You can ask a role what it waits on. You can park the tree.", "controller",
+		rolePrompts + "controller-root.md", "`first: read_tree` says to read the tree first; then decide what it needs among the choices `decide` names: `ask_role_what_it_waits_on`, ask a role what it waits on; and `park_tree`, park the tree, which you ask a person about first, as `skill://legion-controller` says."},
 	{texts.TreeStalled, "No agent of the tree is at work.", "controller",
 		rolePrompts + "controller-root.md", "no agent of it is at work"},
 	{texts.ArchitectStalled, " That time is counted from the end of pause %d at %s, which held the project.", "controller",
@@ -887,15 +887,11 @@ var goldenSteps = []goldenStep{
 		goPrompts + "implementer.md", "forward in the issue workspace, `$LEGION_WORKSPACE`: every role of the issue shares that one workspace."},
 	{texts.MergeForwardAsk, " Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace.", "merger",
 		rolePrompts + "merger.md", "You write the issue workspace for one thing only: a merge of the base forward and what that merge must change"},
-	{texts.MergeForwardAsk, " First do the working-copy check of skill://legion-worker/references/foreign-path.md.", "implementer",
-		goPrompts + "implementer.md", "First do the working-copy check of `skill://legion-worker/references/foreign-path.md`."},
-	{texts.MergeForwardAsk, " First do the working-copy check of skill://legion-worker/references/foreign-path.md.", "merger",
-		rolePrompts + "merger.md", "after the working-copy check of `skill://legion-worker/references/foreign-path.md`"},
-	{texts.MergeForwardAsk, " Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch.", "implementer",
-		goPrompts + "implementer.md", "Then merge as `skill://legion-worker/references/conflicts-and-rewrites.md` says, and push the issue branch."},
-	{texts.MergeForwardAsk, " Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch.", "merger",
+	{texts.MergeForwardAsk, " Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch.", "implementer",
+		goPrompts + "implementer.md", "Merge as `skill://legion-worker/references/conflicts-and-rewrites.md` says, and push the issue branch."},
+	{texts.MergeForwardAsk, " Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch.", "merger",
 		rolePrompts + "merger.md", "Merge the base forward in the issue workspace as `skill://legion-worker/references/conflicts-and-rewrites.md` says (*Reintegrating the base*)"},
-	{texts.MergeForwardAsk, " Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch.", "merger",
+	{texts.MergeForwardAsk, " Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch.", "merger",
 		rolePrompts + "merger.md", "Then push the issue branch and post the forward-merge comment that reference gives."},
 	{texts.MergeForwardAsk, " Write no handoff and make no completion for this forward merge.", "implementer",
 		goPrompts + "implementer.md", "Write no handoff and make no completion for this merge."},
