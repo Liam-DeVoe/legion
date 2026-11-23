@@ -128,11 +128,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                    {"WWW-Authenticate": 'Basic realm="GitHub"'})
             return self.answer(401, json.dumps({"message": "Bad credentials"}))
         if host == "github.com" and len(parts) == 4 and parts[2:] == ["info", "refs"]:
-            service = urllib.parse.parse_qs(url.query).get("service", [""])[0]
-            if service not in ("git-upload-pack", "git-receive-pack"):
+            requested = urllib.parse.parse_qs(url.query).get("service", [""])[0]
+            # The two services git's smart HTTP names, each with its own content type; the query's
+            # value picks one and is never written back into a header.
+            types = {"git-upload-pack": "application/x-git-upload-pack-advertisement",
+                     "git-receive-pack": "application/x-git-receive-pack-advertisement"}
+            service = next((name for name in types if name == requested), None)
+            if service is None:
                 return self.answer(403, "smart HTTP only\n", "text/plain")
-            return self.answer(200, advertisement(service), "application/x-%s-advertisement" % service,
-                               {"Cache-Control": "no-cache"})
+            return self.answer(200, advertisement(service), types[service], {"Cache-Control": "no-cache"})
         if host == "api.github.com" and self.command in ("GET", "HEAD") and len(parts) == 3 and parts[0] == "repos":
             owner, repo = parts[1], parts[2]
             return self.answer(200, json.dumps({
@@ -170,6 +174,7 @@ def main():
     Handler.records = args.records
     server = http.server.ThreadingHTTPServer((host, int(port)), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(args.cert, args.key)
     server.socket = context.wrap_socket(server.socket, server_side=True)
     print("github-standin listening %s" % args.address, file=sys.stderr, flush=True)
