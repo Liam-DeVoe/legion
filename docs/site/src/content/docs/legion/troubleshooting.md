@@ -674,9 +674,13 @@ architect that failed (`architect.state` is `failed` on the root) leaves nobody 
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it
 restarts the tree when it finds no cause or the cause is gone, and asks a person whether to park
 it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
-the architect above it is told with a `worker-died` and takes the child's notices, and the child's
-next phase start starts it again. What brings a root's architect back depends on where its tree
-stands:
+the architect above it is told with a `worker-died` and takes the child's notices, all but an
+`owner-step`, which goes to the child's own architect alone, and the child's next phase start
+starts it again. Where the child stands at a step its own architect does itself, no phase start
+comes until that architect reports the step, so the `worker-died` says the child waits for a
+retry of it, and `legion state` names it under `failed, retry` on its `claims nothing will wake`
+line; the retry relaunches it and tells it its step again. What brings a root's architect back
+depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
   names the architect under `failed, retry`. Retry it, as [A tree does not move after a
@@ -694,7 +698,8 @@ stands:
   ```
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
-budgets, or on a new one once supervise's `forgetSession` has dropped that, and retries a failed
+budgets, or on a new one once supervise's `forgetSession` has dropped that, and tells it again, in
+an `owner-step`, a step of its own issue that it does itself; it retries a failed
 phase worker whose issue is held for that worker's own role by applying the held phase's retry,
 as its architect's `retry_or_escalate` would. It reaches a retired claim as well as a failed one,
 whatever retired it (`legion claims stop` retires the claim it stops), and how it starts a stopped
@@ -711,7 +716,8 @@ claim, which is retired rather than failed, so name that one with `--claim`.
 
 A held issue has one more release, and it costs nothing. `legion issue status <KEY> todo` on the
 tree's own root releases the hold: the issue returns to the phase `heldFrom` names, that phase's
-worker starts with its task, and the generation, the review rounds, the pod and the issue's place in
+worker starts with its task (at a step the architect does itself, the architect is told the step
+in an `owner-step` instead), and the generation, the review rounds, the pod and the issue's place in
 the admission line stay as they were. A person's move of the root to `todo` in the Dispatch
 dashboard and the controller's own `set_status` do the same, since all three write the one status
 the daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
@@ -893,7 +899,8 @@ by its admission, and a child's own architect by the child's first phase start, 
 failure by the child's next phase start. A notice starts no architect, except one whose idle pod
 the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
-does not hold its role goes to the architect above. A suspended worker of its issue's current
+does not hold its role goes to the architect above, except an `owner-step`, which goes to the
+child's own architect alone, as a root's notice goes to the root's. A suspended worker of its issue's current
 phase that the daemon suspended is resumed by the daemon at boot. One an operator suspended
 (`legion claims suspend`, one claim at a time or a whole fleet before a restart), or whose
 suspension predates the release that records who suspended it (`suspendedBy: unknown`), is not;
@@ -902,8 +909,10 @@ a claim a close or a stop retired while its tree runs, whatever its role. Each o
 child's own architect stops its tree: nothing wakes it, the daemon looks healthy and the state
 shows the tree active, but the tree stops for good at the worker's phase, or at the first decision
 that needs its architect. A child's own architect stops no tree, since its child's notices go to
-the architect above, and the list below never names it: the paragraph under the list says what
-brings one back. Once a boot has re-adopted its claims, the daemon names every such claim in one
+the architect above, except where its child stands at a step that architect does itself, which
+only it reports: a failed one stops that child there, and the list below names it under `retry`.
+The paragraph under the list says what brings one back elsewhere. Once a boot has re-adopted its
+claims, the daemon names every such claim in one
 error line, under the move that brings it back:
 
 ```text
@@ -966,14 +975,18 @@ name of the claim's agent, the role of that agent's first step, whatever role it
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
-- **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on
+- **`retry`** (a failed architect: a tree's, or a child's own whose child stands at a step it does
+  itself): retry it. The daemon relaunches it on the session it kept, or on
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
   catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
   stands at. The daemon drops every notice it could
   not deliver to the failed architect, the notice of the step that moved an issue into `accepting`
-  among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
-  architect's own acceptance, a step `acceptance:owner`, where no worker runs; a step `acceptance`
-  with no key is a fresh agent's, which the catch-up leaves out. Retry it:
+  and an `owner-step` among them, so the catch-up's reason names each issue of the tree waiting in
+  `accepting` for the architect's own acceptance (a step `acceptance:owner`, or an issue with no
+  plan rows), and the architect's own issue where it stands at another step of its own or at its
+  retro (`at a step of yours, which no worker does`); no worker runs at either. A step
+  `acceptance` with no key is a fresh agent's, which the catch-up leaves out. A step of its own
+  issue that the architect does itself is also told to it again in an `owner-step`. Retry it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -1004,8 +1017,10 @@ slot has that start queued already. A root in
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
-The list never names a child's own architect: while that architect does not hold its role, the
-architect above it takes the child's notices, and a later start of the role brings it back, as the
+The list names a child's own architect in one case alone: it failed while its child stands at a
+step it does itself, which only it reports, and it is listed under `retry`. Otherwise, while that
+architect does not hold its role, the architect above it takes the child's notices, all but an
+`owner-step`, and a later start of the role brings it back, as the
 daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
 it, an operator's retry and the controller's `fresh_session` are among such starts. A child's own
 architect that an operator suspended waits for the operator's resume (`legion claims list` shows
@@ -1445,9 +1460,11 @@ These arrive as messages on the Dispatch issue:
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
   move back and fired: the daemon wrote the hook's words once for each role the line names, on the
-  topic of the claim of the agent that works that role's step, and posted this record of it. Nothing
-  is held: the phase the move opened started its worker, and each agent answers in its own turn. No
-  hook writes to an architect: the daemon's own wake to an architect is a notice.
+  topic of the claim of the agent that works that role's step (the architect's, for a step it does
+  itself), and posted this record of it. Nothing is held: the move started the agent of the step it
+  opened, or told the architect that step in an `owner-step` where the step is its own, and each
+  agent answers in its own turn. A hook names no architect role: the daemon's own wake to an
+  architect is a notice.
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
   conclusion GitHub gave it, in one message to each agent among the architect that owns the issue,
   the worker of the issue's current phase and the implementer, and judges none of them: an agent
@@ -1517,9 +1534,12 @@ These arrive as messages on the Dispatch issue:
   reports that head one the issue may advance on.
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
-  commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
-  footer names the session the reviewer's claim records), the reviewer's phase row holds the task of
-  an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its
+  commit to the head. On an issue with a pull request, a review moves that commit only when it is
+  the reviewer's own (its Legion footer names the session the reviewer's claim records), the
+  reviewer's phase row holds the task of an entry, and the footer's `entry` is the entry on that
+  row. A review step that ends by its verdict, the reviewer's on an issue with no pull request or
+  one the architect does itself, moves it instead to the commit its report names, where the report
+  is of the entry the reviewer's row stands on. Each task the reviewer gets in its
   round ends with that entry, `Review entry: <n>.`, the task of a wake that brought its pod back
   included, and the reviewer writes the number of the newest such sentence of its session into the
   footer in quotes, `"entry":"<n>"`. The daemon reads a positive whole number written as a JSON
@@ -1533,10 +1553,12 @@ These arrive as messages on the Dispatch issue:
   the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
-  GitHub can neither merge nor start pull-request CI for: the daemon asks the agent of the
-  implementer's step to merge the base forward while the issue stays in `merging`, and the merger
-  merges the new head at once where the task has no reviewer step, or once the approval of it by
-  the agent of that step is on the pull request. And it enqueues nothing on a merge-queue base whose
+  GitHub can neither merge nor start pull-request CI for: the daemon asks the agent of the task's
+  last step of the type implementation (the implementer, on the default steps, or the architect
+  where that step is its own) to merge the base forward while the issue stays in `merging`, and
+  the merger merges the new head at once where the task has no reviewer step, or once the approval
+  of it by the agent of that step is on the pull request. And it enqueues nothing on a merge-queue
+  base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1614,8 +1636,9 @@ required contexts and the green ones, and `workflow: merge forward asked` with t
 GitHub answered before the newest read the record holds of the same head is dropped whole, with
 `workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
 so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
-forward keeps the phase: the agent of the implementer's step merges in the issue workspace and
-pushes with no handoff
+forward keeps the phase: the agent of the task's last step of the type implementation before the
+issue's place (the implementer, on the default steps, or the architect where that step is its own)
+merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and not to complete
 its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
 names both heads. A completion of the phase the issue stands in that names a head a merge
