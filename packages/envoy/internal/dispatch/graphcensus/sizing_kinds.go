@@ -126,8 +126,8 @@ const (
 //     an ask to the person it waits on, the move of that person, the body blocks of a comment, a
 //     message and an ask with their links, and a delivery attempt's node (its spec's
 //     #b-r-kinds-move, #b-r-delivery-written, #b-r-participation and #b-r-mentions);
-//   - the blocks child's document version node, the node of a removed document's version and of a
-//     version an erase deletes stated gone, an artifact's part_of its issue, an issue's child_of,
+//   - the blocks child's document version node, the node of a removed document's version stated
+//     gone, an artifact's part_of its issue, an issue's child_of,
 //     needs, filed_from and duplicate_of, an issue's room - its tree artifact, its decisions query
 //     and their first versions - and the values of each query node, a document's references, a
 //     comment's anchored_in its anchor's block, the authored_by of a block of an issue's room, a
@@ -275,11 +275,6 @@ func storeKinds() []StoreKind {
 		Driver: "artifact.removed events in the window: the node of the one version an untouched document holds, stated" +
 			" gone with the document (api's removedDocumentNodes)",
 		count: `(select count(*) from events where type = 'artifact.removed' and created_at > ` + sizingWindow + `)`,
-	}, {
-		Name: "erased_version", MovedBy: movedWithBlocks, Tuples: 1, Assumed: sizingWindowDays / 7,
-		Driver: "assumed at one a week, since its one writer is an operator's erase of a block a version held" +
-			" (grapherase's endErasedVersions), which no table the sizing reads records: the node of each version the" +
-			" erase deletes, stated gone",
 	}, {
 		Name: "message_delivery", MovedBy: movedWithInbox, Tuples: 1,
 		Driver: "message_deliveries.created_at, taken by the listener: a delivered_to for each attempt that reached its session",
@@ -752,11 +747,10 @@ func storeKinds() []StoreKind {
 // sizingAuthors is the relation recordedSessions reads storedAuthors as when the sizing reads it:
 // a FROM item named stored, of (kind, id, at), that holds no row. Every writer storedAuthors adds
 // is read off the store itself - a decision's or a reading's decided_by or authored_by, an ask
-// node's authored_by, an erase's record of its writers - and the sizing reads no table of the
-// store, so it runs on a database the store does not exist in yet. A session that asked is
-// counted all the same, by the asks rows and the ask.opened events recordedSessions reads beside
-// it, and a decision or a reading is a kind production writes none of yet, whose rate the sizing
-// assumes.
+// node's authored_by - and the sizing reads no table of the store, so it runs on a database the
+// store does not exist in yet. A session that asked is counted all the same, by the asks rows and
+// the ask.opened events recordedSessions reads beside it, and a decision or a reading is a kind
+// production writes none of yet, whose rate the sizing assumes.
 const sizingAuthors = `(select null::text, null::text, null::timestamptz where false) stored (kind, id, at)`
 
 // reachesANode is true of a topic the outbox reads as a node of the store (outbox's
@@ -793,9 +787,7 @@ func reachesANode(topic string) string {
 // first arm reads one. rooms says the database holds the issue rooms' tables (documentTexts).
 //
 // The people are the ones the census holds to a node (commentWriterPeople), each with the time
-// the first comment naming them was written, and with no erasure taken out: an erase removes a
-// node and never moves the rate the node was written at, and graph_erasures is a table of this
-// branch, which the sizing reads none of.
+// the first comment naming them was written.
 //
 // An approval's blocks are those api's applySpecChange reads a change request from
 // (specchange.FromVersions): the requirement blocks of the spec (specDocument) and the check
@@ -807,8 +799,8 @@ func reachesANode(topic string) string {
 // approval before it is the person's approval of the same document, of whatever version, that
 // committed last before it, in the order docs.ReviewOrder reads a document's reviews (the order
 // their events committed, since created_at is a transaction's start and id is random), and version
-// 0 where there is none; the order is spelled out with its table named, as grapherase's
-// readReviews spells it, because docs' own tests import this package. An approval is a review a
+// 0 where there is none; the order is spelled out with its table named
+// because docs' own tests import this package. An approval is a review a
 // person wrote
 // (docs.ReviewKindPerson), and artifact_reviews and its kind are tables of releases before this
 // branch.

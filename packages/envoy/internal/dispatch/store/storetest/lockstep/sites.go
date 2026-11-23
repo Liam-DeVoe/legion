@@ -384,19 +384,6 @@ var storeWriteCallSites = map[string]string{
 	// the order TestEveryStoreWriteTakesOneLockOrder proves of Write, after the owner locks
 	// writeNodeState takes first too.
 	"graphcensus/orphans.go#StateStaleLensesGone": "graphstore#TestEveryStoreWriteTakesOneLockOrder",
-	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
-	// sides of the node, then the node's row. It takes the owner locks it writes under before that
-	// row, and its projection rows after it.
-	"grapherase/erase.go#apply": "grapherase#TestTheEraseTakesTheStoreLockOrder",
-	// The erase's end of the versions it deletes: each one's node stated gone, in the erase's
-	// transaction, under the owner rows the erase takes first (this branch's spec; grapherase's
-	// TestTheEraseOfABlockAVersionHeldEndsThatVersionsNode).
-	"grapherase/erase.go#endErasedVersions": "grapherase#TestTheEraseOfABlockAVersionHeldEndsThatVersionsNode",
-	// The erase's rewrite of the text values of the blocks holding the erased block, through
-	// RedactValues, in the erase's transaction and under the owner rows it takes first, beside its
-	// rewrite of those blocks' document_block_texts rows (this branch's spec; grapherase's
-	// TestTheEraseTakesTheStoreLockOrder).
-	"grapherase/redaction.go#redactBlocks": "grapherase#TestTheEraseTakesTheStoreLockOrder",
 	// graphstore's own writers that run another of them. QueueAuthored and QueueSessionRecorded
 	// are arms of one statement, and QueueReached is QueueSessionRecorded for an attempt that was
 	// sent. Write and Caused run QueueWrite and QueueCaused as a batch of their own, and

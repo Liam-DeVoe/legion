@@ -501,7 +501,11 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, indexing, err := planBlockIndex(ctx, tx, s.markingRule, artifactID, record, versions, markdown, blocks, located, pointers, facts, removalsOfVersions(ctx, versions))
+	moved, indexing, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
+		ArtifactID: artifactID, Record: record, Versions: versions,
+		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
+		Typed: facts, Beside: removalsOfVersions(ctx, versions),
+	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -642,31 +646,19 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, recor
 	})
 }
 
-// planBlockIndex plans the block index of artifactID at versions, its block pointers and its typed
-// nodes included (refs.PlanBlocks, over facts, the typed-node pass's facts read from record), at
-// the marking rule rule of the build planning it, with beside, a write planned for the same event
-// that no index pass of its own carries - the removals of answered asks' blocks a person's own
-// write made (removalsOfVersions) - planned into it. It returns the targets it moves, the cited
-// blocks it changes included (refs.BlockIndexing.Cited), and the plan: its Queue writes it, its
-// Stated is what it states in the node and tuple store, held for the event the caller appends for
-// the version, and its Won and Marked say whether it won the revision fence and drains this
-// build's mark. It plans against what the index holds (heldBlockIndex), and records what this one
-// leaves for a later indexing of the same document (recordBlockIndex).
-func planBlockIndex(
-	ctx context.Context,
-	tx pgx.Tx,
-	rule int,
-	artifactID string,
-	record refs.IndexedVersion,
-	versions refs.Versions,
-	markdown string,
-	blocks []model.ArtifactBlock,
-	located []text.Located,
-	pointers []refs.Pointer,
-	facts refs.TypedFacts,
-	beside graphstore.Uncaused,
-) ([]refs.Target, refs.BlockIndexing, error) {
-	index, err := heldBlockIndex(ctx, tx, artifactID)
+// planBlockIndex plans the block index of version, the versions of a document with its block
+// pointers and its typed nodes (refs.PlanBlocks, over version.Typed, the typed-node pass's facts
+// read from version.Record), at the marking rule rule of the build planning it, with
+// version.Beside, a write planned for the same event that no index pass of its own carries - the
+// removals of answered asks' blocks a person's own write made (removalsOfVersions) - planned into
+// it. It returns the targets it moves, the cited blocks it changes included
+// (refs.BlockIndexing.Cited), and the plan: its Queue writes it, its Stated is what it states in
+// the node and tuple store, held for the event the caller appends for the version, and its Won
+// and Marked say whether it won the revision fence and drains this build's mark. It plans against
+// what the index holds (heldBlockIndex), and records what this one leaves for a later indexing of
+// the same document (recordBlockIndex).
+func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, refs.BlockIndexing, error) {
+	index, err := heldBlockIndex(ctx, tx, version.ArtifactID)
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
@@ -674,11 +666,7 @@ func planBlockIndex(
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
-	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, refs.VersionBlocks{
-		ArtifactID: artifactID, Record: record, Versions: versions,
-		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
-		Typed: facts, Beside: beside,
-	})
+	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, version)
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
@@ -686,7 +674,7 @@ func planBlockIndex(
 	if err != nil {
 		return nil, refs.BlockIndexing{}, err
 	}
-	recordBlockIndex(ctx, tx, artifactID, indexing.Held())
+	recordBlockIndex(ctx, tx, version.ArtifactID, indexing.Held())
 	return slices.Concat(indexing.Moved(), cited), indexing, nil
 }
 

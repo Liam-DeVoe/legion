@@ -297,8 +297,7 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 // tuple dated before the version written before the cutover moves nothing of it, though the tree
 // at its time holds that tuple; it moves the version that holds a row, which the census of the
 // versions then reads as a difference; and with that row deleted the version answers its stored
-// bytes and says so. A version an erase deletes takes its version_renders row with it, and a row
-// a delete leaves behind is a difference of the census of the rendered versions. A version whose
+// bytes and says so. A version whose
 // markdown is null says it holds no bytes. The head of a spec a real settlement wrote renders as
 // that version's stored markdown. The census of document_block_texts reads no difference in
 // either direction over the converted issues, and prints the rows of DOC-9 as the class of unstated
@@ -386,7 +385,6 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		}},
 		{"a tuple dated before the version written before the cutover moves nothing of it", renderStepBoundary},
 		{"with its row deleted a version answers its stored bytes and says so", renderStepRowDeleted},
-		{"a version an erase deletes takes its row, and a row left behind is a difference", renderStepErasedVersion},
 		{"a version whose markdown is null says it holds no bytes", renderStepNoBytes},
 		{"document_block_texts keeps the columns 0121_block_graph creates", renderStepTextColumns},
 		{"a settled version whose authored block stands under a parent other than the block before it", func(t *testing.T, rig *renderRig) {
@@ -613,74 +611,6 @@ func (r *renderRig) readRenderCensus(t *testing.T) graphcensus.VersionRenderCens
 		t.Fatalf("read the census of the versions version_renders holds: %v", err)
 	}
 	return renders
-}
-
-// eraseVersions deletes version numbers[i] of the spec as the erase deletes a version holding
-// erased text: its version_renders row, by docs' one statement of that delete, and then the
-// version, in one transaction; with keepRows the row is left behind, as a deleter that forgot it
-// would leave it.
-func (r *renderRig) eraseVersions(t *testing.T, keepRows bool, numbers ...int32) {
-	t.Helper()
-	ctx := context.Background()
-	artifacts := make([]string, len(numbers))
-	for index := range numbers {
-		artifacts[index] = r.room.spec
-	}
-	if err := pgx.BeginFunc(ctx, r.database.Pool, func(tx pgx.Tx) error {
-		if !keepRows {
-			if _, err := ForgetVersionRenders(ctx, tx, artifacts, numbers); err != nil {
-				return err
-			}
-		}
-		_, err := tx.Exec(ctx, `
-			delete from artifact_versions where exists (
-				select 1 from unnest($1::uuid[], $2::int[]) as doomed (artifact, number)
-				where doomed.artifact = artifact_versions.artifact_id and doomed.number = artifact_versions.number)`, artifacts, numbers)
-		return err
-	}); err != nil {
-		t.Fatalf("delete versions %v of the spec: %v", numbers, err)
-	}
-}
-
-func renderStepErasedVersion(t *testing.T, rig *renderRig) {
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
-		rig.writeVersionFromTree(t, tx, 4)
-		rig.writeVersionFromTree(t, tx, 5)
-		return nil
-	}); err != nil {
-		t.Fatalf("write versions 4 and 5 from the tree: %v", err)
-	}
-	if renders := rig.readRenderCensus(t); renders.Versions != 2 || renders.Differences != 0 {
-		t.Fatalf("with versions 4 and 5 written the census of the rendered versions compares %d and reads %d differences (%+v), want both and none",
-			renders.Versions, renders.Differences, renders.Reported)
-	}
-	rig.eraseVersions(t, false, 4)
-	if versions, renders := rig.versionRows(t, rig.database.Pool, 4); versions != 0 || renders != 0 {
-		t.Errorf("after its erase version 4 holds %d versions and %d rows, want neither", versions, renders)
-	}
-	if renders := rig.readRenderCensus(t); renders.Versions != 1 || renders.Differences != 0 {
-		t.Errorf("after version 4's erase the census of the rendered versions compares %d and reads %d differences (%+v), want version 5 alone and none",
-			renders.Versions, renders.Differences, renders.Reported)
-	}
-	// The control: a delete of version 5 that leaves its row behind is read as a difference.
-	rig.eraseVersions(t, true, 5)
-	renders := rig.readRenderCensus(t)
-	if renders.Versions != 1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v5") {
-		t.Errorf("with version 5 deleted and its row left behind the census of the rendered versions compares %d and reads %d differences (%+v), want the row of version 5",
-			renders.Versions, renders.Differences, renders.Reported)
-	} else {
-		t.Logf("the census reads the row left behind at %s: %s", renders.Reported[0].At, renders.Reported[0].Cause)
-	}
-	if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
-		_, err := ForgetVersionRenders(ctx, tx, []string{rig.room.spec}, []int32{5})
-		return err
-	}); err != nil {
-		t.Fatalf("forget version 5's row: %v", err)
-	}
-	if renders := rig.readRenderCensus(t); renders.Versions != 0 || renders.Differences != 0 {
-		t.Errorf("with version 5's row forgotten the census of the rendered versions compares %d and reads %d differences, want none", renders.Versions, renders.Differences)
-	}
 }
 
 // renderAuthoredSpec is the spec of CORE-1, an issue's spec the real version path writes: a

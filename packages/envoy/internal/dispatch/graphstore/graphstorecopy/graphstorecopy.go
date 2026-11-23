@@ -23,19 +23,17 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // Caused in a caller's transaction, and QueueWrite, QueueNodes and QueueCaused, the same writes
 // queued on a write phase's batch; WriteArms and WriteArmsUncaused spliced into a caller's
 // statement; QueueAuthored, QueueReached and QueueSessionRecorded, which queue those arms for the
-// writers that record an author, a reached session and a session an ask names; EraseNode, the
-// erase's delete of a node and its tuples; RedactValues, the erase's rewrite of the quote of an
-// erased block in the text values of the blocks holding it; FillScopes, the backfill's fill of the
-// project of a node stored with none; Retarget, the move of one pointer tuple of a node from one
-// far end to another; QueueFrameTuple, the append of one frame value of a run queued on a caller's
-// batch; and WriteRun, the write of a run's node from its row. Each is a function of the package,
-// never a method, so a call of one is named by the package wherever it is made. It is the one list
-// the source scans that hold the store's writers read: graphstore's register of their call sites
-// (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected tables
-// (TestNoProjectionRowIsWrittenWithoutTheStore).
+// writers that record an author, a reached session and a session an ask names; FillScopes, the
+// backfill's fill of the project of a node stored with none; Retarget, the move of one pointer
+// tuple of a node from one far end to another; QueueFrameTuple, the append of one frame value of a
+// run queued on a caller's batch; and WriteRun, the write of a run's node from its row. Each is a
+// function of the package, never a method, so a call of one is named by the package wherever it
+// is made. It is the one list the source scans that hold the store's writers read: graphstore's
+// register of their call sites (TestEveryStoreWriteCallSiteIsListed) and api's scan of the
+// writers of the projected tables (TestNoProjectionRowIsWrittenWithoutTheStore).
 func WriteFunctions() []string {
 	return []string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
 		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
-		"EraseNode", "RedactValues", "FillScopes", "Retarget", "QueueFrameTuple", "WriteRun"}
+		"FillScopes", "Retarget", "QueueFrameTuple", "WriteRun"}
 }

@@ -1132,12 +1132,7 @@ func writtenByPerson(ctx context.Context, actor model.Actor) bool {
 // document held before this write, so an ask whose block an earlier write took out is neither
 // refused to an agent nor a removal of a person's.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, holder askHolder, target *pmdoc.Node, by dropper) error {
-	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), holder, target, by)
-}
-
-// refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's asks through q,
-// for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
-func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, holder askHolder, target *pmdoc.Node, by dropper) error {
+	q := s.queryFrom(ctx)
 	open, err := openAskBlocksIn(ctx, q, holder)
 	if err != nil {
 		return err
@@ -1193,8 +1188,8 @@ func droppedBlock(dropped map[string]struct{}) func(blockID string) bool {
 // askHolder is whose asks a read of asks takes: each ask whose block the document id holds, in the
 // room that document is edited in (documentAsksOf, refs.AsksOfDocumentSQL), or every ask of the
 // room id, for a writer that reads and writes an issue room's whole tree at once, all of its
-// fragments' blocks (roomAsksOf): a rebuild and an erase. A document that is its own room has the
-// same asks either way.
+// fragments' blocks (roomAsksOf), as a rebuild does. A document that is its own room has the same
+// asks either way.
 type askHolder struct {
 	id   string
 	room bool
@@ -3016,8 +3011,7 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 // issue's spec (api's createIssue).
 //
 // The node's address is drawn from the version's own number, which the insert took under the
-// document's owner lock. The address can be one the store already holds a gone node at: the next
-// version after an erase deleted a document's newest (grapherase's endErasedVersions), or the
+// document's owner lock. The address can be one the store already holds a gone node at: the
 // first version of a document made under the name of one a removal took out (api's
 // removedDocumentNodes), whose slug, and so whose ref_key, the new row takes. The write then
 // restates that node (graphstore.Node.Restates), which brings it back live with this row's number

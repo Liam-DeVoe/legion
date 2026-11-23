@@ -324,7 +324,7 @@ func (s *server) getSpecNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := r.PathValue("key")
-	owner, name, err := sourcePathRepo(r)
+	owner, name, err := s.sourcePathRepo(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -386,7 +386,7 @@ func (s *server) putSpecSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	owner, name, err := sourcePathRepo(r)
+	owner, name, err := s.sourcePathRepo(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -470,7 +470,7 @@ func (s *server) deleteSpecSource(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireActor(w, r, input.Actor); !ok {
 		return
 	}
-	owner, name, err := sourcePathRepo(r)
+	owner, name, err := s.sourcePathRepo(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

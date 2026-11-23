@@ -1348,8 +1348,8 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// is taken to hold a definition_version.
 		"version": {tuples: 6, writes: 4}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
 		"query_version": {tuples: 1, writes: 3},
-		// The scratch document removed in the window held one version; no table dates an erase.
-		"version_removed": {tuples: 1, writes: 1}, "erased_version": {tuples: 1, writes: sizingWindowDays / 7, assumed: true},
+		// The scratch document removed in the window held one version.
+		"version_removed": {tuples: 1, writes: 1},
 		// The comment is alice's first, the delivery records ses_sized and the published copy
 		// ses_copy, and the message.created event is the first to address the role sizer, which
 		// takes a page with it.
@@ -1589,7 +1589,7 @@ func TestTheSizingRunsOnADatabaseWithNoStore(t *testing.T) {
 	seedSizedHistory(t, database)
 	before := sizingCensus(t, database)
 	if _, err := database.Pool.Exec(context.Background(), `
-		drop table graph_tuples, graph_nodes, graph_erasures cascade;
+		drop table graph_tuples, graph_nodes cascade;
 		alter table comments drop column node_kind cascade, drop column node_address cascade;
 		alter table document_blocks drop column node_kind cascade, drop column node_address cascade,
 			drop column parent_block_id cascade;

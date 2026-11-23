@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -407,4 +410,53 @@ func savedVersionNumber(ctx context.Context, tx pgx.Tx, artifactID string) (int,
 		return 0, fmt.Errorf("read latest document version number: %w", err)
 	}
 	return number, nil
+}
+
+// joinedSeeds is the one tree an issue room's seed holds, every fragment's in the room's order
+// (joinFragments), a fragment that holds nothing read as no block: what the rules that read the
+// room's ask blocks read.
+func joinedSeeds(seeds []*pmdoc.Node) *pmdoc.Node {
+	parts := make([]*pmdoc.Node, len(seeds))
+	for index, seed := range seeds {
+		parts[index] = seed
+		if seed == nil {
+			parts[index] = &pmdoc.Node{Type: "doc"}
+		}
+	}
+	joined, _ := joinFragments(parts)
+	return joined
+}
+
+// encodeDocumentSeed writes trees, each into the fragment of fragments beside it, and margin into a
+// fresh document and returns its one durable update, as encodeDocumentTreeHolding does for a tree
+// alone: an issue room's seed carries every fragment of the room. A fragment whose tree is nil
+// holds nothing, and is left so. held is each live tree the seed is cut from, whose elements the
+// document already holds (pmdoc.UpdateHolding), so an element a newer build wrote there is put
+// back rather than refused.
+func encodeDocumentSeed(fragments []string, trees, held []*pmdoc.Node, margin map[string]any) ([]byte, error) {
+	doc := crdt.New()
+	written := make([]*crdt.YXmlFragment, len(fragments))
+	for index, name := range fragments {
+		if trees[index] != nil {
+			written[index] = doc.GetXmlFragment(name)
+		}
+	}
+	marks := doc.GetMap(marksMapName)
+	if err := doc.TransactE(func(transaction *crdt.Transaction) error {
+		for index, fragment := range written {
+			if fragment == nil {
+				continue
+			}
+			if err := pmdoc.UpdateHolding(transaction, fragment, trees[index], held[index]); err != nil {
+				return err
+			}
+		}
+		for _, key := range slices.Sorted(maps.Keys(margin)) {
+			marks.Set(transaction, key, margin[key])
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return crdt.EncodeStateAsUpdateV1(doc, nil), nil
 }

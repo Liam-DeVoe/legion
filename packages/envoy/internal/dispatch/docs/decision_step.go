@@ -797,7 +797,7 @@ func (s *DecisionStep) catchUpAsk(ctx context.Context, askID string, unstated []
 	}
 	defer tx.Rollback(ctx)
 	owners := events.OwnerRows{}
-	owners.Add(issue, document, "ask "+askID)
+	owners.Add(issue, document)
 	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 		return 0, nil, err
 	}

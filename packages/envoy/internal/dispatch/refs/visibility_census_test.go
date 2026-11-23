@@ -183,7 +183,6 @@ var readsWithoutAViewer = map[string]string{
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
-	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,

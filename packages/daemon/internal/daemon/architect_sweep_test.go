@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -56,7 +57,7 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 		t.Fatal(err)
 	}
 	const entry = 2
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -216,7 +217,7 @@ func seedQuietArchitectStall(t *testing.T, pool *store.Pool) record.Issue {
 	}
 	const entry = 2
 	queued := now.Add(-20 * time.Minute)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -271,7 +272,7 @@ func TestTheArchitectSweepsStallArmsAreServedOnTheStateWhetherOrNotTheController
 	}
 	view := &source{
 		store: st, records: records, project: quietStallProject, projectToken: project, runtime: "tmux", admissionCap: 1,
-		startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+		startedAt: time.Now(), deployment: func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} },
 		reports:         func() map[claim.Token]capabilities.Report { return nil },
 		architectStalls: admission.ArchitectStallArms,
 	}

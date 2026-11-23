@@ -140,8 +140,8 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The document's node and its versions' nodes, stated gone, the document's with each
 	// changed_by_run it states now retracted, in the store's order: the node rows before any row of
-	// the document goes, as the erase takes a node's row before the rows that project it, and their
-	// facts in the batch that appends artifact.removed below (removedDocumentNodes,
+	// the document goes, and their facts in the batch that appends artifact.removed below
+	// (removedDocumentNodes,
 	// appendCausingEvent). What that node write reads, and whether a lens stands on the document's
 	// node, is read first, under the locks and before the transaction's first write, so no read of
 	// it runs while the transaction holds an id (#2468's write phase): the owner's lock and the
@@ -342,9 +342,9 @@ type removedNodes struct {
 //
 // A document of an issue room, whose document_rooms row names the issue's tree
 // (model.Artifact.Room), is refused too. Only the spec, the Verification document and the plan
-// join the room (documentJoinsIssueRoom), and the role test already refuses each of them, but a
-// role document reads no role once an operator erases its query node (`envoy-dispatch erase`), so
-// this test keeps every document of the room out of the removal. Every writer of a document_rooms
+// join the room (documentJoinsIssueRoom), and the role test already refuses each of them; this
+// test keeps every document of the room out of the removal whatever its role reads. Every writer
+// of a document_rooms
 // row takes the issue's owner lock first (createConvertedIssueRoom, queueIssueRoomJoin), so the row read here
 // stands until the removal commits.
 func artifactRowIsUntouched(artifact model.Artifact) error {

@@ -468,7 +468,7 @@ func writeIssueComponentMemberBatch(ctx context.Context, database *store.Store, 
 		issues := make([]string, len(batch))
 		components := make([]string, len(batch))
 		for index, member := range batch {
-			owners.Add(member.issue, "", "issue "+member.issue)
+			owners.Add(member.issue, "")
 			issues[index], components[index] = member.issue, member.component
 		}
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {

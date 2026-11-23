@@ -53,7 +53,7 @@ type objectKind struct {
 	// distinguishes replacements even when their created_at values are equal.
 	rows string
 	// owners answers, for a kind whose batch writes under its rows' owners, the owner each row of
-	// the ids $1 stands under, as (issue, document id, id): for a document the owner whose lock a
+	// the ids $1 stands under, as (issue, document id): for a document the owner whose lock a
 	// writer that deletes its row takes before anything else (api's removeArtifact takes its
 	// document's issue's), and for an issue its own row, under which the batch reads the parent its
 	// child_of names (heldRowMarks). It is empty for a kind whose batch names nothing on a row.
@@ -91,8 +91,8 @@ func nodeInAnotherProject(kind, id, project string) string {
 // not gone naming a project or parties at the row a's address that is that row's own - any such
 // node, for a row no removal takes, and for one a removal can take, one whose live statement was
 // made for it (ownLiveStatement). A node whose live statement is not the row's is a document a
-// build before this one removed and then made again at the address before the node was erased,
-// and that row is owed its own live statement as much as a row with none (classGone).
+// build before this one removed and then made again at the address, and that row is owed its own
+// live statement as much as a row with none (classGone).
 func unmarkedDocument(a string) string {
 	return `not ` + retiredDocument(a) + ` and not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindArtifact + `' and n.id = ` + a + `.ref_key` +
 		` and n.state <> '` + graphstore.StateGone + `' and ` + scopedNode + ` and (not ` + removableDocument(a) + ` or ` +
@@ -128,7 +128,7 @@ var objectKinds = []objectKind{
 		  or (` + issueRowUnmarked + ` and not ` + nodeInAnotherProject(graphstore.KindIssue, "i.key", "i.project_key") + `))
 		order by i.key limit $2`,
 		rows:   `select key, key from issues where key = any($1::text[])`,
-		owners: `select key, '', key from issues where key = any($1::text[])`},
+		owners: `select key, '' from issues where key = any($1::text[])`},
 	documentObjectKind,
 	{kind: graphstore.KindAsk, start: zeroUUID, read: `
 		select k.id::text, k.created_at, k.author, coalesce(i.project_key, a.project_key),
@@ -171,7 +171,7 @@ var documentObjectKind = objectKind{kind: graphstore.KindArtifact, read: `
 		       or (a.node_kind is null and not ` + nodeInAnotherProject(graphstore.KindArtifact, "a.ref_key", "a.project_key") + `))
 		order by a.ref_key limit $2`,
 	rows:   `select ref_key, id::text from artifacts where ref_key = any($1::text[])`,
-	owners: `select coalesce(issue_key, ''), id::text, ref_key from artifacts where ref_key = any($1::text[])`}
+	owners: `select coalesce(issue_key, ''), id::text from artifacts where ref_key = any($1::text[])`}
 
 // issueRowUnmarked is the test that the issues row aliased i is one its row marker does not mark:
 // it names no node, or it names a parent its node's child_of does not name, which only the release
@@ -181,10 +181,10 @@ var documentObjectKind = objectKind{kind: graphstore.KindArtifact, read: `
 const issueRowUnmarked = `(i.node_kind is null or (i.parent_key is not null and ` + store.IssueParentMoved + `))`
 
 // ObjectRowStands answers whether a row of kind stands at id, for a kind the backfill writes a
-// node for from its rows (objectKinds), and false for any other kind. The erase reads it to refuse
-// a node of these kinds while its row holds its text (grapherase's Erasure.read). An ask's and a
-// message's row is keyed by a uuid, so an id that is no uuid names no row of them; it answers false
-// for it rather than let the cast in objectKind.rows abort the erase's transaction.
+// node for from its rows (objectKinds), and false for any other kind. The sweep of an orphaned
+// document's node reads it under the node's lock (StateOrphanedGone). An ask's and a message's row
+// is keyed by a uuid, so an id that is no uuid names no row of them; it answers false for it rather
+// than let the cast in objectKind.rows abort its caller's transaction.
 func ObjectRowStands(ctx context.Context, q graphstore.Queryer, kind, id string) (bool, error) {
 	for _, known := range objectKinds {
 		if known.kind != kind {
@@ -635,10 +635,10 @@ func derefText(value *string) string {
 // document has another UUID even when its created_at is identical; it is left for the next run,
 // which the report's remaining count names. A removal waiting for this batch removes a row whose
 // node is live, and this build's removal then states that node gone. The owner locks come first
-// and the nodes after them, the order every writer of these nodes takes (a document's create, its
-// removal, the erase). A kind no writer deletes a row of takes no lock and is read again the same
-// way, but an issue, whose batch takes its own row as its owner lock, so the parent its child_of
-// names is read under it (heldRowMarks).
+// and the nodes after them, the order every writer of these nodes takes (a document's create and
+// its removal). A kind no writer deletes a row of takes no lock and is read again the same way,
+// but an issue, whose batch takes its own row as its owner lock, so the parent its child_of names
+// is read under it (heldRowMarks).
 //
 // Beside each node it states what its kind's writer states: a document's part_of the issue that
 // owns it, with the node's time, its writer and its cause (graphstore.ArtifactPartOf), among the
@@ -1078,9 +1078,9 @@ func lockObjectOwners(ctx context.Context, tx pgx.Tx, kind objectKind, ids []str
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)
 	}
 	owners := events.OwnerRows{}
-	var issue, document, id string
-	if _, err := pgx.ForEachRow(rows, []any{&issue, &document, &id}, func() error {
-		owners.Add(issue, document, kind.kind+" "+id)
+	var issue, document string
+	if _, err := pgx.ForEachRow(rows, []any{&issue, &document}, func() error {
+		owners.Add(issue, document)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("read the owners of the batch's %s rows: %w", kind.kind, err)

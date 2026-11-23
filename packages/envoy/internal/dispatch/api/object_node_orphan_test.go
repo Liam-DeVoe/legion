@@ -91,7 +91,7 @@ func removeAsTheReleaseBefore(t *testing.T, database *store.Store, artifact mode
 // It answers the event's id.
 func deleteAsTheReleaseBefore(ctx context.Context, tx pgx.Tx, artifact model.Artifact) (int64, error) {
 	owners := events.OwnerRows{}
-	owners.Add(*artifact.IssueKey, artifact.ID, "document "+artifact.ID)
+	owners.Add(*artifact.IssueKey, artifact.ID)
 	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 		return 0, err
 	}
