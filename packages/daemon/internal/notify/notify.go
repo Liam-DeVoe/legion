@@ -153,22 +153,24 @@ const RoleTopicPrefix = "notifications.role."
 // sessionStoreFault); a claim whose turns keep ending in a provider error (`provider-errors`,
 // supervise's tellOfProviderErrors), which the issue's architect is told as well, unless the run
 // is the tree root's architect's own, and a child's own architect's run is told to the architect
-// above that child; and the operator's pause and resume of the project (`project-paused` and
-// `project-resumed`, record.ProjectPause, queued in the store's Pause and Resume), of which the
-// controller's own pause or resume tells it nothing. A free slot alone is no reason for the
-// controller to take an issue: work reaches Legion only when a person hands it over or a role
-// reports a clear defect the controller files (skill://legion-controller, "Free slots"). It sits
-// among the issue topics, where no issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and
-// the plugin's controller registers it as an interest while it holds the controller role
-// (legionControllerNoticeSubject, packages/contracts/src/subject.ts). project is the project
-// token panes are told as LEGION_PROJECT (packages/pi-legion/src/controller-session.ts), never
-// the Dispatch project key. The stream retains it and the controller's session receives it from
-// its own JetStream consumer, whose filter that registration carries the lane into (Envoy's
-// bus.ReachesPrivateStreamSubject lets the project's controller role holder register it, and no
-// other session), so a notice published while that session was away is delivered when it
-// registers again, its consumer keeping the place it acknowledged. A session new to the lane is
-// given a consumer at the stream's end, so a freshly started controller is handed none of what
-// came before it and learns that from `legion state` and Dispatch.
+// above that child; one of the controller's own programs its pod's memory guard ended
+// (`memory-guard-kill`, workflow's controllerMemoryGuardKill, once for each kill); and the
+// operator's pause and resume of the project (`project-paused` and `project-resumed`,
+// record.ProjectPause, queued in the store's Pause and Resume), of which the controller's own pause
+// or resume tells it nothing. A free slot alone is no reason for the controller to take an issue:
+// work reaches Legion only when a person hands it over or a role reports a clear defect the
+// controller files (skill://legion-controller, "Free slots"). It sits among the issue topics, where
+// no issue key (`[A-Z][A-Z0-9]*-[0-9]+`) can be `controller`, and the plugin's controller registers
+// it as an interest while it holds the controller role (legionControllerNoticeSubject,
+// packages/contracts/src/subject.ts). project is the project token panes are told as LEGION_PROJECT
+// (packages/pi-legion/src/controller-session.ts), never the Dispatch project key. The stream
+// retains it and the controller's session receives it from its own JetStream consumer, whose filter
+// that registration carries the lane into (Envoy's bus.ReachesPrivateStreamSubject lets the
+// project's controller role holder register it, and no other session), so a notice published while
+// that session was away is delivered when it registers again, its consumer keeping the place it
+// acknowledged. A session new to the lane is given a consumer at the stream's end, so a freshly
+// started controller is handed none of what came before it and learns that from `legion state` and
+// Dispatch.
 func ControllerTopic(project string) string {
 	return "notifications.legion." + project + ".controller"
 }
