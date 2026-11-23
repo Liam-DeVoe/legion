@@ -44,30 +44,31 @@ import (
 // (TestReview7AnOwedRecordTheIndexRefusesHoldsASlot: `head_7_after=0s deliveries=25
 // num_ack_pending=4`); an owner of 40 characters and a name of 101, which the table holds, so at
 // ceeec40f46 each read GitHub and owed a refusal for a repository GitHub cannot have; and a
-// character no repository name holds. The last two are such names reached through a rename: the
-// envelope names a repository GitHub can have, and repo_projects maps it to a canonical name, as a
-// target stored before the settings route held it to GitHub's name rule can, of 3,500 random
-// characters and of 101. With no failure of the owed record ending an envelope, the first of them
-// was handed back for ever and the second owed a refusal for a repository GitHub cannot have,
-// until the rows' values were checked where the rows are built; at 3a21edb2c9 each was then
-// acknowledged with nothing owed, so its head never came, also after the target was corrected
-// (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D1). Such an envelope is acknowledged at
-// its first delivery too, but its read is owed under the name it gave, which the check takes
-// (owePullRequestRead), and the reconcile reads it once the target is corrected
+// character no repository name holds. The last two are such names as a rename pair's new name:
+// the envelope names a repository GitHub can have, and repo_projects renames it to a name of
+// 3,500 random characters and of 101, as only SQL by hand writes a pair. With no failure of the
+// owed record ending an envelope, the first of them was handed back for ever and the second owed
+// a refusal for a repository GitHub cannot have, until the rows' values were checked where the
+// rows are built; at 3a21edb2c9 each was then acknowledged with nothing owed, so its head never
+// came, also after the target was corrected (acceptance of cybermonklabs/legion#4209 at
+// 3a21edb2c9, D1). The boot now drops such a pair (refs.NewRenames), so the envelope's own name is
+// its canonical name: it is read from GitHub under that name, which GitHub answers 404 for here,
+// and it is acknowledged at its first delivery with its read owed under that name and the line
+// that says so, and the reconcile reads it once the target is corrected
 // (TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCorrected). A GitHub
 // answer no head row can hold is no such envelope either: its read is owed
 // (TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile).
 func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
 	const (
 		namesNoPullRequest = "names no pull request"
-		owedIsRecorded     = "the read it is owed is recorded"
+		gitHubGaveNone     = "GitHub gave no pull request for this read"
 	)
 	for _, poison := range []struct {
 		name   string
 		repo   string
 		number func(i int) int
-		// renamedTo, where set, is the canonical name repo_projects maps repo to, and the read of
-		// each envelope is owed under repo.
+		// renamedTo, where set, is the new name a repo_projects row renames repo to, which the
+		// boot drops, and the read of each envelope is owed under repo.
 		renamedTo string
 	}{
 		{"number_3000000000_and_up", "acme/widgets", func(i int) int { return 3_000_000_000 + i }, ""},
@@ -137,21 +138,24 @@ func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
 			if err := pool.QueryRow(ctx, `select count(*), count(*) filter (where repo = $1) from pull_request_reads_owed`, poison.repo).Scan(&owed, &owedUnderGiven); err != nil {
 				t.Fatal(err)
 			}
-			wantOwed, wantLine := 0, namesNoPullRequest
+			wantOwed, wantLevel, wantLine := 0, "WARN", namesNoPullRequest
 			if poison.renamedTo != "" {
-				wantOwed, wantLine = intakeMaxAckPending, owedIsRecorded
+				wantOwed, wantLevel, wantLine = intakeMaxAckPending, "INFO", gitHubGaveNone
 			}
 			if owed != wantOwed || owedUnderGiven != wantOwed {
-				t.Errorf("%d reads owed, %d of them under %.50q, want %d under it: an envelope no delivery can get past owes no read, and one whose canonical name is refused is owed under the name it gave", owed, owedUnderGiven, poison.repo, wantOwed)
+				t.Errorf("%d reads owed, %d of them under %.50q, want %d under it: an envelope no delivery can get past owes no read, and one whose rename pair the boot dropped is owed under the name it gave", owed, owedUnderGiven, poison.repo, wantOwed)
 			}
 			lines := 0
 			for _, record := range logs() {
-				if message, _ := record["msg"].(string); record["level"] == "WARN" && strings.Contains(message, wantLine) {
+				if message, _ := record["msg"].(string); record["level"] == wantLevel && strings.Contains(message, wantLine) {
 					lines++
+				}
+				if poison.renamedTo != "" && strings.Contains(fmt.Sprint(record), poison.renamedTo) {
+					t.Errorf("a line names the new name %.20q… of the pair the boot dropped: %.300v", poison.renamedTo, record)
 				}
 			}
 			if lines != intakeMaxAckPending {
-				t.Errorf("%d WARN lines say %q, want one for each of the %d envelopes", lines, wantLine, intakeMaxAckPending)
+				t.Errorf("%d %s lines say %q, want one for each of the %d envelopes", lines, wantLevel, wantLine, intakeMaxAckPending)
 			}
 		})
 	}

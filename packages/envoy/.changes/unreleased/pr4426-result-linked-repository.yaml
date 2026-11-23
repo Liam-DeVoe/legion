@@ -18,11 +18,7 @@ body: |-
   `/pull/<n>` or the `/issues/<n>` form in any letter case, under the name its repository has
   today, with an owner and a name GitHub can have, a name that is not empty, `.` or `..` once a
   trailing `.git` is trimmed; any other link, such as one of `-acme` or `acme/.git`, spends no
-  read, and no refusal names it. A linked pull request whose repository a stored rename target
-  renames to a name GitHub's naming rule refuses, such as `acme/.git`, counts for nothing and
-  spends one of the 10 reads, and `400 RESULT_COMMIT_UNKNOWN` names that repository as one
-  whose links Dispatch set aside, which no grant of the App mends. Where Dispatch cannot read
-  one of these repositories (the GitHub
+  read, and no refusal names it. Where Dispatch cannot read one of these repositories (the GitHub
   App is not installed on it or cannot read it, GitHub's 403 that is no rate limit), or a read of
   one of them or of a pull request linked in it does not answer (a rate limit, a 5xx, a timeout),
   and no repository is shown to hold the commit, the result is stored, taken to be at a commit of

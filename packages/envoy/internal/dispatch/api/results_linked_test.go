@@ -295,35 +295,31 @@ func TestManyLinksOfARepositoryDispatchCannotReadStoreTheResult(t *testing.T) {
 	}
 }
 
-// A linked pull request of a repository whose name GitHub's naming rule refuses is set aside and
-// named. The link rule refuses a link that spells such a name (delivery.linkedPullRequest holds a
-// link's own name to refs.SplitGitHubRepo), so the name comes from a rename: the issue links
-// oldco/gizmo#3, and the rename pair of oldco/gizmo names `acme/.git`, which the settings route
-// of an earlier release refused and which a row stored before that refusal, or by direct SQL, can
-// still hold. The link names the pull request under that canonical name, which
-// refs.SplitGitHubRepo refuses, since the name is empty once a trailing `.git` is trimmed: so
-// Dispatch asks GitHub nothing about it, and the repository counts for nothing, as one Dispatch
-// cannot read does. The commit no repository holds is refused 400 RESULT_COMMIT_UNKNOWN, and the
-// refusal names the repository it set aside and that GitHub's naming rule refuses its name, and
-// does not name it as a repository Dispatch could not read, which a grant of the App would not
-// mend. A second issue links acme/.git#4 itself, a link the rule refuses: it names no repository,
-// so its refusal sets nothing aside and asks GitHub nothing about acme/.git either.
+// A linked pull request is read under a name GitHub can hold, so no record sets a linked
+// repository aside for GitHub's naming rule. The link rule refuses a link that spells such a name
+// (delivery.linkedPullRequest holds a link's own name to refs.SplitGitHubRepo), and a rename pair
+// whose new name is one, `acme/.git` here, which only SQL by hand writes, is dropped when the
+// server reads the pairs (refs.NewRenames): the issue links oldco/gizmo#3, the pair of
+// oldco/gizmo names `acme/.git`, and the record reads #3 under oldco/gizmo, its name today, which
+// GitHub answers 404 for. The commit no repository holds is refused 400 RESULT_COMMIT_UNKNOWN,
+// naming acme/widgets, which it asked, and neither acme/.git nor a repository set aside. A second
+// issue links acme/.git#4 itself, a link the rule refuses: it names no repository, so its refusal
+// sets nothing aside and asks GitHub nothing about acme/.git either.
 //
-// A server that holds the pair stores every link under its repository's new name
+// A server that holds a pair stores every link under its repository's new name
 // (refs.Renames.CanonicalURL), so the link by the old name is written first, on a server built
 // with no pair, as a release before stored it. The pair is then seeded by SQL, as the last
 // release left it, and the results are recorded on a server built after the seed, which reads
 // the pair once, as it is built.
 //
-// The negative control is the refusal as linkCannotCount left it, which read the name rule's
-// answer as one about a repository Dispatch cannot read and then kept only such repositories, so
-// the refusal said nothing of the link at all.
-func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
+// The negative control is the start before it dropped such a pair: the record called the link's
+// repository `acme/.git`, asked GitHub nothing about it and named it as set aside.
+func TestALinkWhoseRenamePairGitHubCannotHoldIsReadUnderItsOwnName(t *testing.T) {
 	const commit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	linked := &linkedGitHub{held: map[string][]string{"acme/widgets": {headCommit}}, pulls: map[string]string{}}
 	options := linkedRepositoriesOptions(t, linked)
 	handler, database, _ := newTestServer(t, options)
-	issue := issueInRepository(t, handler, "RELG", "acme/widgets", "A link GitHub's naming rule refuses").Key
+	issue := issueInRepository(t, handler, "RELG", "acme/widgets", "A link whose rename pair GitHub cannot hold").Key
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/oldco/gizmo/pull/3")
 	var stored int
@@ -338,6 +334,9 @@ func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
 		t.Fatalf("store oldco/gizmo as renamed to acme/.git: %v", err)
 	}
 	options.store, options.renames = storetest.SecondProcess(t, database), readRenames(t, database)
+	if dropped := options.renames.Dropped(); len(dropped) != 1 || options.renames.Canonical("oldco/gizmo") != "oldco/gizmo" {
+		t.Fatalf("the server's pairs dropped %v and call oldco/gizmo %q, want the pair to acme/.git dropped and oldco/gizmo its own", dropped, options.renames.Canonical("oldco/gizmo"))
+	}
 	handler, _, _ = newTestServer(t, options)
 	eventsBefore := resultEventsOn(t, database, issue)
 
@@ -347,14 +346,11 @@ func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
 	if recorded.Code != http.StatusBadRequest || code != "RESULT_COMMIT_UNKNOWN" {
 		t.Fatalf("status=%d body=%s, want 400 RESULT_COMMIT_UNKNOWN", recorded.Code, recorded.Body.String())
 	}
-	if want := "; Dispatch set aside the links to pull requests of acme/.git, which GitHub's naming rule refuses as a repository's name"; !strings.Contains(text, want) {
-		t.Errorf("the refusal reads %q, want it to say %q", text, want)
+	if strings.Contains(text, "set aside") || strings.Contains(text, "acme/.git") || strings.Contains(text, "could not read") {
+		t.Errorf("the refusal reads %q, want no repository set aside or unread, and no word of acme/.git", text)
 	}
-	if strings.Contains(text, "could not read") {
-		t.Errorf("the refusal reads %q, want acme/.git, which the naming rule refuses, not named as a repository Dispatch could not read", text)
-	}
-	if asked, _, _ := strings.Cut(text, "; "); strings.Contains(asked, "acme/.git") {
-		t.Errorf("the refusal reads %q, want acme/.git, which it never asked about the commit, not named as asked", text)
+	if reads, _ := linked.counts("oldco/gizmo"); reads != 1 {
+		t.Errorf("the record read the state of oldco/gizmo#3 %d times, want once: under its own name, the name it has with the pair dropped", reads)
 	}
 	if stored := resultEventsOn(t, database, issue) - eventsBefore; stored != 0 {
 		t.Errorf("the refused result appended %d result.recorded events, want none", stored)

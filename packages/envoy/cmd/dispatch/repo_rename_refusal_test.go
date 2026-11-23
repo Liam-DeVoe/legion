@@ -91,6 +91,72 @@ func TestTheStartDropsARenamePairWhoseNewNameGitHubCannotHold(t *testing.T) {
 	}
 }
 
+// The ERROR line of a pair the start drops names the pair's new name, a stored text of any length
+// that SQL by hand wrote, to the 140 characters the name rule's own refusal shows a name to
+// (refs.SplitGitHubRepo): of a new name of 3,500 characters with no slash, the line holds at
+// most 140 in a run, beside its other text, in its new name and in its error alike. The line is
+// written at every start while the row stands. Before the start dropped such a pair, the line
+// that named it was the reconcile's, for the read owed under the old name, in every pass.
+func TestTheLineOfADroppedRenamePairNamesItsNewNameToABound(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	target := strings.Repeat("x", 3500)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('INFRA', 'Infra', 'alice');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into repo_projects (repo, project, created_by, renamed_to)
+			values ('acme/legacy-9105', 'INFRA', '{"kind":"user","id":"alice"}', $1)
+	`, target); err != nil {
+		t.Fatalf("seed acme/legacy-9105 renamed to a name of 3,500 characters: %v", err)
+	}
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+
+	renames, err := readRenames(ctx, database.Pool, repoRenamesReadTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dropped := renames.Dropped(); len(dropped) != 1 || dropped[0].From != "acme/legacy-9105" {
+		t.Fatalf("the start dropped %d pairs, want the one of acme/legacy-9105", len(dropped))
+	}
+	var named int
+	for line := range strings.Lines(logs.String()) {
+		if !strings.Contains(line, "dropped a rename pair") {
+			continue
+		}
+		named++
+		shown := longestRun(line, 'x')
+		t.Logf("line_bytes=%d target_shown=%d", len(line), shown)
+		if shown > 140 {
+			t.Errorf("the line of the dropped pair names %d characters of its new name in a run (%d bytes), want at most 140: a stored setting's text past its cut at every start",
+				shown, len(line))
+		}
+		if !strings.Contains(line, strings.Repeat("x", 140)) {
+			t.Errorf("the line of the dropped pair names no run of 140 characters of its new name, want the name to its cut:\n%.400s", line)
+		}
+	}
+	if named != 1 {
+		t.Fatalf("%d lines name the dropped pair, want 1:\n%s", named, logs.String())
+	}
+}
+
+// longestRun is the length of the longest run of r in text.
+func longestRun(text string, r rune) int {
+	longest, run := 0, 0
+	for _, c := range text {
+		if c != r {
+			run = 0
+			continue
+		}
+		run++
+		longest = max(longest, run)
+	}
+	return longest
+}
+
 // pgxStrings is each row's one text column.
 func pgxStrings(rows interface {
 	Next() bool

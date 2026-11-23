@@ -6,6 +6,9 @@ body: |-
     name GitHub cannot hold`, with the old name, the new name and why, and applies the other pairs.
     The rename pass writes nothing for the dropped pair, and the old name reads as its own, so a
     pull request event or a link of that repository is owed its read under a name a read can reach.
+    A result's record reads a linked pull request of the old name under that name too, so
+    `400 RESULT_COMMIT_UNKNOWN` no longer names a repository whose links Dispatch set aside for
+    GitHub's naming rule: only such a pair made one.
     Before, the pass wrote the bad name into every field of the old name, and a read owed under it
     stayed owed for as long as the row stood. Correct the row by SQL and restart: each process
     reads the pairs at its start.
