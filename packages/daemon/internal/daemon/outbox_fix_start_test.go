@@ -1,0 +1,248 @@
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
+)
+
+// The fix a start serves, and the heads its start names: the head the fix's working copy is made at
+// and the head the task's working copy moves to.
+const (
+	fixStartIssue = "LEGION-208"
+	fixStartEntry = 2
+	fixStartHead  = "c0de000000000000000000000000000000000001"
+	fixStartMove  = "c0de000000000000000000000000000000000002"
+	fixStartTask  = "Fix the CI check k-ci, which failed at " + fixStartHead + "."
+
+	// phaseLeftLine and fixEndedLine are the start fence's two lines: a start of no fix whose
+	// phase the issue has left, and a start of a fix that no longer runs.
+	phaseLeftLine = "outbox start serves a phase the issue has left; finished without acting"
+	fixEndedLine  = "outbox start serves a fix that no longer runs; finished without acting"
+)
+
+// fixStartRig is an issue whose task's fix 1 runs beside the step the issue stands in: the record
+// holds the issue, the implementer's phases row at the fix's entry and the fix itself, and the
+// outbox runs over a supervisor of its own, whose machines ask the daemon's own answer whether a
+// task is still its issue's work (workflowRuntime.phaseHolds). Its log is kept.
+type fixStartRig struct {
+	t       *testing.T
+	pool    *store.Pool
+	records *record.Postgres
+	issue   record.Issue
+	runner  *outbox
+	sup     *supervisor
+	token   claim.Token
+	logs    *syncBuffer
+}
+
+// newFixStartRig records the issue as stands leaves it, beside fix 1 of its task default, running
+// at entry fixStartEntry of the implementer.
+func newFixStartRig(t *testing.T, stands func(*record.Issue)) *fixStartRig {
+	t.Helper()
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: fixStartIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: fixStartIssue, Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "in_progress"}
+	stands(&issue)
+	putOutboxIssue(t, pool, records, issue)
+	token, err := claim.NewToken("legion", fixStartIssue, claim.RoleImplementer)
+	if err != nil {
+		t.Fatalf("claim token: %v", err)
+	}
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: fixStartIssue, Role: claim.RoleImplementer, Claim: token,
+			Entry: fixStartEntry, EntryTask: fixStartTask, EntryRaisedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		fix := record.TaskFix{Issue: fixStartIssue, Generation: 1, Task: "default", Fix: 1, State: record.FixReading,
+			Check: "k-ci", Head: fixStartHead, Place: 1}
+		if err := records.PutFix(ctx, tx, fix); err != nil {
+			return err
+		}
+		fix.State, fix.Entry = record.FixRunning, fixStartEntry
+		return records.UpdateFix(ctx, tx, fix)
+	}); err != nil {
+		t.Fatalf("record the implementer's entry and the running fix: %v", err)
+	}
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).phaseHolds
+	logs := &syncBuffer{}
+	runner := &outbox{log: slog.New(slog.NewJSONHandler(logs, nil)), pool: pool, dispatchProject: "LEGION", records: records,
+		supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/" + fixStartIssue}, nil
+		},
+	}
+	if got := readIssue(t, pool, fixStartIssue); got.RunningFix != 1 {
+		t.Fatalf("the record names running fix %d, want 1: the case's own premise", got.RunningFix)
+	}
+	return &fixStartRig{t: t, pool: pool, records: records, issue: issue, runner: runner, sup: sup, token: token, logs: logs}
+}
+
+// fixStartOf is the start of fix 1's task on the implementer: phase implementing, entry
+// fixStartEntry, the fix's head and the move, as the workflow writes it (Store.EnqueueFixStart).
+func fixStartOf() record.SuperviseRequest {
+	return record.SuperviseRequest{Op: "start", Tree: fixStartIssue, Role: claim.RoleImplementer, Generation: 1,
+		Phase: phase.Implementing, Entry: fixStartEntry, Task: fixStartTask, Fix: 1, FixFrom: fixStartHead, MoveTo: fixStartMove}
+}
+
+// queue writes start as the issue's outbox row and answers the row with its id, as a lane reads it.
+func (r *fixStartRig) queue(start record.SuperviseRequest) record.OutboxRow {
+	r.t.Helper()
+	row := mustOutboxRow(r.t, fixStartIssue, start, time.Now())
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		var err error
+		row.ID, err = r.records.EnqueueID(context.Background(), tx, row)
+		return err
+	}); err != nil {
+		r.t.Fatalf("queue the start: %v", err)
+	}
+	return row
+}
+
+// run runs row through the start executor, as its lane would.
+func (r *fixStartRig) run(row record.OutboxRow) {
+	r.t.Helper()
+	if err := r.runner.execute(context.Background(), row); err != nil {
+		r.t.Fatalf("run the start row %d: %v", row.ID, err)
+	}
+}
+
+// fenced is each line the start fence logged.
+func (r *fixStartRig) fenced() []map[string]any {
+	r.t.Helper()
+	logs := r.logs.String()
+	return append(loggedLines(r.t, logs, phaseLeftLine), loggedLines(r.t, logs, fixEndedLine)...)
+}
+
+// tookTheTask holds that row passed the fence and that the implementer's claim took its task: the
+// claim records the row and the fix's entry as given, and holds the row's own delivery, of phase
+// implementing and that entry.
+func (r *fixStartRig) tookTheTask(row record.OutboxRow) {
+	t := r.t
+	t.Helper()
+	if fenced := r.fenced(); len(fenced) != 0 {
+		t.Fatalf("the start fence finished the fix's start: %v", fenced)
+	}
+	machine, found := r.sup.Machine(r.token)
+	if !found {
+		t.Fatal("the fix's start created no claim for the implementer")
+	}
+	machine.Wait()
+	held := machine.Claim()
+	if !slices.Contains(held.DeliveredRows, row.ID) || held.GivenEntry != fixStartEntry {
+		t.Fatalf("the implementer's claim records rows %v and was given entry %d, want row %d and entry %d: the claim took the fix's task",
+			held.DeliveredRows, held.GivenEntry, row.ID, fixStartEntry)
+	}
+	want := fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID)
+	if held.Pending == nil || held.Pending.ID != want || held.Pending.Task != fixStartTask ||
+		held.Pending.Phase != phase.Implementing || held.Pending.Entry != fixStartEntry {
+		t.Fatalf("the implementer's pending delivery = %+v, want the row's own delivery %s of the fix's task, phase %s, entry %d",
+			held.Pending, want, phase.Implementing, fixStartEntry)
+	}
+}
+
+// finishedByTheFence holds that row was finished without acting by the start fence, on line, which
+// names the fix the row serves where it serves one (fix above 0) and no fix otherwise, and that no
+// claim was made for the implementer.
+func (r *fixStartRig) finishedByTheFence(line string, fix int) {
+	t := r.t
+	t.Helper()
+	logged := loggedLines(t, r.logs.String(), line)
+	if len(logged) != 1 {
+		t.Fatalf("logged %q %d times, want once: %s", line, len(logged), r.logs.String())
+	}
+	named, ok := logged[0]["fix"]
+	if fix > 0 && named != float64(fix) || fix == 0 && ok {
+		t.Fatalf("%q names fix %v (named: %t), want %d", line, named, ok, fix)
+	}
+	if _, found := r.sup.Machine(r.token); found {
+		t.Fatal("the fenced start made a claim for the implementer")
+	}
+}
+
+// A fix's start names phase implementing while the issue stands in reviewing, the step beside it.
+// The start fence holds it to the fix instead of the phase (record.PhaseHolds): with fix 1 running,
+// the start passes, and the implementer's claim takes the fix's task, with the row and the fix's
+// entry. The controls are the same start of no fix, which the fence finishes as it finishes any
+// start of a phase the issue has left, and a start of fix 1 once fix 1 ended, which it finishes
+// too, with a line that names the fix.
+func TestAFixStartRunsWhileTheIssueIsInReviewing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("fix 1's start while fix 1 runs", func(t *testing.T) {
+		t.Parallel()
+		rig := newFixStartRig(t, func(*record.Issue) {})
+		row := rig.queue(fixStartOf())
+		rig.run(row)
+		rig.tookTheTask(row)
+	})
+
+	t.Run("control: the same start of no fix", func(t *testing.T) {
+		t.Parallel()
+		rig := newFixStartRig(t, func(*record.Issue) {})
+		start := fixStartOf()
+		start.Fix, start.FixFrom = 0, ""
+		rig.run(rig.queue(start))
+		rig.finishedByTheFence(phaseLeftLine, 0)
+	})
+
+	t.Run("control: fix 1's start once fix 1 ended", func(t *testing.T) {
+		t.Parallel()
+		rig := newFixStartRig(t, func(*record.Issue) {})
+		if err := pgx.BeginFunc(context.Background(), rig.pool, func(tx pgx.Tx) error {
+			fix, err := rig.records.RunningFix(context.Background(), tx, fixStartIssue, 1, "default")
+			if err != nil || fix == nil {
+				return fmt.Errorf("read the running fix: %+v, %w", fix, err)
+			}
+			fix.State, fix.Result = record.FixEnded, "passed"
+			return rig.records.UpdateFix(context.Background(), tx, *fix)
+		}); err != nil {
+			t.Fatalf("end fix 1: %v", err)
+		}
+		rig.run(rig.queue(fixStartOf()))
+		rig.finishedByTheFence(fixEndedLine, 1)
+	})
+}
+
+// A fix's start the lane runs only after the issue moved to held for the fix (record.HoldForFix: a
+// step beside the fix failed and its return waits for the fix, or the last step passed and the
+// retro waits) still passes the start fence, since the fix still runs, and the implementer's claim
+// takes its task. The control is the same start of no fix, which the fence finishes: the issue
+// stands in no phase of implementing.
+func TestAFixStartRunsAfterTheIssueIsHeldForTheFix(t *testing.T) {
+	t.Parallel()
+	held := func(issue *record.Issue) {
+		issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Reviewing, Reason: record.HoldForFix}
+	}
+
+	t.Run("fix 1's start while the issue is held for it", func(t *testing.T) {
+		t.Parallel()
+		rig := newFixStartRig(t, held)
+		row := rig.queue(fixStartOf())
+		rig.run(row)
+		rig.tookTheTask(row)
+	})
+
+	t.Run("control: the same start of no fix", func(t *testing.T) {
+		t.Parallel()
+		rig := newFixStartRig(t, held)
+		start := fixStartOf()
+		start.Fix, start.FixFrom = 0, ""
+		rig.run(rig.queue(start))
+		rig.finishedByTheFence(phaseLeftLine, 0)
+	})
+}
