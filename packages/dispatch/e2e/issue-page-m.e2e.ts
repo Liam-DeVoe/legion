@@ -3683,6 +3683,7 @@ async function pressLoadOlderUntilGone(
   press: (loadOlder: Locator) => Promise<void>
 ): Promise<void> {
   const loadOlder = historyLoadOlder(page);
+  // Read once a page's answer has landed and two frames drew it, so Load older is drawn or gone.
   for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
     expect(
       presses,
@@ -4107,6 +4108,7 @@ test("the address of a short reply under a long agents' turn keeps the reply in 
         .toBeLessThan(400);
       await nextFrames(page);
       const view = await historyViewport(page);
+      // Read once the cut has landed and two frames drew it, so the reply stands where the keeper left it.
       const at = await marked.boundingBox();
       if (at === null) {
         outOfView.push(`at ${size.width} px the reply drew no box`);

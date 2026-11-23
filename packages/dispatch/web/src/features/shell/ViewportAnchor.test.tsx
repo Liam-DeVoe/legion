@@ -1475,6 +1475,7 @@ for (const { letGo, once } of [
   },
   { letGo: () => rowOf("r4").append(controlOf("r3")), once: "the element leaves the row" },
   {
+    // user-event's hover sends no clientX/clientY of its own, and the pointer's place names the row.
     letGo: () => fireEvent.pointerMove(rowOf("r3"), { clientX: 20, clientY: 100 }),
     once: "the reader's hand moves onto the row",
   },
