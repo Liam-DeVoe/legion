@@ -595,8 +595,11 @@ Each module's `internal/textcheck` holds those two kinds of package to the rule 
 - an `os.WriteFile` or `os.OpenFile` whose mode has an execute bit, or a mode it cannot read as a
   constant;
 - an `os.WriteFile`, `os.OpenFile`, `os.Create` or `os.CreateTemp` whose file the same top-level
-  function gives an execute bit with a `Chmod`: `os.Chmod` of the path the open names, spelled
-  the same way, `os.Chmod` of the file's `Name()`, or the file's own `Chmod` method;
+  function gives an execute bit, or a mode it cannot read as a constant, with a `Chmod`:
+  `os.Chmod` of the path the open names, spelled the same way, or of the path an `os.Rename` of
+  the function moved it to, or the file's own `Chmod` method, or `os.Chmod` of the file's
+  `Name()`. The last two follow the variable or field the open's own call assigns the file to,
+  and an open wrapped in a call, as `must(os.CreateTemp(dir, ""))`;
 - a use of `os.WriteFile`, `os.OpenFile`, `os.Create`, `os.CreateTemp` or `os.Chmod` as a value;
 - a dot import of `os`.
 
@@ -604,14 +607,17 @@ It reads each file's syntax alone, with no types, so it does not see:
 
 - a `Chmod` in another function than the open, or of the same path spelled another way, such as
   a variable that holds the open's `filepath.Join` or its file's `Name()`;
-- a file written by another function of `os` (`os.CopyFS`), by another package's function
-  (`syscall.Open`, a helper of a package that is neither of the two kinds above), or by a command
-  such as `cp`;
+- a file opened inside a function that returns it, such as a helper that calls `os.CreateTemp`
+  and returns the file, which its caller then gives an execute bit;
+- a file written by another function of `os` (`os.CopyFS`) or by another package's function
+  (`syscall.Open`, a helper of a package that is neither of the two kinds above);
 - a test-support package whose name does not begin or end with `test`.
 
-A write in one of those forms needs `testexec.WriteFile` by hand. The check also fails when the
-directory it reads holds no `go.mod`, or when it read no test file there, so a check pointed at the
-wrong directory cannot pass while it reads nothing.
+A write in one of those forms needs `testexec.WriteFile` by hand. A file that a command such as
+`cp` writes needs nothing: it is open in the command's process, not in the test's, so no fork of
+the test copies its descriptor. The check also fails when the directory it reads holds no
+`go.mod`, or when it read no test file there, so a check pointed at the wrong directory cannot
+pass while it reads nothing.
 
 ## A Go test that opens a NATS client
 
