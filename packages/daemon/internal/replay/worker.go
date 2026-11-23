@@ -159,7 +159,9 @@ func (d *driver) dueNow() time.Time { return d.now().Add(dueSlack) }
 // pause holds), but a start a wait holds under the run's rule (waitHolds), one at a time and
 // listed again after each, since a row run changes what is due, until none is due; then a wake at
 // the next row that comes due later (wake). A start a wait holds stays due, and the drain after
-// the fact whose pass ends the wait takes it.
+// the fact whose pass ends the wait takes it. Within one listing nothing changes the slots until a
+// row is taken, which ends the listing, so the slots a wait holds are read once in it, at its first
+// start that may be held.
 func (d *driver) drain() error {
 	for {
 		var due []record.OutboxRow
@@ -171,8 +173,9 @@ func (d *driver) drain() error {
 			return fmt.Errorf("replay: list the outbox rows due at %s: %w", stamp(d.clock.Instant()), err)
 		}
 		ran := false
+		var waiting map[string]bool
 		for _, row := range due {
-			held, err := d.waitHolds(row)
+			held, err := d.waitHolds(row, &waiting)
 			if err != nil {
 				return err
 			}
@@ -203,8 +206,9 @@ func (d *driver) drain() error {
 // a phase worker's) and brings its worker a phase entry its claim has not been given, of an issue
 // whose slot the admission pass marks waiting (record.Slot.WaitsSince: admit's markSlotWaits over
 // blockers.KeptWaits, the waits a cover reads). A covered waiter holds no slot, so the lanes' own
-// rule holds its start. Under every other rule nothing is held here.
-func (d *driver) waitHolds(row record.OutboxRow) (bool, error) {
+// rule holds its start. Under every other rule nothing is held here. waiting is the issues whose
+// slot is marked waiting, read the first time a start needs them where it is nil.
+func (d *driver) waitHolds(row record.OutboxRow, waiting *map[string]bool) (bool, error) {
 	if d.rule.Take != record.TakeCover || row.Kind != record.OutboxKindSupervise {
 		return false, nil
 	}
@@ -224,20 +228,22 @@ func (d *driver) waitHolds(row record.OutboxRow) (bool, error) {
 	if c, found := d.claims[token]; found && start.Entry <= c.GivenEntry {
 		return false, nil
 	}
-	waits := false
-	err = store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		slots, err := d.records.Slots(ctx, tx)
-		for _, slot := range slots {
-			if slot.Issue == row.Issue && slot.WaitsSince != nil {
-				waits = true
+	if *waiting == nil {
+		read := map[string]bool{}
+		if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			slots, err := d.records.Slots(ctx, tx)
+			for _, slot := range slots {
+				if slot.WaitsSince != nil {
+					read[slot.Issue] = true
+				}
 			}
+			return err
+		}); err != nil {
+			return false, fmt.Errorf("replay: read whether a wait holds the start row %d of %s: %w", row.ID, row.Issue, err)
 		}
-		return err
-	})
-	if err != nil {
-		return false, fmt.Errorf("replay: read whether a wait holds the start row %d of %s: %w", row.ID, row.Issue, err)
+		*waiting = read
 	}
-	return waits, nil
+	return (*waiting)[row.Issue], nil
 }
 
 // wake queues the stub's next run at the earliest next_at of the project's rows that come due
@@ -331,9 +337,6 @@ func (d *driver) finishUnder(row record.OutboxRow, kind RowKind) error {
 // its kind's handling finishes (finishUnder), and of a start queued for news alone that reaches
 // its claim, which a start's handling executes (start).
 func (d *driver) finishAssumed(row record.OutboxRow, assumption int) error {
-	if d.counters.Finished == nil {
-		d.counters.Finished = map[int]int{}
-	}
 	d.counters.Finished[assumption]++
 	d.used[assumption] = true
 	return d.finish(row)
@@ -449,7 +452,7 @@ func (d *driver) statusRow(row record.OutboxRow, payload record.StatusWrite) err
 	if moved || read == payload.Status {
 		return d.finish(row)
 	}
-	if err := d.writeStatus(row.Issue, payload.Status, false); err != nil {
+	if err := d.writeStatus(row.Issue, payload.Status); err != nil {
 		return err
 	}
 	return d.finish(row)
@@ -532,8 +535,8 @@ func (d *driver) handOverHolds(row record.OutboxRow, payload record.StatusWrite)
 
 // writeStatus is the daemon's write of key's status to Dispatch, made in the shadow, and the event
 // that write makes applied at once through the decoder and the chain (applyEcho).
-func (d *driver) writeStatus(key, status string, handOver bool) error {
-	raw, wrote, err := d.shadow.statusWrite(key, status, handOver, d.clock.Instant())
+func (d *driver) writeStatus(key, status string) error {
+	raw, wrote, err := d.shadow.statusWrite(key, status, false, d.clock.Instant())
 	if err != nil || !wrote {
 		return err
 	}
@@ -586,7 +589,7 @@ func (d *driver) superviseRow(row record.OutboxRow, payload record.SuperviseRequ
 	}
 	switch {
 	case payload.Op == "tree_close":
-		return d.closeTree(row, payload, *issue, token)
+		return d.closeTree(row, payload, token)
 	case payload.Op == "suspend" && payload.Tree != issue.Tree:
 		c, found := d.claims[token]
 		if !found || c.Tree != payload.Tree {
@@ -739,8 +742,7 @@ func (d *driver) start(row record.OutboxRow, payload record.SuperviseRequest, is
 		return d.finish(row)
 	}
 	c.LastStartRow = row.ID
-	if state == supervise.StateQueued || state == supervise.StateSuspended || state == supervise.StateFailed ||
-		state == supervise.StateRetired {
+	if c.RunsNothing() {
 		d.launch(&c, state == supervise.StateSuspended)
 	}
 	ranNothing := state == supervise.StateFailed || state == supervise.StateRetired
@@ -824,7 +826,7 @@ func (d *driver) launch(c *supervise.Claim, resumed bool) {
 	if resumed {
 		resumedBy = "id"
 	}
-	d.log.Info("supervise: launched", "claim", string(c.Token), "generation", c.Generation,
+	d.log.Info(launchedLine, "claim", string(c.Token), "generation", c.Generation,
 		"incarnation", fmt.Sprintf("replay%08x", c.Generation), "resumed", resumed, "resumedBy", resumedBy)
 }
 
@@ -932,7 +934,7 @@ func (d *driver) gateClosed(issue record.Issue) (bool, error) {
 // left the workflow.
 func (d *driver) suspend(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
 	c, found := d.claims[token]
-	if !found || c.State == supervise.StateFailed || c.State == supervise.StateRetired || c.State == supervise.StateSuspended ||
+	if !found || c.Gone() ||
 		!workflow.StopActs(row.ID, payload, c.LastStartRow, nil) {
 		return d.finish(row)
 	}
@@ -962,14 +964,14 @@ func (d *driver) suspend(row record.OutboxRow, payload record.SuperviseRequest, 
 	if err := d.writeClaim(c, pending); err != nil {
 		return err
 	}
-	d.log.Info("supervise: suspended", "claim", string(token), "reason", payload.Reason, "by", string(supervise.SuspendedByDaemon))
+	d.log.Info(suspendedLine, "claim", string(token), "reason", payload.Reason, "by", string(supervise.SuspendedByDaemon))
 	return d.finish(row)
 }
 
 // closeTree runs a tree's close as the outbox's does: it acts only while the tree's root still
 // lingers at the generation the close names (workflow.StopActs), and then retires the claim and
 // cancels the segments it works.
-func (d *driver) closeTree(row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue, token claim.Token) error {
+func (d *driver) closeTree(row record.OutboxRow, payload record.SuperviseRequest, token claim.Token) error {
 	c, found := d.claims[token]
 	if !found {
 		return d.finish(row)
@@ -1106,11 +1108,11 @@ func (d *driver) ensureClaim(key string, role claim.Role) (supervise.Claim, bool
 	return c, true, nil
 }
 
-// writeTurnStart is a turn of key's role's worker beginning, in p: its claim in the turn
+// writeTurnStart is a turn of key's role's worker beginning: its claim in the turn
 // (supervise.StateWorking) from now, the step the turn records, and the line the turn writes
 // (`supervise: a turn started`, with the delivery the turn works where the claim holds one). A turn
 // no claim can be admitted for writes nothing (ensureClaim).
-func (d *driver) writeTurnStart(key string, role claim.Role, p *piece) error {
+func (d *driver) writeTurnStart(key string, role claim.Role) error {
 	c, held, err := d.ensureClaim(key, role)
 	if err != nil || !held {
 		return err
@@ -1126,12 +1128,7 @@ func (d *driver) writeTurnStart(key string, role claim.Role, p *piece) error {
 	if _, err := d.st.PutClaimStep(d.ctx, c.Token, supervise.StepRecord{At: now, TurnStartedAt: now}); err != nil {
 		return fmt.Errorf("write the step of the claim %s: %w", c.Token, err)
 	}
-	args := []any{"claim", string(c.Token), "generation", c.Generation}
-	if c.Pending != nil {
-		args = append(args, "delivery", c.Pending.ID)
-	}
-	d.log.Info("supervise: a turn started", args...)
-	d.working[c.Token] = p
+	d.log.Info(turnStartedLine, turnLineArgs(c)...)
 	return d.settled(key, role)
 }
 
@@ -1150,13 +1147,18 @@ func (d *driver) writeTurnEnd(key string, role claim.Role) error {
 	if err := d.putClaim(c); err != nil {
 		return err
 	}
+	d.log.Info(turnEndedLine, turnLineArgs(c)...)
+	return d.settled(key, role)
+}
+
+// turnLineArgs is the attributes of the line a turn of c writes as it starts or ends: the claim, its
+// generation, and the delivery the turn works where the claim holds one.
+func turnLineArgs(c supervise.Claim) []any {
 	args := []any{"claim", string(c.Token), "generation", c.Generation}
 	if c.Pending != nil {
 		args = append(args, "delivery", c.Pending.ID)
 	}
-	d.log.Info("supervise: a turn ended", args...)
-	delete(d.working, token)
-	return d.settled(key, role)
+	return args
 }
 
 // settled applies Settled where the claim the stub just changed is a root architect's and its root

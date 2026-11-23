@@ -49,6 +49,11 @@ type shadowIssue struct {
 	seq int64
 	// payload is the issue as Dispatch shows it now, nil before its first issue event.
 	payload map[string]json.RawMessage
+	// shownStatus, shownParent, shownLabels and shownBlockers are the payload's status, parent,
+	// labels and blocked_by as str and strs read them, decoded at each write of those fields
+	// (decodeShown: take and statusWrite) rather than at each read.
+	shownStatus, shownParent   string
+	shownLabels, shownBlockers []string
 	// recorded is the payload of the issue's last recorded issue event, whoever wrote it, which
 	// the next recorded issue event's change is read against.
 	recorded map[string]json.RawMessage
@@ -124,18 +129,28 @@ type envelope struct {
 }
 
 // readEnvelope reads one recorded event, raw, whose envelope parsed already holds
-// (ParseDispatchEvent): its top-level fields and its payload, each by name.
+// (ParseDispatchEvent): its top-level fields and its payload, each by name; a payload of null
+// reads as none.
 func readEnvelope(raw json.RawMessage, parsed DispatchEvent) (envelope, error) {
 	e := envelope{key: parsed.Key, project: parsed.Project, kind: parsed.Type, actor: parsed.Actor}
 	if err := json.Unmarshal(raw, &e.fields); err != nil {
 		return envelope{}, fmt.Errorf("replay: read a recorded Dispatch event: %w", err)
 	}
-	if payload, ok := e.fields["payload"]; ok && !bytes.Equal(bytes.TrimSpace(payload), []byte("null")) {
+	if payload, ok := e.fields["payload"]; ok {
 		if err := json.Unmarshal(payload, &e.payload); err != nil {
 			return envelope{}, fmt.Errorf("replay: read the payload of a recorded %s event of %s: %w", e.kind, e.key, err)
 		}
 	}
 	return e, nil
+}
+
+// decodePayload decodes e's payload into into from the bytes the event carries, the bytes e.payload
+// was read from; an event with no payload leaves into as it is.
+func decodePayload(e envelope, into any) error {
+	if e.payload == nil {
+		return nil
+	}
+	return json.Unmarshal(e.fields["payload"], into)
 }
 
 // issueEvent says whether kind is an event of an issue's own fields, which carries the whole
@@ -205,6 +220,7 @@ func (s *shadow) take(iss *shadowIssue, e envelope, at time.Time) (json.RawMessa
 			}
 		}
 		iss.recorded = e.payload
+		iss.decodeShown()
 		iss.stamp(at)
 		payload, err := iss.render(s.ranks)
 		if err != nil {
@@ -254,25 +270,22 @@ func (iss *shadowIssue) event(fields map[string]json.RawMessage, at time.Time) (
 	return raw, nil
 }
 
+// versionPayload is what the replay reads of an artifact.version event's payload: the document it
+// writes a version of and the version's number.
+type versionPayload struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    struct {
+		Number int `json:"number"`
+	} `json:"version"`
+}
+
 // notePayload reads what a non-issue event says of the issue's asks and documents, at the
 // sequence the shadow gave it.
 func (s *shadow) notePayload(iss *shadowIssue, e envelope, at time.Time) error {
-	read := func(into any) error {
-		raw, err := json.Marshal(e.payload)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(raw, into)
-	}
 	switch e.kind {
 	case "artifact.version":
-		var payload struct {
-			ArtifactID string `json:"artifact_id"`
-			Version    struct {
-				Number int `json:"number"`
-			} `json:"version"`
-		}
-		if err := read(&payload); err != nil {
+		var payload versionPayload
+		if err := decodePayload(e, &payload); err != nil {
 			return err
 		}
 		document := iss.document(payload.ArtifactID)
@@ -289,7 +302,7 @@ func (s *shadow) notePayload(iss *shadowIssue, e envelope, at time.Time) error {
 			Version    int     `json:"version"`
 			Reason     *string `json:"reason"`
 		}
-		if err := read(&payload); err != nil {
+		if err := decodePayload(e, &payload); err != nil {
 			return err
 		}
 		document := iss.document(payload.ArtifactID)
@@ -311,7 +324,7 @@ func (s *shadow) notePayload(iss *shadowIssue, e envelope, at time.Time) error {
 				RequestedVersion int    `json:"requested_version"`
 			} `json:"approval"`
 		}
-		if err := read(&payload); err != nil {
+		if err := decodePayload(e, &payload); err != nil {
 			return err
 		}
 		ask, known := iss.asks[payload.ID]
@@ -340,7 +353,7 @@ func (s *shadow) notePayload(iss *shadowIssue, e envelope, at time.Time) error {
 			AskID        string `json:"ask_id"`
 			AskWaitingOn string `json:"ask_waiting_on"`
 		}
-		if err := read(&payload); err != nil {
+		if err := decodePayload(e, &payload); err != nil {
 			return err
 		}
 		if ask, known := iss.asks[payload.AskID]; known && payload.AskWaitingOn != "" {
@@ -384,6 +397,7 @@ func (s *shadow) statusWrite(key, status string, handOver bool, at time.Time) (j
 			iss.payload["labels"] = mustJSON(append(labels, dispatch.LegionLabel))
 		}
 	}
+	iss.decodeShown()
 	iss.stamp(at)
 	payload, err := iss.render(s.ranks)
 	if err != nil {
@@ -454,7 +468,7 @@ type jsonActor struct {
 }
 
 // status is the issue's status as the shadow holds it, "" for an issue it holds no payload of.
-func (iss *shadowIssue) status() string { return iss.str("status") }
+func (iss *shadowIssue) status() string { return iss.shownStatus }
 
 // str is the string field name of the payload, "" where it is absent or null.
 func (iss *shadowIssue) str(name string) string {
@@ -477,10 +491,17 @@ func (iss *shadowIssue) strs(name string) []string {
 	return value
 }
 
-// labels, parent and blockers are the payload's.
-func (iss *shadowIssue) labels() []string   { return iss.strs("labels") }
-func (iss *shadowIssue) parent() string     { return iss.str("parent") }
-func (iss *shadowIssue) blockers() []string { return iss.strs("blocked_by") }
+// decodeShown reads the payload's status, parent, labels and blocked_by into the fields their
+// readers answer from, after a write of the payload.
+func (iss *shadowIssue) decodeShown() {
+	iss.shownStatus, iss.shownParent = iss.str("status"), iss.str("parent")
+	iss.shownLabels, iss.shownBlockers = iss.strs("labels"), iss.strs("blocked_by")
+}
+
+// labels, parent and blockers are the payload's, each list the caller's own copy.
+func (iss *shadowIssue) labels() []string   { return slices.Clone(iss.shownLabels) }
+func (iss *shadowIssue) parent() string     { return iss.shownParent }
+func (iss *shadowIssue) blockers() []string { return slices.Clone(iss.shownBlockers) }
 
 // rank is the rank the replay shows the issue at.
 func (s *shadow) rank(iss *shadowIssue) string {
@@ -542,12 +563,11 @@ func (s *shadow) chain(key, parent string) []string {
 // (dispatch.Approval): its latest version, the verdict on that version, and the approval request
 // open on it and whose turn it stands on.
 type approval struct {
-	latest          int
-	approved        *shadowVerdict
-	changes         *shadowVerdict
-	ask, waitingOn  string
-	latestReviewer  dispatch.Actor
-	latestReviewSeq record.EventMark
+	latest         int
+	approved       *shadowVerdict
+	changes        *shadowVerdict
+	ask, waitingOn string
+	latestReviewer dispatch.Actor
 }
 
 // approvalOf is the approval of artifact on key as the shadow holds it.
@@ -570,7 +590,7 @@ func (s *shadow) approvalOf(key, artifact string) approval {
 			} else {
 				read.changes = verdict
 			}
-			read.latestReviewer, read.latestReviewSeq = verdict.actor, verdict.mark
+			read.latestReviewer = verdict.actor
 		}
 	}
 	for _, id := range slices.Sorted(maps.Keys(iss.asks)) {
@@ -607,9 +627,12 @@ func (s *shadow) approvedBefore(artifact string, version int) int {
 
 // sameJSON says whether a and b are one JSON value written alike, spaces aside.
 func sameJSON(a, b json.RawMessage) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
 	var x, y bytes.Buffer
 	if json.Compact(&x, a) != nil || json.Compact(&y, b) != nil {
-		return bytes.Equal(a, b)
+		return false
 	}
 	return bytes.Equal(x.Bytes(), y.Bytes())
 }

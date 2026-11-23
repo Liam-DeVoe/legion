@@ -204,18 +204,23 @@ func Decide(rules []string, branches []BranchCosts) Decision {
 				best = false
 				continue
 			}
-			if standingOf(costs, main) != StandingBetter {
-				best = false
-			}
+			// The rule stands better than main on the branch (standingOf) where it is better on some
+			// measure and worse on none.
+			better, worse := false, false
 			for i, m := range costMeasures {
 				switch judge(m, m.of(costs), m.of(main)) {
 				case verdictBetter:
 					trade.Measures[i].Better++
+					better = true
 				case verdictWorse:
 					trade.Measures[i].Worse++
+					worse = true
 				default:
 					trade.Measures[i].Level++
 				}
+			}
+			if !better || worse {
+				best = false
 			}
 		}
 		if best {
@@ -334,8 +339,8 @@ func RunCompare(ctx context.Context, cfg CompareConfig) error {
 			return err
 		}
 	}
-	if names[0] == names[1] {
-		return fmt.Errorf("replay: both windows go by the name %s; a window goes by its directory's name", names[0])
+	if err := distinctNames(names[0], names[1]); err != nil {
+		return err
 	}
 	if heads[0].From.After(heads[1].From) {
 		return fmt.Errorf("replay: the window %s starts after %s; give the window before the change of the rule first", names[0], names[1])
@@ -405,6 +410,15 @@ func ruleNames(rules []record.SlotRule) string {
 		names = append(names, rule.Name)
 	}
 	return strings.Join(names, ", ")
+}
+
+// distinctNames refuses two windows that go by one name, before's and after's: a window goes by its
+// directory's name, and a comparison and a forecast read each window by it.
+func distinctNames(before, after string) error {
+	if before == after {
+		return fmt.Errorf("replay: both windows go by the name %s; a window goes by its directory's name", before)
+	}
+	return nil
 }
 
 // ValidateConfig is a validation of one window (RunValidate): the window, the rule its daemon ran,
@@ -484,8 +498,8 @@ func RunForecast(ctx context.Context, cfg ForecastConfig) (ForecastResult, error
 	if err != nil {
 		return ForecastResult{}, err
 	}
-	if before == after {
-		return ForecastResult{}, fmt.Errorf("replay: both windows go by the name %s; a window goes by its directory's name", before)
+	if err := distinctNames(before, after); err != nil {
+		return ForecastResult{}, err
 	}
 	rule := cfg.Rule.OrMain()
 	specs := []windowSpec{
@@ -570,17 +584,16 @@ func (r Runs) readComparison() (comparison, error) {
 					}
 					c.branches = append(c.branches, at)
 				}
+				for _, run := range slices.Concat(part.plan.Branches, part.plan.BreakEven) {
+					if run.Branch == MainBranch.Name && !slices.Contains(c.factors, run.Slowdown) {
+						c.factors = append(c.factors, run.Slowdown)
+					}
+				}
 				continue
 			}
 			if !slices.Equal(labels, plan) {
 				return comparison{}, fmt.Errorf("replay: the part of %s under %s ran other branches than the part of %s under %s", w.Name, rule, c.windows[0].Name, c.rules[0])
 			}
-		}
-	}
-	first := r.parts[partKey{window: c.windows[0].Name, rule: c.rules[0]}]
-	for _, run := range slices.Concat(first.plan.Branches, first.plan.BreakEven) {
-		if run.Branch == MainBranch.Name && !slices.Contains(c.factors, run.Slowdown) {
-			c.factors = append(c.factors, run.Slowdown)
 		}
 	}
 	slices.Sort(c.factors)
@@ -788,13 +801,7 @@ func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
 	p.line("")
 	p.line("Each rule's trade against `main` over the %d branches that pass R5: on how many it is better, worse by more than R5's gap, and neither.", decision.Branches)
 	p.line("")
-	header, rule := "| rule |", "| --- |"
-	for _, m := range costMeasures {
-		header += " " + m.name + " |"
-		rule += " --- |"
-	}
-	p.line("%s", header)
-	p.line("%s", rule)
+	p.line("%s", tableHead("rule", costMeasureNames()))
 	for _, trade := range decision.Trades {
 		row := "| `" + trade.Rule + "` |"
 		for _, m := range trade.Measures {
@@ -805,8 +812,7 @@ func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
 	p.line("")
 	p.line("Each rule's costs and `main`'s on the main branch of each window:")
 	p.line("")
-	p.line("| window | rule | done | waitOnlyForSlot.hours | priorityTaken | otherDelays.hours | standing against main |")
-	p.line("| --- | --- | --- | --- | --- | --- | --- |")
+	p.line("%s", tableHead("window", slices.Concat([]string{"rule"}, costMeasureNames(), []string{"standing against main"})))
 	for _, w := range c.windows {
 		main, _ := c.costsAt(w.Name, record.MainRule.Name, MainBranchAt.Label())
 		for _, rule := range c.rules {
@@ -818,23 +824,36 @@ func (c comparison) writeDecision(p *printer, forecast ForecastResult) {
 			if rule != record.MainRule.Name {
 				standing = string(standingOf(costs, main))
 			}
-			p.line("| %s | `%s` | %s | %s | %s | %s | %s |", w.Name, rule, formatNumber(costs.Done), formatNumber(costs.WaitOnlyForSlot),
-				formatNumber(costs.PriorityTaken), formatNumber(costs.OtherDelays), standing)
+			row := "| " + w.Name + " | `" + rule + "` |"
+			for _, m := range costMeasures {
+				row += " " + formatNumber(m.of(costs)) + " |"
+			}
+			p.line("%s", row+" "+standing+" |")
 		}
 	}
 	p.line("")
 }
 
+// costMeasureNames is the name of each measure a rule's costs are judged on (costMeasures), in
+// their order.
+func costMeasureNames() []string {
+	names := make([]string, 0, len(costMeasures))
+	for _, m := range costMeasures {
+		names = append(names, m.name)
+	}
+	return names
+}
+
 // codeList is names, each in code, separated by commas.
-func codeList(names []string) string {
+func codeList[S ~string](names []S) string {
 	return strings.Join(coded(names), ", ")
 }
 
 // coded is each of names in code.
-func coded(names []string) []string {
+func coded[S ~string](names []S) []string {
 	out := make([]string, 0, len(names))
 	for _, name := range names {
-		out = append(out, "`"+name+"`")
+		out = append(out, "`"+string(name)+"`")
 	}
 	return out
 }
@@ -1023,6 +1042,14 @@ func (c comparison) writeBreakEven(p *printer) {
 	p.line("A rule's rank against `main` is its standing on the main branch: better, worse, a trade, or level (the rule named best is better on every branch).")
 	p.line("The break-even factor is the first slowdown factor of the search at which that standing differs from its standing at the first.")
 	p.line("")
+	results := map[partKey]BreakEvenResult{}
+	for _, rule := range c.rules {
+		for _, w := range c.windows {
+			if rule != record.MainRule.Name {
+				results[partKey{window: w.Name, rule: rule}] = c.breakEven(w.Name, rule)
+			}
+		}
+	}
 	p.line("%s", tableHead("rule", windowNames(c.windows)))
 	top := formatNumber(c.factors[len(c.factors)-1])
 	for _, rule := range c.rules {
@@ -1031,7 +1058,7 @@ func (c comparison) writeBreakEven(p *printer) {
 		}
 		row := "| `" + rule + "` |"
 		for i, w := range c.windows {
-			result := c.breakEven(w.Name, rule)
+			result := results[partKey{window: w.Name, rule: rule}]
 			switch {
 			case !c.validations[i].MainPasses():
 				row += " no comparison: the window's main branch fails R5 |"
@@ -1059,7 +1086,7 @@ func (c comparison) writeBreakEven(p *printer) {
 			if rule == record.MainRule.Name {
 				continue
 			}
-			result := c.breakEven(w.Name, rule)
+			result := results[partKey{window: w.Name, rule: rule}]
 			row := "| `" + rule + "` |"
 			for _, f := range c.factors {
 				row += " " + string(standingAt(result, f)) + " |"

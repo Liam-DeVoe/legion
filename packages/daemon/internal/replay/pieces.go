@@ -38,7 +38,7 @@ const (
 // openSeeded runs each piece under way at the window's start at its recorded times: the start
 // state's claims stand in its worker, so only its acts from the start on are entered.
 func (d *driver) openSeeded() {
-	for _, key := range sortedKeys(d.script.pieces) {
+	for _, key := range slices.Sorted(maps.Keys(d.script.pieces)) {
 		for _, p := range d.script.pieces[key] {
 			if p.opens == opensAtSeed && p.state == pieceWaiting {
 				d.openPiece(p, p.start, true)
@@ -106,7 +106,6 @@ func (d *driver) runningPiece(key string, role claim.Role) *piece {
 // before it. Its acts at its very start are queued at once.
 func (d *driver) openPiece(p *piece, at time.Time, seeded bool) {
 	p.state, p.at, p.turns = pieceRunning, at, map[claim.Role]bool{}
-	d.used[1] = true
 	if seeded {
 		d.sizePiece(p, at, p.m, true)
 		return
@@ -165,11 +164,11 @@ func (d *driver) sizePiece(p *piece, at time.Time, n int, seeded bool) {
 func (d *driver) queueAct(p *piece, a act, when time.Time) {
 	switch a.kind {
 	case actTurnStart:
-		d.push(&item{at: when, class: classTurnStart, rec: a.rec, piece: p, run: func() error { return d.turnStarts(p, a.role, a.turn) }})
+		d.push(&item{at: when, class: classTurnStart, rec: a.rec, piece: p, run: func() error { return d.turnStarts(p, a.role) }})
 	case actTurnEnd:
-		d.push(&item{at: when, class: classTurnEnd, rec: a.rec, piece: p, run: func() error { return d.turnEnds(p, a.role, a.turn) }})
+		d.push(&item{at: when, class: classTurnEnd, rec: a.rec, piece: p, run: func() error { return d.turnEnds(p, a.role) }})
 	case actEvent:
-		d.placePieceEvent(a, when, p)
+		d.queueEvent(a.event, when, a.rec, p)
 	case actRegistration:
 		d.push(&item{at: when, class: classAct, rec: a.rec, order: lineOrder + int64(a.order), piece: p,
 			run: func() error { return d.register(p.issue, d.gateFor(p, a.gate)) }})
@@ -184,42 +183,18 @@ func (d *driver) queueAct(p *piece, a act, when time.Time) {
 	}
 }
 
-// placePieceEvent queues the recorded event of a, an act of p's work, at when, ordered among the
-// items of its instant by the act's moment in the record of p's work: the event's own, or, for an
-// event another piece's work took over (giveEvents), its moment in that work. A person's answer to
-// it is placed once it is applied (placeAnswers).
-func (d *driver) placePieceEvent(a act, when time.Time, p *piece) {
-	i := a.event
-	event := &d.script.events[i]
-	if event.placed {
-		return
-	}
-	event.placed = true
-	d.placed[i] = when
-	var applied []byte
-	d.push(&item{at: when, class: classAct, rec: a.rec, order: int64(event.order), piece: p, eventKey: event.env.key,
-		eventKind: event.env.kind,
-		dispatch: func() error {
-			var err error
-			event.dispatched = true
-			applied, err = d.dispatchEvent(i)
-			d.placeAnswers(event)
-			return err
-		},
-		run: func() error { return d.applyEvent(i, applied) }})
-}
-
 // passOver passes over p, a piece of work the replay has not opened and will not run: its
 // recorded events are placed by their anchors (placeUnrun).
 func (d *driver) passOver(p *piece) {
-	p.state = pieceSkipped
+	p.state, p.pending = pieceSkipped, nil
 	d.placeUnrun(p)
 }
 
 // cancelPiece cancels p, running or paused, so nothing more of its work goes on: its recorded
-// events still to come in it are placed by their anchors (placeUnrun).
+// events still to come in it are placed by their anchors (placeUnrun), and the items it held are
+// let go, since only a paused piece's resume reads them.
 func (d *driver) cancelPiece(p *piece) {
-	p.state = pieceCancelled
+	p.state, p.pending = pieceCancelled, nil
 	d.placeUnrun(p)
 }
 
@@ -236,7 +211,7 @@ func (d *driver) placeUnrun(p *piece) {
 		if event.piece != p || event.dispatched {
 			continue
 		}
-		event.piece, event.placed = nil, false
+		event.piece = nil
 		delete(d.placed, a.event)
 		d.placeByAnchor(a.event)
 	}
@@ -278,15 +253,12 @@ func (d *driver) resumePiece(p *piece) error {
 		}
 		it.done = true
 		again := *it
-		again.done, again.at = false, it.at.Add(shift)
-		if again.at.Before(now) {
-			again.at = now
-		}
+		again.done, again.at = false, maxTime(it.at.Add(shift), now)
 		d.push(&again)
 	}
 	for _, role := range slices.Sorted(maps.Keys(p.turns)) {
 		if p.turns[role] {
-			if err := d.writeTurnStart(p.issue, role, p); err != nil {
+			if err := d.writeTurnStart(p.issue, role); err != nil {
 				return err
 			}
 		}
@@ -315,12 +287,12 @@ func (d *driver) cancelWork(key string) {
 func (d *driver) endPiece(p *piece) error {
 	for _, role := range slices.Sorted(maps.Keys(p.turns)) {
 		if p.turns[role] {
-			if err := d.turnEnds(p, role, nil); err != nil {
+			if err := d.turnEnds(p, role); err != nil {
 				return err
 			}
 		}
 	}
-	p.state = pieceEnded
+	p.state, p.pending = pieceEnded, nil
 	if p.ends == endFailure {
 		return d.failPiece(p)
 	}
@@ -389,8 +361,10 @@ func (d *driver) enterRecorded(p *piece) error {
 	for _, number := range move.Source.Assumptions {
 		d.used[number] = true
 	}
+	var pr *record.PullRequest
 	if move.Trigger == workflow.TriggerImplementationReady || move.Trigger == workflow.TriggerPullRequestMerged || pastImplementing(move.From) {
-		if err := d.ensurePullRequest(p.issue); err != nil {
+		var err error
+		if pr, err = d.ensurePullRequest(p.issue); err != nil {
 			return err
 		}
 	}
@@ -426,12 +400,9 @@ func (d *driver) enterRecorded(p *piece) error {
 		case workflow.TriggerSignOff:
 			return d.signOff(p.issue)
 		case workflow.TriggerPullRequestMerged:
-			pr, err := d.pullRequestOf(p.issue)
-			if err != nil || pr == nil {
-				if err == nil {
-					refuse(fmt.Sprintf("%s holds no pull request record to merge", p.issue))
-				}
-				return err
+			if pr == nil {
+				refuse(fmt.Sprintf("%s holds no pull request record to merge", p.issue))
+				return nil
 			}
 			if _, err := d.apply("github", d.factID("merge", p.issue, pr.Number), intake.PullRequestMerged{Repo: pr.Repo, Number: pr.Number,
 				MergeSHA: fmt.Sprintf("replay-merge-%s-%d", p.issue, pr.Number), HeadSHA: pr.HeadSHA}); err != nil {
@@ -441,9 +412,7 @@ func (d *driver) enterRecorded(p *piece) error {
 		case workflow.TriggerBackward:
 			if move.Drop != "" {
 				d.drops[p.issue] = move.Drop
-				if err := d.queueLeft(p.issue, move); err != nil {
-					return err
-				}
+				d.queueLeft(p.issue, move, pr)
 			}
 			result, err := d.apply("api", d.factID("backward", p.issue, to), intake.BackwardMove{Issue: p.issue,
 				Requester: phaseRole(move.From), To: to, Reason: fmt.Sprintf("the record's move back from %s to %s", move.From, to)})
@@ -461,15 +430,15 @@ func (d *driver) enterRecorded(p *piece) error {
 
 // queueLeft writes, just before the replay enters key's recorded move back out of merging, the line
 // of key's pull request leaving the merge queue that the record shows before that move (Move.Drop):
-// the msg and attributes of the daemon's own line (workflow's dequeued), on the replay's own pull
-// request record of key, which stands in for the issue's (assumption 29), with the recorded line's
-// reason where it gives one. The merge queue is GitHub's, so no code the replay runs writes the
-// line, and without it the line timeline, whose trace reads the replay's own log as a record's is
-// read (CauseOf), would name the loop send_back where the snapshot timeline names it queue_drop.
-func (d *driver) queueLeft(key string, move *Move) error {
-	pr, err := d.pullRequestOf(key)
-	if err != nil || pr == nil {
-		return err
+// the msg and attributes of the daemon's own line (workflow's dequeued), on pr, the replay's own pull
+// request record of key (nil for none, which writes nothing), which stands in for the issue's
+// (assumption 29), with the recorded line's reason where it gives one. The merge queue is GitHub's,
+// so no code the replay runs writes the line, and without it the line timeline, whose trace reads
+// the replay's own log as a record's is read (CauseOf), would name the loop send_back where the
+// snapshot timeline names it queue_drop.
+func (d *driver) queueLeft(key string, move *Move, pr *record.PullRequest) {
+	if pr == nil {
+		return
 	}
 	args := []any{"issue", key, "pullRequest", pr.Number, "head", pr.HeadSHA}
 	if iss, ok := d.trace.Issues[key]; ok {
@@ -484,7 +453,6 @@ func (d *driver) queueLeft(key string, move *Move) error {
 		}
 	}
 	d.log.Info(move.Drop, args...)
-	return nil
 }
 
 // merged counts the merge of key's pull request the replay applied by move: one that left key
@@ -530,7 +498,7 @@ func (d *driver) stretchEnds(p *piece) error {
 		if next.state != pieceWaiting {
 			continue
 		}
-		if next.phase == p.phase && next.visit != nil && next.visit.In != nil && next.visit.In.To == p.phase {
+		if next.returnsTo(p.phase) {
 			next.stretchDrawn = true
 			d.openPiece(next, d.clock.Instant(), false)
 			return nil
@@ -602,7 +570,7 @@ func (d *driver) failPiece(p *piece) error {
 // start, which the start state places (Seed) and no failure of the replay's begins: each at its
 // recorded time, the hold having begun at its recorded start (queueHoldEnd).
 func (d *driver) releaseSeededHolds() {
-	for _, key := range sortedKeys(d.script.pieces) {
+	for _, key := range slices.Sorted(maps.Keys(d.script.pieces)) {
 		iss := d.trace.Issues[key]
 		for i := range iss.Waits {
 			if hold := &iss.Waits[i]; hold.Kind == WaitHeld && standsAt(hold.Start, hold.End, d.window.From) {
@@ -674,7 +642,7 @@ func (d *driver) claimFailed(failed ClaimFailed) error {
 			return err
 		}
 	}
-	d.log.Error("supervise: claim failed", "claim", string(token), "cause", failed.Cause, "why", failed.Why)
+	d.log.Error(claimFailedLine, "claim", string(token), "cause", failed.Cause, "why", failed.Why)
 	_, err = d.apply("supervise", d.factID("claim-failed", key, role), intake.ClaimFailed{Issue: key, Role: role, Reason: failed.Why,
 		Cause: supervise.FailureCause(failed.Cause)})
 	return err
@@ -736,25 +704,32 @@ func (d *driver) readyMark(key string) error {
 	return err
 }
 
-// ensurePullRequest writes the replay's own open pull request record of key where it holds none,
+// ensurePullRequest is the replay's own pull request record of key, written where it holds none,
 // on the issue's repository and branch against its default branch, at the number the run gives
 // key's record in that repository (pullRequestNumbers), its head arriving now as a live webhook's
-// would: the record the daemon's guards read.
-func (d *driver) ensurePullRequest(key string) error {
+// would: the record the daemon's guards read. It answers the record as the database holds it once
+// written, read back in the same transaction; nil for an issue the replay does not record.
+func (d *driver) ensurePullRequest(key string) (*record.PullRequest, error) {
 	pr, err := d.pullRequestOf(key)
 	if err != nil || pr != nil {
-		return err
+		return pr, err
 	}
 	issue, err := d.recorded(key)
 	if err != nil || issue == nil {
-		return err
+		return nil, err
 	}
 	d.used[assumeNoGitHub] = true
 	arrived := d.now()
-	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return d.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: issue.Repo, Number: d.numbers.of(key, issue.Repo),
-			Branch: claim.IssueBranch(key), Base: issue.DefaultBranch, HeadUpdatedAt: arrived, State: record.PullRequestOpen})
+	err = store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := d.records.PutPullRequest(ctx, tx, record.PullRequest{Issue: key, Repo: issue.Repo, Number: d.numbers.of(key, issue.Repo),
+			Branch: claim.IssueBranch(key), Base: issue.DefaultBranch, HeadUpdatedAt: arrived, State: record.PullRequestOpen}); err != nil {
+			return err
+		}
+		var err error
+		pr, err = d.records.PullRequest(ctx, tx, key)
+		return err
 	})
+	return pr, err
 }
 
 // pullRequestNumbers is the number of the replay's own pull request record of each issue
@@ -787,7 +762,7 @@ type repositoryNumber struct {
 // issue's pull request); and last, for each issue left, the next number above every number given
 // in its repository.
 func newPullRequestNumbers(t Trace) *pullRequestNumbers {
-	keys := sortedKeys(t.Issues)
+	keys := slices.Sorted(maps.Keys(t.Issues))
 	n := &pullRequestNumbers{numbered: make(map[string]repositoryNumber, len(keys)), top: map[string]int{}}
 	taken := make(map[repositoryNumber]bool, len(keys))
 	give := func(key string, at repositoryNumber) {
@@ -804,7 +779,7 @@ func newPullRequestNumbers(t Trace) *pullRequestNumbers {
 		if _, numbered := n.numbered[key]; numbered {
 			continue
 		}
-		_, suffix, _ := cutKey(key)
+		_, suffix, _ := strings.Cut(key, "-")
 		number, err := strconv.Atoi(suffix)
 		if at := (repositoryNumber{repo: strings.ToLower(t.Issues[key].Repo), number: number}); err == nil && number > 0 && !taken[at] {
 			give(key, at)
@@ -843,26 +818,16 @@ func (d *driver) pullRequestOf(key string) (*record.PullRequest, error) {
 }
 
 // turnStarts is a recorded turn of role's worker beginning in p: its claim is in a turn.
-func (d *driver) turnStarts(p *piece, role claim.Role, _ *Turn) error {
+func (d *driver) turnStarts(p *piece, role claim.Role) error {
 	p.turns[role] = true
-	return d.writeTurnStart(p.issue, role, p)
+	return d.writeTurnStart(p.issue, role)
 }
 
 // turnEnds is a turn of role's worker in p ending.
-func (d *driver) turnEnds(p *piece, role claim.Role, _ *Turn) error {
+func (d *driver) turnEnds(p *piece, role claim.Role) error {
 	if !p.turns[role] {
 		return nil
 	}
 	p.turns[role] = false
 	return d.writeTurnEnd(p.issue, role)
-}
-
-// sortedKeys is the keys of m, in order.
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	return keys
 }

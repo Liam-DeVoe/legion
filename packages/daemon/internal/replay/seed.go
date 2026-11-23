@@ -116,10 +116,7 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 			return SeedReport{}, err
 		}
 	}
-	for _, fact := range t.Unplaced {
-		if _, considered := t.Issues[fact.Issue]; !considered || !bearsOnStart(fact, at) {
-			continue
-		}
+	for _, fact := range startDoubts(t, at) {
 		if fact.At.Before(at) {
 			s.unplaced(fact.Issue, "the trace could not place a fact of it before the window's start: %s", fact.Reason)
 		} else {
@@ -128,6 +125,19 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 	}
 	return SeedReport{Unplaced: s.report, LeftOut: s.leftOut, InferredSlots: s.inferred, SlotCount: t.SlotCount,
 		ChildrenTold: s.childrenTold}, nil
+}
+
+// startDoubts is each fact of t the trace could not place that leaves in doubt what a start state
+// at at writes (bearsOnStart), of an issue the trace holds: the facts a start state names its
+// issues for (SeedAndReport), and a record's scorecard counts (unplacedAtStart).
+func startDoubts(t Trace, at time.Time) []UnplacedFact {
+	var doubts []UnplacedFact
+	for _, fact := range t.Unplaced {
+		if _, considered := t.Issues[fact.Issue]; considered && bearsOnStart(fact, at) {
+			doubts = append(doubts, fact)
+		}
+	}
+	return doubts
 }
 
 // bearsOnStart says whether fact, which the trace could not place, leaves in doubt what a start
@@ -415,7 +425,7 @@ func (s *seeder) gates() error {
 				gate.EverOpened = true
 			case GateClosedFact:
 				gate.LatestVersion = max(gate.LatestVersion, version)
-				if fact.Event == string(GateChangesRequested) {
+				if fact.Event == string(intake.DispatchArtifactChangesRequested) {
 					gate.ApprovedVersion, gate.ApprovedMark = nil, record.EventMark{}
 					gate.ToldChangesVersion = &version
 				}
@@ -486,7 +496,7 @@ func (s *seeder) told() error {
 		if err != nil {
 			return err
 		}
-		if len(rows) == 0 || record.OutOfWorkflow(issue.Status) || issue.Phase == phase.Done {
+		if len(rows) == 0 || !record.InWorkflow(issue) {
 			continue
 		}
 		live[issue.Tree] = true
@@ -527,14 +537,11 @@ func (s *seeder) childrenToldMarks() error {
 	for _, key := range s.placedKeys() {
 		issue, iss := s.placed[key], s.t.Issues[key]
 		root, placed := s.placed[issue.Tree]
-		rootIss := s.t.Issues[issue.Tree]
-		if !inWorkflow(issue) || !placed || rootIss == nil {
+		if !inWorkflow(issue) || !placed {
 			continue
 		}
-		run, _ := s.run(rootIss)
-		if run == nil {
-			continue
-		}
+		// A placed root is one the trace holds, placed in its current run.
+		run, _ := s.run(s.t.Issues[issue.Tree])
 		i := slices.IndexFunc(iss.Waits, func(wait Wait) bool {
 			return wait.Kind == WaitChildren && wait.Told && !wait.Start.Before(run.At) && wait.Start.Before(s.at) &&
 				treeOf(iss, wait.Start) == issue.Tree
@@ -589,7 +596,7 @@ func (s *seeder) asks() error {
 			if event.Ask.Artifact != "" {
 				row.Artifact = event.Ask.Artifact
 			}
-			person := event.Actor.Kind == "user"
+			person := event.Actor.Person()
 			switch event.Type {
 			case "ask.opened":
 				row.Open, row.Seq, row.WaitingOn, row.WaitingOnSeq = true, event.Seq, "human", event.Seq
@@ -682,9 +689,15 @@ func (s *seeder) slots() error {
 
 // lifecycles opens, under the workflow's authority, the lifecycle of each tree that runs or
 // lingers at the start: each tree whose root the start state recorded in its current run, once
-// that run took its first slot or a member of the tree had started, and whose linger has not
-// closed it.
+// that run took its first slot or a member of the tree had started (record.Issue.TakenBack, which
+// the start state set from the member's run), and whose linger has not closed it.
 func (s *seeder) lifecycles() error {
+	started := map[string]bool{}
+	for _, member := range s.placed {
+		if member.TakenBack {
+			started[member.Tree] = true
+		}
+	}
 	for _, root := range s.placedKeys() {
 		issue := s.placed[root]
 		if issue.Tree != root || !inWorkflow(issue) && issue.LingerUntil == nil {
@@ -692,16 +705,9 @@ func (s *seeder) lifecycles() error {
 		}
 		iss := s.t.Issues[root]
 		entry, _ := s.run(iss)
-		opened := slices.ContainsFunc(iss.Slots, func(span SlotSpan) bool {
+		opened := started[root] || slices.ContainsFunc(iss.Slots, func(span SlotSpan) bool {
 			return span.Start.Before(s.at) && (!span.Start.Before(entry.At) || span.Before)
 		})
-		for _, key := range s.placedKeys() {
-			member := s.placed[key]
-			_, visits := s.run(s.t.Issues[key])
-			if member.Tree == root && slices.ContainsFunc(visits, func(visit Visit) bool { return visit.Phase != phase.Admitted }) {
-				opened = true
-			}
-		}
 		if !opened {
 			continue
 		}
@@ -909,7 +915,7 @@ func (s *seeder) unclassified() error {
 	for _, issue := range issues {
 		live[issue.Key] = true
 	}
-	own := slices.DeleteFunc(slices.Clone(slots), func(slot record.Slot) bool { return !live[slot.Issue] })
+	own := slices.DeleteFunc(slots, func(slot record.Slot) bool { return !live[slot.Issue] })
 	facts, err := record.ReadLineFactsUnder(s.ctx, s.tx, s.records, s.t.Project, issues, s.t.GateSteps, s.rule)
 	if err != nil {
 		return fmt.Errorf("replay: read back the seeded line facts of %s: %w", s.t.Project, err)

@@ -58,23 +58,6 @@ func (b BranchAt) Label() string {
 	return b.Branch.Name + "@" + strconv.FormatFloat(b.Slowdown, 'f', -1, 64)
 }
 
-// branchAtLabel is the branch a label names (Label), refused where it names none.
-func branchAtLabel(label string) (BranchAt, error) {
-	name, factor, ok := strings.Cut(label, "@")
-	if !ok {
-		return BranchAt{}, fmt.Errorf("replay: %q is no branch at a slowdown factor (<branch>@<f>)", label)
-	}
-	branch, err := BranchNamed(name)
-	if err != nil {
-		return BranchAt{}, err
-	}
-	f, err := strconv.ParseFloat(factor, 64)
-	if err != nil || f <= 0 {
-		return BranchAt{}, fmt.Errorf("replay: %q names no slowdown factor above zero", label)
-	}
-	return BranchAt{Branch: branch, Slowdown: f}, nil
-}
-
 // windowName is the name a window goes by in a directory of runs and in every report: its
 // directory's base name.
 func windowName(dir string) (string, error) {
@@ -83,25 +66,6 @@ func windowName(dir string) (string, error) {
 		return "", fmt.Errorf("replay: the window directory %q has no name of its own", dir)
 	}
 	return name, nil
-}
-
-// readWindowHead is the window in dir as window.json alone gives it, its inputs not read: what a
-// comparison needs of a window it runs no part of.
-func readWindowHead(dir string) (Window, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, windowFile))
-	if err != nil {
-		return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
-	}
-	var w Window
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&w); err != nil {
-		return Window{}, fmt.Errorf("read %s: %w", filepath.Join(dir, windowFile), err)
-	}
-	if w.Format != WindowFormat {
-		return Window{}, fmt.Errorf("read the window in %s: format %d, want %d", dir, w.Format, WindowFormat)
-	}
-	return w, nil
 }
 
 // partsRule is the name of the one rule parts say the window's daemon ran, "" where they name none
@@ -162,13 +126,17 @@ func (r windowRecord) seeds(branch Branch, perDraw int) []int64 {
 // newWindowRecord is the record of w, named name at order: its record's scorecard, its conflict
 // model's counts and its waits that gave a slot back, all read from one trace.
 func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
-	t, err := BuildTrace(w)
+	in, err := newWindowInputs(w)
 	if err != nil {
 		return windowRecord{}, err
 	}
-	model := windowConflicts(t, newBaseMerges(w, t))
+	return in.record(w, name, order), nil
+}
+
+// record is the record of w, whose inputs in are, named name at order (newWindowRecord).
+func (in *windowInputs) record(w Window, name string, order int) windowRecord {
 	return windowRecord{Name: name, Order: order, Project: w.Project, From: w.From, To: w.To, Rule: partsRule(w.Parts), Parts: w.Parts,
-		Scorecard: scoreTrace(t), Stretches: model.Stretches, Conflicted: model.Conflicts, WaitsGaveBack: waitsGaveBack(t)}, nil
+		Scorecard: scoreTrace(in.trace), Stretches: in.conflicts.Stretches, Conflicted: in.conflicts.Conflicts, WaitsGaveBack: waitsGaveBack(in.trace)}
 }
 
 // partRun is one branch of a part's plan with the seeds it runs.
@@ -281,14 +249,17 @@ type planned struct {
 
 // runWindow reads ws's window, writes its record.json (kept where one of the same window is there
 // already), and runs every run of its parts not already in, ended and of counting the runs of the
-// process; each part's part.json is written once all of its runs are in.
+// process; each part's part.json is written once all of its runs are in. What every run of the
+// window reads alike (windowInputs) is read once, the first time the record or a run needs it, and
+// shared by them all.
 func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *int) error {
 	began := time.Now()
 	w, err := ReadWindow(ws.dir)
 	if err != nil {
 		return err
 	}
-	rec, err := windowRecordFor(w, ws, opts.root)
+	inputs := sync.OnceValues(func() (*windowInputs, error) { return newWindowInputs(w) })
+	rec, err := windowRecordFor(w, ws, opts.root, inputs)
 	if err != nil {
 		return err
 	}
@@ -321,7 +292,7 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 			if err := gctx.Err(); err != nil {
 				return err
 			}
-			done, err := runOne(gctx, w, ws.name, ws.parts[run.part].rule, run, opts)
+			done, err := runOne(gctx, w, inputs, ws.name, ws.parts[run.part].rule, run, opts)
 			if err != nil {
 				return err
 			}
@@ -349,18 +320,25 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 
 // windowRecordFor is the record of ws's window w, as record.json under root holds it where a
 // record of the same window (its project and span) is there, at ws's place, and otherwise read from
-// w (newWindowRecord), as it is where the record there was written before it held the waits that
-// gave a slot back (WaitsGaveBack nil); either way it is written back with ws's place.
-func windowRecordFor(w Window, ws windowSpec, root string) (windowRecord, error) {
+// the window's inputs (windowInputs.record), as it is where the record there was written
+// before it held the waits that gave a slot back (WaitsGaveBack nil); either way it is written back
+// with ws's place, where that changes the file.
+func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
-	if err := readJSON(path, &rec); err != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) || !rec.To.Equal(w.To) ||
-		rec.WaitsGaveBack == nil {
-		if rec, err = newWindowRecord(w, ws.name, ws.order); err != nil {
+	held, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
+		!rec.To.Equal(w.To) || rec.WaitsGaveBack == nil {
+		in, err := inputs()
+		if err != nil {
 			return windowRecord{}, err
 		}
+		rec = in.record(w, ws.name, ws.order)
 	}
 	rec.Order = ws.order
+	if written, err := json.MarshalIndent(rec, "", "  "); err == nil && bytes.Equal(append(written, '\n'), held) {
+		return rec, nil
+	}
 	return rec, writeJSON(path, rec)
 }
 
@@ -369,15 +347,23 @@ func runDir(root, window, rule string, at BranchAt, seed int64) string {
 	return filepath.Join(root, window, rule, at.Label(), fmt.Sprintf("seed-%d", seed))
 }
 
-// runOne makes the run p plans of w under rule on opts.pgDSN's server, unless its three files are
-// there already, and deletes its log unless opts keeps it: the run reads its log back for its line
-// scorecard (Run), and a window's log is the largest file a run writes.
-func runOne(ctx context.Context, w Window, window string, rule record.SlotRule, p planned, opts runOptions) (RunDone, error) {
+// runOne makes the run p plans of w, whose inputs inputs answers, under rule on opts.pgDSN's
+// server, unless its three files are there already, and deletes its log unless opts keeps it: the
+// run reads its log back for its line scorecard (Run), and a window's log is the largest file a run
+// writes.
+func runOne(ctx context.Context, w Window, inputs func() (*windowInputs, error), window string, rule record.SlotRule, p planned,
+	opts runOptions) (RunDone, error) {
 	done := RunDone{Window: window, Rule: rule.Name, Branch: p.at, Seed: p.seed}
-	if runComplete(p.dir) {
+	path := filepath.Join(p.dir, runFile)
+	var ran runRecord
+	if kept, complete := runComplete(p.dir); complete {
 		done.Kept = true
+		if err := decodeJSON(path, kept, &ran); err != nil {
+			return done, err
+		}
 	} else {
-		if _, err := Run(ctx, RunConfig{Window: w, Rule: rule, Branch: p.at.Branch, Seed: p.seed, Slowdown: p.at.Slowdown, PGDSN: opts.pgDSN, Out: p.dir}); err != nil {
+		if _, err := Run(ctx, RunConfig{Window: w, Rule: rule, Branch: p.at.Branch, Seed: p.seed, Slowdown: p.at.Slowdown, PGDSN: opts.pgDSN, Out: p.dir,
+			inputs: inputs}); err != nil {
 			return done, fmt.Errorf("replay: %s under %s on %s, seed %d: %w", window, rule.Name, p.at.Label(), p.seed, err)
 		}
 		if !opts.keepLogs {
@@ -385,24 +371,28 @@ func runOne(ctx context.Context, w Window, window string, rule record.SlotRule, 
 				return done, fmt.Errorf("replay: delete the log of %s: %w", p.dir, err)
 			}
 		}
-	}
-	var ran runRecord
-	if err := readJSON(filepath.Join(p.dir, runFile), &ran); err != nil {
-		return done, err
+		if err := readJSON(path, &ran); err != nil {
+			return done, err
+		}
 	}
 	done.Facts, done.Passes, done.WallSeconds, done.PeakMemoryBytes = ran.Facts, ran.Passes, ran.WallSeconds, ran.PeakMemoryBytes
 	return done, nil
 }
 
-// runComplete says whether dir holds a run's three files, each one JSON value.
-func runComplete(dir string) bool {
+// runComplete says whether dir holds a run's three files, each one JSON value, and answers its
+// run.json where it does.
+func runComplete(dir string) ([]byte, bool) {
+	var ran []byte
 	for _, name := range []string{runFile, scorecardFile, lineScorecardFile} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || !json.Valid(data) {
-			return false
+			return nil, false
+		}
+		if name == runFile {
+			ran = data
 		}
 	}
-	return true
+	return ran, true
 }
 
 // readJSON reads the JSON value in path into v.
@@ -411,6 +401,11 @@ func readJSON(path string, v any) error {
 	if err != nil {
 		return fmt.Errorf("replay: read %s: %w", path, err)
 	}
+	return decodeJSON(path, data, v)
+}
+
+// decodeJSON reads data, the JSON value read from path, into v.
+func decodeJSON(path string, data []byte, v any) error {
 	if err := json.Unmarshal(data, v); err != nil {
 		return fmt.Errorf("replay: read %s: %w", path, err)
 	}
@@ -557,7 +552,7 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 			continue
 		}
 		for _, seed := range run.Seeds {
-			read, err := readRun(filepath.Join(partDir, at.Label(), fmt.Sprintf("seed-%d", seed)), keepIssues)
+			read, err := readRun(runDir(dir, key.window, key.rule, at, seed), keepIssues)
 			if err != nil {
 				return nil, err
 			}
@@ -610,12 +605,7 @@ func dropIssueTimes(card *Scorecard) {
 // Windows is the name of each window the runs hold a record of, in their order among the windows
 // compared (the window before the change of the rule first), then by name.
 func (r Runs) Windows() []string {
-	records := slices.SortedFunc(maps.Values(r.windows), windowOrder)
-	names := make([]string, 0, len(records))
-	for _, rec := range records {
-		names = append(names, rec.Name)
-	}
-	return names
+	return windowNames(slices.SortedFunc(maps.Values(r.windows), windowOrder))
 }
 
 // windowOrder orders two windows' records by their place among the windows compared, then by name.

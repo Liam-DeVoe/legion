@@ -159,3 +159,11 @@ func (b Branch) orMain() Branch {
 	}
 	return b
 }
+
+// timingWall says whether b keeps the events that end a wait at their recorded times, not at their
+// recorded offsets from the replay's start of the wait (Timing wall).
+func (b Branch) timingWall() bool { return b.Timing == valueWall }
+
+// answerWall says whether b keeps a person's answers at their recorded times, not at their recorded
+// offsets from their questions (Answer wall).
+func (b Branch) answerWall() bool { return b.Answer == valueWall }

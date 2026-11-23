@@ -115,10 +115,8 @@ func scoreTrace(t Trace) Scorecard {
 // for the trace's own doubts (SeedAndReport).
 func unplacedAtStart(t Trace) int {
 	issues := map[string]bool{}
-	for _, fact := range t.Unplaced {
-		if _, considered := t.Issues[fact.Issue]; considered && bearsOnStart(fact, t.From) {
-			issues[fact.Issue] = true
-		}
+	for _, fact := range startDoubts(t, t.From) {
+		issues[fact.Issue] = true
 	}
 	return len(issues)
 }

@@ -3,7 +3,6 @@ package replay
 import (
 	"cmp"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"math"
 	"slices"
@@ -156,11 +155,9 @@ func (p *piece) move() *Move {
 }
 
 // worked is the length of the piece's work in a replay before the slowdown: its recorded length
-// less what the branch takes off it (cut), and zero for one the record shows unended.
+// less what the branch takes off it (cut, never below zero), and zero for one the record shows
+// unended, whose recorded length is zero.
 func (p *piece) worked() time.Duration {
-	if p.end.IsZero() {
-		return 0
-	}
 	return max(0, p.recorded()-p.cut)
 }
 
@@ -199,7 +196,6 @@ type act struct {
 	rec    time.Time
 	order  int
 	role   claim.Role
-	turn   *Turn
 	event  int
 	gate   GateFact
 	failed ClaimFailed
@@ -252,9 +248,9 @@ type scriptEvent struct {
 	wait   waitAnchor
 	// dependents is every event placed from this one.
 	dependents []int
-	// placed is whether the replay has placed the event, and dispatched whether it has applied it
-	// to its copy of Dispatch.
-	placed, dispatched bool
+	// dispatched is whether the replay has applied the event to its copy of Dispatch; where the
+	// replay placed it is driver.placed's.
+	dispatched bool
 	// releasesHold says the event is the daemon session's todo on a held root that the record's
 	// release of the hold names as its cause (markHeldRootTodos).
 	releasesHold bool
@@ -302,11 +298,12 @@ func joinedStretches(stretches [][2]time.Time) [][2]time.Time {
 	return joined
 }
 
-// buildScript reads t into the pieces of its issues' work and the placement of its events, from
-// the window's start on. A piece's acts run by offset, then by the record's moment, then by order
-// (act.order): of one instant, an act a line holds runs after a turn or an event, and acts of the
-// same order keep the order they were placed in.
-func buildScript(t Trace, w Window, lines recordLines) (script, error) {
+// buildScript reads t into the pieces of its issues' work and the placement of its events, the
+// window's Dispatch events in the order the trace read them (readTrace), from the window's start
+// on. A piece's acts run by offset, then by the record's moment, then by order (act.order): of one
+// instant, an act a line holds runs after a turn or an event, and acts of the same order keep the
+// order they were placed in.
+func buildScript(t Trace, events []readEvent, lines recordLines) (script, error) {
 	s := script{pieces: map[string][]*piece{}, flight: map[string][][2]time.Time{}}
 	var flying [][2]time.Time
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
@@ -326,10 +323,11 @@ func buildScript(t Trace, w Window, lines recordLines) (script, error) {
 	}
 	s.placeTurns(t)
 	s.placeLines(t, lines)
-	if err := s.placeEvents(t, w); err != nil {
+	issueEvents, err := s.placeEvents(t, events)
+	if err != nil {
 		return script{}, err
 	}
-	s.markHeldRootTodos(lines)
+	s.markHeldRootTodos(lines, issueEvents)
 	for _, pieces := range s.pieces {
 		for _, p := range pieces {
 			slices.SortStableFunc(p.acts, func(x, y act) int {
@@ -478,27 +476,25 @@ func (s *script) placeTurns(t Trace) {
 			if p == nil {
 				continue
 			}
-			p.acts = append(p.acts, act{kind: actTurnStart, offset: turn.Start.Sub(p.start), rec: turn.Start, role: turn.Claim.Role, turn: turn})
+			p.acts = append(p.acts, act{kind: actTurnStart, offset: turn.Start.Sub(p.start), rec: turn.Start, role: turn.Claim.Role})
 			if !turn.End.IsZero() {
-				p.acts = append(p.acts, act{kind: actTurnEnd, offset: turn.End.Sub(p.start), rec: turn.End, role: turn.Claim.Role, turn: turn})
+				p.acts = append(p.acts, act{kind: actTurnEnd, offset: turn.End.Sub(p.start), rec: turn.End, role: turn.Claim.Role})
 			}
 		}
 	}
 }
 
 // placeLines puts each recorded act of an architect or a worker that a line of the record holds
-// into the piece of its issue it falls in: each registration of a design document, each failure of
-// a claim that holds nothing, each release of queued roots into a tree, and each close of a root by
-// its architect.
+// into the piece of its issue it falls in (placeLineAct): each registration of a design document,
+// each failure of a claim that holds nothing, each release of queued roots into a tree, and each
+// close of a root by its architect.
 func (s *script) placeLines(t Trace, lines recordLines) {
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		for _, gate := range t.Issues[key].Gates {
 			if gate.Kind != GateRegisteredFact || gate.At.Before(t.From) {
 				continue
 			}
-			if p := s.pieceAt(key, gate.At, false); p != nil {
-				p.acts = append(p.acts, act{kind: actRegistration, offset: gate.At.Sub(p.start), rec: gate.At, order: 1, gate: gate})
-			}
+			s.placeLineAct(key, gate.At, act{kind: actRegistration, gate: gate})
 		}
 	}
 	for _, failed := range lines.failed {
@@ -506,9 +502,7 @@ func (s *script) placeLines(t Trace, lines recordLines) {
 		if failed.Time.Before(t.From) || key == "" || s.endsAPiece(key, failed) {
 			continue
 		}
-		if p := s.pieceAt(key, failed.Time, false); p != nil {
-			p.acts = append(p.acts, act{kind: actClaimFailed, offset: failed.Time.Sub(p.start), rec: failed.Time, order: 1, failed: failed})
-		}
+		s.placeLineAct(key, failed.Time, act{kind: actClaimFailed, failed: failed})
 	}
 	joined := map[string]map[time.Time][]RootJoined{}
 	for _, line := range lines.joined {
@@ -522,9 +516,7 @@ func (s *script) placeLines(t Trace, lines recordLines) {
 	}
 	for _, tree := range slices.Sorted(maps.Keys(joined)) {
 		for _, at := range slices.SortedFunc(maps.Keys(joined[tree]), time.Time.Compare) {
-			if p := s.pieceAt(tree, at, false); p != nil {
-				p.acts = append(p.acts, act{kind: actAdoption, offset: at.Sub(p.start), rec: at, order: 1, joined: joined[tree][at]})
-			}
+			s.placeLineAct(tree, at, act{kind: actAdoption, joined: joined[tree][at]})
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
@@ -532,9 +524,7 @@ func (s *script) placeLines(t Trace, lines recordLines) {
 			if at.Before(t.From) {
 				continue
 			}
-			if p := s.pieceAt(key, at, false); p != nil {
-				p.acts = append(p.acts, act{kind: actReady, offset: at.Sub(p.start), rec: at, order: 1})
-			}
+			s.placeLineAct(key, at, act{kind: actReady})
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
@@ -543,10 +533,18 @@ func (s *script) placeLines(t Trace, lines recordLines) {
 			if leave.At.Before(t.From) || leave.Status != record.DoneStatus || !closedByArchitect(iss, leave) {
 				continue
 			}
-			if p := s.pieceAt(key, leave.At, false); p != nil {
-				p.acts = append(p.acts, act{kind: actCloseRoot, offset: leave.At.Sub(p.start), rec: leave.At, order: 1})
-			}
+			s.placeLineAct(key, leave.At, act{kind: actCloseRoot})
 		}
+	}
+}
+
+// placeLineAct puts a, an act a line of the record holds at at, into the piece of key's work it
+// falls in (pieceAt), at its offset from the piece's start and of order 1, so it runs after a turn
+// or an event of the same moment; nowhere where key's work holds no such piece.
+func (s *script) placeLineAct(key string, at time.Time, a act) {
+	if p := s.pieceAt(key, at, false); p != nil {
+		a.offset, a.rec, a.order = at.Sub(p.start), at, 1
+		p.acts = append(p.acts, a)
 	}
 }
 
@@ -580,30 +578,32 @@ func closedByArchitect(iss *IssueTrace, leave Leave) bool {
 	return true
 }
 
-// placeEvents reads every recorded event of the window at or after its start, and says how a
-// replay places it. A worker's event — one whose actor is a session the record shows running a
-// claim of an issue, by the session's title or by the claim token its id is (actorClaimOf) — that
-// falls in a piece of that claim's role's work (workPiece) is an act of that piece, placed at its
-// offset in it where the replay runs the piece. Every other event is placed by its anchor, and so
-// is a worker's event whose piece the replay does not run (placeUnrun): a person's answer from its
-// question (Branch.Answer); an event that ended a wait in the record from the replay's start of
-// that wait (Branch.Timing); every other at its recorded time.
-func (s *script) placeEvents(t Trace, w Window) error {
-	for _, key := range slices.Sorted(maps.Keys(w.Events)) {
-		for _, raw := range w.Events[key] {
-			parsed, err := ParseDispatchEvent(raw)
-			if err != nil {
-				return err
-			}
-			env, err := readEnvelope(raw, parsed)
-			if err != nil {
-				return err
-			}
-			s.events = append(s.events, scriptEvent{parsed: parsed, env: env, at: parsed.At, order: int(parsed.ID), on: -1})
+// placeEvents reads every recorded event of the window at or after its start, from events, the
+// window's events in the trace's order (readTrace): by time, then by id. It says how a replay
+// places each, and answers each issue's issue events, by their index, in that order. A worker's
+// event — one whose actor is a session the record shows running a claim of an issue, by the
+// session's title or by the claim token its id is (actorClaimOf) — that falls in a piece of that
+// claim's role's work (workPiece) is an act of that piece, placed at its offset in it where the
+// replay runs the piece. Every other event is placed by its anchor, and so is a worker's event
+// whose piece the replay does not run (placeUnrun): a person's answer from its question
+// (Branch.Answer); an event that ended a wait in the record from the replay's start of that wait
+// (Branch.Timing); every other at its recorded time.
+func (s *script) placeEvents(t Trace, events []readEvent) (map[string][]int, error) {
+	s.events = make([]scriptEvent, 0, len(events))
+	for _, read := range events {
+		env, err := readEnvelope(read.raw, read.event)
+		if err != nil {
+			return nil, err
+		}
+		s.events = append(s.events, scriptEvent{parsed: read.event, env: env, at: read.event.At, order: int(read.event.ID), on: -1})
+	}
+	issueEvents := map[string][]int{}
+	for i := range s.events {
+		if s.events[i].parsed.Issue != nil {
+			issueEvents[s.events[i].env.key] = append(issueEvents[s.events[i].env.key], i)
 		}
 	}
-	slices.SortStableFunc(s.events, func(x, y scriptEvent) int { return cmp.Or(x.at.Compare(y.at), cmp.Compare(x.order, y.order)) })
-	ended := s.waitEnders(t)
+	ended := s.waitEnders(t, issueEvents)
 	questions := s.questions()
 	for i := range s.events {
 		event := &s.events[i]
@@ -625,21 +625,16 @@ func (s *script) placeEvents(t Trace, w Window) error {
 			event.anchor, event.wait, event.offset = anchorWait, wait, event.at.Sub(wait.start)
 		}
 	}
-	return nil
+	return issueEvents, nil
 }
 
 // markHeldRootTodos marks each event in which the daemon's own session set a held root todo
-// (releasesHold): the issue's last issue event at or before a `workflow: a held phase is released`
-// of heldRootReleaseReason, where that event is the daemon session's todo. Only a todo on a held
-// root writes that release (workflow's releaseHeldRoot), from the todo's event or, for the
-// controller's set_status, from the daemon API's own write, which Dispatch records as that event.
-func (s *script) markHeldRootTodos(lines recordLines) {
-	issueEvents := map[string][]int{}
-	for i := range s.events {
-		if s.events[i].parsed.Issue != nil {
-			issueEvents[s.events[i].env.key] = append(issueEvents[s.events[i].env.key], i)
-		}
-	}
+// (releasesHold): the issue's last issue event (issueEvents, placeEvents) at or before a
+// `workflow: a held phase is released` of heldRootReleaseReason, where that event is the daemon
+// session's todo. Only a todo on a held root writes that release (workflow's releaseHeldRoot),
+// from the todo's event or, for the controller's set_status, from the daemon API's own write,
+// which Dispatch records as that event.
+func (s *script) markHeldRootTodos(lines recordLines, issueEvents map[string][]int) {
 	for _, line := range lines.released {
 		if line.Reason != heldRootReleaseReason {
 			continue
@@ -698,7 +693,7 @@ func (s *script) questions() map[int]int {
 // comment is of, or the document and version a verdict is on; all empty for any other event.
 func answerOf(event *scriptEvent) (ask, artifact string, version int) {
 	parsed := event.parsed
-	if parsed.Actor.Kind != "user" {
+	if !parsed.Actor.Person() {
 		return "", "", 0
 	}
 	switch {
@@ -710,7 +705,7 @@ func answerOf(event *scriptEvent) (ask, artifact string, version int) {
 		var payload struct {
 			AskID string `json:"ask_id"`
 		}
-		if decodeField(event.env.payload, &payload) {
+		if decodePayload(event.env, &payload) == nil {
 			return payload.AskID, "", 0
 		}
 	}
@@ -720,13 +715,8 @@ func answerOf(event *scriptEvent) (ask, artifact string, version int) {
 // versionWritten is the document event, an artifact.version event, writes a version of and the
 // version's number; "" for a payload that names no document.
 func versionWritten(event *scriptEvent) (string, int) {
-	var payload struct {
-		ArtifactID string `json:"artifact_id"`
-		Version    struct {
-			Number int `json:"number"`
-		} `json:"version"`
-	}
-	if !decodeField(event.env.payload, &payload) {
+	var payload versionPayload
+	if decodePayload(event.env, &payload) != nil {
 		return "", 0
 	}
 	return payload.ArtifactID, payload.Version.Number
@@ -735,16 +725,10 @@ func versionWritten(event *scriptEvent) (string, int) {
 // waitEnders is, by the index of the event, each event that ended a wait in the record: the last
 // unfinished link taken off (link_removed, the waiting issue's own event), an outside blocker's
 // close (blocker_done of an issue Legion does not work), and the last open child moved out from
-// under its parent (child_moved_out, the child's event), each with the wait it ended.
-func (s *script) waitEnders(t Trace) map[int]waitAnchor {
+// under its parent (child_moved_out, the child's event), each with the wait it ended. own is each
+// issue's issue events, by their index, in order.
+func (s *script) waitEnders(t Trace, own map[string][]int) map[int]waitAnchor {
 	ended := map[int]waitAnchor{}
-	// own is each issue's issue events, by their index, in order.
-	own := map[string][]int{}
-	for i := range s.events {
-		if event := &s.events[i]; issueEvent(event.env.kind) {
-			own[event.env.key] = append(own[event.env.key], i)
-		}
-	}
 	find := func(key string, at time.Time) int {
 		events := own[key]
 		j, found := slices.BinarySearchFunc(events, at, func(i int, at time.Time) int { return s.events[i].at.Compare(at) })
@@ -831,38 +815,24 @@ type recordLines struct {
 	joined    []RootJoined
 }
 
-// readRecordLines reads w's log into its recordLines.
-func readRecordLines(w Window) (recordLines, error) {
-	held := make(map[string]bool, len(w.Lines))
-	for _, msg := range w.Lines {
-		held[msg] = true
-	}
-	var lines recordLines
-	for i, raw := range w.Log {
-		line, err := ParseLogLine(raw)
-		if err != nil {
-			return recordLines{}, fmt.Errorf("replay: line %d of the window's log: %w", i+1, err)
-		}
-		if line == nil || !held[line.Head().Msg] {
-			continue
-		}
+// recordLinesOf is the recordLines of lines, the window's lines of the kinds it holds in the
+// order the trace read them (readTrace): in time order, the window's own among lines of one
+// moment.
+func recordLinesOf(lines []LogLine) recordLines {
+	var read recordLines
+	for _, line := range lines {
 		switch l := line.(type) {
 		case ClaimFailed:
-			lines.failed = append(lines.failed, l)
+			read.failed = append(read.failed, l)
 		case HoldReleased:
-			lines.released = append(lines.released, l)
+			read.released = append(read.released, l)
 		case PhaseHeld:
 			if l.Reason == string(record.HoldEscalated) {
-				lines.escalated = append(lines.escalated, l)
+				read.escalated = append(read.escalated, l)
 			}
 		case RootJoined:
-			lines.joined = append(lines.joined, l)
+			read.joined = append(read.joined, l)
 		}
 	}
-	order := func(x, y LineHead) int { return x.Time.Compare(y.Time) }
-	slices.SortStableFunc(lines.failed, func(x, y ClaimFailed) int { return order(x.LineHead, y.LineHead) })
-	slices.SortStableFunc(lines.released, func(x, y HoldReleased) int { return order(x.LineHead, y.LineHead) })
-	slices.SortStableFunc(lines.escalated, func(x, y PhaseHeld) int { return order(x.LineHead, y.LineHead) })
-	slices.SortStableFunc(lines.joined, func(x, y RootJoined) int { return order(x.LineHead, y.LineHead) })
-	return lines, nil
+	return read
 }

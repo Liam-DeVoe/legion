@@ -190,6 +190,41 @@ const (
 // leave.
 const mergedCloseWaitsLine = "workflow: a merged issue's close waits for the issues beneath it"
 
+// slotTakenLine and slotReleasedLine are the msgs of the admission pass's lines of a slot taken
+// and given back (admit's logSlot), waitsOnIssuesLine of its line of an issue that waits for what
+// it waits on (admit's promoteHolds), waitsForChildrenLine of its line of an issue that waits for
+// the Dispatch children under it (admit's tellChildrenFirst), and leftWorkflowLine of the engine's
+// line of an issue leaving the workflow (workflow's leave). The trace reads each (lineReaders), the
+// driver reads the ones a replay writes as it runs (tapped, observe), and a replay leaves the
+// per-pass wait out of its own log (unwritten).
+const (
+	slotTakenLine        = "admission: slot taken"
+	slotReleasedLine     = "admission: slot released"
+	waitsOnIssuesLine    = "admission waits for what this issue waits on"
+	waitsForChildrenLine = "admission: an issue waits for the Dispatch children under it"
+	leftWorkflowLine     = "workflow: issue left the workflow"
+)
+
+// turnStartedLine, turnEndedLine, launchedLine, suspendedLine and claimFailedLine are the msgs of
+// supervision's lines of a claim's turn beginning and ending, its launch, its suspension and its
+// failure (supervise's machine), which the trace reads (lineReaders) and a replay's worker stub
+// writes as supervision does.
+const (
+	turnStartedLine = "supervise: a turn started"
+	turnEndedLine   = "supervise: a turn ended"
+	launchedLine    = "supervise: launched"
+	suspendedLine   = "supervise: suspended"
+	claimFailedLine = "supervise: claim failed"
+)
+
+// pauseBeganLine and pauseEndedLine are the msgs of the lines of a project's pause beginning and
+// ending (internal/pause's Pause and Resume), which the trace reads (lineReaders) and a replay's
+// own pause writes (driver.pause, driver.resume).
+const (
+	pauseBeganLine = "pause: the project is paused"
+	pauseEndedLine = "pause: the project is resumed"
+)
+
 // LineHead is what every daemon log line the trace reads carries whatever its kind: the msg the
 // daemon wrote it under and the time the daemon wrote it, the line's own time attribute. A Cloud
 // Logging export's timestamp is when the log store took the line in, a moment later, and is not
@@ -729,10 +764,10 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 		return PhaseChanged{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), From: phase.Phase(a.str("from")),
 			To: phase.Phase(a.str("to")), Trigger: workflow.TriggerKind(a.str("trigger")), Status: a.str("status")}
 	},
-	"admission: slot taken": func(h LineHead, a *lineAttrs) LogLine {
+	slotTakenLine: func(h LineHead, a *lineAttrs) LogLine {
 		return SlotTaken{LineHead: h, Issue: a.str("issue"), Slots: a.count("slots"), Cap: a.count("cap")}
 	},
-	"admission: slot released": func(h LineHead, a *lineAttrs) LogLine {
+	slotReleasedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return SlotReleased{LineHead: h, Issue: a.str("issue"), Slots: a.count("slots"), Cap: a.count("cap")}
 	},
 	passMovedSlotsLine: func(h LineHead, a *lineAttrs) LogLine {
@@ -752,7 +787,7 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 		return PhaseHeld{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), From: phase.Phase(a.str("from")),
 			Role: claim.Role(a.str("role")), Reason: a.str("reason")}
 	},
-	"admission waits for what this issue waits on": func(h LineHead, a *lineAttrs) LogLine {
+	waitsOnIssuesLine: func(h LineHead, a *lineAttrs) LogLine {
 		return WaitsOnIssues{LineHead: h, Issue: a.str("issue"), Blockers: a.strs("blockers")}
 	},
 	"admission gives a slot back to an issue whose work came back": func(h LineHead, a *lineAttrs) LogLine {
@@ -761,7 +796,7 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	"admission gives a slot back to an issue whose wait ended": func(h LineHead, a *lineAttrs) LogLine {
 		return SlotBackWaitEnded{LineHead: h, Issue: a.str("issue"), Phase: phase.Phase(a.str("phase"))}
 	},
-	"admission: an issue waits for the Dispatch children under it": func(h LineHead, a *lineAttrs) LogLine {
+	waitsForChildrenLine: func(h LineHead, a *lineAttrs) LogLine {
 		return WaitsForChildren{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), Generation: a.generation("generation"),
 			Children: a.count("children")}
 	},
@@ -796,7 +831,7 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	"workflow: a held phase is released": func(h LineHead, a *lineAttrs) LogLine {
 		return HoldReleased{LineHead: h, Issue: a.str("issue"), Phase: phase.Phase(a.str("phase")), Reason: a.str("reason")}
 	},
-	"workflow: issue left the workflow": func(h LineHead, a *lineAttrs) LogLine {
+	leftWorkflowLine: func(h LineHead, a *lineAttrs) LogLine {
 		return LeftWorkflow{LineHead: h, Issue: a.str("issue"), Tree: a.str("tree"), Status: a.str("status")}
 	},
 	"workflow: tree lingers": func(h LineHead, a *lineAttrs) LogLine {
@@ -805,23 +840,23 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	"workflow: linger closed the tree": func(h LineHead, a *lineAttrs) LogLine {
 		return LingerClosed{LineHead: h, Tree: a.str("tree"), Generation: a.generation("generation"), Issues: a.count("issues")}
 	},
-	"supervise: a turn started": func(h LineHead, a *lineAttrs) LogLine {
+	turnStartedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return TurnStarted{LineHead: h, Claim: a.claim("claim"), Generation: a.generation("generation"), Delivery: a.optionalStr("delivery")}
 	},
-	"supervise: a turn ended": func(h LineHead, a *lineAttrs) LogLine {
+	turnEndedLine: func(h LineHead, a *lineAttrs) LogLine {
 		outcome := a.has("sequence")
 		if outcome {
 			a.seq("sequence")
 		}
 		return TurnEnded{LineHead: h, Claim: a.claim("claim"), Generation: a.generation("generation"), Outcome: outcome}
 	},
-	"supervise: launched": func(h LineHead, a *lineAttrs) LogLine {
+	launchedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return Launched{LineHead: h, Claim: a.claim("claim"), Generation: a.generation("generation"), Resumed: a.flag("resumed")}
 	},
-	"supervise: suspended": func(h LineHead, a *lineAttrs) LogLine {
+	suspendedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return Suspended{LineHead: h, Claim: a.claim("claim"), By: a.str("by"), Reason: a.str("reason")}
 	},
-	"supervise: claim failed": func(h LineHead, a *lineAttrs) LogLine {
+	claimFailedLine: func(h LineHead, a *lineAttrs) LogLine {
 		// A line of a release that recorded no cause (ParseLogLine) has the hold's word for none.
 		failed := ClaimFailed{LineHead: h, Claim: a.claim("claim"), Cause: string(supervise.CauseUnrecorded)}
 		if a.has("cause") {
@@ -867,10 +902,10 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 		return ConsumerCaughtUp{LineHead: h, Count: a.count("count"), AckFloor: a.seq("ack_floor"), Idle: a.flag("idle"),
 			Admitted: a.count("admitted")}
 	},
-	"pause: the project is paused": func(h LineHead, a *lineAttrs) LogLine {
+	pauseBeganLine: func(h LineHead, a *lineAttrs) LogLine {
 		return PauseBegan{LineHead: h, Pause: a.seq("pause"), Reason: a.str("reason")}
 	},
-	"pause: the project is resumed": func(h LineHead, a *lineAttrs) LogLine {
+	pauseEndedLine: func(h LineHead, a *lineAttrs) LogLine {
 		return PauseEnded{LineHead: h, Pause: a.seq("pause")}
 	},
 	"workflow: a queued root joined a live tree": func(h LineHead, a *lineAttrs) LogLine {

@@ -378,12 +378,9 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 	heading := strings.Repeat("#", depth)
 	p.line("%s %s under `%s`", heading, v.Window, v.Rule)
 	p.line("")
-	main := "passes"
-	if !v.MainPasses() {
-		main = "fails"
-	}
-	p.line("The window's main branch (%s) %s every test of R5.", MainBranchAt.Label(), main)
-	if !v.MainPasses() {
+	mainPasses := v.MainPasses()
+	p.line("The window's main branch (%s) %s every test of R5.", MainBranchAt.Label(), passWord(mainPasses))
+	if !mainPasses {
 		p.line("So the window gives no comparison at all: every branch of it gives none.")
 	}
 	none := v.NoComparison()
@@ -401,10 +398,7 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 	p.line("| branch | seeds | R5 | tests failed | first slot error: median | 90th percentile | done error: median | 90th percentile |")
 	p.line("| --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, b := range v.Branches {
-		verdict := "passes"
-		if !b.Pass() {
-			verdict = "fails"
-		}
+		verdict := passWord(b.Pass())
 		failed := "none"
 		if len(b.Failed) > 0 {
 			failed = strings.Join(b.Failed, ", ")
@@ -421,18 +415,12 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 		for _, m := range b.Measures {
 			allowed, test := "", "not tested"
 			if m.Tested {
-				allowed, test = formatNumber(m.Gap.Allowed(m.Recorded))+" ("+m.Gap.String()+")", "fails"
-				if m.Pass {
-					test = "passes"
-				}
+				allowed, test = formatNumber(m.Gap.Allowed(m.Recorded))+" ("+m.Gap.String()+")", passWord(m.Pass)
 			}
 			p.line("| %s | %s | %s | %s | %s | %s |", m.Measure, formatNumber(m.Recorded), spreadCell(m.Replayed, m.Low, m.High, len(b.Seeds)),
 				formatNumber(m.Replayed-m.Recorded), allowed, test)
 		}
-		first := "fails"
-		if b.FirstSlotPass {
-			first = "passes"
-		}
+		first := passWord(b.FirstSlotPass)
 		p.line("| %s | 0 | %s | %s | %s | %s |", FirstSlotTest, formatNumber(b.FirstSlot.Median), formatNumber(b.FirstSlot.Median),
 			formatNumber(gapFirstSlot.Amount), first)
 		p.line("")
@@ -456,6 +444,14 @@ func (v Validation) Write(w io.Writer, depth int, issuesOf func(BranchAt) bool) 
 		}
 	}
 	return p.err
+}
+
+// passWord is the word a report writes for a test that passed, "passes", or failed, "fails".
+func passWord(pass bool) string {
+	if pass {
+		return "passes"
+	}
+	return "fails"
 }
 
 // printer writes lines to w and keeps the first error, so a report is written without a check

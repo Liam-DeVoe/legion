@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -199,7 +201,7 @@ func Collect(ctx context.Context, cfg CollectConfig) (Collected, error) {
 
 	reader := eventReader{log: cfg.Dispatch, to: cfg.To, wait: cfg.Wait, limit: cfg.Concurrency, events: map[string][]json.RawMessage{}}
 	if reader.wait == nil {
-		reader.wait = waitOnTimer
+		reader.wait = backoff.Sleep
 	}
 	if reader.limit <= 0 {
 		reader.limit = DefaultConcurrency
@@ -414,9 +416,8 @@ func readLogFile(file string, keep func(file string, at int, element []byte) err
 		if len(line) == 0 {
 			continue
 		}
-		if prefix := kubectlPrefix.FindIndex(line); prefix != nil {
-			line = line[prefix[1]:]
-		}
+		// The prefix is optional, so it matches every line, the empty prefix included.
+		line = line[kubectlPrefix.FindIndex(line)[1]:]
 		if err := keep(file, at, line); err != nil {
 			return err
 		}
@@ -462,9 +463,6 @@ func daemonLine(element []byte) (line []byte, msg string, ok bool) {
 		return nil, "", false
 	}
 	if len(probe.Payload) > 0 {
-		if !bytes.HasPrefix(bytes.TrimSpace(probe.Payload), []byte("{")) {
-			return nil, "", false
-		}
 		return daemonLine(bytes.TrimSpace(probe.Payload))
 	}
 	if probe.Msg == nil {
@@ -631,10 +629,10 @@ func (r *eventReader) read(ctx context.Context, keys []string) error {
 				events, err = r.log.EventsAfter(ctx, key, 0)
 				return err
 			})
-			r.mu.Lock()
-			defer r.mu.Unlock()
 			switch {
 			case dispatch.Missing(err):
+				r.mu.Lock()
+				defer r.mu.Unlock()
 				r.missing = append(r.missing, key)
 				return nil
 			case err != nil:
@@ -656,6 +654,8 @@ func (r *eventReader) read(ctx context.Context, keys []string) error {
 				}
 			}
 			if len(before) > 0 {
+				r.mu.Lock()
+				defer r.mu.Unlock()
 				r.events[key] = before
 			}
 			return nil
@@ -695,20 +695,8 @@ func retry(ctx context.Context, wait func(context.Context, time.Duration) error,
 func retryableDispatch(err error) bool {
 	var refusal *dispatch.Error
 	if errors.As(err, &refusal) {
-		return refusal.Status == 429 || refusal.Status >= 500
+		return refusal.Status == http.StatusTooManyRequests || refusal.Status >= 500
 	}
 	var transient *dispatch.TransientError
 	return errors.As(err, &transient)
-}
-
-// waitOnTimer waits d, or until ctx ends.
-func waitOnTimer(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }

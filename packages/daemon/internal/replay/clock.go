@@ -3,6 +3,7 @@ package replay
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -89,6 +90,13 @@ func newLineTap(msgs ...string) *lineTap {
 	return tap
 }
 
+// keep keeps line, a line of a msg the tap reads, for the next take.
+func (t *lineTap) keep(line tappedLine) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.lines = append(t.lines, line)
+}
+
 // take is every line tapped since the last take, in order.
 func (t *lineTap) take() []tappedLine {
 	t.mu.Lock()
@@ -110,12 +118,12 @@ func (l tappedLine) str(key string) string {
 // candidate it passes over, which a replay leaves out of its log: about a
 // million lines a run, which no measure reads, since the trace builds a link wait from events.
 var unwritten = map[string]bool{
-	"admission waits for what this issue waits on": true,
+	waitsOnIssuesLine: true,
 }
 
 // clockHandler is the handler of a replay's log: the daemon's JSON handler (inner), with each
 // record's time set from the simulated clock, the lines unwritten names left out, and the lines
-// the tap asks for handed to it as they are written.
+// the tap, which every handler has, asks for handed to it as they are written.
 type clockHandler struct {
 	inner slog.Handler
 	clock *simClock
@@ -133,7 +141,7 @@ func (h *clockHandler) Enabled(ctx context.Context, level slog.Level) bool {
 // unwritten.
 func (h *clockHandler) Handle(ctx context.Context, r slog.Record) error {
 	r.Time = h.clock.Instant()
-	if h.tap != nil && h.tap.msgs[r.Message] {
+	if h.tap.msgs[r.Message] {
 		attrs := make(map[string]slog.Value, len(h.attrs)+r.NumAttrs())
 		for _, attr := range h.attrs {
 			attrs[attr.Key] = attr.Value
@@ -142,9 +150,7 @@ func (h *clockHandler) Handle(ctx context.Context, r slog.Record) error {
 			attrs[attr.Key] = attr.Value
 			return true
 		})
-		h.tap.mu.Lock()
-		h.tap.lines = append(h.tap.lines, tappedLine{msg: r.Message, attrs: attrs})
-		h.tap.mu.Unlock()
+		h.tap.keep(tappedLine{msg: r.Message, attrs: attrs})
 	}
 	if unwritten[r.Message] {
 		return nil
@@ -154,7 +160,7 @@ func (h *clockHandler) Handle(ctx context.Context, r slog.Record) error {
 
 // WithAttrs is the handler with attrs on every record, for the inner handler and the tap alike.
 func (h *clockHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &clockHandler{inner: h.inner.WithAttrs(attrs), clock: h.clock, tap: h.tap, attrs: append(append([]slog.Attr{}, h.attrs...), attrs...)}
+	return &clockHandler{inner: h.inner.WithAttrs(attrs), clock: h.clock, tap: h.tap, attrs: slices.Concat(h.attrs, attrs)}
 }
 
 // WithGroup is the handler under group. The tap reads a grouped record's attributes by their own

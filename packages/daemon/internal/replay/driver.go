@@ -125,11 +125,11 @@ const lineOrder = int64(1) << 50
 // tapped is the daemon's lines the driver reads as the replay writes them (lineTap).
 var tapped = []string{
 	phaseChangedLine,
-	"workflow: issue left the workflow",
-	"admission: slot taken",
-	"admission: slot released",
-	"admission: an issue waits for the Dispatch children under it",
-	"workflow: design gate closed",
+	leftWorkflowLine,
+	slotTakenLine,
+	slotReleasedLine,
+	waitsForChildrenLine,
+	gateClosedLine,
 	mergeForwardAskedLine,
 	mergeForwardLandedLine,
 	admit.CoverTakenLine,
@@ -137,12 +137,14 @@ var tapped = []string{
 
 // driver is one replay's run: the window and its reading, the replay's database, its simulated
 // clock and log, the daemon's chain it drives, its copy of Dispatch, its queue, its worker stub's
-// state and what it counts.
+// state and what it counts. inputs is what every run of the window reads alike (windowInputs),
+// trace and lines among them, which no run writes into.
 type driver struct {
 	ctx    context.Context
 	cfg    RunConfig
 	window Window
 	trace  Trace
+	inputs *windowInputs
 	script script
 	lines  recordLines
 	rule   record.SlotRule
@@ -175,10 +177,8 @@ type driver struct {
 	// wakeAt is the moment of the outbox wake queued, zero for none.
 	wakeAt time.Time
 
-	// claims is every claim the stub holds, as last written, with its pending delivery, and
-	// working the piece each claim's turn under way stands in.
-	claims  map[claim.Token]supervise.Claim
-	working map[claim.Token]*piece
+	// claims is every claim the stub holds, as last written, with its pending delivery.
+	claims map[claim.Token]supervise.Claim
 
 	// inFlight is the issues in flight in the replay, started is when each issue of its current
 	// entry first took a slot, childWait when each issue's children wait began, and placed when
@@ -196,8 +196,8 @@ type driver struct {
 	// pull request leaving the merge queue the record shows before it (Move.Drop), which names the
 	// move's cause in the snapshot timeline.
 	drops map[string]string
-	// moves counts the replay's own facts, which names each.
-	moves int
+	// ownFacts counts the replay's own facts, which names each (factID).
+	ownFacts int
 	// released is what the slots of the current fact did: a slot released before a slot taken in
 	// one fact is a slot given out in the pass that freed it (assumption 11).
 	released bool
@@ -231,10 +231,6 @@ type driver struct {
 	waiting     map[string]waitingConflict
 	heads       int
 	numbers     *pullRequestNumbers
-	// timingWall and answerWall say the branch keeps the events that end a wait, and a person's
-	// answers, at their recorded times (Branch.Timing and Branch.Answer wall), not at their
-	// recorded offsets from their anchors.
-	timingWall, answerWall bool
 }
 
 // Divergence is what a replay counts of where it left the record's course, which a replay under
@@ -326,7 +322,7 @@ func (d *driver) now() time.Time { return d.clock.Now() }
 // daemon does not run records (ruleTables), and the replay's own handler before the chain.
 func (d *driver) newChain(at time.Time) {
 	w := d.window
-	source := rand.New(rand.NewPCG(uint64(d.cfg.Seed), 0x7265706c6179))
+	source := rand.New(rand.NewPCG(uint64(d.cfg.Seed), experimentStream))
 	draw := func(bound uint64) (uint64, error) {
 		if bound == 0 {
 			return 0, fmt.Errorf("draw a value below %d: there is no value below zero", bound)
@@ -399,8 +395,8 @@ func (d *driver) apply(source, eventID string, fact intake.Fact) (intake.Result,
 
 // factID names one of the replay's own facts uniquely in its run.
 func (d *driver) factID(kind string, parts ...any) string {
-	d.moves++
-	id := fmt.Sprintf("replay-%s:%d", kind, d.moves)
+	d.ownFacts++
+	id := fmt.Sprintf("replay-%s:%d", kind, d.ownFacts)
 	for _, part := range parts {
 		id += fmt.Sprintf(":%v", part)
 	}
@@ -424,7 +420,7 @@ func (d *driver) observe() error {
 				delete(d.drops, key)
 			}
 			d.snap.moved(key, d.clock.Instant(), from, to, trigger, drop)
-			if to == phase.Accepting || to == phase.Retro || to == phase.Merging {
+			if pastReviewPhase(to) {
 				d.used[2] = true
 			}
 			if phase.MovesBack(from, to) {
@@ -442,7 +438,7 @@ func (d *driver) observe() error {
 			if err := d.waitMoves(key, to); err != nil {
 				return err
 			}
-		case "workflow: issue left the workflow":
+		case leftWorkflowLine:
 			delete(d.inFlight, key)
 			delete(d.started, key)
 			delete(d.childWait, key)
@@ -455,7 +451,7 @@ func (d *driver) observe() error {
 						run: func() error { return d.signOff(waiting) }})
 				}
 			}
-		case "admission: slot taken":
+		case slotTakenLine:
 			d.used[9] = true
 			d.inFlight[key] = true
 			if _, ok := d.started[key]; !ok {
@@ -469,14 +465,14 @@ func (d *driver) observe() error {
 			if d.released {
 				d.used[11] = true
 			}
-		case "admission: slot released":
+		case slotReleasedLine:
 			d.released = true
-		case "admission: an issue waits for the Dispatch children under it":
+		case waitsForChildrenLine:
 			d.used[4] = true
 			if _, ok := d.childWait[key]; !ok {
 				d.childWait[key] = d.clock.Instant()
 			}
-		case "workflow: design gate closed":
+		case gateClosedLine:
 			d.used[4] = true
 		case mergeForwardAskedLine:
 			d.snap.roundBegins(key, d.clock.Instant())
@@ -489,20 +485,16 @@ func (d *driver) observe() error {
 			d.used[14] = true
 		}
 	}
-	return d.placeAnchored()
+	d.placeAnchored()
+	return nil
 }
 
 // treeOf is the tree key's record stands in, "" for an issue the replay does not record.
 func (d *driver) treeOf(key string) string {
-	var tree string
-	_ = store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		issue, err := d.records.Issue(ctx, tx, key)
-		if err == nil && issue != nil {
-			tree = issue.Tree
-		}
-		return err
-	})
-	return tree
+	if issue, _ := d.recorded(key); issue != nil {
+		return issue.Tree
+	}
+	return ""
 }
 
 // recorded is key's record in the replay's database, nil for an issue it does not record.
@@ -569,7 +561,7 @@ func (d *driver) run() error {
 		d.cfg.atStart(d.shadow)
 	}
 	// An issue that stands in a stretch at the window's start began it where the record shows.
-	for _, key := range sortedKeys(t.Issues) {
+	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		if start, standing := stretchStartAt(t.Issues[key], w.From); standing {
 			d.stretchFrom[key] = start
 		}
@@ -804,9 +796,9 @@ func (d *driver) firstSlotBefore(key string) time.Time {
 // answer offset waits for its question to place it.
 func (d *driver) placeByAnchor(i int) {
 	event := &d.script.events[i]
-	at := later(event.at, d.clock.Instant())
+	at := maxTime(d.clock.Instant(), event.at)
 	switch {
-	case event.anchor == anchorTime, event.anchor == anchorWait && d.timingWall, event.anchor == anchorEvent && d.answerWall:
+	case event.anchor == anchorTime, event.anchor == anchorWait && d.cfg.Branch.timingWall(), event.anchor == anchorEvent && d.cfg.Branch.answerWall():
 		d.placeEvent(i, at)
 	case event.anchor == anchorWait:
 		d.anchored = append(d.anchored, i)
@@ -817,16 +809,26 @@ func (d *driver) placeByAnchor(i int) {
 	}
 }
 
-// placeEvent queues the recorded event events[i] at at: its change to the shadow, then its fact.
+// placeEvent queues the recorded event events[i] at at, by its anchor (placeByAnchor), ordered
+// among the items of its instant by its own moment in the record (queueEvent).
 func (d *driver) placeEvent(i int, at time.Time) {
-	event := &d.script.events[i]
-	if event.placed {
+	d.queueEvent(i, at, d.script.events[i].at, nil)
+}
+
+// queueEvent queues the recorded event events[i] at at: its change to the shadow, then its fact,
+// ordered among the items of its instant by rec, its moment in the record, and the act of p's work
+// it is, nil for an event no piece places. A piece's event is ordered by the act's moment in the
+// record of p's work: the event's own, or, for an event another piece's work took over
+// (giveEvents), its moment in that work. A person's answer to it is placed once it is applied
+// (placeAnswers). An event the replay has placed already is not queued again.
+func (d *driver) queueEvent(i int, at, rec time.Time, p *piece) {
+	if _, placed := d.placed[i]; placed {
 		return
 	}
-	event.placed = true
 	d.placed[i] = at
+	event := &d.script.events[i]
 	var applied []byte
-	d.push(&item{at: at, class: classAct, rec: event.at, order: int64(event.order), eventKey: event.env.key, eventKind: event.env.kind,
+	d.push(&item{at: at, class: classAct, rec: rec, order: int64(event.order), piece: p, eventKey: event.env.key, eventKind: event.env.kind,
 		dispatch: func() error {
 			var err error
 			event.dispatched = true
@@ -844,40 +846,31 @@ func (d *driver) placeEvent(i int, at time.Time) {
 // not run its piece (placeUnrun) — so no answer comes before its question. Under answer wall each
 // answer was placed at its recorded time at the start.
 func (d *driver) placeAnswers(event *scriptEvent) {
-	if d.answerWall {
+	if d.cfg.Branch.answerWall() {
 		return
 	}
 	now := d.clock.Instant()
 	for _, answer := range event.dependents {
-		d.placeEvent(answer, later(now.Add(d.script.events[answer].offset), now))
+		d.placeEvent(answer, maxTime(now, now.Add(d.script.events[answer].offset)))
 	}
 }
 
 // placeAnchored places each event whose anchor, the replay's start of the wait it ended in the
 // record, the replay has now reached (Branch.Timing).
-func (d *driver) placeAnchored() error {
+func (d *driver) placeAnchored() {
 	kept := d.anchored[:0]
 	for _, i := range d.anchored {
-		event := &d.script.events[i]
-		if event.placed {
+		if _, placed := d.placed[i]; placed {
 			continue
 		}
-		start, reached, err := d.waitStart(event.wait)
-		if err != nil {
-			return err
-		}
+		start, reached := d.waitStart(d.script.events[i].wait)
 		if !reached {
 			kept = append(kept, i)
 			continue
 		}
-		at := start.Add(event.offset)
-		if now := d.clock.Instant(); at.Before(now) {
-			at = now
-		}
-		d.placeEvent(i, at)
+		d.placeEvent(i, maxTime(start.Add(d.script.events[i].offset), d.clock.Instant()))
 	}
 	d.anchored = kept
-	return nil
 }
 
 // placeUnbegun places the recorded event events[i], whose place waits for the replay's start of
@@ -888,7 +881,7 @@ func (d *driver) placeAnchored() error {
 // it as a started issue does.
 func (d *driver) placeUnbegun(i int) {
 	event := &d.script.events[i]
-	if event.placed || event.wait.kind != WaitLink {
+	if _, placed := d.placed[i]; placed || event.wait.kind != WaitLink {
 		return
 	}
 	if _, started := d.started[event.wait.issue]; started {
@@ -905,34 +898,26 @@ func (d *driver) placeUnbegun(i int) {
 // waitStart is the replay's start of the wait an anchor names, and whether the replay has reached
 // it: for a link wait, the later of the replay's moment of the event that added the link and the
 // waiting issue's start; for a children wait, the moment the replay's pass began it.
-func (d *driver) waitStart(wait waitAnchor) (time.Time, bool, error) {
+func (d *driver) waitStart(wait waitAnchor) (time.Time, bool) {
 	switch wait.kind {
 	case WaitLink:
 		started, ok := d.started[wait.issue]
 		if !ok {
-			return time.Time{}, false, nil
+			return time.Time{}, false
 		}
 		if wait.added < 0 {
-			return started, true, nil
+			return started, true
 		}
 		added, placed := d.placed[wait.added]
 		if !placed || added.After(d.clock.Instant()) {
-			return time.Time{}, false, nil
+			return time.Time{}, false
 		}
-		return later(added, started), true, nil
+		return maxTime(started, added), true
 	case WaitChildren:
 		began, ok := d.childWait[wait.issue]
-		return began, ok, nil
+		return began, ok
 	}
-	return time.Time{}, false, nil
-}
-
-// later is the later of a and b.
-func later(a, b time.Time) time.Time {
-	if a.After(b) {
-		return a
-	}
-	return b
+	return time.Time{}, false
 }
 
 // dispatchEvent applies the recorded event events[i] to the shadow at the clock's instant, and
@@ -991,10 +976,10 @@ func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
 	return after.Status == "todo" && !labelled && (record.OutOfWorkflow(before.Status) || event.releasesHold)
 }
 
-// shelved says whether status is backlog, icebox or triage: out of the workflow, as done is, and,
-// unlike done, never written by the daemon's outbox (keepsDaemonEvent).
+// shelved says whether status is out of the workflow, as done is (record.OutOfWorkflow), but not
+// done: backlog, icebox or triage, which the daemon's outbox never writes (keepsDaemonEvent).
 func shelved(status string) bool {
-	return status == "backlog" || status == "icebox" || status == "triage"
+	return status != record.DoneStatus && record.OutOfWorkflow(status)
 }
 
 // namesLinkOrChild says whether event shows an issue with a link or a parent (assumption 10).
@@ -1004,21 +989,11 @@ func (d *driver) namesLinkOrChild(event *scriptEvent) bool {
 		return false
 	}
 	for _, blocker := range shown.BlockedBy {
-		if project, _, _ := cutKey(blocker); project != d.window.Project {
+		if project, _, _ := strings.Cut(blocker, "-"); project != d.window.Project {
 			d.used[25] = true
 		}
 	}
 	return len(shown.BlockedBy) > 0 || shown.Parent != ""
-}
-
-// cutKey splits an issue key into its project and number.
-func cutKey(key string) (string, string, bool) {
-	for i := range len(key) {
-		if key[i] == '-' {
-			return key[:i], key[i+1:], true
-		}
-	}
-	return key, "", false
 }
 
 // applyEvent applies the event the shadow answered for events[i] (applied) through the daemon's
@@ -1035,7 +1010,7 @@ func (d *driver) applyEvent(i int, applied []byte) error {
 	if fact == nil {
 		return nil
 	}
-	if event.env.actor.Kind == "user" && answers(fact) {
+	if event.env.actor.Person() && answers(fact) {
 		d.used[5] = true
 	}
 	prepared, recorded, err := d.prepare(fact)
@@ -1073,14 +1048,20 @@ func (d *driver) boot(boot Boot) error {
 		return fmt.Errorf("replay: open the uncounted runs of the boot at %s: %w", stamp(boot.At), err)
 	}
 	listing := d.shadow.listing()
+	recorded := map[string]*record.Issue{}
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := d.records.Issues(ctx, tx)
+		for i := range issues {
+			recorded[issues[i].Key] = &issues[i]
+		}
+		return err
+	}); err != nil {
+		return err
+	}
 	listed := make([]intake.DispatchIssue, 0, len(listing))
 	for _, summary := range listing {
 		fact := intake.ListedIssue(summary)
-		prepared, err := d.prepareListed(fact)
-		if err != nil {
-			return err
-		}
-		listed = append(listed, prepared)
+		listed = append(listed, d.prepareListed(fact, recorded[fact.Key]))
 	}
 	// A boot whose listing the record shows held for the Dispatch consumer reads the consumer
 	// short of the stream's position, so the summaries ahead of the record wait for the release
@@ -1117,8 +1098,8 @@ func (d *driver) boot(boot Boot) error {
 	if err := d.observe(); err != nil {
 		return err
 	}
+	bootNumber := d.boots
 	if !boot.Holding.IsZero() && !boot.CaughtUp.IsZero() && boot.CaughtUp.Before(d.window.To) {
-		bootNumber := d.boots
 		d.push(&item{at: boot.CaughtUp, class: classAct, rec: boot.CaughtUp, order: lineOrder, run: func() error {
 			_, err := d.apply("dispatch", d.factID("dispatch-position", d.window.Project, bootNumber),
 				intake.DispatchConsumerPosition{AckFloorStream: target, Idle: true})
@@ -1131,10 +1112,9 @@ func (d *driver) boot(boot Boot) error {
 	last := boot.At
 	for _, root := range catchingUp {
 		at := d.caughtUpAt(boot, root.Key)
-		last = later(last, at)
+		last = maxTime(at, last)
 		d.push(&item{at: at, class: classAct, rec: at, order: lineOrder - 1, run: func() error { return d.releaseCatchUp(root) }})
 	}
-	bootNumber := d.boots
 	d.push(&item{at: last, class: classAct, rec: last, order: lineOrder, run: func() error {
 		if _, err := d.apply("daemon", fmt.Sprintf("boot:%s:%d", d.window.Project, bootNumber), intake.DaemonBooted{Boot: int64(bootNumber)}); err != nil {
 			return err
@@ -1294,14 +1274,14 @@ func (d *driver) tick(at time.Time) error {
 // pause, which holds every promotion and the outbox rows a pause holds, and stops every live claim
 // with a pause_stop row (internal/pause's StopRow), which the stub finishes (assumption 28).
 func (d *driver) pause(span PauseSpan) error {
+	reason := cmp.Or(span.Reason, "the record's pause")
 	paused, _, err := d.st.Pause(d.ctx, store.PauseRequest{Project: d.window.Project, By: store.PauseActor{Kind: store.PauseByOperator},
-		Reason: cmp.Or(span.Reason, "the record's pause"), At: d.now(), StopRow: pause.StopRow})
+		Reason: reason, At: d.now(), StopRow: pause.StopRow})
 	if err != nil {
 		return fmt.Errorf("replay: pause the project at %s: %w", stamp(span.From), err)
 	}
 	d.paused, d.pauseID = true, paused.ID
-	d.log.Info("pause: the project is paused", "pause", paused.ID, "by", string(store.PauseByOperator), "reason",
-		cmp.Or(span.Reason, "the record's pause"))
+	d.log.Info(pauseBeganLine, "pause", paused.ID, "by", string(store.PauseByOperator), "reason", reason)
 	return nil
 }
 
@@ -1320,7 +1300,7 @@ func (d *driver) resume(span PauseSpan) error {
 		return fmt.Errorf("replay: resume the project at %s: %w", stamp(span.To), err)
 	}
 	d.paused = false
-	d.log.Info("pause: the project is resumed", "pause", d.pauseID, "by", string(store.PauseByOperator))
+	d.log.Info(pauseEndedLine, "pause", d.pauseID, "by", string(store.PauseByOperator))
 	_, err := d.apply("pause", fmt.Sprintf("project-resumed:%s:%d", d.window.Project, d.pauseID), intake.ProjectResumed{})
 	return err
 }

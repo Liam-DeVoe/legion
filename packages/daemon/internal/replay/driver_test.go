@@ -181,15 +181,11 @@ func TestARuleThatStopsThePhaseStopsIt(t *testing.T) {
 // each hold of its role's claim, as the replay's script reads them.
 func recordedStarts(t *testing.T, window Window) map[string][]time.Time {
 	t.Helper()
-	trace, err := BuildTrace(window)
+	in, err := newWindowInputs(window)
 	if err != nil {
 		t.Fatalf("build the window's trace: %v", err)
 	}
-	lines, err := readRecordLines(window)
-	if err != nil {
-		t.Fatalf("read the window's lines: %v", err)
-	}
-	s, err := buildScript(trace, window, lines)
+	s, err := buildScript(in.trace, in.events, in.lines)
 	if err != nil {
 		t.Fatalf("read the window's script: %v", err)
 	}

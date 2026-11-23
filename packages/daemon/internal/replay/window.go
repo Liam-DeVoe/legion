@@ -145,13 +145,9 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// ReadWindow reads the window in dir: window.json, then every input its Files names, each checked
-// against its sha256 before it is read. It refuses a window of another format, an input that is
-// missing or whose hash differs, a name in Files that is no input of the format, a line of an
-// input that is not one JSON object, and an input file in dir that Files does not name, since
-// nothing would check it. Other files of dir — a fixture's README.md and expect.json — are no
-// part of the window and are not read.
-func ReadWindow(dir string) (Window, error) {
+// readWindowHead is the window in dir as window.json alone gives it, its inputs not read: what a
+// comparison needs of a window it runs no part of, and where ReadWindow begins.
+func readWindowHead(dir string) (Window, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, windowFile))
 	if err != nil {
 		return Window{}, fmt.Errorf("read the window in %s: %w", dir, err)
@@ -164,6 +160,20 @@ func ReadWindow(dir string) (Window, error) {
 	}
 	if w.Format != WindowFormat {
 		return Window{}, fmt.Errorf("read the window in %s: format %d, want %d", dir, w.Format, WindowFormat)
+	}
+	return w, nil
+}
+
+// ReadWindow reads the window in dir: window.json (readWindowHead), then every input its Files
+// names, each checked against its sha256 before it is read. It refuses a window of another format,
+// an input that is missing or whose hash differs, a name in Files that is no input of the format, a
+// line of an input that is not one JSON object, and an input file in dir that Files does not name,
+// since nothing would check it. Other files of dir — a fixture's README.md and expect.json — are no
+// part of the window and are not read.
+func ReadWindow(dir string) (Window, error) {
+	w, err := readWindowHead(dir)
+	if err != nil {
+		return Window{}, err
 	}
 	w.Events = make(map[string][]json.RawMessage)
 	w.Merges = make(map[string][]Merge)
@@ -251,8 +261,8 @@ func (w Window) Write(dir string) error {
 		}
 	}
 	for _, repo := range slices.Sorted(maps.Keys(w.Merges)) {
-		owner, name, ok := strings.Cut(repo, "/")
-		if !ok || owner == "" || name == "" || strings.Contains(name, "/") || strings.Contains(owner, "__") {
+		owner, name, ok := splitRepo(repo)
+		if !ok {
 			return fmt.Errorf("write the window to %s: merges of %q, which is no owner/repo", dir, repo)
 		}
 		lines := make([]json.RawMessage, 0, len(w.Merges[repo]))
@@ -275,6 +285,14 @@ func (w Window) Write(dir string) error {
 		return fmt.Errorf("write the window to %s: %w", dir, err)
 	}
 	return nil
+}
+
+// splitRepo is repo, a repository as owner/name, split into its owner and name, and whether it is
+// one: an owner and a name, neither empty, the name with no slash and the owner with no "__", which
+// a merges file's name (<owner>__<name>.jsonl) joins them with.
+func splitRepo(repo string) (owner, name string, ok bool) {
+	owner, name, ok = strings.Cut(repo, "/")
+	return owner, name, ok && owner != "" && name != "" && !strings.Contains(name, "/") && !strings.Contains(owner, "__")
 }
 
 // inputOf is which input of the format name is — logFile, eventsDir or mergesDir — and the key
@@ -327,17 +345,18 @@ func inputFiles(dir string) ([]string, error) {
 }
 
 // jsonLines is data's lines, each one JSON object: a last line ended by a newline leaves no empty
-// line after it, and any other empty line, or a line that is not an object, is refused.
+// line after it, and any other empty line, or a line that is not an object, is refused. Each line
+// is a part of data, which the caller writes nothing to after.
 func jsonLines(data []byte) ([]json.RawMessage, error) {
-	text := strings.TrimSuffix(string(data), "\n")
-	if text == "" {
+	text := bytes.TrimSuffix(data, []byte("\n"))
+	if len(text) == 0 {
 		return nil, nil
 	}
-	split := strings.Split(text, "\n")
+	split := bytes.Split(text, []byte("\n"))
 	lines := make([]json.RawMessage, 0, len(split))
 	for i, line := range split {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "{") || !json.Valid([]byte(trimmed)) {
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("{")) || !json.Valid(trimmed) {
 			return nil, fmt.Errorf("line %d is not one JSON object", i+1)
 		}
 		lines = append(lines, json.RawMessage(trimmed))

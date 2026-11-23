@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
 // DefaultGitHubAPI is GitHub's REST API, which collect-merges reads where its caller names no
@@ -39,10 +41,8 @@ type MergesConfig struct {
 	API string
 	// Window is the directory of the window the merges are written into, which collect wrote.
 	Window string
-	// Client makes the requests; nil is a client whose every request ends within a minute.
-	Client *http.Client
 	// Wait is how a read GitHub refused for now waits before it is tried again; nil waits on a
-	// timer.
+	// timer (backoff.Sleep).
 	Wait func(ctx context.Context, d time.Duration) error
 }
 
@@ -57,9 +57,9 @@ type MergesConfig struct {
 // GitHub refuses for now (429, a 5xx, no answer) tried again with a growing wait. It returns the
 // branch's commits as written, oldest first.
 func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
-	owner, name, ok := strings.Cut(cfg.Repo, "/")
+	owner, name, ok := splitRepo(cfg.Repo)
 	switch {
-	case !ok || owner == "" || name == "" || strings.Contains(name, "/") || strings.Contains(owner, "__"):
+	case !ok:
 		return nil, fmt.Errorf("replay: collect-merges: %q is no owner/name of a repository", cfg.Repo)
 	case cfg.Branch == "":
 		return nil, errors.New("replay: collect-merges: no branch is named")
@@ -76,12 +76,9 @@ func CollectMerges(ctx context.Context, cfg MergesConfig) ([]Merge, error) {
 	if err != nil {
 		return nil, fmt.Errorf("replay: collect-merges: %w", err)
 	}
-	reader := githubReader{api: api, token: cfg.Token, client: cfg.Client, wait: cfg.Wait}
-	if reader.client == nil {
-		reader.client = &http.Client{Timeout: time.Minute}
-	}
+	reader := githubReader{api: api, token: cfg.Token, client: &http.Client{Timeout: time.Minute}, wait: cfg.Wait}
 	if reader.wait == nil {
-		reader.wait = waitOnTimer
+		reader.wait = backoff.Sleep
 	}
 	query := url.Values{}
 	query.Set("sha", cfg.Branch)

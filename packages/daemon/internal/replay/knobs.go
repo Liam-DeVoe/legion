@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"time"
@@ -9,9 +10,10 @@ import (
 )
 
 // The streams of the run's seed: each draw of a replay reads a source of its own, seeded by the
-// run's seed on its own stream, so a draw of one kind never moves the draws of another (the
-// experiments' source is newChain's).
+// run's seed on its own stream, so a draw of one kind never moves the draws of another: the
+// experiments' (newChain), the conflicts' and the never-started scenario's.
 const (
+	experimentStream   = 0x7265706c6179     // "replay"
 	conflictStream     = 0x636f6e666c696374 // "conflict"
 	neverStartedStream = 0x6e65766572       // "never"
 )
@@ -90,7 +92,7 @@ func treeRoot(iss *IssueTrace) bool {
 // from, the issue keeps no work, as under none. Each issue draws once, in the order of their keys.
 func (s *script) drawNeverStarted(t Trace, scenario string, source *rand.Rand) {
 	var roots, children []string
-	for _, key := range sortedKeys(t.Issues) {
+	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		if iss.Project != t.Project || len(s.pieces[key]) == 0 || !startedIn(t, iss) {
 			continue
@@ -104,7 +106,7 @@ func (s *script) drawNeverStarted(t Trace, scenario string, source *rand.Rand) {
 			children = append(children, key)
 		}
 	}
-	for _, key := range sortedKeys(t.Issues) {
+	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		if iss.Project != t.Project || len(iss.Entries) == 0 || !neverStartedIn(t, key) {
 			continue

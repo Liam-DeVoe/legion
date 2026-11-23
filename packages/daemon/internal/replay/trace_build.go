@@ -31,8 +31,10 @@ type Trace struct {
 	// Start is the earliest moment the window's inputs reach, From less Before: the log holds
 	// nothing older, so a phase or a slot an issue stood in at Start began at an unknown time.
 	Start time.Time
-	// Parts, GateSteps and TickInterval are the window's own (Window).
+	// Parts, GateSteps and TickInterval are the window's own (Window), and rules the slot rule of
+	// each part, by its index, as the repository keeps it (ruleAt).
 	Parts        []Part
+	rules        []record.SlotRule
 	GateSteps    []record.DesignStep
 	TickInterval time.Duration
 	// GateLines says the window holds the daemon's lines of a design gate's opening and closing
@@ -56,11 +58,9 @@ type Trace struct {
 	// at the window's start.
 	InferredSlots int
 	SlotCount     SlotCount
-	// Controller is the turns of the project's controller, whose claim names no issue.
-	Controller []Turn
 	// Boots is each daemon process, in order: each start the log holds, and, where the log opens
-	// with no start, the process it opens in (Boot.Seen). Downtimes is each stretch between the last
-	// line of one process and the start of the next, when no daemon ran a pass (assumption 24).
+	// with no start, the process it opens in. Downtimes is each stretch between the last line of one
+	// process and the start of the next, when no daemon ran a pass (assumption 24).
 	Boots     []Boot
 	Downtimes []Downtime
 	// Ticks is each controller tick the daemon ran: a minute after each boot and every
@@ -242,8 +242,6 @@ type Visit struct {
 	WorkerStart time.Time
 	// Segment is the visit's work segment, nil where no worker started.
 	Segment *WorkSegment
-	// Ready is the merger's ready mark inside the visit to merging, zero for none.
-	Ready time.Time
 	// Merge is the merge of the issue's pull request inside a visit to merging whose close waited
 	// for the issues beneath it (MergedCloseWaits, the first line of the visit's): the move the
 	// merge would have made, from merging to done by pull_request_merged at the line's time, which
@@ -263,14 +261,13 @@ func (v *Visit) workEnd() *Move {
 }
 
 // Move is one recorded phase move (`workflow: phase changed`): its moment, its phases on today's
-// workflow and as the line wrote them, its trigger and the Dispatch status the move wrote, how a
-// replay makes it (MoveSources) and, for a move back, its cause (CauseOf).
+// workflow and as the line wrote them, its trigger, how a replay makes it (MoveSources) and, for a
+// move back, its cause (CauseOf).
 type Move struct {
 	At                       time.Time
 	From, To                 phase.Phase
 	RecordedFrom, RecordedTo phase.Phase
 	Trigger                  workflow.TriggerKind
-	Status                   string
 	Source                   MoveSource
 	Cause                    Cause
 	// Drop is the msg of the line of the issue's pull request leaving the merge queue that came
@@ -305,30 +302,12 @@ const (
 	SegmentEndHeldMerge SegmentEnd = "held_merge"
 )
 
-// WorkSegment is one visit's work: from its worker start to its end (zero while open), with each
-// turn of the issue's workers and each child the issue filed in it, at their offsets from its
-// start. A replay places neither from here: it places each turn from the issue's own
-// (IssueTrace.Turns, placeTurns) and each child's filing from the recorded event that made it.
+// WorkSegment is one visit's work: from its worker start to its end (zero while open), and how it
+// ended. A replay places each turn from the issue's own (IssueTrace.Turns, placeTurns) and each
+// child's filing from the recorded event that made it.
 type WorkSegment struct {
 	Start, End time.Time
 	EndedBy    SegmentEnd
-	Turns      []SegmentTurn
-	Filings    []SegmentFiling
-}
-
-// SegmentTurn is one turn of a segment: the role whose worker took it, its offset from the
-// segment's start and its length, Open where the record shows it unended.
-type SegmentTurn struct {
-	Role   claim.Role
-	Offset time.Duration
-	Length time.Duration
-	Open   bool
-}
-
-// SegmentFiling is one child the issue filed in a segment, at its offset from the segment's start.
-type SegmentFiling struct {
-	Child  string
-	Offset time.Duration
 }
 
 // SlotMove is one slot an admission pass gave out or took back: the issue, the moment, and the
@@ -357,7 +336,6 @@ type SlotSpan struct {
 	Start, End time.Time
 	Before     bool
 	Inferred   bool
-	Kind       string
 	Reason     record.SlotTakenReason
 	ForWait    bool
 }
@@ -506,7 +484,6 @@ const (
 type Turn struct {
 	Claim      ClaimRef
 	Generation uint64
-	Delivery   string
 	Start, End time.Time
 	EndedBy    TurnEnd
 }
@@ -577,13 +554,11 @@ func (g *gateReader) apply(fact GateFact) bool {
 }
 
 // ChildFiling is a child filed under the issue (issue.created naming it the parent) or moved under
-// it (an issue event that changed its parent to it), by whom and at what status.
+// it (an issue event that changed its parent to it).
 type ChildFiling struct {
-	Child  string
-	At     time.Time
-	By     dispatch.Actor
-	Status string
-	Moved  bool
+	Child string
+	At    time.Time
+	Moved bool
 }
 
 // Leave is the issue leaving the workflow at a Dispatch status.
@@ -592,30 +567,26 @@ type Leave struct {
 	Status string
 }
 
-// Linger is one linger of a tree, at its generation: begun At, to run until Until, and Closed when
-// its linger closed the tree (zero while it runs at the window's end).
+// Linger is one linger of a tree: begun At, to run until Until, and Closed when its linger closed
+// the tree (zero while it runs at the window's end).
 type Linger struct {
-	Generation        uint64
 	At, Until, Closed time.Time
 }
 
-// QueueDrop is a line of an issue's pull request leaving the merge queue: its msg, the pull
-// request's number and, for a line on which the daemon read nothing, the reason it read nothing.
+// QueueDrop is a line of an issue's pull request leaving the merge queue: its msg and, for a line on
+// which the daemon read nothing, the reason it read nothing.
 type QueueDrop struct {
-	At          time.Time
-	Line        string
-	PullRequest int
-	Why         string
+	At   time.Time
+	Line string
+	Why  string
 }
 
-// Boot is one daemon process: when it started, whether the log holds that start (Seen; the
-// process the log opens in is taken to have started at Trace.Start), and when it finished its boot
-// and the cap it served under, where its `legion daemon started` line says.
+// Boot is one daemon process: when it started (the process the log opens in with no start line is
+// taken to have started at Trace.Start), and when it finished its boot, where its `legion daemon
+// started` line says.
 type Boot struct {
 	At      time.Time
-	Seen    bool
 	Started time.Time
-	Cap     int
 	// Stopped is when the process began to stop, where its `legion daemon stopping` or `legion
 	// daemon stopped` line says (ProcessStop); zero where the log shows neither.
 	Stopped time.Time
@@ -661,14 +632,25 @@ func BuildTrace(w Window) (Trace, error) {
 // replay's own log (driver.lineTimeline), whose rule need be no rule the repository keeps, while
 // the lines before the start are its record's. nil reads every line under the rule w's parts name.
 func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
-	for _, part := range w.Parts {
-		if _, kept := record.SlotRuleNamed(part.Rule); !kept {
-			return Trace{}, fmt.Errorf("replay: the window's part from %s names the slot rule %q, which the repository does not keep (legion replay rules)",
+	t, _, _, err := readTrace(w, ran)
+	return t, err
+}
+
+// readTrace is buildTrace of w with what it read on the way, which a run's script reads again
+// (newWindowInputs): the lines of the kinds the window holds and every Dispatch event, each in
+// the one time order the trace read them in, the events by time and then id.
+func readTrace(w Window, ran *record.SlotRule) (Trace, []LogLine, []readEvent, error) {
+	rules := make([]record.SlotRule, len(w.Parts))
+	for i, part := range w.Parts {
+		rule, kept := record.SlotRuleNamed(part.Rule)
+		if !kept {
+			return Trace{}, nil, nil, fmt.Errorf("replay: the window's part from %s names the slot rule %q, which the repository does not keep (legion replay rules)",
 				stamp(part.From), part.Rule)
 		}
+		rules[i] = rule
 	}
 	b := traceBuilder{
-		t: &Trace{Project: w.Project, From: w.From, To: w.To, Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts,
+		t: &Trace{Project: w.Project, From: w.From, To: w.To, Start: w.From.Add(-time.Duration(w.Before)), Parts: w.Parts, rules: rules,
 			GateSteps: w.GateSteps, TickInterval: time.Duration(w.TickInterval), Branches: map[string]string{},
 			Issues: map[string]*IssueTrace{}},
 		ran:         ran,
@@ -694,7 +676,7 @@ func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
 	for i, raw := range w.Log {
 		line, err := ParseLogLine(raw)
 		if err != nil {
-			return Trace{}, fmt.Errorf("replay: line %d of the window's log: %w", i+1, err)
+			return Trace{}, nil, nil, fmt.Errorf("replay: line %d of the window's log: %w", i+1, err)
 		}
 		if line != nil && b.held[line.Head().Msg] {
 			lines = append(lines, line)
@@ -707,7 +689,7 @@ func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
 		for i, raw := range w.Events[key] {
 			event, err := ParseDispatchEvent(raw)
 			if err != nil {
-				return Trace{}, fmt.Errorf("replay: event %d of %s: %w", i+1, key, err)
+				return Trace{}, nil, nil, fmt.Errorf("replay: event %d of %s: %w", i+1, key, err)
 			}
 			events = append(events, readEvent{event: event, raw: raw})
 		}
@@ -726,7 +708,7 @@ func buildTrace(w Window, ran *record.SlotRule) (Trace, error) {
 		j++
 	}
 	b.finish()
-	return *b.t, nil
+	return *b.t, lines, events, nil
 }
 
 // readEvent is one Dispatch event as the trace read it, and its raw bytes, from which the issue's
@@ -776,6 +758,9 @@ type traceBuilder struct {
 	// sessions is each session the events show running a claim, by the claim's issue, in the order
 	// of their first events (sessionSeen); finish gives each issue of the trace its own.
 	sessions map[string][]RecordedSession
+	// shown is each issue's Dispatch states as its issue events show them (shownOf), indexed the
+	// first time a wait reads the issue, once every event is read (dispatchStateAt).
+	shown map[string]shownStates
 }
 
 // entryRef is one entry of an issue's trace: its issue and its index in the issue's Entries.
@@ -860,14 +845,15 @@ func (b *traceBuilder) onEvent(read readEvent) {
 	b.sessionSeen(event)
 	switch {
 	case event.Issue != nil:
-		title, repo := issueSubject(read.raw)
+		payload := readIssuePayload(read.raw)
+		title, repo := payload.subject()
 		if title != "" {
 			iss.Title = title
 		}
 		if iss.Repo == "" {
 			iss.Repo = repo
 		}
-		for linked, number := range linkedPullRequests(read.raw) {
+		for linked, number := range payload.linkedPullRequests() {
 			if iss.LinkedPullRequests == nil {
 				iss.LinkedPullRequests = map[string]int{}
 			}
@@ -899,47 +885,69 @@ func (b *traceBuilder) sessionSeen(event DispatchEvent) {
 	b.sessions[ran.Issue] = append(b.sessions[ran.Issue], RecordedSession{ID: event.Actor.ID, Role: ran.Role, First: event.At})
 }
 
-// issueSubject reads an issue event's title and repository, which ParseDispatchEvent leaves out:
-// the repository Dispatch resolved for it (resolved_repo), or the one it names (repo) where none is
-// resolved.
-func issueSubject(raw json.RawMessage) (title, repo string) {
-	var event struct {
-		Payload struct {
-			Title        string  `json:"title"`
-			Repo         *string `json:"repo"`
-			ResolvedRepo *string `json:"resolved_repo"`
-		} `json:"payload"`
+// issuePayload is what the trace reads of an issue event's payload that ParseDispatchEvent leaves
+// out, each member as the event writes it: its title, its repository and the one Dispatch resolved
+// for it, and its external links. The event is decoded once (readIssuePayload), and each reading
+// decodes the members it reads (subject, linkedPullRequests); unread is a payload that does not
+// read, from which neither reads anything.
+type issuePayload struct {
+	Payload struct {
+		Title         json.RawMessage `json:"title"`
+		Repo          json.RawMessage `json:"repo"`
+		ResolvedRepo  json.RawMessage `json:"resolved_repo"`
+		ExternalLinks json.RawMessage `json:"external_links"`
+	} `json:"payload"`
+	unread bool
+}
+
+// readIssuePayload reads raw, an issue event, into its issuePayload.
+func readIssuePayload(raw json.RawMessage) issuePayload {
+	var p issuePayload
+	p.unread = json.Unmarshal(raw, &p) != nil
+	return p
+}
+
+// decodeMember decodes member, a member of a payload as written, into into; an absent member
+// leaves into as it is.
+func decodeMember(member json.RawMessage, into any) error {
+	if member == nil {
+		return nil
 	}
-	if json.Unmarshal(raw, &event) != nil {
+	return json.Unmarshal(member, into)
+}
+
+// subject is the event's title and repository: the repository Dispatch resolved for it
+// (resolved_repo), or the one it names (repo) where none is resolved; both empty where a member does
+// not read.
+func (p issuePayload) subject() (title, repo string) {
+	var named, resolved *string
+	if p.unread || decodeMember(p.Payload.Title, &title) != nil || decodeMember(p.Payload.Repo, &named) != nil ||
+		decodeMember(p.Payload.ResolvedRepo, &resolved) != nil {
 		return "", ""
 	}
 	switch {
-	case event.Payload.ResolvedRepo != nil && *event.Payload.ResolvedRepo != "":
-		repo = *event.Payload.ResolvedRepo
-	case event.Payload.Repo != nil:
-		repo = *event.Payload.Repo
+	case resolved != nil && *resolved != "":
+		repo = *resolved
+	case named != nil:
+		repo = *named
 	}
-	return event.Payload.Title, repo
+	return title, repo
 }
 
 // pullRequestLink is a link to a GitHub pull request: https://github.com/<owner>/<repo>/pull/<n>.
 var pullRequestLink = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$`)
 
-// linkedPullRequests reads the pull requests an issue event's payload links among its external
-// links, which ParseDispatchEvent leaves out: each link's number by its repository as owner/repo
-// in lower case, the last one listed where it lists two of one repository. A link is an object
-// with its url, as Dispatch serves it, or the url alone.
-func linkedPullRequests(raw json.RawMessage) map[string]int {
-	var event struct {
-		Payload struct {
-			ExternalLinks []json.RawMessage `json:"external_links"`
-		} `json:"payload"`
-	}
-	if json.Unmarshal(raw, &event) != nil {
+// linkedPullRequests is the pull requests the payload links among its external links: each link's
+// number by its repository as owner/repo in lower case, the last one listed where it lists two of
+// one repository. A link is an object with its url, as Dispatch serves it, or the url alone. None
+// where the links do not read.
+func (p issuePayload) linkedPullRequests() map[string]int {
+	var links []json.RawMessage
+	if p.unread || decodeMember(p.Payload.ExternalLinks, &links) != nil {
 		return nil
 	}
 	var linked map[string]int
-	for _, link := range event.Payload.ExternalLinks {
+	for _, link := range links {
 		var url string
 		if json.Unmarshal(link, &url) != nil {
 			var object struct {
@@ -975,10 +983,12 @@ func (b *traceBuilder) childFiled(iss *IssueTrace, event DispatchEvent) {
 	}
 	moved := event.Type != "issue.created"
 	if moved {
+		// The issue's state before this event: its newest issue event before it.
 		var previous *DispatchIssueState
-		for _, earlier := range iss.Dispatch[:len(iss.Dispatch)-1] {
-			if earlier.Issue != nil {
-				previous = earlier.Issue
+		for i := len(iss.Dispatch) - 2; i >= 0; i-- {
+			if iss.Dispatch[i].Issue != nil {
+				previous = iss.Dispatch[i].Issue
+				break
 			}
 		}
 		if previous != nil && previous.Parent == parent {
@@ -986,8 +996,7 @@ func (b *traceBuilder) childFiled(iss *IssueTrace, event DispatchEvent) {
 		}
 	}
 	under := b.issue(parent)
-	under.Children = append(under.Children, ChildFiling{Child: iss.Key, At: event.At, By: event.Actor, Status: event.Issue.Status,
-		Moved: moved})
+	under.Children = append(under.Children, ChildFiling{Child: iss.Key, At: event.At, Moved: moved})
 }
 
 // maybeEnter enters iss into the workflow at event where the issue, of the window's project,
@@ -1040,9 +1049,9 @@ func (b *traceBuilder) onLine(line LogLine) {
 	}
 	switch {
 	case starts && (!b.starting || len(b.t.Boots) == 0):
-		b.boot(at, true)
+		b.boot(at)
 	case !starts && len(b.t.Boots) == 0:
-		b.boot(b.t.Start, false)
+		b.boot(b.t.Start)
 	}
 	b.starting = starts
 	b.last = at
@@ -1050,7 +1059,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 	switch l := line.(type) {
 	case DaemonStarted:
 		boot := &b.t.Boots[len(b.t.Boots)-1]
-		boot.Started, boot.Cap = at, l.AdmissionCap
+		boot.Started = at
 	case PhaseChanged:
 		b.moved(l)
 	case SlotTaken:
@@ -1126,7 +1135,7 @@ func (b *traceBuilder) onLine(line LogLine) {
 	case TreeLingers:
 		root := b.issue(l.Tree)
 		b.generationIs(root, l.Generation)
-		root.Lingers = append(root.Lingers, Linger{Generation: l.Generation, At: at, Until: l.Until})
+		root.Lingers = append(root.Lingers, Linger{At: at, Until: l.Until})
 	case LingerClosed:
 		root := b.issue(l.Tree)
 		b.generationIs(root, l.Generation)
@@ -1199,7 +1208,7 @@ func stamp(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
 // boot begins a daemon process at at, and the downtime before it where an earlier process wrote a
 // line: from that process's first stop line where it wrote one (Boot.Stopped), since it runs no
 // pass once it has begun to stop, and from its last line otherwise.
-func (b *traceBuilder) boot(at time.Time, seen bool) {
+func (b *traceBuilder) boot(at time.Time) {
 	if n := len(b.t.Boots); n > 0 && !b.last.IsZero() && b.last.Before(at) {
 		from := b.last
 		if stopped := b.t.Boots[n-1].Stopped; !stopped.IsZero() && stopped.Before(from) {
@@ -1207,7 +1216,7 @@ func (b *traceBuilder) boot(at time.Time, seen bool) {
 		}
 		b.t.Downtimes = append(b.t.Downtimes, Downtime{From: from, To: at})
 	}
-	b.t.Boots = append(b.t.Boots, Boot{At: at, Seen: seen})
+	b.t.Boots = append(b.t.Boots, Boot{At: at})
 }
 
 // generationIs sets iss's latest entry to generation, the generation a line of the daemon names
@@ -1308,12 +1317,9 @@ func (b *traceBuilder) moved(l PhaseChanged) {
 	}
 	if from == to {
 		iss.Ready = append(iss.Ready, at)
-		if visit.Ready.IsZero() {
-			visit.Ready = at
-		}
 		return
 	}
-	move := Move{At: at, From: from, To: to, RecordedFrom: l.From, RecordedTo: l.To, Trigger: l.Trigger, Status: l.Status, Source: source}
+	move := Move{At: at, From: from, To: to, RecordedFrom: l.From, RecordedTo: l.To, Trigger: l.Trigger, Source: source}
 	if from == phase.Merging {
 		for _, drop := range slices.Backward(iss.QueueDrops) {
 			if !drop.At.Before(visit.Enter) && !drop.At.After(at) {
@@ -1354,7 +1360,7 @@ func (b *traceBuilder) pullRequestSeen(iss *IssueTrace, at time.Time, number int
 // queueLeft reads a line of an issue's pull request leaving the merge queue.
 func (b *traceBuilder) queueLeft(key string, at time.Time, msg string, number int, why string) {
 	iss := b.issue(key)
-	iss.QueueDrops = append(iss.QueueDrops, QueueDrop{At: at, Line: msg, PullRequest: number, Why: why})
+	iss.QueueDrops = append(iss.QueueDrops, QueueDrop{At: at, Line: msg, Why: why})
 	b.pullRequestSeen(iss, at, number)
 }
 
@@ -1375,8 +1381,7 @@ func (b *traceBuilder) mergeWaits(l MergedCloseWaits) {
 	}
 	if visit.Merge == nil {
 		visit.Merge = &Move{At: at, From: phase.Merging, To: phase.Done, RecordedFrom: phase.Merging, RecordedTo: phase.Done,
-			Trigger: workflow.TriggerPullRequestMerged, Status: workflow.PhaseStatus(phase.Done),
-			Source: MoveSources[workflow.TriggerPullRequestMerged]}
+			Trigger: workflow.TriggerPullRequestMerged, Source: MoveSources[workflow.TriggerPullRequestMerged]}
 	}
 }
 
@@ -1503,9 +1508,9 @@ func (b *traceBuilder) left(iss *IssueTrace, at time.Time, status string) {
 	if n := len(iss.MergeForwards); n > 0 && iss.MergeForwards[n-1].End.IsZero() {
 		iss.MergeForwards[n-1].End = at
 	}
-	for _, token := range slices.Sorted(maps.Keys(b.turns)) {
-		if b.turns[token].issue == iss.Key {
-			b.turnEnds(iss.Turns[b.turns[token].index].Claim, at, TurnEndLeft, false)
+	for _, open := range b.turns {
+		if open.issue == iss.Key {
+			b.turnEnds(iss.Turns[open.index].Claim, at, TurnEndLeft, false)
 		}
 	}
 }
@@ -1520,8 +1525,8 @@ func (b *traceBuilder) checkClosed(iss *IssueTrace, at time.Time) {
 	if iss.openVisit() != nil {
 		return
 	}
-	for _, token := range slices.Sorted(maps.Keys(b.turns)) {
-		if open := b.turns[token]; open.issue == iss.Key && iss.Turns[open.index].Claim.Role == claim.RoleTester {
+	for _, open := range b.turns {
+		if open.issue == iss.Key && iss.Turns[open.index].Claim.Role == claim.RoleTester {
 			b.turnEnds(iss.Turns[open.index].Claim, at, TurnEndRetired, false)
 		}
 	}
@@ -1533,10 +1538,11 @@ func (b *traceBuilder) turnStarts(l TurnStarted) {
 		b.unplaced(UnplacedTurn, l.Claim.Issue, l.Time, "%s starts a turn at %s while its turn before is open; that turn ends here", l.Claim.Token, stamp(l.Time))
 		b.turnEnds(l.Claim, l.Time, TurnEndLine, false)
 	}
-	turn := Turn{Claim: l.Claim, Generation: l.Generation, Delivery: l.Delivery, Start: l.Time}
+	turn := Turn{Claim: l.Claim, Generation: l.Generation, Start: l.Time}
 	if l.Claim.Issue == "" {
-		b.t.Controller = append(b.t.Controller, turn)
-		b.turns[l.Claim.Token] = turnAt{index: len(b.t.Controller) - 1}
+		// The controller's claim names no issue, and the trace keeps none of its turns: it holds the
+		// claim's open turn alone, so its next start and end read as they do for any claim.
+		b.turns[l.Claim.Token] = turnAt{}
 		return
 	}
 	iss := b.issue(l.Claim.Issue)
@@ -1557,10 +1563,10 @@ func (b *traceBuilder) turnEnds(ref ClaimRef, at time.Time, by TurnEnd, ownLine 
 		return
 	}
 	delete(b.turns, ref.Token)
-	turns := b.t.Controller
-	if open.issue != "" {
-		turns = b.t.Issues[open.issue].Turns
+	if open.issue == "" {
+		return
 	}
+	turns := b.t.Issues[open.issue].Turns
 	turns[open.index].End, turns[open.index].EndedBy = at, by
 }
 
@@ -1607,11 +1613,6 @@ func (b *traceBuilder) finish() {
 		b.forWait(iss)
 		b.segments(iss)
 	}
-	for i := range b.t.Controller {
-		if b.t.Controller[i].EndedBy == "" {
-			b.t.Controller[i].EndedBy = TurnEndOpen
-		}
-	}
 	b.ticks()
 }
 
@@ -1627,9 +1628,9 @@ func (b *traceBuilder) spans() {
 		case move.Given && holding:
 			b.unplaced(UnplacedSlot, move.Issue, move.At, "%s takes a slot at %s while it holds one", move.Issue, stamp(move.At))
 			iss.Slots[n-1].End = move.At
-			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At, Kind: move.Kind})
+			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At})
 		case move.Given:
-			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At, Kind: move.Kind})
+			iss.Slots = append(iss.Slots, SlotSpan{Start: move.At})
 		case holding:
 			iss.Slots[n-1].End, iss.Slots[n-1].Reason = move.At, move.Reason
 		default:
@@ -1661,20 +1662,7 @@ func (b *traceBuilder) inferSlots() {
 		if !shown || !b.t.ruleAt(standing.Enter).PhaseKeepsSlot(standing.Phase) {
 			continue
 		}
-		span := SlotSpan{Start: b.t.Start, Before: true, Inferred: true}
-		for i := first; i < len(iss.Visits); i++ {
-			visit := iss.Visits[i]
-			if i > first && visit.In == nil {
-				break // a later run, which began with an entry of its own
-			}
-			if !b.t.ruleAt(visit.Enter).PhaseKeepsSlot(visit.Phase) {
-				span.End = visit.Enter
-				break
-			}
-			if span.End = visit.Exit; span.End.IsZero() {
-				break
-			}
-		}
+		span := SlotSpan{Start: b.t.Start, Before: true, Inferred: true, End: b.slotKeptUntil(iss, first)}
 		iss.Slots = append(iss.Slots, span)
 		b.t.InferredSlots++
 	}
@@ -1692,10 +1680,10 @@ func (b *traceBuilder) inferSlots() {
 // one (workflow.StartOrOwe). An issue whose work came back with no slot and whose worker has not
 // started owes its start (Seed's owedStarts), and an architect's turn starts on no slot, so neither
 // is given one. The slot runs from the later of the run's entry and the end of the issue's last
-// slot until the rule gives it back, as inferSlots reads it; a slot line after the start that gives
-// the issue a slot before then shows it held none, and leaves it without. Each is counted
-// (Trace.InferredSlots). An issue the slot puts in flight at the start has its link waits read
-// again, since they are read in flight alone, and one of them that stands at the start, which
+// slot until the rule gives it back (slotKeptUntil, as inferSlots reads it); a slot line after the
+// start that gives the issue a slot before then shows it held none, and leaves it without. Each is
+// counted (Trace.InferredSlots). An issue the slot puts in flight at the start has its link waits
+// read again, since they are read in flight alone, and one of them that stands at the start, which
 // would have given the slot back, takes it away again.
 func (b *traceBuilder) inferStartSlots() {
 	from := b.t.From
@@ -1732,20 +1720,7 @@ func (b *traceBuilder) inferStartSlots() {
 		if !started {
 			continue
 		}
-		span := SlotSpan{Start: start, Inferred: true}
-		for i := at; i < len(iss.Visits); i++ {
-			visit := iss.Visits[i]
-			if i > at && visit.In == nil {
-				break // a later run, which began with an entry of its own
-			}
-			if !b.t.ruleAt(visit.Enter).PhaseKeepsSlot(visit.Phase) {
-				span.End = visit.Enter
-				break
-			}
-			if span.End = visit.Exit; span.End.IsZero() {
-				break
-			}
-		}
+		span := SlotSpan{Start: start, Inferred: true, End: b.slotKeptUntil(iss, at)}
 		if slices.ContainsFunc(iss.Slots, func(given SlotSpan) bool {
 			return given.Start.After(from) && (span.End.IsZero() || given.Start.Before(span.End))
 		}) {
@@ -1767,6 +1742,26 @@ func (b *traceBuilder) inferStartSlots() {
 		}
 		b.t.InferredSlots++
 	}
+}
+
+// slotKeptUntil is when the rule gives back the slot iss holds from its visit at index from on:
+// the first move of that run into a phase the rule keeps no slot in, or the run's end, its move to
+// done or its leave; zero while the run goes on at the window's end.
+func (b *traceBuilder) slotKeptUntil(iss *IssueTrace, from int) time.Time {
+	var end time.Time
+	for i := from; i < len(iss.Visits); i++ {
+		visit := iss.Visits[i]
+		if i > from && visit.In == nil {
+			break // a later run, which began with an entry of its own
+		}
+		if !b.t.ruleAt(visit.Enter).PhaseKeepsSlot(visit.Phase) {
+			return visit.Enter
+		}
+		if end = visit.Exit; end.IsZero() {
+			break
+		}
+	}
+	return end
 }
 
 // workerPhase says whether p is a phase a worker other than the architect works (phaseRole), whose
@@ -1847,28 +1842,25 @@ func (b *traceBuilder) countSlots() {
 
 // holdsSlotAt says whether iss holds a slot at at: a slot that began at or before it and ends
 // after it.
-func (iss *IssueTrace) holdsSlotAt(at time.Time) (SlotSpan, bool) {
-	for _, span := range iss.Slots {
-		if !span.Start.After(at) && (span.End.IsZero() || span.End.After(at)) {
-			return span, true
-		}
-	}
-	return SlotSpan{}, false
+func (iss *IssueTrace) holdsSlotAt(at time.Time) bool {
+	return slices.ContainsFunc(iss.Slots, func(span SlotSpan) bool {
+		return !span.Start.After(at) && (span.End.IsZero() || span.End.After(at))
+	})
 }
 
-// dispatchStateBefore is the issue state of the newest issue event of events at or before at
-// (strictly before where strict), nil for none.
-func dispatchStateBefore(events []DispatchEvent, at time.Time, strict bool) *DispatchIssueState {
-	var state *DispatchIssueState
-	for _, event := range events {
-		if event.At.After(at) || strict && event.At.Equal(at) {
-			break
-		}
-		if event.Issue != nil {
-			state = event.Issue
-		}
+// dispatchStateAt is the issue state of the newest issue event of iss at or before at, nil for
+// none, read by binary search over its issue events, which are in time order, each issue's indexed
+// once (shownOf) the first time it is read, once every event is read.
+func (b *traceBuilder) dispatchStateAt(iss *IssueTrace, at time.Time) *DispatchIssueState {
+	if b.shown == nil {
+		b.shown = map[string]shownStates{}
 	}
-	return state
+	shown, indexed := b.shown[iss.Key]
+	if !indexed {
+		shown = shownOf(iss)
+		b.shown[iss.Key] = shown
+	}
+	return shown.stateAt(at)
 }
 
 // inFlight is each stretch in which iss was in flight: from the first slot it took after an entry
@@ -1970,7 +1962,7 @@ func (b *traceBuilder) linkWaits(iss *IssueTrace) {
 	moments = slices.CompactFunc(moments, time.Time.Equal)
 
 	unfinished := func(at time.Time) []string {
-		state := dispatchStateBefore(iss.Dispatch, at, false)
+		state := b.dispatchStateAt(iss, at)
 		if state == nil {
 			return nil
 		}
@@ -1981,7 +1973,7 @@ func (b *traceBuilder) linkWaits(iss *IssueTrace) {
 				open = append(open, key)
 				continue
 			}
-			if shown := dispatchStateBefore(blocker.Dispatch, at, false); shown == nil || shown.Status != record.DoneStatus {
+			if shown := b.dispatchStateAt(blocker, at); shown == nil || shown.Status != record.DoneStatus {
 				open = append(open, key)
 			}
 		}
@@ -1998,7 +1990,7 @@ func (b *traceBuilder) linkWaits(iss *IssueTrace) {
 				waiting.End, waiting.EndedBy = at, WaitLeft
 			case len(open) == 0:
 				waiting.End, waiting.EndedBy = at, WaitBlockerDone
-				if state := dispatchStateBefore(iss.Dispatch, at, false); state != nil {
+				if state := b.dispatchStateAt(iss, at); state != nil {
 					for _, key := range before {
 						if !slices.Contains(state.BlockedBy, key) {
 							waiting.EndedBy = WaitLinkRemoved
@@ -2048,7 +2040,7 @@ func (b *traceBuilder) childrenAt(parent string, candidates []string, at time.Ti
 	var open []string
 	for _, key := range candidates {
 		child := b.t.Issues[key]
-		state := dispatchStateBefore(child.Dispatch, at, false)
+		state := b.dispatchStateAt(child, at)
 		if state == nil || state.Parent != parent {
 			continue
 		}
@@ -2166,7 +2158,7 @@ func (b *traceBuilder) childrenWaitEnd(iss *IssueTrace, candidates []string, wai
 			}
 			c.end = WaitChildDone
 			for _, key := range wait.On {
-				if state := dispatchStateBefore(b.t.Issues[key].Dispatch, c.at, false); state != nil && state.Parent != iss.Key {
+				if state := b.dispatchStateAt(b.t.Issues[key], c.at); state != nil && state.Parent != iss.Key {
 					c.end = WaitChildMovedOut
 				}
 			}
@@ -2284,7 +2276,7 @@ func (b *traceBuilder) personWaitEnds(iss *IssueTrace) {
 			if event.Seq <= wait.SinceSeq || event.At.Before(wait.Start) {
 				continue
 			}
-			person := event.Actor.Kind == "user" && (event.Ask != nil && event.Type != "ask.opened" || event.Verdict != nil)
+			person := event.Actor.Person() && (event.Ask != nil && event.Type != "ask.opened" || event.Verdict != nil)
 			if person || wait.Version > 0 && event.Type == "artifact.version" {
 				wait.End, wait.EndedBy = event.At, WaitAnswered
 				break
@@ -2325,21 +2317,20 @@ func (b *traceBuilder) forWait(iss *IssueTrace) {
 }
 
 // ruleAt is the slot rule the window's daemon ran at at: the rule of the part that holds it, or of
-// the nearest part, as the repository keeps it (record.SlotRuleNamed; BuildTrace refuses a window
-// whose part names a rule the repository does not keep), and the daemon's own rule where the
-// window names no part.
-func (t Trace) ruleAt(at time.Time) record.SlotRule {
+// the nearest part, as the repository keeps it (record.SlotRuleNamed, which BuildTrace read once
+// for each part, refusing a window whose part names a rule the repository does not keep), and the
+// daemon's own rule where the window names no part.
+func (t *Trace) ruleAt(at time.Time) record.SlotRule {
 	if len(t.Parts) == 0 {
 		return record.MainRule
 	}
-	name := t.Parts[0].Rule
-	for _, part := range t.Parts {
+	held := 0
+	for i, part := range t.Parts {
 		if !part.From.After(at) {
-			name = part.Rule
+			held = i
 		}
 	}
-	rule, _ := record.SlotRuleNamed(name)
-	return rule
+	return t.rules[held]
 }
 
 // segments sets each of iss's visits' worker start and work segment. A visit to merging whose
@@ -2377,26 +2368,6 @@ func (b *traceBuilder) segments(iss *IssueTrace) {
 		case visit.Left:
 			segment.EndedBy = SegmentEndLeft
 		}
-		until := segment.End
-		if until.IsZero() {
-			until = visit.Exit
-		}
-		inSegment := func(at time.Time) bool { return !at.Before(segment.Start) && (until.IsZero() || at.Before(until)) }
-		for _, turn := range iss.Turns {
-			if !inSegment(turn.Start) {
-				continue
-			}
-			placed := SegmentTurn{Role: turn.Claim.Role, Offset: turn.Start.Sub(segment.Start), Open: turn.End.IsZero()}
-			if !placed.Open {
-				placed.Length = turn.End.Sub(turn.Start)
-			}
-			segment.Turns = append(segment.Turns, placed)
-		}
-		for _, filing := range iss.Children {
-			if !filing.Moved && inSegment(filing.At) {
-				segment.Filings = append(segment.Filings, SegmentFiling{Child: filing.Child, Offset: filing.At.Sub(segment.Start)})
-			}
-		}
 		visit.Segment = segment
 	}
 }
@@ -2420,8 +2391,7 @@ func (b *traceBuilder) memberLeftAt(iss *IssueTrace, at time.Time) bool {
 	if entry == nil {
 		return false
 	}
-	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
-		member := b.t.Issues[key]
+	for key, member := range b.t.Issues {
 		if key == iss.Key || !slices.ContainsFunc(member.Leaves, func(leave Leave) bool { return leave.At.Equal(at) }) {
 			continue
 		}
@@ -2437,7 +2407,7 @@ func (b *traceBuilder) memberLeftAt(iss *IssueTrace, at time.Time) bool {
 // phase change; otherwise the first turn in the visit of the role that works its phase. Zero where
 // none of them is.
 func (b *traceBuilder) workerStart(iss *IssueTrace, visit *Visit) time.Time {
-	if _, held := iss.holdsSlotAt(visit.Enter); held {
+	if iss.holdsSlotAt(visit.Enter) {
 		return visit.Enter
 	}
 	for _, span := range iss.Slots {

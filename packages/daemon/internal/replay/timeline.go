@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"maps"
 	"slices"
 	"sort"
 	"time"
@@ -92,12 +93,11 @@ type IssueState struct {
 	Waiting bool
 }
 
-// CourseMove is one move of an issue's phase: its moment, its phases, its trigger and, for a move
-// back, its cause (CauseOf).
+// CourseMove is one move of an issue's phase: its moment, its phases and, for a move back, its
+// cause (CauseOf).
 type CourseMove struct {
 	At       time.Time
 	From, To phase.Phase
-	Trigger  workflow.TriggerKind
 	Cause    Cause
 }
 
@@ -140,11 +140,12 @@ func (c *Course) set(at time.Time, state IssueState) {
 	}
 }
 
-// moveOf is the course's reading of a move: its cause where it moves back (CauseOf), none for a
-// move back CauseOf names no cause of. drop is the msg of the line of the issue's pull request
-// leaving the merge queue before a move out of merging, "" for none (SendBack.Drop).
+// moveOf is the course's reading of a move: its cause where it moves back (CauseOf, which reads
+// the move's trigger), none for a move back CauseOf names no cause of. drop is the msg of the line
+// of the issue's pull request leaving the merge queue before a move out of merging, "" for none
+// (SendBack.Drop).
 func moveOf(at time.Time, from, to phase.Phase, trigger workflow.TriggerKind, drop string) CourseMove {
-	move := CourseMove{At: at, From: from, To: to, Trigger: trigger}
+	move := CourseMove{At: at, From: from, To: to}
 	if phase.MovesBack(from, to) {
 		if cause, named := CauseOf(SendBack{Trigger: trigger, From: from, To: to, Drop: drop}); named {
 			move.Cause = cause
@@ -153,9 +154,16 @@ func moveOf(at time.Time, from, to phase.Phase, trigger workflow.TriggerKind, dr
 	return move
 }
 
-// pastReviewPhase says whether p is a phase past the review: accepting, retro or merging.
+// pastReviewPhase says whether p is a phase past the review (record.PastReview): accepting, retro
+// or merging.
 func pastReviewPhase(p phase.Phase) bool {
-	return p == phase.Accepting || p == phase.Retro || p == phase.Merging
+	return record.PastReview(record.Issue{Phase: p})
+}
+
+// upTo is how many of ts, moments in time order, are at or before at: the index of the first one
+// after it.
+func upTo(ts []time.Time, at time.Time) int {
+	return sort.Search(len(ts), func(i int) bool { return ts[i].After(at) })
 }
 
 // rankFunc is the Dispatch rank of an issue at a moment.
@@ -206,7 +214,7 @@ func shownOf(iss *IssueTrace) shownStates {
 // stateAt is the state the newest issue event at or before at shows, nil before the first
 // (dispatchStateBefore, read by binary search).
 func (s shownStates) stateAt(at time.Time) *DispatchIssueState {
-	i := sort.Search(len(s.at), func(i int) bool { return s.at[i].After(at) })
+	i := upTo(s.at, at)
 	if i == 0 {
 		return nil
 	}
@@ -249,7 +257,7 @@ func countStretches(stretches [][2]time.Time) stretchCount {
 
 // at is how many stretches stand at at.
 func (c stretchCount) at(at time.Time) int {
-	i := sort.Search(len(c.from), func(i int) bool { return c.from[i].After(at) })
+	i := upTo(c.from, at)
 	if i == 0 {
 		return 0
 	}
@@ -281,7 +289,7 @@ func gateStepsOf(root *IssueTrace, lines bool) gateSteps {
 
 // openAt says whether the gate stands open at at; closed before its first fact.
 func (g gateSteps) openAt(at time.Time) bool {
-	i := sort.Search(len(g.at), func(i int) bool { return g.at[i].After(at) })
+	i := upTo(g.at, at)
 	return i > 0 && g.open[i-1]
 }
 
@@ -421,7 +429,7 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 			}
 		}
 	}
-	for _, key := range sortedKeys(t.Issues) {
+	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		if iss.Project != t.Project {
 			continue
@@ -457,11 +465,12 @@ func lineTimeline(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule)
 
 // recordedWaitStarts is, for each of keys that t's record shows waiting for a slot at at, the
 // moment it began that wait: the first of the run of moments up to at in which its line reading
-// waits for one (waitsForSlot, as waitRuns joins them), read as lineTimeline reads each moment.
-// An issue the record shows waiting for none at at is left out. Each issue is read alone, at its
-// own moments, so the cost is that of its own reading.
-func recordedWaitStarts(t Trace, ranks rankFunc, rule func(time.Time) record.SlotRule, at time.Time, keys []string) map[string]time.Time {
-	r := &lineReader{t: t, ranks: ranks, rule: rule, index: map[string]*issueIndex{}}
+// waits for one (waitsForSlot, as waitRuns joins them), read as lineTimeline reads each moment, by
+// the ranks of t's record (ranksOf) and the rule its parts name (Trace.ruleAt). An issue the
+// record shows waiting for none at at is left out. Each issue is read alone, at its own moments, so
+// the cost is that of its own reading.
+func recordedWaitStarts(t Trace, ranks rankFunc, at time.Time, keys []string) map[string]time.Time {
+	r := &lineReader{t: t, ranks: ranks, rule: t.ruleAt, index: map[string]*issueIndex{}}
 	starts := make(map[string]time.Time, len(keys))
 	for _, key := range keys {
 		x := r.of(key)
@@ -753,7 +762,7 @@ func (r *lineReader) returnedAt(x *issueIndex, tree string, visit *Visit, at tim
 	if visit.In != nil {
 		written = visit.Enter
 	}
-	if i := sort.Search(len(x.restarts), func(i int) bool { return x.restarts[i].After(at) }); i > 0 && !x.restarts[i-1].Before(visit.Enter) {
+	if i := upTo(x.restarts, at); i > 0 && !x.restarts[i-1].Before(visit.Enter) {
 		written = x.restarts[i-1]
 	}
 	return !written.IsZero() && (last == nil || last.End.Before(written))
@@ -853,7 +862,7 @@ func (r *lineReader) underAccepted(x *issueIndex, at time.Time, tree string) boo
 // merging, a hold from one of them keeping its visit.
 func acceptedAt(iss *IssueTrace, at time.Time) bool {
 	visit := visitOf(iss, at)
-	return visit != nil && (visit.Phase == phase.Retro || visit.Phase == phase.Merging)
+	return visit != nil && record.Accepted(record.Issue{Phase: visit.Phase})
 }
 
 // underLiveRoot says whether x's issue, a queued root, stands under a live root at at: an issue its

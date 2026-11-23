@@ -202,47 +202,51 @@ func keepFirstSlot(ctx context.Context, tx pgx.Tx, issue record.Issue, at time.T
 }
 
 // readFirstSlots is the first slot of each of issues in the generation it stands at, by key, from
-// the table keepFirstSlots and the start state (keepFirstSlot) keep; an issue the table holds no
-// row of at that generation has none.
+// the table keepFirstSlots and the start state (keepFirstSlot) keep, matched to each issue's
+// generation in the query; an issue the table holds no row of at that generation has none.
 func readFirstSlots(ctx context.Context, tx pgx.Tx, issues []record.Issue) (map[string]time.Time, error) {
 	first := make(map[string]time.Time)
 	if len(issues) == 0 {
 		return first, nil
 	}
-	generations := make(map[string]uint64, len(issues))
 	keys := make([]string, 0, len(issues))
+	generations := make([]int64, 0, len(issues))
 	for _, issue := range issues {
-		generations[issue.Key] = issue.Generation
-		keys = append(keys, issue.Key)
+		keys, generations = append(keys, issue.Key), append(generations, int64(issue.Generation))
 	}
-	rows, err := tx.Query(ctx, `select issue, generation, slot_at from replay_first_slots where issue = any($1)`, keys)
+	rows, err := tx.Query(ctx, `select f.issue, f.slot_at from replay_first_slots f
+		join unnest($1::text[], $2::bigint[]) as i(issue, generation) on i.issue = f.issue and i.generation = f.generation`, keys, generations)
 	if err != nil {
 		return nil, fmt.Errorf("read the first slots: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var key string
-		var generation int64
 		var at time.Time
-		if err := rows.Scan(&key, &generation, &at); err != nil {
+		if err := rows.Scan(&key, &at); err != nil {
 			return nil, fmt.Errorf("read a first slot: %w", err)
 		}
-		if uint64(generation) == generations[key] {
-			first[key] = at.UTC()
-		}
+		first[key] = at.UTC()
 	}
 	return first, rows.Err()
 }
 
-// KeepCovers makes covers the table's covers: the ones that ended go and the new ones are written.
+// KeepCovers makes covers the table's covers: the ones that ended go and the new ones are written,
+// in one statement.
 func (ruleTables) KeepCovers(ctx context.Context, tx pgx.Tx, covers map[string]string) error {
 	if _, err := tx.Exec(ctx, `delete from replay_covers`); err != nil {
 		return fmt.Errorf("clear the covers: %w", err)
 	}
-	for _, waiter := range slices.Sorted(maps.Keys(covers)) {
-		if _, err := tx.Exec(ctx, `insert into replay_covers (waiter, holder) values ($1, $2)`, waiter, covers[waiter]); err != nil {
-			return fmt.Errorf("keep the cover of %s by %s: %w", waiter, covers[waiter], err)
-		}
+	if len(covers) == 0 {
+		return nil
+	}
+	waiters := slices.Sorted(maps.Keys(covers))
+	holders := make([]string, len(waiters))
+	for i, waiter := range waiters {
+		holders[i] = covers[waiter]
+	}
+	if _, err := tx.Exec(ctx, `insert into replay_covers (waiter, holder) select * from unnest($1::text[], $2::text[])`, waiters, holders); err != nil {
+		return fmt.Errorf("keep the covers %v of %v: %w", holders, waiters, err)
 	}
 	return nil
 }

@@ -63,12 +63,16 @@ func forecastQuantities(cards ...Scorecard) []quantity {
 	}
 	rounds := func(l LoopHours) float64 { return float64(l.Rounds) }
 	hours := func(l LoopHours) float64 { return l.Hours }
+	// loopRates is the rounds and the hours per hour of the send-back loops of causes, named name.
+	loopRates := func(name string, causes []Cause) []quantity {
+		return []quantity{rate(name+".rounds", gapThirty, causes, loops(causes, rounds)), rate(name+".hours", gapThirty, causes, loops(causes, hours))}
+	}
 	quantities := []quantity{
 		rate("done", gapTenth, nil, func(card Scorecard) float64 { return float64(card.Done) }),
 		rate("slotsGiven", gapTenth, nil, func(card Scorecard) float64 {
 			total := 0
-			for _, day := range slices.Sorted(maps.Keys(card.SlotsGivenByDay)) {
-				total += card.SlotsGivenByDay[day]
+			for _, given := range card.SlotsGivenByDay {
+				total += given
 			}
 			return float64(total)
 		}),
@@ -80,14 +84,10 @@ func forecastQuantities(cards ...Scorecard) []quantity {
 		average("slotHoursInTurn per hour", gapThirty, func(card Scorecard) float64 { return perHour(card, card.SlotHoursInTurn) }),
 		average("slotHoursNoTurn per hour", gapThirty, func(card Scorecard) float64 { return perHour(card, card.SlotHoursNoTurn) }),
 		{name: "priorityTaken", kind: QuantityShare, gap: gapPriority, of: func(card Scorecard) float64 { return card.PriorityTaken }},
-		rate(LoopsAll+".rounds", gapThirty, Causes, loops(Causes, rounds)),
-		rate(LoopsAll+".hours", gapThirty, Causes, loops(Causes, hours)),
 	}
+	quantities = append(quantities, loopRates(LoopsAll, Causes)...)
 	for _, cause := range ForecastGroups[GroupSame] {
-		one := []Cause{cause}
-		quantities = append(quantities,
-			rate("loops["+string(cause)+"].rounds", gapThirty, one, loops(one, rounds)),
-			rate("loops["+string(cause)+"].hours", gapThirty, one, loops(one, hours)))
+		quantities = append(quantities, loopRates("loops["+string(cause)+"]", []Cause{cause})...)
 	}
 	words := map[string]struct{}{}
 	for _, card := range cards {
@@ -181,22 +181,15 @@ func (f ForecastResult) Write(w io.Writer, depth int) error {
 	}
 	p.line("It compares rates per hour, averages over time and shares, never totals, since the windows differ in length and in work, and each passes within twice R5's gap of its value after the change.")
 	p.line("The causes the workflow change redefines (%s): %s; each is scored only inside the total of all send-back loops, `%s`.",
-		GroupRedefined, causeList(ForecastGroups[GroupRedefined]), LoopsAll)
+		GroupRedefined, codeList(ForecastGroups[GroupRedefined]), LoopsAll)
 	p.line("The causes both releases define the same way (%s): %s; each is scored apart, and inside the total too.",
-		GroupSame, causeList(ForecastGroups[GroupSame]))
+		GroupSame, codeList(ForecastGroups[GroupSame]))
 	p.line("")
 	p.line("| quantity | kind | causes | forecast (lowest, highest seed) | after the change | difference | allowed | test |")
 	p.line("| --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, c := range f.Checks {
-		test := "fails"
-		if c.Pass {
-			test = "passes"
-		}
-		causes := ""
-		if len(c.Causes) > 0 {
-			causes = causeList(c.Causes)
-		}
-		p.line("| %s | %s | %s | %s | %s | %s | %s (%s) | %s |", c.Quantity, c.Kind, causes, spreadCell(c.Forecast, c.Low, c.High, len(f.Seeds)),
+		test := passWord(c.Pass)
+		p.line("| %s | %s | %s | %s | %s | %s | %s (%s) | %s |", c.Quantity, c.Kind, codeList(c.Causes), spreadCell(c.Forecast, c.Low, c.High, len(f.Seeds)),
 			formatNumber(c.After), formatNumber(c.Forecast-c.After), formatNumber(c.Gap.Allowed(c.After)), c.Gap, test)
 	}
 	p.line("")
@@ -213,13 +206,4 @@ func (f ForecastResult) Write(w io.Writer, depth int) error {
 			strings.Join(failed, ", "))
 	}
 	return p.err
-}
-
-// causeList is causes as a report names them: each word in code, separated by commas.
-func causeList(causes []Cause) string {
-	words := make([]string, 0, len(causes))
-	for _, cause := range causes {
-		words = append(words, "`"+string(cause)+"`")
-	}
-	return strings.Join(words, ", ")
 }

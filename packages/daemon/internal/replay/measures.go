@@ -29,22 +29,54 @@ const firstDay = 24 * time.Hour
 //
 // It reads each state of the timeline once, in time order, after one sort of all of them, and
 // keeps the pairs of priority taken by the places of their members in one order of the board
-// (rankOrder), so a window of hundreds of thousands of states is measured in O(n log n).
+// (rankOrder), so a window of hundreds of thousands of states is measured in O(n log n). The sort,
+// the order and the issues' keys are read once for both spans (newMeasuring).
 func Measure(tl Timeline) Scorecard {
-	card := measureSpan(tl, tl.From, tl.To)
+	m := newMeasuring(tl)
+	card := m.span(tl.From, tl.To)
 	if tl.To.Sub(tl.From) > firstDay {
-		day := measureSpan(tl, tl.From, tl.From.Add(firstDay))
+		day := m.span(tl.From, tl.From.Add(firstDay))
 		card.FirstDayApart = &day
 	}
 	return card
 }
 
-// measureSpan is the measures of tl over [from, to).
-func measureSpan(tl Timeline, from, to time.Time) Scorecard {
+// measuring is what every span Measure reads of tl reads alike: its issues' keys in order, the
+// place on the board of each of its holders and issues that wait for a slot (rankOrder), and each
+// stint of each issue as a change, in time order and by key within a moment.
+type measuring struct {
+	tl      Timeline
+	keys    []string
+	places  map[ranked]int
+	changes []stintChange
+}
+
+// stintChange is one stint of an issue as a sweep reads it: its moment, the issue and the state it
+// stands in from then.
+type stintChange struct {
+	at    time.Time
+	key   string
+	state IssueState
+}
+
+// newMeasuring reads tl for its spans (measuring).
+func newMeasuring(tl Timeline) measuring {
+	m := measuring{tl: tl, keys: slices.Sorted(maps.Keys(tl.Issues)), places: rankOrder(tl)}
+	for _, key := range m.keys {
+		for _, stint := range tl.Issues[key].States {
+			m.changes = append(m.changes, stintChange{at: stint.At, key: key, state: stint.IssueState})
+		}
+	}
+	slices.SortStableFunc(m.changes, func(a, b stintChange) int { return a.at.Compare(b.at) })
+	return m
+}
+
+// span is the measures of the timeline over [from, to).
+func (m measuring) span(from, to time.Time) Scorecard {
 	card := Scorecard{From: from, To: to, Loops: map[string]LoopHours{}, Waits: map[string]WaitHours{},
 		SlotsGivenByDay: map[string]int{}, FirstSlot: map[string]time.Time{}, DoneAt: map[string]time.Time{}}
 	span := to.Sub(from).Hours()
-	counted := newSweep(from, to, tl).run(tl)
+	counted := newSweep(from, to, m.places).run(m.changes)
 	occupy := func(o *occupancy) Occupancy {
 		if span <= 0 {
 			return Occupancy{Max: o.max}
@@ -63,12 +95,13 @@ func measureSpan(tl Timeline, from, to time.Time) Scorecard {
 	}
 	within := func(at time.Time) bool { return !at.Before(from) && at.Before(to) }
 	var slotWaits []float64
-	for _, key := range sortedKeys(tl.Issues) {
-		c := tl.Issues[key]
+	nextInto := map[phase.Phase]time.Time{}
+	for _, key := range m.keys {
+		c := m.tl.Issues[key]
 		if state, ok := c.stateBefore(to); ok && state.InFlight {
 			card.WorkLeft++
 		}
-		measureLoops(&card, key, c.Moves, from, to)
+		measureLoops(&card, key, c.Moves, from, to, nextInto)
 		measureRounds(&card, c.Rounds, from, to)
 		for _, wait := range c.Waits {
 			start, end := maxTime(wait.Start, from), to
@@ -87,7 +120,8 @@ func measureSpan(tl Timeline, from, to time.Time) Scorecard {
 			waits.Hours += end.Sub(start).Hours()
 			card.Waits[string(word)] = waits
 		}
-		runs := c.waitRuns()
+		// The runs of the course's waits for a slot are read at its first slot given in the span.
+		var runs []int
 		for _, given := range c.Given {
 			if !within(given) {
 				continue
@@ -95,6 +129,9 @@ func measureSpan(tl Timeline, from, to time.Time) Scorecard {
 			card.SlotsGivenByDay[given.UTC().Format(time.DateOnly)]++
 			if first, ok := card.FirstSlot[key]; !ok || given.Before(first) {
 				card.FirstSlot[key] = given
+			}
+			if runs == nil {
+				runs = c.waitRuns()
 			}
 			slotWaits = append(slotWaits, given.Sub(c.waitingSince(given, runs)).Minutes())
 		}
@@ -106,9 +143,10 @@ func measureSpan(tl Timeline, from, to time.Time) Scorecard {
 
 // measureLoops adds to card the moves of key in [from, to): its move to done, and each move back
 // its cause names, one round of that cause, its hours from the move to the issue's next entry into
-// the phase the move left, or to to. The next entries are read in one walk back over the moves.
-func measureLoops(card *Scorecard, key string, moves []CourseMove, from, to time.Time) {
-	nextInto := map[phase.Phase]time.Time{}
+// the phase the move left, or to to. The next entries are read in one walk back over the moves,
+// into nextInto, which it empties first.
+func measureLoops(card *Scorecard, key string, moves []CourseMove, from, to time.Time, nextInto map[phase.Phase]time.Time) {
+	clear(nextInto)
 	for i := len(moves) - 1; i >= 0; i-- {
 		move := moves[i]
 		back, ok := nextInto[move.From]
@@ -128,10 +166,7 @@ func measureLoops(card *Scorecard, key string, moves []CourseMove, from, to time
 		if ok && back.Before(to) {
 			end = back
 		}
-		loop := card.Loops[string(move.Cause)]
-		loop.Rounds++
-		loop.Hours += end.Sub(move.At).Hours()
-		card.Loops[string(move.Cause)] = loop
+		card.addRound(move.Cause, end.Sub(move.At))
 	}
 }
 
@@ -146,11 +181,16 @@ func measureRounds(card *Scorecard, rounds []CourseRound, from, to time.Time) {
 		if !round.End.IsZero() && round.End.Before(to) {
 			end = round.End
 		}
-		loop := card.Loops[string(round.Cause)]
-		loop.Rounds++
-		loop.Hours += end.Sub(round.Start).Hours()
-		card.Loops[string(round.Cause)] = loop
+		card.addRound(round.Cause, end.Sub(round.Start))
 	}
+}
+
+// addRound adds one round of a send-back loop of cause, lasting lasted, to card's loops.
+func (card *Scorecard) addRound(cause Cause, lasted time.Duration) {
+	loop := card.Loops[string(cause)]
+	loop.Rounds++
+	loop.Hours += lasted.Hours()
+	card.Loops[string(cause)] = loop
 }
 
 // stateBefore is the state the course stands in just before at, and false where it stands in
@@ -327,32 +367,23 @@ func (f fenwick) below(place int) int {
 	return n
 }
 
-// newSweep is a sweep over [from, to) of tl.
-func newSweep(from, to time.Time, tl Timeline) *sweep {
-	places := rankOrder(tl)
+// newSweep is a sweep over [from, to) of the holders and issues that wait for a slot at places.
+func newSweep(from, to time.Time, places map[ranked]int) *sweep {
 	return &sweep{from: from, to: to, places: places, holders: newFenwick(len(places)), waiting: newFenwick(len(places))}
 }
 
-// run reads every stint of tl in time order, each moment's stints together, and adds each stretch
-// between two moments to the integrals.
-func (s *sweep) run(tl Timeline) *sweep {
-	type change struct {
-		at    time.Time
-		key   string
-		state IssueState
-	}
-	var changes []change
-	for _, key := range sortedKeys(tl.Issues) {
-		for _, stint := range tl.Issues[key].States {
-			changes = append(changes, change{at: stint.At, key: key, state: stint.IssueState})
-		}
-	}
-	slices.SortStableFunc(changes, func(a, b change) int { return a.at.Compare(b.at) })
+// run reads every change of changes, stints in time order (measuring), each moment's together, and
+// adds each stretch between two moments to the integrals. A moment at or after the span's end ends
+// the reading: add clips every stretch from it on to nothing.
+func (s *sweep) run(changes []stintChange) *sweep {
 	states := map[string]IssueState{}
 	previous := s.from
 	for i := 0; i < len(changes); {
 		at := changes[i].at
 		s.add(previous, at)
+		if !at.Before(s.to) {
+			return s
+		}
 		for ; i < len(changes) && changes[i].at.Equal(at); i++ {
 			s.apply(changes[i].key, states[changes[i].key], changes[i].state)
 			states[changes[i].key] = changes[i].state
@@ -444,7 +475,7 @@ type Measured struct {
 func MeasuresOf(card Scorecard) []Measured {
 	measured := measuresOf(card, "")
 	if card.FirstDayApart != nil {
-		measured = append(measured, measuresOf(*card.FirstDayApart, "firstDayApart.")...)
+		measured = append(measured, measuresOf(*card.FirstDayApart, firstDayPrefix)...)
 	}
 	return measured
 }
@@ -506,8 +537,9 @@ func (g MeasureGap) Gap() float64 { return g.Line - g.Snapshot }
 // minutes from the window's start: an issue one of them gives no time for stands there at the
 // window's end, the soonest it could come.
 func Gaps(snapshot, line Scorecard) []MeasureGap {
-	lineValues := map[string]float64{}
-	for _, measure := range MeasuresOf(line) {
+	lineMeasures := MeasuresOf(line)
+	lineValues := make(map[string]float64, len(lineMeasures))
+	for _, measure := range lineMeasures {
 		lineValues[measure.Name] = measure.Value
 	}
 	var gaps []MeasureGap
@@ -516,7 +548,7 @@ func Gaps(snapshot, line Scorecard) []MeasureGap {
 		seen[measure.Name] = true
 		gaps = append(gaps, MeasureGap{Measure: measure.Name, Snapshot: measure.Value, Line: lineValues[measure.Name]})
 	}
-	for _, measure := range MeasuresOf(line) {
+	for _, measure := range lineMeasures {
 		if !seen[measure.Name] {
 			gaps = append(gaps, MeasureGap{Measure: measure.Name, Line: measure.Value})
 		}

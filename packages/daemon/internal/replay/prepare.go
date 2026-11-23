@@ -19,16 +19,24 @@ import (
 // Dispatch answered from the replay's copy of it (the shadow) and every repository served
 // (replayRepositories), so the preparation reads nothing outside. It answers the fact to apply and
 // the record of its issue as the preparation read it, nil for an event of another kind or an issue
-// the replay does not record, which the run's count of fenced events reads (countFence).
+// the replay does not record, which the run's count of fenced events reads (countFence). An issue
+// event's record and the queued roots its preparation reads are read in one read-only transaction.
 func (d *driver) prepare(fact intake.Fact) (intake.Fact, *record.Issue, error) {
 	switch f := fact.(type) {
 	case intake.DispatchIssue:
-		recorded, err := d.recorded(f.Key)
-		if err != nil {
+		var prepared intake.DispatchIssue
+		var recorded *record.Issue
+		if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			if recorded, err = d.records.Issue(ctx, tx, f.Key); err != nil {
+				return err
+			}
+			prepared, err = d.prepareIssue(ctx, tx, f, recorded)
+			return err
+		}); err != nil {
 			return nil, nil, err
 		}
-		prepared, err := d.prepareIssue(f, recorded)
-		return prepared, recorded, err
+		return prepared, recorded, nil
 	case intake.DispatchArtifact:
 		// A person's approval that is not Dispatch's carry of an earlier one reads the issue's
 		// detail, from which the workflow decides whether it queues a parked labelled root.
@@ -60,13 +68,13 @@ func (d *driver) countFence(fact intake.Fact, recorded *record.Issue) {
 // unrecorded issue's admission event is applied from Dispatch's view of the issue now (an Observed
 // fact carrying the event it stands in for); and each reads its Dispatch parent chain where the
 // waiting line may hold it under an ancestor (withAncestry), and the chains of the queued roots an
-// event may have moved.
-func (d *driver) prepareIssue(issue intake.DispatchIssue, recorded *record.Issue) (intake.DispatchIssue, error) {
+// event may have moved, in tx.
+func (d *driver) prepareIssue(ctx context.Context, tx pgx.Tx, issue intake.DispatchIssue, recorded *record.Issue) (intake.DispatchIssue, error) {
 	if recorded != nil {
 		if issue.ResolvedRepoMissing {
 			issue.ResolvedRepo, issue.ResolvedRepoMissing = recorded.Repo, false
 		}
-		return d.withAncestry(issue, recorded)
+		return d.withAncestry(ctx, tx, issue, recorded)
 	}
 	if !issue.AdmissionBound() {
 		if issue.LabelledTriageRoot() {
@@ -76,26 +84,22 @@ func (d *driver) prepareIssue(issue intake.DispatchIssue, recorded *record.Issue
 			}
 			issue.LabelSetter = setter
 		}
-		return d.withAncestry(d.prepareUnrecorded(issue), nil)
+		return d.withAncestry(ctx, tx, d.prepareUnrecorded(issue), nil)
 	}
 	if iss, ok := d.shadow.issues[issue.Key]; ok && iss.payload != nil {
 		event := issue
 		issue = intake.ObservedIssue(d.shadow.detail(iss))
 		issue.Seq, issue.Delivered = max(event.Seq, issue.Seq), &event
 	}
-	return d.withAncestry(d.prepareUnrecorded(issue), nil)
+	return d.withAncestry(ctx, tx, d.prepareUnrecorded(issue), nil)
 }
 
-// prepareListed readies one issue of a boot's listing, as the daemon's prepareListed does: a
-// recorded issue takes the record's repository where it names none, an unrecorded one the shadow's,
-// and a labelled todo under a parent reads its Dispatch parent chain (intake.DispatchIssue's
-// QueuesUnderParent); no other root's chain is read again, since the listing holds every queued
-// root's own todo.
-func (d *driver) prepareListed(issue intake.DispatchIssue) (intake.DispatchIssue, error) {
-	recorded, err := d.recorded(issue.Key)
-	if err != nil {
-		return issue, err
-	}
+// prepareListed readies one issue of a boot's listing, recorded as recorded (nil for none), as the
+// daemon's prepareListed does over the records its boot read once: a recorded issue takes the
+// record's repository where it names none, an unrecorded one the shadow's, and a labelled todo
+// under a parent reads its Dispatch parent chain (intake.DispatchIssue's QueuesUnderParent); no
+// other root's chain is read again, since the listing holds every queued root's own todo.
+func (d *driver) prepareListed(issue intake.DispatchIssue, recorded *record.Issue) intake.DispatchIssue {
 	if recorded != nil {
 		if issue.ResolvedRepoMissing {
 			issue.ResolvedRepo, issue.ResolvedRepoMissing = recorded.Repo, false
@@ -106,7 +110,7 @@ func (d *driver) prepareListed(issue intake.DispatchIssue) (intake.DispatchIssue
 	if issue.QueuesUnderParent(recorded) {
 		issue.Ancestry = d.shadow.chain(issue.Key, issue.Parent)
 	}
-	return issue, nil
+	return issue
 }
 
 // prepareUnrecorded readies the event of an issue the workflow does not record: one that names no
@@ -127,21 +131,17 @@ func (d *driver) prepareUnrecorded(issue intake.DispatchIssue) intake.DispatchIs
 // is a labelled todo under a parent, unrecorded or recorded as a root
 // (intake.DispatchIssue.QueuesUnderParent); and, for an event of an issue the workflow does not
 // record or a fresh event of a recorded issue whose parent is not its record's, the chain of every
-// queued root whose recorded chain holds the issue, carried as Reread where it differs from the
-// record's.
-func (d *driver) withAncestry(issue intake.DispatchIssue, recorded *record.Issue) (intake.DispatchIssue, error) {
+// queued root whose recorded chain holds the issue, read in tx, carried as Reread where it differs
+// from the record's.
+func (d *driver) withAncestry(ctx context.Context, tx pgx.Tx, issue intake.DispatchIssue, recorded *record.Issue) (intake.DispatchIssue, error) {
 	if issue.QueuesUnderParent(recorded) {
 		issue.Ancestry = d.shadow.chain(issue.Key, issue.Parent)
 	}
 	if recorded != nil && (storetext.Text(issue.Parent) == intake.ParentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
 		return issue, nil
 	}
-	var roots []record.Issue
-	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		roots, err = d.records.QueuedRootsUnder(ctx, tx, issue.Key)
-		return err
-	}); err != nil {
+	roots, err := d.records.QueuedRootsUnder(ctx, tx, issue.Key)
+	if err != nil {
 		return issue, fmt.Errorf("read the queued roots whose chain holds %s: %w", issue.Key, err)
 	}
 	for _, root := range roots {

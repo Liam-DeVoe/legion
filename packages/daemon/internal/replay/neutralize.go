@@ -213,7 +213,7 @@ func resolvedPath(path string) string {
 // within says whether path is dir or under it.
 func within(dir, path string) bool {
 	rel, err := filepath.Rel(dir, path)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return err == nil && filepath.IsLocal(rel)
 }
 
 // writeNeutralMap writes m to file, readable by its owner alone, refusing a file that is there.
@@ -361,14 +361,17 @@ func newNeutralizer(cfg NeutralizeConfig) (*neutralizer, error) {
 	return n, nil
 }
 
+// uuidShape is a uuid's shape, which a string that is one uuid (wholeUUID) and a uuid standing in
+// a string (namesPattern) both take.
+const uuidShape = `[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`
+
 // The patterns of the names the neutralizer finds by their shape.
 var (
-	// wholeKey is a string that is one issue key, and anyKey a key standing anywhere in a string,
-	// of any project, in either case.
-	wholeKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
-	anyKey   = regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9]*)-([0-9]+)\b`)
+	// anyKey is an issue key standing anywhere in a string, of any project, in either case; a string
+	// that is one key is one claim.IsIssueKey takes.
+	anyKey = regexp.MustCompile(`\b([A-Za-z][A-Za-z0-9]*)-([0-9]+)\b`)
 	// wholeUUID is a string that is one uuid.
-	wholeUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	wholeUUID = regexp.MustCompile(`^` + uuidShape + `$`)
 	// daemonMachine is the machine name of a deployment's daemon, legion-<project token>-daemon. A
 	// Legion role's session title is legionTitle (trace.go), which the trace reads its claim from.
 	daemonMachine = regexp.MustCompile(`^legion-([a-z0-9]+)-daemon$`)
@@ -416,8 +419,9 @@ var (
 )
 
 // walk reads v under f: registering its projects, keys and repositories where rewrite is false,
-// and answering v with every string renamed (visit) where it is true. An object's members are
-// walked in order, each under its own name; a list's elements under the list's.
+// and answering v with every string renamed (visit) where it is true; a reading that registers
+// answers v itself. An object's members are walked in order, each under its own name; a list's
+// elements under the list's.
 func (n *neutralizer) walk(v any, f field, rewrite bool) any {
 	switch value := v.(type) {
 	case jsonObject:
@@ -427,18 +431,30 @@ func (n *neutralizer) walk(v any, f field, rewrite bool) any {
 				kind, _ = member.value.(string)
 			}
 		}
+		if !rewrite {
+			for _, member := range value {
+				n.walk(member.value, field{source: f.source, key: member.key, parent: f.key, kind: kind}, false)
+			}
+			return v
+		}
 		out := make(jsonObject, len(value))
 		for i, member := range value {
-			out[i] = jsonMember{key: member.key, value: n.walk(member.value, field{source: f.source, key: member.key, parent: f.key, kind: kind}, rewrite)}
+			out[i] = jsonMember{key: member.key, value: n.walk(member.value, field{source: f.source, key: member.key, parent: f.key, kind: kind}, true)}
 		}
-		if rewrite && f.source == sourceEvent {
+		if f.source == sourceEvent {
 			numberFollowsKey(out)
 		}
 		return out
 	case []any:
+		if !rewrite {
+			for _, element := range value {
+				n.walk(element, f, false)
+			}
+			return v
+		}
 		out := make([]any, len(value))
 		for i, element := range value {
-			out[i] = n.walk(element, f, rewrite)
+			out[i] = n.walk(element, f, true)
 		}
 		return out
 	case string:
@@ -459,13 +475,13 @@ func numberFollowsKey(object jsonObject) {
 			key, _ = member.value.(string)
 		}
 	}
-	match := wholeKey.FindStringSubmatch(key)
-	if match == nil {
+	if !claim.IsIssueKey(key) {
 		return
 	}
+	_, number, _ := strings.Cut(key, "-")
 	for i, member := range object {
 		if _, isNumber := member.value.(json.Number); member.key == "number" && isNumber {
-			object[i].value = json.Number(match[2])
+			object[i].value = json.Number(number)
 		}
 	}
 }
@@ -488,8 +504,9 @@ func (n *neutralizer) register(s string, f field) {
 	if match := githubRepoURL.FindStringSubmatch(s); match != nil {
 		n.addRepo(match[1])
 	}
-	if match := wholeKey.FindStringSubmatch(s); match != nil {
-		n.addProject(match[1])
+	if claim.IsIssueKey(s) {
+		project, _, _ := strings.Cut(s, "-")
+		n.addProject(project)
 	}
 	n.values = append(n.values, s)
 }
@@ -600,7 +617,7 @@ func (n *neutralizer) namesPattern() *regexp.Regexp {
 	alternatives := []string{
 		`(?P<link>https?://[^\s"'<>(){}\[\]]+)`,
 		`(?P<email>[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})`,
-		`(?P<uuid>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})`,
+		`(?P<uuid>` + uuidShape + `)`,
 		`(?P<address>` + addressShape + `)`,
 	}
 	if len(repos) > 0 {
@@ -913,8 +930,9 @@ func (n *neutralizer) rewriteAll(values []any, from source) ([]json.RawMessage, 
 func (n *neutralizer) checkWritten(dir string) error {
 	var left []*regexp.Regexp
 	left = append(left, n.deny...)
+	neutral := slices.Collect(maps.Values(n.m.Projects))
 	for _, project := range n.sourceProjects {
-		if slices.Contains(slices.Collect(maps.Values(n.m.Projects)), project) {
+		if slices.Contains(neutral, project) {
 			continue // a record's name that is also a neutral one cannot be told apart by its spelling
 		}
 		quoted := regexp.QuoteMeta(project)
@@ -1003,43 +1021,56 @@ func decodeValue(decoder *json.Decoder) (any, error) {
 }
 
 // encodeOrdered writes v, a value decodeOrdered reads, as compact JSON: members in their order,
-// numbers as written, strings with no HTML escaping.
+// numbers as written, strings with no HTML escaping, each string through one encoder of out.
 func encodeOrdered(out *bytes.Buffer, v any) error {
+	encoder := json.NewEncoder(out)
+	encoder.SetEscapeHTML(false)
+	return orderedEncoder{out: out, strings: encoder}.encode(v)
+}
+
+// orderedEncoder is encodeOrdered's writer: the buffer it writes to and the encoder of its strings.
+type orderedEncoder struct {
+	out     *bytes.Buffer
+	strings *json.Encoder
+}
+
+// encode writes v (encodeOrdered).
+func (e orderedEncoder) encode(v any) error {
 	switch value := v.(type) {
 	case jsonObject:
-		out.WriteByte('{')
+		e.out.WriteByte('{')
 		for i, member := range value {
 			if i > 0 {
-				out.WriteByte(',')
+				e.out.WriteByte(',')
 			}
-			if err := encodeString(out, member.key); err != nil {
+			if err := e.encodeString(member.key); err != nil {
 				return err
 			}
-			out.WriteByte(':')
-			if err := encodeOrdered(out, member.value); err != nil {
+			e.out.WriteByte(':')
+			if err := e.encode(member.value); err != nil {
 				return err
 			}
 		}
-		out.WriteByte('}')
+		e.out.WriteByte('}')
 	case []any:
-		out.WriteByte('[')
+		e.out.WriteByte('[')
 		for i, element := range value {
 			if i > 0 {
-				out.WriteByte(',')
+				e.out.WriteByte(',')
 			}
-			if err := encodeOrdered(out, element); err != nil {
+			if err := e.encode(element); err != nil {
 				return err
 			}
 		}
-		out.WriteByte(']')
+		e.out.WriteByte(']')
 	case string:
-		return encodeString(out, value)
+		return e.encodeString(value)
 	case json.Number:
-		out.WriteString(value.String())
+		e.out.WriteString(value.String())
 	case bool:
-		out.WriteString(strconv.FormatBool(value))
+		e.out.WriteString(strconv.FormatBool(value))
 	case nil:
-		out.WriteString("null")
+		e.out.WriteString("null")
 	default:
 		return fmt.Errorf("no JSON value: %T", v)
 	}
@@ -1047,12 +1078,10 @@ func encodeOrdered(out *bytes.Buffer, v any) error {
 }
 
 // encodeString writes s as a JSON string, with no HTML escaping.
-func encodeString(out *bytes.Buffer, s string) error {
-	encoder := json.NewEncoder(out)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(s); err != nil {
+func (e orderedEncoder) encodeString(s string) error {
+	if err := e.strings.Encode(s); err != nil {
 		return err
 	}
-	out.Truncate(out.Len() - 1) // Encode ends the value with a newline
+	e.out.Truncate(e.out.Len() - 1) // Encode ends the value with a newline
 	return nil
 }

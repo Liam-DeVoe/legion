@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -70,6 +71,82 @@ type RunConfig struct {
 	// every act of the instant has run, with the replay's store and the instant: a test's look at
 	// the replay's database at the moments its timeline reads (TestReplayStatesAreTheProjectionsStates).
 	atSettled func(ctx context.Context, st *store.Store, at time.Time) error
+	// inputs, where set, answers what every run of the window reads of it alike (windowInputs),
+	// read once for all of a window's runs (runWindow); Run reads its own where it is unset.
+	inputs func() (*windowInputs, error)
+}
+
+// windowInputs is what every run of one window reads of it alike, read once for all of them
+// (runWindow): the window's trace (BuildTrace); the lines of the record a run's script reads
+// beside it (recordLines) and the window's Dispatch events, both in the order the trace read them
+// (readTrace); the commits of the base branches a stretch's M is counted from and the conflict
+// model fitted on them (newBaseMerges, windowConflicts); the record's ranks (ranksOf); and the
+// record's lines and events from before the window's start, which each run's line timeline reads
+// (recordBefore), read the first time a run asks for them. No run writes into any of it.
+type windowInputs struct {
+	trace     Trace
+	lines     recordLines
+	events    []readEvent
+	merges    baseMerges
+	conflicts ConflictModel
+	ranks     rankFunc
+	before    func() (recordBefore, error)
+}
+
+// newWindowInputs reads w's inputs (windowInputs).
+func newWindowInputs(w Window) (*windowInputs, error) {
+	trace, lines, events, err := readTrace(w, nil)
+	if err != nil {
+		return nil, err
+	}
+	merges := newBaseMerges(w, trace)
+	return &windowInputs{trace: trace, lines: recordLinesOf(lines), events: events, merges: merges,
+		conflicts: windowConflicts(trace, merges), ranks: ranksOf(trace),
+		before: sync.OnceValues(func() (recordBefore, error) { return readRecordBefore(w) })}, nil
+}
+
+// readInputs is the window's inputs cfg runs on: the ones its window's runs share where it names
+// them, and otherwise its window's own, read now.
+func (cfg RunConfig) readInputs() (*windowInputs, error) {
+	if cfg.inputs != nil {
+		return cfg.inputs()
+	}
+	return newWindowInputs(cfg.Window)
+}
+
+// recordBefore is the record's lines and events from before a window's start, which the start
+// state was built from and which a run's line timeline holds beside the run's own (lineTimeline).
+type recordBefore struct {
+	log    []json.RawMessage
+	events map[string][]json.RawMessage
+}
+
+// readRecordBefore reads w's lines and events from before its start (recordBefore).
+func readRecordBefore(w Window) (recordBefore, error) {
+	before := recordBefore{events: make(map[string][]json.RawMessage, len(w.Events))}
+	for i, raw := range w.Log {
+		var head struct {
+			Time time.Time `json:"time"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			return recordBefore{}, fmt.Errorf("replay: line %d of the window's log has no time: %w", i+1, err)
+		}
+		if head.Time.Before(w.From) {
+			before.log = append(before.log, raw)
+		}
+	}
+	for key, events := range w.Events {
+		for i, raw := range events {
+			event, err := ParseDispatchEvent(raw)
+			if err != nil {
+				return recordBefore{}, fmt.Errorf("replay: event %d of %s: %w", i+1, key, err)
+			}
+			if event.At.Before(w.From) {
+				before.events[key] = append(before.events[key], raw)
+			}
+		}
+	}
+	return before, nil
 }
 
 // RunResult is what one replay made and measured.
@@ -183,15 +260,12 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if cfg.Out == "" {
 		return RunResult{}, errors.New("replay: no directory to write the run's output to")
 	}
-	trace, err := BuildTrace(w)
+	in, err := cfg.readInputs()
 	if err != nil {
 		return RunResult{}, err
 	}
-	lines, err := readRecordLines(w)
-	if err != nil {
-		return RunResult{}, err
-	}
-	script, err := buildScript(trace, w, lines)
+	trace := in.trace
+	script, err := buildScript(trace, in.events, in.lines)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -205,8 +279,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	if cfg.Branch.FirstStarts != firstStartsRank {
 		starts = firstStartRanks(trace)
 	}
-	merges := newBaseMerges(w, trace)
-	conflicts := windowConflicts(trace, merges)
+	conflicts := in.conflicts
 	if cfg.Branch.Merges == mergesZero {
 		conflicts = conflicts.WithoutTerm()
 	}
@@ -241,20 +314,19 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	st.UseClock(clock.Now)
 	tap := newLineTap(tapped...)
 	d := &driver{
-		ctx: ctx, cfg: cfg, window: w, trace: trace, script: script, lines: lines, rule: cfg.Rule.OrMain(),
+		ctx: ctx, cfg: cfg, window: w, trace: trace, inputs: in, script: script, lines: in.lines, rule: cfg.Rule.OrMain(),
 		clock: clock, st: st, pool: st.Pool(), records: record.NewStoreWithClock(clock.Now), tap: tap,
 		log:    slog.New(&clockHandler{inner: slog.NewJSONHandler(written, &slog.HandlerOptions{Level: slog.LevelInfo}), clock: clock, tap: tap}),
 		shadow: newShadow(w.Project, starts.ranks()), firstStarts: starts, token: token,
-		claims: map[claim.Token]supervise.Claim{}, working: map[claim.Token]*piece{},
+		claims:   map[claim.Token]supervise.Claim{},
 		inFlight: map[string]bool{}, started: map[string]time.Time{}, childWait: map[string]time.Time{}, placed: map[int]time.Time{},
 		signOffs: map[string]bool{}, drops: map[string]string{}, used: map[int]bool{1: true, assumeRootRanksByNextStart: starts != nil},
-		snap:     newSnapshots(w.From, w.To, ranksOf(trace)),
+		snap:     newSnapshots(w.From, w.To, in.ranks),
 		counters: Divergence{Refused: []RefusedMove{}, Finished: map[int]int{}, TurnsLeftOut: map[int]int{}},
 	}
-	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, merges, recordedLoops(script), map[string]time.Time{}
+	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, in.merges, recordedLoops(script), map[string]time.Time{}
 	d.waiting = map[string]waitingConflict{}
 	d.draws, d.numbers = rand.New(rand.NewPCG(uint64(cfg.Seed), conflictStream)), newPullRequestNumbers(trace)
-	d.timingWall, d.answerWall = cfg.Branch.Timing == valueWall, cfg.Branch.Answer == valueWall
 	runErr := d.run()
 	flushErr := written.Flush()
 	if err := errors.Join(runErr, flushErr); err != nil {
@@ -281,7 +353,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	result.snapshot = d.snap.timelineAt()
 	// An issue that waits for a slot at the start began that wait where the record shows, its start
 	// state being the record's.
-	result.snapshot.beginWaitsAt(recordedWaitStarts(trace, ranksOf(trace), trace.ruleAt, w.From, result.snapshot.startWaiters()))
+	result.snapshot.beginWaitsAt(recordedWaitStarts(trace, in.ranks, w.From, result.snapshot.startWaiters()))
 	result.Scorecard = d.scorecard(Measure(result.snapshot))
 	lined, err := d.lineTimeline()
 	if err != nil {
@@ -305,7 +377,7 @@ func (d *driver) traceAssumptions() {
 	if len(d.inFlight) > 0 {
 		d.used[15] = true
 	}
-	for _, key := range sortedKeys(d.trace.Issues) {
+	for _, key := range slices.Sorted(maps.Keys(d.trace.Issues)) {
 		iss := d.trace.Issues[key]
 		if iss.Project != d.trace.Project {
 			continue
@@ -333,12 +405,8 @@ func (d *driver) traceAssumptions() {
 
 // startedBy says whether iss had started by at: it held a slot or a worker of it had started.
 func startedBy(iss *IssueTrace, at time.Time) bool {
-	for _, span := range iss.Slots {
-		if span.Start.Before(at) {
-			return true
-		}
-	}
-	return slices.ContainsFunc(iss.Visits, func(visit Visit) bool { return !visit.WorkerStart.IsZero() && visit.WorkerStart.Before(at) })
+	return slices.ContainsFunc(iss.Slots, func(span SlotSpan) bool { return span.Start.Before(at) }) ||
+		slices.ContainsFunc(iss.Visits, func(visit Visit) bool { return !visit.WorkerStart.IsZero() && visit.WorkerStart.Before(at) })
 }
 
 // assumptionsUsed is the numbers of the assumptions the run used, in order, up to top.
@@ -359,7 +427,7 @@ func (d *driver) scorecard(card Scorecard) Scorecard {
 	card.Source, card.Rule, card.Branch, card.Seed, card.Slowdown = "replay", d.rule.Name, d.cfg.Branch.Name, d.cfg.Seed, d.cfg.Slowdown
 	card.From, card.To, card.Unplaced = d.window.From, d.window.To, len(d.unplaced)
 	card.Assumptions = d.assumptionsUsed(specAssumptionsTop)
-	card.Scenario = cmp.Or(d.cfg.Branch.NeverStarted, MainBranch.NeverStarted)
+	card.Scenario = d.cfg.Branch.NeverStarted
 	return card
 }
 
@@ -385,19 +453,20 @@ var laterLines = []string{passMovedSlotsLine, phaseHeldLine}
 // replay did.
 func (d *driver) lineTimeline() (Timeline, error) {
 	w := d.window
+	before, err := d.inputs.before()
+	if err != nil {
+		return Timeline{}, err
+	}
 	lined := w
-	lined.Log, lined.Events = nil, make(map[string][]json.RawMessage, len(w.Events)+len(d.shadow.issues))
+	// Clipped, a run's own lines and events are appended to copies, never to the shared record's.
+	lined.Log, lined.Events = slices.Clip(before.log), make(map[string][]json.RawMessage, len(w.Events)+len(d.shadow.issues))
+	for key, events := range before.events {
+		lined.Events[key] = slices.Clip(events)
+	}
 	lined.Lines = slices.Clone(w.Lines)
-	for i, raw := range w.Log {
-		var head struct {
-			Time time.Time `json:"time"`
-		}
-		if err := json.Unmarshal(raw, &head); err != nil {
-			return Timeline{}, fmt.Errorf("replay: line %d of the window's log has no time: %w", i+1, err)
-		}
-		if head.Time.Before(w.From) {
-			lined.Log = append(lined.Log, raw)
-		}
+	listed := make(map[string]bool, len(w.Lines)+len(laterLines))
+	for _, msg := range slices.Concat(w.Lines, laterLines) {
+		listed[msg] = true
 	}
 	replayed, err := os.ReadFile(filepath.Join(d.cfg.Out, logFile))
 	if err != nil {
@@ -413,21 +482,11 @@ func (d *driver) lineTimeline() (Timeline, error) {
 		if err := json.Unmarshal(line, &head); err != nil {
 			return Timeline{}, fmt.Errorf("replay: line %d of the run's own log is no JSON object: %w", i+1, err)
 		}
-		if TraceReads(head.Msg) && !slices.Contains(lined.Lines, head.Msg) && !slices.Contains(laterLines, head.Msg) {
+		if TraceReads(head.Msg) && !listed[head.Msg] {
 			lined.Lines = append(lined.Lines, head.Msg)
+			listed[head.Msg] = true
 		}
 		lined.Log = append(lined.Log, json.RawMessage(line))
-	}
-	for key, events := range w.Events {
-		for i, raw := range events {
-			event, err := ParseDispatchEvent(raw)
-			if err != nil {
-				return Timeline{}, fmt.Errorf("replay: event %d of %s: %w", i+1, key, err)
-			}
-			if event.At.Before(w.From) {
-				lined.Events[key] = append(lined.Events[key], raw)
-			}
-		}
 	}
 	for key, iss := range d.shadow.issues {
 		lined.Events[key] = append(lined.Events[key], iss.log[iss.seeded:]...)
@@ -437,7 +496,7 @@ func (d *driver) lineTimeline() (Timeline, error) {
 	if err != nil {
 		return Timeline{}, fmt.Errorf("replay: read the run's own log and events back as a record: %w", err)
 	}
-	return lineTimeline(t, ranksOf(d.trace), func(time.Time) record.SlotRule { return d.rule }), nil
+	return lineTimeline(t, d.inputs.ranks, func(time.Time) record.SlotRule { return d.rule }), nil
 }
 
 // runRecord is a run's run.json: what it ran — the rule, the branch, the seed, the slowdown, the
@@ -477,7 +536,7 @@ func (d *driver) writeOutputs(result RunResult, wall time.Duration) error {
 		mean = float64(d.passTime.Microseconds()) / 1000 / float64(d.facts)
 	}
 	ran := runRecord{Rule: d.rule.Name, RuleCommit: d.rule.Commit, Branch: d.cfg.Branch, Seed: d.cfg.Seed, Slowdown: d.cfg.Slowdown,
-		Scenario: result.Scorecard.Scenario, Assumptions: d.assumptionsUsed(len(Assumptions)), Database: result.Database,
+		Scenario: result.Scorecard.Scenario, Assumptions: result.Assumptions, Database: result.Database,
 		KeptDatabase: d.cfg.KeepDB, Facts: d.facts, Passes: d.facts + d.boots, MeanPassMillis: mean, WallSeconds: wall.Seconds(),
 		PeakMemoryBytes: peakMemory(), Unplaced: len(result.Unplaced), Segments: len(d.segments), Divergence: result.Divergence,
 		Gaps: result.Gaps, Conflicts: result.Conflicts}
@@ -494,12 +553,11 @@ func (d *driver) writeOutputs(result RunResult, wall time.Duration) error {
 		return nil
 	}
 	var segments bytes.Buffer
+	encoder := json.NewEncoder(&segments)
 	for _, segment := range d.segments {
-		line, err := json.Marshal(segment)
-		if err != nil {
+		if err := encoder.Encode(segment); err != nil {
 			return fmt.Errorf("replay: write the run's %s: %w", segmentsFile, err)
 		}
-		segments.Write(append(line, '\n'))
 	}
 	if err := os.WriteFile(filepath.Join(d.cfg.Out, segmentsFile), segments.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("replay: write the run's %s: %w", segmentsFile, err)
@@ -512,7 +570,7 @@ func (d *driver) writeOutputs(result RunResult, wall time.Duration) error {
 // system.
 func peakMemory() uint64 {
 	if status, err := os.ReadFile("/proc/self/status"); err == nil {
-		for _, line := range strings.Split(string(status), "\n") {
+		for line := range strings.SplitSeq(string(status), "\n") {
 			if rest, ok := strings.CutPrefix(line, "VmHWM:"); ok {
 				if kib, err := strconv.ParseUint(strings.TrimSuffix(strings.TrimSpace(rest), " kB"), 10, 64); err == nil {
 					return kib * 1024
@@ -586,7 +644,7 @@ func firstStartRanks(t Trace) *firstStarts {
 	}
 	var started []first
 	lowest, ranked := "", false
-	for _, key := range sortedKeys(t.Issues) {
+	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		rank := ""
 		for _, event := range iss.Dispatch {

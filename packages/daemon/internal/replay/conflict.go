@@ -43,9 +43,16 @@ type Stretch struct {
 }
 
 // stretchPhase says whether p is a phase of a stretch: a phase in which the issue's pull request
-// stands on a head that can conflict with its base, testing through merging.
+// stands on a head that can conflict with its base, testing through merging, each after
+// implementing (pastImplementing).
 func stretchPhase(p phase.Phase) bool {
-	return p == phase.Testing || p == phase.Reviewing || p == phase.Accepting || p == phase.Retro || p == phase.Merging
+	return pastImplementing(p)
+}
+
+// breaksStretch says whether p, a phase an issue moves into or stands in, ends the stretch it
+// stood in: a phase outside the stretch's that is not a hold, which a stretch goes on through.
+func breaksStretch(p phase.Phase) bool {
+	return !stretchPhase(p) && p != phase.Held
 }
 
 // endsStretch says whether move, the move out of a visit to a stretch phase, ends the stretch: a
@@ -66,7 +73,7 @@ func startsStretch(from, to phase.Phase) bool {
 	if !stretchPhase(to) {
 		return false
 	}
-	return phase.MovesBack(from, to) || !stretchPhase(from) && from != phase.Held
+	return phase.MovesBack(from, to) || breaksStretch(from)
 }
 
 // baseMerges is the first-parent commits of each repository's base branch a window's merges hold,
@@ -121,7 +128,7 @@ func (m baseMerges) between(repo string, own int, start, end time.Time) (int, bo
 	if !ok {
 		return 0, false
 	}
-	after := sort.Search(len(r.at), func(i int) bool { return r.at[i].After(start) })
+	after := upTo(r.at, start)
 	before := sort.Search(len(r.at), func(i int) bool { return !r.at[i].Before(end) })
 	if before <= after {
 		return 0, false
@@ -148,7 +155,7 @@ func ownPullRequest(iss *IssueTrace) int {
 // move to done, nor open where that move falls after the window's end.
 func recordedStretches(t Trace, merges baseMerges) []Stretch {
 	var stretches []Stretch
-	for _, key := range sortedKeys(t.Issues) {
+	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
 		iss := t.Issues[key]
 		if iss.Project != t.Project {
 			continue
@@ -168,7 +175,7 @@ func recordedStretches(t Trace, merges baseMerges) []Stretch {
 				out = visit.Merge
 			}
 			switch {
-			case !stretchPhase(visit.Phase) && visit.Phase != phase.Held, out == nil:
+			case breaksStretch(visit.Phase), out == nil:
 				open = time.Time{}
 			case endsStretch(out):
 				if known {
@@ -215,7 +222,7 @@ func stretchStartAt(iss *IssueTrace, at time.Time) (time.Time, bool) {
 			start = visit.Enter
 		case start.IsZero() && stretchPhase(visit.Phase):
 			start = visit.Enter
-		case !stretchPhase(visit.Phase) && visit.Phase != phase.Held:
+		case breaksStretch(visit.Phase):
 			start = time.Time{}
 		}
 	}
@@ -498,12 +505,26 @@ func (loop *conflictLoop) endsIn(left phase.Phase) bool {
 // piece after it, the return's (len(pieces) where the record shows no return).
 func loopAfter(pieces []*piece, p *piece) ([]*piece, int) {
 	for i := p.index + 1; i < len(pieces); i++ {
-		next := pieces[i]
-		if next.phase == p.phase && next.visit != nil && next.visit.In != nil && next.visit.In.To == p.phase {
+		if pieces[i].returnsTo(p.phase) {
 			return pieces[p.index+1 : i], i
 		}
 	}
 	return pieces[p.index+1:], len(pieces)
+}
+
+// returnsTo says whether q is the work of an issue's return to left, the phase a loop's move back
+// left: a piece in left whose recorded visit a move into left began.
+func (q *piece) returnsTo(left phase.Phase) bool {
+	return q.phase == left && q.visit != nil && q.visit.In != nil && q.visit.In.To == left
+}
+
+// implementingRound is the first of pieces in implementing, the implementing round of a conflict
+// loop's work; nil where none is.
+func implementingRound(pieces []*piece) *piece {
+	if i := slices.IndexFunc(pieces, func(q *piece) bool { return q.phase == phase.Implementing }); i >= 0 {
+		return pieces[i]
+	}
+	return nil
 }
 
 // recordedLoops is every recorded conflict loop of s, by issue and then time: one for each piece
@@ -519,12 +540,7 @@ func recordedLoops(s script) []conflictLoop {
 			loop := conflictLoop{issue: key, left: p.phase}
 			own, back := loopAfter(pieces, p)
 			loop.pieces, loop.returned = slices.Clone(own), back < len(pieces)
-			for _, q := range loop.pieces {
-				if q.phase == phase.Implementing {
-					loop.round = q
-					break
-				}
-			}
+			loop.round = implementingRound(loop.pieces)
 			loops = append(loops, loop)
 		}
 	}
@@ -535,7 +551,7 @@ func recordedLoops(s script) []conflictLoop {
 // a piece in a stretch phase whose recorded move (piece.move) ends the stretch (endsStretch), the
 // stretch not having drawn already (piece.stretchDrawn).
 func (d *driver) drawsAtEnd(p *piece) bool {
-	return !p.stretchDrawn && p.visit != nil && stretchPhase(p.phase) && endsStretch(p.move())
+	return !p.stretchDrawn && stretchPhase(p.phase) && endsStretch(p.move())
 }
 
 // drawConflict draws, at the replay's end of the stretch p ends, whether its head conflicts with
@@ -634,10 +650,7 @@ func (d *driver) keepConflict(p *piece) error {
 func (d *driver) conflictFor(p *piece, kept bool) (bool, error) {
 	key := p.issue
 	delete(d.waiting, key)
-	if err := d.ensurePullRequest(key); err != nil {
-		return false, err
-	}
-	pr, err := d.pullRequestOf(key)
+	pr, err := d.ensurePullRequest(key)
 	if err != nil || pr == nil {
 		return false, err
 	}
@@ -653,18 +666,22 @@ func (d *driver) conflictFor(p *piece, kept bool) (bool, error) {
 		HeadSHA: pr.HeadSHA, Mergeable: record.MergeabilityConflicting, ReadAt: d.now()}); err != nil {
 		return false, err
 	}
-	issue, err := d.recorded(key)
-	if err != nil {
-		return false, err
-	}
-	after, err := d.pullRequestOf(key)
-	if err != nil {
+	var issue *record.Issue
+	var after *record.PullRequest
+	if err := store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if issue, err = d.records.Issue(ctx, tx, key); err != nil {
+			return err
+		}
+		after, err = d.records.PullRequest(ctx, tx, key)
+		return err
+	}); err != nil {
 		return false, err
 	}
 	switch {
 	case issue == nil || after == nil:
 	case issue.Phase == phase.Implementing:
-		if err := d.headOfItsOwn(key); err != nil {
+		if err := d.moveToOwnHead(key, after); err != nil {
 			return false, err
 		}
 		if !kept {
@@ -712,8 +729,17 @@ func (d *driver) conflictFor(p *piece, kept bool) (bool, error) {
 // so no later move asks a merge forward of the head that conflicted.
 func (d *driver) headOfItsOwn(key string) error {
 	moved, err := d.pullRequestOf(key)
-	if err != nil || moved == nil {
+	if err != nil {
 		return err
+	}
+	return d.moveToOwnHead(key, moved)
+}
+
+// moveToOwnHead is headOfItsOwn of moved, key's record as just read, nil for none, which moves
+// nothing.
+func (d *driver) moveToOwnHead(key string, moved *record.PullRequest) error {
+	if moved == nil {
+		return nil
 	}
 	moved.HeadSHA, moved.ConflictingHead = d.newHead(key), ""
 	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error { return d.records.PutPullRequest(ctx, tx, *moved) })
@@ -753,25 +779,16 @@ func loopSide(loop *conflictLoop, left phase.Phase) int {
 // phase; and where it records none of those either, among those that left an earlier one. Nil
 // where it records none at all.
 func (d *driver) drawnLoop(left phase.Phase) *conflictLoop {
-	var sides [loopSides]int
+	var sides [loopSides][]int
 	for i := range d.loops {
 		if d.loops[i].endsIn(left) {
-			sides[loopSide(&d.loops[i], left)]++
+			side := loopSide(&d.loops[i], left)
+			sides[side] = append(sides[side], i)
 		}
 	}
-	for side, n := range sides {
-		if n == 0 {
-			continue
-		}
-		nth := d.draws.IntN(n)
-		for i := range d.loops {
-			if loopSide(&d.loops[i], left) != side || !d.loops[i].endsIn(left) {
-				continue
-			}
-			if nth == 0 {
-				return &d.loops[i]
-			}
-			nth--
+	for _, candidates := range sides {
+		if len(candidates) > 0 {
+			return &d.loops[candidates[d.draws.IntN(len(candidates))]]
 		}
 	}
 	return nil
@@ -790,10 +807,7 @@ func (d *driver) drawnLoop(left phase.Phase) *conflictLoop {
 func (d *driver) mergeForwardRound(p *piece, kept bool) *piece {
 	if kept {
 		own, _ := loopAfter(d.script.pieces[p.issue], p)
-		if i := slices.IndexFunc(own, func(q *piece) bool { return q.phase == phase.Implementing }); i >= 0 {
-			return own[i]
-		}
-		return nil
+		return implementingRound(own)
 	}
 	if loop := d.drawnLoop(p.phase); loop != nil {
 		return loop.round
@@ -887,9 +901,7 @@ func (d *driver) mergerMergesForward(key string) {
 	delete(d.waiting, key)
 	d.used[23] = true
 	pieces := d.script.pieces[key]
-	at := slices.IndexFunc(pieces, func(q *piece) bool {
-		return q.state == pieceWaiting && q.role == claim.RoleMerger && q.phase == phase.Merging && q.opens == opensOnStart
-	})
+	at := slices.IndexFunc(pieces, func(q *piece) bool { return q.waitsForStart(claim.RoleMerger, phase.Merging) })
 	if at < 0 {
 		at = len(pieces)
 	}
@@ -921,7 +933,7 @@ func (d *driver) mergedForward(forward *piece) error {
 		pieces := d.script.pieces[forward.issue]
 		if i := forward.index + 1; i < len(pieces) {
 			next := pieces[i]
-			if next.state == pieceWaiting && next.role == forward.role && next.phase == forward.phase && next.opens == opensOnStart {
+			if next.waitsForStart(forward.role, forward.phase) {
 				next.stretchDrawn = true
 				d.openPiece(next, d.clock.Instant(), false)
 			}
@@ -1071,4 +1083,10 @@ func (d *driver) replacePieces(key string, from, to int, work []*piece) {
 		p.index = i
 	}
 	d.script.pieces[key] = replaced
+}
+
+// waitsForStart says whether q is the next work a start of role's worker in ph opens: a piece of
+// role's in ph that waits for that start (opensOnStart).
+func (q *piece) waitsForStart(role claim.Role, ph phase.Phase) bool {
+	return q.state == pieceWaiting && q.role == role && q.phase == ph && q.opens == opensOnStart
 }

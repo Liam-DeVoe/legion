@@ -68,18 +68,17 @@ type replayDatabase struct {
 
 // openReplayDatabase makes a database of the replay's own on the server dsn names, named
 // legion_replay_<run id>, as a file copy of template1 (every database made from it carries the
-// server's extensions), migrates it with the daemon's migrations and creates the replay's own
-// tables in it (replayTables), and answers it with the store opened on it. It never writes the
-// database dsn names: that connection only makes the replay's. A DSN on which no database can be
-// made is refused with the server's reason.
+// server's extensions), set to commit without waiting for the write-ahead log, migrates it with the
+// daemon's migrations and creates the replay's own tables in it (replayTables), and answers it with
+// the store opened on it. It never writes the database dsn names: that connection only makes the
+// replay's. A DSN on which no database can be made is refused with the server's reason.
 func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store.Store, error) {
 	if dsn == "" {
 		return replayDatabase{}, nil, errors.New("replay: no Postgres DSN to make the replay's database on (--pg-dsn)")
 	}
 	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return replayDatabase{}, nil, fmt.Errorf("replay: name the replay's database: %w", err)
-	}
+	// crypto/rand.Read fills the buffer whole and never returns an error.
+	_, _ = rand.Read(suffix[:])
 	name := replayDatabasePrefix + hex.EncodeToString(suffix[:])
 	target, err := databaseURL(dsn, name)
 	if err != nil {
@@ -94,6 +93,12 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 	if _, err := admin.Exec(ctx, "create database "+pgx.Identifier{name}.Sanitize()+" template template1 strategy file_copy"); err != nil {
 		return replayDatabase{}, nil, fmt.Errorf("replay: the server of %s refuses to make the replay's database %s: %w", redacted(dsn), name, err)
 	}
+	// Every fact commits, and a replay's facts are many: a commit that does not wait for the
+	// write-ahead log to reach the disk changes no decision. The setting reaches every connection
+	// opened after it, so it is set before the store opens and the migrations run with it.
+	if _, err := admin.Exec(ctx, "alter database "+pgx.Identifier{name}.Sanitize()+" set synchronous_commit = off"); err != nil {
+		return db, nil, errors.Join(fmt.Errorf("replay: set the replay's database %s to commit without waiting for the disk: %w", name, err), db.drop(ctx))
+	}
 	st, err := store.Open(ctx, target)
 	if err != nil {
 		return db, nil, errors.Join(fmt.Errorf("replay: open the replay's database %s: %w", name, err), db.drop(ctx))
@@ -103,11 +108,6 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 		return db, nil, errors.Join(fmt.Errorf("replay: migrate the replay's database %s: %w", name, err), db.drop(ctx))
 	}
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		// Every fact commits, and a replay's facts are many: a commit that does not wait for the
-		// write-ahead log to reach the disk changes no decision.
-		if _, err := tx.Exec(ctx, "alter database "+pgx.Identifier{name}.Sanitize()+" set synchronous_commit = off"); err != nil {
-			return err
-		}
 		for _, table := range replayTables {
 			if _, err := tx.Exec(ctx, table); err != nil {
 				return err
@@ -117,11 +117,6 @@ func openReplayDatabase(ctx context.Context, dsn string) (replayDatabase, *store
 	}); err != nil {
 		st.Close()
 		return db, nil, errors.Join(fmt.Errorf("replay: create the replay's own tables in %s: %w", name, err), db.drop(ctx))
-	}
-	// The setting reaches the connections opened after it, so the pool starts again on them.
-	st.Close()
-	if st, err = store.Open(ctx, target); err != nil {
-		return db, nil, errors.Join(fmt.Errorf("replay: open the replay's database %s: %w", name, err), db.drop(ctx))
 	}
 	return db, st, nil
 }
@@ -139,7 +134,7 @@ func (db replayDatabase) drop(ctx context.Context) error {
 	for {
 		_, err := admin.Exec(ctx, "drop database if exists "+pgx.Identifier{db.name}.Sanitize()+" with (force)")
 		var refused *pgconn.PgError
-		if err == nil || !errors.As(err, &refused) || refused.Code != "55006" || time.Now().After(deadline) {
+		if err == nil || !errors.As(err, &refused) || refused.Code != objectInUse || time.Now().After(deadline) {
 			if err != nil {
 				return fmt.Errorf("replay: drop the replay's database %s: %w", db.name, err)
 			}
@@ -148,6 +143,10 @@ func (db replayDatabase) drop(ctx context.Context) error {
 		time.Sleep(250 * time.Millisecond)
 	}
 }
+
+// objectInUse is PostgreSQL's 55006, which a forced drop answers while a session it terminated has
+// not exited yet.
+const objectInUse = "55006"
 
 // databaseURL is dsn naming the database name in place of its own: the URL form's path, or a
 // keyword form's dbname, whichever dsn is written in. It refuses a dsn pgx cannot read, and a
