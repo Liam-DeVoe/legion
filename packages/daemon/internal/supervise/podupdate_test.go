@@ -864,6 +864,27 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	}
 }
 
+// The reviewer creates no commit and pushes nothing (its role part), so the project release's ask
+// tells it that it pushes nothing, names no branch for it to push to, and asks it to commit and
+// push nothing that a subagent or a background job made, as an update round's ask does
+// (UpdateTask). A role that commits, the implementer, is still told to push its commits to the
+// issue's branch and to commit and push what its subagents and background jobs made.
+func TestReleaseTaskTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
+	const issue = "LEGION-209"
+	deletesAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.UTC)
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
+		text, commits := ReleaseTask(role, "release:7", issue, deletesAt), role != claim.RoleReviewer
+		for _, says := range []string{"1. Push every commit that you want to keep to the branch legion/" + issue + ".", "commit and push what it made"} {
+			if strings.Contains(text, says) != commits {
+				t.Errorf("the release's ask to the %s holds %q: %t, want %t:\n%s", role, says, !commits, commits, text)
+			}
+		}
+		if says := "1. You create no commit, so you push nothing."; strings.Contains(text, says) == commits {
+			t.Errorf("the release's ask to the %s holds %q: %t, want %t:\n%s", role, says, commits, !commits, text)
+		}
+	}
+}
+
 // A stale plugin is relaunched at once, whatever contract the claim records: the lane asks its
 // worker nothing, so a plugin that holds the ready_for_update op is relaunched exactly as one
 // that does not. No round is opened and no task is sent. The relaunch keeps the pod and the

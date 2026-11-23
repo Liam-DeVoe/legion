@@ -8,7 +8,8 @@ body: |-
   `Omp-Session` trailer names a session the issue's claims hold or whose `Dispatch` trailer names
   the issue. It asks each running role of a pod with such commits, a refused read or
   a turn in progress to push to `legion/<KEY>`, to let its subagents and background jobs finish
-  and push what they made, and to answer. It waits for the answers or the bound,
+  and push what they made, and to answer; it tells the reviewer, which creates no commit, that it
+  pushes nothing. It waits for the answers or the bound,
   `pod_update_grace_minutes` by default. Then it stops every role process and deletes every
   Sandbox of the project. It saves no workspace.
   A role whose activity report names a running subagent or background job, or that has sent no

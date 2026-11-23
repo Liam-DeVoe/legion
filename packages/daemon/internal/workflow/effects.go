@@ -877,16 +877,19 @@ const (
 // resume of a cancelled idle release (the daemon's outbox), the roles admission brings back beside
 // a member's phase worker (admit's startMidPhaseMembers), the boot's start of a claim the project
 // release stopped that is not behind its entry, with no task or a phase owner's resume task
-// (resume.go's startStoppedClaim), and the phase's resume task a ready worker level with the entry
-// its phases row names is given (catch_up.go's readyWorkerTask) are enqueued directly and stay
-// claimable at once. None of the first six puts a worker to work on a phase it was not already at,
-// so none of them is the cap's to hold, and a slot they waited for might never be offered. The last
-// is sent to a worker already at work on the phase it is in — its agent has just reported ready —
-// so in a phase that keeps a slot the issue holds the row the cap counts already or gave it back to
-// wait on another issue, a wait that stops none of its work, and in accepting, retro or merging it
-// needs none (record.KeepsSlot), so this one has nothing to wait for in any case. The work of an
-// entry that same ready worker stands below, or a claim the project release stopped stands below,
-// is sent through sendOwedEntry, and that start comes through here with the rest.
+// (resume.go's startStoppedClaim), the start with no task that admission's repair writes for a
+// claim the project release stopped, in place of a held start whose phase alone the issue has left
+// (admit's finishFencedStarts, record.ReleaseStoppedStart), and the phase's resume task a ready
+// worker level with the entry its phases row names is given (catch_up.go's readyWorkerTask) are
+// enqueued directly and stay claimable at once. None of the first seven puts a worker to work on a
+// phase it was not already at, so none of them is the cap's to hold, and a slot they waited for
+// might never be offered. The last is sent to a worker already at work on the phase it is in — its
+// agent has just reported ready — so in a phase that keeps a slot the issue holds the row the cap
+// counts already or gave it back to wait on another issue, a wait that stops none of its work, and
+// in accepting, retro or merging it needs none (record.KeepsSlot), so this one has nothing to wait
+// for in any case. The work of an entry that same ready worker stands below, or a claim the
+// project release stopped stands below, is sent through sendOwedEntry, and that start comes
+// through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
 	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)
 }

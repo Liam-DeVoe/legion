@@ -301,7 +301,8 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 // a session of the role (reach), or once the role answered; one the ask reached no session of by
 // the bound, and that had not answered, is taken off the line then (atBound). The line it logs for
 // a written ask names the roles of hold (backgroundHold.attributes), the reports that asked a pod
-// nothing else asked.
+// nothing else asked. Each row carries the text built for its role (supervise.ReleaseTask): the
+// reviewer's text says that it creates no commit and pushes nothing.
 func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod, hold backgroundHold) (bool, error) {
 	running := runningClaims(r.issueViews(pod.sandbox.Issue))
 	if len(running) == 0 {
@@ -313,15 +314,17 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 		return false, nil
 	}
 	round := projectReleaseRound(run.id)
-	text := supervise.ReleaseTask(round, pod.sandbox.Issue, run.bound)
 	rows := make([]record.OutboxPayload, len(running))
+	for i, c := range running {
+		text := supervise.ReleaseTask(c.Role, round, pod.sandbox.Issue, run.bound)
+		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod.sandbox.PodUID, Text: text}
+	}
 	run.mu.Lock()
 	line := &run.result.Sandboxes[pod.line]
 	before := len(line.Asked)
-	for i, c := range running {
+	for _, c := range running {
 		run.asked[c.Token] = releaseAsk{line: pod.line, role: c.Role, nudge: pod.nudge}
 		line.Asked = append(line.Asked, api.ReleasedAsk{Role: c.Role})
-		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod.sandbox.PodUID, Text: text}
 	}
 	run.mu.Unlock()
 	written, err := r.enqueue(ctx, pod.sandbox.Issue, rows...)
@@ -338,7 +341,7 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 		run.mu.Unlock()
 		return false, err
 	}
-	r.log.Info("project release: asked each running role of the pod to push and end its turn",
+	r.log.Info("project release: asked each running role of the pod to push what it keeps and end its turn",
 		append([]any{"release", run.id, "sandbox", pod.sandbox.Name, "roles", len(rows), "bound", run.bound.Format(time.RFC3339)},
 			hold.attributes()...)...)
 	r.record(ctx, run)
