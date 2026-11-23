@@ -118,3 +118,31 @@ func TestTheIdleViewCarriesEachRolesPhasesRow(t *testing.T) {
 		}
 	}
 }
+
+// A role that stands at two steps of a task keeps a phases row for each, and the idle view carries
+// the role's row now, the one record.PhaseRowOf picks: the highest entry. Here the implementer of
+// `implementer reviewer implementer` ran step 1 as key a's agent (entry 1) and works step 3 as key
+// b's (entry 3); the rows are written newest first, so a read in the table's own order would end
+// on step 1's row and name key a's agent, which no longer works the implementer's step.
+func TestAnIdleViewOfARoleAtTwoStepsCarriesItsRowNow(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	const keyA, keyB = claim.Token("legion-legion-legion-208-implementer"), claim.Token("legion-legion-legion-208-implementer-2")
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing,
+			Generation: 1, Status: "implementing", Rank: "A", LastDispatchSeq: 1, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}); err != nil {
+			return err
+		}
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: keyB, StepTask: "a", StepPlace: 3, Entry: 3}); err != nil {
+			return err
+		}
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: keyA, StepTask: "a", StepPlace: 1, Entry: 1})
+	}); err != nil {
+		t.Fatalf("seed the issue and its rows: %v", err)
+	}
+	view := idleViewOf(t, st, "LEGION-208")
+	if got, want := view.Phases[claim.RoleImplementer], (pods.IdlePhase{Claim: keyB, StepTask: "a"}); got != want {
+		t.Fatalf("the idle view carries the implementer's row %+v, want %+v, the row of step 3 it works now", got, want)
+	}
+}
