@@ -388,24 +388,20 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 		// Every answer's send arms roomSyncSendTimeout on task B's clock, this fake, and lets it go
 		// as the send returns (roomQueries.send), which can be after its last notification reached
 		// task A. Task A answers none of its own queries and the silent member answers nothing, so
-		// a goroutine inside a send is task B's; once none is, the clock holds task A's wait alone.
-		testwait.Until(t, kind+": task B's send of its answer to return and let go of its bound", func() (int, bool) {
-			sending := goroutinesIn("docs.(*roomQueries).send(")
-			return sending, sending == 0
-		})
-		armed := awaitQueryArms(t, clock, kind+": task A's wait for the silent member", 1)
+		// every send is task B's, its bound armed for asked+roomSyncSendTimeout until it lets go:
+		// once the room queries' timers hold task A's wait, armed for roomQueryWait from asked, and
+		// no other, task B holds none of its own. A give-up names what the fake held, and where.
 		want := asked.Add(roomQueryWait)
-		for _, deadline := range armed {
-			if !deadline.Equal(want) {
-				t.Fatalf("%s: with only the silent member left to answer, the clock holds %v, want task A's wait, armed for %v", kind, armed, want)
-			}
-		}
+		testwait.Until(t, fmt.Sprintf("%s: with only the silent member left to answer, task B to let go of its send's bound and the room queries' timers on the fake clock to hold task A's wait alone, armed for %v", kind, want), func() (queryArmsReading, bool) {
+			read := queryArmsReading{now: clock.Now(), all: clock.Armed(), arms: queryArms(clock)}
+			return read, slices.EqualFunc(read.arms, []time.Time{want}, time.Time.Equal)
+		})
 		select {
 		case early := <-result:
 			t.Fatalf("%s returned %+v before its wait ran out, with a member yet to answer", kind, early)
 		default:
 		}
-		clock.Set(armed[0])
+		clock.Set(want)
 		waited := testwait.Receive(t, kind+": task A's query to return once its wait ran out", result)
 		if waited.err != nil || !waited.asked {
 			t.Fatalf("%s: asked %t, %v; want the members asked", kind, waited.asked, waited.err)
@@ -568,21 +564,58 @@ func TestAPublishedWritesLossIsJudgedAtTheStoredHeadAfterTheOtherProcessFlushes(
 			// Task B's append opens once the publish's flush waits for it: an append that landed
 			// before that wait would be in the fork the write reads, not the loss this row reads.
 			// The release runs on a goroutine of its own, since this hook runs on the write's own
-			// goroutine, which arms that wait only once the hook returns; the test waits the
-			// goroutine out before it ends. Off the test goroutine, a give-up of its wait fails
-			// the test with t.Error, and the gate opens all the same, so the write is never left
-			// parked behind it.
-			armed := len(queryArms(clock))
-			released := make(chan struct{})
-			t.Cleanup(func() { testwait.Receive(t, "the release of task B's append to return", released) })
+			// goroutine, which arms that wait only once the hook returns. A give-up of its wait
+			// opens the gate all the same, so the write is never left parked behind it. The
+			// goroutine touches no t: its give-up and the cleanup's wait for it end at the same
+			// moment, and a t.Error from it once the test has ended panics the binary. It hands
+			// the cleanup its give-up, which the cleanup fails the test with, and what its wait
+			// last read, which the cleanup's own give-up names.
+			//
+			// What the hook reads armed can still hold task B's answer to the write's join flush:
+			// its flush timeout and its send's bound (roomQueries.query, send), each armed before
+			// that answer left task B and let go only as its goroutine returns, which can be after
+			// task A read the answer, committed and reached this hook. Neither is armed again, and
+			// the publish asks no other query first, so the wait is for a deadline the hook's
+			// reading does not hold (armedBeyond), which no arm let go of ever makes, in whatever
+			// order those two go and the publish's two come: task A's wait for the publish's
+			// answers and task B's flush timeout. Each of those is answerWait from the fake's
+			// moment, which never moves here, and answerWait is what is left of the shared wait:
+			// read after the hook's reading, it is shorter than every one read before it, and it
+			// equals a send's roomSyncSendTimeout only when read 2 s before the shared wait gives up.
+			before := queryArms(clock)
+			var last struct {
+				sync.Mutex
+				read queryArmsReading
+			}
+			lastRead := func() queryArmsReading {
+				last.Lock()
+				defer last.Unlock()
+				return last.read
+			}
+			released := make(chan error, 1)
+			t.Cleanup(func() {
+				testwait.Until(t, "the release of task B's append to return", func() (string, bool) {
+					select {
+					case err := <-released:
+						if err != nil {
+							t.Errorf("%v; last read: %v", err, lastRead())
+						}
+						return "the release returned", true
+					default:
+					}
+					return fmt.Sprintf("the release still waits for the publish's flush; it last read %v", lastRead()), false
+				})
+			})
 			go func() {
-				defer close(released)
-				if err := testwait.InHelper("afterLiveCommit's release", fmt.Sprintf("the publish's wait for task B's flush (at least %d of the room queries' timers armed on the fake clock)", armed+1), func() bool {
-					return len(queryArms(clock)) > armed
-				}); err != nil {
-					t.Error(err)
-				}
+				err := testwait.InHelper("afterLiveCommit's release", fmt.Sprintf("the publish's wait for task B's flush (a room query's timer armed on the fake clock beyond the %v the hook read)", before), func() bool {
+					read := queryArmsReading{now: clock.Now(), all: clock.Armed(), arms: queryArms(clock)}
+					last.Lock()
+					last.read = read
+					last.Unlock()
+					return len(armedBeyond(before, read.arms)) > 0
+				})
 				pair.gateB.release()
+				released <- err
 			}()
 		})
 	}

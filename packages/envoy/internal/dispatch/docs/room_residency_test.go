@@ -361,7 +361,9 @@ func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	seed := New(testServiceDeps(database))
 	seedServiceText(t, seed, artifactID, "before")
-	if err := seed.Shutdown(context.Background()); err != nil {
+	var err error
+	testwait.Returns(t, "the seeding service's shutdown to return", func() { err = seed.Shutdown(context.Background()) })
+	if err != nil {
 		t.Fatalf("shut the seeding service down: %v", err)
 	}
 	synctest.Test(t, func(t *testing.T) {
