@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,23 +16,19 @@ import (
 // that owner does now (record.OwnerActsAs), so its slot holds that step's App while it does the
 // step and its own role's App again after; false for every other token, an issue the daemon does
 // not record, and an issue whose owner is another claim. The issue is read in a read-only
-// transaction of its own, at each write of a slot's gh files that asks (runtime.SlotRole).
-//
-// A token spells its issue's key lowercased (claim.AgentToken), and a key's prefix is capitals and
-// digits alone (claim.IsIssueKey), so the key is the token's issue part with that prefix in
-// capitals; the owner check then holds the token to the issue's own project as well.
+// transaction of its own, at each write of a slot's gh files that asks (runtime.SlotRole). The key
+// is the token's own (claim.Token.IssueKey), and the owner check then holds the token to the
+// issue's own project as well.
 func ownerActsAs(pool *store.Pool, records record.Store) runtime.ActsAs {
 	return func(ctx context.Context, token claim.Token) (claim.Role, bool, error) {
-		part, agent, ok := token.Cut()
+		_, agent, ok := token.Cut()
 		if !ok || agent != claim.Agent(claim.RoleArchitect) {
 			return "", false, nil
 		}
-		// part is `legion-<project>-<prefix>-<number>`: no project token holds a dash.
-		names := strings.Split(part, "-")
-		if len(names) != 4 {
+		key, ok := token.IssueKey()
+		if !ok {
 			return "", false, nil
 		}
-		key := strings.ToUpper(names[2]) + "-" + names[3]
 		var role claim.Role
 		var acting bool
 		err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
