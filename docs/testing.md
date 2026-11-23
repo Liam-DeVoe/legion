@@ -556,18 +556,26 @@ A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): 
 ## A file a test runs
 
 A Go test that writes a file it then runs (a fake command, a stand-in script, a stub on `PATH`)
-writes it with `testexec.WriteFile` (`packages/envoy/testexec`), which every module reaches, not
-`os.WriteFile`. While a file is open for writing, a fork of the test process copies the write
-descriptor into the child, which holds it until its own exec closes it, and the kernel refuses to
-exec a file any process holds open for writing: the run fails with `ETXTBSY` ("text file busy").
-A test running beside it (`t.Parallel`) forks each time it starts a command, so once
-`internal/daemon`'s tests ran beside each other a gate test failed so under load
+can see the run fail with `ETXTBSY` ("text file busy"). While a file is open for writing, a fork
+of the test process copies the write descriptor into the child, which holds it until its own exec
+closes it, and the kernel refuses to exec a file any process holds open for writing. A test
+running beside it (`t.Parallel`) forks each time it starts a command, so once `internal/daemon`'s
+tests ran beside each other a gate test failed so under load
 (`TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid/refuses`, one run in 660).
-`testexec.WriteFile` holds `syscall.ForkLock` for reading while the file is open, which every fork
-of a Go process takes for writing, so no fork falls inside the write. Each module's
+`testexec.WriteFile` (`packages/envoy/testexec`, which every module reaches) is `os.WriteFile`
+holding `syscall.ForkLock` for reading while the file is open, which every fork of a Go process
+takes for writing, so no fork falls inside the write.
+
+Two kinds of package write such a file with `testexec.WriteFile`: a package whose tests call
+`Parallel`, in its test files, and a test-support package (a package whose name begins or ends
+with `test`), in every file, since tests of any package call it. Each module's
 `internal/textcheck` names, by `testexec.Unguarded`, each write of a file with an execute bit by
-`os.WriteFile` or `os.OpenFile` in a test file of a package whose tests call `Parallel`, and in
-any file of a test-support package (a package whose name begins or ends with `test`).
+`os.WriteFile` or `os.OpenFile` in those files. A package whose tests run one at a time can still
+write such a file with `os.WriteFile`. Its test binary runs one test at a time, and a fork in
+another process copies none of its descriptors, so only a goroutine of the running test can fork
+while the file is open. Once its tests call `Parallel`, the check names its writes. A test that
+starts a command from another goroutine while it writes such a file writes it with
+`testexec.WriteFile` wherever it is.
 
 ## A Go test that opens a NATS client
 
