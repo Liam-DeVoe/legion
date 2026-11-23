@@ -630,6 +630,7 @@ func (e *Engine) fixMovedBack(ctx context.Context, tx pgx.Tx, issue record.Issue
 func (e *Engine) endFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, fix *record.TaskFix, end StepEnd, endHead string) error {
 	now := e.now()
 	fix.State, fix.Result, fix.EndHead, fix.EndedAt = record.FixEnded, string(end.Result), endHead, &now
+	end.Commit = endHead
 	if end.Result == ResultFailed {
 		fix.Failed = true
 		if end.ReturnedTo != nil {
