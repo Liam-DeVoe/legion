@@ -149,15 +149,20 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 //
 // The statement drives from term_weights, one row per picked lexeme and its idf, into
 // issues.search and into document_search (migration 20261101182447, one row per document holding
-// its latest version's vector), so each term is one probe of a GIN index and no candidate's spec
-// vector is read more than once per term. project_key, the status and the ancestors are filters
-// on the rows those index scans produced, never the driving predicate.
+// its latest version's vector). The plan Postgres makes for its arguments (duplicateScoreArguments)
+// reads no text-search index: each arm is a nested loop over the terms whose inner side is the
+// project's open issues, read once by a sequential scan and held in memory (the spec arm hashes
+// document_search to artifacts and to those issues), so each term is tested against every open
+// issue's title vector and spec vector. project_key, the status and the ancestors filter what that
+// scan reads. So the cost grows with the project's open issues times the terms, at most
+// relatedTermLimit; relatedMatchBudget bounds the hits, not the tests. That is the plan read on
+// the production corpus and on a synthetic project of 3,000 issues (PostgreSQL 18.6, 2026-11-23).
 //
 // Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
 // per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
 // candidate's spec vector once per term, so its cost grows with the length of every candidate's
-// spec, and a project's specs are long. The per-term join does its work inside the index and is
-// bounded by the picker's own relatedMatchBudget.
+// spec, and a project's specs are long. As planned (above), the per-term join also tests each
+// open issue's spec vector once per term, through no index.
 //
 // A term that matches both a candidate's title and its spec counts once: the two arms are joined
 // with `union`, which takes distinct (key, lexeme, idf) before the sum, and idf is a function of
