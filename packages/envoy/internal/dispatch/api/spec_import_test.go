@@ -996,10 +996,11 @@ func TestImportLevelTakesNoStatementFromACodeExample(t *testing.T) {
 }
 
 // TestImportLevelWritesEachComponentFromItsParsedCells: the import reads each component of the
-// level's Components table from the cells the document parser gives its row, so a purpose holding
-// an escaped pipe is written with a literal `|`, as a purpose of plain words is; and a row that reads
-// as no component - here a table of four columns - refuses the import (409 SPEC_NODE_INVALID),
-// which writes nothing and opens no repair issue, rather than leaving the component out (D9).
+// level's Components part from the cells the document parser gives its row, wherever the part holds
+// its table, so a purpose holding an escaped pipe is written with a literal `|`, and a table in a
+// quote is read, as a purpose of plain words at the top of the part is; and a row that reads as no
+// component - here a table of four columns - refuses the import (409 SPEC_NODE_INVALID), which
+// writes nothing and opens no repair issue, rather than leaving the component out (D9).
 func TestImportLevelWritesEachComponentFromItsParsedCells(t *testing.T) {
 	const header = "| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n"
 	for _, c := range []struct {
@@ -1007,6 +1008,8 @@ func TestImportLevelWritesEachComponentFromItsParsedCells(t *testing.T) {
 	}{
 		{name: "a purpose of plain words", table: header + "| billing | component | Billing | It bills each order. | none |\n", purpose: "It bills each order."},
 		{name: "a purpose holding an escaped pipe", table: header + "| billing | component | Billing | It bills \\| pays each order. | none |\n", purpose: "It bills | pays each order."},
+		{name: "a table in a quote", purpose: "It bills each order.",
+			table: "> | Id | Kind | Name | Purpose | Parent or joins |\n> | --- | --- | --- | --- | --- |\n> | billing | component | Billing | It bills each order. | none |\n"},
 		{name: "a table of four columns", table: "| Id | Kind | Name | Purpose |\n| --- | --- | --- | --- |\n| billing | component | Billing | It bills each order. |\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {

@@ -143,6 +143,37 @@ func TestParseLevelReadsEachComponentFromItsParsedCells(t *testing.T) {
 	}
 }
 
+// The tables of the Components part are read wherever the part holds them - at its top, in a quote,
+// in a list item - as a statement is read wherever the level holds its block, so no table of the
+// part is left out.
+func TestParseLevelReadsAComponentsTableWhereverThePartHoldsIt(t *testing.T) {
+	t.Parallel()
+	rows := []string{"| Id | Kind | Name | Purpose | Parent or joins |", "| --- | --- | --- | --- | --- |", "| billing | component | Billing | It bills. | none |"}
+	table, quoted, listed := "", "", "- The table:\n\n"
+	for _, row := range rows {
+		table += row + "\n"
+		quoted += "> " + row + "\n"
+		listed += "  " + row + "\n"
+	}
+	want := []specgraph.Component{{ID: "billing", Name: "Billing", Purpose: "It bills."}}
+	for _, c := range []struct{ name, part string }{
+		{name: "at the top of the part", part: table},
+		{name: "in a quote", part: quoted},
+		{name: "in a list item", part: listed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			level, err := ParseLevel("# Level\n\n## Components\n\n"+c.part, "")
+			if err != nil {
+				t.Fatalf("parse the level: %v", err)
+			}
+			if !reflect.DeepEqual(level.Components, want) {
+				t.Errorf("the level reads the components %+v, want %+v", level.Components, want)
+			}
+		})
+	}
+}
+
 // A row of a Components table that reads as no component or interface - a table of another number
 // of columns, a kind that is neither `component` nor `interface`, an empty id - is refused as a
 // node the approved spec cannot hold (SPEC_NODE_INVALID), naming the row, and never left out.
