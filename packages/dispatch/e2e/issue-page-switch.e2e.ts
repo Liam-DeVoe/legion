@@ -424,9 +424,10 @@ test("turning the new issue page on and off in Settings keeps the focus on its c
 
 // A choice made in another tab reaches this one through the window's `storage` event
 // (`web/src/features/issue-page/stored-choice.ts`), and it too changes nothing above the issue
-// page: this tab's Settings stays mounted, with what the reader typed into its mapping form and
-// has not sent. Two shells for the two choices would mount this tab's whole page again at the
-// other tab's press, and the form would come back empty.
+// page: this tab's Settings stays mounted, with what the reader typed into its new-project form
+// and has not sent (`web/src/features/settings/ProjectsSection.tsx`). Two shells for the two
+// choices would mount this tab's whole page again at the other tab's press, and the form would
+// come back empty.
 // SLOW(>=2s): two tabs each load Settings cold, and the other tab's switch is pressed twice.
 test("another tab turning the new issue page on and off leaves this tab's unsent form text @phone", async ({
   context,
@@ -438,16 +439,16 @@ test("another tab turning the new issue page on and off leaves this tab's unsent
     if (!isPhone) await tab.setViewportSize(desktop);
     await tab.goto("/settings");
   }
-  const repository = page.getByRole("textbox", { exact: true, name: "Repository" });
-  await repository.fill("octo/unsent");
+  const projectName = page.getByRole("textbox", { exact: true, name: "Name" });
+  await projectName.fill("Unsent project");
 
   await issuePageCheckbox(second).check();
   // This tab's own switch reads the choice the other tab stored, so the event has reached it.
   await expect(issuePageCheckbox(page)).toBeChecked();
-  await expect(repository).toHaveValue("octo/unsent");
+  await expect(projectName).toHaveValue("Unsent project");
   await issuePageCheckbox(second).uncheck();
   await expect(issuePageCheckbox(page)).not.toBeChecked();
-  await expect(repository).toHaveValue("octo/unsent");
+  await expect(projectName).toHaveValue("Unsent project");
   if (isPhone) await assertPageFits(page);
 });
 
