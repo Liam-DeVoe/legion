@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The bundled `dispatch` command has `dispatch carry-test --from <commit> --to <commit> --base
+  <commit-ish>`. Run it in a clone of the pull request's repository, after a fetch of the base
+  branch, to learn whether a pass of a check carries across a merge of the base. Its last line is
+  the verdict: `carries`, `runs again`, `no merge` (the push rule decides) or `UNKNOWN` (git could
+  not answer, such as in a `--filter=blob:none` clone). It runs local git only and sends nothing.

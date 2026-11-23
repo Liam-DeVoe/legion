@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `dispatch carry-test --from <commit> --to <commit> --base <commit-ish>` decides whether a pass
+  of a check carries from an earlier head to a new head across a merge of the base, by GitHub's
+  rule for a stale approval. For each merge on the first-parent path between the heads,
+  `git merge-tree --write-tree` finds whether it resolved a conflict. Where none did, the
+  patch-id of the pull request's diff from the base, with no context lines, must read the same at
+  both heads. The last line is the verdict: `carries` (exit 0), `runs again` (1), `no merge` (4)
+  or `UNKNOWN` (3). The tests run in a new bare repository under `TMPDIR` that borrows the clone's
+  objects, with no git setting of the environment, home, system or clone, and fetch nothing. So a
+  `--filter=blob:none` clone that lacks a file a test reads prints UNKNOWN, never `carries`. Like
+  `dispatch login`, it reads no Dispatch host, session or `envoy.json`, and sends nothing
+  (`docs/carry-test.md`).

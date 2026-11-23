@@ -71,7 +71,12 @@ class Planted {
   }
 
   gitInput(input: string, ...args: string[]): string {
-    return execFileSync("git", args, { cwd: this.dir, env: this.env, input, encoding: "utf8" }).trim();
+    return execFileSync("git", args, {
+      cwd: this.dir,
+      env: this.env,
+      input,
+      encoding: "utf8",
+    }).trim();
   }
 
   write(lines: readonly string[], file = "a.txt"): void {
@@ -97,7 +102,11 @@ function lines(set: Record<number, string>): string[] {
 }
 
 /** The base commit, branch pr changing line 10 (the earlier head), then main changing a line. */
-function setup(prLine: number, mainLine: number, mainText = "main"): { repo: Planted; src: string } {
+function setup(
+  prLine: number,
+  mainLine: number,
+  mainText = "main"
+): { repo: Planted; src: string } {
   const repo = Planted.make();
   repo.write(BASE);
   repo.commit("base");
@@ -149,7 +158,12 @@ function handCase(): Case {
 function gitlinkCase(): Case {
   const repo = Planted.make();
   const tree = (text: readonly string[], link: string): string => {
-    const blob = repo.gitInput(text.map((line) => `${line}\n`).join(""), "hash-object", "-w", "--stdin");
+    const blob = repo.gitInput(
+      text.map((line) => `${line}\n`).join(""),
+      "hash-object",
+      "-w",
+      "--stdin"
+    );
     return repo.gitInput(`100644 blob ${blob}\ta.txt\n160000 commit ${link}\tdep\n`, "mktree");
   };
   const x = "1".repeat(40);
@@ -198,10 +212,14 @@ function promisorSource(): Case {
 function partialClone(source: Planted): Planted {
   const root = directory("part");
   const dir = join(root, "clone");
-  execFileSync("git", ["clone", "-q", "--no-checkout", "--filter=blob:none", `file://${source.dir}`, dir], {
-    env: source.env,
-    stdio: "pipe",
-  });
+  execFileSync(
+    "git",
+    ["clone", "-q", "--no-checkout", "--filter=blob:none", `file://${source.dir}`, dir],
+    {
+      env: source.env,
+      stdio: "pipe",
+    }
+  );
   return new Planted(dir, source.env);
 }
 
@@ -240,7 +258,8 @@ async function carry(
 }
 
 const short = (sha: string): string => sha.slice(0, 12);
-const patchIds = (run: Run): string[] => run.lines.filter((line) => line.startsWith("patch-id at "));
+const patchIds = (run: Run): string[] =>
+  run.lines.filter((line) => line.startsWith("patch-id at "));
 const ids = (run: Run): string[] => patchIds(run).map((line) => line.split(": ")[1] ?? "");
 const carries = (c: Case): string =>
   `carries: no merge between ${short(c.src)} and ${short(c.to)} resolved a conflict, and the pull request's diff reads the same at both heads`;
@@ -251,7 +270,10 @@ const conflict = (merge: string): string => `runs again: merge ${short(merge)} r
 /** The patch-id of the pull request's diff, by plain git in the clone with this environment: the
  *  control that a setting reaches git when nothing keeps it out. */
 function plainPatchId(repo: Planted, env: Record<string, string>, range: string): string {
-  const diff = execFileSync("git", ["diff", "--binary", "-M", "-U0", range], { cwd: repo.dir, env });
+  const diff = execFileSync("git", ["diff", "--binary", "-M", "-U0", range], {
+    cwd: repo.dir,
+    env,
+  });
   return execFileSync("git", ["patch-id", "--verbatim"], { cwd: repo.dir, env, input: diff })
     .toString()
     .split(" ")[0] as string;
@@ -429,7 +451,11 @@ describe("dispatch carry-test", () => {
       GIT_CONFIG_KEY_0: "diff.ignoreSubmodules",
       GIT_CONFIG_VALUE_0: "all",
     };
-    const log = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "diff.submodule", GIT_CONFIG_VALUE_0: "log" };
+    const log = {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "diff.submodule",
+      GIT_CONFIG_VALUE_0: "log",
+    };
     for (const setting of [ignore, log]) {
       const run = await carry(c.repo.dir, c.src, c.to, "main", callerEnv(setting));
       expect(run.code).toBe(1);
@@ -447,13 +473,17 @@ describe("dispatch carry-test", () => {
     expect(byHome.last).toBe(diffChanged(c));
     const plainHome = { ...c.repo.env, HOME: home };
     delete (plainHome as Record<string, string | undefined>).GIT_CONFIG_GLOBAL;
-    expect(plainPatchId(c.repo, plainHome, range(c.src))).toBe(plainPatchId(c.repo, plainHome, range(c.to)));
+    expect(plainPatchId(c.repo, plainHome, range(c.src))).toBe(
+      plainPatchId(c.repo, plainHome, range(c.to))
+    );
     // The clone's own config.
     c.repo.git("config", "diff.ignoreSubmodules", "all");
     const byClone = await carry(c.repo.dir, c.src, c.to, "main");
     expect(byClone.code).toBe(1);
     expect(byClone.last).toBe(diffChanged(c));
-    expect(plainPatchId(c.repo, c.repo.env, range(c.src))).toBe(plainPatchId(c.repo, c.repo.env, range(c.to)));
+    expect(plainPatchId(c.repo, c.repo.env, range(c.src))).toBe(
+      plainPatchId(c.repo, c.repo.env, range(c.to))
+    );
   });
 
   test("diff.context=7 and diff.noprefix=true in the environment change no patch-id", async () => {
@@ -495,13 +525,17 @@ describe("dispatch carry-test", () => {
     expect((await carry(clean.repo.dir, clean.src, clean.to, "main", env)).code).toBe(0);
     expect(readdirSync(tmp)).toEqual([]);
     const conflicted = conflictCase();
-    expect((await carry(conflicted.repo.dir, conflicted.src, conflicted.to, "main", env)).code).toBe(1);
+    expect(
+      (await carry(conflicted.repo.dir, conflicted.src, conflicted.to, "main", env)).code
+    ).toBe(1);
     expect(readdirSync(tmp)).toEqual([]);
     expect((await carry(clean.repo.dir, ZERO, clean.to, "main", env)).code).toBe(3);
     expect(readdirSync(tmp)).toEqual([]);
     const source = promisorSource();
     const part = partialClone(source.repo);
-    expect((await carry(part.dir, source.src, source.to, source.repo.sha("main"), env)).code).toBe(3);
+    expect((await carry(part.dir, source.src, source.to, source.repo.sha("main"), env)).code).toBe(
+      3
+    );
     expect(readdirSync(tmp)).toEqual([]);
   });
 

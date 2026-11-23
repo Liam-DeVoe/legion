@@ -81,7 +81,8 @@ function parseCarryTest(argv: readonly string[]): ParsedCarryTest {
     const word = argv[at] as string;
     if (word === "--help" || word === "-h") return { kind: "help" };
     const flag = FLAGS.find((name) => word === name || word.startsWith(`${name}=`));
-    if (flag === undefined) return { kind: "refused", problem: `unknown argument ${JSON.stringify(word)}` };
+    if (flag === undefined)
+      return { kind: "refused", problem: `unknown argument ${JSON.stringify(word)}` };
     let value: string | undefined;
     if (word === flag) {
       value = argv[at + 1];
@@ -89,12 +90,14 @@ function parseCarryTest(argv: readonly string[]): ParsedCarryTest {
     } else {
       value = word.slice(flag.length + 1);
     }
-    if (value === undefined || value === "") return { kind: "refused", problem: `${flag} needs a commit` };
+    if (value === undefined || value === "")
+      return { kind: "refused", problem: `${flag} needs a commit` };
     if (values.has(flag)) return { kind: "refused", problem: `${flag} is given twice` };
     values.set(flag, value);
   }
   const missing = FLAGS.filter((flag) => !values.has(flag));
-  if (missing.length > 0) return { kind: "refused", problem: `${missing.join(", ")} must be given` };
+  if (missing.length > 0)
+    return { kind: "refused", problem: `${missing.join(", ")} must be given` };
   return {
     kind: "test",
     from: values.get("--from") as string,
@@ -142,12 +145,18 @@ const short = (sha: string): string => sha.slice(0, 12);
 /** The patch-id line of one head: `none (empty diff)` only where git diff exits 0 and prints
  *  nothing, and UNKNOWN where it prints a diff and git patch-id prints no id. git diff and git
  *  patch-id run as two processes, so each exit is read. */
-function patchId(head: string, base: string, bare: { cwd: string; env: Record<string, string> }): string {
+function patchId(
+  head: string,
+  base: string,
+  bare: { cwd: string; env: Record<string, string> }
+): string {
   const diff = git(["diff", "--binary", "-M", "-U0", `${base}...${head}`], bare, [0]);
   if (diff.stdout.length === 0) return "none (empty diff)";
   const id = text(git(["patch-id", "--verbatim"], bare, [0], diff.stdout)).split(/\s+/)[0] ?? "";
   if (!/^[0-9a-f]{40,64}$/.test(id)) {
-    throw new Unknown(`git patch-id printed no id for the ${diff.stdout.length}-byte diff at ${short(head)}`);
+    throw new Unknown(
+      `git patch-id printed no id for the ${diff.stdout.length}-byte diff at ${short(head)}`
+    );
   }
   return id;
 }
@@ -163,7 +172,9 @@ export async function carryTestCommand(argv: readonly string[], io: CarryTestIo)
     return CARRIES;
   }
   if (parsed.kind === "refused") {
-    io.print(`dispatch carry-test was not called: ${parsed.problem}. Run dispatch carry-test --help.`);
+    io.print(
+      `dispatch carry-test was not called: ${parsed.problem}. Run dispatch carry-test --help.`
+    );
     return USAGE;
   }
   let dir: string | undefined;
@@ -175,7 +186,8 @@ export async function carryTestCommand(argv: readonly string[], io: CarryTestIo)
         cwd: clone.cwd,
         env: clone.env,
       });
-      if (run.error !== undefined) throw new Unknown(`git rev-parse could not run: ${run.error.message}`);
+      if (run.error !== undefined)
+        throw new Unknown(`git rev-parse could not run: ${run.error.message}`);
       if (run.status !== 0) {
         throw new Unknown(
           `git rev-parse exited ${run.status ?? run.signal}: ${firstStderrLine(run)}; the clone may lack commit ${commit}`
@@ -186,7 +198,9 @@ export async function carryTestCommand(argv: readonly string[], io: CarryTestIo)
     const from = resolve(parsed.from);
     const to = resolve(parsed.to);
     const base = resolve(parsed.base);
-    const common = text(git(["rev-parse", "--path-format=absolute", "--git-common-dir"], clone, [0]));
+    const common = text(
+      git(["rev-parse", "--path-format=absolute", "--git-common-dir"], clone, [0])
+    );
 
     // The new bare repository, which borrows the clone's objects and reads no setting but its own.
     dir = mkdtempSync(join(io.env.TMPDIR || tmpdir(), "carry-test-"));
@@ -218,12 +232,16 @@ export async function carryTestCommand(argv: readonly string[], io: CarryTestIo)
         .split(/\s+/)
         .slice(1);
       if (parents.length > 2) {
-        throw new Unknown(`merge ${short(sha)} has ${parents.length} parents, and the merge test reads two`);
+        throw new Unknown(
+          `merge ${short(sha)} has ${parents.length} parents, and the merge test reads two`
+        );
       }
       if (parents.length === 2) merges.push({ sha, parents });
     }
     if (merges.length === 0) {
-      io.print(`no merge: no merge commit lies between ${short(from)} and ${short(to)}, so the push rule decides`);
+      io.print(
+        `no merge: no merge commit lies between ${short(from)} and ${short(to)}, so the push rule decides`
+      );
       return NO_MERGE;
     }
 
@@ -235,12 +253,15 @@ export async function carryTestCommand(argv: readonly string[], io: CarryTestIo)
         env: bare.env,
         maxBuffer: MAX_OUTPUT,
       });
-      if (run.error !== undefined) throw new Unknown(`git merge-tree could not run: ${run.error.message}`);
+      if (run.error !== undefined)
+        throw new Unknown(`git merge-tree could not run: ${run.error.message}`);
       if (run.status === 129 && /unknown option/.test(run.stderr.toString("utf8"))) {
         throw new Unknown("git merge-tree --write-tree needs git 2.38 or newer");
       }
       if (run.status !== 0 && run.status !== 1) {
-        throw new Unknown(`git merge-tree exited ${run.status ?? run.signal}: ${firstStderrLine(run)}`);
+        throw new Unknown(
+          `git merge-tree exited ${run.status ?? run.signal}: ${firstStderrLine(run)}`
+        );
       }
       io.print(`merge ${sha}: ${run.status === 0 ? "clean" : "conflict"}`);
       if (run.status === 1) conflicted ??= sha;
@@ -256,7 +277,9 @@ export async function carryTestCommand(argv: readonly string[], io: CarryTestIo)
     const after = patchId(to, base, bare);
     io.print(`patch-id at ${to}: ${after}`);
     if (before !== after) {
-      io.print(`runs again: the pull request's diff changed between ${short(from)} and ${short(to)}`);
+      io.print(
+        `runs again: the pull request's diff changed between ${short(from)} and ${short(to)}`
+      );
       return RUNS_AGAIN;
     }
     io.print(
