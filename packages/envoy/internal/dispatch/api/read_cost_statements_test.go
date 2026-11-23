@@ -1,0 +1,291 @@
+//go:build basebuild
+
+package api
+
+// The database time of the reads c-read-cost and c-moved-read-cost measure: what Postgres spent
+// executing the statements one reading of a read sends. It is read from pg_stat_statements as the
+// sum of total_exec_time over the statements of a batch of readings, from a snapshot before the
+// batch and one after it, divided by the batch's readings. It is a reading, printed beside each
+// read's percentiles and in the tables, and nothing is bound on it.
+//
+// pg_stat_statements holds every statement of the server, so what is not the read's is kept out
+// of the sum, or printed beside it, as follows.
+//
+//   - Every other database's statements, those of every other suite on a shared server among them:
+//     a snapshot reads the run's database alone (dbid), and the run's role alone (userid), the role
+//     both builds connect as.
+//   - The test's own statements: the snapshots are read over a connection to a database of their
+//     own, created beside the run's database and dropped with it, so each snapshot is recorded
+//     under that database and never under the run's. The test's other connection to the run's
+//     database (readCostConnect) sends nothing while a batch runs.
+//   - A statement counted twice: under pg_stat_statements.track=all a statement that a function
+//     or a trigger runs is recorded beside the statement that ran it, whose time already holds it,
+//     so only top-level statements are summed (toplevel).
+//   - The server's background work that a setting stops is stopped on every build that has the
+//     setting (startReadCostServer): the keyword fill (DISPATCH_SEARCH_FILL=off), the embedding
+//     queue (DISPATCH_TEST_EMBEDDER_OFF=1) and the maintenance sweep, whose first tick then falls
+//     a day after the boot (DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL). The CI reconcile, the
+//     webhook redelivery and the delivery reconcile do not run at all, since they need NATS or
+//     the GitHub App and neither build is given either.
+//   - The background work no setting stops: the process heartbeat, the leased loops' ticks, the
+//     block index's tick and its embedding windows, the search term statistics rebuilt at boot
+//     and every ten minutes, the display-tree fill and the other reconciliations. They send their
+//     statements on schedules of their own, so the read's time is the time of the statements that
+//     ran at least once per reading of the batch, as every statement the read sends does; the
+//     statements that ran fewer times are printed beside it, with their time. After the batch, an
+//     idle interval of the batch's length is read in the same way on the same server while
+//     nothing reads, and printed beside both: its whole time per reading of the batch, and the
+//     part of it in statements that ran at least as often as the batch has readings, which is how
+//     much background work the first figure would count as the read's over that length.
+//
+// The noise that remains: background work that runs a statement at least once per reading during
+// a batch (the window arm, while windows are owed) is counted as the read's, which the idle
+// interval's second figure estimates; the background calls of a statement the read sends as well
+// (COMMIT, which every transaction shares) are counted as the read's; a statement the read sends
+// less than once per reading (the refresh of a cached answer) is printed beside the read's time
+// and not in it; planning time is not total_exec_time and is not counted; and an entry that
+// pg_stat_statements evicts during a batch takes its time with it, which the read's line says
+// where pg_stat_statements_info counts an eviction.
+//
+// pg_stat_statements needs the server to preload it (shared_preload_libraries) and a role that
+// may create the extension. Where either is missing, the run says in one line that database time
+// was not measured and why, and measures everything else, failing on none of it.
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// readCostStatements reads pg_stat_statements for the top-level statements of the run's database
+// and role, over a connection to a database of its own. A nil one measures nothing.
+type readCostStatements struct {
+	check    string
+	conn     *pgx.Conn
+	database uint32 // the oid of the run's database, every snapshot's dbid
+	role     uint32 // the oid of the role the run and both builds connect as, every snapshot's userid
+}
+
+// readCostSnapshot is pg_stat_statements at one moment: each top-level statement of the run's
+// database and role by its queryid, and how many entries the extension had evicted until then
+// (pg_stat_statements_info.dealloc).
+type readCostSnapshot struct {
+	at         time.Time
+	statements map[int64]readCostStatementTotal
+	evicted    int64
+}
+
+// readCostStatementTotal is one statement's calls and total_exec_time in milliseconds.
+type readCostStatementTotal struct {
+	calls int64
+	ms    float64
+}
+
+// readCostDatabaseTime is the database time of one interval per reading of the batch it is read
+// against: the statements that ran at least once per reading, and beside them those that ran
+// fewer times.
+type readCostDatabaseTime struct {
+	readings int
+	length   time.Duration
+	// ms and calls are the time and the calls per reading of the statements that ran at least
+	// once per reading.
+	ms, calls float64
+	// otherMS is the time per reading of the statements that ran fewer times, and others how many
+	// statements those are.
+	otherMS float64
+	others  int
+	evicted int64
+}
+
+// newReadCostStatements opens what database time is read with, for the run's database at
+// databaseURL: a database of its own beside it, dropped when the test ends, holding the
+// extension. Where pg_stat_statements cannot be read it says so in one line, naming why, and
+// answers nil, and the run goes on without database time.
+func newReadCostStatements(t *testing.T, check, databaseURL string) *readCostStatements {
+	t.Helper()
+	unmeasured := func(format string, args ...any) *readCostStatements {
+		t.Helper()
+		t.Logf("%s: database time was not measured: %s; it needs pg_stat_statements in the server's shared_preload_libraries and "+
+			"a role that may create the extension, and the run measures everything else and fails on none of it", check, fmt.Sprintf(format, args...))
+		return nil
+	}
+	run, err := url.Parse(databaseURL)
+	if err != nil {
+		return unmeasured("read the run's database URL: %v", err)
+	}
+	database := strings.TrimPrefix(run.Path, "/")
+	own := database + "_statements"
+	admin, statements := *run, *run
+	admin.Path, statements.Path = "/postgres", "/"+own
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, admin.String())
+	if err != nil {
+		return unmeasured("connect to the test server: %v", err)
+	}
+	_, err = conn.Exec(ctx, "create database "+own)
+	_ = conn.Close(ctx)
+	if err != nil {
+		return unmeasured("create %s, the database the snapshots are read from: %v", own, err)
+	}
+	t.Cleanup(func() { dropReadCostDatabase(t, admin.String(), own) })
+	s := &readCostStatements{check: check}
+	if s.conn, err = pgx.Connect(ctx, statements.String()); err != nil {
+		return unmeasured("connect to %s: %v", own, err)
+	}
+	t.Cleanup(func() { _ = s.conn.Close(context.Background()) })
+	if _, err := s.conn.Exec(ctx, `create extension if not exists pg_stat_statements`); err != nil {
+		return unmeasured("create extension pg_stat_statements in %s: %v", own, err)
+	}
+	var track string
+	if err := s.conn.QueryRow(ctx, `select (select oid from pg_database where datname = $1),
+		(select oid from pg_roles where rolname = current_user), coalesce(current_setting('pg_stat_statements.track', true), '')`,
+		database).Scan(&s.database, &s.role, &track); err != nil {
+		return unmeasured("read the oids of the run's database %s and of its role: %v", database, err)
+	}
+	if _, err := s.snapshot(ctx); err != nil {
+		return unmeasured("%v", err)
+	}
+	if track != "top" && track != "all" {
+		return unmeasured("pg_stat_statements.track is %q, so it records no statement", track)
+	}
+	t.Logf("%s: database time is read from pg_stat_statements (track=%s) for the top-level statements of the run's database %s "+
+		"(oid %d) and its role (oid %d), over a connection to %s", check, track, database, s.database, s.role, own)
+	return s
+}
+
+// snapshot reads pg_stat_statements for the run's database and role.
+func (s *readCostStatements) snapshot(ctx context.Context) (readCostSnapshot, error) {
+	snapshot := readCostSnapshot{at: time.Now(), statements: map[int64]readCostStatementTotal{}}
+	if err := s.conn.QueryRow(ctx, `select dealloc from pg_stat_statements_info`).Scan(&snapshot.evicted); err != nil {
+		return snapshot, fmt.Errorf("read pg_stat_statements_info: %w", err)
+	}
+	rows, err := s.conn.Query(ctx, `select queryid, calls, total_exec_time from pg_stat_statements(false)
+		where dbid = $1 and userid = $2 and toplevel`, s.database, s.role)
+	if err != nil {
+		return snapshot, fmt.Errorf("read pg_stat_statements: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var query int64
+		var total readCostStatementTotal
+		if err := rows.Scan(&query, &total.calls, &total.ms); err != nil {
+			return snapshot, fmt.Errorf("read pg_stat_statements: %w", err)
+		}
+		snapshot.statements[query] = total
+	}
+	if err := rows.Err(); err != nil {
+		return snapshot, fmt.Errorf("read pg_stat_statements: %w", err)
+	}
+	return snapshot, nil
+}
+
+// measure runs batch, which takes readings readings, between two snapshots, and then waits an idle
+// interval of the batch's length on the same server, with nothing reading, before a third. It
+// answers the database time of the batch and of the idle interval, each per reading of the batch.
+// Either is nil where s is nil or a snapshot failed, which it says, failing nothing.
+func (s *readCostStatements) measure(t *testing.T, readings int, batch func()) (database, idle *readCostDatabaseTime) {
+	t.Helper()
+	if s == nil {
+		batch()
+		return nil, nil
+	}
+	ctx := context.Background()
+	before, err := s.snapshot(ctx)
+	if err != nil {
+		t.Logf("%s: the database time of this batch was not measured: %v", s.check, err)
+		batch()
+		return nil, nil
+	}
+	batch()
+	after, err := s.snapshot(ctx)
+	if err != nil {
+		t.Logf("%s: the database time of this batch was not measured: %v", s.check, err)
+		return nil, nil
+	}
+	database = readCostDatabaseTimeOf(before, after, readings)
+	time.Sleep(database.length)
+	rested, err := s.snapshot(ctx)
+	if err != nil {
+		t.Logf("%s: the database time of the idle interval after this batch was not measured: %v", s.check, err)
+		return database, nil
+	}
+	return database, readCostDatabaseTimeOf(after, rested, readings)
+}
+
+// readCostDatabaseTimeOf is the database time between two snapshots per reading of a batch of
+// readings: the statements that ran at least readings times, and apart from them those that ran
+// fewer times. A statement with fewer calls than before was evicted and recorded again since, so
+// all it holds is the interval's.
+func readCostDatabaseTimeOf(before, after readCostSnapshot, readings int) *readCostDatabaseTime {
+	spent := &readCostDatabaseTime{readings: readings, length: after.at.Sub(before.at), evicted: after.evicted - before.evicted}
+	for query, now := range after.statements {
+		was := before.statements[query]
+		if now.calls < was.calls {
+			was = readCostStatementTotal{}
+		}
+		switch calls, ms := now.calls-was.calls, now.ms-was.ms; {
+		case calls >= int64(readings):
+			spent.ms += ms
+			spent.calls += float64(calls)
+		case calls > 0:
+			spent.otherMS += ms
+			spent.others++
+		}
+	}
+	spent.ms /= float64(readings)
+	spent.calls /= float64(readings)
+	spent.otherMS /= float64(readings)
+	return spent
+}
+
+// readCostDatabaseLine is the database time a read's line prints beside its percentiles, and
+// nothing where it was not measured.
+func readCostDatabaseLine(database, idle *readCostDatabaseTime) string {
+	if database == nil {
+		return ""
+	}
+	line := fmt.Sprintf("; database time %.2f ms per reading in %.1f statements, beside %.2f ms per reading in %d statements that ran "+
+		"fewer than %d times", database.ms, database.calls, database.otherMS, database.others, database.readings)
+	evicted := database.evicted
+	if idle != nil {
+		line += fmt.Sprintf(", and %.2f ms per reading over an idle %s after the batch, %.2f ms of it in statements that ran %d times or more",
+			idle.ms+idle.otherMS, idle.length.Round(time.Millisecond), idle.ms, idle.readings)
+		evicted += idle.evicted
+	}
+	if evicted > 0 {
+		line += fmt.Sprintf("; pg_stat_statements evicted %d entries meanwhile, and the time they held is not counted", evicted)
+	}
+	return line
+}
+
+// readCell is a table's cell for the read's database time per reading, "-" where it was not
+// measured.
+func (spent *readCostDatabaseTime) readCell() string {
+	if spent == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", spent.ms)
+}
+
+// idleCell is a table's cell for an idle interval's whole database time per reading, "-" where it
+// was not measured.
+func (spent *readCostDatabaseTime) idleCell() string {
+	if spent == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", spent.ms+spent.otherMS)
+}
+
+// readCostDatabaseRatio is the ratio of now's database time per reading to old's, "-" where
+// either was not measured.
+func readCostDatabaseRatio(old, now *readCostDatabaseTime) string {
+	if old == nil || now == nil || old.ms == 0 {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", now.ms/old.ms)
+}

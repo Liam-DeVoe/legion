@@ -85,9 +85,9 @@ const (
 	readCostUnrelatedDocument = 10 * readCostOwnHistory / readCostUnrelatedBlocks
 )
 
-// The sampling, as inbox_dismissed_scale_test.go takes it and widened to p99: one warm-up reading
-// that is not counted, then readCostRuns readings of each read on each side. p99 by nearest rank
-// is the ceil(0.99 x n)th reading, so at 200 it is the 198th rather than the slowest.
+// The sampling, as inbox_dismissed_scale_test.go takes it and widened to p90 and p99: one warm-up
+// reading that is not counted, then readCostRuns readings of each read on each side. p99 by
+// nearest rank is the ceil(0.99 x n)th reading, so at 200 it is the 198th rather than the slowest.
 const readCostRuns = 200
 
 // The waits. A first boot migrates a whole schema and this head's boot migrates the corpus, so a
@@ -186,7 +186,8 @@ func readCostClient() *http.Client {
 // startReadCostServer starts binary, a build stamped with commit, over databaseURL on a loopback
 // port the test holds until the process serves on it, and waits until it serves. It inherits
 // nothing from the test's environment: a home of its own, the person named by a trusted header,
-// the shared agent bearer, no NATS, and listener as its Envoy listener.
+// the shared agent bearer, no NATS, listener as its Envoy listener, and the settings that stop the
+// background work a setting stops (readCostStatements).
 func startReadCostServer(t *testing.T, client *http.Client, name, binary, commit, databaseURL, listener string) *readCostServer {
 	t.Helper()
 	home := t.TempDir()
@@ -206,6 +207,11 @@ func startReadCostServer(t *testing.T, client *http.Client, name, binary, commit
 		"DISPATCH_SIGNING_KEY":             readCostSigningKey,
 		"DISPATCH_TEST_HOOKS":              "1",
 		"ENVOY_URL":                        listener,
+		// A build that lacks one of these settings ignores it: the release before BASELINE_SHA names
+		// has no keyword fill, and so no DISPATCH_SEARCH_FILL.
+		"DISPATCH_SEARCH_FILL":                     "off",
+		"DISPATCH_TEST_EMBEDDER_OFF":               "1",
+		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": "24h",
 	}
 	cmd := exec.Command(binary)
 	cmd.Dir = home
@@ -1070,45 +1076,57 @@ func readCostReads(corpus *readCostCorpus) []readCostRead {
 	}
 }
 
-// readCostReading is one read's readings on one side: the three percentiles and every reading, so
-// a number in the table can be read against the spread it came from.
+// readCostReading is one read's readings on one side: the four percentiles and every reading, so
+// a number in the table can be read against the spread it came from, and the database time of
+// the readings and of the idle interval after them (readCostStatements), nil where it was not
+// measured.
 type readCostReading struct {
-	p50, p95, p99 time.Duration
-	runs          []time.Duration
+	p50, p90, p95, p99 time.Duration
+	runs               []time.Duration
+	database, idle     *readCostDatabaseTime
 }
 
 // measureReadCost takes one warm-up reading that is not counted - the first run of a statement on
 // a connection pays for the pages every run after it finds cached - and then readCostRuns readings,
 // with the percentiles inbox_dismissed_scale_test.go takes (percentileOfDismissedScale, a nearest
-// rank, so every number printed is a reading that happened), widened to p99.
-func measureReadCost(t *testing.T, s *readCostServer, read string, take func(*readCostServer) (time.Duration, error)) readCostReading {
+// rank, so every number printed is a reading that happened), widened to p90 and p99, and the
+// database time of those readings (readCostStatements.measure). It prints them on one line for
+// check, naming the read and what it is read on.
+func measureReadCost(t *testing.T, check string, statements *readCostStatements, s *readCostServer, read, on string,
+	take func(*readCostServer) (time.Duration, error)) readCostReading {
 	t.Helper()
 	if _, err := take(s); err != nil {
-		t.Fatalf("c-read-cost: the warm-up reading of %s on %s: %v", read, s.name, err)
+		t.Fatalf("%s: the warm-up reading of %s on %s: %v", check, read, on, err)
 	}
 	runs := make([]time.Duration, 0, readCostRuns)
-	for range readCostRuns {
-		took, err := take(s)
-		if err != nil {
-			t.Fatalf("c-read-cost: a reading of %s on %s: %v", read, s.name, err)
+	database, idle := statements.measure(t, readCostRuns, func() {
+		for range readCostRuns {
+			took, err := take(s)
+			if err != nil {
+				t.Fatalf("%s: a reading of %s on %s: %v", check, read, on, err)
+			}
+			runs = append(runs, took)
 		}
-		runs = append(runs, took)
-	}
+	})
 	sorted := slices.Clone(runs)
 	slices.Sort(sorted)
 	reading := readCostReading{
-		p50:  percentileOfDismissedScale(sorted, 0.50),
-		p95:  percentileOfDismissedScale(sorted, 0.95),
-		p99:  percentileOfDismissedScale(sorted, 0.99),
-		runs: runs,
+		p50:      percentileOfDismissedScale(sorted, 0.50),
+		p90:      percentileOfDismissedScale(sorted, 0.90),
+		p95:      percentileOfDismissedScale(sorted, 0.95),
+		p99:      percentileOfDismissedScale(sorted, 0.99),
+		runs:     runs,
+		database: database,
+		idle:     idle,
 	}
-	t.Logf("c-read-cost: %s on %s: p50 %.1f ms, p95 %.1f ms, p99 %.1f ms over %d readings",
-		read, s.name, msOf(reading.p50), msOf(reading.p95), msOf(reading.p99), readCostRuns)
+	t.Logf("%s: %s on %s: p50 %.1f ms, p90 %.1f ms, p95 %.1f ms, p99 %.1f ms over %d readings%s", check, read, on,
+		msOf(reading.p50), msOf(reading.p90), msOf(reading.p95), msOf(reading.p99), readCostRuns, readCostDatabaseLine(database, idle))
 	return reading
 }
 
 // measureReadCostSide takes every read of reads that the side has (old, or new) on s, keyed by name.
-func measureReadCostSide(t *testing.T, s *readCostServer, reads []readCostRead, old bool, skip map[string]bool) map[string]readCostReading {
+func measureReadCostSide(t *testing.T, statements *readCostStatements, s *readCostServer, reads []readCostRead, old bool,
+	skip map[string]bool) map[string]readCostReading {
 	t.Helper()
 	readings := map[string]readCostReading{}
 	for _, read := range reads {
@@ -1119,7 +1137,7 @@ func measureReadCostSide(t *testing.T, s *readCostServer, reads []readCostRead, 
 		if take == nil || skip[read.name] {
 			continue
 		}
-		readings[read.name] = measureReadCost(t, s, read.name, take)
+		readings[read.name] = measureReadCost(t, "c-read-cost", statements, s, read.name, s.name, take)
 	}
 	return readings
 }
@@ -1189,7 +1207,8 @@ func readCostCorpusName() string {
 }
 
 // readCostChainBaseline is the chain read's recorded baseline: its readings, the commit they were
-// taken at, the corpus, the pod and the date.
+// taken at, the corpus, the pod and the date. A baseline recorded before the p90 was read holds
+// none, and reads 0.
 type readCostChainBaseline struct {
 	RecordedAt string      `json:"recorded_at"`
 	Commit     string      `json:"commit"`
@@ -1197,8 +1216,19 @@ type readCostChainBaseline struct {
 	Pod        readCostPod `json:"pod"`
 	Runs       int         `json:"runs"`
 	P50MS      float64     `json:"p50_ms"`
+	P90MS      float64     `json:"p90_ms"`
 	P95MS      float64     `json:"p95_ms"`
 	P99MS      float64     `json:"p99_ms"`
+}
+
+// cells is the baseline as the old side of the chain read's row: its percentiles, "-" for a p90 it
+// does not hold, and no database time, which no baseline records.
+func (baseline *readCostChainBaseline) cells() readCostCells {
+	p90 := "-"
+	if baseline.P90MS > 0 {
+		p90 = fmt.Sprintf("%.1f", baseline.P90MS)
+	}
+	return readCostCells{fmt.Sprintf("%.1f", baseline.P50MS), p90, fmt.Sprintf("%.1f", baseline.P95MS), fmt.Sprintf("%.1f", baseline.P99MS), "-", "-"}
 }
 
 // readCostChainBound reads the chain read's recorded baseline and answers it where it holds for
@@ -1211,7 +1241,7 @@ func readCostChainBound(t *testing.T, commit string, reading readCostReading) *r
 	t.Helper()
 	now := readCostChainBaseline{
 		RecordedAt: time.Now().UTC().Format(time.RFC3339), Commit: commit, Corpus: readCostCorpusName(), Pod: readCostPodNow(),
-		Runs: readCostRuns, P50MS: msOf(reading.p50), P95MS: msOf(reading.p95), P99MS: msOf(reading.p99),
+		Runs: readCostRuns, P50MS: msOf(reading.p50), P90MS: msOf(reading.p90), P95MS: msOf(reading.p95), P99MS: msOf(reading.p99),
 	}
 	var moved []string
 	recorded, err := os.ReadFile(readCostChainBaselinePath)
@@ -1230,8 +1260,9 @@ func readCostChainBound(t *testing.T, commit string, reading readCostReading) *r
 		}
 		moved = append(moved, now.Pod.moved(before.Pod)...)
 		if len(moved) == 0 {
-			t.Logf("c-read-cost: the chain read's baseline was recorded at %s on %s (%s) at %s: p50 %.1f ms, p95 %.1f ms, p99 %.1f ms",
-				before.RecordedAt, before.Pod.Host, readCostPodName(before.Pod), before.Commit, before.P50MS, before.P95MS, before.P99MS)
+			cells := before.cells()
+			t.Logf("c-read-cost: the chain read's baseline was recorded at %s on %s (%s) at %s: p50, p90, p95 and p99 %s ms",
+				before.RecordedAt, before.Pod.Host, readCostPodName(before.Pod), before.Commit, strings.Join(cells[:4], ", "))
 			return &before
 		}
 	}
@@ -1276,9 +1307,12 @@ func readCostPodName(pod readCostPod) string {
 // test's operations: the inbox to 2.00 against the reads it replaces, and each other read to twice
 // its baseline's p50. The chain read replaces nothing, so its first run records its own baseline
 // with the pod and the date and gates on nothing; every later run is held to twice that recorded
-// p50. Every p99 is printed and bound at nothing, since the 198th of 200 readings on a Postgres
-// shared with every other suite moves further than a change does. The run then reads the event
-// horizon from the subscriber's side (TestNoEventOutrunsItsNode) and prints its own wall time.
+// p50. Every p90, p95 and p99 is printed and bound at nothing, since the 198th of 200 readings on
+// a Postgres shared with every other suite moves further than a change does. So is each read's
+// database time per reading on each side, and that of an idle interval after it
+// (readCostStatements), where the server's pg_stat_statements can be read; where it cannot, the
+// run says so in one line and fails on none of it. The run then reads the event horizon from the
+// subscriber's side (TestNoEventOutrunsItsNode) and prints its own wall time.
 //
 // It fails, never skips, where BASELINE_SHA is unset or names no 40-character commit, before it
 // builds or measures anything: a reading of the replaced reads needs the server of that commit.
@@ -1306,6 +1340,7 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	client := readCostClient()
 	listener := readCostListener(t)
 	conn := readCostConnect(t, databaseURL)
+	statements := newReadCostStatements(t, "c-read-cost", databaseURL)
 
 	// ───── first: the corpus and the old side, on the release before ─────
 	base := startReadCostServer(t, client, "the release before ("+baseCommit+")", baseBinary, baseCommit, databaseURL, listener)
@@ -1314,7 +1349,7 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 	readCostVacuum(t, conn, "old side")
 	requireReadCostOldShape(t, base, corpus)
 	reads := readCostReads(corpus)
-	old := measureReadCostSide(t, base, reads, true, nil)
+	old := measureReadCostSide(t, statements, base, reads, true, nil)
 	base.stop(t)
 
 	// ───── second: this head over the same database, booted twice ─────
@@ -1340,12 +1375,12 @@ func TestNoReadThisTreeMovesGetsSlower(t *testing.T) {
 
 	// ───── fourth: the new side ─────
 	missing := map[string]bool{"inbox": !served}
-	now := measureReadCostSide(t, head, reads, false, missing)
+	now := measureReadCostSide(t, statements, head, reads, false, missing)
 	chain := readCostChainBound(t, headCommit, now["chain"])
 	head.stop(t)
 
 	t.Logf("c-read-cost: old side %s, new side %s; %d readings of each read on each side", baseCommit, headCommit, readCostRuns)
-	t.Log("c-read-cost: read\told p50 ms\tnew p50 ms\told p95 ms\tnew p95 ms\told p99 ms\tnew p99 ms\tratio of p50s\tbound")
+	t.Log("c-read-cost: read\t" + strings.Join(readCostHeads("old", "new"), "\t") + "\tdb new/old\tratio of p50s\tbound")
 	for _, read := range reads {
 		t.Logf("c-read-cost: %s", readCostRow(read, old, now, chain, missing))
 	}
@@ -1412,28 +1447,73 @@ func readCostBaseCommit(t *testing.T) string {
 	return named
 }
 
-// readCostRow is one read's row of the table: its two p50s, p95s and p99s and the ratio of its
-// p50s, with the bound that ratio is held to.
+// readCostRow is one read's row of the table: its two p50s, p90s, p95s and p99s, its two database
+// times per reading and its two idle intervals', the ratio of its database times, and the ratio of
+// its p50s with the bound that ratio is held to.
 func readCostRow(read readCostRead, old, now map[string]readCostReading, chain *readCostChainBaseline, missing map[string]bool) string {
 	reading, measured := now[read.name]
+	before := old[read.name]
+	var cells []string
 	switch {
 	case missing[read.name] || !measured:
-		before := old[read.name]
-		return fmt.Sprintf("%s\t%.1f\tmissing\t%.1f\tmissing\t%.1f\tmissing\t-\t%.2fx on p50: this head does not serve %s",
-			read.name, msOf(before.p50), msOf(before.p95), msOf(before.p99), dismissedScaleRatioBound, read.newRoutes)
+		cells = append(readCostTableCells(before.cells(), readCostNoCells("missing")),
+			"-", "-", fmt.Sprintf("%.2fx on p50: this head does not serve %s", dismissedScaleRatioBound, read.newRoutes))
 	case read.old == nil && chain == nil:
-		return fmt.Sprintf("%s\t-\t%.1f\t-\t%.1f\t-\t%.1f\t-\tnone: this run records the read's own baseline",
-			read.name, msOf(reading.p50), msOf(reading.p95), msOf(reading.p99))
+		cells = append(readCostTableCells(readCostNoCells("-"), reading.cells()),
+			"-", "-", "none: this run records the read's own baseline")
 	case read.old == nil:
-		return fmt.Sprintf("%s\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%.2fx on p50 of the baseline recorded at %s",
-			read.name, chain.P50MS, msOf(reading.p50), chain.P95MS, msOf(reading.p95), chain.P99MS, msOf(reading.p99),
-			msOf(reading.p50)/chain.P50MS, dismissedScaleRatioBound, chain.RecordedAt)
+		cells = append(readCostTableCells(chain.cells(), reading.cells()), "-", fmt.Sprintf("%.2f", msOf(reading.p50)/chain.P50MS),
+			fmt.Sprintf("%.2fx on p50 of the baseline recorded at %s", dismissedScaleRatioBound, chain.RecordedAt))
 	default:
-		before := old[read.name]
-		return fmt.Sprintf("%s\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%.2fx on p50 of %s",
-			read.name, msOf(before.p50), msOf(reading.p50), msOf(before.p95), msOf(reading.p95), msOf(before.p99), msOf(reading.p99),
-			float64(reading.p50)/float64(before.p50), dismissedScaleRatioBound, read.oldRoutes)
+		cells = append(readCostTableCells(before.cells(), reading.cells()), readCostDatabaseRatio(before.database, reading.database),
+			fmt.Sprintf("%.2f", float64(reading.p50)/float64(before.p50)), fmt.Sprintf("%.2fx on p50 of %s", dismissedScaleRatioBound, read.oldRoutes))
 	}
+	return read.name + "\t" + strings.Join(cells, "\t")
+}
+
+// readCostColumns are the columns each side of a read has in a table: its percentiles, its
+// database time per reading, and the database time per reading of the idle interval after it.
+var readCostColumns = [...]string{"p50 ms", "p90 ms", "p95 ms", "p99 ms", "db ms/read", "idle db ms/read"}
+
+// readCostCells is one side's cells of a read's row, in readCostColumns' order.
+type readCostCells [len(readCostColumns)]string
+
+// cells is the reading as one side's cells: "-" for a database time that was not measured.
+func (reading readCostReading) cells() readCostCells {
+	return readCostCells{fmt.Sprintf("%.1f", msOf(reading.p50)), fmt.Sprintf("%.1f", msOf(reading.p90)), fmt.Sprintf("%.1f", msOf(reading.p95)),
+		fmt.Sprintf("%.1f", msOf(reading.p99)), reading.database.readCell(), reading.idle.idleCell()}
+}
+
+// readCostNoCells is a side that has no reading, every cell of it cell.
+func readCostNoCells(cell string) readCostCells {
+	var cells readCostCells
+	for column := range cells {
+		cells[column] = cell
+	}
+	return cells
+}
+
+// readCostHeads are the heads of the sides' columns, each column for every side in turn, as
+// readCostTableCells orders the cells.
+func readCostHeads(sides ...string) []string {
+	heads := make([]string, 0, len(readCostColumns)*len(sides))
+	for _, column := range readCostColumns {
+		for _, side := range sides {
+			heads = append(heads, side+" "+column)
+		}
+	}
+	return heads
+}
+
+// readCostTableCells are the sides' cells, each column for every side in turn.
+func readCostTableCells(sides ...readCostCells) []string {
+	cells := make([]string, 0, len(readCostColumns)*len(sides))
+	for column := range readCostColumns {
+		for _, side := range sides {
+			cells = append(cells, side[column])
+		}
+	}
+	return cells
 }
 
 // readCostMilliseconds is every reading in milliseconds to a tenth, in the order taken.

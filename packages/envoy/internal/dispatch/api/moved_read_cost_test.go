@@ -346,34 +346,12 @@ func holdMovedCostReads(t *testing.T, s *readCostServer, side string, reads []mo
 
 // measureMovedCostSide takes each read on s as c-read-cost takes a read (measureReadCost): one
 // warm-up reading that is not counted, then readCostRuns readings over HTTP through the one client,
-// with nearest-rank percentiles.
-func measureMovedCostSide(t *testing.T, s *readCostServer, side string, reads []movedCostRead) map[string]readCostReading {
+// with nearest-rank percentiles and the database time of those readings.
+func measureMovedCostSide(t *testing.T, statements *readCostStatements, s *readCostServer, side string, reads []movedCostRead) map[string]readCostReading {
 	t.Helper()
 	readings := map[string]readCostReading{}
 	for _, read := range reads {
-		take := readCostGets(read.path)
-		if _, err := take(s); err != nil {
-			t.Fatalf("c-moved-read-cost: the warm-up reading of %s on the %s: %v", read.name, side, err)
-		}
-		runs := make([]time.Duration, 0, readCostRuns)
-		for range readCostRuns {
-			took, err := take(s)
-			if err != nil {
-				t.Fatalf("c-moved-read-cost: a reading of %s on the %s: %v", read.name, side, err)
-			}
-			runs = append(runs, took)
-		}
-		sorted := slices.Clone(runs)
-		slices.Sort(sorted)
-		reading := readCostReading{
-			p50:  percentileOfDismissedScale(sorted, 0.50),
-			p95:  percentileOfDismissedScale(sorted, 0.95),
-			p99:  percentileOfDismissedScale(sorted, 0.99),
-			runs: runs,
-		}
-		t.Logf("c-moved-read-cost: %s (%s) on the %s: p50 %.1f ms, p95 %.1f ms, p99 %.1f ms over %d readings",
-			read.name, read.path, side, msOf(reading.p50), msOf(reading.p95), msOf(reading.p99), readCostRuns)
-		readings[read.name] = reading
+		readings[read.name] = measureReadCost(t, "c-moved-read-cost", statements, s, read.name+" ("+read.path+")", "the "+side, readCostGets(read.path))
 	}
 	return readings
 }
@@ -738,8 +716,11 @@ func movedCostParameters(statement movedCostStatement) string {
 // each of its statements through the views, taken through a proxy on a boot of its own, then
 // measures the third side. Each side answers each read alike before it is measured.
 //
-// Each read on the new side and on the third side is held to twice its old side's p50. Every p95
-// and p99 is printed and bound at nothing.
+// Each read on the new side and on the third side is held to twice its old side's p50. Every p90,
+// p95 and p99 is printed and bound at nothing, and so is each read's database time per reading on
+// each side, and that of an idle interval after it (readCostStatements), where the server's
+// pg_stat_statements can be read; where it cannot, the run says so in one line and fails on none
+// of it.
 //
 // It fails, never skips, where STORES_BASE_SHA is unset, names no 40-character commit, or names a
 // commit that lacks one of the three migrations, before it builds anything.
@@ -768,6 +749,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	client := readCostClient()
 	listener := readCostListener(t)
 	conn := readCostConnect(t, databaseURL)
+	statements := newReadCostStatements(t, "c-moved-read-cost", databaseURL)
 	reads := movedCostReads(corpus)
 	baseName := func(what string) string { return "the release before (" + baseCommit + ")" + what }
 
@@ -779,7 +761,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	base := startReadCostServer(t, client, baseName(""), baseBinary, baseCommit, databaseURL, listener)
 	readCostVacuum(t, conn, "old side")
 	counts := holdMovedCostReads(t, base, "old side", reads, nil)
-	old := measureMovedCostSide(t, base, "old side", reads)
+	old := measureMovedCostSide(t, statements, base, "old side", reads)
 	base.stop(t)
 
 	// ───── second: this head, which moves both stores at boot ─────
@@ -804,7 +786,7 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	}
 	readCostVacuum(t, conn, "new side")
 	holdMovedCostReads(t, head, "new side", reads, counts)
-	now := measureMovedCostSide(t, head, "new side", reads)
+	now := measureMovedCostSide(t, statements, head, "new side", reads)
 	head.stop(t)
 
 	// ───── third: the release before again, through the views; the plans first ─────
@@ -815,19 +797,20 @@ func TestNoMovedReadGetsSlower(t *testing.T) {
 	printMovedCostPlans(t, conn, proxy, reads)
 	rollback := startReadCostServer(t, client, baseName(" after the rollback"), baseBinary, baseCommit, databaseURL, listener)
 	holdMovedCostReads(t, rollback, "third side", reads, counts)
-	third := measureMovedCostSide(t, rollback, "third side", reads)
+	third := measureMovedCostSide(t, statements, rollback, "third side", reads)
 	rollback.stop(t)
 
 	t.Logf("c-moved-read-cost: old side and third side %s, new side %s; %d readings of each read on each side; corpus scale %v",
 		baseCommit, headCommit, readCostRuns, corpus.scale)
-	t.Log("c-moved-read-cost: read\troute\told p50 ms\tnew p50 ms\tthird p50 ms\told p95 ms\tnew p95 ms\tthird p95 ms\t" +
-		"old p99 ms\tnew p99 ms\tthird p99 ms\tnew/old p50\tthird/old p50\tbound")
+	t.Log("c-moved-read-cost: read\troute\t" + strings.Join(readCostHeads("old", "new", "third"), "\t") +
+		"\tnew/old db\tthird/old db\tnew/old p50\tthird/old p50\tbound")
 	for _, read := range reads {
 		before, after, rolled := old[read.name], now[read.name], third[read.name]
-		t.Logf("c-moved-read-cost: %s\t%s\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.2f\t%.2f\t%.2fx on the old side's p50",
-			read.name, read.path, msOf(before.p50), msOf(after.p50), msOf(rolled.p50), msOf(before.p95), msOf(after.p95), msOf(rolled.p95),
-			msOf(before.p99), msOf(after.p99), msOf(rolled.p99), float64(after.p50)/float64(before.p50), float64(rolled.p50)/float64(before.p50),
-			movedCostBound)
+		cells := append(readCostTableCells(before.cells(), after.cells(), rolled.cells()),
+			readCostDatabaseRatio(before.database, after.database), readCostDatabaseRatio(before.database, rolled.database),
+			fmt.Sprintf("%.2f", float64(after.p50)/float64(before.p50)), fmt.Sprintf("%.2f", float64(rolled.p50)/float64(before.p50)),
+			fmt.Sprintf("%.2fx on the old side's p50", movedCostBound))
+		t.Logf("c-moved-read-cost: %s\t%s\t%s", read.name, read.path, strings.Join(cells, "\t"))
 	}
 	sides := []struct {
 		name     string
