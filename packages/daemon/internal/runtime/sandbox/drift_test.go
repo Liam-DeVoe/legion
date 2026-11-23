@@ -189,14 +189,15 @@ func sandboxBlock(kind SandboxType, canaries ...string) func(*Options) {
 // value as the operator wrote it: the image, the kind's own reservation, the operator's volumes and
 // mounts, the disk, and, for a microVM pod alone, where it runs — the microVM RuntimeClass and the
 // microvm block's ComputeClass, StorageClass, keep_volume where it is on, and metadata endpoint,
-// which a block naming none leaves out; and, for an issue pod of a deployment that defines roles,
-// those roles by name (podShapeRecord.Roles). The controller's microVM pod records no StorageClass
-// and no keep_volume: its disk stays on runtime.kubernetes.storage_class (diskSpec), and it keeps
-// the volume its Sandbox owns whatever keep_volume says (keptVolume), so neither key is in its
-// shape. A gVisor pod records no sandbox at all, beside a microvm block or without one,
-// keep_volume on or off, so its shape is the one every release before the sandbox setting
-// recorded. It is pinned whole because it is what every later daemon compares a running pod
-// against: a change of spelling here reads as drift on every pod of the fleet at once.
+// which a block naming none leaves out. The recorded shape of an issue pod of a deployment that
+// defines roles also holds those roles by name (podShapeRecord.Roles). The controller's microVM
+// pod records no StorageClass and no keep_volume: its disk stays on
+// runtime.kubernetes.storage_class (diskSpec), and it keeps the volume its Sandbox owns whatever
+// keep_volume says (keptVolume), so neither key is in its shape. A gVisor pod records no sandbox
+// at all, beside a microvm block or without one, keep_volume on or off, so its shape is the one
+// every release before the sandbox setting recorded. It is pinned whole because it is what every
+// later daemon compares a running pod against: a change of spelling here reads as drift on every
+// pod of the fleet at once.
 func TestPodShapeRecordsTheConfigurationAPodIsBuiltFrom(t *testing.T) {
 	withoutMetadata := testMicroVM()
 	withoutMetadata.Metadata = nil

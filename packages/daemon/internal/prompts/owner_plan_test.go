@@ -334,7 +334,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
 		"A task with no `acceptance:owner` step has no `accepting`",
-		"`to` the phase of an earlier step of the task, and `reason`). `request_backward_move` to `step` works where one earlier step of the task runs as `step`; with two, name `return_to`.",
+		"`to` the phase of an earlier step of the task, and `reason`). `request_backward_move` to `step` works where one earlier step of the task runs as `step`. Where two do, name `return_to`.",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
 		"goes back to the first step of the type implementation before the tester, the implementer in the default steps, or to the earlier step its completion names",
 	}
