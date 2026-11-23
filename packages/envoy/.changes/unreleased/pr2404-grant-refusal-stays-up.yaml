@@ -22,8 +22,9 @@ body: |-
     refused by the NATS grant; retrying`, with the stream and the grant), while a NATS credential
     the server refuses still ends the start, as the listener's own setting that a restarted pod
     reads again. Until the spent-proof bucket
-    opens, a request that presents a broker access token is answered 503 `service starting` with
-    `Retry-After: 1`, so no token is taken without its spent-proof check. A nats-server release
+    opens, `/v1` stays closed, so a request that presents a broker access token is answered 503
+    `service starting` before its credential is read, and no token is taken without its
+    spent-proof check. A nats-server release
     below the listener's floor is logged at ERROR at each try (`nats-server release below the
     listener's floor; retrying`, with the server's release and the floor) and tried again with the
     same wait, and meanwhile the pod delivers nothing: no role message is forwarded, no frame is

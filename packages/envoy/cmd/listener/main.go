@@ -1331,8 +1331,8 @@ const spentProofBucketRefusedLine = "spent-proof bucket refused by the NATS gran
 // (natsgrant.Edge), finds the one a full listener of this build made. It follows the start rule
 // (cmd/listener/README.md, "Start"): the start waits here, so /healthz answers 503 "starting",
 // /livez 204 and /v1 stays unopened, and every broker-token presentation is answered 503 "service
-// starting" until the bucket is open (brokerTokens.verify), so no token is accepted without the
-// check that refuses a proof another replica already spent.
+// starting" by the closed /v1 gate before its credential is read (v1API), so no token is accepted
+// without the check that refuses a proof another replica already spent.
 //
 // An open the server cannot take in its cluster's present state is tried again after
 // waitOutClusterState, and one that fails for want of NATS (natsConnectionError) every startRetry
@@ -2032,9 +2032,9 @@ func main() {
 	// open, and never exits while NATS does not answer its open, answers it from the cluster's
 	// state or refuses it under the grant (openSpentProofBucket): /healthz answers 503 "starting"
 	// and /livez 204 meanwhile, /v1 stays unopened, and every broker-token presentation is answered
-	// 503 "service starting" (brokerTokens.verify), so no token is accepted without the check of
-	// its proof, and no spent proof is recorded anywhere this listener's other replicas cannot see
-	// it.
+	// 503 "service starting" by the closed /v1 gate before its credential is read (v1API), so no
+	// token is accepted without the check of its proof, and no spent proof is recorded anywhere
+	// this listener's other replicas cannot see it.
 	openSpentProofBucket(starting, client, logger, grantName(edge), brokerTokenAuth, cfg.NATSReplicas)
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
