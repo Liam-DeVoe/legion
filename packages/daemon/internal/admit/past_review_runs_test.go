@@ -28,6 +28,22 @@ func pastReviewRoot(t *testing.T, pool *pgxpool.Pool, key string, stands phase.P
 	seedLifecycle(t, pool, key)
 }
 
+// startAcceptance records the architect of key's tree as the agent of a start of key's acceptance
+// step, as the daemon's start of accepting writes it: the owner's sign_off and its move back out
+// of accepting are taken only from the claim that run names (workflow's stepCallerRefusal).
+func startAcceptance(t *testing.T, pool *pgxpool.Pool, key string) {
+	t.Helper()
+	at := stepPlaces[phase.Accepting]
+	agent := architectClaim(t, issue(t, pool, key).Tree)
+	inTx(t, pool, func(tx pgx.Tx) {
+		if _, err := record.NewStore().RaiseStepStarts(context.Background(), tx, key, at, func(int64) record.StepRecord {
+			return record.StepRecord{Task: at.Task, Step: at.Place, Kind: at.Kind, Agent: string(agent), StartedAt: new(fixedNow)}
+		}); err != nil {
+			t.Fatalf("record the start of %s's acceptance: %v", key, err)
+		}
+	})
+}
+
 // runStart finishes the oldest supervise start row of issue, as that row's lifecycle lane does
 // once it has delivered the task. A lane runs one row of an issue at a time, oldest first
 // (record.Store's outboxInOrder), so a reading of what the next start may do runs the start
@@ -124,6 +140,7 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	pastReviewRoot(t, pool, atWork, phase.Implementing, "in_progress", "D")
 	oweMemberStart(t, pool, atWork, atWork, phase.Implementing)
 
+	startAcceptance(t, pool, accepted)
 	by, generation, entry := rootArchitectsRead(t, pool, accepted)
 	applyFact(t, pool, admission, "sign-off", intake.SignOff{Issue: accepted, By: by, Generation: generation, Entry: entry})
 
@@ -164,6 +181,7 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	const sentBack = "LEGION-400"
 	pastReviewRoot(t, pool, sentBack, phase.Accepting, "needs_review", "E")
 
+	startAcceptance(t, pool, sentBack)
 	by, generation, entry = rootArchitectsRead(t, pool, sentBack)
 	applyFact(t, pool, admission, "sent-back", intake.BackwardMove{Issue: sentBack, Requester: claim.RoleArchitect,
 		To: phase.Implementing, Reason: "the change needs work the review found", By: by, Generation: generation, Entry: entry})
