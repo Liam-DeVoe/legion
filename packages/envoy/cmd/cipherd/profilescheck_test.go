@@ -553,19 +553,41 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 }
 
 // TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule: --private-upstream holds the
-// destination to the address rule the boot holds it to (config.PrivateUpstreamAddressRules, the
-// part of netaddr.DestinationRefusal that reads no setting). Each destination below that the boot
-// refuses whatever its cluster ranges - loopback, localhost with and without the root's dot, the
-// metadata servers, the IPv4 broadcast and unspecified addresses, 0.0.0.0/8 and the NAT64 form of
-// the metadata server - exits 1 with one line on stderr naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and
-// the rule, and no report. A public address, and a ClusterIP of a global Service range, are the
-// destination only inside a broker's BROKER_AIRLOCK_CLUSTER_RANGES, which the check reads nothing
-// of: each is valid, with one line that says the address was not judged. A private address, one
-// of 100.64.0.0/10, a unique-local one and a name are valid with no such line; a name is the
-// dial's to check, at the boot too.
+// destination to the address rule the boot holds it to (config.PrivateUpstreamAddressRules,
+// netaddr.DestinationRefusal), and --cluster-ranges, the value BROKER_AIRLOCK_CLUSTER_RANGES gives
+// the broker, makes it the boot's whole rule. Each destination below that the boot refuses whatever
+// its cluster ranges - loopback, localhost with and without the root's dot, the metadata servers,
+// the IPv4 broadcast and unspecified addresses, 0.0.0.0/8 and the NAT64 form of the metadata
+// server - exits 1 with one line on stderr naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and the rule, and
+// no report, without --cluster-ranges and with every ranges given: none, the Service range, every
+// address. A public address, and a ClusterIP of a global Service range, are the destination only
+// inside a broker's BROKER_AIRLOCK_CLUSTER_RANGES: without --cluster-ranges each is valid with one
+// line that says it was not judged against the cluster ranges; given ranges that do not hold it, it
+// exits 1 naming both settings, as the boot refuses it; given ranges that hold it, it is valid with
+// no such line. A private address, one of 100.64.0.0/10, a unique-local one and a name are valid
+// with no such line, with any ranges; a name is the dial's to check, at the boot too. A
+// --cluster-ranges value the setting's parser refuses, and one given without --private-upstream,
+// are usage errors.
 func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
 	path := profilesFile(t, `{"profiles": [`+resultsProfileOf("DISPATCH_RESULTS_TOKEN", `"`+resultsBoundHost+`"`, `["Authorization"]`, `[{"method": "POST", "pathPrefix": "/api/v1/projects/"}]`, "dpop")+`]}`)
-	const notJudged = "the address was not judged, since this check reads no cluster ranges"
+	const (
+		notJudged = "it was not judged against the cluster ranges (no --cluster-ranges)"
+		// serviceRange is GKE's default Service range, global unicast; everything holds every
+		// address, IPv4 and IPv6, in the setting's form with a space after the comma.
+		serviceRange = "34.118.224.0/20"
+		everything   = "0.0.0.0/0, ::/0"
+	)
+	// Each ranges a run can give: none (no flag), and the flag given empty, with the Service
+	// range, and with every address.
+	rangesRuns := []struct {
+		name string
+		args []string
+	}{
+		{"no --cluster-ranges", nil},
+		{"--cluster-ranges empty", []string{"--cluster-ranges", ""}},
+		{"--cluster-ranges " + serviceRange, []string{"--cluster-ranges", serviceRange}},
+		{"--cluster-ranges " + everything, []string{"--cluster-ranges", everything}},
+	}
 	for _, row := range []struct{ url, rule string }{
 		{"http://127.0.0.1:8766", "a loopback or link-local address"},
 		{"http://[::1]:8766", "a loopback or link-local address"},
@@ -578,38 +600,76 @@ func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
 		{"http://0.0.0.1:8766", "an address of 0.0.0.0/8"},
 		{"http://[64:ff9b::a9fe:a9fe]", "carries an IPv4 address"},
 	} {
-		t.Run("refused "+row.url, func(t *testing.T) {
-			code, stdout, stderr := runCheck(t, path, "--private-upstream", resultsBoundHost+"="+row.url)
-			if code != 1 || stdout != "" {
-				t.Fatalf("exit %d with stdout %q; want exit 1 and no report, as the boot refuses %s at start", code, stdout, row.url)
-			}
-			if !strings.Contains(stderr, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") || !strings.Contains(stderr, row.rule) || strings.Count(strings.TrimRight(stderr, "\n"), "\n") != 0 {
-				t.Fatalf("the refusal reads %q; want one line naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and %q", stderr, row.rule)
-			}
-		})
+		for _, ranges := range rangesRuns {
+			t.Run("refused "+row.url+", "+ranges.name, func(t *testing.T) {
+				code, stdout, stderr := runCheck(t, append([]string{path, "--private-upstream", resultsBoundHost + "=" + row.url}, ranges.args...)...)
+				if code != 1 || stdout != "" {
+					t.Fatalf("exit %d with stdout %q; want exit 1 and no report, as the boot refuses %s at start", code, stdout, row.url)
+				}
+				if !strings.Contains(stderr, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") || !strings.Contains(stderr, row.rule) || strings.Count(strings.TrimRight(stderr, "\n"), "\n") != 0 {
+					t.Fatalf("the refusal reads %q; want one line naming BROKER_AIRLOCK_PRIVATE_UPSTREAM and %q", stderr, row.rule)
+				}
+			})
+		}
 	}
 	for _, row := range []struct {
-		url    string
-		judged bool
+		url string
+		// outside is an address outside the private ranges, which only the cluster ranges admit;
+		// inServiceRange says whether serviceRange holds it.
+		outside, inServiceRange bool
 	}{
-		{"http://8.8.8.8:8766", false},
-		{"http://203.0.113.5:8766", false},
-		{"http://34.118.224.10:8766", false},
-		{"http://10.0.0.5:8766", true},
-		{"http://100.64.1.1:8766", true},
-		{"http://[fd12:3456::5]:8766", true},
-		{"http://dispatch.dispatch.svc.cluster.local:8766", true},
+		{"http://8.8.8.8:8766", true, false},
+		{"http://203.0.113.5:8766", true, false},
+		{"http://[2001:4860:4860::8888]:8766", true, false},
+		{"http://34.118.224.10:8766", true, true},
+		{"http://10.0.0.5:8766", false, false},
+		{"http://100.64.1.1:8766", false, false},
+		{"http://[fd12:3456::5]:8766", false, false},
+		{"http://dispatch.dispatch.svc.cluster.local:8766", false, false},
 	} {
-		t.Run("valid "+row.url, func(t *testing.T) {
-			code, stdout, stderr := runCheck(t, path, "--private-upstream", resultsBoundHost+"="+row.url)
-			if code != 0 {
-				t.Fatalf("exit %d (%q); want 0", code, stderr)
+		for _, ranges := range rangesRuns {
+			held := ranges.args == nil || !row.outside || ranges.args[1] == everything || ranges.args[1] == serviceRange && row.inServiceRange
+			t.Run(row.url+", "+ranges.name, func(t *testing.T) {
+				code, stdout, stderr := runCheck(t, append([]string{path, "--private-upstream", resultsBoundHost + "=" + row.url}, ranges.args...)...)
+				if !held {
+					if code != 1 || stdout != "" || !strings.Contains(stderr, "BROKER_AIRLOCK_PRIVATE_UPSTREAM") || !strings.Contains(stderr, "outside the private ranges and BROKER_AIRLOCK_CLUSTER_RANGES") {
+						t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 and one line naming both settings, as a boot of these ranges refuses it", code, stdout, stderr)
+					}
+					return
+				}
+				if code != 0 {
+					t.Fatalf("exit %d (%q); want 0", code, stderr)
+				}
+				switch said := strings.Count(stdout, notJudged+"\n"); {
+				case (ranges.args != nil || !row.outside) && said != 0:
+					t.Fatalf("the report says the address was not judged against the ranges: %q", stdout)
+				case ranges.args == nil && row.outside && said != 1:
+					t.Fatalf("the report does not say once, on a line of its own, that the address was not judged against the ranges: %q", stdout)
+				}
+			})
+		}
+	}
+	for _, run := range []struct {
+		name  string
+		args  []string
+		wants []string
+	}{
+		{"--cluster-ranges without --private-upstream", []string{"--cluster-ranges", serviceRange}, []string{"--cluster-ranges judges the address of the destination --private-upstream gives"}},
+		{"--cluster-ranges not a prefix", []string{"--private-upstream", resultsBoundHost + "=http://10.0.0.5:8766", "--cluster-ranges", serviceRange + ", not-a-prefix"}, []string{"--cluster-ranges: BROKER_AIRLOCK_CLUSTER_RANGES: element 2 is not a CIDR prefix"}},
+		{"--cluster-ranges an IPv4-mapped prefix", []string{"--private-upstream", resultsBoundHost + "=http://10.0.0.5:8766", "--cluster-ranges", "::ffff:34.118.224.0/116"}, []string{"element 1 is an IPv4-mapped IPv6 prefix"}},
+	} {
+		t.Run(run.name, func(t *testing.T) {
+			code, stdout, stderr := runCheck(t, append([]string{path}, run.args...)...)
+			if code != 2 || stdout != "" {
+				t.Fatalf("exit %d with stdout %q; want exit 2 and no report", code, stdout)
 			}
-			switch said := strings.Count(stdout, notJudged+"\n"); {
-			case row.judged && said != 0:
-				t.Fatalf("the report says the address was not judged: %q", stdout)
-			case !row.judged && said != 1:
-				t.Fatalf("the report does not say once, on a line of its own, that the address was not judged: %q", stdout)
+			for _, want := range append(run.wants, profilesCheckUsage) {
+				if !strings.Contains(stderr, want) {
+					t.Fatalf("the usage error does not say %q: %q", want, stderr)
+				}
+			}
+			if strings.Contains(stderr, "not-a-prefix") {
+				t.Fatalf("the usage error quotes the element: %q", stderr)
 			}
 		})
 	}

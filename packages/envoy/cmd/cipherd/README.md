@@ -41,7 +41,7 @@ operate page's "A migration recorded under another file".
 `envoy-broker end-sessions <login>` ends every browser session that login holds on the approval
 page and prints how many it ended;
 it reads the same configuration, binds no listener and applies no migration.
-`envoy-broker profiles check <file> [--against <old file>] [--private-upstream <host>=<url>]`
+`envoy-broker profiles check <file> [--against <old file>] [--private-upstream <host>=<url> [--cluster-ranges <CIDR prefixes>]]`
 reads a profiles file with the broker's own code and exits non-zero, naming the profile and the
 field or the parse position, when the broker would not serve that file, or when its start check of
 the results profile `DISPATCH_RESULTS_TOKEN` refuses it;
@@ -49,9 +49,14 @@ the results profile `DISPATCH_RESULTS_TOKEN` refuses it;
 that profile to the destination's host as the start does, and the destination's address to the
 start's rule: an address no broker takes as the destination (loopback, link-local, a metadata
 server, an IPv6 form that carries an IPv4 address and the rest of `netaddr.DestinationNever`) and
-`localhost` exit 1, and an address outside the private ranges, which only a broker's
-`BROKER_AIRLOCK_CLUSTER_RANGES` admit, prints one line saying it was not judged;
-without it a file that holds the profile prints one line saying that tie was not checked;
+`localhost` exit 1;
+`--cluster-ranges` takes the value `BROKER_AIRLOCK_CLUSTER_RANGES` gives the broker and makes that
+rule the start's whole one, so an address outside the private ranges and outside every range given
+exits 1 and one inside a range given passes; without it such an address, which only a broker's
+`BROKER_AIRLOCK_CLUSTER_RANGES` admit, prints one line saying it was not judged against the
+cluster ranges;
+without `--private-upstream` a file that holds the profile prints one line saying that tie was not
+checked;
 on a file it would serve it prints every field of each profile the file adds and removes against
 the file `--against` names, and each field a profile both files hold changes: its source, tier,
 requesters and `maxGrant`, its GitHub accounts, repositories, permissions and value, its Google

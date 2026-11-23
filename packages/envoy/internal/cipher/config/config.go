@@ -1936,13 +1936,14 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, map[netip.Add
 	return hosts, ports, nil
 }
 
-// parseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
+// ParseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
 // order, each as its network; spaces around a comma are allowed, and a blank value is none. It
 // refuses, naming the element's position and never the element, which could be anything an
 // operator pasted: an empty element, one netip.ParsePrefix does not read, and an IPv4-mapped IPv6
 // prefix, which no address the proxy checks is ever inside, since the proxy reads every address as
-// the IPv4 address it holds.
-func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
+// the IPv4 address it holds. Load reads the setting with it, and `profiles check` its
+// --cluster-ranges argument, so both read one form.
+func ParseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 	const setting = "BROKER_AIRLOCK_CLUSTER_RANGES"
 	if strings.TrimSpace(value) == "" {
 		return nil, nil
@@ -2148,29 +2149,34 @@ func privateUpstreamDialable(upstream PrivateUpstream, dialAllow []string, clust
 }
 
 // PrivateUpstreamAddressRules is the start's check of the private destination's address
-// (privateUpstreamDialable) as `profiles check --private-upstream` makes it, given the destination
-// and no other setting: the same rule, netaddr.DestinationRefusal, of which it reads the part
-// every broker holds whatever its cluster ranges. It refuses, in the start's words and naming the
-// setting, a URL whose host is localhost or a name under .localhost, and one whose host is an
-// address netaddr.DestinationNever names. An address outside the ranges every broker takes
-// (netaddr.DestinationPrivate) is the destination's only on a broker whose
-// BROKER_AIRLOCK_CLUSTER_RANGES hold it, a setting this reads nothing of: it answers unjudged, a
-// sentence that says the address was not judged and why, and no error. A host that is a name is
-// the dial's to check at each dial, as at the start, and answers nothing. The start's one
-// exception, BROKER_AIRLOCK_TEST_DIAL_ALLOW, is the local stack's and a production start refuses
-// it, so it is no exception here.
-func PrivateUpstreamAddressRules(upstream PrivateUpstream) (unjudged string, err error) {
+// (privateUpstreamDialable) as `profiles check --private-upstream` makes it: the same rule,
+// netaddr.DestinationRefusal. Given the broker's cluster ranges (rangesGiven, clusterRanges as
+// ParseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES, none for a blank value), it is the
+// start's whole check with those ranges, its refusals in the start's words, and it answers no
+// unjudged address. Without them it reads the part every broker holds whatever its ranges: it
+// refuses, in the start's words and naming the setting, a URL whose host is localhost or a name
+// under .localhost, and one whose host is an address netaddr.DestinationNever names; an address
+// outside the ranges every broker takes (netaddr.DestinationPrivate) is the destination's only on a
+// broker whose BROKER_AIRLOCK_CLUSTER_RANGES hold it, so it answers that address as unjudged, and
+// no error, for the caller to say it did not judge the ranges. A host that is a name is the dial's
+// to check at each dial, as at the start, and answers nothing. The start's one exception,
+// BROKER_AIRLOCK_TEST_DIAL_ALLOW, is the local stack's and a production start refuses it, so it is
+// no exception here.
+func PrivateUpstreamAddressRules(upstream PrivateUpstream, clusterRanges []netip.Prefix, rangesGiven bool) (unjudged netip.Addr, err error) {
+	if rangesGiven {
+		return netip.Addr{}, privateUpstreamDialable(upstream, nil, clusterRanges)
+	}
 	addr, err := privateUpstreamAddress(upstream)
 	if err != nil || !addr.IsValid() {
-		return "", err
+		return netip.Addr{}, err
 	}
 	if why := netaddr.DestinationNever(addr); why != "" {
-		return "", fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, addr, why)
+		return netip.Addr{}, fmt.Errorf("%s: the URL after its = names %s, %s", privateUpstreamSetting, addr, why)
 	}
 	if !netaddr.DestinationPrivate(addr) {
-		return fmt.Sprintf("%s names %s, an address outside the private ranges, which a broker takes as the destination only inside its BROKER_AIRLOCK_CLUSTER_RANGES: the address was not judged, since this check reads no cluster ranges", privateUpstreamSetting, addr), nil
+		return addr, nil
 	}
-	return "", nil
+	return netip.Addr{}, nil
 }
 
 // privateUpstreamAddress is the part of the start's check of the destination's host that reads no
@@ -2619,7 +2625,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// The broker cluster's own ranges, read whatever the profiles file says: a list the broker
 	// could not act on is a mistake in the deployment whether or not its airlock is on today.
-	if cfg.AirlockClusterRanges, err = parseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
+	if cfg.AirlockClusterRanges, err = ParseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
 		return Config{}, err
 	}
 	// The private destination, read and held to its form here; the one profile whose proxy block
