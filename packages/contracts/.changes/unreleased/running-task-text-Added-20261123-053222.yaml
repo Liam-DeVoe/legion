@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  The daemon API schemas describe contract 233: each task of `register_plan`'s answer that runs
+  carries `running`, its `kind`, `place` and `role`.
+time: 2026-11-23T05:32:22Z
+custom:
+    Issue: running-task-text

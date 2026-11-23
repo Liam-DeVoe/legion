@@ -730,7 +730,7 @@ test("an issue runs the default steps unless its architect registers a plan befo
     ...lacks("legion-architect/SKILL.md", [
       /references\/plan\.md`[^.;]*before `register_gate`[^.;]*before `release_children`/,
       /issue with none runs the default steps/,
-      /stop a task[^.;]*references\/plan-changes\.md`/,
+      /stop a task[^.;]*decide something for an agent[^.;]*references\/plan-changes\.md`/,
     ]),
     ...lacks("legion-architect/references/plan.md", [
       /\*\*A root:\*\* before `register_gate`/,
@@ -738,6 +738,27 @@ test("an issue runs the default steps unless its architect registers a plan befo
     ]),
     ...lacks("legion-worker/SKILL.md", [/default task[^.;]*tester[^.;]*reviewer[^.;]*acceptance/]),
   ]).toEqual([]);
+});
+
+// A decision of the owner for an agent of a task goes into the task's text, in a later version of
+// the plan, which every later start of the task holds; the agent at work reads no new start, so
+// the owner also messages the agent of the step register_plan's answer names. An issue that
+// started before Legion took plans has no task text, so there the decision goes in a comment and a
+// message. The rule holds over any place a general skill offers, and the issue and its plan are
+// the one record. A later version that changes only a running task's text is taken.
+test("a decision for an agent goes into its task's text, and a message reaches the agent that runs", () => {
+  expect(
+    lacks("legion-architect/references/plan-changes.md", [
+      /changes only the text of a running task is taken[^.;]*goes on at its step/,
+      /decision for an agent of a task into the task's text[^.;]*later version of the plan/,
+      /Every later start of the task holds that text[^.;]*new session/,
+      /agent at work now reads no new start/,
+      /answer of `register_plan` names the step[^.;]*`running`[^.;]*send that step's agent[^.;]*by message/,
+      /started its work before Legion took plans[^.;]*comment on the issue[^.;]*by message/,
+      /hold also where a general skill offers another place/,
+      /issue and its plan are the record of the work to be done/,
+    ])
+  ).toEqual([]);
 });
 
 // The admission table is read raw, since each of its rows is a line, and it lists the contract's

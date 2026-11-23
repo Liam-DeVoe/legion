@@ -251,9 +251,12 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
   "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
   "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
-  "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-  "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-  "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
+  "work starts: a root's before its design gate opens, a child's before release_children releases it. A later version that changes only " +
+  "the text of a running task is taken: the task goes on at its step, and every later start of it reads the new text. The answer is the " +
+  "plan Legion took, each task with its steps, and a task that runs with `running`: its step and the role whose agent works it now, " +
+  "which reads no new start, so send that agent a message for a decision that is for it now. Legion records nothing when it refuses a " +
+  "plan it does not carry out, with one reason for each cause (PLAN_REFUSED, which also refuses a version that removes a running task " +
+  "or changes more of it than its text: stop it with stop_task first, and a plan of an issue " +
   "that started its work before Legion took plans), a version Dispatch does " +
   "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
   "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
@@ -1106,12 +1109,24 @@ test("register_gate takes the document reference the Dispatch tools take, and re
 });
 
 // The owner's plan (contract 219): register_plan names its document as register_gate does, for any
-// issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
-// comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its
-// code. stop_task names the task to stop by its block's id.
+// issue of the architect's tree, and answers the plan Legion took, a running task with the act it
+// runs (contract 233); each refusal of the call itself comes before any lookup, grant or request,
+// and the daemon's refusal reaches the agent with its code. stop_task names the task to stop by
+// its block's id.
 test("register_plan takes the document reference the Dispatch tools take and answers the plan Legion took", async () => {
   const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
-  const taken = { plan: { version: 3, tasks: [{ id: "a", steps: ["implementer", "reviewer"] }] } };
+  const taken = {
+    plan: {
+      version: 3,
+      tasks: [
+        {
+          id: "a",
+          steps: ["implementer", "reviewer"],
+          running: { kind: "step", place: 1, role: "implementer" },
+        },
+      ],
+    },
+  };
   const resolved: Array<readonly [string, string]> = [];
   const { calls, daemon } = recordingDaemon({ answers: { planRegister: taken } });
   const run = (parameters: Record<string, unknown>, sessionIssue = "LEGION-208") =>

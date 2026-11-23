@@ -41,7 +41,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 
 5. Before you write or give an issue's plan, read `skill://legion-architect/references/plan.md`:
    a root's plan comes before `register_gate`, a child's before `release_children`, and an issue with none runs the default steps.
-   Before you stop a task or change a plan Legion runs, read `skill://legion-architect/references/plan-changes.md`.
+   Before you stop a task, change a plan Legion runs or decide something for an agent, read `skill://legion-architect/references/plan-changes.md`.
 
 6. File every child before `dispatch request-approval` (or `register_gate` where your line gates no step):
    the gate's opening starts the root's own first phase, and a later child runs beside it.

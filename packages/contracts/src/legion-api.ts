@@ -1864,18 +1864,33 @@ const legionAnsweredPause = z.object({
 /** `api.PlanRegisterResponse`, the plan register_plan took (contract 219): the version given and
  * each of its tasks, its id and the steps its block names as the plan writes them (`role` or
  * `role:key`). A task whose block names none runs the project's default steps, which the workflow
- * reads when the task's work starts, so it is answered with no step: an empty list, never null. A
- * plan the daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds every reason
- * in order; the body's `reasons` lists them by task, which `LegionErrorResponse` strips. The
- * reader takes every field as optional, since no plugin code reads one: the `legion` tool hands
- * the answer to its agent whole. */
+ * reads when the task's work starts, so it is answered with no step: an empty list, never null.
+ * From contract 233 a task that runs also carries `running` (`api.RunningStep`): the act it stands
+ * at once the version is taken, its `kind` (`step`, `retro` or `merge`), its `place` (from 1 for a
+ * step, 0 for the retro and the merge) and the `role` whose agent works it. A later version can
+ * change only the text of a running task, and that agent reads no new start of it, so it is the
+ * agent the owner sends a message to for a decision about the act that runs now. A plan the
+ * daemon does not take is answered `409 PLAN_REFUSED`, whose `error` holds every reason in order;
+ * the body's `reasons` lists them by task, which `LegionErrorResponse` strips. The reader takes
+ * every field as optional, since no plugin code reads one: the `legion` tool hands the answer to
+ * its agent whole, so a field this schema leaves out never reaches the agent. */
 export const LegionPlanRegisterResponse = z.object({
   plan: z
     .object({
       version: z.number().int().positive().optional(),
       tasks: z
         .array(
-          z.object({ id: nonEmptyString.optional(), steps: z.array(nonEmptyString).optional() })
+          z.object({
+            id: nonEmptyString.optional(),
+            steps: z.array(nonEmptyString).optional(),
+            running: z
+              .object({
+                kind: nonEmptyString.optional(),
+                place: z.number().int().nonnegative().optional(),
+                role: nonEmptyString.optional(),
+              })
+              .optional(),
+          })
         )
         .optional(),
     })

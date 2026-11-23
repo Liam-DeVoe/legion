@@ -16,9 +16,10 @@ import (
 // notice tells of (a failed step's, and another architect's stop_task, whose notice names that
 // architect) and the stop it is not sent for (its own), when a plan must be given and how a plan
 // replaces the default steps once the work started, and the answers a later version gets from the
-// workflow (workflow.planGiven): the running task's block, its text included, is refused and the
-// unchanged block taken, each refusal names its cause and changes nothing so the same version can
-// be given again, and an issue that started its work before Legion took plans takes none. A new
+// workflow (workflow.planGiven): of the running task the text alone may change, which Legion takes
+// while the task goes on, any other change of it is refused and the unchanged block taken, each
+// refusal names its cause and changes nothing so the same version can be given again, and an
+// issue that started its work before Legion took plans takes none. A new
 // version of `plan.md` names the token of the text it replaces, since Dispatch refuses a replacing
 // upload that names none (envoy's PRECONDITION_REQUIRED), and a child out of the workflow takes a
 // new plan only after its rerun, since a version for its done or left task is refused TASK_DONE
@@ -85,11 +86,15 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				{"register_plan", "release_children"},
 				// An issue already at work runs the task default: stop it, then give the plan.
 				{"stop_task", "default", "register_plan"},
-				// A later version changes only a task that waits or is stopped, refuses a change
-				// of the running task, and takes its block unchanged.
-				{"later version", "waits", "stopped"},
-				{"running task", "`PLAN_REFUSED`", "task <id> is running"},
+				// A later version changes a task that waits or is stopped, and of the running task
+				// its text alone, which Legion takes while the task goes on and every later start
+				// reads; it refuses any other change of the running task, and takes its block
+				// unchanged. Its answer names the running step (`running`).
+				{"later version", "waits", "stopped", "running task", "text alone"},
+				{"only the running task's text", "goes on at its step", "later start", "new text", "sent nothing"},
+				{"removes the running task", "`PLAN_REFUSED`", "task <id> is running, so a later version can change only its text."},
 				{"running task's block", "goes on"},
+				{"answer", "running task", "role whose agent works it", "`running`"},
 				// A refusal changes nothing, so the same version is given again, and an issue
 				// that started before plans takes none.
 				{"changes nothing", "given again"},
@@ -107,6 +112,43 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// A child out of the workflow takes a new plan after its rerun: stop, then give it.
 				{"child out of the workflow", "only after `rerun_child`", "`TASK_DONE`"},
 				{"after the rerun", "`stop_task`", "`register_plan`", "first step"},
+			} {
+				if !clauseHolds(composed, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
+				}
+			}
+		})
+	}
+}
+
+// A decision of the owner for an agent of a task goes into the task's text, in a later version of
+// the plan, which every later start of the task holds. The agent at work reads no new start, so the
+// owner also messages the agent of the step register_plan's answer names. An issue that started
+// before Legion took plans has no task text: there the decision goes in a comment on the issue and
+// a message. The rule holds over any other place a general skill offers, and the issue and its
+// plan are the one record of the work to be done. Each rule is held by the terms of the clause
+// that states it, in their order, in both architect compositions. This shows the text is loaded,
+// never that an owner follows it.
+func TestTheOwnersPromptPutsADecisionForAnAgentInTheTasksText(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		isRoot bool
+	}{{"root architect", true}, {"sub-architect", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			composed := composedText(t, composer, claim.RoleArchitect, tc.isRoot)
+			for _, terms := range [][]string{
+				{"decision for an agent", "into the task's text", "later version of the plan"},
+				{"Every later start", "holds that text", "new session"},
+				{"agent at work now reads no new start"},
+				{"answer of `register_plan` names the step", "send that step's agent", "by message"},
+				{"started its work before Legion took plans has no task text"},
+				{"such an issue", "comment on the issue", "by message"},
+				{"hold also where a general skill offers another place"},
+				{"issue and its plan are the record of the work to be done"},
 			} {
 				if !clauseHolds(composed, terms...) {
 					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
