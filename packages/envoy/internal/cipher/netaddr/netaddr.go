@@ -147,6 +147,17 @@ func DestinationRefusal(addr netip.Addr) string {
 			return c.Form + " " + c.Addr.String() + ", " + why
 		}
 	}
+	// No tunnelled or translated address is a destination inside the broker's own cluster,
+	// whatever it carries: the network sends it to the IPv4 address inside it, which a check of
+	// the IPv6 address alone does not read. So every carried form is refused, the first it holds
+	// named, and so is an ISATAP address (RFC 5214), whose interface id carries an IPv4 address
+	// inside any prefix, a unique-local one included.
+	if n > 0 {
+		return held[0].Form + " " + held[0].Addr.String() + ", a tunnelled or translated address, which is no private destination"
+	}
+	if a := addr.As16(); addr.Is6() && (a[8] == 0 || a[8] == 2) && a[9] == 0 && a[10] == 0x5e && a[11] == 0xfe {
+		return "an ISATAP address (an interface id of 0:5efe or 200:5efe), which carries an IPv4 address and is no private destination"
+	}
 	return ""
 }
 

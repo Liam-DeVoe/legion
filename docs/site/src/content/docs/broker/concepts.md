@@ -706,8 +706,7 @@ and then retires the key; any other value, and no tag, leaves the profile refuse
 `profile-block-mismatch` (a `github` or `google` block that
 does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (looser than the
 source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored
-value, `google-login` or `azure-login` source), `profile-minted` (a `proxy` block of kind `dpop`,
-which no stored secret ever serves), or a tag rule its own tags over its source's break,
+value, `google-login` or `azure-login` source), or a tag rule its own tags over its source's break,
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), as is a `github-installations` one
@@ -1524,9 +1523,9 @@ host with an `allow` list none of whose entries is every path (`""` or `/`), in 
 requests to its own address inside the broker's own cluster rather than wherever its name resolves. No block of another
 kind may bind it. A stored secret under a dpop block is never released (`403 MINTED_ONLY`).
 Each grant records a digest of its block and the destination, and a broker whose own digest differs
-serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds:
-it refuses it as `profile-minted`, and a stored secret of its name is not served through it, so
-nothing of it can be requested or approved. A grant of the capability is made by the broker
+serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
+and a stored secret of its name is not served through it, so nothing of it can be requested or
+approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
 itself, for a kind it names in code, and this release names none yet.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`

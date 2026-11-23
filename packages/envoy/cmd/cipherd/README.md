@@ -52,9 +52,9 @@ scopes, and its proxy block's hosts, headers, `allow`, `kind`, `judge` and guida
 So a pull request changing the deployment's `profiles.json` leaves a reviewer only the question of
 whether each of those is right for its profile.
 A profile whose proxy block is of kind `dpop`, a capability the broker mints and holds, is held to
-the boot's rules for it: one exact host, a non-empty `allow` list, the `Authorization` header alone,
-and no block of another kind on that host.
-Its host must also be the private destination's, which only the broker's own
+the boot's rules for it: one exact host, a non-empty `allow` list none of whose entries is every path
+(`""` or `/`), the `Authorization` header alone, and no block of another kind on that host.
+Its host must also be one private destination's, which only the broker's own
 `BROKER_PROXY_PRIVATE_UPSTREAM` names: `--private-upstream '<host>=<url> ...'` checks that too, and
 without the flag each such profile gets one line saying its tie to the destination was not checked.
 `profiles check` reads no configuration, opens no database and binds nothing.

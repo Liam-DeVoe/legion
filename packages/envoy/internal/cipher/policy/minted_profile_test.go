@@ -44,22 +44,28 @@ func TestADPoPProfileIsANameAndAProxyBlockAlone(t *testing.T) {
 }
 
 // TestADPoPProfileIsNeverServedAsASecret: a dpop profile is proxy configuration for a capability
-// the broker mints and holds, so the policy serves it as no secret whatever the store holds: with
-// no stored secret of its name, and with one, it is refused profile-minted, so it can be neither
-// requested nor approved. The file's other profile is still served.
+// the broker mints and holds, so the policy serves it as no secret whatever the store holds - with
+// no stored secret of its name and with one - and it can be neither requested nor approved. It is
+// no refusal either: a set whose profiles hold only a dpop block refuses nothing, so the block
+// writes no refused line and counts in no broker_unservable_secrets series, which reads Refused.
+// Beside another profile, that profile is still served.
 func TestADPoPProfileIsNeverServedAsASecret(t *testing.T) {
+	dpop := `{"name": "TEST_MINTED_TOKEN", ` + mintedBlock + `}`
 	for name, stored := range map[string][]secrets.LocalSecret{
-		"no stored secret of its name": everySource(),
-		"a stored secret of its name":  append(everySource(), policytest.Secret("TEST_MINTED_TOKEN", appOwner, policy.TierAgent, "stored-v1")),
+		"no stored secret of its name": nil,
+		"a stored secret of its name":  {policytest.Secret("TEST_MINTED_TOKEN", appOwner, policy.TierAgent, "stored-v1")},
 	} {
 		t.Run(name, func(t *testing.T) {
-			cur, _ := profiled(t, stored, readProfile, `{"name": "TEST_MINTED_TOKEN", `+mintedBlock+`}`)
+			cur, _ := profiled(t, stored, dpop)
 			set := cur.Get()
-			refusal := refusedProfile(t, set, "TEST_MINTED_TOKEN", policy.ReasonProfileMinted)
-			if !strings.Contains(refusal.Detail, "dpop") {
-				t.Errorf("TEST_MINTED_TOKEN's refusal detail = %q; want it to name the kind dpop", refusal.Detail)
+			if secret, served := set.Secrets["TEST_MINTED_TOKEN"]; served {
+				t.Fatalf("TEST_MINTED_TOKEN is served (%+v); want it served as nothing", secret)
 			}
-			servedProfile(t, set, "GITHUB_READ")
+			if len(set.Refused) != 0 {
+				t.Fatalf("a set holding only a dpop block refuses %v; want nothing", set.Refused)
+			}
 		})
 	}
+	cur, _ := profiled(t, everySource(), readProfile, dpop)
+	servedProfile(t, cur.Get(), "GITHUB_READ")
 }

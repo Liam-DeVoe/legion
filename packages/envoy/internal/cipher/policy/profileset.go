@@ -62,6 +62,12 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 			}
 			continue
 		}
+		if refusal.Reason == ReasonProfileMinted {
+			// A dpop profile is proxy configuration and no secret: it is served as nothing, a
+			// stored secret of its name with it (deleted above), and it is no refusal either, so
+			// it writes no refused line and counts in no broker_unservable_secrets series.
+			continue
+		}
 		refused[profileKey(profile.Name)] = refusal
 		byName[profile.Name] = refusal
 		if stored, taken := set.Secrets[profile.Name]; taken && refusal.Reason == ReasonProfileNameTaken {
