@@ -382,10 +382,10 @@ const prChecksCompletedInQuery = `
 // with every job it ran: the runs of a window whose jobs the failing-jobs tally reads, read by their
 // completion rather than as every run of the window (dispatch://INFRA-2918, D9), so the read of
 // their jobs reads the jobs of a day's runs, never those of every run of an 84-day window.
-// Bounded by maxRunsPerWindow, as listRunsStartedIn is.
+// Bounded by MaxRunsPerWindow, as listRunsStartedIn is.
 func ReadPRChecksCompletedIn(ctx context.Context, q Querier, deployRepo string, from, to, completedFrom, completedTo time.Time) (RunsWithJobs, error) {
 	rows, err := q.Query(ctx, prChecksCompletedInQuery, deployRepo, string(DeliveryRunKindPRChecks), "pull_request",
-		from, to, completedFrom, completedTo, maxRunsPerWindow)
+		from, to, completedFrom, completedTo, MaxRunsPerWindow)
 	if err != nil {
 		return RunsWithJobs{}, err
 	}

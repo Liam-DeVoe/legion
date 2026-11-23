@@ -64,7 +64,7 @@ func TestThePRChecksReadByCompletionReadsTheCompletionIndex(t *testing.T) {
 	}
 
 	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, prChecksCompletedInQuery,
-		"acme/widgets", string(DeliveryRunKindPRChecks), "pull_request", from, end, horizon, end, maxRunsPerWindow)
+		"acme/widgets", string(DeliveryRunKindPRChecks), "pull_request", from, end, horizon, end, MaxRunsPerWindow)
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_runs"}) {
 		t.Fatalf("the read reads %v; want delivery_runs alone:\n%s", read, raw)
 	}
