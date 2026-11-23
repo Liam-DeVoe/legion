@@ -183,7 +183,7 @@ func (l *KV) attempt(pair Key, key string) (Attempt, error) {
 		if err == nil {
 			return Attempt{Verdict: Proceed, pair: pair, key: key, revision: revision}, nil
 		}
-		if !errors.Is(err, nats.ErrKeyExists) {
+		if !bus.IsCASConflict(err) {
 			return Attempt{}, fmt.Errorf("create delivery record %s: %w", key, err)
 		}
 		entry, err := l.kv.Get(key)
@@ -200,7 +200,7 @@ func (l *KV) attempt(pair Key, key string) (Attempt, error) {
 		if err == nil {
 			return Attempt{Verdict: Proceed, pair: pair, key: key, revision: revision}, nil
 		}
-		if !errors.Is(err, nats.ErrKeyExists) {
+		if !bus.IsCASConflict(err) {
 			return Attempt{}, fmt.Errorf("take over delivery record %s: %w", key, err)
 		}
 	}

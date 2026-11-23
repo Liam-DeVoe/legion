@@ -58,8 +58,8 @@ func newCache(ttl time.Duration, clock func() time.Time) *Cache {
 	return c
 }
 
-// Seen reports whether the pair was recorded within the TTL window. It changes nothing: Record is
-// the write, made once the delivery is confirmed.
+// Seen reports whether the pair was recorded within the TTL window. It changes nothing:
+// RecordStored is the write, made once the delivery is confirmed.
 func (c *Cache) Seen(dedupeKey, sessionID string) bool {
 	_, ok := c.Stored(dedupeKey, sessionID)
 	return ok
@@ -75,12 +75,6 @@ func (c *Cache) Stored(dedupeKey, sessionID string) (uint64, bool) {
 		return 0, false
 	}
 	return e.sequence, true
-}
-
-// Record marks the pair confirmed. Call it only after a confirmed delivery, so nothing is skipped
-// that was not taken.
-func (c *Cache) Record(dedupeKey, sessionID string) {
-	c.RecordStored(dedupeKey, sessionID, 0)
 }
 
 // RecordStored marks a (dedupeKey, sessionID) pair as delivered by the copy the stream holds at

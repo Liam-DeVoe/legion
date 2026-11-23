@@ -229,6 +229,68 @@ func TestKV_AClearThatLosesToAReplicatingWriteLeavesTheRecordForTheNextAttempt(t
 	mustAttempt(t, ledger, "publish.abc", "ses_target", Proceed)
 }
 
+// leaderReadBucket takes direct gets off kv's stream, a stream of three copies on cluster, has
+// member 0 lead it, and returns a handle on the bucket opened after that, whose reads go to that
+// leader. A Create whose first write is refused reads its key back to tell a delete marker from a
+// value, and while a raced write is held the cluster's routes are frozen
+// (testnats.Cluster.HoldReplicatingWrite): a direct get may be handed to another copy across a
+// frozen route and wait out its JetStream wait, and the Create then answers its first write's
+// refusal rather than its write over the marker. The bus package's
+// TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict does the same.
+func leaderReadBucket(t *testing.T, cluster *testnats.Cluster, kv bus.KeyValue) bus.KeyValue {
+	t.Helper()
+	js, err := kv.Streams().Conn().JetStream(nats.MaxWait(2 * time.Second))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	stream := "KV_" + kv.Bucket()
+	info, err := js.StreamInfo(stream)
+	if err != nil {
+		t.Fatalf("read the bucket's stream: %v", err)
+	}
+	undirected := info.Config
+	undirected.AllowDirect = false
+	if _, err := js.UpdateStream(&undirected); err != nil {
+		t.Fatalf("take direct gets off the bucket's stream: %v", err)
+	}
+	cluster.MoveStreamLeader(t, stream, 0)
+	legacy, err := js.KeyValue(kv.Bucket())
+	if err != nil {
+		t.Fatalf("open the bucket with no direct gets: %v", err)
+	}
+	return bus.NewKeyValue(legacy, kv.WatchHandle(), kv.Streams())
+}
+
+// An Attempt whose Create over a cleared record loses to a write of the key still being replicated,
+// on a bucket of three copies, is a lost race like any other. A clear leaves a delete marker, and
+// nats.go's Create sends its write again at the marker's revision and returns that write's 10164
+// as it is, which neither nats.ErrKeyExists nor nats.ErrKeyRevisionMismatch wraps. The Attempt
+// reads the key again, finds it still cleared, writes this boot's record and proceeds. Before, it
+// answered the loss as a failure of the bucket.
+func TestKV_AnAttemptOverAClearedRecordThatLosesToAReplicatingWriteProceeds(t *testing.T) {
+	cluster := testnats.StartCluster(t, 3)
+	kv := leaderReadBucket(t, cluster, openTestBucketOn(t, cluster.Servers[0].URL(), 3))
+	ledger := newTestKV(kv, "boot-a", newTestClock())
+
+	if err := ledger.Clear(mustAttempt(t, ledger, "publish.abc", "ses_target", Proceed)); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	cluster.AwaitReplicated(t, "KV_"+bus.ListenerStateBucket)
+	race := cluster.RaceKeyValue(t, kv.Legacy(), 1)
+	ledger.kv = bus.NewKeyValue(race, kv.WatchHandle(), kv.Streams())
+
+	retry, err := ledger.Attempt("publish.abc", "ses_target")
+	if err != nil || retry.Verdict != Proceed {
+		t.Fatalf("Attempt over the cleared record that lost to a replicating write = %v, %v; want Proceed and no error", retry.Verdict, err)
+	}
+	if race.Lost() != 1 {
+		t.Fatalf("%d creates lost the race, want 1", race.Lost())
+	}
+	if record := readRecord(t, kv, ledger.Key("publish.abc", "ses_target")); record.State != stateAttempted || record.Boot != "boot-a" {
+		t.Fatalf("record after the retry = %+v, want boot-a's attempted record", record)
+	}
+}
+
 // A delivery whose outcome never came back is kept: the pair is InFlight until the attempt is
 // AttemptedAge old, well past the takeover age, and taken over after that.
 func TestKV_AKeptAttemptIsInFlightUntilAttemptedAge(t *testing.T) {

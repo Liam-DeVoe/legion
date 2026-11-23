@@ -554,7 +554,7 @@ func (l *lease) writeRelease(record leaseRecord, rev uint64) (uint64, error) {
 		l.mu.Unlock()
 		l.logger.Info("listener lease released", slog.String("lease", l.key), slog.Uint64("revision", next))
 		return next, nil
-	case errors.Is(err, nats.ErrKeyExists):
+	case bus.IsCASConflict(err):
 		return 0, nil
 	default:
 		return 0, fmt.Errorf("mark lease %s released: %w", l.key, err)
@@ -705,7 +705,7 @@ func (l *lease) renew() time.Duration {
 		return l.cfg.renewEvery
 	}
 	next, err := l.kv.Update(l.key, value, rev)
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		own, mine, err := l.ownRevision()
 		if err != nil {
 			l.noteFailure("read after a conflict", err)
@@ -904,7 +904,7 @@ func (l *lease) acquire(previous nats.KeyValueEntry, record leaseRecord, how lea
 	} else {
 		rev, err = l.kv.Update(l.key, value, previous.Revision())
 	}
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		l.seenRev = 0
 		return 0
 	}
