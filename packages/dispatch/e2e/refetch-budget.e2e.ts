@@ -420,9 +420,10 @@ function summaryReads(gets: readonly string[], issues: readonly { key: string }[
 }
 
 /** GETs under `/api/` the first load of the citing page sends: 70 on chromium at the commit
- *  before INFRA-4009 (df87c903eb89) and 70 at INFRA-4009's head, one run each - the 50 summaries
- *  and the 20 reads the page and its shell send whatever the message cites. */
-const FIRST_LOAD_GETS = 70;
+ *  before INFRA-4009 (df87c903eb89) and at INFRA-4009's head before #3125's head 1a40d608c2 was
+ *  merged; 69 at 1a40d608c2 (this file's row run over it) and 69 at the merge, one run each -
+ *  the 50 summaries and the 19 reads the page and its shell send whatever the message cites. */
+const FIRST_LOAD_GETS = 69;
 
 // INFRA-4009's R8: the status mark adds no read to a page's first load, since each cited issue's
 // mark comes with the summary its name is read from. The row passes unchanged at the commit
