@@ -153,7 +153,9 @@ func TestAStandInDeadlineReadsItsParentsEndAtOnce(t *testing.T) {
 // Done before the parent ended, such as the goroutine the standard library starts to end a context
 // derived from it, is woken with no read of the stand-in after the end. The wait below reads the
 // channel alone, never the stand-in, since every read of the stand-in looks at its parent first and
-// would end it on its own.
+// would end it on its own. A stand-in that learns the end closes the channel at once, so the wait
+// has a bound of its own, a minute, and a stand-in that does not fails here then, not at the test
+// binary's deadline.
 func TestAStandInDeadlineNothingReadsEndsWithItsParent(t *testing.T) {
 	errParent := errors.New("the parent's cause")
 	parent, cancelParent := context.WithCancelCause(context.Background())
@@ -162,7 +164,14 @@ func TestAStandInDeadlineNothingReadsEndsWithItsParent(t *testing.T) {
 	defer cancel()
 	done := stand.Done()
 	cancelParent(errParent)
-	Receive(t, "the end of a stand-in nothing read, after its parent ended", done)
+	WithinPolling(t, time.Minute, Poll, "the end of a stand-in nothing read, after its parent ended", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
 	if stand.Err() != context.Canceled || context.Cause(stand) != errParent {
 		t.Errorf("the stand-in reads Err %v and cause %v, want %v and %v, its parent's", stand.Err(), context.Cause(stand), context.Canceled, errParent)
 	}

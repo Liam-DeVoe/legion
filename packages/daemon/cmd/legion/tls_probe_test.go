@@ -3313,8 +3313,11 @@ func TestTheProbesDeadlineIsItsBudgetCountedFromTheCall(t *testing.T) {
 // which leaves that run with no verdict and the emSign failure deciding the probe. The curl logs
 // its run first; its limit is counted from that line (standInLog), and the probe's deadline passes
 // once the AAA control's run has logged it (probeDeadlineOnceLogged), not at a budget of seconds
-// a loaded machine can spend before the emSign control's curl has answered.
+// a loaded machine can spend before the emSign control's curl has answered. Its --probe-budget is
+// not shortProbeBudget, the other such tests' value, so a probe that asked for one fixed budget
+// rather than the flag's value fails one of them.
 func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
+	const budget = "5s"
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
 	curlRuns := standInLogAt(filepath.Join(t.TempDir(), "runs"))
@@ -3322,9 +3325,9 @@ func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
 	previous := tlsPositiveControlSpec
 	t.Cleanup(func() { tlsPositiveControlSpec = previous })
 	tlsPositiveControlSpec.timeout, tlsPositiveControlSpec.limitClock = time.Minute, curlRuns.clock
-	probeDeadlineOnceLogged(t, curlRuns, "curl "+aaaTLSSite.url, shortProbeBudget)
+	probeDeadlineOnceLogged(t, curlRuns, "curl "+aaaTLSSite.url, budget)
 
-	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags("--probe-budget", shortProbeBudget)...)
+	code, stdout, stderr := probeImageWith(passingImageTLSClients, probeTLSPositiveControls, img.flags("--probe-budget", budget)...)
 
 	want := "emSign positive control at " + emSignTLSSite.url + " did not accept its root: exit status 60: curl: (60) SSL certificate problem"
 	if code != 1 || !strings.Contains(stderr, want) || strings.Contains(stdout, bootprobe.OKPrefix) {
