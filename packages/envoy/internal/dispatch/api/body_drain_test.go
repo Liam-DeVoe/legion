@@ -244,7 +244,7 @@ func (c *deadlineConn) endedUnder() []time.Time {
 	return slices.Clone(c.ended)
 }
 
-// computedDeadline is a read deadline a drain computed, and the moment it began.
+// computedDeadline is a read deadline a drain computed, and the moment the drain armed it from.
 type computedDeadline struct{ began, deadline time.Time }
 
 // drainDeadlines records each deadline the server's drains compute (server.drainDeadlineSet).
@@ -260,12 +260,13 @@ func (d *drainDeadlines) set(began, deadline time.Time) {
 }
 
 // judge says what is wrong with the deadlines that ended conn's reads, or "" when nothing is: every
-// deadline a drain computed lies limit past the moment the drain began, at least one read ended
-// under such a deadline, and none ended under a deadline no drain computed. A read ended under no
-// deadline, or under net/http's own of 1970 (its abort of a read it keeps in the background), is
-// net/http's and is passed over. Each comparison is between values, not with a clock read when the
-// test looks: a deadline replaced after the drain set it, or a drain that chose another bound, fails
-// however long the machine took to run either.
+// deadline a drain computed lies limit past the moment the drain armed it from (movingDeadline.arm
+// reports both, reading the clock once), at least one read ended under such a deadline, and none
+// ended under a deadline no drain computed. A read ended under no deadline, or under net/http's own
+// of 1970 (its abort of a read it keeps in the background), is net/http's and is passed over. Each
+// comparison is between values, not with a clock read when the test looks: a deadline replaced
+// after the drain set it, or a drain that chose another bound, fails however long the machine took
+// to run either.
 func (d *drainDeadlines) judge(conn *deadlineConn, limit time.Duration) string {
 	d.mu.Lock()
 	computed := slices.Clone(d.computed)
@@ -821,14 +822,15 @@ func TestAKeyedPostBegunPastItsBoundEndsAtOnce(t *testing.T) {
 // deadline and closed after it, as a 4 MiB body, of which net/http reads nothing more, always was.
 //
 // The drain's bound is judged by value, not by how long the answer took: the server's drains report
-// each deadline they compute and the moment they began (server.drainDeadlineSet), the connection
-// records the deadline in effect each time a read on it ends at its deadline (deadlineConn), and
-// every such deadline must be one a drain computed, drainLimit past its beginning. A deadline
-// replaced after the drain set it, or a drain that chose another bound, fails however loaded the
-// machine is, and a right one passes however long the machine took. A 409 answered before
-// drainLimit had passed still fails too: load only lengthens a step. The connection keeps each
-// deadline off its socket until the server has read every byte the client sent (deadlineConn), so
-// a row that sends a megabyte past the JSON limit is answered 413 however slowly the drain reads it.
+// each deadline they arm and the moment they armed it from (server.drainDeadlineSet, which
+// movingDeadline.arm calls before it sets the deadline), the connection records the deadline in
+// effect each time a read on it ends at its deadline (deadlineConn), and every such deadline must be
+// one a drain armed, drainLimit past the moment it armed it. A deadline replaced after the drain set
+// it, or a drain that chose another bound, fails however loaded the machine is, and a right one
+// passes however long the machine took. A 409 answered before drainLimit had passed still fails
+// too: load only lengthens a step. The connection keeps each deadline off its socket until the
+// server has read every byte the client sent (deadlineConn), so a row that sends a megabyte past
+// the JSON limit is answered 413 however slowly the drain reads it.
 func TestADrainStopsWaitingForABodyThatStalls(t *testing.T) {
 	t.Parallel()
 	const drainLimit = time.Second

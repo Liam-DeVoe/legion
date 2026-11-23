@@ -620,9 +620,10 @@ type server struct {
 	transfer transferBounds
 	// drainDeadlineSet is called with each read deadline a request's body arms on its connection
 	// and the moment it armed it from, before the deadline is set on the connection
-	// (bodyReadDeadline); nil, which every server the deployment builds leaves it, calls nothing.
-	// Only a test sets it, to judge the deadline in effect when a stalled read ended against the
-	// bound the body's reads chose, which no clock the test reads afterwards can name.
+	// (drainedBody's movingDeadline.report, called from arm); nil, which every server the
+	// deployment builds leaves it, calls nothing. Only a test sets it, to judge the deadline in
+	// effect when a stalled read ended against the bound the body's reads chose, which no clock
+	// the test reads afterwards can name.
 	drainDeadlineSet func(began, deadline time.Time)
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server

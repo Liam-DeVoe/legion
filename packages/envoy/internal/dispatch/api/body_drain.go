@@ -104,16 +104,22 @@ type movingDeadline struct {
 	// bound to it, so a transfer allocates neither for its request.
 	control http.ResponseController
 	set     func(*http.ResponseController, time.Time) error
-	bounds  transferBounds
-	armed   bool
-	started time.Time
-	// moved is how many bytes of the transfer have moved, which the floor is judged on.
-	moved int64
+	// report is called with each deadline arm sets and the moment it armed it from, before the
+	// deadline is set: a body's reads carry server.drainDeadlineSet here, which only a test sets.
+	// Nil, as it is for every answer and for every body of a server the deployment builds, calls
+	// nothing.
+	report func(began, deadline time.Time)
+	bounds transferBounds
 	// buffered is whether the kernel holds what has been handed over, so that the read or write
 	// about to run waits on that buffer draining rather than on the far end's next byte: an
 	// answer's writes are buffered that way (boundedAnswer), a body's reads are not, since a
-	// read returns with whatever has arrived.
+	// read returns with whatever has arrived. It sits beside armed so the two bools share one
+	// word: one word more would take drainedBody past its 256-byte size class.
 	buffered bool
+	armed    bool
+	started  time.Time
+	// moved is how many bytes of the transfer have moved, which the floor is judged on.
+	moved int64
 	// outside is time the transfer spent waiting on something that is not the far end, which
 	// the floor leaves out of what it judges: a download's answer is written as fast as the
 	// file store feeds it, so the time its reads spend inside the store's body is none of its
@@ -134,10 +140,19 @@ func (d *movingDeadline) arm() {
 	if !d.armed {
 		d.armed, d.started = true, now
 	} else if d.tooSlow(now) {
-		_ = d.set(&d.control, now)
+		d.setFrom(now, now)
 		return
 	}
-	_ = d.set(&d.control, now.Add(d.bounds.idle+d.drain()))
+	d.setFrom(now, now.Add(d.bounds.idle+d.drain()))
+}
+
+// setFrom sets deadline on the connection, telling report first, where there is one, that arm
+// armed it from now.
+func (d *movingDeadline) setFrom(now, deadline time.Time) {
+	if d.report != nil {
+		d.report(now, deadline)
+	}
+	_ = d.set(&d.control, deadline)
 }
 
 // drain is how long what the kernel already holds of the transfer takes to leave at the floor,
@@ -227,26 +242,6 @@ func connectionControl(w http.ResponseWriter) http.ResponseController {
 	return *http.NewResponseController(w)
 }
 
-// bodyReadDeadline is how a request's body sets the read deadline it arms (drainedBody's
-// movingDeadline.set): the connection controller's own method, as an answer's write deadline is
-// set, and, in a test that set drainDeadlineSet, that method behind a report of each deadline
-// armed with the moment it was armed from. A body's reads add nothing to the idle bound
-// (movingDeadline.drain), so that moment is the deadline less bounds.idle. The lift's zero
-// deadline arms nothing and is not reported. Only the test's server pays for the report's
-// closure; every other body sets its deadline through the method itself.
-func (s *server) bodyReadDeadline(bounds transferBounds) func(*http.ResponseController, time.Time) error {
-	report := s.drainDeadlineSet
-	if report == nil {
-		return (*http.ResponseController).SetReadDeadline
-	}
-	return func(control *http.ResponseController, deadline time.Time) error {
-		if !deadline.IsZero() {
-			report(deadline.Add(-bounds.idle), deadline)
-		}
-		return control.SetReadDeadline(deadline)
-	}
-}
-
 // expectsContinue reports whether r's client asked to be told to continue before it sends its body
 // (Expect: 100-continue). net/http tells it so at the body's first read, so a layer that answers
 // such a request without reading the body asks the client for none of it.
@@ -305,12 +300,11 @@ func (s *server) drainBeforeAnswer(route apiRoute, handler http.HandlerFunc) htt
 			handler(w, r)
 			return
 		}
-		bounds := s.transfer.orDefault()
 		body := &drainedBody{
 			ReadCloser: r.Body,
 			movingDeadline: movingDeadline{
-				control: connectionControl(w), set: s.bodyReadDeadline(bounds),
-				bounds: bounds,
+				control: connectionControl(w), set: (*http.ResponseController).SetReadDeadline,
+				report: s.drainDeadlineSet, bounds: s.transfer.orDefault(),
 			},
 			ctx:           r.Context(),
 			length:        r.ContentLength,
