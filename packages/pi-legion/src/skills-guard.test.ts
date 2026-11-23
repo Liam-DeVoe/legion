@@ -20,6 +20,7 @@ import {
   stageSkills,
 } from "@legion/pi-shared/test/skills-guard";
 import { collapsed, skillPins } from "./skill-pins";
+
 // The Claude Code plugin is generated from this repository's skills/ and this package's agents/,
 // and nothing commits packages/claude-envoy/legion/, so a check of what a Claude Code role loads
 // builds a fresh one, as

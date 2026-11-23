@@ -20,15 +20,14 @@ Put each decision for an agent of a task into the task's text, in a later versio
 Every later start of the task holds that text, a new session's start included.
 The agent at work now reads no new start.
 So when the answer of `register_plan` names the step the decision is for, in `running`, also send that step's agent the decision by message.
-On the project's default steps, the task is `default`, which no block of yours names, and `plan.md` is the planner's: leave it as it is.
+On an issue that started on the project's default steps, the task is `default`, which no block of yours names.
+There `plan.md` is the planner's: leave it as it is.
 Create a document of your own on the issue, `owner-plan.md`, whose one task block is `:::plan_task{#default}`, with no `steps`, and whose text holds the decision, and give its id and version to `register_plan`.
 Legion takes that version while the task runs, and stops nothing.
 Give each later version of yours on that issue as a version of the same `owner-plan.md`: Legion refuses another document (`PLAN_DOCUMENT_CHANGED`).
 An issue that started its work before Legion took plans has no task text.
 On such an issue, put the decision in a comment on the issue, and send it to the agent by message.
-These rules hold also where a general skill offers another place for a decision.
-A list of open items, such as an issue's `open-items.md`, is such a place.
-Write no decision for an agent in it, and do not keep it as the record of the work.
+These rules hold also where a general skill offers another place for a decision: write no decision for an agent there, and keep no record of the work there.
 The issue and its plan are the record of the work to be done.
 
 ## The notices
