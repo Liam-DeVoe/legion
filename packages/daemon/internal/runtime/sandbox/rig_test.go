@@ -582,6 +582,10 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// holdStart, when set, is what every fake launcher waits on, or the rig's end, before it
+	// answers a start it has recorded: a start the launcher is still waiting on, as a real
+	// launcher waits for its slot's gh files to hold the start's credential. Guarded by commandsMu.
+	holdStart chan struct{}
 }
 
 type rigOption func(*rig, *Options)
@@ -1241,6 +1245,16 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart:
+				g.commandsMu.Lock()
+				hold := g.holdStart
+				g.commandsMu.Unlock()
+				if hold != nil {
+					select {
+					case <-hold:
+					case <-g.ctx.Done():
+						return
+					}
+				}
 				if running != 0 {
 					_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, Error: fmt.Sprintf("generation %d is still running", running)})
 					continue

@@ -213,6 +213,12 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // between its read and its write, and the write is refused as a conflict and judged again on a
 // fresh read (writeSlotCredential).
 //
+// A refresh writes nothing into a slot while a launch into the pod is in flight in it, from just
+// before the launch writes the slot to the end of its start (markSlotLaunch, refreshUpdate): the
+// start names the digest of the token the launch left in the slot, which the launcher waits for
+// the files to hold, and a newer token of the same App written over it would leave them never
+// holding it. The refresher's next tick writes the slot as usual.
+//
 // A workflow role's credential is rendered for that repository, and not for the Secret's
 // recorded default, which names an owner and so could never name a repository: the repository
 // is what the bundle's default is routed by (ghconfig.RouteDir). A pod the previous daemon
@@ -287,7 +293,8 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 		role, err = r.slotAppRole(ctx, held, pod.Name, slot, secret.Annotations[launchedRoleAnnotation])
 		return role, err
 	}
-	if _, err := r.writeSlotCredential(ctx, pod, uid, slot, repo, bundles, slotWrite{role: judge}); err != nil && !errors.Is(err, errSecretNotOwned) {
+	_, err := r.writeSlotCredential(ctx, pod, uid, slot, repo, bundles, slotWrite{role: judge})
+	if err != nil && !errors.Is(err, errSecretNotOwned) && !errors.Is(err, errSlotLaunching) {
 		r.log.Warn("sandbox runtime: github credential refresh failed", "sandbox", pod.Name, "slot", slot, "role", role, "err", err)
 	}
 }
@@ -295,6 +302,66 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 // errSecretNotOwned is a slot Secret another Sandbox owns: the pod's Sandbox was replaced since the
 // pod was read, so the write is the new Sandbox's to make.
 var errSecretNotOwned = errors.New("the slot's Secret is another Sandbox's")
+
+// errSlotLaunching is a refresh's write of a slot that a launch into its pod is in flight in
+// (refreshUpdate): the slot is the launch's to hold until its start ends, and the refresher's next
+// tick writes it.
+var errSlotLaunching = errors.New("a launch into the slot is in flight")
+
+// markSlotLaunch marks key's slot as launched into until the answered func is called
+// (Runtime.launching), so no refresh writes it meanwhile (refreshUpdate). A refresh's write of the
+// slot already on its way to the API server is waited out first, so the launch reads the Secret
+// that write leaves; ctx ending first unmarks the slot and answers ctx's error. A launch into a pod
+// it keeps marks its slot just before it writes the slot's credential (writeLaunchCredential) and
+// unmarks it once its start is answered (relaunch).
+func (r *Runtime) markSlotLaunch(ctx context.Context, key slotKey) (func(), error) {
+	r.launchedMu.Lock()
+	r.launching[key]++
+	updating := r.updating[key]
+	r.launchedMu.Unlock()
+	unmark := func() {
+		r.launchedMu.Lock()
+		defer r.launchedMu.Unlock()
+		if r.launching[key]--; r.launching[key] <= 0 {
+			delete(r.launching, key)
+		}
+	}
+	if updating != nil {
+		select {
+		case <-updating:
+		case <-ctx.Done():
+			unmark()
+			return nil, ctx.Err()
+		}
+	}
+	return unmark, nil
+}
+
+// refreshUpdate makes update, the refresher's write of key's slot, unless a launch into the slot
+// is in flight (markSlotLaunch), which answers errSlotLaunching and writes nothing. The check and
+// the record of the write on its way are made under one lock, and a launch that marks the slot
+// while the write is on its way waits it out, so no refresh's write lands in a slot after a launch
+// into it has read the Secret, whether or not that launch wrote it: a launch that found its token
+// in the Secret already writes nothing that a resourceVersion could refuse a refresh's write over.
+func (r *Runtime) refreshUpdate(key slotKey, update func() error) error {
+	r.launchedMu.Lock()
+	if r.launching[key] > 0 {
+		r.launchedMu.Unlock()
+		return errSlotLaunching
+	}
+	done := make(chan struct{})
+	r.updating[key] = done
+	r.launchedMu.Unlock()
+	defer func() {
+		r.launchedMu.Lock()
+		if r.updating[key] == done {
+			delete(r.updating, key)
+		}
+		r.launchedMu.Unlock()
+		close(done)
+	}()
+	return update()
+}
 
 // slotCredential is what a slot's Secret holds after its write (writeSlotCredential): its default
 // owner, the token that owner's hosts.yml holds, and the App that minted it. An empty owner is a
@@ -352,7 +419,9 @@ func readLaunched(record string) (uint64, claim.Role, bool) {
 // update then writes, under its resourceVersion: a write refused as a conflict, because something
 // wrote the Secret since it was read — a launch binding it to its new pod (bindLauncherSecrets),
 // or a launch into the pod writing the slot for its claim's role — is judged, rendered and made
-// once more on a fresh read, so that write is kept and its record read.
+// once more on a fresh read, so that write is kept and its record read. A refresh's update is
+// made only while no launch into the slot is in flight (refreshUpdate), and answers
+// errSlotLaunching otherwise.
 func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid types.UID, slot claim.Role, repo ghrepo.Repository, bundles *appauth.Bundles, write slotWrite) (slotCredential, error) {
 	sandbox := pod.Name
 	name := roleSecretName(sandbox, slot)
@@ -437,7 +506,15 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 			}
 			secret.Annotations[launchedRoleAnnotation] = write.launched
 		}
-		_, err = secrets.Update(ctx, secret, metav1.UpdateOptions{})
+		update := func() error {
+			_, err := secrets.Update(ctx, secret, metav1.UpdateOptions{})
+			return err
+		}
+		if write.launched == "" {
+			err = r.refreshUpdate(slotKey{sandbox: sandbox, slot: slot}, update)
+		} else {
+			err = update()
+		}
 		if err == nil {
 			if len(changed) > 0 || stalePairs {
 				r.log.Info("sandbox runtime: github credential refreshed", "sandbox", sandbox, "slot", slot, "role", role, "app", written.App,
@@ -456,7 +533,8 @@ func (r *Runtime) writeSlotCredential(ctx context.Context, pod *corev1.Pod, uid 
 // (writeSlotCredential), records on the Secret in that write the role the launch's process runs
 // as (launchedRoleAnnotation), which the refresher renders the slot for from then on, and answers
 // what the slot's gh files must hold before the child starts: the default owner's hosts.yml and
-// the digest of its token. A slot whose gh acts as nobody needs nothing. The kubelet projects the
+// the digest of its token, with no bound on the launcher's wait for it, which relaunch sets from
+// its own deadline. A slot whose gh acts as nobody needs nothing. The kubelet projects the
 // Secret anew within its sync period, and the launcher waits for it; so that no wait is silent,
 // the start logs the wait whenever the slot's files may not hold its credential yet: at the first
 // start this runtime makes in the slot, and at each start of another App than the slot's last,

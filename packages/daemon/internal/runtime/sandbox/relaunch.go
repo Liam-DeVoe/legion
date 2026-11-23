@@ -450,11 +450,23 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// supervise charges nothing, rather than failing in the writer as a charged launch failure. A
 	// launch into a pod it keeps writes its slot's credential first, for the App of the step its
 	// claim does now, and its start names it, which the launcher waits for: no Secret is written
-	// for such a launch otherwise (writeLauncherSecrets runs for a pod a launch builds).
+	// for such a launch otherwise (writeLauncherSecrets runs for a pod a launch builds). From just
+	// before that write until the launch ends, no refresh writes the slot (markSlotLaunch), so the
+	// slot holds the very token the start names. The launcher's wait is bounded by what remains of
+	// this launch's own wait on the start before the stop grace, so its refusal arrives while this
+	// launch still waits, and the stop that follows a start this launch gave up on finds no child.
 	if !replace {
+		unmark, err := r.markSlotLaunch(starting, slotKey{sandbox: pod.Name, slot: slotOf(spec.Claim)})
+		if err != nil {
+			return fail("wait out the refresh of its slot's github credential", err)
+		}
+		defer unmark()
 		credential, err := r.writeLaunchCredential(starting, pod, spec)
 		if err != nil {
 			return fail("write its slot's github credential", err)
+		}
+		if credential != nil {
+			credential.WaitMs = int(max(time.Until(deadline), time.Millisecond).Milliseconds())
 		}
 		l.gitHubCredential = credential
 	}
