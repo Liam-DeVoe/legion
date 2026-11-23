@@ -126,6 +126,14 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
     nodeMenu: address.nodeMenu,
     onFilterChange,
     toolbar,
-    ...(phone ? { sheet: (tools: ReactNode) => <OutlineSheet slot={props} tools={tools} /> } : {}),
+    // At 760 px and below the node menu stands in the Outline sheet, so an address that opens the
+    // menu (`/artifacts`) opens the sheet with it (R4, R6).
+    ...(phone
+      ? {
+          sheet: (tools: ReactNode) => (
+            <OutlineSheet opened={address.nodeMenu} slot={props} tools={tools} />
+          ),
+        }
+      : {}),
   };
 }

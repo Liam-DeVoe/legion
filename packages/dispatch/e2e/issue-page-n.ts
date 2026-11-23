@@ -6,12 +6,27 @@
  */
 
 import { expect, type Locator, type Page } from "@playwright/test";
-import { CONTROL_LABELS, type Preset } from "../web/src/features/issue-page/page-words";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
+import {
+  CONTROL_LABELS,
+  PRESET_NAMES,
+  PRESET_ORDER,
+  type Preset,
+} from "../web/src/features/issue-page/page-words";
 import type { IssueRoute } from "../web/src/features/refs/routes";
+import { PAGE_COLORS } from "../web/src/theme/classes";
+import { oklchToSrgb8 } from "../web/src/theme/contrast";
 import { getIssue } from "./api";
 import { connectedDot, documentEditor } from "./editor";
-import { issuePage, openMenu, outlineControl } from "./issue-page";
-import { nodeRows } from "./issue-page-g";
+import {
+  contentsPane,
+  gotoIssue,
+  issuePage,
+  openMenu,
+  outlineControl,
+  outlineSheet,
+} from "./issue-page";
+import { expectIssuePageDrawn, nodeRows } from "./issue-page-g";
 import type { Box } from "./layout";
 import { navigateInApp } from "./sends";
 import { expandedState, settledState } from "./settled";
@@ -73,6 +88,10 @@ const SELECTORS = {
   nodeTag: "[data-node-tag]",
   nodeWords: "[data-node-words]",
   nodeState: "[data-node-state]",
+  /** The sheet the Outline control opens below 1024 px, drawn in the page's body and not inside
+   *  its root (`contents-frame.tsx`), which holds the view row's three small controls at 760 px
+   *  and below. */
+  outlineSheet: '[data-testid="issue-outline-sheet"]',
   pageChrome: "[data-page-chrome]",
   parentLine: "[data-node-parent-line]",
   presetCount: "[data-preset-count]",
@@ -187,12 +206,13 @@ export function optionsOf(control: Locator): Promise<{ label: string; value: str
 }
 
 /** What the page says in its own words: the text of each `[data-page-chrome]` element with every
- *  `[data-author-text]` descendant removed, which is what c-plain-words reads word by word. */
+ *  `[data-author-text]` descendant removed, which is what c-plain-words reads word by word. The
+ *  Outline sheet is the page's too, though it is drawn outside the page's root. */
 export function chromeTexts(page: Page): Promise<string[]> {
   return page.evaluate((selectors) => {
     const found: string[] = [];
     for (const element of document.querySelectorAll(
-      `${selectors.issuePage} ${selectors.pageChrome}`
+      `${selectors.issuePage} ${selectors.pageChrome}, ${selectors.outlineSheet} ${selectors.pageChrome}`
     )) {
       const copy = element.cloneNode(true) as Element;
       for (const authored of copy.querySelectorAll(selectors.authorText)) authored.remove();
@@ -203,23 +223,25 @@ export function chromeTexts(page: Page): Promise<string[]> {
   }, SELECTORS);
 }
 
-/** Every element of the page that carries visible text and no `[data-page-chrome]` or
- *  `[data-author-text]` ancestor or self, which is text the page divides into neither. */
+/** Every element of the page - its root and the Outline sheet - that carries visible text and no
+ *  `[data-page-chrome]` or `[data-author-text]` ancestor or self, which is text the page divides
+ *  into neither. */
 export function undividedTexts(page: Page): Promise<string[]> {
   return page.evaluate((selectors) => {
     const found: string[] = [];
-    const walker = document.createTreeWalker(
-      document.querySelector(selectors.issuePage) ?? document.createElement("div"),
-      NodeFilter.SHOW_TEXT
-    );
-    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-      const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
-      if (text === "") continue;
-      const element = node.parentElement;
-      if (element === null) continue;
-      if (element.closest(`${selectors.pageChrome}, ${selectors.authorText}`) !== null) continue;
-      if (element.getClientRects().length === 0) continue;
-      found.push(text);
+    for (const root of document.querySelectorAll(
+      `${selectors.issuePage}, ${selectors.outlineSheet}`
+    )) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (text === "") continue;
+        const element = node.parentElement;
+        if (element === null) continue;
+        if (element.closest(`${selectors.pageChrome}, ${selectors.authorText}`) !== null) continue;
+        if (element.getClientRects().length === 0) continue;
+        found.push(text);
+      }
     }
     return found;
   }, SELECTORS);
@@ -229,6 +251,8 @@ export function undividedTexts(page: Page): Promise<string[]> {
 export interface FilterRowReading {
   /** The name of each control the row draws, left to right: what a reader hears it called. */
   readonly controls: readonly string[];
+  /** Each of those controls' own height in CSS pixels, in the same order. */
+  readonly heights: readonly number[];
   /** The row's own height in CSS pixels. */
   readonly height: number;
   /** How many lines its controls stand on: controls whose boxes overlap vertically are one. */
@@ -280,9 +304,119 @@ export function filterRowReading(page: Page): Promise<FilterRowReading | null> {
     return {
       controls: controls.map((control) => control.name),
       height: edge.height,
+      heights: controls.map((control) => control.box.height),
       lines,
       overflow: Math.max(0, ...controls.map((control) => control.box.right - edge.right)),
     };
+  }, SELECTORS);
+}
+
+/** One colour the filter row draws: where, and the value the browser computed for it. */
+interface DrawnColour {
+  /** The element and the property, as a failure names them: `button "Keys" color`. */
+  readonly drawn: string;
+  /** The computed value, as `getComputedStyle` gives it. */
+  readonly value: string;
+}
+
+/** Every colour the filter row draws, as the browser computed it, over the row and each of its
+ *  visible elements: the text colour of each that draws words or a shape of its own (an `svg`
+ *  fills with its `currentColor`), each background, and each border that has a width. An element
+ *  that draws no word and no shape draws no text colour, though it computes one. */
+function filterRowColours(page: Page): Promise<DrawnColour[]> {
+  return page.evaluate((selectors) => {
+    const row = document.querySelector<HTMLElement>(selectors.filterRow);
+    if (row === null) return [];
+    const found: { drawn: string; value: string }[] = [];
+    for (const element of [row, ...row.querySelectorAll<Element>("*")]) {
+      if (element.closest("[hidden]") !== null || !element.checkVisibility()) continue;
+      const style = getComputedStyle(element);
+      const name =
+        element.getAttribute("aria-label") ??
+        (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
+      const at = `${element.tagName.toLowerCase()} "${name}"`;
+      const drawsWords = [...element.childNodes].some(
+        (child) => child.nodeType === Node.TEXT_NODE && (child.textContent ?? "").trim() !== ""
+      );
+      if (drawsWords || element instanceof SVGSVGElement || element instanceof HTMLInputElement) {
+        found.push({ drawn: `${at} color`, value: style.color });
+      }
+      found.push({ drawn: `${at} background-color`, value: style.backgroundColor });
+      for (const side of ["top", "right", "bottom", "left"] as const) {
+        if (style.getPropertyValue(`border-${side}-style`) === "none") continue;
+        if (Number.parseFloat(style.getPropertyValue(`border-${side}-width`)) === 0) continue;
+        found.push({
+          drawn: `${at} border-${side}-color`,
+          value: style.getPropertyValue(`border-${side}-color`),
+        });
+      }
+    }
+    return found;
+  }, SELECTORS);
+}
+
+/** A computed colour as Chromium writes one - `rgb(…)`, `rgba(…)` or `oklch(…)`, the last when
+ *  it was declared in that space - as `[r, g, b, alpha]` in 8-bit sRGB, by the conversion
+ *  `e2e/theme.stub.e2e.ts` reads swatches with; undefined for a form this does not read. */
+function srgbOf(value: string): readonly [number, number, number, number] | undefined {
+  const rgb = /^rgba?\((\d+), (\d+), (\d+)(?:, ([\d.]+))?\)$/u.exec(value);
+  if (rgb !== null) {
+    return [Number(rgb[1]), Number(rgb[2]), Number(rgb[3]), Number(rgb[4] ?? 1)];
+  }
+  const oklch = /^oklch\(([\d.]+)(%?) ([\d.]+) ([\d.]+)(?: \/ ([\d.]+))?\)$/u.exec(value);
+  if (oklch === null) return undefined;
+  const l = Number(oklch[1]) / (oklch[2] === "%" ? 100 : 1);
+  const [r, g, b] = oklchToSrgb8({ c: Number(oklch[3]), h: Number(oklch[4]), l });
+  return [r, g, b, Number(oklch[5] ?? 1)];
+}
+
+/** Each colour the filter row draws that is none of B's `PAGE_COLORS` in `scheme` and not
+ *  transparent (part N's R4: the row is drawn in none but those, the prototype's colours), named
+ *  with where it is drawn. Each page colour is computed from its swatch as
+ *  `e2e/theme.stub.e2e.ts` computes a swatch's 8-bit value (`oklchToSrgb8`). */
+export async function offThePalette(page: Page, scheme: "dark" | "light"): Promise<string[]> {
+  const palette = new Set(
+    Object.values(PAGE_COLORS).map((pair) => oklchToSrgb8(pair[scheme].oklch).join(", "))
+  );
+  return (await filterRowColours(page)).flatMap(({ drawn, value }) => {
+    const srgb = srgbOf(value);
+    if (srgb?.[3] === 0) return [];
+    if (srgb?.[3] === 1 && palette.has(srgb.slice(0, 3).join(", "))) return [];
+    return [`${drawn} is ${value}`];
+  });
+}
+
+/** How a small control of the filter row is drawn, as the prototype draws Keys (part N's R4): its
+ *  border, its corner, its words' size, weight and line, and its colours. */
+export interface ControlLook {
+  readonly background: string;
+  readonly border: string;
+  readonly color: string;
+  readonly font: string;
+  readonly radius: string;
+}
+
+/** The look of each button the filter row draws on the page itself, by its name, as
+ *  `filterRowReading` names it. */
+export function filterRowLooks(page: Page): Promise<Record<string, ControlLook>> {
+  return page.evaluate((selectors) => {
+    const row = document.querySelector(selectors.filterRow);
+    const looks: Record<string, ControlLook> = {};
+    for (const control of row?.querySelectorAll<HTMLElement>("button") ?? []) {
+      if (!control.checkVisibility()) continue;
+      if (control.closest('[role="menu"], [role="dialog"], [hidden]') !== null) continue;
+      const heard = control.cloneNode(true) as HTMLElement;
+      for (const hidden of heard.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+      const style = getComputedStyle(control);
+      looks[(heard.textContent ?? "").replace(/\s+/g, " ").trim()] = {
+        background: style.backgroundColor,
+        border: `${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
+        color: style.color,
+        font: `${style.fontSize} ${style.fontWeight} ${style.lineHeight}`,
+        radius: style.borderTopLeftRadius,
+      };
+    }
+    return looks;
   }, SELECTORS);
 }
 
@@ -324,6 +458,45 @@ export async function rowsWithoutAuthorScrollers(page: Page): Promise<Locator[]>
     { scrollers: AUTHOR_SCROLLERS, selectors: SELECTORS }
   );
   return walked.map((index) => nodeRows(page).nth(index));
+}
+
+/**
+ * Fails where `scope`, or a box inside it, scrolls sideways, or where `scope` reaches past the
+ * box that holds it: R9's question, no part of the page scrolls in two dimensions, for a part
+ * that scrolls down by design and folds what it holds behind its own controls - an open
+ * document, whose editor scrolls down in a box of its own and whose references are folded
+ * (part N's R2). A box counts where it can be scrolled (`overflow-x` of `auto`, `scroll` or
+ * `overlay`) and is wider inside than out, as `e2e/unclipped.ts`'s `"scrolls-only"` reading
+ * counts one; a code block, a table or a picture inside an author's text may scroll sideways
+ * (R17), so a box inside one of those is left out.
+ */
+export async function assertNoSidewaysScroll(scope: Locator): Promise<void> {
+  const scrolls = await scope.evaluate(
+    (element, { scrollers, selectors }) => {
+      const found: string[] = [];
+      for (const node of [element, ...element.querySelectorAll("*")]) {
+        const exempt = node.closest(scrollers.join(", "));
+        if (exempt !== null && exempt.closest(selectors.authorText) !== null) continue;
+        const style = getComputedStyle(node);
+        if (!["auto", "scroll", "overlay"].includes(style.overflowX)) continue;
+        if (node.scrollWidth <= node.clientWidth + 1) continue;
+        const classes = node.getAttribute("class");
+        found.push(
+          `${node.tagName.toLowerCase()}${classes === null ? "" : `.${classes}`}: ${node.scrollWidth} wide in ${node.clientWidth}`
+        );
+      }
+      const holder = element.parentElement?.getBoundingClientRect();
+      const box = element.getBoundingClientRect();
+      if (holder !== undefined && box.right > holder.right + 1) {
+        found.push(
+          `${Math.round(box.right)} past the ${Math.round(holder.right)} its holder ends at`
+        );
+      }
+      return found;
+    },
+    { scrollers: AUTHOR_SCROLLERS, selectors: SELECTORS }
+  );
+  expect(scrolls, scrolls.join(", ")).toEqual([]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1173,3 +1346,106 @@ export const OLD_PAGE_ADDRESSES: Readonly<Record<IssueRoute["kind"], readonly Ad
     },
   ],
 };
+
+// ---------------------------------------------------------------------------------------------
+// INV-2: the states and widths of part N's R9.
+// ---------------------------------------------------------------------------------------------
+
+/** One state of the page R9 reads: Conversation, which is no view on, or one of the four views;
+ *  the node menu open; a document open in place of the outline; or the Outline sheet open. */
+export type PageState =
+  | { readonly kind: "view"; readonly preset: Preset }
+  | { readonly kind: "node-menu" }
+  | { readonly kind: "document" }
+  | { readonly kind: "outline-sheet" };
+
+/** One state of the page at one width of the viewport. */
+export interface StateAtWidth {
+  readonly state: PageState;
+  readonly width: number;
+}
+
+/** No view on, and each of the four views. */
+const VIEWS: readonly PageState[] = PRESET_ORDER.map((preset) => ({ kind: "view", preset }));
+
+/** Each of `states` at each of `widths`, the widths outermost: the page is resized once for every
+ *  state read at that width. */
+function atEachWidth(states: readonly PageState[], widths: readonly number[]): StateAtWidth[] {
+  return widths.flatMap((width) => states.map((state) => ({ state, width })));
+}
+
+/** INV-2's states in which no text the page draws as its own holds an internal word (R9's first
+ *  sentence, `c-documents` (4)): no view, each view, the node menu open and a document open, at
+ *  1440 px and at 390 px. */
+export const WORD_STATES: readonly StateAtWidth[] = atEachWidth(
+  [...VIEWS, { kind: "node-menu" }, { kind: "document" }],
+  [1440, 390]
+);
+
+/** INV-2's states in which no part of the page scrolls in two dimensions (R9's second sentence,
+ *  `c-documents` (5)): no view, each view, the node menu open, a document open and the Outline
+ *  sheet open, at the six widths. */
+export const REFLOW_STATES: readonly StateAtWidth[] = atEachWidth(
+  [...VIEWS, { kind: "node-menu" }, { kind: "document" }, { kind: "outline-sheet" }],
+  [320, 390, 768, 1024, 1280, 1440]
+);
+
+/** How a failure names `state`. */
+export function stateName(state: PageState): string {
+  switch (state.kind) {
+    case "view":
+      return state.preset === "conversation" ? "no view" : `the ${PRESET_NAMES[state.preset]} view`;
+    case "node-menu":
+      return `the ${CONTROL_LABELS.other_nodes} menu open`;
+    case "document":
+      return "the spec open as a document";
+    case "outline-sheet":
+      return "the Outline sheet open";
+  }
+}
+
+/**
+ * Loads issue `key` in `state`, as a reader reaches it, and waits until the page draws it: a
+ * view at its address, with the rows it draws; the node menu at `/artifacts`, the address that
+ * opens it (R6), with its items - at 760 px and below inside the Outline sheet, which that
+ * address opens with it (R4); the issue's spec at its own address, with its editor's words; and
+ * the Outline sheet opened by its control from the issue's address, below 1024 px. From 1024 px
+ * the page draws no Outline control, and the same list stands in the Contents pane beside the
+ * outline, which is drawn open.
+ */
+export async function openPageState(page: Page, key: string, state: PageState): Promise<void> {
+  switch (state.kind) {
+    case "view":
+      await gotoIssue(page, presetPath(key, state.preset));
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(async () => await nodeRows(page).count(), {
+          message: `${stateName(state)} draws no row`,
+        })
+        .toBeGreaterThan(0);
+      return;
+    case "node-menu":
+      await gotoIssue(page, `/issues/${key}/artifacts`);
+      await expect(openMenu(page), "/artifacts does not open the node menu").toBeVisible();
+      await expect(openMenu(page).getByRole("menuitem").first()).toBeVisible();
+      return;
+    case "document":
+      await gotoIssue(page, await specAddress(key));
+      await expect(openedEditor(page), "the spec's address opens no editor").toBeVisible();
+      await expect(openedEditor(page)).toContainText(/\S/u);
+      return;
+    case "outline-sheet": {
+      await gotoIssue(page, `/issues/${key}`);
+      await expectIssuePageDrawn(page);
+      await expect.poll(async () => await nodeRows(page).count()).toBeGreaterThan(0);
+      const drawn = await settledState("the outline's list", [
+        ["Outline control", outlineControl(page)],
+        ["Contents pane", contentsPane(page)],
+      ]);
+      if (drawn === "Contents pane") return;
+      await outlineControl(page).click();
+      await expect(outlineSheet(page), "the Outline control opens no sheet").toBeVisible();
+      return;
+    }
+  }
+}
