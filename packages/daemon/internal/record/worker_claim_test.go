@@ -65,7 +65,10 @@ func TestARolesRowNowIsTheRowWithTheHighestEntry(t *testing.T) {
 		{name: "a row no entry was raised on loses", place: 3, rows: []PhaseRow{
 			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first},
 			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3}}},
-		{name: "two rows on one entry", place: 3, rows: []PhaseRow{
+		{name: "two rows on one entry, the earlier step read first", place: 3, rows: []PhaseRow{
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 3},
+			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3}}},
+		{name: "two rows on one entry, the later step read first", place: 3, rows: []PhaseRow{
 			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 3, Claim: second, Entry: 3},
 			{Role: claim.RoleImplementer, StepTask: "t", StepPlace: 1, Claim: first, Entry: 3}}},
 	} {
