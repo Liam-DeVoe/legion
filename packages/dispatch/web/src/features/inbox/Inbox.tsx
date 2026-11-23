@@ -327,6 +327,13 @@ function MarkCheckbox({
       onChange={(event) =>
         onMark(id, event.nativeEvent instanceof MouseEvent && event.nativeEvent.shiftKey)
       }
+      // On macOS, Safari and Firefox do not focus a checkbox the pointer clicks (MDN, "Clicking a
+      // <button>", the focus table), so the shift-press puts the focus on it here: the range's
+      // keys, the bar's return and the hold read the row that holds the focus. The press keeps
+      // its default action: the three engines the browser suite runs select no text from it.
+      onPointerDown={(event) => {
+        if (event.shiftKey) event.currentTarget.focus({ preventScroll: true });
+      }}
       type="checkbox"
     />
   );
