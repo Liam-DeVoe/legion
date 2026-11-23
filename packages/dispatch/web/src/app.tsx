@@ -25,6 +25,7 @@ import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread
 import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
+import { DefaultProjectRedirect } from "./features/evals/DefaultProjectRedirect";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
@@ -180,13 +181,6 @@ const BroadcastsPage = lazy(() =>
 
 const BroadcastPage = lazy(() =>
   import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
-);
-
-const DeliveryPage = lazy(() =>
-  import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
-);
-const PipelinePage = lazy(() =>
-  import("./features/delivery/PipelinePage").then((module) => ({ default: module.PipelinePage }))
 );
 
 const AnswersPage = lazy(() =>
@@ -1099,12 +1093,15 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
+                <Route element={<ProjectPage />} path="/projects/:key/evals" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
-                <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelinePage />} path="/pipeline" />
+                {/* The Delivery and Pipeline pages are each project's Evals tab now; an old link
+                    lands on the default project's, its window and filters kept. */}
+                <Route element={<DefaultProjectRedirect />} path="/delivery" />
+                <Route element={<DefaultProjectRedirect />} path="/pipeline" />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>

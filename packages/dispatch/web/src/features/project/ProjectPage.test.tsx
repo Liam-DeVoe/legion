@@ -293,6 +293,30 @@ test("renders header, tabs, and the Issues panel; /documents selects Documents",
   }
 });
 
+test("the Evals tab shows on a project with no source, and /evals selects it", async () => {
+  const user = userEvent.setup();
+  const issues = renderPage("/projects/CORE/issues");
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(screen.queryByRole("tab", { name: "Architecture" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Evals" }));
+    expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/evals");
+  } finally {
+    issues.restore();
+  }
+
+  const evals = renderPage("/projects/CORE/evals");
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(screen.getByRole("tab", { name: "Evals" })).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByRole("tabpanel", { name: "Evals" });
+    expect(within(panel).getByRole("region", { name: "Target cards" })).toBeTruthy();
+    expect(screen.queryByRole("tabpanel", { name: "Issues" })).not.toBeInTheDocument();
+  } finally {
+    evals.restore();
+  }
+});
+
 test("shows a compact blocker link only when asks await the viewer", async () => {
   const waiting = renderPage("/projects/CORE", undefined, "alice", [inboxRow()]);
   try {
