@@ -82,7 +82,7 @@ func standingStep(w Walk, issue record.Issue) (standing, bool) {
 		return standing{}, false
 	}
 	step, ok := stepAt(w, issue, standingIn(record.StandsAt(issue)))
-	step.owner = ok && issue.Phase != phase.Held && w.PlaceRole(w.Place) == claim.RoleArchitect
+	step.owner = ok && issue.Phase != phase.Held && w.OwnerAt(w.Place)
 	return step, ok
 }
 

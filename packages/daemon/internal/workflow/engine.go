@@ -1027,17 +1027,17 @@ func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, issue record.I
 
 // completionOf is the phase a completion of role on issue is of, and whether it is current: the
 // work of the place issue's task stands at now. For a run with plan rows it is current exactly
-// where the task runs, issue stands in the phase that place derives, and role is the role that
-// works the place (Walk.RoleAt: a step's role, a role the deployment defines at step among them,
-// and at the retro the role of the agent that does it, plan.RetroAgent); otherwise it is of the
-// phase role left (phase.LeftBy). A run with no plan rows judges by the phase alone (phase.Of), as
-// it always did.
+// where the task runs at its place now (record.RunsAt: it runs, and issue stands in the phase that
+// place derives) and role is the role that works the place (Walk.RoleAt: a step's role, a role the
+// deployment defines at step among them, and at the retro the role of the agent that does it,
+// record.PlaceWorker); otherwise it is of the phase role left (phase.LeftBy). A run with no plan
+// rows judges by the phase alone (phase.Of), as it always did.
 func completionOf(issue record.Issue, w Walk, role claim.Role) (phase.Phase, bool) {
 	if !w.Stored {
 		reported := phase.Of(role, issue.Phase)
 		return reported, reported == issue.Phase
 	}
-	if w.State == record.TaskRunning && issue.Phase == issuePhaseOf(w, w.Place, w.State) && role == w.RoleAt(w.Place) {
+	if record.RunsAt(issue, w.State, w.Place, w.Steps) && role == w.RoleAt(w.Place) {
 		return issue.Phase, true
 	}
 	return phase.LeftBy(role, issue.Phase), false
@@ -1060,24 +1060,18 @@ func judgedReport(issue record.Issue, w Walk, fact intake.HandoffComplete) (phas
 		return issue.Phase, true, nil
 	}
 	reported, current := completionOf(issue, w, fact.Role)
-	if current && w.PlaceRole(w.Place) == claim.RoleArchitect {
+	if current && w.OwnerAt(w.Place) {
 		return phase.LeftBy(fact.Role, issue.Phase), false, nil
 	}
 	return reported, current, nil
 }
 
 // ownerStepRefusal is the refusal of the owner's report of step (from 1, and 0 for the retro) of
-// issue's task on w, nil where that step runs now and its agent is the owner: the task runs at
-// that place, the issue stands in the phase the place derives, and the claim that works the place
-// is the owner's (Walk.PlaceRole is the architect). Its sentence is the one the route complete_step
-// writes too (record.OwnerStepNotRunning), naming where the task stands and who works that place.
+// issue's task on w, nil where that step runs now and its agent is the owner (record.OwnerStepRuns,
+// the rule the route complete_step reads too). Its sentence is the one the route writes as well
+// (record.OwnerStepNotRunning), naming where the task stands and who works that place.
 func ownerStepRefusal(issue record.Issue, w Walk, step int) *intake.Refusal {
-	named := record.TaskPlace{Kind: record.PlaceStep, Position: step}
-	if step == 0 {
-		named = record.TaskPlace{Kind: record.PlaceRetro}
-	}
-	if w.Stored && w.Place == named && w.State == record.TaskRunning && issue.Phase == issuePhaseOf(w, w.Place, w.State) &&
-		w.PlaceRole(w.Place) == claim.RoleArchitect {
+	if record.OwnerStepRuns(issue, w.Task, w.Stored, w.State, step, w.Place, w.Steps) {
 		return nil
 	}
 	return refused("OWNER_STEP_NOT_RUNNING", record.OwnerStepNotRunning(issue, w.Task, w.Stored, w.State, step, w.Place, w.Steps)).Refusal
@@ -1264,13 +1258,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// its plan reads. A completion with no verdict leaves the round to the reviews on GitHub, as
 		// it always has.
 		if fact.Verdict == "pass" || fact.Verdict == "fail" {
-			if err := e.recordStepReview(ctx, tx, *issue, row, fact); err != nil {
-				return intake.Result{}, err
-			}
-			if fact.Verdict == "fail" {
-				return intake.Result{}, e.transition(ctx, tx, *issue, TriggerReviewRejected, returnTo, row, pr, "")
-			}
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
+			return intake.Result{}, e.endByVerdict(ctx, tx, *issue, row, pr, fact, returnTo, TriggerReviewRejected, func() error {
+				return e.transition(ctx, tx, *issue, TriggerReviewApproved, record.TaskPlace{}, row, pr, "")
+			})
 		}
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
@@ -1281,29 +1271,17 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// It ends its step by its verdict, keeping the commit it read (recordStepReview): its pass
 		// is the sign-off's own move (accept), and its fail returns the work as a review's request
 		// for changes does, to the step its returnTo names or to the one its plan reads.
-		if err := e.recordStepReview(ctx, tx, *issue, row, fact); err != nil {
-			return intake.Result{}, err
-		}
-		switch fact.Verdict {
-		case "fail":
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerReviewRejected, returnTo, row, pr, "")
-		case "pass":
-			return intake.Result{}, e.accept(ctx, tx, *issue)
-		}
+		return intake.Result{}, e.endByVerdict(ctx, tx, *issue, row, pr, fact, returnTo, TriggerReviewRejected, func() error {
+			return e.accept(ctx, tx, *issue)
+		})
 	case phase.Step:
 		// A role the deployment defines reports pass or fail and writes no handoff record; its fail
 		// goes back to the step its returnTo names, or to the one its plan reads (returnTarget). A
 		// step of the type review keeps the commit its completion read first, before the move
 		// raises any entry (recordStepReview).
-		if err := e.recordStepReview(ctx, tx, *issue, row, fact); err != nil {
-			return intake.Result{}, err
-		}
-		switch fact.Verdict {
-		case "fail":
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerStepFailed, returnTo, row, pr, "")
-		case "pass":
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerStepPassed, record.TaskPlace{}, row, pr, "")
-		}
+		return intake.Result{}, e.endByVerdict(ctx, tx, *issue, row, pr, fact, returnTo, TriggerStepFailed, func() error {
+			return e.transition(ctx, tx, *issue, TriggerStepPassed, record.TaskPlace{}, row, pr, "")
+		})
 	case phase.Retro:
 		// The completion that ends the retro carries the rating its agent gave the plan, which
 		// planRatingRefusal above took on no other completion, and a plugin before the rating
@@ -1314,6 +1292,26 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, e.rateRetro(ctx, tx, *issue, *fact.PlanRating)
 	}
 	return intake.Result{}, nil
+}
+
+// endByVerdict ends the step issue stands at by the verdict of fact, a current completion of it
+// whose phases row is row: the step keeps the commit its completion read first, before the move
+// raises any entry (recordStepReview); then a fail returns the work by failed, to the step returnTo
+// names or to the one its plan reads (returnTarget), and a pass makes pass, the move the step's
+// phase makes on it. A completion with neither verdict moves nothing. A review step that no review
+// on GitHub decides, an acceptance and a step of a role the deployment defines all end so.
+func (e *Engine) endByVerdict(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, fact intake.HandoffComplete,
+	returnTo record.TaskPlace, failed TriggerKind, pass func() error) error {
+	if err := e.recordStepReview(ctx, tx, issue, row, fact); err != nil {
+		return err
+	}
+	switch fact.Verdict {
+	case "fail":
+		return e.transition(ctx, tx, issue, failed, returnTo, row, pr, "")
+	case "pass":
+		return pass()
+	}
+	return nil
 }
 
 // claimFailed holds the issue whose phase worker's claim failed — a budget ran out — and tells the

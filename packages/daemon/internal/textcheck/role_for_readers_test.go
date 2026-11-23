@@ -130,7 +130,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}: {calls: 1, tests: []string{
 		"TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
 	// The merge's role and the role a step's role runs as; the retro's is its agent's
-	// (plan.RetroAgent), which reads no RoleFor.
+	// (record.PlaceWorker), which reads no RoleFor.
 	{file: "internal/workflow/line.go", fn: "Walk.RoleAt"}: {calls: 2, tests: []string{"TestADeploymentRoleOfAnyTypeStartsAndReports", "TestTheRetroRunsAsTheRoleOfItsAgent"}},
 	// The role whose step a move ends (Engine.transition, Engine.arrive, Engine.holdBeforeRetro and
 	// endOfTransition read it), read by the place on a task with plan rows and by the phase on an

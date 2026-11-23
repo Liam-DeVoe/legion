@@ -65,25 +65,6 @@ func AgentOf(task string, place int, s Step) Agent {
 // Owner says whether a is the owner of its task.
 func (a Agent) Owner() bool { return a.Key == "owner" }
 
-// RetroAgent is who does the retro of task, and the role of that run: the agent and the role of
-// its last step whose role is of the type implementation; where the task has no such step, or that
-// step's key is owner, the owner, with the role implementer, the role of the phase retro, on whose
-// phases row the owner's retro is recorded. types[i] is the type of steps[i]. It reads each step's
-// type, never its role's name, so a role of the deployment or of the plan of the type
-// implementation does the retro of a task whose last such step it is.
-func RetroAgent(task string, steps []Step, types []Type) (Agent, string) {
-	for i := len(steps) - 1; i >= 0; i-- {
-		if i >= len(types) || types[i] != TypeImplementation {
-			continue
-		}
-		if agent := AgentOf(task, i+1, steps[i]); !agent.Owner() {
-			return agent, steps[i].Role
-		}
-		break
-	}
-	return Agent{Key: "owner"}, "implementer"
-}
-
 // StoredAgentName is the name of the agent of step place of task, whose step is s and whose stored
 // name is stored: the last part of that agent's claim token, the one rule every reader of a stored
 // step names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's

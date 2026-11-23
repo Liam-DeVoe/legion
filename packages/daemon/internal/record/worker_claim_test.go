@@ -133,7 +133,7 @@ func TestPhaseRowAtIsTheRowOfARolesStepWhereTheTaskStands(t *testing.T) {
 	if got := PhaseRowAt([]PhaseRow{rows[1], rows[4]}, claim.RoleImplementer, "t", step(1), steps); got.Entry != 9 || got.StepTask != "" {
 		t.Fatalf("PhaseRowAt with the implementer's row of no step = %+v, want that row", got)
 	}
-	// The retro stands after every step for the role of its agent (RetroAgentOf): the role of the
+	// The retro stands after every step for the role of its agent (PlaceWorker): the role of the
 	// task's last step of the type implementation, the implementer where the owner does it. In
 	// `coder checker`, coder of that type, the coder's row at the retro is its row of place 0, the
 	// row the retro's entry is raised on, and its step's row is read while the checker's step runs.

@@ -60,8 +60,9 @@ func (req CompleteStepRequest) completion() HandoffCompleteRequest {
 
 // ownerPlace is where the owner's report of one place finds its issue, read in one read-only
 // transaction: the issue, its plan's running task and steps (no plan rows where stored is false),
-// the role of the place reported (placeRole) and that role's phases row, and the issue's pull
-// request record, nil while none is recorded.
+// the role of the place reported (record.PlaceWorker: the step's own role at a step, the role of the
+// retro's run at the retro, the implementer for the owner's, and none for a step the task does not
+// hold) and that role's phases row, and the issue's pull request record, nil while none is recorded.
 type ownerPlace struct {
 	issue  record.Issue
 	stored bool
@@ -95,7 +96,8 @@ func (s *server) readOwnerPlace(ctx context.Context, key string, named record.Ta
 		}
 		at.stored, at.steps = true, stored.Steps[at.task.Task]
 	}
-	at.role = placeRole(at.task.Task, at.steps, named)
+	worker, _ := record.PlaceWorker(at.task.Task, named, at.steps)
+	at.role = worker.Role
 	rows, err := s.records.Phases(ctx, tx, key)
 	if err != nil {
 		return nil, err
@@ -105,20 +107,6 @@ func (s *server) readOwnerPlace(ctx context.Context, key string, named record.Ta
 		return nil, err
 	}
 	return at, tx.Commit(ctx)
-}
-
-// placeRole is the role of the place named of task on steps: the step's own role at a step, "" for
-// a step the task does not hold, and at the retro the role of the retro's run
-// (record.RetroAgentOf), the implementer for the owner's.
-func placeRole(task string, steps []record.PlanStep, named record.TaskPlace) claim.Role {
-	if named.Kind == record.PlaceStep {
-		if named.Position >= 1 && named.Position <= len(steps) {
-			return claim.Role(steps[named.Position-1].Role)
-		}
-		return ""
-	}
-	_, role := record.RetroAgentOf(task, steps)
-	return claim.Role(role)
 }
 
 // completeStep is the owner's report of a step of its own, `POST /legion/v1/steps/complete`: a step
@@ -160,10 +148,7 @@ func (s *server) completeStep(w http.ResponseWriter, r *http.Request) {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "fact intake is unavailable")
 		return
 	}
-	named := record.TaskPlace{Kind: record.PlaceStep, Position: req.Step}
-	if req.Step == 0 {
-		named = record.TaskPlace{Kind: record.PlaceRetro}
-	}
+	named := record.ReportedPlace(req.Step)
 	at, err := s.readOwnerPlace(r.Context(), req.Issue, named)
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the issue record")
@@ -184,11 +169,7 @@ func (s *server) completeStep(w http.ResponseWriter, r *http.Request) {
 			"the steps of the key owner of %s are its own architect's, %s, and this grant is of %s. This report changed nothing.", issue.Key, owner, grant.Claim))
 		return
 	}
-	stands := plan.RunsAs(string(at.role))
-	if req.Step == 0 {
-		stands = phase.Retro
-	}
-	if !at.stored || at.task.State != record.TaskRunning || at.task.Place != named || issue.Phase != stands || issue.PlaceRole != claim.RoleArchitect {
+	if !record.OwnerStepRuns(issue, at.task.Task, at.stored, at.task.State, req.Step, at.task.Place, at.steps) {
 		s.writeFailure(w, r, http.StatusConflict, "OWNER_STEP_NOT_RUNNING",
 			record.OwnerStepNotRunning(issue, at.task.Task, at.stored, at.task.State, req.Step, at.task.Place, at.steps))
 		return
@@ -223,7 +204,7 @@ func (s *server) completeStep(w http.ResponseWriter, r *http.Request) {
 			"%s of %s ends with no handoff record, and this report names one: report without handoffId and handoffVersion; nothing was recorded", record.PlaceWords(named), issue.Key))
 		return
 	}
-	if at.role == "acceptance" {
+	if at.role == claim.RoleAcceptance {
 		if rating != nil {
 			refusal := intake.PlanRatingUnexpected(what)
 			s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
@@ -261,7 +242,7 @@ func (s *server) completeStep(w http.ResponseWriter, r *http.Request) {
 // sign_off (intake.SignOff), and fail as request_backward_move (intake.BackwardMove) with the
 // report's summary as its reason, to the step its returnTo names, or, where it names none, to the
 // task's first step of the type implementation before the acceptance, as a failed step's work
-// returns (workflow's returnTarget). A fail that names no step, with no such step before it (an
+// returns (record.ReturnTarget). A fail that names no step, with no such step before it (an
 // acceptance that is its task's first step among them), returns the work nowhere: it is the fail
 // of the step itself, applied as the completion of the acceptance's role under the owner's claim
 // (intake.HandoffComplete with the verdict fail), which stops the task and tells its owner, as the
@@ -285,12 +266,7 @@ func (s *server) ownersAcceptance(w http.ResponseWriter, r *http.Request, req Co
 			return
 		}
 	} else {
-		for i, step := range at.steps[:req.Step-1] {
-			if step.Type == plan.TypeImplementation {
-				back = i + 1
-				break
-			}
-		}
+		back, _ = record.ReturnTarget(at.steps, req.Step)
 	}
 	if back < 1 {
 		s.applyFact(w, r, requestFactID("steps/complete"), intake.HandoffComplete{Generation: at.issue.Generation, Issue: req.Issue, Role: at.role,

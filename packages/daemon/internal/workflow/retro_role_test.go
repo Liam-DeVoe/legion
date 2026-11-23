@@ -62,7 +62,7 @@ func assertRetroStartsCoder(t *testing.T, pool *pgxpool.Pool, engine *Engine, ke
 }
 
 // The retro of a task is run by the agent of its last step of the type implementation, as that
-// step's role (plan.RetroAgent): in `coder checker`, coder of the type implementation, the
+// step's role (record.PlaceWorker): in `coder checker`, coder of the type implementation, the
 // checker's pass starts the coder's retro under the coder's own claim, and no implementer; the
 // coder's completion at the retro, with its rating, ends the retro and moves the issue to the
 // merge of its pull request; and a parent held before its retro for a child starts the coder's

@@ -14,14 +14,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// placeRoleCase is a plan of one task a and the types its rows record, as plan.RetroAgent's table
-// holds it (plan/retro_agent_test.go).
+// placeRoleCase is a plan of one task a and the types its rows record, as the table of
+// record.PlaceWorker holds it (record/place_worker_test.go).
 type placeRoleCase struct {
 	steps string
 	types []plan.Type
 }
 
-// placeRoleCases are the plans of plan.RetroAgent's table: a retro that is the implementer's, a
+// placeRoleCases are the plans of record.PlaceWorker's table: a retro that is the implementer's, a
 // keyed implementer's, the owner's for a task with no step of the type implementation, for a task
 // whose only such step is the owner's and for one whose last such step is, and a coder's, a role of
 // the deployment of the type implementation.
@@ -95,7 +95,7 @@ func issueAndWalkAt(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 
 // The running role of an issue names the claim that works the place its task stands at: the
 // architect at a step or a retro the owner does, the agent acceptance at a step acceptance with no
-// key, the role of the retro's agent (plan.RetroAgent) at the retro, and the step's role otherwise.
+// key, the role of the retro's agent (record.PlaceWorker) at the retro, and the step's role otherwise.
 // The move of the task sets it (moveTask), and a read of the issue gives the same (Issue.PlaceRole);
 // RoleAt answers it at each phase a place runs as, and OpenRoleOf, which names no architect, answers
 // none at the owner's place. A hold keeps it for the phase it left, and an issue with no plan rows
@@ -165,9 +165,9 @@ func TestTheRunningRoleNamesTheClaimThatWorksThePlace(t *testing.T) {
 }
 
 // The store's read of the running role (Issue.PlaceRole, a subquery of the issue's plan rows) and
-// the walk's (Walk.PlaceRole) give one answer at every place of every plan of plan.RetroAgent's
-// table: the architect exactly where the agent at the place is the owner (plan.AgentOf at a step,
-// plan.RetroAgent at the retro), else the role that works the place. So the SQL and the one rule
+// the walk's (Walk.PlaceRole) give one answer at every place of every plan of record.PlaceWorker's
+// table: the architect exactly where the agent at the place is the owner (record.Worker.Owner),
+// else the role that works the place. So the SQL and the one rule
 // cannot drift apart.
 func TestThePlaceRoleOfTheStoreIsTheWalks(t *testing.T) {
 	for _, c := range placeRoleCases {

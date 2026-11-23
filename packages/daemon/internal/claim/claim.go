@@ -35,3 +35,8 @@ const (
 // none of Roles, and NewToken never builds a token of it; its one token is ControllerToken. The
 // daemon holds such a claim only when it launches the controller itself (`controller: daemon`).
 const RoleController Role = "controller"
+
+// RoleAcceptance is the role of the step `acceptance` (plan.RunsAs gives it accepting), a role of
+// Legion's that is none of Roles: the claim of the fresh agent of a step `acceptance` with no key
+// takes it, and a step `acceptance:owner` is the owner's, whose claim keeps the architect's role.
+const RoleAcceptance Role = "acceptance"

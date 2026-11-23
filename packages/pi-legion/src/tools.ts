@@ -134,7 +134,7 @@ const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 /** The role the place of each phase runs as where a step of the owner's can stand, so the owner's
  * `complete_step` carries the report a completion by that role would carry (`handoffReport`): the
  * inverse of the daemon's `plan.RunsAs` over Legion's roles and the role acceptance, and at the
- * retro the implementer, whom the owner's retro runs as (`record.RetroAgentOf`). At `step` the
+ * retro the implementer, whom the owner's retro runs as (`record.PlaceWorker`). At `step` the
  * place's role is the issue's `stepRole`; every other phase runs no step of the owner's. */
 const OWNER_PLACE_ROLES: Readonly<Partial<Record<LegionPhase, LegionStepRole>>> = {
   planning: "planner",

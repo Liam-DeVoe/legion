@@ -296,10 +296,10 @@ type Issue struct {
 	// running or stopped (plan_tasks.running_kind step or retro): the architect where the agent
 	// there is the owner of the task (a step of the key owner, or the retro of a task whose last step
 	// of the type implementation is the owner's or that has none), the step's role at a step, and
-	// at the retro the role of the task's last step of the type implementation (plan.RetroAgent's
-	// role); "" with no plan rows, at the merge, and while no place runs. It is read with the issue
-	// from its plan rows, and only read: PutIssue writes nothing of it, and workflow's moveTask sets
-	// it on the issue it moves (Walk.PlaceRole, the same rule).
+	// at the retro the role of the task's last step of the type implementation: the claim's role of
+	// PlaceWorker (Worker.ClaimRole); "" with no plan rows, at the merge, and while no place runs. It
+	// is read with the issue from its plan rows, and only read: PutIssue writes nothing of it, and
+	// workflow's moveTask sets it on the issue it moves (Walk.PlaceRole, the same rule).
 	PlaceRole claim.Role
 }
 
@@ -789,7 +789,7 @@ type PhaseRow struct {
 	EntryMovedBack bool
 	// StepTask and StepPlace are the step this row runs, for an issue with plan rows: the plan's
 	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro, on the
-	// row of the role its agent runs as (the implementer's where the owner does it, RetroAgentOf),
+	// row of the role its agent runs as (the implementer's where the owner does it, PlaceWorker),
 	// and for the merge on the merger's row, written by the start that raises the
 	// entry (workflow's enter). With the issue and the role they are the row's key, so a role that
 	// stands at two steps of a task has a row for each, and each row's handoff, completion, entry and
@@ -2886,7 +2886,7 @@ func RaisedLater(at time.Time, entry int64, thanAt time.Time, than int64) bool {
 // at, whose steps are steps. A role can stand at two steps of a task, one agent doing both, and
 // each run of a step keeps a row of its own (StepTask, StepPlace), so the row read is the row of
 // one of the role's places in the task: its step at at where the step there is the role's; else
-// its latest place before at, the retro, the role of its agent's run (RetroAgentOf), and the
+// its latest place before at, the retro, the role of its agent's run (PlaceWorker), and the
 // merge, the merger's, standing after every step; else its first place after at, so a read or a
 // write before the role's first step reaches the row of that step, as the one row of a role did;
 // and place 0 where the task gives the role no place, so every write of such a role lands on one
@@ -2924,7 +2924,7 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 
 // rolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on task,
 // whose steps are steps: from 1 for a step, 0 for the retro, the merge and a role the task gives
-// no place. The retro is a place of the role its agent runs as (RetroAgentOf), the role of the
+// no place. The retro is a place of the role its agent runs as (PlaceWorker), the role of the
 // task's last step of the type implementation, so the row read there is the row its entry raises.
 func rolePlace(role claim.Role, task string, at TaskPlace, steps []PlanStep) int {
 	// Each place of role, by its rank on the task's line: a step's place from 1, then the retro,
@@ -2936,7 +2936,7 @@ func rolePlace(role claim.Role, task string, at TaskPlace, steps []PlanStep) int
 			stands = append(stands, stand{rank: step.Position, place: step.Position})
 		}
 	}
-	if _, retro := RetroAgentOf(task, steps); role == claim.Role(retro) {
+	if retro, _ := PlaceWorker(task, TaskPlace{Kind: PlaceRetro}, steps); role == retro.Role {
 		stands = append(stands, stand{rank: len(steps) + 1})
 	}
 	if role == phase.RoleFor(phase.Merging) {

@@ -458,7 +458,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err := e.reviveArchitect(ctx, tx, issue); err != nil {
 		return err
 	}
-	if w.Stored && w.PlaceRole(w.Place) == claim.RoleArchitect {
+	if w.OwnerAt(w.Place) {
 		return e.startOwnersStep(ctx, tx, issue, w, told, movedBack)
 	}
 	if !w.Stored && issue.Phase == phase.Accepting {
@@ -486,20 +486,18 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 // worker of that place would be sent, the round's sentences of a review step among it, and writes
 // the run's one start record, which tells the owner that task (enter, whose step token is the
 // owner's, Engine.ownerAgent, and startStep, the one place an owner's run is told). No claim
-// starts. The place's role is the step's own role at a step, the owner's acceptance among them, so
-// its row and its record name the step the owner does; at the retro it is the role of the retro
-// (Walk.RoleAt), the implementer for the owner's. Its two callers are every start of a run of the
-// owner's: start, for a transition, a task started again and a held retro, and StartStepRecord,
-// for a re-admission's promotion, with the phase's resume task.
+// starts. The place's role is its worker's (record.PlaceWorker): the step's own role at a step, the
+// owner's acceptance among them, so its row and its record name the step the owner does; at the
+// retro the role of the retro, the implementer for the owner's. Its two callers are every start of
+// a run of the owner's: start, for a transition, a task started again and a held retro, and
+// StartStepRecord, for a re-admission's promotion, with the phase's resume task.
 func (e *Engine) startOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, told func(Standing) string, movedBack bool) error {
 	at, err := e.standingPart(ctx, tx, issue, w)
 	if err != nil {
 		return err
 	}
-	role := w.RoleAt(w.Place)
-	if step, ok := w.planStepAt(w.Place); ok {
-		role = claim.Role(step.Role)
-	}
+	worker, _ := w.workerAt(w.Place)
+	role := worker.Role
 	_, err = e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	return err
 }

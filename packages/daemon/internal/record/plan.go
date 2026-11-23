@@ -173,18 +173,99 @@ func (s PlanStep) AgentName() claim.Agent {
 	return claim.Agent(plan.StoredAgentName(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}, string(s.Agent)))
 }
 
-// RetroAgentOf is who does the retro of task, whose plan rows are steps, and the role of that run
-// (plan.RetroAgent), read from the type each row records: the agent and the role of its last step
-// of the type implementation, else the owner as the implementer. It is the one reading of the
-// retro's agent from plan rows, which the workflow's walk, the route complete_step and the sentence
-// of OWNER_STEP_NOT_RUNNING all take.
-func RetroAgentOf(task string, steps []PlanStep) (plan.Agent, string) {
-	named := make([]plan.Step, len(steps))
-	types := make([]plan.Type, len(steps))
-	for i, step := range steps {
-		named[i], types[i] = plan.Step{Role: step.Role, Key: step.AgentKey}, step.Type
+// Worker is who works one place of a task on its plan rows (PlaceWorker): the role of the place,
+// the agent that does it, and the place, from 1, of the step that agent was given.
+type Worker struct {
+	// Role is the role of the place: a step's own role, and at the retro the role of its run.
+	Role claim.Role
+	// Agent is the agent that does the place (plan.AgentOf): the owner of the task where its Key is
+	// owner (Worker.Owner).
+	Agent plan.Agent
+	// Step is the place, from 1, of the step whose agent Agent is: the step itself, and at the
+	// retro the task's last step of the type implementation; 0 for the owner's retro of a task with
+	// no such step.
+	Step int
+}
+
+// Owner says whether the owner of the task does the place.
+func (w Worker) Owner() bool { return w.Agent.Owner() }
+
+// ClaimRole is the role of the claim that works the place: the architect where the owner does it,
+// whose claim keeps its role at a step of its own, and Role otherwise.
+func (w Worker) ClaimRole() claim.Role {
+	if w.Owner() {
+		return claim.RoleArchitect
 	}
-	return plan.RetroAgent(task, named, types)
+	return w.Role
+}
+
+// Name is the name of the agent that does the place (PlanStep.AgentName), of its step on steps,
+// the task's rows PlaceWorker read: none where the owner does it, whose claim is no name on the
+// issue.
+func (w Worker) Name(steps []PlanStep) claim.Agent {
+	if w.Owner() || w.Step < 1 || w.Step > len(steps) {
+		return ""
+	}
+	return steps[w.Step-1].AgentName()
+}
+
+// PlaceWorker is who works place of task, whose plan rows are steps, and ok false at the merge, at
+// no act and at a step the task does not hold, which no agent of the plan works. At a step it is
+// the step's own role and agent. At the retro it is read from the type each row records: the agent
+// and the role of the task's last step of the type implementation, else, where the task has no such
+// step or that step's key is owner, the owner, with the role implementer, the role of the phase
+// retro, on whose phases row the owner's retro is recorded. It reads each step's type, never its
+// role's name, so a role of the deployment or of the plan of the type implementation does the retro
+// of a task whose last such step it is.
+//
+// It is the one statement of who works a place of a task: the workflow's walk (Walk.PlaceRole,
+// AgentAt, OwnerAt and RoleAt), the route complete_step, the sentences of OWNER_STEP_NOT_RUNNING and
+// SIGNOFF_NOT_THE_OWNERS, and the place of a role's phases row (PhaseRowAt) all read it, and the
+// store states it again in SQL (storetext.PlaceRoleColumn), which a test holds to this one.
+func PlaceWorker(task string, place TaskPlace, steps []PlanStep) (Worker, bool) {
+	agentOf := func(position int) plan.Agent {
+		step := steps[position-1]
+		return plan.AgentOf(task, position, plan.Step{Role: step.Role, Key: step.AgentKey})
+	}
+	switch place.Kind {
+	case PlaceStep:
+		if place.Position < 1 || place.Position > len(steps) {
+			return Worker{}, false
+		}
+		return Worker{Role: claim.Role(steps[place.Position-1].Role), Agent: agentOf(place.Position), Step: place.Position}, true
+	case PlaceRetro:
+		for i := len(steps) - 1; i >= 0; i-- {
+			if steps[i].Type != plan.TypeImplementation {
+				continue
+			}
+			agent := agentOf(i + 1)
+			if agent.Owner() {
+				return Worker{Role: claim.RoleImplementer, Agent: agent, Step: i + 1}, true
+			}
+			return Worker{Role: claim.Role(steps[i].Role), Agent: agent, Step: i + 1}, true
+		}
+		return Worker{Role: claim.RoleImplementer, Agent: plan.Agent{Key: "owner"}}, true
+	}
+	return Worker{}, false
+}
+
+// ReturnTarget is the step, from 1, that the failed step at position of a task on steps returns
+// its work to when its report names none: the first step before it whose recorded type is
+// implementation. ok is false where no step before it has that type, and for a position that is no
+// step of steps: the work then returns nowhere. A step of a role the deployment defines may stand
+// before its task's implementer, and a stored type that no plan gives may stand anywhere; each
+// reaches that answer. The workflow's return of a failed step (Walk.returnTarget) and the owner's
+// fail of its acceptance (api's ownersAcceptance) both read it.
+func ReturnTarget(steps []PlanStep, position int) (int, bool) {
+	if position < 1 || position > len(steps) {
+		return 0, false
+	}
+	for i, step := range steps[:position-1] {
+		if step.Type == plan.TypeImplementation {
+			return i + 1, true
+		}
+	}
+	return 0, false
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by

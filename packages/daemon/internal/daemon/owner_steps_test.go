@@ -43,7 +43,7 @@ import (
 // holds it, and while the runtime answers that it does not yet, the owner is told nothing. Once
 // the slot holds it, the owner is told its step as one notice owner-step. Its complete_step of
 // step 1, with its handoff record written in its own session and the pull request open, moves the
-// issue to the retro, which is the owner's too (plan.RetroAgent): the end of step 1 writes the
+// issue to the retro, which is the owner's too (record.PlaceWorker): the end of step 1 writes the
 // owner's slot for its own App again, and the retro is told as an owner-step once the slot holds
 // it. The owner's complete_step of the retro with its rating moves the issue to merging, and the
 // merge ends it at done. The records of step 1 and of the retro name the owner's claim and its
@@ -107,7 +107,7 @@ func TestTheOwnerDoesAStep(t *testing.T) {
 
 // A task with no step of the type implementation: the plan `tester` runs the tester with the
 // task's text, and no pull request is ever opened. The tester's pass starts the retro, which is the
-// owner's (plan.RetroAgent): the owner is told it as one notice owner-step and no implementer is
+// owner's (record.PlaceWorker): the owner is told it as one notice owner-step and no implementer is
 // launched. The owner's complete_step of the retro with its rating ends the issue at done, with no
 // merger launched and no production check opened, though the project checks production with the
 // tester; the issue's Dispatch status went testing, retro, done; and the record of the retro names
@@ -406,7 +406,7 @@ func planWithCoder() string {
 
 // The retro of a task whose last step of the type implementation is a role the plan defines runs
 // as that role, on its model: the plan `coder checker`, coder of the type implementation on m-one.
-// The coder's step and the checker's pass, and the retro is the coder's (plan.RetroAgent): the
+// The coder's step and the checker's pass, and the retro is the coder's (record.PlaceWorker): the
 // coder's claim takes it, its launch spec still of the role coder on m-one, the implementer's claim
 // never launched; the coder's completion of the retro with its rating moves the issue to merging,
 // and the merge ends the walk at done.

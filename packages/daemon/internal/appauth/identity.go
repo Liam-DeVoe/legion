@@ -24,9 +24,6 @@ type Planned struct {
 // the deployment nor the issue's plan defines: such a role acts as no App.
 var ErrRoleNotDefined = errors.New("neither the deployment nor the issue's plan defines it")
 
-// roleAcceptance is the role of the step `acceptance`, a role of Legion's that is no claim role.
-const roleAcceptance claim.Role = "acceptance"
-
 // AppRoleFor is the one role-to-App decision, the one place a change of how a role's App is
 // chosen goes. Keep this switch exhaustive over Legion's claim roles, plus the two non-claim
 // roles it also decides: the project controller, and the role acceptance, the fresh agent that
@@ -41,7 +38,7 @@ const roleAcceptance claim.Role = "acceptance"
 // deployed names for it. A role none of the three defines is ErrRoleNotDefined.
 func AppRoleFor(role claim.Role, deployed DeploymentApps, planned Planned) (AppRole, error) {
 	switch role {
-	case claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleController, roleAcceptance:
+	case claim.RoleArchitect, claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleController, claim.RoleAcceptance:
 		return Review, nil
 	case claim.RoleImplementer, claim.RoleMerger:
 		return Implement, nil
