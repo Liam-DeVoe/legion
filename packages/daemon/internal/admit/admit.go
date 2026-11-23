@@ -647,12 +647,13 @@ type phaseWorker struct {
 }
 
 // phaseWorkerOf is issue as a candidate of a repair over phase workers, and whether it is one:
-// an issue of this project whose phase has a worker role (workflow.OpenRoleOf, which reads the
-// role with the issue, so at step it is the role of the running step) and whose work
-// the record shows under way in a tree that does not linger. project is the project's claim
-// token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
-// roots are read from and which the slot repair walks its slots and its issues past review
-// through. entries is the caller's one batched read of the phases rows of its candidates
+// an issue of this project whose place has a worker role (workflow.OpenRoleOf, which reads the
+// role that works the issue's place with the issue: at step the role of the running step, at an
+// accepting a fresh agent works the role acceptance, and none where the owner does the step) and
+// whose work the record shows under way in a tree that does not linger. project is the project's
+// claim token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
+// roots are read from and which the slot repair walks its slots and its issues in accepting, retro
+// or merging through. entries is the caller's one batched read of the phases rows of its candidates
 // (record.Store.PhaseEntries), which the claim of the role's worker is read from
 // (record.WorkerClaimOf): a keyed agent on a step of another role is that step's worker.
 //
@@ -1338,8 +1339,10 @@ func (a *Admission) recordObservation(ctx context.Context, tx pgx.Tx, stored rec
 // facts clear across its whole tree, as do those of an orphan readmitted without carry. An orphan
 // readmitted with carry (one that started a phase) is the same work moving from a finished root to
 // a root of its own, so its phase, phase rows, gate and pull request (with its observed head) carry
-// into the new generation, and its promotion starts both its architect and the role of that
-// carried phase. A merged pull request is never observed as merged again, and a review or an
+// into the new generation, its plan with it, and its promotion starts both its architect and the
+// agent of the place that carried run stands at: the role that works it, or, at a step or a retro
+// the owner does, that architect alone, which the step's start tells of it again (workflow's
+// StartStepRecord). A merged pull request is never observed as merged again, and a review or an
 // acceptance would otherwise rerun work already decided or landed.
 //
 // An issue leaving another tree, a hand-over or an orphan, carried or not, records that tree
@@ -1982,12 +1985,14 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			}
 			switch candidate.Kind {
 			case record.LineReturning:
-				// The transition that sent this issue's work back wrote its worker's task in its
-				// own transaction and left it unclaimable until a slot row of this issue existed
-				// (record.SuperviseRequest.NeedsSlot). The slot above is the whole promotion:
-				// the row is claimable the moment it commits, and the grant wakes the issue's
-				// lifecycle lane (the daemon's projectRecords.PutSlot), so the task is delivered
-				// in the same second rather than at the next sweep.
+				// The transition that sent this issue's work back to a step a worker does wrote
+				// that worker's task in its own transaction and left it unclaimable until a slot
+				// row of this issue existed (record.SuperviseRequest.NeedsSlot); at a step the
+				// owner does it queued no worker's task and told the owner instead (workflow's
+				// tellOwner). The slot above is the whole promotion: the row is claimable the
+				// moment it commits, and the grant wakes the issue's lifecycle lane (the daemon's
+				// projectRecords.PutSlot), so the task is delivered in the same second rather than
+				// at the next sweep.
 				a.log.Info("admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
 			case record.LineWaitingOnIssue:
 				// The wait is over — a candidate still waiting never reaches here, the skip
@@ -2161,21 +2166,22 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // from) and its phase keeps one (record.KeepsSlot). The grant and the release read that one
 // predicate, so no pass hands out a row the next pass would take back.
 //
-// It reads the phase the candidate's record carries rather than the phase its promotion leaves
-// it in, and the two agree wherever this is asked: KeepsSlot refuses the three phases past an
-// issue's review — accepting, retro and merging — a phase of done and a Dispatch status out of
-// the workflow, and no promotion moves an issue into or out of any of them. A first phase
-// starts at phase.Planning from a record standing at admitted, an answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
-// a root whose tree is opened keeps the phase it ran in the tree it left.
+// It reads the phase the candidate's record carries, save for a candidate at admitted, which it
+// judges by the phase its promotion moves it into, its task's first step's (planning on the
+// default steps), so the two agree wherever this is asked: KeepsSlot refuses accepting, retro and
+// merging (in the default steps, the phases past an issue's review), a phase of done and a
+// Dispatch status out of the workflow, and a candidate at admitted whose first step keeps no slot,
+// such as a first step `acceptance`, is promoted on no row. An answered root goes from
+// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and a
+// root whose tree is opened keeps the phase it ran in the tree it left.
 //
 // So a root another tree handed over carrying accepting, retro or merging is a candidate this
 // refuses, and its promotion opens its tree while it holds no row. That follows from the rule
-// and is intended: the work of such a root is its sign-off, its retro and its merge, which
-// write no more of the change, and the cap counts the issues whose change is still to write.
-// The tree opens, the phase's own worker starts on a row the outbox holds for no slot
-// (workflow.StartOrOwe), and the root takes a row again only where its architect sends the work
-// back to a phase that keeps one.
+// and is intended: the work of such a root there writes no more of the change, and the cap counts
+// the issues whose change is still to write. The tree opens, the agent of its place starts on a
+// row the outbox holds for no slot (workflow.StartOrOwe), or is told where it is the owner, and the
+// root takes a row again only where its work moves to a phase that keeps one: sent back, or on to
+// a later step whose phase keeps one.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
@@ -2549,9 +2555,11 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 }
 
 // startMidPhaseMembers brings back the roles that have run of every member of the tree promotion
-// has just opened, and gives the one role whose phase the member stands in the task that carries
-// that phase on. A hand-over turns a child into that root while preserving its phase, so its phase
-// role needs the same resume start ordinary mid-phase children receive
+// has just opened, and gives the role that works the place the member stands at, where a worker
+// works it, the task that carries that phase on; at a place the owner does no worker starts, and
+// the start of the member's step tells the owner (workflow's StartStepRecord). A hand-over turns a
+// child into that root while preserving its phase, so the worker of its place needs the same
+// resume start ordinary mid-phase children receive
 // (workflow's Engine.ResumeTask, which says to carry the phase's work on and names no head, since a
 // merger reads the head it merges on GitHub). A root promoted held, which only a hand-over leaves
 // (every other re-admission starts its root at admitted), starts no worker. The hold's first
@@ -2591,7 +2599,8 @@ func ownSlots(issues []record.Issue, slots []record.Slot) []record.Slot {
 //
 // The claims are each stored claim of the member (record.Store.IssueClaims), a keyed agent's and a
 // role of the deployment's among them, and the phase's owner is the agent of the step the member
-// stands in, read with the member (record.Issue.RoleAt, workflow's PromotedWorkerClaim).
+// stands in, read with the member (record.Issue.RoleAt, workflow's PromotedWorkerClaim), and none
+// where that agent is the architect.
 //
 // What an issue waits on is deliberately not read here: every member this starts is mid-phase,
 // work already under way, and a member standing at admitted is passed over, since nothing of it
@@ -2620,8 +2629,8 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	}
 	type midPhaseMember struct {
 		issue record.Issue
-		// owner is the role whose phase the member stands in, empty where that phase is an
-		// architect's (accepting).
+		// owner is the role that works the place the member stands at (record.Issue.RoleAt), empty
+		// where that role is the architect: an acceptance, or any other step or retro, the owner does.
 		owner  claim.Role
 		claims []comeBack
 	}
@@ -2650,10 +2659,11 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		if member.Phase == phase.Admitted {
 			return nil
 		}
-		// Accepting's role is an architect, which no phase start brings back here: the root's is
-		// promotion's own start, and a child's own comes back below with the member's other roles
-		// that have run. At step the role is the running step's, read with the member
-		// (record.Issue.RoleAt), since no phase of Legion's names it.
+		// The architect, the role of a place the owner does (its acceptance, or any other step or
+		// retro of its), is no phase owner brought back here: the root's is promotion's own start,
+		// and a child's own comes back below with the member's other roles that have run. The role
+		// is read with the member (record.Issue.RoleAt): at step the running step's, which no phase
+		// of Legion's names, and acceptance for the fresh agent of a step `acceptance` with no key.
 		owner := member.RoleAt(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
@@ -2756,10 +2766,11 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			}
 		}
 		// The member's step starts again with the tree, whatever the promotion starts of it: a
-		// phase worker's start above began its run already, and accepting's (whose role is the
-		// architect that owns the member, workflow's ownerAgent: its own where a start of it
-		// queued above will run), a held member's (whose hold starts none) and a role
-		// workflow.StartFor finds already started begin it here. The store's run mark decides
+		// phase worker's start above began its run already, and a place the owner does (whose
+		// agent is the architect that owns the member, workflow's ownerAgent: its own where a start
+		// of it queued above will run; this start tells it its step, workflow's tellOwner), a held
+		// member's (whose hold starts none) and a role workflow.StartFor finds already started begin
+		// it here. The store's run mark decides
 		// (workflow's StartStepRecord): a run still open goes on and gets no second start — the
 		// one a start above began, and the merge step of a member held from merging, which the
 		// linger left open and the hold's retry goes on with. A member its plan holds, a stopped
@@ -2875,8 +2886,8 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // statement can disagree with the pass. Every role of the daemon is inside it, the root architect
 // among them.
 //
-// Its domain is the issues holding one of the cap's slots and this project's issues that stand
-// past their review (record.PastReview, the complement of the phases that keep a row), by key
+// Its domain is the issues holding one of the cap's slots and this project's issues in accepting,
+// retro or merging (record.PastReview, the complement of the phases that keep a row), by key
 // and once each, and beside them the architect of each root released for a wait
 // (readSlotHolders says why that root's architect alone). The second half is there because such
 // an issue holds no row at all now (record.KeepsSlot) and its worker would otherwise be repaired
@@ -2886,7 +2897,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The second half asks of the record the three terms the first half gets from the row itself,
 // and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in the
-// workflow, its tree running and its root not lingering, while an issue past its review is in
+// workflow, its tree running and its root not lingering, while an issue in those phases is in
 // the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
 // every record that is not done, a parked one included. So this half asks each of the three —
 // record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
@@ -2899,10 +2910,10 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // record.TreeRuns is asked of each such issue's root rather than record.RunningRoots being
 // built once for the call: the set costs a walk of every record of the project and a map the
 // size of it on every pass, while the rule asked here costs two map lookups for each issue
-// past its review, of which a healthy project has a handful.
+// in those phases, of which a healthy project has a handful.
 //
-// Only the role of each candidate's current phase is read (workflow.OpenRoleOf, which at step is
-// the role of the running step, in the selection both repairs over phase workers make,
+// Only the role that works each candidate's place is read (workflow.OpenRoleOf, none where the
+// owner does that step, in the selection both repairs over phase workers make,
 // phaseWorkerOf), and a root's own architect (rootArchitectOf), so a role the issue's phase has
 // left is no part of the answer: its phases row keeps the entry it was last handed work on, and
 // nothing here would ever send that work again. The phase's own worker is held where a worker of
@@ -2921,7 +2932,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // answers false for a root at admitted once its design gate has opened, where the architect is
 // still the only role at work on the root itself, and a relaunched architect of exactly such a
 // root is the measured defect (dispatch://INFRA-2614). The architect of every root of the domain
-// is weighed here, slotted, past its review or released for a wait, and the reach that decides
+// is weighed here, slotted, in those three phases or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
 // while it stands in the run that hand-over carried it into, and a root past admitted under its
@@ -2935,7 +2946,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // architects this names are exactly those the pass sends a start to, and the sweep's gate opens
 // for no root the pass would send nothing.
 //
-// The slots are walked here, in the order the store answered, then the issues past their review
+// The slots are walked here, in the order the store answered, then the issues in those phases
 // in the order the pass holds them, and the candidates those two halves make are what the
 // selection is given: it is the tick's silent list that walks the project's live issues
 // (silentWorkers). The roots released for a wait come last and give that selection nothing,
@@ -3097,8 +3108,8 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		}
 		// The architect of a root is weighed beside the phase's worker, because two roles can
 		// stand on one issue: a root at admitted holds no phase worker at all, and a root a
-		// hand-over carried in has both its phase's worker and an architect that has still to
-		// be told the tree is its own.
+		// hand-over carried in has its place's worker, where the place is not the owner's own, and
+		// an architect that has still to be told the tree is its own.
 		if architect, selected := a.rootArchitectOf(project, c.issue); selected {
 			hold(architect, c.admittedAt)
 		}
