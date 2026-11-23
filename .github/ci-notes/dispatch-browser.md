@@ -612,9 +612,9 @@ job 138020620825, its record artifact's weed.log) each 1 GB volume took 2.5 to 3
 bucket's grow took 16.8 s, the next bucket's assign was cancelled at 10 s ("failing to
 assign a file id: rpc error: code = Canceled"), and `artifacts.e2e.ts` "the artifacts tab
 filter narrows rows by name and kind" failed on its upload's 502 twice. In main's merge run
-45242914629 and in attempt 1 of that run, every leg grew its 42 volumes with no grow longer
-than 1.0 s. Without the reservation a volume is an empty file that fills as it is written, as
-much as the suite's uploads need, and its 1,024 MB limit is unchanged.
+45242914629 and in attempt 1 of run 45261148766, every leg grew its 42 volumes with no grow
+longer than 1.0 s. Without the reservation a volume is an empty file that fills as it is
+written, as much as the suite's uploads need, and its 1,024 MB limit is unchanged.
 
 The two flags after those, `-master.raftHashicorp -master.raftBootstrap`, are this job's own.
 A one-node master on weed's default raft elects itself only after about 19 s: the log of
@@ -629,10 +629,11 @@ and read back: 31 to 37 s with the default raft, 10.5 to 13 s with these two fla
 run, so there is no earlier raft state to resume.
 
 So, for whoever moves the seaweedfs row of .github/ci-images.yaml to a new version:
-read that image's /entrypoint.sh again and reconcile the three image flags with its `server`
-case, because they are the script's and this job runs the binary without it. The row
-pins a digest, so the entrypoint cannot change under this job between bumps, which is
-what makes the rule a read at bump time rather than a check on every run. Read it with
+read that image's /entrypoint.sh again and reconcile the image's flags with its `server`
+case - the two this job passes, and the one it leaves out for the reason above - because they
+are the script's and this job runs the binary without it. The row pins a digest, so the
+entrypoint cannot change under this job between bumps, which is what makes the rule a read at
+bump time rather than a check on every run. Read it with
 `crane export ghcr.io/cybermonklabs/legion/ci@<the row's digest> - | tar -xO entrypoint.sh`.
 
 ## What the shard job downloads in place of a Go build
