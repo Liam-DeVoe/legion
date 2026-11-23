@@ -2632,8 +2632,12 @@ func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 // claim: that suspension holds until
 // the operator resumes the claim. A launch that fails is charged to the claim's launch budget like
 // any other, so a claim the rule resumes that keeps failing fails once the budget is spent, and a
-// failed claim is never resumed by rule. A claim recording a session it does not hold is not
-// resumed by rule either (resumeRefusal): it stays suspended, and the line says why.
+// failed claim is never resumed by rule. A claim whose last launch its issue's pod refused is
+// refused while that pod stands (podStillRefuses), before its session is asked about, as resume
+// asks them: the refusal answers runtime.ErrAwaitsPodUpdate, on which an outbox start waits for the
+// pod (internal/daemon's start), whatever the session's own answer would have been. A claim
+// recording a session it does not hold is not resumed by rule either (resumeRefusal): it stays
+// suspended, and the line says why.
 func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	resume := ev.(RequestRuleResume)
 	rule := resume.Reason
@@ -2644,13 +2648,13 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.startHolds(ctx, resume.Start); err != nil {
 		return err
 	}
-	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
-		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
-		return nil
-	}
 	if err := m.podStillRefuses(); err != nil {
 		m.log.Info("supervise: not resumed by rule: the pod that refused its last launch still stands", "rule", rule, "error", err)
 		return err
+	}
+	if err := m.resumeRefusal(ctx, "resume by rule"); err != nil {
+		m.log.Info("supervise: not resumed by rule: the claim records a session it does not hold", "rule", rule, "error", err)
+		return nil
 	}
 	m.log.Info("supervise: resuming by rule", "rule", rule, "suspendedBy", m.claim.SuspendedBy)
 	return m.revive(ctx, exemptWake(ev), resume.Start, nil)
