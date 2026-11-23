@@ -43,7 +43,7 @@ type settlementReconciliation struct {
 	retracted []model.Ask
 	// answeredGone is whether an answered ask of the document has no block in the tree reconciled
 	// - a row no block matched - which alone can make the version a person's removal of its block
-	// (holdSettledRemovals), so a settlement whose tree holds every answered ask's block reads no
+	// (holdRoomRemovals), so a settlement whose tree holds every answered ask's block reads no
 	// removal.
 	answeredGone bool
 	// owedCopies are the other documents showing a copy of an ask this settlement retracts, or of
@@ -464,11 +464,13 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, s
 // answer's words while another build serves (wroteAnswerWords), for withholdAnswersWithoutRoom to
 // weigh. A block that already held the words its write leaves - one whose repair cleared its
 // `invalid` or moved a copy's provenance - keeps them: they are in the document settlement read
-// and add nothing to it, and the release before weighed only a repair that wrote an answer.
-//
-// kept for one release: roll-window-attributes
+// and add nothing to it, and the release before weighed only a repair that wrote an answer. The
+// write stays, settlement's one write to a block of an ask (G1); the record of the words it wrote
+// goes with the roll window.
 func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
+	// kept for one release: roll-window-attributes
 	found := maps.Clone(node.Attrs)
+	// kept for one release: roll-window-attributes
 	repair, eventAt := len(r.repairs), len(r.events)
 	if event == nil {
 		eventAt = -1
@@ -477,6 +479,7 @@ func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID str
 	if !r.repairAsk(node, blockID, write, event) {
 		return false
 	}
+	// kept for one release: roll-window-attributes
 	if twoBuilds && wroteAnswerWords(found, node) {
 		r.inStep = append(r.inStep, answerInStep{
 			node: node, found: found, write: write, withheld: askReadableWriteWithheld(ask, copied),
@@ -489,6 +492,8 @@ func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID str
 // wroteAnswerWords reports whether node, an ask block a write left, holds an answer's words
 // (answerWords) that found, its attributes before the write, did not: a selection or words found
 // held none of, or held another value of.
+//
+// kept for one release: roll-window-attributes
 func wroteAnswerWords(found pmdoc.Attrs, node *pmdoc.Node) bool {
 	for _, name := range answerWords {
 		value, held := node.Attrs[name]

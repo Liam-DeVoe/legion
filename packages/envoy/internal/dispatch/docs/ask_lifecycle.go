@@ -702,10 +702,10 @@ func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 // another build serves, whose pages read the block's state from it, and once the fleet is one
 // build none of the seven attributes a version can store (withoutStoredAskAttributes), since a
 // block that has no ask row and is no copy keeps none of them (R10); the text routes answer it
-// resolved in their asks (textAsks). It reports whether it changed the block.
-//
-// kept for one release: roll-window-attributes
+// resolved in their asks (textAsks). It reports whether it changed the block. The one-build write
+// is R10's and stays; the roll window's branch goes with it.
 func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
+	// kept for one release: roll-window-attributes
 	if twoBuilds {
 		return resolveUnindexedAskBlock
 	}

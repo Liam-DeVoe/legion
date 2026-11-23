@@ -160,14 +160,7 @@ func withoutAddedShapedPointers(tree *pmdoc.Node, added map[string][]string, dec
 		if len(kept) == len(held) {
 			return node, false
 		}
-		shown := *node
-		shown.Attrs = maps.Clone(node.Attrs)
-		if len(kept) == 0 {
-			delete(shown.Attrs, shapedAttribute)
-		} else {
-			shown.Attrs[shapedAttribute] = kept
-		}
-		return &shown, true
+		return withShapedPointers(node, kept), true
 	})
 }
 
@@ -193,6 +186,76 @@ func shapedPointersOf(node *pmdoc.Node) []string {
 	return nil
 }
 
+// withShapedPointers is a copy of node, an ask block, holding pointers as its `shaped` value, and
+// no such attribute where pointers is empty. node itself is left as it was.
+func withShapedPointers(node *pmdoc.Node, pointers []string) *pmdoc.Node {
+	shown := *node
+	shown.Attrs = maps.Clone(node.Attrs)
+	if len(pointers) == 0 {
+		delete(shown.Attrs, shapedAttribute)
+	} else {
+		shown.Attrs[shapedAttribute] = pointers
+	}
+	return &shown
+}
+
+// restoredShape is what the restore's write did to the `shaped` pointers of one ask block it wrote
+// into the spec (decisionStepCases.restoredShaped), beside the pointers the block held as the spec
+// last held it (restoredBlock.held), which the write keeps as each reads once the pass is written
+// (restoredPointers): added is each pointer it gave the block that the block held none of - a
+// pointer of the decisions document's block of its ask, moved with it, and a spec block a section
+// that restates its ask links - and moved is each pointer the block held that it rewrote, to where
+// that pointer reads then, "" where it names no block then (movedPointer). They are all of the
+// block's pointers restoreCase leaves out of its comparison with the block the person approved
+// (restoredAskBlocks): a pointer an agent gave the block, or took off it, since the approval is a
+// difference no case carries.
+//
+// kept for one release: decisions-step
+type restoredShape struct {
+	added []string
+	moved map[string]string
+}
+
+// approvedBlock is node, the block the approved version holds under the restored block's id, with
+// each of its pointers the restore's write rewrote on the block it wrote (moved) read as rewritten,
+// left out where rewritten to no block, and every other pointer as it stands.
+//
+// kept for one release: decisions-step
+func (shape restoredShape) approvedBlock(node *pmdoc.Node) *pmdoc.Node {
+	held := shapedPointersOf(node)
+	if len(shape.moved) == 0 || len(held) == 0 {
+		return node
+	}
+	pointers := make([]string, 0, len(held))
+	for _, pointer := range held {
+		if to, moved := shape.moved[pointer]; moved {
+			pointer = to
+		}
+		if pointer != "" {
+			pointers = appendUnique(pointers, pointer)
+		}
+	}
+	return withShapedPointers(node, pointers)
+}
+
+// writtenBlock is node, the block the restore's write wrote, without the pointers that write added
+// (added), every other pointer kept in its order.
+//
+// kept for one release: decisions-step
+func (shape restoredShape) writtenBlock(node *pmdoc.Node) *pmdoc.Node {
+	if len(shape.added) == 0 {
+		return node
+	}
+	// shapedPointersOf answers a list of its own, which the cut may reorder in place.
+	held := shapedPointersOf(node)
+	count := len(held)
+	kept := slices.DeleteFunc(held, func(pointer string) bool { return slices.Contains(shape.added, pointer) })
+	if len(kept) == count {
+		return node
+	}
+	return withShapedPointers(node, kept)
+}
+
 // decidedAskBlocks is each ask block of a version, as asksAgreeWithTheirNodes read it (shown),
 // whose ask holds an answer, by block id: its own document's row, or the source of a copy, read
 // answered (asks.StateAnswered).
@@ -216,10 +279,11 @@ func decidedAskBlocks(shown versionAsks) map[string]bool {
 // decisions document moved, open ones among them (D1): one the approved version does not hold
 // under its id, and one it holds under that id byte for byte as the person approved it
 // (sameAskBytes) - its question and options with every link, code span and sub-list they hold,
-// multiple and urgency. A block whose words or bytes moved since is not among them, so the
-// restore that returns it is a difference no case carries (R7) and the restore reports the
-// approval superseded, and neither is a block an agent wrote there.
-func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool) map[string]bool {
+// multiple and urgency, and its `shaped` pointers but for what the restore's own write did to
+// them (shaped, restoredShape). A block whose words, bytes or pointers moved since is not among
+// them, so the restore that returns it is a difference no case carries (R7) and the restore
+// reports the approval superseded, and neither is a block an agent wrote there.
+func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool, shaped map[string]restoredShape) map[string]bool {
 	start, end := decisionsPart(version)
 	if start < 0 {
 		return nil
@@ -231,7 +295,7 @@ func restoredAskBlocks(approved, version *pmdoc.Node, written map[string]bool) m
 		if child.Type != "ask" || !written[id] {
 			continue
 		}
-		if held, approvedHeld := before[id]; approvedHeld && !sameAskBytes(held, child) {
+		if held, approvedHeld := before[id]; approvedHeld && !sameAskBytes(shaped[id].approvedBlock(held), shaped[id].writtenBlock(child)) {
 			continue
 		}
 		restored[id] = true
@@ -251,17 +315,16 @@ func sameAskBytes(a, b *pmdoc.Node) bool {
 }
 
 // askBytes is node, an ask block, as a document holding it alone renders it, without what other
-// cases weigh or what no approval covers: the server-owned attributes (askServerAttributeNames,
-// attributeRemovalCase's), its `shaped` pointers (the conversion's ties, outside what an approval
-// of a spec covers: conversionCase) and the readings it closes with (readingCase's). What is left
-// is what the person read - its question and options, each link, code span and sub-list among
-// them, urgency and multiple - under its id.
+// cases weigh: the server-owned attributes (askServerAttributeNames, attributeRemovalCase's) and
+// the readings it closes with (readingCase's). What is left is what the person approved of it -
+// its question and options, each link, code span and sub-list among them, urgency, multiple and
+// its `shaped` pointers - under its id; the pointers the restore's own write changed are taken
+// off before (restoredShape).
 func askBytes(node *pmdoc.Node) (string, error) {
 	attrs := maps.Clone(node.Attrs)
 	for _, name := range askServerAttributeNames {
 		delete(attrs, name)
 	}
-	delete(attrs, shapedAttribute)
 	content, _ := pmdoc.TypedContent(node)
 	return blockMarkdown(&pmdoc.Node{Type: node.Type, Attrs: attrs, Children: content})
 }

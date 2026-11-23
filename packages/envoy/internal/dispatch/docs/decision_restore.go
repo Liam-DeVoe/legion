@@ -173,8 +173,9 @@ const issueDocumentColumns = `a.id::text, a.ref_key, a.issue_key, coalesce(a.pro
 // address of a copy of the block the decisions document holds, "" where it holds none), the block
 // of a document of the issue it moves out of where that document still holds it (moved), for the
 // main shape the block as the spec's last version holding it held it (held, removalOf), the spec
-// blocks it shaped, the readings it holds, and, for the main shape, what the restore read of the
-// version that left the block out (RestoredAsk.Read).
+// blocks it shaped, the readings it holds, for the main shape what the restore read of the
+// version that left the block out (RestoredAsk.Read), and what the write of its block did to the
+// `shaped` pointers beside the block's own (shape: restoredPointers, movedBlockOf).
 //
 // kept for one release: decisions-step
 type restoredBlock struct {
@@ -189,6 +190,7 @@ type restoredBlock struct {
 	shaped   []string
 	readings []*pmdoc.Node
 	read     string
+	shape    restoredShape
 }
 
 // declinedAsk is one answered ask the restore declines to return (removalOf): the person who
@@ -782,8 +784,10 @@ type specRemoval struct {
 // version after the answer credits her whatever else it holds, an agent's drop of the block among
 // it (answerersVersion). In every later version she counts as any person does. This build's own
 // settlement records a person's removal of an answered ask's block as the version is written
-// (holdSettledRemovals), so a version this build settled with the block gone, its answerer among
-// its authors, has its ask declined before this reads it (readState's removed).
+// (holdRoomRemovals), and so does every write that versions the room in a settlement's place - an
+// upload, a snapshot, a named version - so a version this build wrote with the block gone, its
+// answerer among the room's authors, has its ask declined before this reads it (readState's
+// removed).
 //
 // It is the one test of a person's removal, which the restore reads (removalOf) and the store
 // census's dangling counter reads its returning set by (ReturnDeclined). It writes nothing.
@@ -2178,10 +2182,11 @@ func withDecisionsPartBlocks(children, blocks []*pmdoc.Node, pointer func(*pmdoc
 func (r *issueRestore) restoredAskBlock(ctx context.Context, restore *restoredBlock, twoBuilds bool, nodes map[string]askNodeAnswer) (*pmdoc.Node, error) {
 	decided := model.NewAskEditPrevious(restore.row)
 	attrs := pmdoc.Attrs{pmdoc.BlockIDAttr: restore.id, "urgency": decided.Urgency, "multiple": decided.Multiple}
-	shaped, err := r.restoredPointers(ctx, restore)
+	shaped, shape, err := r.restoredPointers(ctx, restore)
 	if err != nil {
 		return nil, err
 	}
+	restore.shape = shape
 	if len(shaped) > 0 {
 		attrs[shapedAttribute] = shaped
 	}
@@ -2246,23 +2251,47 @@ func askBlockFrom(attrs pmdoc.Attrs, content, readings []*pmdoc.Node, decided mo
 
 // restoredPointers is the `shaped` value of restore's block, R6's "its `shaped` tuples stay
 // intact": the pointers the block held - as the spec last held it (held) and as the decisions
-// document holds it (moved) - each as it reads once the pass is written (movedPointers), then the
-// spec blocks the sections that restate its ask link (specPointers), each once.
+// document holds it (moved) - each as it reads once the pass is written (movedPointer), then the
+// spec blocks the sections that restate its ask link (specPointers), each once; and what the pass
+// did to the pointers the spec last held the block with (restoredShape) - each it rewrote, and
+// each other pointer it gives the block - which restoreCase leaves out of its comparison with the
+// block the person approved.
 //
 // kept for one release: decisions-step
-func (r *issueRestore) restoredPointers(ctx context.Context, restore *restoredBlock) ([]string, error) {
+func (r *issueRestore) restoredPointers(ctx context.Context, restore *restoredBlock) ([]string, restoredShape, error) {
 	var pointers []string
-	for _, block := range []*pmdoc.Node{restore.held, restore.moved} {
-		if block == nil {
-			continue
+	var shape restoredShape
+	if restore.held != nil {
+		for _, pointer := range shapedPointersOf(restore.held) {
+			to, stands, err := r.movedPointer(ctx, pointer)
+			if err != nil {
+				return nil, restoredShape{}, err
+			}
+			if !stands {
+				to = ""
+			}
+			if to != pointer {
+				if shape.moved == nil {
+					shape.moved = map[string]string{}
+				}
+				shape.moved[pointer] = to
+			}
+			if to != "" {
+				pointers = appendUnique(pointers, to)
+			}
 		}
-		held, err := r.movedPointers(ctx, shapedPointersOf(block))
-		if err != nil {
-			return nil, err
-		}
-		pointers = appendUnique(pointers, held...)
 	}
-	return appendUnique(pointers, r.specPointers(restore.shaped)...), nil
+	own := len(pointers)
+	if restore.moved != nil {
+		moved, err := r.movedPointers(ctx, shapedPointersOf(restore.moved))
+		if err != nil {
+			return nil, restoredShape{}, err
+		}
+		pointers = appendUnique(pointers, moved...)
+	}
+	pointers = appendUnique(pointers, r.specPointers(restore.shaped)...)
+	shape.added = pointers[own:len(pointers):len(pointers)]
+	return pointers, shape, nil
 }
 
 // movedPointers is pointers, the `shaped` values of a block the restore moves, each as it reads
@@ -2385,6 +2414,8 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock,
 		if len(pointers) > 0 {
 			node.Attrs[shapedAttribute] = pointers
 		}
+		// The spec held no block of it: every pointer it carries in is the pass's own.
+		restore.shape = restoredShape{added: pointers}
 	}
 	// kept for one release: roll-window-attributes
 	if !twoBuilds {
@@ -2444,9 +2475,11 @@ func (r *issueRestore) stepCasesFor(document string) decisionStepCases {
 		return steps
 	}
 	steps.restored, steps.decisions, steps.headingAdded = map[string]bool{}, map[string]bool{}, r.headingAdded
+	steps.restoredShaped = map[string]restoredShape{}
 	for _, restore := range r.restores {
 		if !restore.joins {
 			steps.restored[restore.id] = true
+			steps.restoredShaped[restore.id] = restore.shape
 		}
 	}
 	for _, converted := range r.sections {

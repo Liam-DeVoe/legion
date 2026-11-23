@@ -417,8 +417,9 @@ func main() {
 	// install is here, beside the migration run: a process serving on a schema that is not the
 	// store's would hold documents to types the deployment has moved on from, so a failure
 	// stops the boot as a failed migration does. The reinstall on each change is a loop of its
-	// own, started beside the other woken loops below.
-	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+	// own, started beside the other woken loops below. Each opens the pool's transactions, so
+	// each marks its context for the pool's nested-acquire guard (store.WithTransactionTracking).
+	if err := schemanodes.InstallFromStore(store.WithTransactionTracking(ctx), database.Pool); err != nil {
 		slog.Error("dispatch: install the block schema from the store", "error", err)
 		os.Exit(1)
 	}
@@ -950,7 +951,7 @@ func main() {
 			}
 			documentService.CloseDocumentSockets()
 		},
-	}).Run(ctx)
+	}).Run(store.WithTransactionTracking(ctx))
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
 	// functions set it from the deploy on, and this labels the rows stored before it, in

@@ -104,6 +104,7 @@ func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, 
 		writeCensusFailure(errOut, err)
 		return 2
 	}
+	// kept for one release: decisions-documents-fn
 	if !report.Absent {
 		decisions, err := readDecisionsCensus(ctx, databaseURL)
 		if err != nil {
@@ -149,6 +150,8 @@ func versions(ctx context.Context, databaseURL string, out, errOut io.Writer) in
 
 // readDecisionsCensus reads what the decisions step's third phase still owes
 // (docs.ReadDecisionsCensus) in a read-only snapshot on a connection of its own.
+//
+// kept for one release: decisions-documents-fn
 func readDecisionsCensus(ctx context.Context, databaseURL string) (graphcensus.DecisionsCensus, error) {
 	conn, err := pgx.Connect(ctx, databaseURL)
 	if err != nil {

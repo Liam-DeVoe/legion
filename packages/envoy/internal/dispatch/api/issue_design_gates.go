@@ -46,6 +46,7 @@ import (
 // 20261114020013_design_gates_holds), and the superseded-approval advice answers such a row by the
 // project's list (supersededApprovalGates).
 type issueDesignGate struct {
+	// kept for one release: steps-write-admits
 	Step       string `json:"step" enum:"decisions,criteria,spec"`
 	ArtifactID string `json:"artifact_id"`
 	Holds      *bool  `json:"holds"`
@@ -65,6 +66,7 @@ type issueDesignGates struct {
 // step or no document, and takes one with no holds, which every daemon older than the field
 // publishes, and stores it as null.
 type issueDesignGateInput struct {
+	// kept for one release: steps-write-admits
 	Step       string `json:"step" enum:"decisions,criteria,spec" required:"true"`
 	ArtifactID string `json:"artifact_id" required:"true"`
 	Holds      *bool  `json:"holds"`
@@ -111,6 +113,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	gates := make([]issueDesignGate, 0, len(*input.Gates))
 	for _, entry := range *input.Gates {
 		gate := issueDesignGate(entry)
+		// kept for one release: steps-write-admits
 		if gate.Step != retiredDecisionsStep && !slices.Contains(model.GatedStepsKnown, gate.Step) {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", ")))
