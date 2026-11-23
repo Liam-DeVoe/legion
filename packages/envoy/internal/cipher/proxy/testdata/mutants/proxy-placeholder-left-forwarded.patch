@@ -1,6 +1,6 @@
 # proxy-placeholder-left-forwarded: a request that still carries a placeholder after the swap - an
 # ended grant's, another session's, a second grant's beside the one it is handled for, or one outside
-# the headers its entry names - goes upstream with it, where the proxy refuses it.
+# the headers its entry names - goes upstream with it, and the service sees it, where the head refuses it.
 # must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
 # must fail: TestARenewedGitHubGrantsEndedPlaceholderIsRefused
 # must fail: TestOneRequestIsHandledForOneNameOfTheGrant

@@ -585,7 +585,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
 		e.runtime_id, coalesce(e.session_id, ''),
-		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
+		`+grantAndEnrollmentLive("g", "e")+`,
 		e.kind, e.operator, e.subject, e.projects, c.service
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
@@ -689,8 +689,7 @@ func (m *Machine) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exc
 		join requests r on r.id = g.request_id
 		join airlock_placeholders p on p.grant_id = g.id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
-		where g.enrollment_id = $1 and g.id::text <> $2 and g.revoked_at is null and `+grantUnexpired("g")+`
-		and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
+		where g.enrollment_id = $1 and g.id::text <> $2 and `+grantAndEnrollmentLive("g", "e")+`
 		order by g.id`, enrollmentID, exceptGrantID)
 	if err != nil {
 		return nil, err

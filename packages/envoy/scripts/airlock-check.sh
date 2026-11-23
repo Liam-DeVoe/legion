@@ -767,7 +767,7 @@ check_k2() {
 
 check_k3() {
 	expect "S gets the real value only in Authorization and X-Key of GET /read"
-	expect "X-Other, the query and the body reach S with the placeholder"
+	expect "X-Other and the query are refused 403 PLACEHOLDER_NOT_SWAPPED, and S records neither; the body reaches S with the placeholder"
 	expect "POST /read and GET /other get an error that names the rule, and S records neither"
 	expect "T records the placeholder"
 	expect "the request whose TLS name and Host name T is refused with an error that names the mismatch, and neither S nor T records a value"
@@ -792,7 +792,9 @@ say() { printf '%s\n' "\$1" >>"\$out"; }
 say "authorization=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/read)"
 say "xkey=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Key: \$P" $AIRLOCK_S_URL/read)"
 say "xother=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: \$P" $AIRLOCK_S_URL/read)"
+say "xother_error=\$(curl -sS -H "X-Other: \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "query=\$(curl -sS -o /dev/null -w %{http_code} "$AIRLOCK_S_URL/read?k=\$P")"
+say "query_error=\$(curl -sS "$AIRLOCK_S_URL/read?k=\$P" 2>&1 | tr '\n' ' ')"
 say "getbody=\$(curl -sS -o /dev/null -w %{http_code} -X GET --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody=\$(curl -sS -o /dev/null -w %{http_code} -X POST --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody_error=\$(curl -sS -X POST --data "k=\$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
@@ -822,9 +824,9 @@ EOF
 	body_hits="$(printf '%s' "$recs" | jq --arg v "$scoped_value" '[.[] | select(.body | contains($v))] | length')"
 	post_records="$(printf '%s' "$recs" | jq '[.[] | select(.method == "POST")] | length')"
 	other_records="$(printf '%s' "$recs" | jq '[.[] | select(.path == "/other")] | length')"
-	local xother_ph query_ph body_ph
-	xother_ph="$(printf '%s' "$recs" | jq -r '[.[] | .header["X-Other"] // [] | .[]] | .[0] // ""')"
-	query_ph="$(printf '%s' "$recs" | jq -r '[.[] | select(.query != "") | .query] | .[0] // ""')"
+	local xother_records query_records body_ph
+	xother_records="$(printf '%s' "$recs" | jq '[.[] | select(.header["X-Other"] != null)] | length')"
+	query_records="$(printf '%s' "$recs" | jq '[.[] | select(.query != "")] | length')"
 	body_ph="$(printf '%s' "$recs" | jq -r '[.[] | select(.body != "") | .body] | .[0] // ""')"
 	local t_recs t_ph
 	t_recs="$(records t | jq --argjson n "$t_before" '.[$n:]')"
@@ -832,19 +834,23 @@ EOF
 
 	observe "status by step: Authorization ${K3[authorization]}, X-Key ${K3[xkey]}, X-Other ${K3[xother]}, query ${K3[query]}, GET /read with a body ${K3[getbody]}, POST /read with a body ${K3[postbody]}, POST /read ${K3[post]}, GET /other ${K3[other]}, T ${K3[t]}"
 	observe "S recorded $(printf '%s' "$recs" | jq length) requests: the real value (by SHA-256 and length, $(shape "$scoped_value")) in $auth_hits Authorization and $key_hits X-Key of GET /read, and in $other_hits X-Other, $query_hits queries and $body_hits bodies"
-	observe "what X-Other, the query and the body actually carried: $(shape "$xother_ph"), $(shape "$query_ph"), $(shape "$body_ph") — the placeholder, not the value"
+	observe "S recorded $xother_records requests with an X-Other header and $query_records with a query; the body carried $(shape "$body_ph") — the placeholder, not the value"
 	observe "S recorded $post_records POST and $other_records /other requests"
 	observe "how the body step is read: the proxy block's allow is GET /read alone, and the same check requires POST /read to be refused, so the body carrying the placeholder is read off the GET of /read that carries one; the POST of /read with a placeholder body is refused with the other POST"
 	observe "how the mismatch step is read: the proxy answers the CONNECT to S with a leaf for S, so a client whose TLS name is T fails the handshake and nothing is sent; the same request with the Host header alone changed reaches the proxy and is refused 'airlock: host header mismatch'"
-	observe "the refusals: POST /read said ${K3[post_error]}; GET /other said ${K3[other_error]}; the TLS-name and Host mismatch said ${K3[mismatch_sni]}; a Host-only mismatch said ${K3[mismatch_host]}; a request already carrying the value said ${K3[carries]}"
+	observe "the refusals: X-Other said ${K3[xother_error]}; the query said ${K3[query_error]}; POST /read said ${K3[post_error]}; GET /other said ${K3[other_error]}; the TLS-name and Host mismatch said ${K3[mismatch_sni]}; a Host-only mismatch said ${K3[mismatch_host]}; a request already carrying the value said ${K3[carries]}"
 	observe "T recorded $(printf '%s' "$t_recs" | jq length) requests and its Authorization was $(shape "$t_ph")"
 
 	judge "$([ "$auth_hits" = 1 ] && [ "$key_hits" = 1 ] && [ "$other_hits" = 0 ] && [ "$query_hits" = 0 ] && [ "$body_hits" = 0 ] && echo 0 || echo 1)" \
 		"S gets the real value only in Authorization and X-Key of GET /read" \
 		"Authorization $auth_hits, X-Key $key_hits, X-Other $other_hits, query $query_hits, body $body_hits (compared by SHA-256 and length)"
-	judge "$(contains "agent-secrets-placeholder" "$xother_ph" && contains "agent-secrets-placeholder" "$query_ph" && contains "agent-secrets-placeholder" "$body_ph" && echo 0 || echo 1)" \
-		"X-Other, the query and the body reach S with the placeholder" \
-		"each carried the grant's placeholder: X-Other $(shape "$xother_ph"), query $(shape "$query_ph"), body $(shape "$body_ph")"
+	# The two refusals' code is on their refusal lines (the answer's words name the rule, and the
+	# code beside it is the broker's own record of it).
+	local left_lines
+	left_lines="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | jq -s '[.[] | select(.message == "broker: answer refused" and .code == "PLACEHOLDER_NOT_SWAPPED")] | length')"
+	judge "$([ "${K3[xother]}" = 403 ] && [ "${K3[query]}" = 403 ] && contains "still carries a placeholder after the swap" "${K3[xother_error]}" && contains "still carries a placeholder after the swap" "${K3[query_error]}" && [ "$left_lines" -ge 4 ] && [ "$xother_records" = 0 ] && [ "$query_records" = 0 ] && contains "agent-secrets-placeholder" "$body_ph" && echo 0 || echo 1)" \
+		"X-Other and the query are refused 403 PLACEHOLDER_NOT_SWAPPED, and S records neither; the body reaches S with the placeholder" \
+		"X-Other answered ${K3[xother]} and the query ${K3[query]}, each naming the placeholder left after the swap, with $left_lines refusal lines coded PLACEHOLDER_NOT_SWAPPED for their four requests; S recorded $xother_records with X-Other and $query_records with a query; the body carried $(shape "$body_ph")"
 	judge "$(contains "not allowed by rule" "${K3[post_error]}" && contains "not allowed by rule" "${K3[other_error]}" && [ "$post_records" = 0 ] && [ "$other_records" = 0 ] && echo 0 || echo 1)" \
 		"POST /read and GET /other get an error that names the rule, and S records neither" \
 		"both answered ${K3[post]} and ${K3[other]} with 'not allowed by rule'; S recorded $post_records POST and $other_records /other"
@@ -857,7 +863,7 @@ EOF
 		"the request that already carries the value is refused with an error that names it, and S records nothing" \
 		"it was refused: ${K3[carries]}"
 
-	# Thirteen of the fourteen requests this command makes reach the proxy on a CONNECT to a
+	# Fifteen of the sixteen requests this command makes reach the proxy on a CONNECT to a
 	# bound host and so log a line: the one that does not is the TLS-name mismatch, whose
 	# handshake fails before a request exists. A carried call logs its call line and a refused
 	# one its refusal record in that line's place, so the two are counted together
@@ -872,9 +878,9 @@ EOF
 	refused="$(jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length' <<<"$calls")"
 	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
 	observe "$log_lines"
-	judge "$([ "$((log_after - log_before))" -ge 13 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
+	judge "$([ "$((log_after - log_before))" -ge 15 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
 		"the broker's log has a line for each call to S, allowed or refused with its reason" \
-		"$((log_after - log_before)) lines for the 13 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
+		"$((log_after - log_before)) lines for the 15 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
 
 	# The negative control. The stack's AIRLOCK_DEMO_TOKEN profile has the scoped profile's proxy
 	# block with its allow removed: the same host and the authorization header, and no allow list.
@@ -1372,7 +1378,7 @@ check_k6() {
 	expect "the stand-in AWS service accepts each signature of the STS call, the list and the upload, with the real session token, and finds no placeholder in them"
 	expect "the list is answered, not only signed: aws s3 ls exits 0 through the airlock"
 	expect "the chunk-signed upload and the presigned URL get an error that names them"
-	expect "the negative control, with the exchange and the signing turned off (dev-airlock.sh --no-kind), gives the token endpoint the placeholder and makes the stand-in AWS service reject every signature"
+	expect "the negative control, with the exchange and the signing turned off (dev-airlock.sh --no-kind), gives the token endpoint the placeholder, and refuses each AWS call 403 PLACEHOLDER_NOT_SWAPPED, because X-Amz-Security-Token keeps its placeholder, so the stand-in AWS service records nothing"
 
 	k6_clients
 	start_stack
@@ -1445,10 +1451,16 @@ check_k6() {
 	local control_federated
 	control_federated="$(cat "$AIRLOCK_DIR/azure-identity-token")"
 	control "with --no-kind (BROKER_AIRLOCK_TEST_NO_KIND=true) the token endpoint's client_assertion was $(shape "$K6_AZ_ASSERTION"), against the real federated token $(shape "$control_federated") and a placeholder: it opens 'agent-secrets-placeholder': $(contains agent-secrets-placeholder "$K6_AZ_ASSERTION" && echo yes || echo no)"
-	control "with --no-kind the stand-in AWS service recorded $K6_AWS_CALLS calls, $K6_AWS_PLACEHOLDERS of them carrying a placeholder in a header or the query, and the key ids their Credentials named were '$K6_AWS_KEYIDS' against the real '$AIRLOCK_AWS_KEY_ID'; sts said '${K6AWS[sts]}'"
-	judge "$(contains "agent-secrets-placeholder" "$K6_AZ_ASSERTION" && [ "$K6_AWS_PLACEHOLDERS" = "$K6_AWS_CALLS" ] && [ "$K6_AWS_CALLS" -gt 0 ] && contains "placeholder" "${K6AWS[sts]}" && echo 0 || echo 1)" \
-		"negative control: with the exchange and the signing turned off the token endpoint gets the placeholder and the AWS service rejects every signature" \
-		"the assertion the endpoint got was the grant's placeholder, and all $K6_AWS_PLACEHOLDERS of the $K6_AWS_CALLS calls the stand-in recorded carried a placeholder, where the same runs with the kinds on carry none; the stand-in refused each of them, sts with '${K6AWS[sts]}'"
+	# Each AWS call keeps the session token's placeholder in X-Amz-Security-Token when nothing
+	# signs it again, so the proxy refuses it before it goes upstream: the stand-in records
+	# nothing, and the refusal lines of this stack's brokers say why.
+	local aws_host aws_left
+	aws_host="${AIRLOCK_AWS_URL#https://}"
+	aws_left="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | jq -s --arg h "$aws_host" '[.[] | select(.message == "broker: answer refused" and .code == "PLACEHOLDER_NOT_SWAPPED" and .host == $h)] | length')"
+	control "with --no-kind the stand-in AWS service recorded $K6_AWS_CALLS calls, and the brokers refused $aws_left calls to $aws_host 403 PLACEHOLDER_NOT_SWAPPED; sts said '${K6AWS[sts]}', s3 ls exited ${K6AWS[ls_exit]}"
+	judge "$(contains "agent-secrets-placeholder" "$K6_AZ_ASSERTION" && [ "$K6_AWS_CALLS" = 0 ] && [ "$aws_left" -ge 3 ] && [ "${K6AWS[ls_exit]}" != 0 ] && echo 0 || echo 1)" \
+		"negative control: with the exchange and the signing turned off the token endpoint gets the placeholder, and each AWS call is refused 403 PLACEHOLDER_NOT_SWAPPED and reaches no stand-in" \
+		"the assertion the endpoint got was the grant's placeholder; the stand-in AWS service recorded $K6_AWS_CALLS calls, and $aws_left calls to $aws_host were refused PLACEHOLDER_NOT_SWAPPED, where the same runs with the kinds on are signed again and accepted"
 
 	stop_stack
 }

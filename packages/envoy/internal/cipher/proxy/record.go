@@ -37,7 +37,8 @@ const (
 	// serveConnect and servePlain: a host that resolves nowhere, or somewhere this proxy never
 	// dials (checkedAddresses).
 	codeAddressRefused = "ADDRESS_REFUSED"
-	// servePlain: plain HTTP to a host a name of the grant is bound to.
+	// servePlain: plain HTTP to a host a name of the password's grant, or of another live grant
+	// of its enrollment, is bound to (sessionBinds).
 	codePlainHTTP = "PLAIN_HTTP_TO_BOUND_HOST"
 	// serveConnect's 500: a connection the outer server cannot hand over.
 	codeNotHijackable = "CONNECTION_NOT_HIJACKABLE"
@@ -45,7 +46,8 @@ const (
 	codeUpstream = "UPSTREAM_UNREACHABLE"
 	// serveBound's 500: a decrypted connection whose CONNECT target was lost.
 	codeTargetLost = "CONNECT_TARGET_LOST"
-	// serveBound: a bound connection on which no name of the grant binds the host any more.
+	// serveBound: a bound connection on which no name of any live grant of its enrollment binds
+	// the host any more.
 	codeNoBoundName = "NO_NAME_BOUND"
 	// serveBound: a CONNECT, or an upgrade to h2c, on a connection the proxy decrypted - a request
 	// for a protocol whose bytes after the answer are no request the proxy reads.

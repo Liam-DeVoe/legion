@@ -1,0 +1,19 @@
+# proxy-placeholder-left-bounded: a placeholder is read only where no letter or digit comes before
+# the prefix, so a live placeholder written right after a letter goes upstream unswapped.
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -82,8 +82,10 @@
+ 		if i < 0 {
+ 			return ""
+ 		}
++		// MUTANT: a placeholder starts only where no letter or digit comes before the prefix.
++		bounded := len(rest) == len(text) && i == 0 || strings.IndexByte(requests.PlaceholderAlphabet, text[len(text)-len(rest)+i-1]) < 0
+ 		rest = rest[i:]
+-		if placeholder := placeholderAt(rest); len(placeholder) == len(requests.PlaceholderPrefix)+requests.PlaceholderLength {
++		if placeholder := placeholderAt(rest); bounded && len(placeholder) == len(requests.PlaceholderPrefix)+requests.PlaceholderLength {
+ 			return placeholder
+ 		}
+ 		rest = rest[len(requests.PlaceholderPrefix):]

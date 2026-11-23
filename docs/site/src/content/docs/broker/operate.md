@@ -1959,6 +1959,9 @@ A refusal of the airlock's proxy port has more fields:
 - `path`: the request's path, without its query, at most its first 256 bytes.
 - `issue`: the issue key the grant's reason named, once a grant is proved.
 - `slot`: which of the secret's values the call used, where the line names one.
+- `placeholder_grant`: the grant a placeholder was minted for, on the refusal of a request that
+  still carried a whole placeholder after the swap (`PLACEHOLDER_NOT_SWAPPED`), and only while the
+  broker still holds that placeholder's row. It is a grant id, never the placeholder.
 
 The proxy port's `method`, `path`, `host`, `reason` and `correlation_id` are the command's own
 text, and each has a placeholder in it written as `[placeholder]` (below).

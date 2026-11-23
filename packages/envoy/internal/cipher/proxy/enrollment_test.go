@@ -12,15 +12,19 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
 
@@ -150,11 +154,14 @@ func TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead(t *testing.T)
 	}
 
 	for _, host := range []string{tunnelHost, echoHost} {
-		// tunnelHost is bound by the foreign grant alone, echoHost by no grant.
+		// tunnelHost is bound by the foreign grant alone, echoHost by no grant. Each is a
+		// service that writes back what it is sent, so what comes back is what reached it: the
+		// bytes the command sent, a placeholder among them, as it sent them.
 		answer, conn, _ := r.connectRaw(net.JoinHostPort(host, "443"), basic(chatPlaceholder))
 		if answer.StatusCode != http.StatusOK {
 			t.Fatalf("CONNECT to %s answered %d; want 200 Connection established", host, answer.StatusCode)
 		}
+		stream := net.Conn(conn)
 		if host == tunnelHost {
 			client := tls.Client(conn, &tls.Config{ServerName: tunnelHost, RootCAs: r.trust})
 			if err := client.Handshake(); err != nil {
@@ -163,6 +170,15 @@ func TestAConnectToAHostOnlyAnotherGrantOfTheEnrollmentBindsIsRead(t *testing.T)
 			if err := client.ConnectionState().PeerCertificates[0].CheckSignatureFrom(r.authority.Certificate()); err == nil {
 				t.Fatalf("%s was answered a certificate of the proxy's own: a grant of another enrollment opened it", host)
 			}
+			stream = client
+		}
+		sent := "Authorization: Token " + foreignPlaceholder + "\n"
+		if _, err := io.WriteString(stream, sent); err != nil {
+			t.Fatalf("write through the tunnel to %s: %v", host, err)
+		}
+		got := make([]byte, len(sent))
+		if _, err := io.ReadFull(stream, got); err != nil || string(got) != sent {
+			t.Fatalf("the tunnel to %s carried back %q (%v); want the bytes the command sent, placeholder included, %q", host, got, err, sent)
 		}
 		conn.Close()
 	}
@@ -331,9 +347,21 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 		{"a placeholder no grant holds", "/v1/things",
 			[]string{"Authorization", "Bearer " + unknown}, ""},
 		// No boundary before the prefix: a placeholder written right after a letter would go
-		// upstream unswapped with one, which is what this refusal closes.
-		{"a placeholder written right after a letter", "/v1/things",
+		// upstream unswapped with one, which is what this refusal closes. The named revert:
+		// proxy-placeholder-left-bounded.
+		{"a placeholder written right after a letter in the path", "/v1/x" + unknown,
+			[]string{"Authorization", "Bearer " + workerPlaceholder}, ""},
+		{"a placeholder written right after a letter in a header", "/v1/things",
 			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Note", "x" + unknown}, ""},
+		// The query read pair by pair: an escape that is no escape elsewhere in it does not hide a
+		// placeholder one of whose letters is written as an escape.
+		{"the own grant's placeholder, one letter escaped, in a query with a bad escape", "/v1/things?bad=%zz&k=" +
+			workerPlaceholder[:len(workerPlaceholder)-1] + fmt.Sprintf("%%%02X", workerPlaceholder[len(workerPlaceholder)-1]),
+			[]string{"Authorization", "Bearer " + workerPlaceholder}, testGrantID},
+		// A Basic credential in base64 with no padding, which neither the swap nor a padded decode
+		// reads.
+		{"an ended grant's placeholder inside an unpadded Basic credential", "/v1/things",
+			[]string{"Authorization", "Bearer " + workerPlaceholder, "X-Note", "Basic " + base64.RawStdEncoding.EncodeToString([]byte("x-access-token:"+endedSame))}, endedSameGrant},
 	} {
 		refusals := len(r.logs.refusals())
 		answer, body := r.get(client, "https://"+boundHost+row.path, row.headers...)
@@ -367,5 +395,67 @@ func TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused(t *testing.T)
 	seen = r.requests()
 	if len(seen) != 3 || seen[2].Header.Get("X-Note") != prefixOnly || seen[2].Header.Get("X-Second") != gitBasic(prefixOnly) {
 		t.Fatalf("the request carrying the prefix alone reached the service as %v; want it sent with its headers as written", seen)
+	}
+}
+
+// TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange: the enrollment's other
+// grants are read only where they could change the answer, so a read of them that does not happen
+// fails no call they had no part in. With every such read failing: a CONNECT to a host no entry of
+// the rules binds is a tunnel that carries the command's bytes, as on a broker that never reads
+// other grants; a request the connection's own grant binds the host for, and whose headers hold no
+// whole placeholder, is handled for that grant and sent. The controls, in the same run: a CONNECT to
+// a host only another grant of the session could bind is refused 503, and a request carrying
+// another grant's placeholder on the own grant's connection is refused 503, since each needs the
+// read; and the read count shows the two allowed calls read nothing.
+func TestAFailedReadOfTheEnrollmentsGrantsDecidesOnlyWhatItCouldChange(t *testing.T) {
+	r := newRig(t, Options{Rules: enrollmentRules()})
+	r.grants.connections = map[string]requests.AirlockConnection{}
+	r.addGrant(chatPlaceholder, testGrantID, testEnrollID, chatName, "the-real-chat-token")
+	r.addGrant(secondPlaceholder, secondGrantID, testEnrollID, secondName, secondValue)
+	chat, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Hosts: []string{chatHost}, Authority: r.service.Authority()})
+	if err != nil {
+		t.Fatalf("the stand-in %s: %v", chatHost, err)
+	}
+	t.Cleanup(chat.Close)
+	r.addresses[chatHost] = []netip.Addr{netip.MustParseAddr("93.184.216.39")}
+	r.dialTo[net.JoinHostPort(chatHost, "443")] = chat.Addr()
+	r.grants.failEnrollmentReads(databaseDown)
+
+	answer, conn, _ := r.connectRaw(net.JoinHostPort(echoHost, "443"), basic(chatPlaceholder))
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT to %s, which no entry binds, answered %d with the enrollment read failing; want 200 and a tunnel", echoHost, answer.StatusCode)
+	}
+	sent := "bytes for a host no entry binds\n"
+	if _, err := io.WriteString(conn, sent); err != nil {
+		t.Fatalf("write through the tunnel: %v", err)
+	}
+	got := make([]byte, len(sent))
+	if _, err := io.ReadFull(conn, got); err != nil || string(got) != sent {
+		t.Fatalf("the tunnel carried back %q (%v); want %q", got, err, sent)
+	}
+	conn.Close()
+	if reads := r.grants.enrollmentReads(); reads != 0 {
+		t.Fatalf("a CONNECT to a host no entry binds read the enrollment's grants %d time(s); want none", reads)
+	}
+
+	if answer, body := r.get(r.client(chatPlaceholder), "https://"+chatHost+"/v1/plain", "X-Plain", "nothing of any grant"); answer.StatusCode != http.StatusOK {
+		t.Fatalf("a request the own grant binds the host for, holding no placeholder, answered %d %q with the enrollment read failing; want 200", answer.StatusCode, body)
+	}
+	if len(chat.Requests()) != 1 {
+		t.Fatalf("%s saw %d requests; want the one the own grant handled", chatHost, len(chat.Requests()))
+	}
+	if reads := r.grants.enrollmentReads(); reads != 0 {
+		t.Fatalf("a request holding no placeholder read the enrollment's grants %d time(s); want none", reads)
+	}
+
+	answer, _, _ = r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(chatPlaceholder))
+	if answer.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("CONNECT to %s, which only another grant of the session binds, answered %d with the enrollment read failing; want 503", boundHost, answer.StatusCode)
+	}
+	if answer, body := r.get(r.client(chatPlaceholder), "https://"+chatHost+"/v1/plain", "X-Second", "Token "+secondPlaceholder); answer.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a request carrying another grant's placeholder answered %d %q with the enrollment read failing; want 503", answer.StatusCode, body)
+	}
+	if reads := r.grants.enrollmentReads(); reads != 2 {
+		t.Fatalf("the enrollment's grants were read %d time(s); want two, one for each call that needed them", reads)
 	}
 }

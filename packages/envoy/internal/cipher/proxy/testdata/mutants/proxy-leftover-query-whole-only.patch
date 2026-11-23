@@ -1,0 +1,17 @@
+# proxy-leftover-query-whole-only: a query with an escape that is no escape is read whole alone, so a
+# placeholder one of whose letters is written as an escape, in another pair of it, goes upstream.
+# must fail: TestARequestThatStillCarriesAPlaceholderAfterTheSwapIsRefused
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/leftover.go
++++ b/packages/envoy/internal/cipher/proxy/leftover.go
+@@ -53,7 +53,8 @@
+ 			return placeholder, true
+ 		}
+ 	}
+-	if err == nil {
++	// MUTANT: a query with a bad escape is read whole alone, not pair by pair.
++	if err == nil || true {
+ 		// The whole query unescaped, so each pair of it unescaped was read above.
+ 		return "", false
+ 	}
