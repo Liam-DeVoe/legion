@@ -1646,7 +1646,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if kept.takes(attempt.Target, deref(attempt.SessionID), attempt.State, actor.ID) {
 		// The role's holder answers the attempt kept for its role: the attempt is pinned to it,
 		// guarded on still naming no session, so every later reply of this attempt passes the
-		// check below as its own and no other session can take it.
+		// check below as its own. A later live holder of the role passes it too, by the
+		// role-holder rule every attempt sent for a role takes (roleHolderReply).
 		pinned, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
 			update comment_deliveries set session_id = $4
 			where comment_id = $1 and target = $2 and attempt = $3 and session_id is null and state = 'queued'

@@ -152,8 +152,10 @@ func TestRoleMessageToAReleasedRoleIsKeptForItsNextHolder(t *testing.T) {
 // the listener names as the role's holder when the reply comes may answer, and its reply pins the
 // attempt to it, so the attempt reads answered, the message's thread carries the reply the card
 // shows, and every later reply is judged by the check every reply passes. A session that does not
-// hold the role is refused, a listener that does not answer is a 503 the holder retries, and once
-// the attempt is pinned a later holder of the role is refused as any other session is.
+// hold the role is refused, and a listener that does not answer is a 503 the holder retries. Once
+// the holder has answered, a later live holder of the role may still answer the attempt, as main's
+// #4387 lets the live holder answer any attempt sent for its role (roleHolderReply): it is answered
+// with the stored answer, and nothing it sends is stored or moves the attempt off the holder.
 func TestTheReleasedRolesNextHolderMayReplyToWhatWasKeptForIt(t *testing.T) {
 	const holder, intruder, successor = "woken-planner", "intruder", "successor-planner"
 	listener := newStoppedAgentListener(t)
@@ -253,8 +255,31 @@ func TestTheReleasedRolesNextHolderMayReplyToWhatWasKeptForIt(t *testing.T) {
 		t.Fatalf("the listed message's thread carries %#v, want the holder's reply", answer)
 	}
 
-	// Pinned, the attempt is the holder's alone: a session that holds the role later is refused.
+	// Pinned and answered, the attempt keeps its holder's answer. A later live holder of the role
+	// passes the reply check as #4387's role-holder rule lets it, and is answered with that stored
+	// answer, 200: its own reply is stored nowhere, and the attempt still names the holder.
 	listener.roleHolder.Store(new(successor))
-	forbidden("the successor's reply to the message", replyAs(t, handler, message.ID, successor, "Me too."))
-	forbidden("the successor's reply to the mention", replyToMention(successor))
+	for name, response := range map[string]*httptest.ResponseRecorder{
+		"the message": replyAs(t, handler, message.ID, successor, "Me too."),
+		"the mention": replyToMention(successor),
+	} {
+		body := response.Body.String()
+		if response.Code != http.StatusOK || !strings.Contains(body, `"id":"`+holder+`"`) ||
+			strings.Contains(body, "Me too.") || strings.Contains(body, "Answered by "+successor) {
+			t.Fatalf("the successor's reply to %s: status=%d body=%s, want 200 with the holder's stored answer", name, response.Code, body)
+		}
+	}
+	if session := messageSession(); session != holder {
+		t.Fatalf("the message's attempt names %q after the successor's reply, want %s", session, holder)
+	}
+	if row := commentAttemptRow(t, database, comment.ID, roleTarget, 1); !strings.HasSuffix(row, "/"+holder) {
+		t.Fatalf("the mention's attempt row = %q after the successor's reply, want it still pinned to %s", row, holder)
+	}
+	for _, row := range issueMessageRows(t, handler, issue.Key) {
+		for i := range row.Replies {
+			if row.Replies[i].Author.ID == successor {
+				t.Fatalf("the issue's messages carry a reply by %s: %#v, want none stored", successor, row.Replies[i])
+			}
+		}
+	}
 }

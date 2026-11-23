@@ -1075,7 +1075,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if kept.takes(messageTarget(message.Target), attempt.SessionID, attempt.State, actor.ID) {
 		// The role's holder answers the attempt kept for its role: the attempt is pinned to it,
 		// guarded on still naming no session, so every later reply of this attempt passes the
-		// check below as its own and no other session can take it.
+		// check below as its own. A later live holder of the role passes it too, by the
+		// role-holder rule every attempt sent for a role takes (roleHolderReply).
 		pinned, err := scanMessageDelivery(tx.QueryRow(r.Context(), `
 			update message_deliveries set session_id = $3
 			where message_id = $1 and attempt = $2 and coalesce(session_id, '') = '' and state = 'queued'
