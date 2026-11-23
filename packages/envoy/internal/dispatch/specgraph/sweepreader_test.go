@@ -237,8 +237,9 @@ func (r readerReply) states() (map[string]string, error) {
 // replyOf is the reply of the reader's form whose states are states: readerAnswer's line, marshalled as
 // the reader marshals its answer, with a line end, under a key (replyText). The domain test of the
 // judgment writes the answers that it hands judgeAnswer by it
-// (TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain), and holds it to the reader's reply
-// at each base, byte for byte (decodedBase).
+// (TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain), but the base's reply of an answer
+// whose base is the base as the reader read it, which is the reader's own reply (decodedBase), and
+// holds it to the reader's reply at each base, byte for byte (decodedBase).
 func replyOf(t *testing.T, states map[string]string) readerReply {
 	t.Helper()
 	data, err := json.Marshal(readerAnswer{States: states}, json.Deterministic(true))
@@ -252,7 +253,10 @@ func replyOf(t *testing.T, states map[string]string) readerReply {
 // line of the reader's input, and has a key as each reply that ask returns has one, the sha256 of the
 // line that it answers. No code can compute such a key from the reply, its text or anything else, so
 // a judgment that tells the replies that it reads apart by their keys, whether they have one or how
-// it relates to their text, reads the domain test's replies as it reads the reader's.
+// it relates to their text, reads the domain test's replies as it reads the reader's. Each call gives
+// a new key, where a sweep hands the judgment one base reply under one key for each input of its base,
+// so the domain test hands the reader's own reply to the base, under its key, wherever an answer's
+// base is the base as the reader read it (decodedBase).
 func replyText(text string) readerReply {
 	r := readerReply{text: text}
 	rand.Read(r.line[:])

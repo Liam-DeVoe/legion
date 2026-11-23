@@ -321,8 +321,9 @@ func rightsOf(k judgedKind, values []string) []placeRight {
 
 // answer is one value of the arguments of the judgment of an answer (judgeAnswer): the states of the
 // base, whole, and the input's, got, which the domain test hands it as replies of the reader's form
-// (replyOf); whether the input has a right, hasRight; and allowed, each place that its right names with
-// the value that it names there (nil for a right that names no place).
+// (replyOf, or the reader's own reply to the base where whole is the base as the reader read it,
+// decodedBase); whether the input has a right, hasRight; and allowed, each place that its right names
+// with the value that it names there (nil for a right that names no place).
 type answer struct {
 	whole, got, allowed map[string]string
 	hasRight            bool
@@ -659,24 +660,28 @@ func cell(kind, base, input string, right placeRight) string {
 // it ranges over by their types (eachAnswer): the input's right, whether there is one and allowed nil
 // or a map; and at each place, the base's state, none or each state of its kind, the input's, none or
 // each value of judgedValues, and the value that a map names the place with, or none; the base's
-// answer and the input's go to judgeAnswer as replies of the reader's form (replyOf): each with a key
-// of random bytes (replyText), which no code can tell from the key of the line that a reply of the
-// reader answers, and with the text that the reader's process writes for those states, which
-// decodedBase holds to the reader's reply at each base, byte for byte. It holds what judgeAnswer
-// reports of each to the definition applied place by place (definedAnswer), and an answer that the
-// definition covers no reading of to the judgment's refusal, as it holds a reply that gives no states
-// (the reader's refusal, or a line of no form of the reader's) at the base or the input to it. So a
-// judgment of an answer that reads an answer by its shape (a place that it lacks or holds, a right
-// that names no place of it, or none at all), passes over a place whose input reads a value that is
-// no state of its kind, or reads another right at a place than the input's, fails by the case, and so
-// does one that tells the replies that it reads apart by their keys (whether they have one, or how it
-// relates to their text), or by the members or the order of their text. It fails by name where a
-// right at a place (placeRight) or a reply of the reader (readerReply) gains a field, or judgeAnswer
-// an argument or a type of one, that it does not range over. It does not show what sweepAgainst hands
-// judgeAnswer: that each of the two replies that it hands it for an input, the base's and the input's,
-// is the reader's reply to the line that it stands for is the sweeps' digests' (judgeAnswer gives back
-// the keys of both, by which the sweep counts the input), and that it hands it the input's right is the
-// known positives' (knownPositives), at their bases.
+// answer and the input's go to judgeAnswer as replies of the reader's form (replyOf), with the text
+// that the reader's process writes for those states, which decodedBase holds to the reader's reply at
+// each base, byte for byte. Where an answer's base is the base as the reader read it, the base's reply
+// is the reader's own reply to the base, under the key of its line (decodedBase), as each sweep hands
+// it for each input of that base; each other reply has a key of random bytes (replyText), which no
+// code can tell from the key of the line that a reply of the reader answers. So the domain test hands
+// the judgment one base reply, under one key, for many answers, as the sweeps do. It holds what
+// judgeAnswer reports of each to the definition applied place by place (definedAnswer), and an answer
+// that the definition covers no reading of to the judgment's refusal, as it holds a reply that gives no
+// states (the reader's refusal, or a line of no form of the reader's) at the base or the input to it.
+// So a judgment of an answer that reads an answer by its shape (a place that it lacks or holds, a right
+// that names no place of it, or none at all), passes over a place whose input reads a value that is no
+// state of its kind, or reads another right at a place than the input's, fails by the case, and so does
+// one that tells the replies that it reads apart by their keys (whether they have one, how it relates
+// to their text, or whether an earlier call handed it the same key), or by the members or the order of
+// their text. It fails by name where a right at a place (placeRight) or a reply of the reader
+// (readerReply) gains a field, or judgeAnswer an argument or a type of one, that it does not range
+// over. It does not show what sweepAgainst hands judgeAnswer: that each of the two replies that it
+// hands it for an input, the base's and the input's, is the reader's reply to the line that it stands
+// for is the sweeps' digests' (judgeAnswer gives back the keys of both, by which the sweep counts the
+// input), and that it hands it the input's right is the known positives' (knownPositives), at their
+// bases.
 func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T) {
 	t.Parallel()
 	kinds := judgedKinds()
@@ -712,9 +717,10 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 	}
 	stateMap, reply := reflect.TypeFor[map[string]string](), reflect.TypeFor[readerReply]()
 	// A reply of the reader holds the key of the line that it answers and its text. The domain test
-	// writes the text as the reader's process gives it (replyOf, decodedBase), and the key from random
-	// bytes (replyText), which no code can tell from a line's key: a field that a reply gains, which
-	// it does not write, fails by name.
+	// writes the text as the reader's process gives it (replyOf, decodedBase), and the key as the
+	// reader's process gives it for the base as read (decodedBase), and else from random bytes
+	// (replyText), which no code can tell from a line's key: a field that a reply gains, which it does
+	// not write, fails by name.
 	for _, f := range reflect.VisibleFields(reply) {
 		if f.Name != "line" && f.Name != "text" {
 			t.Errorf("a reply of the reader (readerReply) holds the field %s, which the domain test does not write as the reader's process does (replyOf)", f.Name)
@@ -803,7 +809,7 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 	disagree := map[string][]string{}
 	held := map[string]bool{} // the form of each right at a place of an answer, as the definition reads it
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
-		whole := decodedBase(t, p, name, bases[name])
+		whole, baseReply := decodedBase(t, p, name, bases[name])
 		kindOf := map[string]judgedKind{}
 		for _, at := range slices.Sorted(maps.Keys(whole)) {
 			switch k, of := placeKindOf(kinds, at); {
@@ -825,7 +831,11 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 				held[definedRightAt(a.hasRight, a.allowed, at).form] = true
 			}
 			wantToward, wantBeyond, covered := definedAnswer(a, kindOf)
-			toward, beyond, _, err := judgeAnswer(replyOf(t, a.whole), replyOf(t, a.got), a.hasRight, a.allowed)
+			wholeReply := replyOf(t, a.whole)
+			if maps.Equal(a.whole, whole) {
+				wholeReply = baseReply
+			}
+			toward, beyond, _, err := judgeAnswer(wholeReply, replyOf(t, a.got), a.hasRight, a.allowed)
 			switch {
 			case !covered && err == nil:
 				disagree[c] = append(disagree[c], fmt.Sprintf("%s, %s: the judgment gives %q toward true and %q beyond the right, and the definition covers no reading of it", name, where, toward, beyond))
@@ -853,18 +863,21 @@ func TestTheSweepsJudgmentAgreesWithItsDefinitionOverItsWholeDomain(t *testing.T
 }
 
 // decodedBase is the states of the base fsys, of the name name, as the reader's process p writes them
-// in its reply, decoded by the domain test itself: the reply's member "states" as encoding/json/v2
-// reads it, apart from the decoder that the judgment reads each reply with (readerReply.states, through
-// readerReply.answer, the one reading of the reader's lines). It is the domain test's oracle of a reply,
-// a reading of its own on purpose, as the definition (definedAnswer) is of the judgment. It fails the
-// test t, by the base's name, where that decoder reads the same reply otherwise. So the places of the
-// answers that the domain test writes (eachAnswer) are the places that the reader wrote, and a fault of
-// the judgment's decoder that drops or changes places of a reply fails here by the base's name, and by
-// the answers that move those places, rather than taking the places out of the test's domain and the
-// judgment's reading alike. It fails t by the base's name, too, where the reply that the domain test
-// writes of those states (replyOf) is not the reader's reply, byte for byte: so the replies that the
-// domain test hands judgeAnswer are of the reader's form.
-func decodedBase(t *testing.T, p *readerProcess, name string, fsys fstest.MapFS) map[string]string {
+// in its reply, decoded by the domain test itself, and that reply: the reply's member "states" as
+// encoding/json/v2 reads it, apart from the decoder that the judgment reads each reply with
+// (readerReply.states, through readerReply.answer, the one reading of the reader's lines). It is the
+// domain test's oracle of a reply, a reading of its own on purpose, as the definition (definedAnswer)
+// is of the judgment. It fails the test t, by the base's name, where that decoder reads the same reply
+// otherwise. So the places of the answers that the domain test writes (eachAnswer) are the places that
+// the reader wrote, and a fault of the judgment's decoder that drops or changes places of a reply fails
+// here by the base's name, and by the answers that move those places, rather than taking the places
+// out of the test's domain and the judgment's reading alike. It fails t by the base's name, too, where
+// the reply that the domain test writes of those states (replyOf) is not the reader's reply, byte for
+// byte: so the replies that the domain test hands judgeAnswer are of the reader's form. The reply that
+// it gives back is the one that ask returned, under the key of the base's line, the very reply that
+// each sweep hands judgeAnswer as the base's for each input of that base; the domain test hands it as
+// the base's reply of each answer whose base is the base as the reader read it.
+func decodedBase(t *testing.T, p *readerProcess, name string, fsys fstest.MapFS) (map[string]string, readerReply) {
 	t.Helper()
 	line, _ := readerLine(t, fsys)
 	reply, err := p.ask(t, line)
@@ -883,7 +896,7 @@ func decodedBase(t *testing.T, p *readerProcess, name string, fsys fstest.MapFS)
 	if mine := replyOf(t, own.States); mine.text != reply.text {
 		t.Errorf("%s: the domain test writes the base's states as the reply %q (replyOf), and the reader's process wrote %q", name, mine.text, reply.text)
 	}
-	return own.States
+	return own.States, reply
 }
 
 // knownRight is the right of the known positive beyond its right (knownPositives): it holds at each
