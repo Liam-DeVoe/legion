@@ -316,8 +316,8 @@ func populatedState(t *testing.T) State {
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
 		Admission: Admission{
-			Cap:    6,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240"},
+			Cap:    7,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -328,12 +328,16 @@ func populatedState(t *testing.T) State {
 			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
 			// the holder's clause rather than in one about queuing for a free slot. LEGION-218 and
 			// LEGION-219 are the two reviewing roots whose round waits on GitHub's merge state, and
-			// each holds a slot of its own, which the cap counts.
+			// each holds a slot of its own, which the cap counts. LEGION-240 holds one at step, and
+			// LEGION-241, held from step when its checker's claim failed, keeps the one that step
+			// held, since the slot rule reads where a hold is from (record.KeepsSlot, StandsAt), as
+			// LEGION-210, held from implementing, keeps its own.
 			Waiting: []string{"LEGION-212", "LEGION-211"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed,
 			// LEGION-214 is held with its Legion label off and so stands in no live tree, and every
-			// other root of the fixture is a tree of its own, each named below.
-			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219"},
+			// other root of the fixture is a tree of its own, each named below, LEGION-240 and
+			// LEGION-241 among them.
+			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219", "LEGION-240", "LEGION-241"},
 			// LEGION-211 is the waiting root admission skips, so it is in `waiting` too;
 			// LEGION-209 is a child of LEGION-208's tree the workflow holds at `admitted`, which
 			// no waiting line carries. Both are listed, by issue key, with what each waits on —
@@ -1209,6 +1213,44 @@ func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
 	golden(t, "state.json", state)
+}
+
+// The populated state is written by hand, as a state the daemon serves, so its admission block
+// holds to the rules the daemon's own pass builds that block by. An issue that holds a slot or
+// waits in the line stands in a live tree, so its tree is one `trees` names (record.LiveRoots: a
+// root at work has its lifecycle open, and a root in the line is queued). And every issue the
+// state records that has not finished stands in `active`, `waiting` or `held`, since the held
+// list is every candidate that stands in neither of the other two (record.HeldList). A golden
+// that breaks either rule shows every reader of state.json a state the daemon never serves.
+func TestTheStateGoldensAdmissionNamesEveryIssueItHolds(t *testing.T) {
+	state := populatedState(t)
+	admission := state.Admission
+	trees := map[string]bool{}
+	for _, tree := range admission.Trees {
+		trees[tree] = true
+	}
+	named := map[string]bool{}
+	for _, list := range [][]string{admission.Active, admission.Waiting} {
+		for _, key := range list {
+			named[key] = true
+			issue, recorded := state.Issues[key]
+			if !recorded {
+				t.Errorf("the admission names %s in a slot or in the line, and the state records no such issue", key)
+				continue
+			}
+			if !trees[issue.Tree] {
+				t.Errorf("%s holds a slot or waits in the line in the tree of %s, which `trees` does not name: %v", key, issue.Tree, admission.Trees)
+			}
+		}
+	}
+	for _, row := range admission.Held {
+		named[row.Issue] = true
+	}
+	for key, issue := range state.Issues {
+		if issue.Phase != phase.Done && !named[key] {
+			t.Errorf("%s stands at %s, and the admission names it in none of `active`, `waiting` and `held`", key, issue.Phase)
+		}
+	}
 }
 
 // The state route's body for a caller whose plugin is at the contract before
