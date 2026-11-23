@@ -18,7 +18,9 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { parseIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 
 const PAGE_SIZE = 50;
@@ -82,7 +84,22 @@ export function PersonPage(): ReactNode {
                   <LabelPill key={relation}>{RELATION_LABELS[relation] ?? relation}</LabelPill>
                 ))}
               </div>
-              <MarkdownPreview className="mt-2 text-sm" fullTitle lines={2} markdown={row.title} />
+              {/* The line reaches the page with no tree: the person nodes read sends none, so the
+                  preview parses it (`UNTREED_ROWS` in `refs/surface-lists.test.ts`). */}
+              <MarkdownPreview
+                className="mt-2 text-sm"
+                fullTitle
+                lines={2}
+                markdown={row.title}
+                source={textSourceOf(
+                  textSourceKind(row.kind),
+                  row.id,
+                  // The row carries no issue key; a comment on an issue links to that issue's
+                  // conversation, so a role reference in its line is read by that issue.
+                  parseIssuePath(row.href)?.key
+                )}
+                surface="person-node-title"
+              />
               <Link
                 className={`mt-2 inline-block min-h-11 py-2 text-sm ${linkText} ${linkHoverText}`}
                 to={row.href}

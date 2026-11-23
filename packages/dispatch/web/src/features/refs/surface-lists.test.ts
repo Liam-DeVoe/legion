@@ -2333,6 +2333,10 @@ const UNTREED_ROWS: readonly UntreedRow[] = [
     surface: "margin-suggestion-diff",
     why: "A suggestion's two sides are drawn inside a diff (`ReferenceHostIs host=\"diff\"`), where the renderer writes the characters it is handed and parses nothing (`hostDrawsMarkup`), so no tree is needed. The mounts are main's own (`margin/ThreadCard.tsx`).",
   },
+  {
+    surface: "person-node-title",
+    why: "A node's line on a person's page reaches the page with no tree: the person nodes read (`api/person_nodes.go`) sends the first line of the node's text, cut to 240 runes, and no reading of it, so the preview parses that line on the page. A tree for it is carried to dispatch://INFRA-4353 (cybermonklabs/legion#4105).",
+  },
 ];
 
 /** Where a text or a tree a mount hands on comes from, where it is the props of the component the

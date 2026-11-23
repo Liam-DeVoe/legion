@@ -96,6 +96,7 @@ export type DispatchReadingSurface =
   | "referenced-by-excerpt"
   | "referenced-by-title"
   | "artifacts-reference-name"
+  | "person-node-title"
   | "priority-description"
   | "body-reference-cards"
   | "dispatch-reference-card"
@@ -154,8 +155,8 @@ export interface DispatchReadingSurfaceRow {
    *  tie between the reason and the place it excuses. */
   readonly files: readonly string[];
   /** How a test reaches it: the route that draws it and the handle under that route. A route
-   *  that names an issue, a project, a document or a session writes that part as `<ISSUE>`,
-   *  `<PROJECT>`, `<SLUG>` or `<SESSION>`. */
+   *  that names an issue, a project, a document, a session or a person writes that part as
+   *  `<ISSUE>`, `<PROJECT>`, `<SLUG>`, `<SESSION>` or `<LOGIN>`. */
   readonly reach: string;
   /** Whether the text it draws is a record of this Dispatch, which the renderer is given as its
    *  `source` so a `#id` in the text names a block of that record's document. A surface whose
@@ -1138,6 +1139,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "artifacts-reference-name",
+  },
+  // A person's page: each node they wrote or that reached them, by the first line of its text,
+  // which the person nodes read cuts and sends with no tree of it.
+  {
+    files: ["packages/dispatch/web/src/features/people/PersonPage.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/people/PersonPage.test.tsx",
+      test: "a node's line is drawn through the renderer, its marks drawn and a reference read as its target",
+    },
+    reach: "/people/<LOGIN>, a node's line",
+    record: true,
+    rendered: true,
+    surface: "person-node-title",
   },
   // A priority's description, on its own page and on the open row of the priorities table, and
   // its first line on a closed row of that table.
