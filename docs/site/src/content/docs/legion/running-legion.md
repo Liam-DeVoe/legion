@@ -673,9 +673,12 @@ What each part is for:
   key or as `prompt_file`, a path, never both and never neither. On `work_back` a hook may also
   name `moves`, the moves it counts, each written `<from>-<to>` with two different workflow phases
   (`testing-implementing`, `reviewing-implementing`, `merging-implementing`, or any other of the
-  42 pairs the daemon counts, such as `testing-reviewing` on a task whose reviewer step comes
-  before its tester step), or the word `any`, which is also what a hook that leaves the
-  key out takes. A hook fires when the move is one it counts and the counts of the moves it
+  28 moves back a task's line can make, such as `testing-reviewing` on a task whose reviewer step
+  comes before its tester step), or the word `any`, which is also what a hook that leaves the
+  key out takes. A pair that no line makes as a move back is refused, since the hook would never
+  fire: a move into `retro` or `merging`, which end every line, and a move from `implementing` to
+  `testing`, `reviewing` or `accepting`, whose steps come after the implementer's. A hook fires
+  when the move is one it counts and the counts of the moves it
   counts, added up, are then a whole multiple of its `every`
   ([what it writes](/legion/legion/concepts/#review-signalling)). Each refusal at load names the
   hook by its place in the list and the key at fault, as `hooks[0].every`. The daemon reads every

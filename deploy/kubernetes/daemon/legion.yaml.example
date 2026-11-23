@@ -215,8 +215,11 @@ projects:
 #                                      # hook counts, each written <from>-<to> of two different
 #                                      # workflow phases (testing-implementing,
 #                                      # reviewing-implementing, merging-implementing, or any
-#                                      # other of the 42 pairs, such as testing-reviewing on a
-#                                      # task whose review step comes before its test step), or
+#                                      # other of the 28 moves back a task's line can make,
+#                                      # such as testing-reviewing on a task whose review step
+#                                      # comes before its test step; a move into retro or
+#                                      # merging, or from implementing to a later step, is
+#                                      # refused, since it never fires), or
 #                                      # the word any, which a hook that leaves the key out takes
 #                                      # as well. every is a positive whole number: the hook
 #                                      # fires when the counts of the moves it counts, added up,
