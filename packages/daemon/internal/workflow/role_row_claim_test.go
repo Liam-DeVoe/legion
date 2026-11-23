@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -64,6 +65,44 @@ func TestAHookPromptNamesTheAgentOfItsRolesStep(t *testing.T) {
 	for _, prompt := range prompts {
 		if want := roleRowOf(t, pool, engine, root.Key, claim.Role(prompt.role)).Claim; prompt.claim != string(want) || want != keyed {
 			t.Errorf("the %s's prompt names the claim %q, want %s, key a's agent on its step", prompt.role, prompt.claim, keyed)
+		}
+	}
+}
+
+// A hook's role implementer names the agent that does the implementation work of the task where
+// the move left it, whatever that agent's role is called (implementationAgent), as a merge
+// forward's ask and a settlement's message do. In `coder tester`, coder a role of the plan of the
+// type implementation, the tester's fail sends the work back to the coder's step, and the hook,
+// which names the implementer and the tester, prompts the coder on the claim the start of its step
+// names, and never the role implementer's own claim `…-implementer`, which no step of the task
+// runs and so no agent holds.
+func TestAHookPromptOfTheImplementerReachesTheAgentOfTheImplementationStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	engine.cfg.Hooks = []Hook{{Name: "work-back", On: HookEventWorkBack, Every: 1,
+		Roles: []claim.Role{claim.RoleImplementer, claim.RoleTester}, Prompt: saySoFar}}
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlanDefining(t, pool, root.Key, root.Generation, map[string]plan.Type{"coder": plan.TypeImplementation}, "coder", "tester")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
+
+	move(t, pool, engine, root.Key, TriggerTesterFailed, record.TaskPlace{}, record.PhaseRow{})
+
+	coder := roleRowOf(t, pool, engine, root.Key, "coder").Claim
+	if coder == "" || coder == claim.Token(token(t, root.Key, claim.RoleImplementer)) {
+		t.Fatalf("the coder's phases row names %q after the move back, want the claim of the coder's step: the case's premise", coder)
+	}
+	prompts := roleRowClaims(t, pool, root.Key, string(record.OutboxKindHookPrompt))
+	if len(prompts) != 2 {
+		t.Fatalf("the firing wrote the prompts %+v, want one for each role the hook names", prompts)
+	}
+	want := map[string]claim.Token{
+		string(claim.RoleImplementer): coder,
+		string(claim.RoleTester):      roleRowOf(t, pool, engine, root.Key, claim.RoleTester).Claim,
+	}
+	for _, prompt := range prompts {
+		if prompt.claim != string(want[prompt.role]) {
+			t.Errorf("the %s's prompt names the claim %q, want %q, the claim of the agent of that work's step", prompt.role, prompt.claim, want[prompt.role])
 		}
 	}
 }
