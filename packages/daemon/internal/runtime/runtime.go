@@ -376,17 +376,18 @@ type WorkspaceBundler interface {
 	BundleWorkspace(ctx context.Context, issue string, token claim.Token) (WorkspaceBundle, error)
 }
 
-// WorkspaceWorkReader asks one live role's process whether the issue workspace every role of the
+// WorkspaceWorkReader asks one live claim's process whether the issue workspace every claim of the
 // issue shares holds work that no branch or tag on origin holds. It is the read a pod update round
 // makes before it replaces a pod without waiting for every role, so that the replacement can name
 // what goes with the pod, and it is one runtime call so that INFRA-3271 can make the same read with
-// its own reading (spec R1 of INFRA-4109). The role named must be one whose process runs in the
-// issue's pod: its shim reads the workspace with the jj it already works with. The read keeps
-// nothing of the work and saves no bundle; the one thing it writes is jj's snapshot of the working
-// copy (Conn.WorkspaceWork). A runtime whose processes share no workspace implements nothing
-// here.
+// its own reading (spec R1 of INFRA-4109). The claim is named by its token, as WorkspaceBundler's
+// is, since the agent that works a role's step can run in a claim another role started (a keyed
+// agent), and it must be one whose process runs in the issue's pod: its shim reads the workspace
+// with the jj it already works with. The read keeps nothing of the work and saves no bundle; the
+// one thing it writes is jj's snapshot of the working copy (Conn.WorkspaceWork). A runtime whose
+// processes share no workspace implements nothing here.
 type WorkspaceWorkReader interface {
-	WorkspaceWork(ctx context.Context, issue string, role claim.Role) (WorkspaceWork, error)
+	WorkspaceWork(ctx context.Context, issue string, token claim.Token) (WorkspaceWork, error)
 }
 
 // WorkspaceWork is what one read of an issue's workspace found (WorkspaceWorkReader). Work is a

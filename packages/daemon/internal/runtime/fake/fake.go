@@ -52,8 +52,8 @@ type Call struct {
 	// PodUID is ReplaceIssuePod's pod, and the pod a launch replaced as its round's own
 	// replacement (ReplaceRoundPodAtLaunch, whose Spec is the launch's).
 	PodUID string
-	// Role is WorkspaceWork's role.
-	Role claim.Role
+	// Token is WorkspaceWork's claim.
+	Token claim.Token
 }
 
 // SpawnResult is one scripted answer to Spawn or Resume.
@@ -312,7 +312,7 @@ func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
 }
 
 // ScriptWorkspaceWork makes every later WorkspaceWork of issue answer work, as the Sandbox runtime
-// answers what the shim of a role in the issue's pod read. An issue no call named holds no work,
+// answers what the shim of a claim in the issue's pod read. An issue no call named holds no work,
 // which is the uninteresting case.
 func (r *Runtime) ScriptWorkspaceWork(issue string, work runtime.WorkspaceWork) {
 	r.mu.Lock()
@@ -321,16 +321,16 @@ func (r *Runtime) ScriptWorkspaceWork(issue string, work runtime.WorkspaceWork) 
 }
 
 // FailWorkspaceWork makes every later WorkspaceWork of issue return err, as the Sandbox runtime
-// answers a read that no role's process could make or that the shim refused. nil clears it, and
+// answers a read that no claim's process could make or that the shim refused. nil clears it, and
 // the issue's scripted reading answers again.
 func (r *Runtime) FailWorkspaceWork(issue string, err error) { r.fail("WorkspaceWork:"+issue, err) }
 
 // WorkspaceWork records its call and answers what FailWorkspaceWork set for the issue, else what
 // ScriptWorkspaceWork set, else no work.
-func (r *Runtime) WorkspaceWork(_ context.Context, issue string, role claim.Role) (runtime.WorkspaceWork, error) {
+func (r *Runtime) WorkspaceWork(_ context.Context, issue string, token claim.Token) (runtime.WorkspaceWork, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Role: role})
+	r.calls = append(r.calls, Call{Method: "WorkspaceWork", Issue: issue, Token: token})
 	if err := r.failures["WorkspaceWork:"+issue]; err != nil {
 		return runtime.WorkspaceWork{}, err
 	}

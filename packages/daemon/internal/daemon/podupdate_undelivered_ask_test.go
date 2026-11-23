@@ -334,6 +334,7 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // names). A row the release before wrote names no claim and stands for each claim of its role, so
 // the sweep asks no claim of the tester while it waits.
 func TestPodUpdateAsksAClaimWhileAnotherClaimOfItsRoleHasAnAskQueued(t *testing.T) {
+	t.Parallel()
 	keyed := mustClaimToken(t, podUpdateIssue, claim.RoleImplementer)
 	for _, tc := range []struct {
 		name string
@@ -350,7 +351,7 @@ func TestPodUpdateAsksAClaimWhileAnotherClaimOfItsRoleHasAnAskQueued(t *testing.
 			rig.drifts(podUpdateDrift)
 			rig.tick()
 			rig.awaitRound(claim.RoleTester, podUpdateRound)
-			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
+			text := supervise.UpdateTask(claim.RoleTester, podUpdateRound, podUpdateDrift, podUpdateBound)
 			if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 				Role: claim.RoleTester, Claim: tc.queued, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
 			}); err != nil || !written {

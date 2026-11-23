@@ -251,12 +251,13 @@ func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartO
 	}
 }
 
-// A start that waits because the issue's pod was built before its role, queued above the
-// release's rows, does not cancel the teardown either: the pod cannot run it, and the release is
-// one of the two things that let it start (idleWaitingRow, pods.StartWaitsForPodPrefix). A
-// teardown that read it as the pod being used again would cancel the very release it waits for,
-// and the start would wait on until the pod's update round. The control is the same start before
-// its first try, its last error empty: it is the pod being used again, and cancels the release.
+// A start that waits because the issue's pod lacks the slot of its claim or the role of its step,
+// queued above the release's rows, does not cancel the teardown either: the pod cannot run it, and
+// the release is one of the two things that let it start (idleWaitingRow,
+// pods.StartWaitsForPodPrefix). A teardown that read it as the pod being used again would cancel
+// the very release it waits for, and the start would wait on until the pod's update round. The
+// control is the same start before its first try, its last error empty: it is the pod being used
+// again, and cancels the release.
 func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

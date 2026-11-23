@@ -379,7 +379,7 @@ func stepWorkersOf(project, issue, tree string, p *record.StoredPlan) ([]stepWor
 // step to name.
 func (w *workflowRuntime) stepWorkers(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error) {
 	var workers []stepWorker
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || issue == nil {
 			return err

@@ -94,7 +94,7 @@ func TestThePlanStepAgentMigrationNamesEveryStepItFinds(t *testing.T) {
 	readSteps := func(st *Store) []record.PlanStep {
 		t.Helper()
 		var plan *record.StoredPlan
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) (err error) {
+		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) (err error) {
 			plan, err = record.NewStore().Plan(ctx, tx, "LEGION-208", 1)
 			return err
 		}); err != nil {

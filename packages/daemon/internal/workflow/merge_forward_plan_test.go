@@ -282,8 +282,8 @@ func TestAnApprovalOfAConflictingHeadLeavesTheMergeToTheMerger(t *testing.T) {
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after retro's completion the issue is in %s, want merging", got)
 			}
-			want := []record.MergeForwardMessage{{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead,
-				Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
+			want := []record.MergeForwardMessage{{Role: claim.RoleMerger, Claim: seededClaim(t, claim.RoleMerger), Step: record.MergeForwardAsk,
+				Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Fatalf("merge-forward messages %+v after the move into merging, want %+v", got, want)
 			}
@@ -299,10 +299,12 @@ func completesImplementingAt(t *testing.T, pool *pgxpool.Pool) {
 		Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "implemented", Commit: conflictHead, HandoffRecord: "implement-1", HandoffVersion: 1})
 }
 
-// implementerAsked is the implementer's ask of the merge forward of conflictHead in at, for why.
-func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
-	return record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
-		Phase: at, PullRequest: 42, Why: why}
+// implementerAsked is the implementer's ask of the merge forward of conflictHead in at, for why,
+// on the topic of the implementer's own claim, which works its step on these plans.
+func implementerAsked(t *testing.T, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
+	t.Helper()
+	return record.MergeForwardMessage{Role: claim.RoleImplementer, Claim: seededClaim(t, claim.RoleImplementer), Step: record.MergeForwardAsk,
+		Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
 }
 
 // An ask made in implementing covers implementing alone (mergeForwardOnEntry), and a move to where
@@ -315,7 +317,7 @@ func implementerAsked(at phase.Phase, why record.ConflictWhy) record.MergeForwar
 // it, which moves into its retro at the completion.
 func TestAParentHeldBeforeItsRetroAsksWhatTheMoveIntoItsRetroAsks(t *testing.T) {
 	unread := &record.BaseRules{Unread: "HTTP 502"}
-	want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, record.ConflictRulesUnread)}
+	want := []record.MergeForwardMessage{implementerAsked(t, phase.Implementing, record.ConflictRulesUnread)}
 	// asksNothingAgain is LEGION-208 standing in at after what happened last, with the implementer's
 	// ask of implementing the one merge-forward message written and still on the record, and no
 	// checks-red notice.
@@ -397,9 +399,9 @@ func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) 
 			if got := issuePhase(t, pool); got != phase.Merging {
 				t.Fatalf("after the retro's completion LEGION-208 is in %s, want merging", got)
 			}
-			want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, record.ConflictRulesUnread),
-				{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42,
-					Why: record.ConflictMergeNext}}
+			want := []record.MergeForwardMessage{implementerAsked(t, phase.Implementing, record.ConflictRulesUnread),
+				{Role: claim.RoleMerger, Claim: seededClaim(t, claim.RoleMerger), Step: record.MergeForwardAsk, Head: conflictHead, Base: "main",
+					Phase: phase.Merging, PullRequest: 42, Why: record.ConflictMergeNext}}
 			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 				t.Fatalf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked, the implementer is not asked again and no merger is held",
 					got, want)
@@ -458,8 +460,8 @@ func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testin
 		if got := issuePhase(t, pool); got != phase.Planning {
 			t.Fatalf("after the implementer's completion the issue is in %s, want planning", got)
 		}
-		want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, record.ConflictCheckNotGreen),
-			implementerAsked(phase.Planning, record.ConflictCheckNotGreen)}
+		want := []record.MergeForwardMessage{implementerAsked(t, phase.Implementing, record.ConflictCheckNotGreen),
+			implementerAsked(t, phase.Planning, record.ConflictCheckNotGreen)}
 		if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
 			t.Fatalf("merge-forward messages %+v, want %+v: the planning after the implementer asks again", got, want)
 		}
@@ -482,7 +484,8 @@ func TestAPlannerAfterTheImplementerIsReadForAConflictAndAskedTheMerge(t *testin
 func TestAnAskOfImplementingIsAskedAgainOnlyWhereAStepStillRuns(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	ask := func(role claim.Role, step record.MergeForwardStep, at phase.Phase, why record.ConflictWhy) record.MergeForwardMessage {
-		return record.MergeForwardMessage{Role: role, Step: step, Head: conflictHead, Base: "main", Phase: at, PullRequest: 42, Why: why}
+		return record.MergeForwardMessage{Role: role, Claim: seededClaim(t, role), Step: step, Head: conflictHead, Base: "main", Phase: at,
+			PullRequest: 42, Why: why}
 	}
 	inImplementing := ask(claim.RoleImplementer, record.MergeForwardAsk, phase.Implementing, record.ConflictCheckNotGreen)
 	// completes is LEGION-208 on the plan steps, asked in implementing to merge the base forward

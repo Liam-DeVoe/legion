@@ -59,10 +59,10 @@ const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' an
 // its tree's design gate for the whole time the gate stays closed (the daemon's
 // mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
 // (supervise's queue). A pod held for it would stand idle for all that time. The other is a start
-// that waits because the pod was built before its role (startWaitsForPodRow): the pod cannot run
-// it, and the release is one of the two things that let it start, so it neither holds the pod nor
-// cancels the release. All three reads take this one rule, so the rule that holds a pod and the
-// rules that cancel its release never disagree.
+// that waits because the pod lacks the slot of its claim or the role of its step
+// (startWaitsForPodRow): the pod cannot run it, and the release is one of the two things that let
+// it start, so it neither holds the pod nor cancels the release. All three reads take this one
+// rule, so the rule that holds a pod and the rules that cancel its release never disagree.
 func idleWaitingRow(prefix string) string {
 	return `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true') and not ` +
 		fmt.Sprintf(startWaitsForPodRow, prefix)

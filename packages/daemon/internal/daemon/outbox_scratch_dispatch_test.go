@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -351,6 +352,7 @@ func scratchRoleHolders(t *testing.T, baseURL, token, issue string) []dispatch.R
 // tester's role. Before 20261122130956 Dispatch refused the set, a role named twice (400
 // INVALID_ROLE_HOLDER), the lane ended the row, and Dispatch kept a set with neither session.
 func TestTwoLiveClaimsOfOneRoleBothHoldItOnScratchDispatch(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	r := newRoleHoldersRig(t)
@@ -362,8 +364,8 @@ func TestTwoLiveClaimsOfOneRoleBothHoldItOnScratchDispatch(t *testing.T) {
 	if _, err := r.pool.Exec(r.ctx, `update claims set role = 'tester' where token = $1`, string(keyed)); err != nil {
 		t.Fatalf("re-role the keyed claim to the tester: %v", err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: issue, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
 	}); err != nil {
 		t.Fatalf("name the keyed claim on the tester's step: %v", err)
 	}
