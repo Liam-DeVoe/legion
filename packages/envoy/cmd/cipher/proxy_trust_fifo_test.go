@@ -106,8 +106,9 @@ func pipeSending(t *testing.T, body string) string {
 // TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames: on the bundle path, what a trust
 // variable or WGETRC names is read as the command's own client reads it, whatever kind of file it
 // is. A pipe whose writer sends trust keeps that trust in the bundle, and its lines in the
-// wgetrc; SSL_CERT_FILE=/dev/null adds nothing, and so does not stand for the system roots; and a
-// pipe that sends more than proxyCertFileMaxBytes is read no further and adds nothing.
+// wgetrc, also where the skip decision looked at the pipe first; SSL_CERT_FILE=/dev/null adds
+// nothing, and so does not stand for the system roots; and a pipe or a device that sends more
+// than proxyCertFileMaxBytes is read no further and adds nothing.
 func TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames(t *testing.T) {
 	proxy := proxyTestRoot(t, "test proxy root")
 	systemRoot := proxyTestRoot(t, "test system root")
@@ -138,7 +139,7 @@ func TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames(t *testing.T) {
 			t.Errorf("the wgetrc lacks the lines the pipe sent or the bundle:\n%s", wgetrc)
 		}
 	})
-	t.Run("SSL_CERT_FILE names /dev/null", func(t *testing.T) {
+	t.Run("SSL_CERT_FILE names the null device", func(t *testing.T) {
 		files := runPrepareAirlock(t, "SSL_CERT_FILE=/dev/null", environ(t, "SSL_CERT_FILE=/dev/null"), proxy)
 		if bundle := read(t, files.bundle); strings.Contains(bundle, systemRoot) || !strings.Contains(bundle, proxy) {
 			t.Errorf("SSL_CERT_FILE=/dev/null: the bundle holds the system roots or lacks the proxy's, want the proxy's alone:\n%s", bundle)
@@ -149,6 +150,31 @@ func TestPrepareAirlockReadsAPipeOrDeviceATrustSettingNames(t *testing.T) {
 		files := runPrepareAirlock(t, "CURL_CA_BUNDLE naming a long pipe", environ(t, "CURL_CA_BUNDLE="+pipeSending(t, long)), proxy)
 		if bundle := read(t, files.bundle); strings.Contains(bundle, corp) {
 			t.Errorf("the bundle holds the root at the end of a pipe longer than %d bytes, want it read no further", proxyCertFileMaxBytes)
+		}
+	})
+	t.Run("CURL_CA_BUNDLE names the zero device, which never ends", func(t *testing.T) {
+		files := runPrepareAirlock(t, "CURL_CA_BUNDLE=/dev/zero", environ(t, "CURL_CA_BUNDLE=/dev/zero"), proxy)
+		if bundle := read(t, files.bundle); strings.Contains(bundle, "\x00") || !strings.Contains(bundle, proxy) {
+			t.Errorf("CURL_CA_BUNDLE=/dev/zero: the bundle holds what the device sent or lacks the proxy's root, want the device read no further")
+		}
+	})
+	t.Run("CURL_CA_BUNDLE names a pipe, and the skip decision looks at it first", func(t *testing.T) {
+		// The store holds the release's root and the command carries the eight settings, so the
+		// decision reaches the trust files themselves: the control, a regular CURL_CA_BUNDLE that
+		// holds the root, gets no bundle. A pipe's bytes can be read once, and the decision refuses
+		// it without reading it, so the bundle writer still gets what its writer sent.
+		useSystemTrustFiles(t, writeLoginFile(t, "ca-certificates.crt", proxy+systemRoot))
+		settings := withSettings(proxyStoreSettings(t, writeLoginFile(t, "system.pem", proxy)), "XDG_RUNTIME_DIR="+t.TempDir())
+		control := runPrepareAirlock(t, "a regular CURL_CA_BUNDLE holding the root", withSettings(settings, "CURL_CA_BUNDLE="+writeLoginFile(t, "corp-and-proxy.pem", corp+proxy)), proxy)
+		if control.bundle != "" {
+			t.Fatalf("control: a regular CURL_CA_BUNDLE holding the root got the bundle %q, so the decision never reached the trust files", control.bundle)
+		}
+		files := runPrepareAirlock(t, "CURL_CA_BUNDLE naming a pipe", withSettings(settings, "CURL_CA_BUNDLE="+pipeSending(t, corp)), proxy)
+		if files.bundle == "" {
+			t.Fatalf("CURL_CA_BUNDLE naming a pipe: prepareAirlock wrote no bundle, want one")
+		}
+		if bundle := read(t, files.bundle); !strings.Contains(bundle, corp) {
+			t.Errorf("the bundle lacks the root the pipe sent, so something read the pipe before the bundle writer:\n%s", bundle)
 		}
 	})
 }
