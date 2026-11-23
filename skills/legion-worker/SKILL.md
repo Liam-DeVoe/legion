@@ -12,7 +12,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 1. Read the issue, then its `open-items.md` where one exists (`dispatch doc-read --issue <issue> --artifact open-items-md`):
    the architect records decisions there that it does not message.
-   Then read each earlier step's report at the version your task names for it (`Step <j> (<step>) reported: <word> version <v>`) with `dispatch handoff-read --phase <word> --version <v>`; with none, each earlier phase's newest handoff (`--phase <plan|implement|test|review>`).
+   Then read each earlier step's report: the version your task names, else the newest (`dispatch handoff-read`).
    A record beats your memory.
 
 2. Before the turn's first `jj new`, list `jj -R "$LEGION_WORKSPACE" diff -r @ --name-only` and `jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only`.
@@ -64,7 +64,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - A released pod is not a stop.
   Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 
-- When another role's topic answers 404, read that step's report with `dispatch handoff-read`, at the version your task names.
+- When another role's topic answers 404, read that step's report with `dispatch handoff-read`.
 
 ## Commits and pushes
 
