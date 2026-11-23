@@ -294,7 +294,7 @@ Every other route of the table, `GET /ws/live` and the GitHub proxy (`/api/githu
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/healthz` and `/livez` take no broker token at all.
 `/healthz` and `/livez` take no credential (`routes.Process`), so they answer a request that carries such a token as they answer any other caller, and none of the three makes a write for it; `GET /metrics` is a row of the table, so it answers such a token `403 READ_ONLY_TOKEN` as the rows above do.
-The GitHub proxy resolves its caller as the table's rows do, so it takes a broker token too, and reads GitHub for a full member's credential that holds `person` (the GitHub proxy, under Routes).
+The GitHub proxy resolves its caller as the table's rows do, so it takes a broker token too, and reads GitHub for a person's browser and for a full member's token that holds `person` (the GitHub proxy, under Routes).
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
@@ -4976,7 +4976,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each mint logs at WARN with the email and the peer.
   Not mounted otherwise.
 
-- `/api/github/rest/...` (GET; a full member's cookie, trusted header, or personal or broker-issued token holding `person`)
+- `/api/github/rest/...` (GET; cookie, trusted header, or a full member's personal or broker-issued token holding `person`)
 
   Read GitHub as the GitHub App installation that covers the repository, never as anyone's own GitHub account:
   a pull request (`repos/{o}/{r}/pulls/{n}`), an issue (`repos/{o}/{r}/issues/{n}`), a commit's check runs (`repos/{o}/{r}/commits/{sha}/check-runs`) or a commit's workflow runs (`repos/{o}/{r}/actions/runs?head_sha={sha}`, the query being the full 40-hex `head_sha` and at most a numeric `per_page` and `page`, each once), the only reads the web app makes;
@@ -4994,7 +4994,8 @@ Each item below names a path with its method and identity, then its purpose.
     It must hold the OAuth scope `person`, so the proxy reads only for a person, at their browser or through a token acting as them; the browser holds every scope.
     A credential that holds no scope is `403 OAUTH_SCOPE_REQUIRED` naming `person`, with the scope gate's `WWW-Authenticate` challenge: the deployment's shared agent token, a service account's token, a broker token an operator's entry scoped to one project, a broker token that names no person, and a restricted member's broker token (`api.brokerTokenActor`).
     A read-only token is `403 READ_ONLY_TOKEN`, and a request with no credential `401 NO_IDENTITY`.
-    A restricted member's credential of any kind is `403 RESTRICTED_MEMBER`, whatever scopes it holds: their browser session, a personal token of theirs and any token acting for them (`model.Viewer.Restricted`, the test every write of the API reads for a restricted member), so an outside person and their agents read nothing through the proxy.
+    A restricted member's token of any kind is `403 RESTRICTED_MEMBER`, whatever scopes it holds: a personal token of theirs (which their browser's mint gives `person` and `approve`) and any broker token acting for them (`model.Viewer.Restricted`, the test every write of the API reads for a restricted member), so an outside person's agents read nothing through the proxy.
+    A restricted member's browser session is held to the repository gate below, as every person's is.
     Each refusal comes before the method and the path are read, and GitHub is asked nothing.
 
   - The gate is the one the App-installation route applies to any credential (`GET /api/v1/github/app-installation/{owner}/{repo}`, `api.repositoriesHidden`), read with the caller's own credential, so a token's project list decides which private projects it reads, as everywhere (above): a full member's token that lists no private project reads no repository only a private project's issues resolve to.

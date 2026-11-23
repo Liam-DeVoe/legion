@@ -10,9 +10,9 @@ body: |-
   it reads. A credential without `person` is 403 `OAUTH_SCOPE_REQUIRED` (the shared agent token, a
   service account's token, a broker token an operator's entry scoped to one project, a broker token
   that names no person, a restricted member's broker token), a read-only token 403
-  `READ_ONLY_TOKEN`, and a restricted member's credential of any kind, their browser session
-  included, 403 `RESTRICTED_MEMBER`, each before GitHub is asked anything, so an outside person and
-  their agents read nothing through the proxy; a full member's cookie is answered as before.
+  `READ_ONLY_TOKEN`, and a restricted member's token of any kind 403 `RESTRICTED_MEMBER`, whatever
+  scopes it holds, each before GitHub is asked anything, so an outside person's agents read nothing
+  through the proxy; a person's cookie, a restricted member's included, is answered as before.
 time: 2026-11-22T21:38:07Z
 custom:
     Issue: pr5079
