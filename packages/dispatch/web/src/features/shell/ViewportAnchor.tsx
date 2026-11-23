@@ -27,9 +27,8 @@ interface HeldPlace {
   hostRow: HTMLElement | null;
   id: string;
   /** The element inside the row whose own place is kept with it, and its viewport top then; null
-   *  where the row's top is. A control the focus is on as the reader's act records the place
-   *  keeps it only while it holds the focus; an element the host names inside the row it keeps
-   *  (`keepRow`) keeps it while it stays inside that row (`keptIn`). */
+   *  where the row's top is. Which element keeps the place, and for how long, is the rule
+   *  `keptIn` states. */
   inner: { element: Element; top: number } | null;
   scrollTop: number;
   top: number;
@@ -162,16 +161,13 @@ export function overlaps(rect: Pick<DOMRect, "bottom" | "top">, box: DOMRect): b
 }
 
 /** True where `element`, an element inside `row` other than the row itself, can keep the place
- *  at its own top (`held`): the element a host names inside the row it keeps (`keepRow`, `host`)
- *  does while it stays inside `row`, and a control named by the reader's act does while it also
- *  holds the focus. The row itself says no more than the row's own top. */
-function keptIn(element: Element | null, row: HTMLElement, host: boolean): element is Element {
-  return (
-    element !== null &&
-    element !== row &&
-    (host || element === document.activeElement) &&
-    row.contains(element)
-  );
+ *  at its own top (`held`), the one rule every element kept with a place is kept by: the element
+ *  a host names inside the row it keeps (`keepRow`, `host`) does while it stays inside `row`,
+ *  whether or not it holds the focus, and a control named by the reader's act does while it
+ *  stays inside `row` and holds the focus. An element that left the row, a control that lost the
+ *  focus, and the row itself keep no place of their own, and the row's top is kept instead. */
+function keptIn(element: Element, row: HTMLElement, host: boolean): boolean {
+  return element !== row && (host || element === document.activeElement) && row.contains(element);
 }
 
 /** How far the box that scrolls the rows is scrolled: `scroller`'s offset, or the window's. */
@@ -414,18 +410,17 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  A place the host keeps (`keepRow`) is kept the same way, by the same rule, and is marked as
    *  the host's (`hostRow`), so letting it go leaves a place of the reader's alone.
    *
-   *  Where the focus is on a control inside the row and that control lies in the view as the
-   *  place is recorded, the place is that control's own (`inner`): the control and its viewport
-   *  top then, kept while it holds the focus. So is the place of an element the host names inside
-   *  the row it keeps (`keepRow`), as the history names the turn an address lands at, kept while
-   *  it stays inside the row. A long row whose head is above the view is read at that element,
-   *  and its own words above the element can change height, which moves the element and leaves
-   *  the row's top where it was. `top` is then the row's top that puts the element back at its
-   *  own (`contentResized` keeps the two together), so a commit, which measures the row, moves
-   *  the element back with it. An element outside the view is kept no more than a row outside it
-   *  is (`rowToKeep`). A press of the reader's inside the root, a key or the pointer, lets the
-   *  element go (`readerPressed`): what the press opens in the row opens below the row's top,
-   *  which is what holds then.
+   *  Where an element inside the row can keep the place (`keptIn`), a focused control or the one
+   *  the host names inside the row it keeps (`keepRow`), as the history names the turn an address
+   *  lands at, and lies in the view as the place is recorded, the place is that element's own
+   *  (`inner`): the element and its viewport top then. A long row whose head is above the view is
+   *  read at that element, and its own words above the element can change height, which moves the
+   *  element and leaves the row's top where it was. `top` is then the row's top that puts the
+   *  element back at its own (`contentResized` keeps the two together), so a commit, which measures
+   *  the row, moves the element back with it. An element outside the view is kept no more than a
+   *  row outside it is (`rowToKeep`). A press of the reader's inside the root, a key or the
+   *  pointer, lets the element go (`readerPressed`): what the press opens in the row opens below
+   *  the row's top, which is what holds then.
    *
    *  A different `scrollTop` means the view moved without this component hearing of it, unless
    *  the box sits at its end below the offset kept, where the browser pulled it back as its
@@ -577,9 +572,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   }
 
   /** The element kept with the place `held` (`inner`) while it still keeps the place inside
-   *  `row`, the place's row (`keptIn`): a focused control while it holds the focus there, the
-   *  host's element while it stays there; null otherwise. A control that lost the focus, or an
-   *  element that left the row, keeps no place of its own. */
+   *  `row`, the place's row, as the rule `keptIn` states; null otherwise. */
   private keptInner(held: HeldPlace, row: HTMLElement): HeldPlace["inner"] {
     const inner = held.inner;
     return inner !== null && keptIn(inner.element, row, held.hostRow !== null) ? inner : null;
@@ -659,7 +652,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     const row = this.keptOnlyInView(via) ? this.rowToKeep(named, box) : named;
     if (row === null) return null;
     let inner: HeldPlace["inner"] = null;
-    if (keptIn(within, row, host)) {
+    if (within !== null && keptIn(within, row, host)) {
       const at = within.getBoundingClientRect();
       if (overlaps(at, box)) inner = { element: within, top: at.top };
     }
@@ -1301,14 +1294,13 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  and what it starts changes the list around it, as a page of older rows read in under the
    *  list does; or the host has just scrolled the box to a row an address names, as the history
    *  lands an agents' turn, and keeps it at the top it landed at, whatever order a change of
-   *  height and that scroll's event come in. Where the host names `element`, an element inside
-   *  `row` other than the row itself, as the history names the turn it landed, the place is that
-   *  element's own, as a focused control's is (`held`): recorded at the top it stands at now,
-   *  where any of it lies in the view, and kept while it stays inside the row, whether or not it
-   *  holds the focus. The row's own content above the element can then change height, as a long
-   *  turn above a reply the history landed is cut, and the element stays where it was while the
-   *  row's top moves. Without `element`, or where `element` lies outside the view or the row, the
-   *  row's own top is kept. The row's place is recorded as a reader's would be, by the rule
+   *  height and that scroll's event come in. Where the host names `element` inside `row`, as the
+   *  history names the turn it landed, the place is that element's own (`held`): recorded at the
+   *  top it stands at now, where any of it lies in the view, and kept as the rule `keptIn` states.
+   *  The row's own content above the element can then change height, as a long turn above a reply
+   *  the history landed is cut, and the element stays where it was while the row's top moves.
+   *  Without `element`, or where `element` lies outside the view or can keep no place (`keptIn`),
+   *  the row's own top is kept. The row's place is recorded as a reader's would be, by the rule
    *  `rowToKeep` states where the host takes its box over (`keptOnlyInView`): where that rule
    *  puts another row in its stead, the place kept is that row's top, and still the host's
    *  (`hostRow`). The box's own scroll anchoring is off meanwhile where the host takes the box

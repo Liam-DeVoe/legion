@@ -1470,6 +1470,10 @@ test("a control of Details that another session takes away under the focus leave
   }
 });
 
+/** A paragraph of a long agents' turn: one sentence of the agents' work six times over. Every row
+ *  that draws long turns rests on the height this gives them, so each draws its turns of it. */
+const TURN_PARAGRAPH = "the agents read the history and wrote what they found ".repeat(6);
+
 // The focus rule of `IssueHistory.tsx`, with long agents' turns just above Load older. A turn is
 // cut to six lines only once it comes near the screen (`clamp-measurer.ts`), so turns far below
 // the reader are drawn whole. Moving the focus to Load older scrolls them into view, and Enter
@@ -1490,14 +1494,13 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
   const issue = await createIssue({ project: "CORE", title: "Long turns above Load older" });
   // Each turn is about a thousand pixels whole at Details' width and six lines cut, as the long
   // turns of the real issue were.
-  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
   const turn = (index: number) =>
     createMessage(
       issue.key,
       {
         body: Array.from(
           { length: 10 },
-          (_, part) => `Turn ${index}, part ${part}: ${paragraph}`
+          (_, part) => `Turn ${index}, part ${part}: ${TURN_PARAGRAPH}`
         ).join("\n\n"),
       },
       attentionSession
@@ -1535,11 +1538,9 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
   }
 });
 
-/** The words of a long agents' turn: `parts` paragraphs, each one sentence of the agents' work
- *  six times over. */
+/** The words of a long agents' turn: `parts` paragraphs, each `TURN_PARAGRAPH`. */
 function longTurnBody(parts: number): string {
-  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
-  return Array.from({ length: parts }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n");
+  return Array.from({ length: parts }, (_, part) => `Part ${part}: ${TURN_PARAGRAPH}`).join("\n\n");
 }
 
 // The reader's place in the history (`IssueHistory.tsx`'s `ViewportAnchor`) when a turn above it
@@ -4106,8 +4107,10 @@ test("the address of a short reply under a long agents' turn keeps the reply in 
         .toBeLessThan(400);
       await nextFrames(page);
       const view = await historyViewport(page);
-      const at = await boxOf(marked, "the reply");
-      if (!wholly(at, { bottom: view.bottom + 1, top: view.top - 1 })) {
+      const at = await marked.boundingBox();
+      if (at === null) {
+        outOfView.push(`at ${size.width} px the reply drew no box`);
+      } else if (!wholly(at, { bottom: view.bottom + 1, top: view.top - 1 })) {
         outOfView.push(
           `at ${size.width} px the reply stood from ${Math.round(at.y)} to ${Math.round(at.y + at.height)} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)})`
         );
