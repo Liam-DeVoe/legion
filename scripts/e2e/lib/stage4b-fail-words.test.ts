@@ -11,7 +11,11 @@ import { scriptFunctions } from "./script-functions";
 const path = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 
 test("fail prints FAIL and exits 1", () => {
-  const run = Bun.spawnSync(["bash", "-c", `${scriptFunctions(path)("fail")}\ncheck=done\nfail "a count cannot be read"`]);
+  const run = Bun.spawnSync([
+    "bash",
+    "-c",
+    `${scriptFunctions(path)("fail")}\ncheck=done\nfail "a count cannot be read"`,
+  ]);
   expect(run.exitCode).toBe(1);
   expect(run.stdout.toString()).toBe("CHECK done: FAIL: a count cannot be read\n");
 });
