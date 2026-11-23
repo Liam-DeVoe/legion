@@ -1496,7 +1496,8 @@ async function bootDirectSession(
     readonly dispatchCredential?: "broker";
   } = {}
 ) {
-  stillOn(rowCheck(), "setting the session's Dispatch");
+  const ownRow = rowCheck();
+  stillOn(ownRow, "setting the session's Dispatch");
   process.env.DISPATCH_URL = "http://dispatch.test";
   if (options.dispatchCredential === "broker") delete process.env.DISPATCH_TOKEN;
   else process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
@@ -1555,6 +1556,8 @@ async function bootDirectSession(
   // Query-string isolation gives each caller its own instance of this stateful extension, and a
   // restart its second one; the specifier is the caller's, so it cannot be a static import.
   const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  // A body its limit abandoned while the module loaded starts no session in the row after it.
+  stillOn(ownRow, "starting the session");
   const fixture = createPi();
   const waiters: { readonly count: number; readonly resolve: () => void }[] = [];
   const recordedWhenDelivered: number[] = [];
@@ -2175,13 +2178,18 @@ async function bootSessionPod(
   launch?: { readonly role: string; readonly session?: string },
   transcript: readonly BranchEntry[] = []
 ) {
-  stillOn(rowCheck(), "setting the session pod's launch");
+  // The row the pod is booted in. Each method below that hands the session an event checks it
+  // first, and after each await before the next, so a body its limit abandoned hands the session
+  // nothing inside the row after it.
+  const ownRow = rowCheck();
+  stillOn(ownRow, "setting the session pod's launch");
   if (launch !== undefined) {
     process.env.ENVOY_SESSION_ROLE = launch.role;
     if (launch.session !== undefined) process.env.ENVOY_SESSION_ROLE_SESSION = launch.session;
   }
   // Each caller's own query loads an instance of its own, so the specifier cannot be static.
   const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  stillOn(ownRow, "starting the pod's session");
   const fixture = createPi();
   const intervals: (() => void)[] = [];
   const notices: string[] = [];
@@ -2214,6 +2222,7 @@ async function bootSessionPod(
       return () => fixture.entries.slice(0, end);
     },
     heartbeat: async () => {
+      stillOn(ownRow, "ticking the pod's heartbeat");
       const before = listener.registrations(manager.id);
       intervals[0]?.();
       await until(
@@ -2227,8 +2236,10 @@ async function bootSessionPod(
       id: string,
       opens?: () => readonly unknown[]
     ) => {
+      stillOn(ownRow, `announcing the pod's ${reason}`);
       if (reason === "branch") {
         await fixture.handlers.get("session_before_branch")?.({ entryId: "entry" }, context);
+        stillOn(ownRow, "landing the pod's branch");
         manager.id = id;
         await fixture.handlers.get("session_branch")?.(
           { previousSessionFile: "/tmp/old.jsonl" },
@@ -2237,6 +2248,7 @@ async function bootSessionPod(
         return;
       }
       await fixture.handlers.get("session_before_switch")?.({ reason }, context);
+      stillOn(ownRow, `landing the pod's ${reason}`);
       manager.id = id;
       if (reason === "new") {
         const from = fixture.entries.length;
@@ -2245,7 +2257,10 @@ async function bootSessionPod(
       if (opens !== undefined) manager.branch = opens;
       await fixture.handlers.get("session_switch")?.({ reason }, context);
     },
-    shutdown: () => fixture.handlers.get("session_shutdown")?.({}, context),
+    shutdown: () => {
+      stillOn(ownRow, "shutting the pod's session down");
+      return fixture.handlers.get("session_shutdown")?.({}, context);
+    },
   };
 }
 
@@ -2341,6 +2356,23 @@ async function withEnvoyTimings<T>(
   }
 }
 
+/**
+ * The `ENVOY_PASS_DEADLINE_MS` of every row on `gatedRoleFixture`, which sets it, and of four rows
+ * of the same kind that boot a session of their own: an hour, past the limit of each of those
+ * rows. Each pass and role move is abandoned at its deadline, a real `setTimeout` of the extension
+ * (`createRegistrationState`, `src/registration-state.ts`), and at the 90 s it is otherwise (the
+ * heartbeat's interval, which a pass's deadline is never shorter than) a host slow enough could
+ * abandon a pass the row did not mean to. With an hour no deadline ends a correct row's pass,
+ * however slow the host, and a pass that hangs ends at the row's own limit, which names the row.
+ * This is not the test's clock (`onPassClock`), on purpose: these rows wait on the listener's
+ * 250 ms retry (`LISTENER_CALL_RETRY_DELAY_MS`) and other short real timers, which a held clock
+ * would stop. The long deadline takes the race away and leaves those timers as they are.
+ * `envoySettings` takes any finite number above zero and holds it under 2 147 483 647 ms, so the
+ * hour stands. The file's reset deletes the variable before and after every row
+ * (`resetFileState`), so it reaches no other row.
+ */
+const UNRACED_PASS_DEADLINE_MS = "3600000";
+
 const UNASKED_WAIT_NUDGE =
   "You just said you are waiting on a human for something no open ask in Dispatch covers. Open it now: a decision block in the document it concerns (dispatch doc-edit with an ask block), or dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
 
@@ -2394,6 +2426,9 @@ async function bootAskNudge(
     readonly holdTimers?: boolean;
   } = {}
 ) {
+  // The row the session is booted in. Each method below that hands the session an event checks
+  // it first, so a body its limit abandoned hands the session nothing inside the row after it.
+  const ownRow = rowCheck();
   const branch = options.branch ?? [];
   // A distinct server clock per query, so a period's window can only be the `as_of` of the
   // snapshot it was taken from: a regression that pinned it to the arming turn, or that failed
@@ -2405,7 +2440,7 @@ async function bootAskNudge(
     | undefined;
   let lastAsOf = "";
   let dispatchCalls = 0;
-  stillOn(rowCheck(), "setting the session's Dispatch");
+  stillOn(ownRow, "setting the session's Dispatch");
   process.env.DISPATCH_URL = "http://dispatch.test";
   process.env.DISPATCH_TOKEN = "token";
   const queries: string[] = [];
@@ -2483,7 +2518,6 @@ async function bootAskNudge(
   // over when every timer it scheduled has run. The wait throws once its row has ended.
   const timers: Promise<void>[] = [];
   const held: (() => void | Promise<void>)[] = [];
-  const ownRow = rowCheck();
   const drainTimers = async (): Promise<void> => {
     while (timers.length > 0) {
       await timers.shift();
@@ -2544,6 +2578,7 @@ async function bootAskNudge(
      * (`nextRegistration()`), never a wait on the clock.
      */
     heartbeat: async (awaiting?: Promise<unknown>) => {
+      stillOn(ownRow, "ticking the session's intervals");
       for (const tick of intervals) tick();
       await Promise.resolve();
       await Promise.resolve();
@@ -2551,12 +2586,17 @@ async function bootAskNudge(
     },
     /** The host's order: `before_agent_start` is awaited, then the run starts. */
     userTurn: async (prompt = "finish the task") => {
+      stillOn(ownRow, "typing a user turn");
       const injected = await beforeAgentStart({ prompt }, context);
+      stillOn(ownRow, "starting the run the user typed");
       await agentStart({}, context);
       return injected;
     },
     /** A run the user did not type: an Envoy delivery, or another extension's continuation. */
-    runStart: () => agentStart({}, context),
+    runStart: () => {
+      stillOn(ownRow, "starting a run nobody typed");
+      return agentStart({}, context);
+    },
     /**
      * Holds the next turn's arming read open: `out` resolves once that read is in flight, and
      * the read answers when `release()` is called.
@@ -2586,10 +2626,14 @@ async function bootAskNudge(
         readonly messages?: readonly { readonly role?: string; readonly stopReason?: string }[];
       } = {}
     ) => {
+      stillOn(ownRow, "stopping the run");
       await agentEnd({ messages: [{ role: "assistant", stopReason: "stop" }], ...event }, context);
       await drainTimers();
     },
-    toolResult: (event: Record<string, unknown>) => toolResult(event, context),
+    toolResult: (event: Record<string, unknown>) => {
+      stillOn(ownRow, "handing the session a tool result");
+      return toolResult(event, context);
+    },
     /**
      * A `dispatch` command the agent ran through `via` (bash by default; an `eval` cell runs
      * `command` as its code): the CLI's ledger line for `tool` with `details` under this session,
@@ -2601,6 +2645,7 @@ async function bootAskNudge(
       details: Readonly<Record<string, unknown>>,
       via: "bash" | "eval" = "bash"
     ) => {
+      stillOn(ownRow, "running a dispatch command");
       appendResult(sessionDirectory(process.env, sessionID), { tool, details });
       dispatchCalls += 1;
       await toolResult(
@@ -6627,6 +6672,10 @@ console.log(JSON.stringify(args));
       argv: readonly string[],
       wanted = 1
     ) => {
+      // The row the run is made in: each act below on the session checks it first, so a body its
+      // limit abandoned hands the session nothing inside the row after it.
+      const ownRow = rowCheck();
+      stillOn(ownRow, "starting the unmarked run's session");
       const fixture = allHandlers();
       envoyExtension(fixture.pi);
       const context = gateContext([]);
@@ -6643,6 +6692,7 @@ console.log(JSON.stringify(args));
           fetchImpl: (async () => Response.json({})) as typeof fetch,
         }
       );
+      stillOn(ownRow, "handing the session the unmarked write's tool result");
       await fixture.handlers.get("tool_result")?.(
         {
           toolName: "bash",
@@ -6664,6 +6714,7 @@ console.log(JSON.stringify(args));
          * in: what the gate answered the call with, and every record Dispatch has by then.
          */
         gatedAsk: async (toolCallId: string) => {
+          stillOn(ownRow, "handing the gate a literal dispatch ask");
           const before = published.length;
           const result = (await fixture.handlers.get("tool_call")?.(
             { toolName: "bash", toolCallId, input: { command: ASK } },
@@ -6676,6 +6727,7 @@ console.log(JSON.stringify(args));
           return { result, records: [...published] };
         },
         shutdown: async () => {
+          stillOn(ownRow, "shutting the unmarked run's session down");
           await fixture.handlers.get("session_shutdown")?.({}, context);
         },
       };
@@ -6960,11 +7012,14 @@ console.log(JSON.stringify(args));
       await ask("call-3");
       expect(gateOutcomes(fixture.entries)).toEqual(["verdict", "verdict", "unmarked", "breaker"]);
       // A hang guard: what can hang is a gated call (`ask`) whose review never answers. Its worst
-      // reading is 5 711.36 ms, in envoy.test.ts run whole at the 96 rung in the Job
+      // reading was 5 711.36 ms, in envoy.test.ts run whole at the 96 rung in the Job
       // infra-1580-krows-wf96-xshh4 of the cluster's `builds` namespace, two CPUs and 8 GiB (134
       // busy loops, at which row A's 5 runs took 34.0 s against the calibration's 31.2 s), so this
-      // row's 30_000 from the base is raised to 60_000, 10.5 times that.
-    }, 60_000);
+      // row's 30_000 from the base was raised to 60_000, 10.5 times that. Its worst reading now is
+      // 15 383 ms, in envoy.test.ts run whole at the 96 rung in the Job infra-1580-t25-wf2-np8hv
+      // (216 busy loops, row A 37.6 s), at b5a8b94f, so 60_000 is raised to 100_000, 6.5 times
+      // that.
+    }, 100_000);
     test("an unmarked entry leaves the halt's count as it was: the third call without a verdict still halts", async () => {
       gateOn();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-unmarked-halt");
@@ -8367,8 +8422,14 @@ console.log(JSON.stringify(args));
     } = {}
   ) => {
     // The row the fixture is made in: once it has ended, `tick` throws rather than run the
-    // heartbeat inside the row after it (`stillOn`).
+    // heartbeat inside the row after it (`stillOn`), and a fixture first called after it ended
+    // throws here, before it sets anything for the row after it.
     const ownRow = rowCheck();
+    stillOn(ownRow, "setting the fixture's pass deadline");
+    // An hour, past the row's limit (`UNRACED_PASS_DEADLINE_MS`), unless the row named its own
+    // deadline before it called the fixture (`withEnvoyTimings`): the extension reads it at
+    // `session_start`, below.
+    process.env.ENVOY_PASS_DEADLINE_MS ??= UNRACED_PASS_DEADLINE_MS;
     const claims: string[] = [];
     // Each claim as `<role>@<session it was sent for>`.
     const claimSessions: string[] = [];
@@ -9419,17 +9480,17 @@ console.log(JSON.stringify(args));
 
   for (const phase of ["read", "claim"] as const) {
     test(`a heartbeat's role check whose ${phase} a /fork outlasts leaves the regain an outage owes to the fork`, async () => {
-      // Each pass and role move is abandoned at its deadline, 90 s here (the heartbeat's
-      // interval, which a pass's deadline is never shorter than), the heartbeat's check the row
-      // holds at its read or claim included, and a refused registration is sent again 250 ms later
-      // (`LISTENER_CALL_RETRY_DELAY_MS`): both are this process's timers. On the real clock each
-      // pass raced its deadline with its work, so a host slow enough could abandon a pass the row
-      // did not mean to. So the row runs on the test's clock (`onPassClock`), which moves only
-      // through that retry, 10 ms at a time while the outage's refusals are pending (`stepping`),
-      // under 1 s in all, so no deadline ends. No other timer matters: the fixture's listener
-      // answers each call in process, the heartbeat's extra call after a failed tick is 20 s or
-      // more out on the host's timer, which the fixture's context leaves pending, and `tick` runs
-      // the heartbeat.
+      // Each pass and role move is abandoned at its deadline, an hour here (the fixture's
+      // `UNRACED_PASS_DEADLINE_MS`), the heartbeat's check the row holds at its read or claim
+      // included, and a refused registration is sent again 250 ms later
+      // (`LISTENER_CALL_RETRY_DELAY_MS`): both are this process's timers. At the 90 s deadline the
+      // row had before, each pass raced it with its work on the real clock, so a host slow enough
+      // could abandon a pass the row did not mean to. So the row runs on the test's clock
+      // (`onPassClock`), which moves only through that retry, 10 ms at a time while the outage's
+      // refusals are pending (`stepping`), under 1 s in all, so no deadline ends. No other timer
+      // matters: the fixture's listener answers each call in process, the heartbeat's extra call
+      // after a failed tick is 20 s or more out on the host's timer, which the fixture's context
+      // leaves pending, and `tick` runs the heartbeat.
       await onPassClock(async (clock) => {
         const {
           fixture,
@@ -10312,7 +10373,7 @@ console.log(JSON.stringify(args));
   }
 
   test("a hand-back the listener fails is not tried again, so a later pass leaves a hold another process makes under that id", async () => {
-    // As in the row "a role whose hand-back an outage lost ...": every pass races its 90 s
+    // As in the row "a role whose hand-back an outage lost ...": every pass races its
     // deadline, and the resume waits on its failed hand-back's 250 ms retry
     // (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So the row runs on the test's
     // clock (`onPassClock`), which moves only through that retry, 10 ms at a time while the
@@ -10399,15 +10460,16 @@ console.log(JSON.stringify(args));
   });
 
   test("a role whose hand-back an outage lost is claimed by a later session once the listener reaps the hold, not refused to it", async () => {
-    // Each pass and role move is abandoned at its deadline, 90 s here (the heartbeat's interval,
-    // which a pass's deadline is never shorter than), and a listener call that fails is sent again
-    // 250 ms later (`LISTENER_CALL_RETRY_DELAY_MS`): both are this process's timers. On the real
-    // clock each pass raced its deadline with its work, so a host slow enough could abandon a pass
-    // the row did not mean to. So the row runs on the test's clock (`onPassClock`), which moves
-    // only through a failed call's retry, 10 ms at a time while the session event that waits on it
-    // is pending (`stepping`), under 1 s in all, so no deadline ends. No other timer matters: the
-    // fixture's listener answers each call in process, far inside its 5 s bound
-    // (`LISTENER_CALL_TIMEOUT_MS`), and the heartbeat is the fixture's own, run by `tick`.
+    // Each pass and role move is abandoned at its deadline, an hour here (the fixture's
+    // `UNRACED_PASS_DEADLINE_MS`), and a listener call that fails is sent again 250 ms later
+    // (`LISTENER_CALL_RETRY_DELAY_MS`): both are this process's timers. At the 90 s deadline the
+    // row had before, each pass raced it with its work on the real clock, so a host slow enough
+    // could abandon a pass the row did not mean to. So the row runs on the test's clock
+    // (`onPassClock`), which moves only through a failed call's retry, 10 ms at a time while the
+    // session event that waits on it is pending (`stepping`), under 1 s in all, so no deadline
+    // ends. No other timer matters: the fixture's listener answers each call in process, far
+    // inside its 5 s bound (`LISTENER_CALL_TIMEOUT_MS`), and the heartbeat is the fixture's own,
+    // run by `tick`.
     await onPassClock(async (clock) => {
       const role = "legion-controller";
       const {
@@ -10489,7 +10551,7 @@ console.log(JSON.stringify(args));
   });
 
   test("an abandoned hold whose session another process heartbeats again is the newer holder: refused once seen, never taken back", async () => {
-    // As in the row "a role whose hand-back an outage lost ...": every pass races its 90 s
+    // As in the row "a role whose hand-back an outage lost ...": every pass races its
     // deadline, and the /new waits on a failed call's 250 ms retry
     // (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So the row runs on the test's
     // clock (`onPassClock`), which moves only through that retry, 10 ms at a time while the /new
@@ -10782,7 +10844,7 @@ console.log(JSON.stringify(args));
   }, 120_000);
 
   test("an abandoned hold's session this process registers again is its own hold again, not a newer holder", async () => {
-    // As in the row "a role whose hand-back an outage lost ...": every pass races its 90 s
+    // As in the row "a role whose hand-back an outage lost ...": every pass races its
     // deadline, the pass the row holds at its registration included, and the /new waits on a
     // failed call's 250 ms retry (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So
     // the row runs on the test's clock (`onPassClock`), which moves only through that retry, 10 ms
@@ -10870,7 +10932,7 @@ console.log(JSON.stringify(args));
 
   for (const meanwhile of ["the listener reaped it", "a third session took the role"] as const) {
     test(`a hold taken back on returning to its abandoned session is claimed before it is trusted, when ${meanwhile}`, async () => {
-      // As in the row "a role whose hand-back an outage lost ...": every pass races its 90 s
+      // As in the row "a role whose hand-back an outage lost ...": every pass races its
       // deadline, and the /new waits on a failed call's 250 ms retry
       // (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So the row runs on the
       // test's clock (`onPassClock`), which moves only through that retry, 10 ms at a time while
@@ -10958,7 +11020,7 @@ console.log(JSON.stringify(args));
   }
 
   test("a registration outside a pass takes an abandoned hold back, so its moved last_seen is not read as a newer holder", async () => {
-    // As in the row "a role whose hand-back an outage lost ...": every pass races its 90 s
+    // As in the row "a role whose hand-back an outage lost ...": every pass races its
     // deadline, and the /new and the resume back to ses_op each wait on a failed call's 250 ms
     // retry (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So the row runs on the
     // test's clock (`onPassClock`), which moves only through those retries, 10 ms at a time while
@@ -11076,7 +11138,7 @@ console.log(JSON.stringify(args));
   });
 
   test("a hand-back the listener fails under the session's own id is made by a later pass", async () => {
-    // As in the row "a role whose hand-back an outage lost ...": every pass races its 90 s
+    // As in the row "a role whose hand-back an outage lost ...": every pass races its
     // deadline, and the tree navigation waits on a failed hand-back's 250 ms retry
     // (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So the row runs on the test's
     // clock (`onPassClock`), which moves only through that retry, 10 ms at a time while the tree
@@ -11128,7 +11190,7 @@ console.log(JSON.stringify(args));
     // The client sends a failed listener call once more 250 ms later
     // (`LISTENER_CALL_RETRY_DELAY_MS`), so the pass that fails outlives the tick that started it,
     // and a tick fired meanwhile is swallowed by the heartbeat's `healing` latch; every pass races
-    // its 90 s deadline too. Both are this process's timers, so the row runs on the test's clock
+    // its deadline too. Both are this process's timers, so the row runs on the test's clock
     // (`onPassClock`). The heartbeat is ticked, and the clock moved 50 ms in 10 ms steps, until the
     // hand-back is seen at the listener rather than for a guessed wait, at most 50 times (2.5 s
     // of the clock), so no deadline ends. No other timer matters: the fixture's listener answers
@@ -11477,7 +11539,7 @@ console.log(JSON.stringify(args));
   // sits unheld.
   for (const when of ["after", "before"] as const) {
     test(`a hand-back the listener fails ${when} the process leaves its session is waited out: never tried again, and a claim refused naming it records no refusal`, async () => {
-      // As in the row "a role whose hand-back an outage lost ...": every pass races its 90 s
+      // As in the row "a role whose hand-back an outage lost ...": every pass races its
       // deadline, and the /new or the tree navigation waits on its failed hand-back's 250 ms
       // retry (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So the row runs on the
       // test's clock (`onPassClock`), which moves only through that retry, 10 ms at a time while
@@ -11746,7 +11808,7 @@ console.log(JSON.stringify(args));
 
   test("the model's move off a role a fork holds under its parent hands that hold back under the parent", async () => {
     // As in the row "a role whose hand-back an outage lost ...": the fork's pass and the model's
-    // move each race their 90 s deadline, and the fork waits on its failed claim's 250 ms retry
+    // move each race their deadline, and the fork waits on its failed claim's 250 ms retry
     // (`LISTENER_CALL_RETRY_DELAY_MS`), both this process's timers. So the row runs on the test's
     // clock (`onPassClock`), which moves only through that retry, 10 ms at a time while the fork
     // is pending (`stepping`), so no deadline ends. No other timer matters: the fixture's listener
@@ -12073,15 +12135,16 @@ console.log(JSON.stringify(args));
             const ticking = ticksInWindow === 0 ? "" : ", the heartbeat ticking meanwhile";
             const recording = firstRecords ? " recording the role" : "";
             test(`a ${first}${recording} held ${stage} when ${event.name}${ticking}`, async () => {
-              // Every pass and role move is abandoned at its deadline, 90 s here (the heartbeat's
-              // interval, which a pass's deadline is never shorter than), the one the row holds at
-              // its stage included: a timer of this process. On the real clock each pass raced it
-              // with the row's work, so a host slow enough could abandon a pass the row did not
-              // mean to. So each row runs on the test's clock (`onPassClock`), which never moves
-              // here: no listener call fails, so none waits on its 250 ms retry, and the work
-              // between runs in process, on real turns (`run`, and `drain`'s own turns). No other
-              // timer matters: the fixture's listener answers each call in process, and the
-              // heartbeat is the fixture's own, run by `tick`.
+              // Every pass and role move is abandoned at its deadline, an hour here (the
+              // fixture's `UNRACED_PASS_DEADLINE_MS`), the one the row holds at its stage
+              // included: a timer of this process. At the 90 s deadline the rows had before,
+              // each pass raced it with the row's work on the real clock, so a host slow enough
+              // could abandon a pass the row did not mean to. So each row runs on the test's
+              // clock (`onPassClock`), which never moves here: no listener call fails, so none
+              // waits on its 250 ms retry, and the work between runs in process, on real turns
+              // (`run`, and `drain`'s own turns). No other timer matters: the fixture's listener
+              // answers each call in process, and the heartbeat is the fixture's own, run by
+              // `tick`.
               await onPassClock(async (clock) => {
                 // Where the role is before the first switch: held by the session with a plugin's
                 // role-bound notice; only in the listener's rows (the one source a reclaim reads
@@ -14044,6 +14107,8 @@ console.log(JSON.stringify(args));
     // A listener restart that outlasts the envoy_sessions TTL: the durable claim is intact, but
     // until this session re-registers the listener answers "no holder" for it, and the daemon's
     // publishes in that window went undelivered. The re-registration itself is the regain.
+    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
     const role = "legion-controller";
     let registryDown = false;
     const roleClaims: unknown[] = [];
@@ -14853,6 +14918,8 @@ console.log(JSON.stringify(args));
     // Tick N: registration fails (the listener may now answer "no holder" for this session).
     // Tick N+1: registration lands but the role read errors. Tick N+2: healthy. The regain owed
     // since tick N must still fire exactly once at N+2, or the daemon's held work stays stranded.
+    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
     const role = "legion-controller";
     let registryDown = false;
     let roleReadBroken = false;
@@ -16516,7 +16583,8 @@ console.log(JSON.stringify(args));
           readonly sideTurn?: (prompt: string) => string;
         } = {}
       ) => {
-        stillOn(rowCheck(), "booting a shell session");
+        const ownRow = rowCheck();
+        stillOn(ownRow, "booting a shell session");
         const work = mkdtempSync(join(tmpdir(), "envoy-shell-case-"));
         workDirectories.push(work);
         if (options.limitMs !== undefined) {
@@ -16534,6 +16602,7 @@ console.log(JSON.stringify(args));
             dispatchCredential: options.dispatchCredential,
           }),
         });
+        stillOn(ownRow, "watching the shell session's live stream");
         natsState.controls
           .get("agentstream.ses_delivery.control")
           ?.push(JSON.stringify({ type: "watch", v: 1 }));
@@ -20714,9 +20783,13 @@ console.log(JSON.stringify(args));
     parentID: string,
     transcript: (name: string) => string
   ) {
+    // The row the process is made in: each boot checks it first, so a body its limit abandoned
+    // starts no session inside the row after it.
+    const ownRow = rowCheck();
     const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
     const heartbeats: (() => void)[] = [];
     const boot = async (id: string, file: string) => {
+      stillOn(ownRow, `starting the session ${id}`);
       const fixture = createPi();
       envoyExtension(fixture.pi);
       const context = sessionWithTranscript(id, file, heartbeats);
@@ -21804,6 +21877,9 @@ console.log(JSON.stringify(args));
      * that same run.
      */
     async function bootPlacedSession(query: string, sessionID: string) {
+      // The row the session is booted in: its heartbeat checks it first, so a body its limit
+      // abandoned ticks nothing inside the row after it.
+      const ownRow = rowCheck();
       const places: (TmuxPlace | undefined)[] = [];
       let registered: (() => void) | undefined;
       globalThis.fetch = async (input, init) => {
@@ -21832,6 +21908,7 @@ console.log(JSON.stringify(args));
         places,
         /** Ticks every interval the session registered, and waits for the registration it sends. */
         heartbeat: async () => {
+          stillOn(ownRow, "ticking the placed session's heartbeat");
           const sent = Promise.withResolvers<void>();
           const before = places.length;
           registered = () => {
@@ -22922,6 +22999,9 @@ console.log(JSON.stringify(args));
 
   /** A session for the relay-loss rows: its notices in all three places, and its heartbeat. */
   async function relayLossSession(id: string, query: string) {
+    // The row the session is booted in: its heartbeat and its follow check it first, so a body
+    // its limit abandoned hands the session nothing inside the row after it.
+    const ownRow = rowCheck();
     const warnings: string[] = [];
     const stopSink = rowLogSink((entry) => {
       if (entry.level === "warn") warnings.push(entry.message);
@@ -22966,9 +23046,11 @@ console.log(JSON.stringify(args));
         written: written("Envoy inbound restored"),
       }),
       heartbeat: () => {
+        stillOn(ownRow, "ticking the relay-loss session's heartbeat");
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
       },
       follow: async (topic: string) => {
+        stillOn(ownRow, `following ${topic}`);
         const subscribe = fixture.tools.find((tool) => tool.name === "envoy_subscribe");
         if (subscribe === undefined) throw new Error("envoy_subscribe was not registered");
         return String((await subscribe.execute("", { topics: [topic] })).details.registrationError);
@@ -23287,6 +23369,7 @@ console.log(JSON.stringify(args));
   // of connections lists: the image's build-commit stamp, else a packed build's release version,
   // else none.
   test("the connection name the server sees ends with the plugin's build", async () => {
+    const ownRow = rowCheck();
     await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
       globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
       const names: string[] = [];
@@ -23309,6 +23392,10 @@ console.log(JSON.stringify(args));
           { stamp: undefined, packed: false, want: "omp-ses_build" },
         ];
         for (const [index, row] of rows.entries()) {
+          // Each turn starts, and goes on after each await, only while its row runs, and its
+          // session ends with the row (`rowShutdown`): a row its limit abandoned inside
+          // `session_start` leaves no session running, and its loop acts in no row after it.
+          stillOn(ownRow, "starting a turn of the connection-name loop");
           const stamp = join(stampDirectory, `build-commit-${index}`);
           if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
           entry.setBuildSourceForTests({ stamp, packed: row.packed });
@@ -23320,9 +23407,14 @@ console.log(JSON.stringify(args));
           };
           const fixture = createPi();
           entry.default(fixture.pi);
+          const shutdown = rowShutdown(async () =>
+            fixture.handlers.get("session_shutdown")?.({}, context)
+          );
           names.length = 0;
           await fixture.handlers.get("session_start")?.({}, context);
-          await fixture.handlers.get("session_shutdown")?.({}, context);
+          stillOn(ownRow, "shutting down a session of the connection-name loop");
+          await shutdown();
+          stillOn(ownRow, "reading the connection name of the loop's session");
           expect(names[0]).toBe(row.want);
         }
       } finally {
@@ -24031,15 +24123,18 @@ console.log(JSON.stringify(args));
     });
     // A hang guard, not a bound on work: what can hang is the wait for the boot or for the follow's
     // trade (`clock.waitOn`, `clock.wait`), which has no bound of turns, because each trade reads
-    // the pod's token from disk, real I/O. The readings below were taken with those waits bounded
-    // by turns (`run`, `hold`). Worst measured cost: 13 513.21 ms over 20 runs at 16 busy loops
+    // the pod's token from disk, real I/O. Worst measured cost: 16 391 ms at the 96 rung in the
+    // Job infra-1580-t25-r5-mnnq5 of the cluster's `builds` namespace (257 busy loops, row A
+    // 38.4 s), at b5a8b94f. 100_000 is 6.1 times that. The earlier readings below were taken with
+    // those waits bounded by turns (`run`, `hold`): 13 513.21 ms over 20 runs at 16 busy loops
     // (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T16:06Z to 16:22Z,
     // with the boot on the real clock; with the boot on the test clock, 12 258.67 ms over 20 runs
     // there, 2026-11-20T17:58Z to 18:13Z, and 8 259.09 ms, 2026-11-21T02:21Z to 02:38Z. So 90_000
-    // is 6.7 times the worst. At the merge head 0915a5ef: 8 187.40 ms over 20 runs at the 96 rung
-    // in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs and 8 GiB
-    // (106 busy loops, at which row A's runs took 32.2 s against the calibration's 31.2 s).
-  }, 90_000);
+    // was 6.7 times the worst of them. At the merge head 0915a5ef: 8 187.40 ms over 20 runs at the
+    // 96 rung in the Job infra-1580-krows-m6-vf8fq of the cluster's `builds` namespace, two CPUs
+    // and 8 GiB (106 busy loops, at which row A's runs took 32.2 s against the calibration's
+    // 31.2 s).
+  }, 100_000);
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
     // The move to the new session's token fails (its trade is refused outright, a refusal no
@@ -24873,6 +24968,8 @@ console.log(JSON.stringify(args));
     // The extension captures fetch by value at creation, so the blip must be
     // flipped inside the same function object rather than by reassigning
     // globalThis.fetch afterwards.
+    // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+    process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
     let registryDown = false;
     globalThis.fetch = async (input, init) => {
       if (registryDown) throw new Error("network unreachable");
@@ -25731,7 +25828,11 @@ describe("consumer delivery", () => {
       readonly clock?: PassClock;
     } = {}
   ) {
-    stillOn(rowCheck(), "booting a consumer session");
+    // The row the session is booted in. Each method below that hands the session an event checks
+    // it first, so a body its limit abandoned hands the session nothing inside the row after it.
+    // `stop` does not: a row hands it to `rowShutdown`, whose hooks run it once the row ended.
+    const ownRow = rowCheck();
+    stillOn(ownRow, "booting a consumer session");
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     process.env.DISPATCH_URL = "http://dispatch.test";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
@@ -25801,6 +25902,7 @@ describe("consumer delivery", () => {
       events.push(data === undefined ? subject : `${subject} ${new TextDecoder().decode(data)}`);
     };
     const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    stillOn(ownRow, "starting the consumer session");
     const fixture = createPi();
     const intervals: (() => void)[] = [];
     const written: unknown[] = [];
@@ -25884,6 +25986,7 @@ describe("consumer delivery", () => {
           readonly storedAt?: Date;
         } = {}
       ): string => {
+        stillOn(ownRow, `relaying stored message ${seq}`);
         const controls = natsState.controls.get(RELAY);
         if (controls === undefined) throw new Error("the relay subject was never subscribed");
         inboxes += 1;
@@ -25906,6 +26009,7 @@ describe("consumer delivery", () => {
        *  `until`, or, in a row on the test's clock (`onPassClock`), held on that `clock`, since
        *  `until` is for real timers only. */
       tick: async (clock?: PassClock) => {
+        stillOn(ownRow, "ticking the consumer session's heartbeat");
         const before = registrations.length;
         for (const interval of intervals) interval();
         const sent = () => registrations.length > before;
@@ -25915,6 +26019,7 @@ describe("consumer delivery", () => {
       },
       /** nats.js reports a reconnect. */
       reconnect: async () => {
+        stillOn(ownRow, "reporting a reconnect");
         const before = registrations.length;
         pushNatsStatus("reconnect");
         await until(() => registrations.length > before, "the reconnect's registration");
@@ -25934,6 +26039,7 @@ describe("consumer delivery", () => {
        * idle from then on, writing each card it is handed.
        */
       interrupt: async () => {
+        stillOn(ownRow, "interrupting the streaming turn");
         held.splice(0);
         turn = "idle";
         await fixture.handlers.get("agent_end")?.(
@@ -25942,10 +26048,12 @@ describe("consumer delivery", () => {
         );
         await settle();
       },
-      follow: (topic: string) =>
-        fixture.tools
+      follow: (topic: string) => {
+        stillOn(ownRow, `following ${topic}`);
+        return fixture.tools
           .find((tool) => tool.name === "envoy_subscribe")
-          ?.execute("", { topics: [topic] }),
+          ?.execute("", { topics: [topic] });
+      },
       stop: () => fixture.handlers.get("session_shutdown")?.({}, context),
     };
     return session;
@@ -26716,6 +26824,8 @@ describe("consumer delivery", () => {
     // same event by its own consumer. The request that session makes must state when the event
     // reached it, from its own ledger record, and never when the session before it was shown it.
     test("an event in the session the host moved to reads that session's own delivery time", async () => {
+      // An hour, past the row's limit, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
+      process.env.ENVOY_PASS_DEADLINE_MS = UNRACED_PASS_DEADLINE_MS;
       const session = await bootConsumer("card-age-moved", { turn: "streaming" });
       session.relay(1, peer("card-age-moved"));
       await until(() => session.cards("evt-card-age-moved").length > 0, "the relayed card");
@@ -27197,6 +27307,7 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
     afterAll(() => server.stop(natsHookDeadline(NATS_STOP_HOOK_MS)), NATS_STOP_HOOK_MS);
 
     test("answers a replay asked on its own reply prefix, and nothing on nats.go's request inbox", async () => {
+      const ownRow = rowCheck();
       const decoder = new TextDecoder();
       const originalSeed = process.env.NATS_NKEY_SEED;
       process.env.ENVOY_NATS_URL = server.url;
@@ -27218,20 +27329,30 @@ describe.skipIf(process.env.LEGION_E2E !== "1")(
         }),
         reconnect: false,
       });
+      // The requester closes with the row (`rowShutdown`), as the session does below.
+      const closeRequester = rowShutdown(() => requester.close());
       // A module instance of its own, as every row here takes one: the extension keeps its
       // session's state, so a static import would share it with every other row of the file.
       const { default: envoyExtension } = await import("./envoy.ts?reply-grant");
+      stillOn(ownRow, "booting the reply-grant session");
       const fixture = createPi();
       envoyExtension(fixture.pi);
       const context = sessionContext(SESSION);
+      let stop: (() => Promise<unknown>) | undefined;
       try {
+        // The session ends with the row (`rowShutdown`): the file's hooks end it for a row its
+        // limit abandoned, and a `finally` that runs late starts no shutdown in the row after it.
+        stop = rowShutdown(async () => fixture.handlers.get("session_shutdown")?.({}, context));
         await fixture.handlers.get("session_start")?.({}, context);
         await runReplayGrantScenario({ requester, server, sessionID: SESSION });
       } finally {
-        await fixture.handlers.get("session_shutdown")?.({}, context);
-        await requester.close();
-        if (originalSeed === undefined) delete process.env.NATS_NKEY_SEED;
-        else process.env.NATS_NKEY_SEED = originalSeed;
+        await Promise.all([stop?.(), closeRequester()]);
+        // Once the row has ended, the file's hooks have put the seed back (`resetFileState`), and
+        // the row after it may have set its own.
+        if (ownRow()) {
+          if (originalSeed === undefined) delete process.env.NATS_NKEY_SEED;
+          else process.env.NATS_NKEY_SEED = originalSeed;
+        }
       }
     }, 60_000);
   }
