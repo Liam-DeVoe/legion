@@ -15,6 +15,7 @@ import { presetPath } from "../issue-address";
 import { TWO_THREADS } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
+import { nodeRowSelectorOf } from "../tree-focus";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
   commentGone,
@@ -438,8 +439,8 @@ test("with a chip pressed, a check the chip leaves out, named on a new address u
 });
 
 /** The Spec view's rows of the spec's statement and of the second thread's head. */
-const SPEC_STATEMENT_ROW = `[data-spec-body] [data-node-row][data-node-id="${blockNodeId(SPEC_SLUG, STATEMENT)}"]`;
-const SPEC_COMMENT_ROW = '[data-spec-body] [data-node-row][data-node-id="head-b"]';
+const SPEC_STATEMENT_ROW = `[data-spec-body] ${nodeRowSelectorOf(blockNodeId(SPEC_SLUG, STATEMENT))}`;
+const SPEC_COMMENT_ROW = `[data-spec-body] ${nodeRowSelectorOf("head-b")}`;
 
 // The Spec view draws a node the address names that is no statement as a row of its own, after
 // the statements, so a comment of the issue keeps the view, which lands on the comment's row once
