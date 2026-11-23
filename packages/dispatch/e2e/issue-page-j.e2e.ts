@@ -1357,9 +1357,16 @@ test("the Spec view opened at its address with its statements' reads refused put
 // are drawn above it, and fails this case's check of the viewport. A page that draws no Spec view
 // fails its first check.
 //
+// A key during that load: with both reads held the comment's row, drawn alone, holds the focus,
+// and the reader presses End on it, which leaves the focus on that row, the view's last. The
+// landing then does nothing, since the reader has acted, and the row the key left the reader on
+// stays on screen once the statements are drawn above it. A view that holds nothing after a key
+// leaves the row where the statements pushed it, below the screen, since at the page's top the
+// browser's scroll anchoring holds nothing still, and fails this case's check of the viewport.
+//
 // A comment id of the right shape that no comment of the issue has draws the outline's line for
 // it in the view's place, with the focus on that line's heading, which stands in view.
-// SLOW(>=2s): a seeded issue of sixty statements, then three loads of Settings and three of the
+// SLOW(>=2s): a seeded issue of sixty statements, then four loads of Settings and four of the
 // Spec view, each waited on until the page goes quiet.
 test("an address on the Spec view lands on a statement, on a comment it draws and on a comment the issue holds none of, each loaded from another page with the focused row in view", async ({
   browser,
@@ -1428,6 +1435,39 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       "the comment's address leaves the focus off its row of the Spec view once the statements are drawn above it"
     ).toBeFocused();
     await expectOnScreen(comment, "the comment's address, its statements drawn above it");
+    await page.unroute(heldRead);
+
+    // A key during that load: End on the comment's row, with the coverage read and the spec's
+    // blocks read held until the key is pressed.
+    const keyHeld = Promise.withResolvers<void>();
+    await page.route(heldRead, async (route) => {
+      await keyHeld.promise;
+      await route.continue();
+    });
+    const keyTraffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
+    await expect(
+      comment,
+      "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held, before End"
+    ).toBeVisible();
+    await expect(
+      comment,
+      "the comment's row does not hold the focus while the coverage and the spec's blocks are held, before End"
+    ).toBeFocused();
+    await page.keyboard.press("End");
+    keyHeld.resolve();
+    await expectLoadSettled(keyTraffic);
+    await expect(
+      statements,
+      "the comment's address, End pressed on its row during the load, does not draw every statement of the spec once the coverage and the spec's blocks answer"
+    ).toHaveCount(seeded.requirements.length);
+    await expectOnScreen(
+      comment,
+      "End on the comment's row during the load, its statements drawn above it"
+    );
+    await expect(
+      comment,
+      "End on the comment's row during the load leaves the focus off that row once the statements are drawn above it"
+    ).toBeFocused();
     await page.unroute(heldRead);
 
     // A comment the issue holds none of.
