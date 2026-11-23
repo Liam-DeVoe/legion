@@ -339,7 +339,10 @@ type issueRestore struct {
 	// document held already, by the document's id (writePresent): a section converted into a
 	// reading whose reading is not among them was written nowhere (refuseUnwrittenReadings).
 	readingsWritten map[string]map[string]bool
-	result          *DecisionIssue
+	// ancestors is the issue's chain, which each artifact.version the pass appends names
+	// (DocumentEventAncestors), read once for the issue before the pass's first write.
+	ancestors []string
+	result    *DecisionIssue
 }
 
 // presentEdits is what this pass writes into the answered ask blocks one document holds already:
@@ -406,6 +409,11 @@ func (s *Service) restoreIssueDecisions(ctx context.Context, tx pgx.Tx, issue st
 	// The issue's owner lock first, as every writer of its documents takes it (lockArtifactOwner),
 	// then the rows of its asks, then each document's live write.
 	if _, _, err := lockArtifactOwner(ctx, tx, spec.id); err != nil {
+		return result, err
+	}
+	// The issue's chain, which every version event of the pass names, read under the owner's lock
+	// and before the first write: readState's lock of the ask rows.
+	if r.ancestors, err = DocumentEventAncestors(ctx, tx, &issue); err != nil {
 		return result, err
 	}
 	if err := r.readState(ctx); err != nil {
@@ -2353,7 +2361,7 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 	*number = written.Version.Number
 	event, err := r.service.events.Append(ctx, r.tx, model.Event{
 		IssueKey: new(r.issue), Type: "artifact.version", Actor: DecisionStepActor,
-		Payload: ArtifactVersionEventPayload(document.id, document.name, written.Version, nil, written.Changes),
+		Payload: ArtifactVersionEventPayload(document.id, document.name, written.Version, nil, written.Changes, r.ancestors),
 	})
 	if err != nil {
 		return graphstore.NoEvent, fmt.Errorf("append the version event of %s: %w", document.address, err)

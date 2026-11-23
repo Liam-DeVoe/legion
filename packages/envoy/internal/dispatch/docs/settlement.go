@@ -76,6 +76,11 @@ type settlement struct {
 	// this row, never by the room's record of the issue (roomState.closed): a close this process
 	// has not heard of yet leaves that record open.
 	issueClosed bool
+	// ancestors is the chain of the document's issue that each artifact.version this settlement
+	// appends names (DocumentEventAncestors), nil for a document of no issue. commitVersion reads it
+	// once, in the read phase, where it decides that the settlement writes a version, and both
+	// version writes take it: the document's own and each of an issue room's (commitRoomVersions).
+	ancestors []string
 	// first is the settlement's read of the room before its repairs, read at an exact commit
 	// position; read is that read's tree, and markdown, offsets and renderErr are what it renders
 	// as, which the version reuses when it is rendered from this same tree unchanged
@@ -896,6 +901,13 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	} else if versioning {
 		settledVersion++
 	}
+	// The chain the version events name, read once for every version this settlement writes and
+	// before the write phase runs any of them. A settlement that writes no version names none.
+	if versioning {
+		if st.ancestors, err = DocumentEventAncestors(ctx, tx, st.owner.IssueKey); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
 	// Every update this settlement read is settled once it commits, so the row that left the
 	// settlement to a later load goes with that commit. It goes before the first event this
 	// settlement appends. A transaction marking this document owed as a copy (owedCopiesOf) holds
@@ -1024,7 +1036,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			IssueKey: st.owner.IssueKey,
 			Type:     "artifact.version",
 			Actor:    st.credit.versionActor(),
-			Payload:  ArtifactVersionEventPayload(room, st.owner.Name, result.version, nil, result.changes),
+			Payload:  ArtifactVersionEventPayload(room, st.owner.Name, result.version, nil, result.changes, st.ancestors),
 		}
 		if st.owner.IssueKey == nil {
 			versionEvent.ArtifactID = &room
@@ -1442,7 +1454,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			IssueKey: st.owner.IssueKey,
 			Type:     "artifact.version",
 			Actor:    write.actor,
-			Payload:  ArtifactVersionEventPayload(document, write.fragment.latest.name, write.result.version, nil, moved),
+			Payload:  ArtifactVersionEventPayload(document, write.fragment.latest.name, write.result.version, nil, moved, st.ancestors),
 		}
 		if st.owner.IssueKey == nil {
 			planned[position].ArtifactID = &document

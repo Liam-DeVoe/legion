@@ -138,6 +138,14 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
+	// The chain of the document's issue, which artifact.removed names
+	// (docs.DocumentEventAncestors), read here with the rest of what the removal reads, before its
+	// first write below.
+	ancestors, err := docs.DocumentEventAncestors(r.Context(), tx, artifact.IssueKey)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The document's node and its versions' nodes, stated gone, the document's with each
 	// changed_by_run it states now retracted, in the store's order: the node rows before any row of
 	// the document goes, as the erase takes a node's row before the rows that project it, and their
@@ -188,7 +196,7 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	// The event and the gone statement it causes, in one batch (appendCausingEvent).
 	event, err := s.appendCausingEvent(r.Context(), tx, ownerForArtifact(artifact).event(
-		"artifact.removed", actor, map[string]any{"artifact": artifact},
+		"artifact.removed", actor, artifactRemovedEventPayload(artifact, ancestors),
 	), removed.nodes)
 	if err != nil {
 		s.writeHandlerError(w, err)
