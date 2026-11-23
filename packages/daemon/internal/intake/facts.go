@@ -1253,13 +1253,16 @@ func (f TaskStopped) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskJoined is the end of the join of one task's needs (record.TaskBranch): the outbox made the
 // task's branch, Branch, on GitHub at the work of Needs, the task's needs in their order as its row
-// read them, at Generation, and GitHub refused the merge of each need in Conflicts as a conflict.
-// The workflow ends the wait of the task's step for its join and starts that step, where the step
-// waits for this join: the task, running at Generation, on Branch with Needs. Any other end of a
-// join changes nothing, so a row that a stop and a later version of the task left behind, whose
-// start again queued a join of its own, starts nothing. The outbox names it by the issue, the
-// generation, the task and the row (internal/daemon's taskBranch), so a row that runs again
-// applies one fact.
+// read them, at Generation, and GitHub refused as a conflict the merge of each need in Conflicts
+// into the branch the join is made on: the task's join branch where it has one
+// (record.StoredPlan.BaseOf), else Branch. Unmerged says GitHub refused as a conflict the merge of
+// that join branch into Branch, which the task's own work there makes at a start again; it is false
+// for a task with no join branch. The workflow ends the wait of the task's step for its join and
+// starts that step, where the step waits for this join: the task, running at Generation, on Branch
+// with Needs. Any other end of a join changes nothing, so a row that a stop and a later version of
+// the task left behind, whose start again queued a join of its own, starts nothing. The outbox
+// names it by the issue, the generation, the task and the row (internal/daemon's taskBranch), so a
+// row that runs again applies one fact.
 type TaskJoined struct {
 	Issue      string
 	Generation uint64
@@ -1267,6 +1270,7 @@ type TaskJoined struct {
 	Branch     string
 	Needs      []string
 	Conflicts  []string
+	Unmerged   bool
 }
 
 func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }

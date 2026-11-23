@@ -3193,7 +3193,14 @@ package api
 // task of its own step, which the daemon reads from its claim, and a `task` it names must be that
 // one (`400 TASK_NOT_GRANTS`). A completion of a plan of several tasks is of the task of the step
 // its claim's agent runs, keyed by that task's phase, and one of an agent that runs no step of it
-// is answered `409 HANDOFF_NOT_CURRENT_PHASE`; no request or answer shape of it changes.
+// is answered `409 HANDOFF_NOT_CURRENT_PHASE`; no request or answer shape of it changes. An
+// implementer's completion of such a task is refused `409 HANDOFF_PULL_REQUEST_BASE` when the
+// open pull request on the task's branch is against another branch than the base the plan gives
+// the task (the default branch, its one need's branch, or for a task of several needs its join
+// branch, its own branch and `.join`): the refusal names that base and
+// `gh pr edit <n> --base <base>`, and nothing is recorded. A plan of one task, or none, reads no
+// base. A plugin of an earlier contract shows the code and its text as it shows any refusal of
+// the daemon.
 // `GET /legion/v1/state` serves each task of an issue's plan in a new key,
 // `issues.<key>.tasks`, in task id order (`api.TaskView`): its `id`, its `state`, the tasks it
 // `needs`, the `kind` and the `position` of the act it stands at and that act's `phase`, its

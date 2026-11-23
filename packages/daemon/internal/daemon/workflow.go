@@ -289,10 +289,10 @@ type workflowRuntime struct {
 	// readied is the architects claimReady recorded whose waiting notices releaseReadied has not
 	// released yet.
 	readied *wakeSet[claim.Token]
-	// handedOff is each issue whose agent's handoff the API recorded (handoffCompleted) that
-	// readHandedOff has not read the pull request of yet, which is what makes a second completion
-	// of the same issue, while the first is still queued, one read rather than two.
-	handedOff *wakeSet[string]
+	// handedOff is each read of a task's pull request an agent's handoff the API recorded asked
+	// for (handoffCompleted) that readHandedOff has not made yet, which is what makes a second
+	// completion of the same task, while the first is still queued, one read rather than two.
+	handedOff *wakeSet[handedOffRead]
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
 	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
@@ -661,7 +661,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		failed:     make(chan error, 1),
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
-		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
+		readied: newWakeSet[claim.Token](), handedOff: newHandedOffSet(), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{},
 		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
