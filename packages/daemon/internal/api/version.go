@@ -3257,7 +3257,7 @@ package api
 // is a reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)
 //
-// 223: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
+// 234: #4065 -- the project's controller gets the actions on an agent (stop, retry, suspend,
 // resume_agent, compact and fresh session of one agent, named by its issue and role) it lacked, the
 // four the operator already has, as controller routes beside `claims/fresh-session` and
 // `claims/compact`, each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and
@@ -3325,7 +3325,7 @@ package api
 // The notice of a forgotten session that entry 189 adds, `session-forgotten`, goes to the issue's
 // architect alone, as `session-lost` does: the controller is told of neither (#4065), and no
 // shape moves.
-// Contract 223 is served down by 193's rule (#3659): every answer goes through one writer, which
+// Contract 234 is served down by 193's rule (#3659): every answer goes through one writer, which
 // shapes it to the contract its caller reads. The agent actions' answer and the pod update's
 // are two rows of answers.go's table, `agent-action` on the four routes and `pod-update` on
 // `issues/pod-update`, each arrived whole with its routes at this contract
@@ -3436,6 +3436,9 @@ package api
 // requests, 2026-11-23T01:15:33Z to 01:21:05Z). The merge of main `74cb6855`, which still declares
 // 217, moves it from 227 to 223: 227 is #5162's as well as this change's own, 218 to 222 are other
 // open pull requests', and no open head declares 223 (read at refs/pull/<n>/head of all 507 open
-// pull requests, 2026-11-23T03:03:20Z to 03:08:55Z). Read the base's own number and every open
-// head again at the next merge rather than from this line.)
-const DaemonAPIVersion = 223
+// pull requests, 2026-11-23T03:03:20Z to 03:08:55Z). The merge of main `cdf532a8`, which still
+// declares 217, moves it from 223 to 234: 223 is #3993's and #4661's as well as this change's own,
+// 218 to 222 and 224 to 233 are other open pull requests', and no open head declares 234 (read at
+// refs/pull/<n>/head of all 515 open pull requests, 2026-11-23T05:10:46Z to 05:16:54Z). Read the
+// base's own number and every open head again at the next merge rather than from this line.)
+const DaemonAPIVersion = 234
