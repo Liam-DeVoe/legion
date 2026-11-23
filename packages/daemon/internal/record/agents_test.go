@@ -1,9 +1,11 @@
 package record
 
 import (
+	"regexp"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // Each agent of a version gets one name, the last part of its claim token: the steps of one key
@@ -74,5 +76,50 @@ func TestARowWrittenBeforeTheColumnReadsAsItsRole(t *testing.T) {
 	}
 	if got := (PlanStep{Role: "tester", AgentKey: "a", Agent: "implementer"}).AgentName(); got != "implementer" {
 		t.Errorf("AgentName = %q, want the name the row holds", got)
+	}
+}
+
+// Each task with a sub-owner has an agent of its own, named for the task: `sub-owner-` and the
+// task's slug, or `sub-owner-t-` and the first 12 hexadecimal characters of the SHA-256 of the id
+// where the slug would make a name longer than an agent's name may be. Each name is an agent's
+// name, it makes the claim token of the issue's sub-owner of that task, and no step's name reads
+// as a sub-owner's.
+func TestEachTaskWithASubOwnerHasAnAgentOfItsOwn(t *testing.T) {
+	agentName := regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	long := "a-task-id-of-forty-characters-0123456789"
+	for _, tc := range []struct {
+		task string
+		want claim.Agent
+	}{
+		{task: "f", want: "sub-owner-f"},
+		// The SHA-256 of the id is d6796c45cce506c8…, and the id is a slug of 40 characters.
+		{task: long, want: "sub-owner-t-d6796c45cce5"},
+		{task: "F", want: claim.Agent("sub-owner-" + plan.TaskSlug("F"))},
+	} {
+		got := SubOwnerAgent(tc.task)
+		if got != tc.want {
+			t.Errorf("SubOwnerAgent(%q) = %q, want %q", tc.task, got, tc.want)
+		}
+		if !agentName.MatchString(string(got)) {
+			t.Errorf("SubOwnerAgent(%q) = %q (%d bytes), which is no agent's name: %s, at most 32 bytes", tc.task, got, len(got), agentName)
+		}
+		if !IsSubOwnerAgent(got) {
+			t.Errorf("IsSubOwnerAgent(%q) = false, want true: it is the agent of the sub-owner of task %q", got, tc.task)
+		}
+		if _, err := claim.AgentToken("legion", "I-1", got); err != nil {
+			t.Errorf("AgentToken of SubOwnerAgent(%q) = %q: %v", tc.task, got, err)
+		}
+	}
+	if got := SubOwnerAgent(long); len(got) != 24 {
+		t.Errorf("SubOwnerAgent of an id of 40 characters = %q, %d bytes; want 24", got, len(got))
+	}
+	for _, name := range []claim.Agent{"implementer", "implementer-2", "architect"} {
+		if IsSubOwnerAgent(name) {
+			t.Errorf("IsSubOwnerAgent(%q) = true, want false: it is a step's agent or the architect", name)
+		}
+	}
+	token, err := claim.AgentToken("legion", "I-1", SubOwnerAgent("f"))
+	if err != nil || token != "legion-legion-i-1-sub-owner-f" {
+		t.Errorf("AgentToken(legion, I-1, SubOwnerAgent(f)) = %q, %v; want legion-legion-i-1-sub-owner-f", token, err)
 	}
 }

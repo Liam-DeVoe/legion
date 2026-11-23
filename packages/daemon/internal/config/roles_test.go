@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // rolesFile writes body after minimalFile as a legion.yaml and each named prompt file beside it,
@@ -33,7 +35,9 @@ func configFileWith(t *testing.T, body string, prompts ...string) string {
 // `roles` defines a role of the deployment's own with its type, its prompt file (resolved against
 // the file's directory), its model and its GitHub App, the review App where the file names none;
 // the deployment holds it beside Legion's own roles. `owner`, the key of a task's owner, names no
-// role of Legion's, and a type of `role_types` is a type a role may have.
+// role of Legion's, and a type of `role_types` is a type a role may have. No role takes a name of
+// Legion's own, the claim role `sub-owner` among them, or the name of a task's sub-owner's agent,
+// whose claim token a step of that role would take.
 func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 	path := rolesFile(t, "roles: {checker: {type: testing, prompt_file: checker.md, model: checker-model}}\n", "checker.md")
 	cfg, err := Load(path, noEnv)
@@ -145,11 +149,18 @@ func TestTheDeploymentsRolesAreReadAndRefused(t *testing.T) {
 		{"a type named twice", "role_types: [security, security]\n",
 			"role_types names security twice"},
 	}
-	for _, name := range []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance"} {
+	for _, name := range []string{"architect", "planner", "implementer", "tester", "reviewer", "merger", "controller", "acceptance", "sub-owner"} {
 		refusals = append(refusals, struct{ name, body, want string }{"the Legion name " + name,
 			"roles: {" + name + ": {type: testing, prompt_file: checker.md}}\n",
 			"roles." + name + " names a role of Legion's own: a deployment defines roles of its own names"})
 	}
+	subOwnerOfF := string(record.SubOwnerAgent("f"))
+	if !record.IsSubOwnerAgent(claim.Agent(subOwnerOfF)) {
+		t.Fatalf("IsSubOwnerAgent(%q) = false: the case below names no sub-owner's agent", subOwnerOfF)
+	}
+	refusals = append(refusals, struct{ name, body, want string }{"the name of the agent of a task's sub-owner",
+		"roles: {" + subOwnerOfF + ": {type: testing, prompt_file: checker.md}}\n",
+		"roles." + subOwnerOfF + " starts with sub-owner-, as the agent of a task's sub-owner is named: a step of the role would take that agent's claim"})
 	for _, tc := range refusals {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(rolesFile(t, tc.body, "checker.md"), noEnv)
