@@ -1676,3 +1676,34 @@ func TestWorkHoldStopAskedAgainWaitsForItsOwedWrite(t *testing.T) {
 	h.wantHeld()
 	told.wantOnce(h)
 }
+
+// The architect's decision 3 on INFRA-4528 (dispatch://INFRA-4528/comment/c0b65f44-c999-411b-bd63-a9e64805bee8):
+// an operator's task queued behind the work hold's stop is never retired by the opening; the
+// operator's task is delivered and the opening's task follows it. The operator gives the
+// implementer a task (RequestDeliver with no phase, run or entry, as the operator's deliver route
+// builds it) while a turn runs; the hold's stop is then held for that turn, and the turn's end
+// stops the claim with the operator's task kept. A backward move while the gate was closed raised
+// a newer entry of the implementer's phase, so the opening's start carries that entry's task.
+func TestWorkHoldOpeningKeepsAnOperatorsTaskQueuedBehindTheHeldStop(t *testing.T) {
+	const operatorTask = "Read the daemon log of the last hour and report what failed."
+	h := newHarness(t)
+	h.inPhaseTurn()
+	h.must(RequestDeliver{Claim: h.token, Task: operatorTask})
+	if err := h.handle(holdStop(h, h.clock.Now())); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the hold's stop of a claim in a turn answered %v, want it held for the turn", err)
+	}
+	h.must(StreamTurnEnd{Claim: h.token})
+	h.wantHeld()
+	if kept := h.claim().Pending; kept == nil || kept.Task != operatorTask {
+		t.Fatalf("the stopped claim keeps %+v, want the operator's task", kept)
+	}
+	start := openingStart(h)
+	start.Task, start.Entry = holdOpening+"\n\nImplement entry 3 of LEGION-209.", 3
+
+	if resumed, err := h.m.EndHold(h.ctx, &start); !resumed || err != nil {
+		t.Fatalf("the hold's end = %v, %v; want the claim started", resumed, err)
+	}
+	if p := h.claim().Pending; p == nil || !strings.Contains(p.Task, operatorTask) {
+		t.Fatalf("after the hold's end the claim holds %+v (delivery log %v): the opening retired the operator's task", p, h.store.deliveryLog())
+	}
+}
