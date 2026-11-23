@@ -417,7 +417,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			PendingCause: causeWords[(cause+1)%len(causeWords)],
 			PendingTask: &PendingTaskView{
 				Phase: taskPhase, QueuedAt: at,
-				SendFailures: 1, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+				SendFailures: 1, LastSendError: "worker-stream: legion-values-VALUES-1-implementer refused adopt-working-copy: " +
+					"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/VALUES-1/.git/index.lock " +
+					"was last written 31m ago",
 			},
 		}
 	}

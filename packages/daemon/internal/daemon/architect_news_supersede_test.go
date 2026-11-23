@@ -33,10 +33,11 @@ import (
 // before any turn, or confirmed by a turn whose process then went, which took the confirmation
 // back — its retirement unsent ends no credit, since it holds none: a task no turn confirmed is no
 // credit, and the take-back of a confirmation ended the one that confirmation made (the claim
-// store counts only the copy a confirmed row holds, design_news_told_in). So the architect's row
-// still owes the news when the entry's task arrives, that task carries it, read from the record
-// when its start ran (the start executor's newsForStart), and the one prompt the architect is sent
-// is that task. Its turn's confirmation is the credit that takes the row to version 5, once.
+// store counts only the copy a confirmed row holds once its take's turn has started,
+// design_news_told_in). So the architect's row still owes the news when the entry's task arrives,
+// that task carries it, read from the record when its start ran (the start executor's
+// newsForStart), and the one prompt the architect is sent is that task. Its turn's confirmation is
+// the credit that takes the row to version 5, once.
 func TestANewerEntrysTaskTakesTheUntakenNewsOfARootArchitectAndTellsIt(t *testing.T) {
 	token := mustClaimToken(t, pathRoot, claim.RoleArchitect)
 	for _, held := range []struct {

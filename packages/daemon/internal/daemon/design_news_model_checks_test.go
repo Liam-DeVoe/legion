@@ -44,7 +44,8 @@ func (m *newsModel) credits(row *newsModelRow, carried []byte) ([]newsModelLink,
 }
 
 // standing is the credit row's claims hold in the claim store as stored reads it (storedClaims):
-// the copy each confirmed delivery whose turn's result has not said it ran holds (credits).
+// the copy each confirmed delivery whose take's turn has started and whose turn's result has not
+// said it ran holds (credits).
 func (m *newsModel) standing(row *newsModelRow, stored map[claim.Token]*supervise.Delivery) ([]newsModelLink, map[int]bool) {
 	m.t.Helper()
 	var links []newsModelLink

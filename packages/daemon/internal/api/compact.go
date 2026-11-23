@@ -249,8 +249,8 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	if s.stopped(w, r, "compact") {
 		return CompactResponse{}, false
 	}
-	// A compaction sends the claim's task again once it ends, which is a turn the pause holds
-	// for every claim but the controller's.
+	// A compaction writes the value of the claim's task again once it ends, for the worker to take
+	// at its next idle point, and the pause holds that take for every claim but the controller's.
 	if s.refusedWhilePaused(w, r, "compact", m.View().Claim) {
 		return CompactResponse{}, false
 	}
@@ -291,7 +291,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// where no model's words reach the caller's next prompt (reasonBound).
 		s.log.Warn("api: the claim lost its process while its session was being compacted", "claim", token)
 		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
+			"%s lost its process while its session was being compacted: it was not given back, and the task it owes was not offered. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactSuspended):
 		// The compaction ran, and the end of it found a suspension held over the claim: the
@@ -305,7 +305,7 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		s.writeFailure(w, r, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not offered. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError

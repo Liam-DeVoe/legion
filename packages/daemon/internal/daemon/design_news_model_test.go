@@ -63,9 +63,9 @@ import (
 // its agent was given, read from each prompt's own text, and which of those prompts it read; and what
 // the claim store credits each row with, read from the writes the store let through
 // (newsModelStore): a confirmed copy whose turn's result landed is final, the copy a confirmed
-// delivery holds stands until then, and the reconcile raises past a pair that changed nothing of the
-// work exactly where the record says it does (newsModel.settled). After every step each told row is
-// held to it:
+// delivery holds stands from the start of its take's turn until then, and the reconcile raises
+// past a pair that changed nothing of the work exactly where the record says it does
+// (newsModel.settled). After every step each told row is held to it:
 //
 //   - exactly: the version the row says its holder took is the one the run's baseline, the raises
 //     and the credits the claim store holds reach (the SQL function design_news_known), counting

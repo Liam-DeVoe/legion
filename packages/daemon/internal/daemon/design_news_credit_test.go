@@ -199,13 +199,13 @@ func TestARaisePastAnUnfinalCreditGoesWithThatCredit(t *testing.T) {
 // holder's row stands at version 4 of the spec and the gate at 5. The reconcile the move queued
 // records what changed, and the tester's phase start carries version 5 since version 4. The
 // tester's turn confirms the task, a credit that stands; the turn's result says the turn ran, and
-// the write that records it folds the credit into the told row (supervise's promptResulted, the
-// claim store's settleDesignNews) before the task is retired. So the retirement ends no credit: the
-// row still says version 5, the record owes the issue nothing, and the sweep queues no reconcile
-// that would tell the tester that news again. A result that never made the credit final would leave
-// the retirement to end it, and version 5 would be news again. The model test cannot pin this
-// (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold): no tester's turn there ends with its result
-// while its run stands.
+// the write that records it folds the credit into the told row (supervise's creditRan, which
+// finishTask calls, and the claim store's settleDesignNews) before the task is retired. So the
+// retirement ends no credit: the row still says version 5, the record owes the issue nothing, and
+// the sweep queues no reconcile that would tell the tester that news again. A result that never
+// made the credit final would leave the retirement to end it, and version 5 would be news again.
+// The model test cannot pin this (TestTheNewsRecordHoldsToWhatTheHolderWasReallyTold): no tester's
+// turn there ends with its result while its run stands.
 func TestATestersTurnThatRanMakesItsCreditFinalAndItIsNotToldAgain(t *testing.T) {
 	r := newNewsPathRig(t, 5, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)

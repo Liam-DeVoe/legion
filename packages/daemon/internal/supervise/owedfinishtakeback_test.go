@@ -114,9 +114,9 @@ func (h *harness) wantOwedFinishMade(number uint64) {
 //     a compaction (suspend.go); suspendOverADeadProcess (suspend.go); and reconnectDeadline
 //     (connview.go), to which this change adds the relaunch at the reconnect deadline of a hello no
 //     answer followed;
-//   - takeBackUnstarted (delivery.go): a retirement (machine.go) and a suspension (suspended,
+//   - takeBackUnstarted (takeback.go): a retirement (machine.go) and a suspension (suspended,
 //     suspend.go);
-//   - takeBack (take.go): the operator's compaction (compactStart, compact.go), R5's second wait
+//   - takeBack (takeback.go): the operator's compaction (compactStart, compact.go), R5's second wait
 //     (waits.go) and a provider error's report (takeToLadder, providererror.go).
 //
 // A caller that runs only in a turn meets the owed finish with the take's turn started, since a

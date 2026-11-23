@@ -129,12 +129,13 @@ func (r *toldRig) seedTold() {
 }
 
 // A turn that starts carrying news is what makes its audience have taken it, so the write that
-// records the delivery's confirmation is the write that makes its credit: each item's told version
-// and each opening it carried read as taken, in that write's own transaction, so a confirmation
-// rolled back credits nothing, and one that commits cannot have left the told rows behind. Writing
-// the task before then — the queue, and every write while it waits — credits nothing. The delivery
-// is read back carrying the news it was written with. The write that records that the turn ran
-// makes the credit final, and folds it into the told rows at the confirmation's moment.
+// records that the take's turn started — here the same write as the delivery's confirmation — is
+// the write that makes its credit: each item's told version and each opening it carried read as
+// taken, in that write's own transaction, so such a write rolled back credits nothing, and one
+// that commits cannot have left the told rows behind. Writing the task before then — the queue,
+// and every write while it waits — credits nothing. The delivery is read back carrying the news it
+// was written with. The write that records that the turn ran makes the credit final, and folds it
+// into the told rows at the confirmation's moment.
 func TestAConfirmationRaisesWhatItsNewsToldInItsOwnTransaction(t *testing.T) {
 	r := newToldRig(t)
 	r.seedTold()

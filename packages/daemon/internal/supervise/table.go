@@ -687,7 +687,7 @@ type RequestCompact struct{ Claim claim.Token }
 // longer holds the compaction of is answered ErrCompactProcessGone rather than reaching a row
 // (Machine.fence, ownsCompaction). Compacted is whether Oh My Pi compacted the session: false
 // for a compaction it refused or skipped and for a wait that ran out, each of which gives the
-// claim back and sends the owed task again all the same, and only true puts the claim's run of
+// claim back and offers the owed task again all the same, and only true puts the claim's run of
 // provider-error turns back to zero.
 type CompactEnded struct {
 	Claim      claim.Token
@@ -1366,7 +1366,7 @@ func fillTable(t *builder) {
 	t.ignore(onCompact, "the agent is not ready, so it has no session to compact", unready...)
 	t.ignore(onCompact, "no process of this claim is running, so it has no session to compact", gone...)
 
-	t.row(onCompactEnded, "the compaction is over: reset the run of provider errors it cleared, and send the owed task", compactEnded,
+	t.row(onCompactEnded, "the compaction is over: reset the run of provider errors it cleared, and offer the owed task", compactEnded,
 		[]ClaimState{StateReady, StateIdle, StateWorking, StateLaunching, StateFailed}, StateWorking)
 	// A claim in one of these states holds no compaction, so the fence answers the end
 	// ErrCompactProcessGone before any of them is read (Machine.fence, ownsCompaction); each is
@@ -1887,7 +1887,7 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // is being compacted has a turn of Oh My Pi's own starting under the compaction — a follow-up
 // an Envoy delivery queued while the session was being compacted — and that turn is recorded on
 // the compaction: its end would otherwise reach an idle claim, where it means nothing, and the
-// compaction's end would send the owed task into a running agent (compactEnded).
+// compaction's end would offer the owed task while a turn runs (compactEnded).
 //
 // That turn's start line is written here (startTurn), because its end writes the end line
 // (turnEnded): an operator reads an end with no start as a turn the daemon never saw begin, and
