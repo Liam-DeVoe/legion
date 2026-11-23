@@ -2085,6 +2085,33 @@ test("a decision the reader sent a Change on says so, leaves the review list and
   }
 });
 
+// R6: what a person wrote in a Change is drawn by the renderer, as a person's answer under an
+// ask is (`RowText`), never as the characters they typed: its marks are drawn as what they are
+// and no asterisk or backtick shows.
+test("a Change's body is drawn through the renderer, its marks gone", async () => {
+  await warmMarkdownRenderer();
+  const body = "Name **the read**, and keep `x` as written.";
+  const view = renderBody(wholeIssue());
+  try {
+    await act(async () =>
+      view.client.setQueryData(
+        ["comments", KEY],
+        [changeOf("second", "2026-11-16T09:00:00Z", body)]
+      )
+    );
+    await waitFor(() =>
+      expect(rowOf(view, D("second")).querySelector("[data-change-words]")?.textContent).toBe(
+        "Name the read, and keep x as written."
+      )
+    );
+    expect(rowOf(view, D("second")).querySelector("[data-change-words] strong")?.textContent).toBe(
+      "the read"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 // R2: the view draws four parts. What another person answered is no part of its own: it stands
 // under Your decisions with the reader's own, newest first, and its answer names that person.
 test("another person's answer stands under Your decisions with their name", () => {
