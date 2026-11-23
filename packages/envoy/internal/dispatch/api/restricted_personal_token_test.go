@@ -349,8 +349,9 @@ func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing
 // saying a restricted member's token lists exactly one.
 //
 // Control: drop nothing at the token's use (personalTokenActor answering the row's scopes), and
-// the first check fails on whoami's scopes, and its mint answers 201; at 809a2c288d the grant and
-// sign-in revokes reached their handler (404 FEATURE_OFF here, where no broker is configured).
+// the first check fails on whoami's scopes, whoami answering person and approve, and the test
+// stops there; at 809a2c288d the grant and sign-in revokes reached their handler (404 FEATURE_OFF
+// here, where no broker is configured).
 func TestAStoredRestrictedTokenHoldingApproveActsWithNoScope(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	stored := personalTokenListing(t, r.database, accessErin, []string{"ACC"}, model.ScopePerson, model.ScopeApprove)
@@ -411,8 +412,9 @@ func TestAStoredRestrictedTokenHoldingApproveActsWithNoScope(t *testing.T) {
 // and listing none; that token mints another holding both, and an edit narrows it to person and
 // widens it back.
 //
-// Control: hold every caller to the restricted member's rule (tokenScopes and tokenProjects
-// reading every caller as restricted), and the first check fails naming carol's scopes.
+// Control: give every caller's mint the restricted member's scopes (tokenScopes reading every
+// caller as restricted, the mint handing it true), and the first check fails, carol's default mint
+// holding [] where the row wants [person approve].
 func TestAFullMembersMintStillHoldsPersonAndApprove(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	token := minted(t, r.mintAt(t, accessCarol, map[string]any{"name": "carol's agent"}), "carol's default mint")
@@ -439,7 +441,8 @@ func TestAFullMembersMintStillHoldsPersonAndApprove(t *testing.T) {
 // none. Before the change of kind, the same token minted a token, so each refusal is the change's.
 //
 // Control: drop nothing at a token's use (personalTokenActor answering the row's scopes), and the
-// row fails at the first refusal, dana's token minting 201 after she was made restricted.
+// row fails at its whoami check once she is restricted, whoami under her ACC token answering
+// person and approve where the row wants none, and stops there.
 func TestAMemberMadeRestrictedActsWithNoScopeThroughTheirTokens(t *testing.T) {
 	r := newRestrictedMintRig(t)
 	seedPeople(t, r.database, accessDana)
