@@ -37,17 +37,17 @@ func formerHeadsInstall(t *testing.T) int {
 	return 0
 }
 
-// closesDatedSince is the version of the migration that has Dispatch store when a row of
-// pull_request_heads first reads closed (pull_request_heads.closed_at): a row closed before it
-// holds no such time.
-func closesDatedSince(t *testing.T) int {
+// closesRecordedSince is the version of the migration that has Dispatch record each close of a
+// pull request it stores (pull_request_heads_closes), and each pull request closed when it runs:
+// a close and a reopen before it are in no record.
+func closesRecordedSince(t *testing.T) int {
 	t.Helper()
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if digits, name, _ := strings.Cut(entry.Name(), "_"); name == "pull_request_heads_closed_at.up.sql" {
+		if digits, name, _ := strings.Cut(entry.Name(), "_"); name == "pull_request_heads_closes.up.sql" {
 			version, err := strconv.Atoi(digits)
 			if err != nil {
 				t.Fatalf("%s: %v", entry.Name(), err)
@@ -55,7 +55,7 @@ func closesDatedSince(t *testing.T) int {
 			return version
 		}
 	}
-	t.Fatal("no migration has Dispatch store when a pull request's row first reads closed")
+	t.Fatal("no migration has Dispatch record each close of a pull request it stores")
 	return 0
 }
 
@@ -715,14 +715,14 @@ func TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit(t *testing.T) {
 // such a lock while another writer, holding a lock the first needs next, waits for it closes a
 // cycle with the owner locks and the rows the writers take in their own orders, and Postgres breaks
 // it by failing one writer (TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit is one such
-// pair). So each function a former heads trigger on pull_request_heads, check_results or
-// ci_check_results runs only reads and appends: its body names no row lock, no table lock and no
-// call of a function whose name holds "lock", updates and deletes nothing, inserts with no on
-// conflict, and calls none of the functions the settler folds, drains or leaves candidates with;
-// and each table it inserts into has no primary, unique, exclusion or foreign key, and no unique
-// index, so an insert there waits for no other transaction. The one function those bodies call
-// that writes, check_states_owe, inserts a mark whose key a sequence draws, and waits for nothing
-// either.
+// pair). So each function a former heads trigger, or a trigger of the record of closes
+// (pull_request_heads_closes), on pull_request_heads, check_results or ci_check_results runs only
+// reads and appends: its body names no row lock, no table lock and no call of a function whose
+// name holds "lock", updates and deletes nothing, inserts with no on conflict, and calls none of
+// the functions the settler folds, drains or leaves candidates with; and each table it inserts
+// into has no primary, unique, exclusion or foreign key, and no unique index, so an insert there
+// waits for no other transaction. The one function those bodies call that writes,
+// check_states_owe, inserts a mark whose key a sequence draws, and waits for nothing either.
 func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -735,7 +735,7 @@ func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T)
 		join pg_class watched on watched.oid = fired.tgrelid
 		join pg_proc run on run.oid = fired.tgfoid
 		where not fired.tgisinternal and watched.relname in ('pull_request_heads', 'check_results', 'ci_check_results')
-			and run.proname like 'pull\_request\_former\_heads\_%'
+			and (run.proname like 'pull\_request\_former\_heads\_%' or run.proname like 'pull\_request\_heads\_closes\_%')
 		order by 1, 2`)
 	if err != nil {
 		t.Fatalf("read the former heads triggers: %v", err)
@@ -749,8 +749,13 @@ func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T)
 		t.Fatalf("read the former heads triggers: %v", err)
 	}
 	watched := map[string]bool{}
+	closes := false
 	for _, f := range functions {
 		watched[f.table] = true
+		closes = closes || f.name == "pull_request_heads_closes_keep"
+	}
+	if !closes {
+		t.Error("found no trigger of the record of closes on pull_request_heads, so this test holds it to nothing")
 	}
 	for _, table := range []string{"pull_request_heads", "check_results", "ci_check_results"} {
 		if !watched[table] {
