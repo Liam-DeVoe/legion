@@ -428,6 +428,30 @@ func disarmLegacyConfig(jjDir, repo string) error {
 	return nil
 }
 
+// GuardJJ holds the workspace at dir to the layout before a jj command that a process other than
+// the daemon's own runner starts there, with the guards that runner runs before each of its own
+// (execRunner.Run): the layout's components and the workspace's .jj, its .jj/repo naming the shared
+// clone that Location puts beside it (guardWorkspace), and no legacy configuration file that jj
+// would migrate into the configuration it reads (disarmLegacyConfig, which removes each). The clone
+// is derived from dir's place in the layout and from nothing inside dir (locationOf), as
+// WorkspaceOf derives it. The Kubernetes issue pod's launcher calls it before its workspace read
+// (R6 of dispatch://INFRA-3271). An error is a workspace in which no jj command is to run.
+func GuardJJ(dir string) error {
+	dir = filepath.Clean(dir)
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("refusing to run jj in %s: it is no absolute path, so the shared clone it belongs to cannot be derived", dir)
+	}
+	located, err := locationOf(dir)
+	if err != nil {
+		return fmt.Errorf("refusing to run jj in %s: it is in no state directory's workspace layout: %w", dir, err)
+	}
+	guarded, err := guardWorkspace(located.Dir, located.Clone, true)
+	if err != nil {
+		return err
+	}
+	return disarmLegacyConfig(guarded.jjDir, guarded.repo)
+}
+
 // refuseSymlinkedLayout refuses an operation at root when dir, or any of the directories above it
 // up to the state directory (layoutDepth of them in all), is a symlink, naming it. Provisioning
 // creates every one as a real directory; a symlink there would make jj open, and workspace

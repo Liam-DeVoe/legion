@@ -2,13 +2,10 @@ package launcher
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -35,12 +32,16 @@ import (
 // the read's own (launcherReadEnv), whose home is an empty directory made for the one read. jj
 // reads the user's configuration from JJ_CONFIG, an empty file there, and keeps each repository's
 // and each workspace's configuration under that home's config directory, keyed by the ids the
-// repository and the workspace record, so it finds none of either. A jj loads a configuration file
-// inside the repository too (`config.toml` of the repository, `workspace-config.toml` of the
-// workspace) where the repository records no id of its configuration, migrating it, and an older
-// jj loads it whatever its home: a workspace that holds either file is not read
-// (inRepositoryConfig), and the daemon keeps its pod as it keeps one whose read cannot be made.
-// The snapshot still runs, so a change in the working copy is counted (R5).
+// repository and the workspace record, so it finds none of either. jj loads a configuration file
+// inside the repository's own directories too (`config.toml` of the repository,
+// `.jj/workspace-config.toml` of the workspace) where the id file beside it is missing, migrating
+// it into the configuration it reads. So before jj runs, the read runs the guards the daemon's own
+// jj commands run (workspace.GuardJJ): the workspace and the shared clone that the layout puts
+// beside it, and each such legacy file removed. The image's jj keeps a repository's configuration
+// by id (0.38 and later), so after the guards no file a role wrote loads. A workspace the guards
+// refuse, or whose legacy file cannot be removed, is not read, and the daemon keeps its pod as it
+// keeps one whose read cannot be made. The snapshot still runs, so a change in the working copy is
+// counted (R5).
 
 // launcherReadEnv is the whole environment of the read's jj: the launcher's PATH, and a home of the
 // read's own, home, for every place jj reads a configuration or a state from. No other variable of
@@ -64,37 +65,6 @@ const readUserConfig = "jj-config.toml"
 // (git.abandon-unreachable-commits false, workspace's ensureFetchConfiguration), and the read's
 // first command imports git refs, which with jj's default would abandon those commits.
 var launcherReadConfig = []string{"--config=git.abandon-unreachable-commits=false"}
-
-// inRepositoryConfig is the first jj configuration file the workspace dir holds inside its own
-// directories, "" where it holds none: the workspace's `.jj/workspace-config.toml`, and the
-// repository's `config.toml`, the repository being `.jj/repo` itself or, in a workspace that
-// `jj workspace add` made, the directory that `.jj/repo` names.
-func inRepositoryConfig(dir string) (string, error) {
-	meta := filepath.Join(dir, ".jj")
-	repo := filepath.Join(meta, "repo")
-	info, err := os.Stat(repo)
-	if err != nil {
-		return "", fmt.Errorf("launcher: read %s: %w", repo, err)
-	}
-	if !info.IsDir() {
-		named, err := os.ReadFile(repo)
-		if err != nil {
-			return "", fmt.Errorf("launcher: read %s: %w", repo, err)
-		}
-		repo = strings.TrimSpace(string(named))
-		if !filepath.IsAbs(repo) {
-			repo = filepath.Join(meta, repo)
-		}
-	}
-	for _, file := range []string{filepath.Join(meta, "workspace-config.toml"), filepath.Join(repo, "config.toml")} {
-		if _, err := os.Lstat(file); err == nil {
-			return file, nil
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("launcher: read %s: %w", file, err)
-		}
-	}
-	return "", nil
-}
 
 // maxReadErrorRunes bounds the reason a refused read carries: jj's standard error has no bound of
 // its own, and the answer goes out as one line under shimwire.MaxFrameBytes.
@@ -128,8 +98,9 @@ func (m *manager) readWorkspace(ctx context.Context, writer *shimwire.Writer, re
 // working directory, which the pod sets to the issue's workspace. The jj is PATH's, the image's own,
 // and each command starts through the launcher's pid guard, so PID 1's reaper leaves its exit to
 // the command's own wait (pidGuard.starter). It runs with no configuration of anyone's
-// (launcherReadEnv), in a home made for the one read and removed after it, and it refuses a
-// workspace that holds a configuration file inside its own directories (inRepositoryConfig).
+// (launcherReadEnv), in a home made for the one read and removed after it, and only after the
+// workspace guards hold the workspace to the layout and remove each legacy configuration file
+// (workspace.GuardJJ); a workspace they refuse is not read.
 func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
 	dir := m.cfg.Workspace
 	if dir == "" {
@@ -141,10 +112,8 @@ func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceW
 	if err != nil {
 		return "", false, nil, fmt.Errorf("launcher: jj is not on PATH (%s); no jj to read the workspace with", os.Getenv("PATH"))
 	}
-	if file, err := inRepositoryConfig(dir); err != nil {
-		return "", false, nil, err
-	} else if file != "" {
-		return "", false, nil, fmt.Errorf("launcher: the workspace holds the jj configuration file %s, which a jj may load whatever its home says; the launcher does not read such a workspace", file)
+	if err := workspace.GuardJJ(dir); err != nil {
+		return "", false, nil, fmt.Errorf("launcher: the workspace guards refuse the read: %w", err)
 	}
 	home, err := os.MkdirTemp("", "legion-workspace-read-")
 	if err != nil {
