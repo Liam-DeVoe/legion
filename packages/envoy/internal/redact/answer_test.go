@@ -93,6 +93,59 @@ func TestAnAnswersDecodeErrorQuotesNoValue(t *testing.T) {
 	}
 }
 
+// TestAnAnswersDecodeErrorNamesABoxMemberAtAnyDepth: a box's own type error, for a member that
+// holds no JSON string, names no field, and encoding/json adds none, so Decode finds the member
+// that did not decode itself (failingMember). A box in a list's item or as the item is named
+// through the list as "(item)", in a map's value or as the value through the map as "(key)", as
+// member names those segments, whether the list or the map is a member or the destination itself;
+// a member the answer spells in another case, or one promoted from an embedded struct, by the
+// destination's own name for it. The answer echoes the request's bearer as a map key and as a
+// value that decodes, and the error quotes neither. Captures redact.answer-decode-box/<case>.
+func TestAnAnswersDecodeErrorNamesABoxMemberAtAnyDepth(t *testing.T) {
+	type boxed struct {
+		Code redact.RemoteText `json:"code"`
+	}
+	type Inner struct {
+		Reason redact.RemoteText `json:"reason"`
+	}
+	type holder struct {
+		Inner
+		Code      redact.RemoteText            `json:"code"`
+		Boxes     []boxed                      `json:"boxes"`
+		BoxByKey  map[string]boxed             `json:"box_by_key"`
+		Codes     []redact.RemoteText          `json:"codes"`
+		CodeByKey map[string]redact.RemoteText `json:"code_by_key"`
+	}
+	for _, c := range []struct {
+		name, body, names string
+		into              func() any
+	}{
+		{"list-item-box", `{"boxes":[{"code":"{auth}"},{"code":7}]}`, `"boxes.(item).code"`, func() any { return new(holder) }},
+		{"map-value-box", `{"box_by_key":{"{auth}":{"code":7}}}`, `"box_by_key.(key).code"`, func() any { return new(holder) }},
+		{"list-of-boxes", `{"codes":["{auth}",7]}`, `"codes.(item)"`, func() any { return new(holder) }},
+		{"map-of-boxes", `{"code_by_key":{"{auth}":7}}`, `"code_by_key.(key)"`, func() any { return new(holder) }},
+		{"list-destination", `[{"code":"{auth}"},{"code":7}]`, `"(item).code"`, func() any { return new([]boxed) }},
+		{"map-destination", `{"{auth}":{"code":7}}`, `"(key).code"`, func() any { return new(map[string]boxed) }},
+		{"name-case", `{"CODE":7}`, `"code"`, func() any { return new(holder) }},
+		{"promoted", `{"reason":7}`, `"reason"`, func() any { return new(holder) }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			answer := answerOf(t, http.StatusOK, func(auth string) string { return strings.ReplaceAll(c.body, "{auth}", auth) })
+			err := answer.Decode(c.into())
+			if err == nil {
+				t.Fatal("Decode took an answer that does not decode")
+			}
+			redacttest.RequireNone(t, "redact.answer-decode-box/"+c.name, fmt.Sprintf("%v | %+v | %#v", err, err, err))
+			if !strings.Contains(err.Error(), "the answer's "+c.names+" ") {
+				t.Errorf("Decode's error is %q, want it to name %s", err, c.names)
+			}
+			if errors.Unwrap(err) != nil {
+				t.Errorf("Decode's error unwraps to %v, whose text quotes the value", errors.Unwrap(err))
+			}
+		})
+	}
+}
+
 // TestAnAnswersWordsAndDecodedBoxesHoldItsRecord: a refusal that echoes the request's bearer. Its
 // Words, and every RemoteText Decode fills - a member, one in a slice, one in a map, one behind a
 // pointer - print it redacted, and compare as they came. Captures redact.answer-words and

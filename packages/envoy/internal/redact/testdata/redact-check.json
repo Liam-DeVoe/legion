@@ -4893,6 +4893,13 @@
       "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember"
     },
     {
+      "id": "redact-answer-decode-box-at-depth",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestAnAnswersDecodeErrorNamesABoxMemberAtAnyDepth",
+      "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box's own type error in a list's item or a map's value, a member or the destination itself, or in a member spelled in another case or promoted from an embedded struct, names its member through failingMember's one walk of the answer, a list's item as \"(item)\" and a map's value as \"(key)\", never by the answer's keys"
+    },
+    {
       "id": "redact-answer-decode-map-key",
       "requirement": "r3-each-site",
       "package": "./internal/redact",

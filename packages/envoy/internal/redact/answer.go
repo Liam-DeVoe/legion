@@ -2,6 +2,7 @@ package redact
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -450,35 +451,114 @@ func memberField(t reflect.Type, name string) (reflect.StructField, bool) {
 	return folded, found
 }
 
-// failingMember is the JSON name of the first member of data, an object decoded into the struct
-// type t, whose value does not decode into its field's type, and that field's type, or "": what
-// encoding/json does not name for an error of a type's own UnmarshalJSON or UnmarshalText
-// (time.Time's, a RemoteNumber's). The name is t's own, from its field's json tag, never the
-// answer's.
+// failingMember is the path to the first member of data, decoded into a value of type t, whose
+// value does not decode, and that member's type, or "": what encoding/json does not name for an
+// error of a type's own UnmarshalJSON or UnmarshalText (time.Time's, a RemoteText's, a
+// RemoteNumber's). The path is t's own, as member names it: each struct field by its own JSON
+// name, matched as encoding/json matches the answer's (memberField: in any case, or promoted from
+// an embedded struct), each list item as "(item)" and each map value as "(key)"; never the
+// answer's own spelling or keys. It reads data once, in the answer's order (failingValue).
 func failingMember(data []byte, t reflect.Type) (string, reflect.Type) {
+	path, held, err := failingValue(json.NewDecoder(bytes.NewReader(data)), t)
+	if err != nil || held == nil {
+		return "", nil
+	}
+	return strings.Join(path, "."), held
+}
+
+// failingValue reads the next JSON value of dec as encoding/json decodes it into a value of type
+// t, and answers the type of the member that does not decode in it, or nil where it decodes, and
+// the path to that member inside it, empty for the value itself; err is dec's own, for JSON it
+// cannot read. A struct, a map or a list whose JSON is the object or the array it takes is read
+// member by member (opens), so a member that decodes is read once and one that does not is gone
+// into; a member a struct has no field for, and an array's item past its length, are passed over,
+// as encoding/json passes them; every other value is decoded whole. JSON null decodes into
+// anything, as encoding/json leaves the value as it is.
+func failingValue(dec *json.Decoder, t reflect.Type) ([]string, reflect.Type, error) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t.Kind() != reflect.Struct {
-		return "", nil
+	open := opens(t)
+	if open == 0 {
+		if dec.Decode(reflect.New(t).Interface()) != nil {
+			return nil, t, nil
+		}
+		return nil, nil, nil
 	}
-	var members map[string]json.RawMessage
-	if json.Unmarshal(data, &members) != nil {
-		return "", nil
+	switch token, err := dec.Token(); {
+	case err != nil:
+		return nil, nil, err
+	case token == nil:
+		return nil, nil, nil
+	case token != open:
+		return nil, t, nil
 	}
-	for i := range t.NumField() {
-		f := t.Field(i)
-		name := jsonName(f)
-		raw, ok := members[name]
-		if !ok || name == "" {
+	for index := 0; dec.More(); index++ {
+		var name string
+		var into reflect.Type
+		switch t.Kind() {
+		case reflect.Struct:
+			key, err := dec.Token()
+			if err != nil {
+				return nil, nil, err
+			}
+			text, _ := key.(string)
+			if f, ok := memberField(t, text); ok {
+				name, into = jsonName(f), f.Type
+			}
+		case reflect.Map:
+			if _, err := dec.Token(); err != nil {
+				return nil, nil, err
+			}
+			name, into = "(key)", t.Elem()
+		default:
+			if t.Kind() == reflect.Slice || index < t.Len() {
+				name, into = "(item)", t.Elem()
+			}
+		}
+		if into == nil {
+			var passed json.RawMessage
+			if err := dec.Decode(&passed); err != nil {
+				return nil, nil, err
+			}
 			continue
 		}
-		if json.Unmarshal(raw, reflect.New(f.Type).Interface()) != nil {
-			return name, f.Type
+		if path, held, err := failingValue(dec, into); err != nil || held != nil {
+			return append([]string{name}, path...), held, err
 		}
 	}
-	return "", nil
+	_, err := dec.Token()
+	return nil, nil, err
 }
+
+// opens is the delimiter of the JSON value encoding/json decodes a value of t from member by
+// member: '{' for a struct or a map and '[' for a list, and 0 for every other value, which it
+// decodes whole: one whose type decodes its JSON itself, through its own UnmarshalJSON or
+// UnmarshalText, a byte slice (from base64 text), a scalar or an interface value.
+func opens(t reflect.Type) json.Delim {
+	if p := reflect.PointerTo(t); p.Implements(jsonUnmarshalerType) || p.Implements(textUnmarshalerType) {
+		return 0
+	}
+	switch t.Kind() {
+	case reflect.Struct, reflect.Map:
+		return '{'
+	case reflect.Slice:
+		if t.Elem().Kind() == reflect.Uint8 {
+			return 0
+		}
+		return '['
+	case reflect.Array:
+		return '['
+	}
+	return 0
+}
+
+// jsonUnmarshalerType and textUnmarshalerType are the interfaces through which encoding/json hands
+// a type its JSON whole (opens).
+var (
+	jsonUnmarshalerType = reflect.TypeFor[json.Unmarshaler]()
+	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+)
 
 // jsonName is the member name encoding/json decodes field f from, "" for a field it skips.
 func jsonName(f reflect.StructField) string {
