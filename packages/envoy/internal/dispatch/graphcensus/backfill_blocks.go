@@ -118,6 +118,12 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // that decide what this build marks, and it is named so the test that holds the marking rule to
 // them reads it (refs.BlockIndexMarkingRule).
 //
+// Each batch reads document_blocks_naming_no_node (migration 20261119020900) from the address $1
+// on: that index holds the rows this walk reads, keyed in its order, and its predicate is the
+// walk's own two clauses. node_id's own index is a hash, which keeps no order, so with no other
+// index each batch read every row still naming no node and sorted them, and a run took time
+// growing with the square of the rows (TestTheBackfillsWalksReadOnlyTheirBatch).
+//
 // The event is resolved once per (document, changed version) of the batch and joined back to
 // the rows, not once per row: every block of one version of one document shares that pair. Each
 // such lookup probes events_artifact_version_number (migration 20261119020700) by the document

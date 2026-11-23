@@ -1134,14 +1134,16 @@ func TestCensusAdmitsTheProvedSessionOwnerIndexTheEraseReadsThrough(t *testing.T
 	requireCensusAdmitsConcurrentIndexes(t, 20261119020600)
 }
 
-// TestCensusAdmitsTheBackfillEventIndexes holds the census to admitting the two indexes
-// envoy-dispatch backfill-graph-store reads events through for each batch (20261119020700 on the
-// document and the version an artifact.version event names, 20261119020800 on the comment a
-// comment.created event names), over production before this release
-// (requireCensusAdmitsConcurrentIndexes): production's events is above the table limit, so only a
-// concurrent build's exemption admits an index on it.
-func TestCensusAdmitsTheBackfillEventIndexes(t *testing.T) {
-	requireCensusAdmitsConcurrentIndexes(t, 20261119020700, 20261119020800)
+// TestCensusAdmitsTheBackfillIndexes holds the census to admitting the four indexes envoy-dispatch
+// backfill-graph-store reads through for each batch: two on events (20261119020700 on the document
+// and the version an artifact.version event names, 20261119020800 on the comment a comment.created
+// event names), and the two its walks read in their order (20261119020900 on the block rows naming
+// no node, 20261119021000 on the block references naming no node), over production before this
+// release (requireCensusAdmitsConcurrentIndexes): production's events is above the table limit, so
+// only a concurrent build's exemption admits an index on it, and so would a block table that grows
+// past it.
+func TestCensusAdmitsTheBackfillIndexes(t *testing.T) {
+	requireCensusAdmitsConcurrentIndexes(t, 20261119020700, 20261119020800, 20261119020900, 20261119021000)
 }
 
 // productionBeforeThisRelease is the version that stands for production before this release:
@@ -1433,11 +1435,11 @@ func TestCensusExemptsTheLaterClockMigrationAtAnyTableSize(t *testing.T) {
 // 20261119021826 sets the two clock guards' search_path in a DO block, built from current_schema()
 // as it runs. The census cannot read what a DO block runs, so it exempts none: it answers the
 // migration with no exemption, but the DO block names no table, so the census measures and refuses
-// nothing, even at a limit of one byte. The base is 20261119020800, the version before it (the last
-// of the nine concurrent indexes that sort before it, requireCensusAdmitsConcurrentIndexes).
+// nothing, even at a limit of one byte. The base is 20261119021000, the version before it (the last
+// of the eleven concurrent indexes that sort before it, requireCensusAdmitsConcurrentIndexes).
 func TestCensusAnswersTheClockGuardsSearchPathMigration(t *testing.T) {
 	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 20261119020800)
+	migrateThrough(t, store, 20261119021000)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(), migrationsThrough(t, 20261119021826), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {
 		t.Fatalf("census: %v", err)

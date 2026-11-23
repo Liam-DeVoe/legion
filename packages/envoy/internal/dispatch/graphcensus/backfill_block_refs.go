@@ -91,21 +91,11 @@ func backfillBlockRefs(ctx context.Context, database *store.Store) (KindBackfill
 }
 
 // readBlockRefRows reads one batch of the block references naming no node, by the key a row of
-// block_refs is keyed on past its artifact, so the walk never reads one row twice. Each row
-// carries whether its block's node stands (blockNodeStands), which is the guard
-// backfillBlockRefs skips a row by.
+// block_refs is keyed on past its artifact, so the walk never reads one row twice
+// (BlockRefRowsStatement). Each row carries whether its block's node stands (blockNodeStands),
+// which is the guard backfillBlockRefs skips a row by.
 func readBlockRefRows(ctx context.Context, database *store.Store, after []any) ([]blockRefRow, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select r.artifact_id::text, r.block_id, r.from_node, r.kind, r.to_kind, r.to_id,
-		       r.created_at, r.source_seq, coalesce(r.source_seq, $6),
-		       `+blockNodeStands(`r`)+`
-		from block_refs r
-		where r.node_kind is null and octet_length(r.from_node) <= `+addressBound+`
-		  and octet_length(r.to_id) <= `+addressBound+`
-		  and (r.from_node, r.kind, r.to_kind, r.to_id) > ($1, $2, $3, $4)
-		order by r.from_node, r.kind, r.to_kind, r.to_id
-		limit $5
-	`, after[0], after[1], after[2], after[3], backfillBatch, graphstore.NoEvent)
+	rows, err := database.Pool.Query(ctx, BlockRefRowsStatement, after[0], after[1], after[2], after[3], backfillBatch, graphstore.NoEvent)
 	if err != nil {
 		return nil, fmt.Errorf("read the block references naming no node: %w", err)
 	}
@@ -121,6 +111,28 @@ func readBlockRefRows(ctx context.Context, database *store.Store, after []any) (
 	}
 	return batch, rows.Err()
 }
+
+// BlockRefRowsStatement is readBlockRefRows' selection: at most $5 of the block references naming
+// no node whose two ends fit the store's bound, past the key ($1, $2, $3, $4), in key order, each
+// with its source_seq, or $6, the store's sentinel, where it has none, and whether its block's
+// node stands.
+//
+// Each batch reads block_refs_naming_no_node (migration 20261119021000) from the key on: that
+// index holds the rows this walk reads, keyed in its order, and its predicate is the walk's own
+// three clauses. With no index to serve both its clauses and its order, each batch read every row
+// still naming no node and sorted them, so a run took time growing with the square of the rows
+// (TestTheBackfillsWalksReadOnlyTheirBatch).
+var BlockRefRowsStatement = `
+		select r.artifact_id::text, r.block_id, r.from_node, r.kind, r.to_kind, r.to_id,
+		       r.created_at, r.source_seq, coalesce(r.source_seq, $6),
+		       ` + blockNodeStands(`r`) + `
+		from block_refs r
+		where r.node_kind is null and octet_length(r.from_node) <= ` + addressBound + `
+		  and octet_length(r.to_id) <= ` + addressBound + `
+		  and (r.from_node, r.kind, r.to_kind, r.to_id) > ($1, $2, $3, $4)
+		order by r.from_node, r.kind, r.to_kind, r.to_id
+		limit $5
+	`
 
 // blockNodeStands is the pointer pass's guard over the block_refs row at alias: the store holds
 // the node of the block the row is a link out of, in a state other than gone. It is the test

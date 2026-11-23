@@ -1,0 +1,180 @@
+package graphcensus
+
+import (
+	"context"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
+)
+
+// The seed of TestTheBackfillsWalksReadOnlyTheirBatch: walkPlanDocuments documents of an issue each,
+// with walkPlanBlocksPerDocument block rows naming no node and one block reference naming no node
+// out of each block. That is a hundred batches of each walk (backfillBatch), enough that reading
+// every row still naming no node, and sorting it, costs the planner more than reading one batch
+// through an index in the walk's order, as it does on any deployment's tables.
+const (
+	walkPlanDocuments         = 40
+	walkPlanBlocksPerDocument = 500
+)
+
+// walkPlanRead is one of the backfill's walks over a projected table, the index each batch must
+// read from its cursor on, and the batch's statement from the walk's start.
+type walkPlanRead struct {
+	name, table, index string
+	statement          explaintest.Statement
+}
+
+// TestTheBackfillsWalksReadOnlyTheirBatch holds each of the two walks the backfill makes over a
+// table whose order no other index keeps to reading one batch through an index of its own: the
+// block rows naming no node, by node_id (BlockRowsStatement, through
+// document_blocks_naming_no_node, migration 20261119020900), and the block references naming no
+// node, by their key (BlockRefRowsStatement, through block_refs_naming_no_node, migration
+// 20261119021000). node_id and from_node are hash indexed, which keeps no order, so without them
+// each batch reads every row still naming no node and sorts them, once per batch of the run, which
+// on a seeded database of 270,564 block rows cost the block pass 0.66 ms a block against 0.17 ms a
+// block over a tenth of them.
+//
+// The seed is read first, and each walk's first batch must answer the first backfillBatch rows in
+// the walk's order. Then, with hash and merge joins off and under each plan-cache mode, every read
+// of the table in the analyzed plan must be a probe of the walk's index by its first key, and the
+// reads must answer no more than one batch of rows (relationReads). The control is the same batch
+// with that index dropped inside the explaining transaction, as the database stood before its
+// migration: it must plan, run, and read more than a batch of the table, other than through it.
+func TestTheBackfillsWalksReadOnlyTheirBatch(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	pool := database.Pool
+	seedWalkPlan(t, pool)
+
+	blocks, err := readBlockRows(ctx, database, "")
+	if err != nil {
+		t.Fatalf("read the first block batch: %v", err)
+	}
+	gotBlocks := make([]string, 0, len(blocks))
+	for _, row := range blocks {
+		gotBlocks = append(gotBlocks, row.address)
+	}
+	requireFirstBatch(t, "the block batch", gotBlocks, walkKeys(t, pool, `
+		select node_id from document_blocks where node_kind is null order by node_id limit $1`))
+
+	refs, err := readBlockRefRows(ctx, database, []any{"", "", "", ""})
+	if err != nil {
+		t.Fatalf("read the first block reference batch: %v", err)
+	}
+	gotRefs := make([]string, 0, len(refs))
+	for _, row := range refs {
+		gotRefs = append(gotRefs, row.address+" "+row.kind+" "+row.toKind+" "+row.toID)
+	}
+	requireFirstBatch(t, "the block reference batch", gotRefs, walkKeys(t, pool, `
+		select from_node || ' ' || kind || ' ' || to_kind || ' ' || to_id from block_refs where node_kind is null
+		order by from_node, kind, to_kind, to_id limit $1`))
+
+	keys := explaintest.NewIndexKeys(pool)
+	for _, walk := range []walkPlanRead{{
+		name:      "the block batch",
+		table:     "document_blocks",
+		index:     "document_blocks_naming_no_node",
+		statement: explaintest.Statement{SQL: BlockRowsStatement, Args: []any{"", backfillBatch, graphstore.NoEvent}},
+	}, {
+		name:      "the block reference batch",
+		table:     "block_refs",
+		index:     "block_refs_naming_no_node",
+		statement: explaintest.Statement{SQL: BlockRefRowsStatement, Args: []any{"", "", "", "", backfillBatch, graphstore.NoEvent}},
+	}} {
+		t.Run(walk.index, func(t *testing.T) {
+			dropped := []explaintest.Statement{{SQL: "set local lock_timeout = '10s'"}, {SQL: "drop index " + walk.index}}
+			for _, mode := range explaintest.PlanCacheModes {
+				reads := relationReads(t, keys, explaintest.ExplainAfter(t, ctx, pool, nil, walk.statement, mode, "json"), walk.table, walk.index)
+				switch {
+				case len(reads.unprobed) > 0 || reads.probeLoops == 0:
+					t.Errorf("%s under %s reads %s other than from its cursor through %s:\n  %s\nplan:\n%s", walk.name, mode, walk.table, walk.index,
+						strings.Join(slices.Concat(reads.unprobed, reads.probed), "\n  "), explaintest.ExplainAfter(t, ctx, pool, nil, walk.statement, mode, "text"))
+				case reads.rows > backfillBatch:
+					t.Errorf("%s under %s reads %.0f rows of %s, want one batch, %d at most:\n  %s\nplan:\n%s", walk.name, mode, reads.rows, walk.table,
+						backfillBatch, strings.Join(reads.probed, "\n  "), explaintest.ExplainAfter(t, ctx, pool, nil, walk.statement, mode, "text"))
+				default:
+					t.Logf("%s under %s reads %.0f rows of %s:\n  %s", walk.name, mode, reads.rows, walk.table, strings.Join(reads.probed, "\n  "))
+				}
+
+				control := relationReads(t, keys, explaintest.ExplainAfter(t, ctx, pool, dropped, walk.statement, mode, "json"), walk.table, walk.index)
+				if len(control.unprobed) == 0 || control.rows <= backfillBatch {
+					t.Errorf("%s with %s dropped, the control, reads %.0f rows of %s under %s, so the check cannot tell a read of every row from a batch:\n%s",
+						walk.name, walk.index, control.rows, walk.table, mode, explaintest.ExplainAfter(t, ctx, pool, dropped, walk.statement, mode, "text"))
+				} else {
+					t.Logf("%s with %s dropped under %s reads %.0f rows of %s and fails the check, as the control must:\n  %s",
+						walk.name, walk.index, mode, control.rows, walk.table, strings.Join(control.unprobed, "\n  "))
+				}
+			}
+		})
+	}
+}
+
+// seedWalkPlan writes the seed TestTheBackfillsWalksReadOnlyTheirBatch reads (the constants above
+// say what it holds) and analyzes the tables its walks plan over.
+func seedWalkPlan(t *testing.T, pool *store.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	for _, step := range []struct {
+		what, sql string
+		args      []any
+	}{
+		{"seed project BWK", `insert into projects (key, name, default_assignee) values ('BWK', 'Backfill walks', 'alice')`, nil},
+		{"seed the issues", `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			select 'BWK-' || i, 'BWK', i, 'Issue ' || i, '{"kind":"user","id":"alice"}', 'U'
+			from generate_series(1, $1::int) i`, []any{walkPlanDocuments}},
+		{"seed each issue's document", `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			select key, 'BWK', 'spec', 'spec.md', 'doc', false, '{"kind":"user","id":"alice"}'
+			from issues where project_key = 'BWK'`, nil},
+		{"write the block rows naming no node", `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+			select a.id, 'b' || k, a.ref_key || '#b' || k, 'paragraph', '', 'Block ' || k, 1, now()
+			from artifacts a cross join generate_series(1, $1::int) k
+			where a.project_key = 'BWK'`, []any{walkPlanBlocksPerDocument}},
+		{"write a block reference naming no node out of each block", `
+			insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
+			select d.artifact_id, d.block_id, d.node_id, 'issue', a.issue_key, 'mentions', 1
+			from document_blocks d join artifacts a on a.id = d.artifact_id
+			where a.project_key = 'BWK'`, nil},
+		{"analyze the walked tables", `analyze document_blocks, block_refs, artifacts, issues`, nil},
+	} {
+		if _, err := pool.Exec(ctx, step.sql, step.args...); err != nil {
+			t.Fatalf("%s: %v", step.what, err)
+		}
+	}
+}
+
+// walkKeys reads query, a select of one text column limited to $1, with backfillBatch for $1.
+func walkKeys(t *testing.T, pool *store.Pool, query string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), query, backfillBatch)
+	if err != nil {
+		t.Fatalf("read the seeded keys: %v", err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the seeded keys: %v", err)
+	}
+	return keys
+}
+
+// requireFirstBatch fails unless got, what batch answered from the walk's start, is want, the first
+// backfillBatch rows in the walk's order, and want is a whole batch: a seed of fewer rows would
+// leave the plans below about a walk with nothing past its first batch.
+func requireFirstBatch(t *testing.T, batch string, got, want []string) {
+	t.Helper()
+	if len(want) != backfillBatch {
+		t.Fatalf("the seed holds %d rows for %s, want at least %d", len(want), batch, backfillBatch)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%s answered %d rows, want the first %d in the walk's order:\n got %q\nwant %q", batch, len(got), len(want), got, want)
+	}
+}

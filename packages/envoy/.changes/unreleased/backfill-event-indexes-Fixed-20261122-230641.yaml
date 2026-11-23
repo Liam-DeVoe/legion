@@ -1,14 +1,18 @@
 kind: Fixed
 body: |-
-  `envoy-dispatch backfill-graph-store` no longer reads the whole event log once for each document
-  version and each comment it backfills, so its run time grows with the data rather than with the
-  square of it. For each document version of a block batch it reads the `artifact.version` event
-  that recorded the version, and for each comment of a comment batch the `comment.created` event
-  that stored it; no index served either read, so each one read every event. Two indexes now serve
-  them: `events_artifact_version_number` (migration `20261119020700`) and
-  `events_comment_created_id` (migration `20261119020800`). Both are built concurrently at boot,
-  which holds off no write, and both sort before this release's first migration that runs a DO
-  block, so the deploy census admits them whatever the size of `events`.
+  `envoy-dispatch backfill-graph-store` no longer reads a whole table once for each batch or each
+  row it backfills, so its run time grows with the data rather than with the square of it. For
+  each document version of a block batch it reads the `artifact.version` event that recorded the
+  version, and for each comment of a comment batch the `comment.created` event that stored it; no
+  index served either read, so each one read every event. And it walks the block rows and the block
+  references naming no node in their address order, which no index kept (their address columns are
+  hash indexed), so each batch read and sorted every row still naming no node. Four indexes now
+  serve them: `events_artifact_version_number` (migration `20261119020700`),
+  `events_comment_created_id` (`20261119020800`), and `document_blocks_naming_no_node`
+  (`20261119020900`) and `block_refs_naming_no_node` (`20261119021000`), each of the last two
+  partial on the rows naming no node. All four are built concurrently at boot, which holds off no
+  write, and all four sort before this release's first migration that runs a DO block, so the
+  deploy census admits them whatever their tables' size.
 time: 2026-11-22T23:06:41Z
 custom:
     Issue: backfill-event-indexes
