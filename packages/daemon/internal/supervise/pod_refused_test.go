@@ -14,21 +14,18 @@ import (
 // round or its release replaces it (runtime.AwaitsPodUpdate) is charged nothing and leaves the
 // claim suspended by the daemon, running nothing, so no live claim keeps either release rule off
 // the pod. The claim is the only claim of its pod here. The issue and the controller are told at
-// the refusal, and since no outbox start stands behind this spawn, the daemon is asked to queue a
-// start of the claim. While that pod is still the issue's pod, each resume is refused again with
-// no launch and no write of the claim, so the pod comes to be quiet, and the telling comes again
-// only after an hour. Once another pod stands, the next resume launches the claim.
+// the refusal, naming the pod; whether a start of the claim is queued is the daemon's to read from
+// its outbox (workflow's podRefusedLaunch). While that pod is still the issue's pod, each resume is
+// refused again with no launch and no write of the claim, so the pod comes to be quiet, and the
+// telling comes again only after an hour. Once another pod stands, the next resume launches the
+// claim.
 //
 // The control is the rule before this one: the refused claim is left launching, tried again at
 // every probe interval, written at each try, and nobody is told.
 func TestALaunchItsPodRefusesLeavesTheClaimSuspendedUntilAnotherPodStands(t *testing.T) {
 	h := newHarness(t)
-	type report struct {
-		pod   string
-		queue bool
-	}
-	var told []report
-	h.deps.PodRefused = func(_ Claim, pod, _ string, queue bool) { told = append(told, report{pod, queue}) }
+	var told []string
+	h.deps.PodRefused = func(_ Claim, pod, _ string) { told = append(told, pod) }
 	h.restart()
 	issue := h.claim().Issue
 	h.rt.ScriptIssuePod(issue, "pod-1")
@@ -43,8 +40,8 @@ func TestALaunchItsPodRefusesLeavesTheClaimSuspendedUntilAnotherPodStands(t *tes
 		t.Fatalf("after the refusal the claim is %s by %q with budgets %+v, locator %+v and last start failure %q; want it suspended by the daemon, charged nothing, running nothing, keeping the refusal",
 			c.State, c.SuspendedBy, c.Budgets, c.Locator, c.LastStartFailure)
 	}
-	if len(told) != 1 || told[0] != (report{pod: "pod-1", queue: true}) {
-		t.Fatalf("the refusal told %+v, want one report of pod-1 asking for a start of the claim", told)
+	if len(told) != 1 || told[0] != "pod-1" {
+		t.Fatalf("the refusal told %q, want one report of pod-1", told)
 	}
 
 	writes := 0
@@ -58,14 +55,14 @@ func TestALaunchItsPodRefusesLeavesTheClaimSuspendedUntilAnotherPodStands(t *tes
 	h.wantCalls("Spawn", 1)
 	h.wantState(StateSuspended)
 	if writes != 0 || len(told) != 1 {
-		t.Fatalf("the resumes while pod-1 stands wrote the claim %d times and told %+v; want no write and the one report", writes, told)
+		t.Fatalf("the resumes while pod-1 stands wrote the claim %d times and told %q; want no write and the one report", writes, told)
 	}
 	h.advance(time.Hour)
 	if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's step"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
 		t.Fatalf("a resume an hour later answered %v, want a refusal that is runtime.ErrAwaitsPodUpdate", err)
 	}
-	if len(told) != 2 || told[1] != (report{pod: "pod-1"}) || writes != 0 {
-		t.Fatalf("an hour later the reports are %+v and the claim was written %d times; want a second report of pod-1 asking for no start, and no write", told, writes)
+	if len(told) != 2 || told[1] != "pod-1" || writes != 0 {
+		t.Fatalf("an hour later the reports are %q and the claim was written %d times; want a second report of pod-1, and no write", told, writes)
 	}
 
 	h.rt.ScriptIssuePod(issue, "pod-2")
@@ -87,7 +84,7 @@ func TestALaunchItsPodRefusesLeavesTheClaimSuspendedUntilAnotherPodStands(t *tes
 func TestAResumeWhileTheRuntimeCannotReadTheIssuesPodIsRefusedAsWhileThePodStands(t *testing.T) {
 	h := newHarness(t)
 	var told []string
-	h.deps.PodRefused = func(_ Claim, pod, _ string, _ bool) { told = append(told, pod) }
+	h.deps.PodRefused = func(_ Claim, pod, _ string) { told = append(told, pod) }
 	h.restart()
 	issue := h.claim().Issue
 	h.rt.ScriptIssuePod(issue, "pod-1")

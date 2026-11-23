@@ -1452,15 +1452,14 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 // pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): the claim is
 // suspended, charged nothing, and runs nothing while that pod stands (supervise's podRefused). It
 // is told on the issue and to the controller at the first refusal and hourly while the pod
-// stands. Queue asks for a start of the claim, which a refused launch no outbox start stood behind
-// needs, so that whatever replaces the pod resumes the claim.
+// stands, and the workflow queues a start of the claim wherever its outbox holds none that brings
+// the claim back, so that whatever replaces the pod resumes it (workflow's podRefusedLaunch).
 type PodRefusedLaunch struct {
 	Issue  string
 	Role   claim.Role
 	Claim  claim.Token
 	Pod    string
 	Detail string
-	Queue  bool
 }
 
 func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }

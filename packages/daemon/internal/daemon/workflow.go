@@ -282,9 +282,11 @@ type workflowRuntime struct {
 	// goroutine of its own (reviewRefused).
 	readMemoMu     sync.Mutex
 	refusedReviews map[int64]bool
-	// failed carries the first supervision terminal fact that could not be applied. serve stops
-	// the daemon with it: the claim's terminal state is durable, so the next boot's replay applies
-	// the fact the failed callback lost.
+	// failed carries the first supervision terminal fact, or the first report of a launch its
+	// issue's pod refused (podRefused), that could not be applied. serve stops the daemon with it:
+	// the claim's terminal state, or its suspension for the daemon, is durable, so the next boot's
+	// replay applies the terminal fact the failed callback lost, and its resume by rule starts the
+	// suspended claim.
 	failed chan error
 	// readied is the architects claimReady recorded whose waiting notices releaseReadied has not
 	// released yet.
@@ -2472,20 +2474,42 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 
 // podRefused applies the fact that a claim's launch was refused because its issue pod cannot run
 // it until that pod's update round or its release replaces it (supervise's Deps.PodRefused): the
-// workflow tells the issue and the controller, and queues a start of the claim where queue says no
-// outbox start stood behind the launch, so whatever replaces the pod resumes it. The machine
-// decides how often this is called — at the first refusal, then hourly — so each call is a
-// report, and the event id names the moment.
-func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string, queue bool) {
-	w.applySessionFact(c, fmt.Sprintf("pod-refused:%s:%d", c.Token, time.Now().UnixNano()),
-		intake.PodRefusedLaunch{Issue: c.Issue, Role: c.Role, Claim: c.Token, Pod: pod, Detail: detail, Queue: queue}, "apply a launch its issue's pod refused")
+// workflow tells the issue and the controller, and queues a start of the claim wherever its outbox
+// holds none that brings the claim back, so whatever replaces the pod resumes it (workflow's
+// podRefusedLaunch). The machine decides how often this is called — at the first refusal, then
+// hourly — so each call is a report, and the event id names the moment.
+//
+// The fact is the one thing that queues that start, so it is applied as a claim's terminal fact
+// is (terminal), not as a report: on a goroutine of its own, since the machine calls this inside
+// its own decision, with no deadline, so a queue of facts ahead of it on the serializer is waited
+// out rather than lost, and a failure stops the workflow, and with it the daemon (failed). The
+// claim's suspension for the daemon is durable, so the next boot's resume by rule starts it
+// (workflow's booted), and its launch, refused again while the pod stands, is reported again.
+func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string) {
+	if c.Issue == "" || c.Role == claim.RoleController {
+		return
+	}
+	id := fmt.Sprintf("pod-refused:%s:%d", c.Token, time.Now().UnixNano())
+	fact := intake.PodRefusedLaunch{Issue: c.Issue, Role: c.Role, Claim: c.Token, Pod: pod, Detail: detail}
+	go func() {
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker), and no deadline, for the reasons above.
+		ctx := store.ForConcurrentWorker(context.Background())
+		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
+			w.log.Error("apply a launch its issue's pod refused", "claim", c.Token, "error", err)
+			select {
+			case w.failed <- err:
+			default:
+			}
+		}
+	}()
 }
 
-// applySessionFact applies one of the two session facts on a goroutine of its own, bounded by
-// readyReleaseTimeout: the machine calls both inside its own decision, so neither waits for the
-// database. A failure is logged and is not the daemon's end — the report is a report, and the
-// start it describes has already been decided. A claim on no issue, the daemon's own controller,
-// has nobody to tell.
+// applySessionFact applies one of the two session facts, a lost session and a session store
+// fault, on a goroutine of its own, bounded by readyReleaseTimeout: the machine calls both inside
+// its own decision, so neither waits for the database. A failure is logged and is not the
+// daemon's end — the report is a report, and the start it describes has already been decided. A
+// claim on no issue, the daemon's own controller, has nobody to tell.
 func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact intake.Fact, what string) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return

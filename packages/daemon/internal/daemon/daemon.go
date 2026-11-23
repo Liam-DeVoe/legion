@@ -910,9 +910,10 @@ type plan struct {
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
 	// podRefused tells the workflow that a claim's launch was refused because its issue pod cannot
-	// run it until that pod is replaced, and whether to queue a start of the claim; nil without a
-	// workflow, where nobody is told and nothing is queued.
-	podRefused func(c supervise.Claim, pod, detail string, queue bool)
+	// run it until that pod is replaced, and the workflow queues a start of the claim wherever its
+	// outbox holds none that brings the claim back; nil without a workflow, where nobody is told and
+	// nothing is queued.
+	podRefused func(c supervise.Claim, pod, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)

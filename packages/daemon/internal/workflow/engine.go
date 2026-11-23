@@ -1888,9 +1888,20 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 }
 
 // podRefusedLaunch tells the issue and the controller that a role cannot start until its issue's
-// pod is replaced, and queues a start of the claim where the fact asks for one (Queue,
-// queueRefusedStart). The supervisor decides how often it is told — at the first refusal, then
-// hourly — so every fact that reaches here is reported.
+// pod is replaced, and queues a start of the claim wherever the outbox holds no start that brings
+// it back (queueRefusedStart, startBringsBack), read from the role's run in the fact's own
+// transaction. The supervisor decides how often it is told — at the first refusal, then hourly —
+// so every fact that reaches here is reported.
+//
+// The outbox, not the supervisor, says whether a start stands behind the claim, because the launch
+// the pod refused may have come after the start that raised it had finished: the outbox start of a
+// suspended claim whose resume the wake pacing parked finishes once it has delivered its task, and
+// so does one whose launch's write failed and whose retry the machine arms, while the launch runs
+// at the wake's turn or at that retry. The suspension the refusal ends in retires the task, and
+// with no start left nothing would resume the claim but a boot. Where the outbox start whose own
+// launch the pod refused still stands, it waits for the pod (the outbox's ErrAwaitsPodUpdate wait)
+// and resumes the claim once another pod stands, so nothing more is queued; and once a start this
+// queued stands, an hourly report queues no second.
 func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.PodRefusedLaunch) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1906,21 +1917,22 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 		Kind: record.PodWaitHeldNotice, Role: fact.Role, Phase: issue.Phase, Reason: told})); err != nil {
 		return intake.Result{}, err
 	}
-	if !fact.Queue {
-		return intake.Result{}, nil
+	run, err := e.store.RoleRun(ctx, tx, fact.Claim, issue.Key, fact.Role, issue.Generation)
+	if err != nil || startBringsBack(run) {
+		return intake.Result{}, err
 	}
 	return intake.Result{}, e.queueRefusedStart(ctx, tx, *issue, fact)
 }
 
-// queueRefusedStart queues the start of a claim whose launch its issue's pod refused with no
-// outbox start behind it (intake.PodRefusedLaunch's Queue): a relaunch of the machine's own, an
-// operator's resume. The suspension that refusal ended in retired the phase task the claim held
-// (supervise's settle), and the record holds that work all the same: where the claim works the
-// step its issue stands in, the start is that step's owed entry (sendOwedEntry), the entry and the
-// task its phases row holds, marked as a resend of that entry so the claim, which was given it, is
-// given it again. Any other is a start naming the claim, of no phase, which resumes it with
-// whatever it holds. The outbox runs either as a wait for the pod while that pod stands
-// (supervise's podStillRefuses) and resumes the claim once another stands or none.
+// queueRefusedStart queues the start of a claim whose launch its issue's pod refused where the
+// outbox holds no start that brings the claim back (podRefusedLaunch). The suspension that refusal
+// ended in retired the phase task the claim held (supervise's settle), and the record holds that
+// work all the same: where the claim works the step its issue stands in, the start is that step's
+// owed entry (sendOwedEntry), the entry and the task its phases row holds, marked as a resend of
+// that entry so the claim, which was given it, is given it again. Any other is a start naming the
+// claim, of no phase, which resumes it with whatever it holds. The outbox runs either as a wait for
+// the pod while that pod stands (supervise's podStillRefuses) and resumes the claim once another
+// stands or none.
 func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
 	if record.OutOfWorkflow(issue.Status) {
 		return nil

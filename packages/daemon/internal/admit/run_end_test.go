@@ -379,12 +379,12 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
 				}
 			}}},
-		// A launch the issue's pod refused is told on the issue and to the controller, and the
-		// claim's start is queued, to wait for the pod (workflow's podRefusedLaunch): it moves no
-		// issue, so the step's run stays open.
+		// A launch the issue's pod refused is told on the issue and to the controller, and, with no
+		// start of the claim in the outbox, the claim's start is queued, to wait for the pod
+		// (workflow's podRefusedLaunch): it moves no issue, so the step's run stays open.
 		"PodRefusedLaunch": {{name: "a launch its pod refused is told and its start queued, and keeps the step", arrange: none, source: "supervise",
 			fact: intake.PodRefusedLaunch{Issue: inRetro, Role: claim.RoleImplementer, Pod: "pod-1",
-				Detail: "the pod pod-1 was built without checker, the role of its step", Queue: true}, keeps: inRetro}},
+				Detail: "the pod pod-1 was built without checker, the role of its step"}, keeps: inRetro}},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {

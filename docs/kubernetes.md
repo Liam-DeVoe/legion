@@ -6780,7 +6780,8 @@ A start into a live pod also waits for the pod's update round or its release whe
 The launch judges the launcher it reached, so a re-role the outbox let through right after a daemon restart, while no launcher was connected, still waits.
 That wait, like the wait for a slot or a role the pod lacks, writes nothing in the pod and charges no launch failure.
 The supervisor keeps the refusal as the claim's `lastStartFailure` and suspends the claim, as the daemon's, so no live claim holds the pod and the idle release may take it; while that pod stands it tries no launch of the claim and writes nothing of it, and it tells the issue and the controller at the first refusal and hourly after.
-Once another pod stands, or none, the claim's start resumes it: the start row waits for the pod meanwhile, and a refused launch no start row stood behind (a relaunch after a crash, an operator's resume) has the daemon queue one.
+Once another pod stands, or none, the claim's start resumes it: a start row of the claim waits for the pod meanwhile, and where the outbox holds none, the daemon queues one at the refusal.
+That covers a launch that ran after its start row had finished (the turn the wake pacing held it for, the retry of a launch whose write failed) and a launch no start raised (a relaunch after a crash, an operator's resume).
 
 A near-full disk slows jj's working-copy snapshot before a push, which is why `legion push`'s grant lives `credential.pushTTL` (5 minutes) in place of the usual 60 seconds (`internal/credential/grants.go`;
 `docs/solutions/legion/worker-pane-shell-gotchas.md` has the mechanics).
