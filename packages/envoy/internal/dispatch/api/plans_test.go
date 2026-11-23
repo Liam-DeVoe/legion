@@ -880,6 +880,7 @@ func plannedOrRatedProject(t *testing.T) (http.Handler, []string) {
 // finished_total, the seven finished issues. The newest finished issue has neither a plan nor a
 // rating, so a read that cut the issues to the limit before it kept them lists it.
 func TestTheReadOfPlansKeepsTheNewestPlannedOrRatedIssuesUpToItsLimit(t *testing.T) {
+	t.Parallel()
 	handler, issues := plannedOrRatedProject(t)
 
 	read := readPlans(t, handler, "LEG", "?planned_or_rated=true&limit=2")
@@ -899,6 +900,7 @@ func TestTheReadOfPlansKeepsTheNewestPlannedOrRatedIssuesUpToItsLimit(t *testing
 // finished issue of the project, newest close first, and no member but project and issues; a read
 // of a window answers the same members.
 func TestTheReadOfPlansWithoutItsFilterOrLimitAnswersAsBefore(t *testing.T) {
+	t.Parallel()
 	handler, issues := plannedOrRatedProject(t)
 
 	newestFirst := slices.Clone(issues)
@@ -921,6 +923,7 @@ func TestTheReadOfPlansWithoutItsFilterOrLimitAnswersAsBefore(t *testing.T) {
 // A ?limit= that is no whole number from 1 to projectPlansLimitMax is refused 400 INVALID_QUERY
 // naming limit, and 1 and projectPlansLimitMax are each taken.
 func TestTheReadOfPlansRefusesALimitOutOfItsRange(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestIssue(t, handler, "LEG", "A run of steps")
 

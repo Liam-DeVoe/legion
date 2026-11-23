@@ -20,6 +20,7 @@ import (
 // worker's prompt is the same text in both builds, byte for byte: a deployment that sets the
 // guidance changes no other agent's prompt.
 func TestOnlyAnOwnersPromptHoldsThePlanGuidance(t *testing.T) {
+	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)

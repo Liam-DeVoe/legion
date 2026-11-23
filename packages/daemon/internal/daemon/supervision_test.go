@@ -222,6 +222,7 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 // headed as the copy is (config.WritePlanGuidance), so an owner's launch reads what boot read and
 // never the operator's own path.
 func TestRunWritesThePlanGuidanceCopy(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.PlanGuidancePath = filepath.Join(t.TempDir(), "plan-guidance.md")
 	if err := os.WriteFile(cfg.PlanGuidancePath, []byte("Review on another model family.\n"), 0o600); err != nil {
@@ -244,6 +245,7 @@ func TestRunWritesThePlanGuidanceCopy(t *testing.T) {
 // An owner's launch reads the copy boot wrote of the plan guidance, and a phase worker's launch of
 // the same daemon reads none.
 func TestAnOwnersLaunchReadsThePlanGuidanceCopy(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	cfg.PlanGuidancePath = filepath.Join(t.TempDir(), "plan-guidance.md")
 	if err := os.WriteFile(cfg.PlanGuidancePath, []byte("Review on another model family.\n"), 0o600); err != nil {
@@ -266,6 +268,7 @@ func TestAnOwnersLaunchReadsThePlanGuidanceCopy(t *testing.T) {
 // A deployment that sets no plan_guidance boots as before: boot writes no copy of a guidance, and
 // an owner's launch reads none.
 func TestADeploymentWithNoPlanGuidanceGivesItsOwnerNone(t *testing.T) {
+	t.Parallel()
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
