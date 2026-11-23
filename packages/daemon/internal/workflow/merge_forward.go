@@ -102,9 +102,9 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 
 // mergeForwardOnEntry is what a move does with the merge forward of the pull request of s's task
 // once the move has put its copy in the phase it now stands in and written that phase's start
-// (transition), from being the phase the move left. The pull request is read again in the
-// transaction (taskPullRequest), since the copy a transition is handed can be none, or one read
-// before the transaction's other writes.
+// (transition), from being the phase the move left. pr is that pull request as the move's handler
+// read it in the transaction, after the handler's own writes of it, nil where the task has none:
+// the transition reads the row once, and nothing it does before this writes the row.
 //
 //   - A move into implementing drops the record's merge forward of the task's pull request
 //     (clearTaskMergeForward): the implementer works the head there, and a head it pushes is read
@@ -121,14 +121,13 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //
 // mergeForward asks once for each head, so a move at a head already asked of in a phase past
 // implementing - an ask in reviewing, then the round's end into accepting - asks nothing more.
-func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, s TaskScope, from phase.Phase) error {
+func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, s TaskScope, from phase.Phase, pr *record.PullRequest) error {
 	issue := s.issue
 	if issue.Phase == phase.Implementing {
-		return e.clearTaskMergeForward(ctx, tx, s)
+		return e.clearTaskMergeForward(ctx, tx, s, pr)
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
-	if err != nil || pr == nil || !classify.ConflictRound(*pr) {
-		return err
+	if pr == nil || !classify.ConflictRound(*pr) {
+		return nil
 	}
 	asked := pr.MergeForward
 	switch {
@@ -141,18 +140,17 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, s TaskScope
 	return nil
 }
 
-// clearTaskMergeForward drops the merge forward the record holds for the pull request of s's task
-// (record.PullRequest.MergeForward, taskPullRequest), on a move into implementing
+// clearTaskMergeForward drops the merge forward the record holds for pr, the pull request of s's
+// task as the move read it (record.PullRequest.MergeForward), on a move into implementing
 // (mergeForwardOnEntry): the ask, its landing and the review it asked for are of a stretch of work
 // that is over, and a later conflict is asked about afresh. A run with no plan rows drops each of
 // its pull requests' (clearMergeForwards). A record that holds none is not written.
-func (e *Engine) clearTaskMergeForward(ctx context.Context, tx pgx.Tx, s TaskScope) error {
+func (e *Engine) clearTaskMergeForward(ctx context.Context, tx pgx.Tx, s TaskScope, pr *record.PullRequest) error {
 	if !s.Planned() {
 		return e.clearMergeForwards(ctx, tx, s.issue)
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
-	if err != nil || pr == nil {
-		return err
+	if pr == nil {
+		return nil
 	}
 	return e.clearMergeForwardsOf(ctx, tx, []record.PullRequest{*pr})
 }
@@ -194,12 +192,12 @@ func (e *Engine) clearMergeForwardsOf(ctx context.Context, tx pgx.Tx, prs []reco
 // to read what the merge changed before it goes on (record.MergeForwardLanded). An issue past its
 // review (record.PastReview) stands on a review of the old head, so the reviewer is asked to read
 // the merge and approve the new head or request changes (record.MergeForwardReview), and the
-// record keeps that the review was asked for (ReviewAsked), which the merger's task (task) and
-// the landed the merger is told in merging (record.MergeForwardMessage.Message) read. That holds
-// only where the issue's task has a reviewer step (the walk's line holds reviewing): a task whose
-// plan has none stands on no review of the old head, no reviewer step runs for it, and a merger
-// told to wait for a reviewer's approval would wait for good, so nothing is asked and the merger
-// goes on at the new head.
+// record keeps that the review was asked for (ReviewAsked), which the merger's task
+// (pullRequestPart) and the landed the merger is told in merging (record.MergeForwardMessage.Message)
+// read. That holds only where the issue's task has a reviewer step (the walk's line holds
+// reviewing): a task whose plan has none stands on no review of the old head, no reviewer step runs
+// for it, and a merger told to wait for a reviewer's approval would wait for good, so nothing is
+// asked and the merger goes on at the new head.
 // The daemon records no decision outside reviewing, so that review is the roles' to hold to the
 // head they merge. The architect and the implementer are told nothing: the architect's checks-red
 // notice already said the merge was asked for, and the implementer pushed it. A tree that lingers
@@ -324,8 +322,8 @@ func leftMergeForwardAt(issue record.Issue, lingers bool, pr *record.PullRequest
 
 // mergeForwardReviewOwed says whether the review a landed merge forward asked of the reviewer
 // stands for pr's head (mergeForwardLanded): it was asked, and the head is still the one the merge
-// left. The merger's task reads it (task); the landed message reads ReviewAsked alone, since it
-// names the head the merge left (record.MergeForwardMessage.Message).
+// left. The merger's task reads it (pullRequestPart), started or resumed; the landed message reads
+// ReviewAsked alone, since it names the head the merge left (record.MergeForwardMessage.Message).
 func mergeForwardReviewOwed(pr record.PullRequest) bool {
 	asked := pr.MergeForward
 	return asked != nil && asked.ReviewAsked && asked.Landed == pr.HeadSHA

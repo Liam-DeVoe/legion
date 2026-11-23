@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -161,5 +163,118 @@ func TestAResumedStepNamesItsTasksPullRequest(t *testing.T) {
 		taskMoves(t, pool, engine, root.Key, "c", TriggerImplementationReady, "")
 
 		namesOnce(t, "started reviewer of c", lastStart(t, pool, root.Key, claim.RoleReviewer), 3)
+	})
+}
+
+// pullReads is the real store, counting the reads of the pull request of task of key: the task's
+// own row (record.Store.PullRequestOfTask), and for task "", an issue with no plan rows, the row
+// of its merge (record.Store.MergePullRequest). Every other read and write is the real store's.
+type pullReads struct {
+	record.Store
+	key, task string
+	reads     int
+}
+
+func (s *pullReads) PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*record.PullRequest, error) {
+	if issue == s.key && task == s.task {
+		s.reads++
+	}
+	return s.Store.PullRequestOfTask(ctx, tx, issue, task)
+}
+
+func (s *pullReads) MergePullRequest(ctx context.Context, tx pgx.Tx, issue string) (*record.PullRequest, error) {
+	if issue == s.key && s.task == "" {
+		s.reads++
+	}
+	return s.Store.MergePullRequest(ctx, tx, issue)
+}
+
+// countsPullReads makes engine count, from now on, the reads of the pull request of task of key
+// (pullReads), and answers the count.
+func countsPullReads(engine *Engine, key, task string) *pullReads {
+	reads := &pullReads{Store: engine.store, key: key, task: task}
+	engine.store = reads
+	return reads
+}
+
+// A start that its handler judged on the pull request of its task reads that row once in its
+// transaction: the handler reads it to judge its move (whether the move needs a pull request, the
+// review round, whether GitHub merged it), and the started step's task names that row
+// (Standing.pull) with no read of its own. Of the example plan, the implementer's completion of c,
+// which starts c's review through the transition, reads c's row once; so does the tester's pass of
+// an issue with no plan rows, which starts its review on the row of the issue's merge, the retry of
+// its held implementing, which starts its implementer again (retryPhase), and the gate's opening of
+// a plan of one task, whose task takes the issue's branch and its pull request #42 there
+// (startReady). Each start names the row it read.
+//
+// The fault it catches is a start that reads the row again for its text after its handler read
+// it, two reads of one row in one transaction (its control: standingPart reading the row whatever
+// its caller read, under which each of the four reads it twice), and a merge forward after a move
+// that reads the row the move read again (its controls: mergeForwardOnEntry reading it, under which
+// the two completions, which move past implementing, read it twice; clearTaskMergeForward reading
+// it, under which the gate's opening, a move into implementing, reads it twice).
+func TestAStartReadsItsTasksPullRequestOnce(t *testing.T) {
+	readsOnce := func(t *testing.T, who string, reads *pullReads, task string, number int) {
+		t.Helper()
+		if reads.reads != 1 {
+			t.Fatalf("%s read the pull request of task %q of %s %d times, want once", who, reads.task, reads.key, reads.reads)
+		}
+		if want := fmt.Sprintf(" Pull request: #%d.", number); strings.Count(task, " Pull request: #") != 1 || !strings.Contains(task, want) {
+			t.Fatalf("the task %s started = %q, want it to name the pull request #%d it read, once", who, task, number)
+		}
+	}
+
+	t.Run("a completion that starts the next step of its task", func(t *testing.T) {
+		pool, engine := migratedPool(t), textEngine()
+		root := seedExamplePlan(t, pool, phase.Implementing, map[string]exampleStand{
+			"a": {state: record.TaskDone, place: atStep(2)}, "b": {state: record.TaskDone, place: atStep(3)},
+			"c": {state: record.TaskRunning, place: atStep(1)}, "d": {state: record.TaskWaiting}, "e": {state: record.TaskWaiting},
+		})
+		reads := countsPullReads(engine, root.Key, "c")
+
+		mustSpend(t, "the implementer's completion of c", applyFacts(t, pool, engine)("implement-c", intake.HandoffComplete{Generation: 1, Issue: root.Key,
+			Role: claim.RoleImplementer, Claim: agentClaim(t, root.Key, "implementer-i"), Task: "c", Summary: "done", Commit: "head-c",
+			HandoffRecord: "implement-1", HandoffVersion: 1}))
+
+		reviewer := lastStart(t, pool, root.Key, claim.RoleReviewer)
+		if !strings.Contains(reviewer, " Task: c. Step 2 of 2: reviewer:r.") {
+			t.Fatalf("the reviewer's start = %q, want c's review", reviewer)
+		}
+		readsOnce(t, "the implementer's completion of c", reads, reviewer, 3)
+	})
+
+	t.Run("a completion of an issue with no plan rows", func(t *testing.T) {
+		pool, engine := migratedPool(t), textEngine()
+		root := stepRoot(t, pool, phase.Testing)
+		reads := countsPullReads(engine, root.Key, "")
+
+		completes(t, pool, engine, claim.RoleTester, "test", 1)
+
+		readsOnce(t, "the tester's pass", reads, lastStart(t, pool, root.Key, claim.RoleReviewer), 42)
+	})
+
+	t.Run("the retry of a held phase of an issue with no plan rows", func(t *testing.T) {
+		pool, engine := migratedPool(t), textEngine()
+		root := stepRoot(t, pool, phase.Implementing)
+		root.Phase, root.Hold = phase.Held, &record.Hold{From: phase.Implementing}
+		seedIssue(t, pool, root)
+		reads := countsPullReads(engine, root.Key, "")
+
+		mustSpend(t, "the retry", applyFacts(t, pool, engine)("retry", intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Reason: "the claim failed"}))
+
+		readsOnce(t, "the retry", reads, lastStart(t, pool, root.Key, claim.RoleImplementer), 42)
+	})
+
+	t.Run("the gate's opening of a plan of one task", func(t *testing.T) {
+		pool, engine := migratedPool(t), textEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedSlot(t, pool, record.Slot{Issue: root.Key, Index: 0})
+		seedTasks(t, pool, root.Key, root.Generation,
+			planTask{id: "a", steps: []string{"implementer:a", "reviewer:a"}, agents: []claim.Agent{"impl-a", "rev-a"}, state: record.TaskWaiting})
+		reads := countsPullReads(engine, root.Key, "a")
+
+		firstStepOf(t, pool, engine, root.Key)
+
+		readsOnce(t, "the gate's opening", reads, lastStart(t, pool, root.Key, claim.RoleImplementer), 42)
 	})
 }

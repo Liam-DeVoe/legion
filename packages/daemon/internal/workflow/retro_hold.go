@@ -194,10 +194,6 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err != nil {
 		return err
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
-	if err != nil {
-		return err
-	}
 	status := PhaseStatus(phase.Retro)
 	if err := e.status(ctx, tx, held, status, ""); err != nil {
 		return err
@@ -218,8 +214,8 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.clearHandoff(ctx, tx, held.Key, role); err != nil {
 		return err
 	}
-	return e.start(ctx, tx, s, role, func(at Standing) string {
-		return task(held, at, last, pr, "")
+	return e.start(ctx, tx, s, role, taskPull{}, func(at Standing) string {
+		return task(held, at, last, "")
 	}, false)
 }
 

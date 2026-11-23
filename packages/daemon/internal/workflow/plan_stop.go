@@ -391,13 +391,9 @@ func (e *Engine) startAtFirstStep(ctx context.Context, tx pgx.Tx, s TaskScope, r
 	if err := e.clearHandoff(ctx, tx, s.issue.Key, role); err != nil {
 		return err
 	}
-	pr, err := e.taskPullRequest(ctx, tx, s)
-	if err != nil {
-		return err
-	}
 	issue := s.issue
-	return e.start(ctx, tx, s, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
+	return e.start(ctx, tx, s, role, taskPull{}, func(at Standing) string {
+		return task(issue, at, record.PhaseRow{}, reason)
 	}, true)
 }
 

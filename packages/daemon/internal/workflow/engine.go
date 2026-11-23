@@ -2433,8 +2433,8 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, s TaskScope, from ph
 	// The role of the step the retry starts again: the step the hold kept at from, of the task the
 	// retry is of (heldStepRole).
 	role := heldStepRole(s, from)
-	return from, e.restart(ctx, tx, s, role, func(at Standing) string {
-		return task(issue, at, record.PhaseRow{}, pr, reason)
+	return from, e.restart(ctx, tx, s, role, readPull(pr), func(at Standing) string {
+		return task(issue, at, record.PhaseRow{}, reason)
 	}, freshSession)
 }
 
@@ -2841,8 +2841,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, s, starting, func(at Standing) string {
-			return task(issue, at, report, pr, why)
+		if err := e.start(ctx, tx, s, starting, readPull(pr), func(at Standing) string {
+			return task(issue, at, report, why)
 		}, movedBack); err != nil {
 			return err
 		}
@@ -2874,8 +2874,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
 	// it, and a move at a head held in a confirmed conflict asks for it where the phase entered
 	// needs a head that merges. It comes after the start, so the worker of the phase entered is
-	// started before the hold that tells it to wait for the merge.
-	if err := e.mergeForwardOnEntry(ctx, tx, s, from); err != nil {
+	// started before the hold that tells it to wait for the merge. It reads pr, the row the start
+	// named, as the handler read it: the move reads its task's pull request once.
+	if err := e.mergeForwardOnEntry(ctx, tx, s, from, pr); err != nil {
 		return err
 	}
 	if mergedAlready {
@@ -3150,7 +3151,12 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		}
 	}
 	if stored == nil {
-		return e.transition(ctx, tx, noPlanScope(issue), TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, nil, "")
+		s := noPlanScope(issue)
+		pr, err := e.taskPullRequest(ctx, tx, s)
+		if err != nil {
+			return err
+		}
+		return e.transition(ctx, tx, s, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{}, pr, "")
 	}
 	// The gate's opening is the move out of admitted (Table's one row of TriggerGateOpened): an
 	// issue that has left admitted starts nothing, and tells nothing, at a second opening, and a
