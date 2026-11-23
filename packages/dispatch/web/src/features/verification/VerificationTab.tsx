@@ -326,7 +326,9 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
             </span>
           )}
         </span>
-        <span className="font-medium">{check.text}</span>
+        {/* A check's words can hold a long path with no space; they break inside it rather than
+            widen the page. */}
+        <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{check.text}</span>
       </div>
       <dl className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
         <Fact label="When" testId="verification-check-when">

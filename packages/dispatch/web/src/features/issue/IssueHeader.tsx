@@ -682,7 +682,10 @@ export function IssueHeader({
         </div>
       ) : null}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
+        <div
+          className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto"
+          data-testid="issue-identity"
+        >
           <div className="flex shrink-0 items-center gap-1 self-start">
             <p
               className={`rounded-md px-2.5 py-1.5 font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
