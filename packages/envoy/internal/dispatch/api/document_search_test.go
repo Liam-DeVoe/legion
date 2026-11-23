@@ -37,12 +37,12 @@ const (
 )
 
 // documentSearchStatement is one of R1's five statements: the package's own text, the oracle it
-// is held against (document_search_oracle_test.go), and the arguments each is run with. sorted
-// says the statement declares no order of its own, so its rows are compared as a set; holds and
-// lacks are what the rows must and must not name, which is what says the comparison decided
-// something rather than comparing two empty answers. A statement the plan assertion alone reads
-// (excludingStatements) carries no oracle and no holds: the equality test runs the statements
-// that have one.
+// is held against (document_search_oracle_test.go, search_oracle_test.go), and the arguments
+// each is run with. sorted says the statement declares no order of its own, so its rows are
+// compared as a set; holds and lacks are what the rows must and must not name, which is what
+// says the comparison decided something rather than comparing two empty answers. A statement the
+// plan assertion alone reads (excludingStatements) carries no oracle and no holds: the equality
+// test runs the statements that have one.
 type documentSearchStatement struct {
 	name      string
 	statement string
@@ -209,11 +209,11 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 			// that is what the route sends for one (runMeaningSearch).
 			name:      "search, meaning and keywords",
 			statement: searchQueryMeaningScoped,
-			// This release's own meaning body over main's keyword legs, for the reason
-			// document_search_oracle_test.go gives: main's own meaning arms read the whole-text
-			// rows this release deletes. It opens with the package's own q, so it takes the
-			// statement's own arguments rather than main's eight.
-			oracle:    searchQueryMeaningOverMainsDocumentArm,
+			// Main's own meaning statement at df18d9be, written out whole (search_oracle_test.go):
+			// the older main's meaning arms read the whole-text rows this release deletes, for the
+			// reason document_search_oracle_test.go gives. It binds the eighteen parameters the
+			// statement does, so it takes the statement's own arguments rather than main's eight.
+			oracle:    mainAtDF18SearchQueryMeaningScoped,
 			arguments: searchMeaningArguments,
 			holds:     documents,
 		},
@@ -228,7 +228,7 @@ func (f documentSearchFixture) statements() []documentSearchStatement {
 		{
 			name:      "the related-item check's meaning stage",
 			statement: relatedMeaningScopedQuery,
-			oracle:    relatedMeaningQueryOverMainsDocumentArm,
+			oracle:    mainAtDF18RelatedMeaningScopedQuery,
 			arguments: slices.Concat(relatedMeaning, documentSearchSeen()),
 			holds:     documents,
 		},
@@ -346,15 +346,13 @@ func TestMainsDocumentArmSearchesNoDocumentSearchIndex(t *testing.T) {
 }
 
 // A2. Each statement of R1 answers exactly what its oracle answers over the same rows. For the
-// three whose text main still runs - search's keyword query, the related-item check's keyword
-// stage and the related-terms probe - the oracle is main's released text, held in the test
-// rather than built from this package's helpers, so an edit that changed what the document arm
-// returns would move one side and not the other. For the two meaning statements it is this
-// release's meaning body over main's keyword legs: main's meaning arms read whole-text vectors
-// this release no longer writes, so main's meaning text answers nothing over these rows and
-// would decide nothing, where the substitute differs from the statement under test in the
-// document keyword arm and in nothing else. Either way the one thing that can move a side is the
-// arm this change rewrote.
+// three whose text the older main ran - search's keyword query, the related-item check's
+// keyword stage and the related-terms probe - the oracle is that release's text, held in the
+// test rather than built from this package's helpers, so an edit that changed what the document
+// arm returns would move one side and not the other. For the two meaning statements it is
+// main's text at df18d9be, written out whole in the test as well (search_oracle_test.go): the
+// older main's meaning arms read whole-text vectors this release no longer writes, so its
+// meaning text answers nothing over these rows and would decide nothing.
 func TestEveryDocumentArmAnswersWhatMainsStatementDoes(t *testing.T) {
 	t.Parallel()
 	fixture := newDocumentSearchFixture(t)

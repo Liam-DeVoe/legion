@@ -33,10 +33,10 @@ import "fmt"
 // write the window kinds and delete the whole-text rows main's meaning arms read. Four of
 // mainSearchQueryMeaningBody's five arms therefore find nothing at all over this release's rows,
 // so a meaning statement built from it decides nothing: it would hold a working statement
-// against a blind one. The equality test's two meaning cases run against
-// searchQueryMeaningOverMainsDocumentArm and relatedMeaningQueryOverMainsDocumentArm below -
-// this release's own meaning body over main's keyword legs - whose one difference from the
-// statement each is the oracle of is the document arm, which is the question the oracle asks.
+// against a blind one. The equality test's two meaning cases run against main's meaning
+// statements as main ran them at df18d9be instead (mainAtDF18SearchQueryMeaningScoped and
+// mainAtDF18RelatedMeaningScopedQuery, search_oracle_test.go), which read the windows and are
+// written out whole, so no line of either moves with the package's own text.
 // mainSearchQueryMeaningBody is kept for the timing harness, which measures it on a database at
 // the schema before this release, where it is still the text that ran.
 
@@ -45,15 +45,13 @@ import "fmt"
 // (mainDocumentKeywordLeg), the side the measurement holds this change's arm against.
 //
 // Each arm carries window_id and covers as nulls, which main's arms did not: INFRA-370 added the
-// two columns to every arm of both unions, a keyword arm has nothing to put in them, and these
-// legs are unioned with this release's meaning CTEs, which do carry them
-// (searchQueryMeaningOverMainsDocumentArm). Nothing reads either column out of a keyword row.
+// two columns to every arm of both unions, and a keyword arm has nothing to put in them.
+// mainSearchQueryMeaningBody's meaning arms carry the same two nulls, so its union keeps one
+// column shape. Nothing reads either column out of a keyword row.
 //
 // The issue arm's own column reads q.own_keys, the array INFRA-1042 made of main's scalar
-// own_key: these legs run under both openers - main's two below, whose own_keys is the one key
-// main's own_key was, and this release's own (searchQueryMeaningOverMainsDocumentArm,
-// relatedMeaningQueryOverMainsDocumentArm), which names no scalar at all - and `= any(<one key>)`
-// is main's `= <that key>` row for row.
+// own_key: main's two openers below bind it as the one key, or the none, that main's own_key
+// was, and `= any(<one key>)` is main's `= <that key>` row for row.
 func mainSearchKeywordLegs(rank func(searchColumn string) string) string {
 	return `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
@@ -130,8 +128,9 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // covers is no row, so the package's own lateral answers null for every one of those rows too.
 // The null written here is therefore that column's own value rather than a stand-in, and the
 // lateral's twenty-five lines are not copied into a place where they could only ever answer
-// null. The two statements whose rows can carry covers are this release's own meaning ones, and
-// they are held against this release's own page (searchQueryMeaningOverMainsDocumentArm).
+// null. The statements whose rows can carry covers are this release's own meaning ones, and
+// they are held against main's meaning statements of df18d9be (search_oracle_test.go), whose
+// page carries that lateral.
 func mainSearchPageAndTailSQL(legsSource string) string {
 	return fmt.Sprintf(`page as (
   select l.*, f.score
@@ -220,9 +219,9 @@ legs as (
 // whole-text embedding kinds ('document', 'comment', 'ask', 'message'), which this release's
 // indexers no longer write and delete as each owner gains a window (migration 20261102233625),
 // so those four answer nothing at all over this release's rows. That is why the equality test
-// holds its two meaning statements against this release's meaning body over main's keyword legs
-// rather than against this text, and why this text is left here for the timing harness alone,
-// which measures it on a database at the schema before this release.
+// holds its two meaning statements against main's meaning statements of df18d9be
+// (search_oracle_test.go) rather than against this text, and why this text is left here for the
+// timing harness alone, which measures it on a database at the schema before this release.
 //
 // Its meaning arms carry window_id and covers as nulls for the reason mainSearchKeywordLegs' arms
 // do: the keyword legs this body unions carry them, and a union's arms need one column shape.
@@ -375,8 +374,8 @@ func mainRelatedCoordinationRank(searchColumn string) string {
 
 // The whole statements of R1 the bodies above make. Main's two keyword statements are the oracle
 // of the equality test's keyword cases, as mainRelatedProbeSQL is of its probe case; the two
-// meaning oracles below them are this release's meaning body over main's keyword legs, for the
-// reason given at the top of this file.
+// meaning statements are the timing harness's alone, for the reason given at the top of this
+// file.
 var (
 	mainSearchQuery        = mainSearchQOpener + mainSearchQueryBody(mainSearchKeywordLegsSQL, mainFusedSQL)
 	mainSearchQueryMeaning = mainSearchQOpener + mainSearchQueryMeaningBody(mainSearchKeywordLegsSQL)
@@ -386,27 +385,6 @@ var (
 	mainRelatedDocumentKeywordLeg = mainDocumentKeywordLeg(mainRelatedCoordinationRank)
 	mainRelatedKeywordQuery       = mainRelatedQOpener + mainRelatedTermWeights(9) + mainSearchQueryBody(mainRelatedKeywordLegs, mainRelatedFusedSQL)
 	mainRelatedMeaningQuery       = mainRelatedQOpener + mainRelatedTermWeights(12) + mainSearchQueryMeaningBody(mainRelatedKeywordLegs)
-
-	// searchQueryMeaningOverMainsDocumentArm and relatedMeaningQueryOverMainsDocumentArm are the
-	// package's own two meaning statements with main's keyword legs in place of this release's.
-	// Every other line of each - the opener, the five meaning CTEs, the fusion, the page and its
-	// hit lateral - is the package's own text, so the one thing that differs between either of
-	// these and the statement it is the oracle of is the document keyword arm. A change to
-	// searchDocumentKeywordLeg therefore moves one side and not the other, which is what an
-	// oracle is for; a change to the rest moves both, which main's frozen meaning copy would have
-	// caught and this does not. That is the price of a meaning body whose rows main's own text
-	// cannot see.
-	//
-	// Both are the scoped shape (meaningOneProject), because every caller of either binds a
-	// project as $2 - the fixture's own (documentSearchFixture.project) and the measurement
-	// subject's (statement_timing_test.go) - and that is the shape search and the check send for
-	// such a call (runMeaningSearch, relatedMeaningStatementFor). Each binds the acting
-	// credential where the statement it is the oracle of binds it, since both are this
-	// release's own body.
-	searchQueryMeaningOverMainsDocumentArm = searchQOpener(12) +
-		searchQueryMeaningBody(mainSearchKeywordLegsSQL, searchFusedSQL, "", searchMeaningSeenParam, meaningOneProject)
-	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(mainRelatedKeywordLegs, relatedFusedSQL, "", 14, meaningOneProject)
 )
 
 // mainRelatedProbeSQL is main's relatedProbeSQL, the fifth statement of R1.
