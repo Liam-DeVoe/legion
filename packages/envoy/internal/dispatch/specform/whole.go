@@ -46,14 +46,17 @@ import (
 // lines of one text). A finding after them is still refused and named, and its detail says that
 // Dispatch offers no way out of it (wholeNote).
 //
-// wholeText keeps no byte of a sentence and nothing that it read of one: it names each sentence by
-// its unit and its place in the line, and what it keeps of each place (sentenceAt) is in the
-// judgment's texts, which give it only through the sentence's charge (charge.Texts.Read). So each
-// reading of a sentence, its words, its Spread or a count of its pieces is charged, as every reading
-// of the judge is, and the work of a judgment stays in proportion to its text however many ways out
-// read one sentence; a way out that would read a sentence past its charge is refused unread
-// (elsewhereNote). The first place of each member of a synonym group (firsts) is kept outside the
-// charge: one for each member of rules.json at most, so no walk of it grows with the text.
+// wholeText keeps no byte of a sentence and nothing that it read of one, but the words of each
+// finding whose ways out it read and of those ways out (readFor and passed, by wayKey and wayOut),
+// which for a finding of the rule instructions are its whole sentence, hashed a fixed number of
+// times for that finding: it names each sentence by its unit and its place in the line, and what it
+// keeps of each place (sentenceAt) is in the judgment's texts, which give it only through the
+// sentence's charge (charge.Texts.Read). So each reading of a sentence, its words, its Spread or a
+// count of its pieces is charged, as every reading of the judge is, and the work of a judgment stays
+// in proportion to its text however many ways out read one sentence; a way out that would read a
+// sentence past its charge is refused unread (elsewhereNote). The first place of each member of a
+// synonym group (firsts) is kept outside the charge: one for each member of rules.json at most, so
+// no walk of it grows with the text.
 type wholeText struct {
 	texts *charge.Texts[sentenceAt]
 	// units is the unit of each sentence of the line, in order (sentencesOf), and nth the index of

@@ -144,7 +144,8 @@ type findingKey struct {
 }
 
 // wayKey is a finding as the judge keeps the ways out that it offered: its rule and the words that
-// its ways out change.
+// its ways out change, which for a finding of the rule instructions are its whole sentence, so a key
+// of that rule holds the sentence's text (charge).
 type wayKey struct {
 	rule Rule
 	from string

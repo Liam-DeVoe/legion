@@ -1,12 +1,16 @@
 // Package charge holds the texts that one judgment of the ways out of a text's findings reads (the
 // judge of package specform), and it charges each reading of a text to that text. A text is a
 // sentence of the judged text, a sentence of a title or the address of a link or an image, and the
-// judgment names it by its Unit, an index, everywhere: in each map, each key and each walk. Its
-// bytes, and what the judgment keeps of each place of it in the judged text, are in Texts, outside
-// the judge's package, and the one way to read them is Read, which charges the reading first and
-// gives the text only where the charge lets it: the judge's code has no field and no key that holds
-// a text, so it cannot read one outside the charge. So the judgment reads each text a bounded number
-// of times, however many findings read it, and its work stays in proportion to the judged text.
+// judgment names it by its Unit, an index, in each map, each key and each walk. Its bytes, and what
+// the judgment keeps of each place of it in the judged text, are in Texts, outside the judge's
+// package, and the one way to read them is Read, which charges the reading first and gives the text
+// only where the charge lets it. The judge's fields and keys hold no text but the words of each
+// finding and of its ways out, which a rule hands the judge with the finding, and for a finding of
+// the rule instructions those words are its whole sentence: the judge hashes them in each map keyed
+// by the finding a fixed number of times for that finding, and reads them only as the words that a
+// way out changes, once for each place where it writes the way out, as it reads any finding's words.
+// So the judgment reads each text a bounded number of times, however many findings read it, and its
+// work stays in proportion to the judged text.
 //
 // What Read gives can be kept in a variable of the code that read it, as any value of Go can; a
 // copy of a text in a field of the judge's own, read again later, would be read outside the charge.
@@ -141,8 +145,8 @@ func (t *Texts[K]) Read(u Unit, own bool) (text string, kept []K, ok Answer) {
 	}
 	if *count >= t.limit {
 		if own && t.loud {
-			panic(fmt.Sprintf("charge: a judgment reads the text %.80q a %dth time for the findings that stand in it, past its limit of %d: a walk breaks the bounds that the limit is derived from",
-				at.text, t.limit+1, t.limit))
+			panic(fmt.Sprintf("charge: a judgment reads the text %.80q once more for the findings that stand in it, past its limit of %d: a walk breaks the bounds that the limit is derived from",
+				at.text, t.limit))
 		}
 		return "", nil, false
 	}
