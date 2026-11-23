@@ -141,6 +141,8 @@ export async function startFakeMod(
     }
   }
 
+  // The poll stops once the mod is stopped or its caller's row has ended, at its next turn and
+  // after each await, so a row its limit abandoned answers nothing more of its server's.
   const poll = async (): Promise<void> => {
     while (!stopped && options.signal?.aborted !== true) {
       let requests: readonly ModRequest[] = []
@@ -152,11 +154,14 @@ export async function startFakeMod(
         return
       }
       for (const request of requests) {
+        if (stopped || (options.signal as AbortSignal | undefined)?.aborted === true) return
         calls.push({ call: request.call, args: request.args })
         try {
           const value = await answerOf(request)
+          if (stopped || (options.signal as AbortSignal | undefined)?.aborted === true) return
           await post(MOD_ROUTE_RESULTS, { results: [{ id: request.id, ok: true, value }] })
         } catch (error) {
+          if (stopped || (options.signal as AbortSignal | undefined)?.aborted === true) return
           await post(MOD_ROUTE_RESULTS, {
             results: [{ id: request.id, ok: false, error: String(error) }],
           }).catch(() => undefined)

@@ -368,6 +368,11 @@ interface BoundGate {
 }
 
 function bind(opts: BindOptions = {}): BoundGate {
+  // The row the gate is bound in (every gate is bound inside a row's body): once that row has
+  // ended, binding and every event handed to the gate throw (`stillOn`) rather than act beside
+  // the row after it. The afterEach's call ends (`callEnders`) use the handlers themselves.
+  const ownRow = rowCheck();
+  stillOn(ownRow, "binding a gate");
   const handlers = new Map<string, Handler>();
   const entries: GateEntry[] = [];
   /** The `advisor-gate-record` follow-ups of records that were never written. */
@@ -504,6 +509,7 @@ function bind(opts: BindOptions = {}): BoundGate {
       );
   });
   const emit = (event: Record<string, unknown>) => {
+    stillOn(ownRow, `handing the gate a ${String(event.toolName)} call`);
     if (!handler) throw new Error("no tool_call handler registered");
     if (typeof event.toolCallId === "string") emitted.add(event.toolCallId);
     return handler({ type: "tool_call", ...event }, ctx);
@@ -533,8 +539,10 @@ function bind(opts: BindOptions = {}): BoundGate {
     bash: (toolCallId: string, command: string, extra: Record<string, unknown> = {}) =>
       emit({ toolName: "bash", toolCallId, input: { command, ...extra } }),
     /** Any other event the extension listens to, such as session_switch. */
-    event: (name: string, payload: Record<string, unknown> = {}) =>
-      handlers.get(name)?.({ type: name, ...payload }, ctx),
+    event: (name: string, payload: Record<string, unknown> = {}) => {
+      stillOn(ownRow, `handing the gate ${name}`);
+      return handlers.get(name)?.({ type: name, ...payload }, ctx);
+    },
   };
 }
 
@@ -5057,6 +5065,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
 
   /** What the CLI prints for a gated write with no marker, built on consumeMarker's own reason. */
   const unmarked = (mode: "block" | "warn") => {
+    stillOn(rowCheck(), "reading the CLI's refusal of an unmarked write");
     const spent = consumeMarker([], ["comment"], {}, [], Date.now());
     if (spent.ok) throw new Error("an empty store gave a marker");
     return mode === "block"
@@ -5953,11 +5962,13 @@ describe("askgate.ts, the entry", () => {
         'OMP_ASKGATE_TIMEOUT_MS must be a positive integer, got "soon"'
       );
       const gate = handlers.get("tool_call");
-      const bash = (command: string, kind = "main") =>
-        gate?.(
+      const bash = (command: string, kind = "main") => {
+        stillOn(rowCheck(), "handing the unloaded gate a call");
+        return gate?.(
           { type: "tool_call", toolName: "bash", toolCallId: command, input: { command } },
           mainCtx(kind)
         );
+      };
       for (const command of [
         "dispatch ask --issue X-1 --question 'Ship it?'",
         "dispatch comment --issue X-1 --body b",
