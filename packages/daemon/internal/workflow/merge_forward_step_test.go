@@ -1,13 +1,14 @@
 package workflow
 
 // A merge forward is asked at step as at the phases of Legion's own workers that read the head: an
-// issue whose task runs a step of a role the deployment defines, with its head confirmed in
-// conflict with its base, keeps its step, the implementer is asked to merge the base forward, and
-// the role of that step is told to hold (record.MergeForwardPhases, record.MergeForwardReaches);
-// the landing of the merge tells that role it landed. Its completion at the head the merge
-// replaced is then refused HANDOFF_HEAD_MERGED_FORWARD, naming the head the merge left, as a
-// tester's is (mergedForwardRefusal), so no step passes on code the issue no longer stands on. The
-// control is the same task's tester step, whose tester is told and refused the same way.
+// issue whose task runs a step of a role the deployment defines after the implementer, with its
+// head confirmed in conflict with its base, keeps its step, the implementer is asked to merge the
+// base forward, and the role of that step is told to hold (classify.MergeForwardStands,
+// mergeForwardWorker, record.MergeForwardReaches); the landing of the merge tells that role it
+// landed. Its completion at the head the merge replaced is then refused
+// HANDOFF_HEAD_MERGED_FORWARD, naming the head the merge left, as a tester's is
+// (mergedForwardRefusal), so no step passes on code the issue no longer stands on. The control is
+// the same task's tester step, whose tester is told and refused the same way.
 
 import (
 	"reflect"
@@ -75,6 +76,53 @@ func TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole(t *testing.T) {
 			if got := issuePhase(t, pool); got != tc.at {
 				t.Fatalf("after the refused completion the issue is in %s, want it still in %s", got, tc.at)
 			}
+		})
+	}
+}
+
+// A merge forward is asked at a step of a role the deployment defines only where that step stands
+// after the implementer on its task's line, as at a planner's step: before the implementer the
+// branch holds no implementation to merge the base into (classify.MergeForwardStands, which reads
+// the line). So a conflict confirmed at the checker's step of `checker implementer` asks nothing
+// and tells nobody, and the issue stays at that step; the same conflict at the checker's step of
+// `implementer checker` asks the implementer and tells the checker to hold, the role of the
+// running step (mergeForwardWorker). Each half of the join fails one case: a rule that asks at
+// every step whatever its place asks before the implementer, and a worker read that names only
+// Legion's own workers tells the checker nothing after it.
+func TestAMergeForwardIsAskedAtADeploymentStepOnlyAfterTheImplementer(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name  string
+		steps []string
+		at    int
+		asked bool
+	}{
+		{name: "the checker's step before the implementer asks nothing", steps: []string{"checker", "implementer"}, at: 1},
+		{name: "the checker's step after the implementer asks the implementer and holds the checker", steps: []string{"implementer", "checker"}, at: 2, asked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedConflictIssue(t, phase.Step, "in_progress", settledGreen("lint"))
+			seedStepsPlan(t, pool, "LEGION-208", 1, tc.steps...)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning)
+			})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: "checker", Claim: claim.Token("checker-claim"), Entry: 1})
+
+			confirmsConflict(t, pool, requiresCI)
+
+			if got := issuePhase(t, pool); got != phase.Step {
+				t.Fatalf("after the confirmed conflict the issue is in %s, want it still at step", got)
+			}
+			if !tc.asked {
+				if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked != nil {
+					t.Fatalf("the conflict at %v asked a merge forward %+v, want none before the implementer", tc.steps, asked)
+				}
+				if told := toldWho(mergeForwardMessages(t, pool)); len(told) != 0 {
+					t.Fatalf("the conflict at %v queued %v, want no merge-forward message", tc.steps, told)
+				}
+				return
+			}
+			askedOnce(t, pool, phase.Step, "in_progress", record.ConflictCheckNotGreen, "checker")
 		})
 	}
 }

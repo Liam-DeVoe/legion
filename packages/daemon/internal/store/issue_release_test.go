@@ -245,6 +245,36 @@ func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartO
 	}
 }
 
+// A start that waits because the issue's pod was built before its role, queued above the
+// release's rows, does not cancel the teardown either: the pod cannot run it, and the release is
+// one of the two things that let it start (idleWaitingRow, pods.StartWaitsForPodPrefix). A
+// teardown that read it as the pod being used again would cancel the very release it waits for,
+// and the start would wait on until the pod's update round. The control is the same start before
+// its first try, its last error empty: it is the pod being used again, and cancels the release.
+func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		lastError string
+		want      ReleaseAct
+	}{
+		{name: "a start that waits for its pod", lastError: pods.StartWaitsForPodPrefix + ": the pod was built before the role checker", want: ReleaseActs},
+		{name: "control: the same start before its first try", lastError: "", want: ReleaseCancel},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			markRelease(t, st, 5, 6, 10, 0)
+			suspendedImplementer(t, st, supervise.SuspendedByReleased)
+			queueStart(t, st, 30, "checker", tc.lastError)
+			release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: 10}
+			if decision, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow); err != nil || decision.Act != tc.want {
+				t.Fatalf("the teardown with %s queued after the release's rows = %s (%s), %v; want %s", tc.name, decision.Act, decision.Cause, err, tc.want)
+			}
+		})
+	}
+}
+
 // A close and a release order against each other: each waits on the other's role stops, which is
 // what adding 'release' to both op fences buys. A release row below a close's own row makes the
 // close wait, exactly as one of its own suspends would.
