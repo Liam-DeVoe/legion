@@ -1419,6 +1419,7 @@ That dial is bounded at half the launcher's `--stop-grace` (5 s at the default `
 — is refused, as `no answer within <bound>`, while the daemon still waits for the start's answer:
 the daemon waits on a start until the launcher's connection deadline plus that same grace, so at least the whole grace remains however late the launcher connected (`proofTimeout`, `launcher.go`).
 The launcher reads one command at a time, so the bound also keeps it free to read the stop the daemon sends after a start it gave up on.
+Every later dial, the one the proxy makes for each connection it accepts, has the same bound (`sessionproxy.Config.DialTimeout`): a dial that gets no answer within it closes its connection, with nothing written back, and logs `sessionproxy: could not dial <instance> for a connection: no answer within <bound>: <error>`.
 
 The connection belongs to the generation, not to the pod.
 The proxy keeps serving through the child's stop grace however the stop arrives
@@ -1444,12 +1445,17 @@ In a pod that drain costs nothing, since every process that could hold a connect
 it bounds the case where the launcher is not PID 1, where signals reach only the child's process group and a holder outside it could otherwise keep the stop, the next generation and the launcher's exit waiting.
 
 That URL carries a login and no password, because the credential is the pod's own cloud identity or, with `impersonate_service_account`, the service account that identity impersonates:
-the Cloud SQL Go connector puts it in the instance's ephemeral-certificate exchange (automatic IAM database authentication, `cloudsqlconn.WithIAMAuthN`), never in the Postgres startup packet, and mints one as it dials, per connection, from a certificate cache it keeps refreshed (`newConnectorDialer` and `serve`, `internal/sessionproxy`).
+the Cloud SQL Go connector puts it in the instance's ephemeral-certificate exchange (automatic IAM database authentication, `cloudsqlconn.WithIAMAuthN`), never in the Postgres startup packet.
 That is why the proxy reads no Postgres protocol at all:
 it accepts a connection, dials the instance over its private IP, and copies bytes both ways
 — which is what Google's own `cloud-sql-proxy` does over the same connector.
 Google runs that connector as a container beside the application;
 a Legion pod admits no further container, since `runtime.kubernetes.pod` takes only env, volumes, mounts and a service account, so the same library runs inside the pod's own first process, the launcher itself.
+
+The connector keeps one ephemeral certificate for the instance and refreshes it inside a dial (`cloudsqlconn.WithLazyRefresh`): the first dial, and the first one within four minutes of the certificate's expiry, mints a new one, and every other dial reuses it (`connectorOptions` and `serve`, `internal/sessionproxy`).
+A dial that refreshes holds the connector's cache while it does, so the dials behind it wait for it, and a refresh that fails fails the dial that ran it, with no fallback to the certificate it replaces; the next dial tries again.
+The refresh runs in the dial so that a refusal of the Cloud SQL Admin API, which the connector hands back as text alone, is read with the record of the requests that dial sent, and a bearer the refusal echoes prints redacted; a refresh in the background has no such record.
+That is why each dial is bounded (above) and each request the proxy sends to Google has a bound of 30 seconds (`googleCallTimeout`): an Admin API call, a `generateAccessToken` call, an exchange at the Security Token Service, and a token read of the pod's own credentials over a credential file (the metadata server's own client bounds its reads at five seconds).
 
 With `impersonate_service_account`, the connector also takes two token sources, and each of them impersonates that service account with the pod's own credentials (`cloudsqlconn.WithIAMAuthNTokenSources`, `connectorOptions`, `internal/sessionproxy`).
 The source for the Cloud SQL Admin API has the `sqlservice.admin` and `cloud-platform` scopes.
@@ -1461,7 +1467,7 @@ With `writer_audience`, both sources impersonate the account with a federated to
 One federated source exchanges the writer token at Google's Security Token Service, `https://sts.googleapis.com/v1/token` (`STSTokenURL`, `internal/sessionproxy/sessionproxy.go`), where the pod-local metadata endpoint exchanges too.
 The exchange names the member's value as its audience, a JWT as its subject token type and the `cloud-platform` scope.
 The proxy gives both sources one IAM Service Account Credentials client, which puts the federated token on each `generateAccessToken` call.
-The federated token is exchanged again five minutes before it expires (`writerTokenEarlyRefresh`), and each exchange and each `generateAccessToken` call has a bound of 30 seconds (`writerCallTimeout`).
+The federated token is exchanged again five minutes before it expires (`writerTokenEarlyRefresh`), and each exchange and each `generateAccessToken` call has the bound of 30 seconds every request to Google has (`googleCallTimeout`).
 So the proxy reads no credential of the pod: it looks up no Application Default Credentials and asks no metadata server.
 Its start line says which credential signs in: `sessionproxy: serving <instance> on <socket> as <account> with the launcher's writer token`.
 

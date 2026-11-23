@@ -1290,19 +1290,23 @@ func TestEveryGitHubCallOfTheStartsMintKeepsGitHubsAnswer(t *testing.T) {
 // answers, when it is set, answers an owner's exchange itself where it reports that it did:
 // GitHub's trouble and its rate limits, which a test sends one owner alone.
 type keyModeGitHub struct {
-	mu        sync.Mutex
-	owners    []string
-	slug      string
-	grants    map[string]string
-	bodies    []accessTokensBody
-	raw       []string
-	reads     []string
-	answer    func(exchange int, body accessTokensBody) (int, string)
-	granted   func(installation string, read int) (int, string)
-	refuses   func(owner string) bool
-	suspended map[string]bool
-	forbids   func(owner string) bool
-	answers   func(w http.ResponseWriter, owner string) bool
+	mu     sync.Mutex
+	owners []string
+	slug   string
+	grants map[string]string
+	bodies []accessTokensBody
+	raw    []string
+	reads  []string
+	// authorized is the Authorization header, the App's JWT, of every request about one
+	// installation, its read and its access_tokens exchange, in the order GitHub got them, for a
+	// stand-in answer that echoes it.
+	authorized []string
+	answer     func(exchange int, body accessTokensBody) (int, string)
+	granted    func(installation string, read int) (int, string)
+	refuses    func(owner string) bool
+	suspended  map[string]bool
+	forbids    func(owner string) bool
+	answers    func(w http.ResponseWriter, owner string) bool
 }
 
 // forbiddenAnswer is the stand-in's 403 to a token request on a suspended installation. Its
@@ -1345,6 +1349,7 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			g.mu.Lock()
 			g.bodies = append(g.bodies, body)
 			g.raw = append(g.raw, text)
+			g.authorized = append(g.authorized, r.Header.Get("Authorization"))
 			exchange, refuses, suspended, forbids, answers := len(g.bodies), g.refuses, g.suspended, g.forbids, g.answers
 			g.mu.Unlock()
 			owner := g.ownerOf(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens"))
@@ -1368,6 +1373,7 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			installation := strings.TrimPrefix(r.URL.Path, "/app/installations/")
 			g.mu.Lock()
 			g.reads = append(g.reads, installation)
+			g.authorized = append(g.authorized, r.Header.Get("Authorization"))
 			read, grants, granted, suspended, forbids := len(g.reads), g.grants, g.granted, g.suspended, g.forbids
 			g.mu.Unlock()
 			if grants == nil {
@@ -1415,6 +1421,17 @@ func (g *keyModeGitHub) exchangeTexts() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return slices.Clone(g.raw)
+}
+
+// lastAuthorization is the Authorization header of the last request about one installation, the
+// App's JWT as GitHub got it, or "" before any.
+func (g *keyModeGitHub) lastAuthorization() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.authorized) == 0 {
+		return ""
+	}
+	return g.authorized[len(g.authorized)-1]
 }
 
 // permissionReads is the installation each read of what an installation is granted named, in the
@@ -1639,7 +1656,8 @@ func TestAnAnswerNamingTheInstallationsRepositoriesIsServed(t *testing.T) {
 // answer against the request: a permission the request did not ask for, an access above the one
 // it asked at, or a word this daemon cannot order is a token wider than the one asked for, and
 // is refused rather than served. The refusal names what was asked and the permission the answer
-// named, never the token.
+// named, never the token: a permission the request named and an access this daemon ranks print as
+// they came, and a fixed phrase stands in place of any other (heldWords).
 func TestTokenRefusesATokenWiderThanThePermissionsAsked(t *testing.T) {
 	expires := time.Date(2026, 11, 6, 13, 0, 0, 0, time.UTC).Format(time.RFC3339)
 	for _, tc := range []struct {
@@ -1647,9 +1665,9 @@ func TestTokenRefusesATokenWiderThanThePermissionsAsked(t *testing.T) {
 		permissions string
 		named       string
 	}{
-		{"a permission the request did not ask for", `{"administration":"write","contents":"read","metadata":"read","pull_requests":"read","actions":"read"}`, "administration: write"},
+		{"a permission the request did not ask for", `{"administration":"write","contents":"read","metadata":"read","pull_requests":"read","actions":"read"}`, "(a permission the request did not name): write"},
 		{"an access above the one asked for", `{"contents":"write","metadata":"read","pull_requests":"read","actions":"read"}`, "contents: write"},
-		{"an access this daemon cannot order", `{"contents":"maintain","metadata":"read","pull_requests":"read","actions":"read"}`, "contents: maintain"},
+		{"an access this daemon cannot order", `{"contents":"maintain","metadata":"read","pull_requests":"read","actions":"read"}`, "contents: (an access this daemon cannot order)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)

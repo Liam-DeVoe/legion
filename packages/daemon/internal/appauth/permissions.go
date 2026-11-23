@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 )
 
 // writePermissions is the permission set a role's write token is asked for, one per App role:
@@ -324,9 +325,24 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 		return nil, fmt.Errorf("GitHub App installation permissions read returned an invalid response")
 	}
 	if payload.SuspendedAt != nil {
-		return nil, fmt.Errorf("%w: GitHub answers installation %s with suspended_at %s", errInstallationSuspended, installation, *payload.SuspendedAt)
+		return nil, fmt.Errorf("%w: GitHub answers installation %s with suspended_at %s", errInstallationSuspended, installation, shownSuspension(*payload.SuspendedAt))
 	}
 	return payload.Permissions, nil
+}
+
+// notATime is what shownSuspension prints in place of a suspended_at that is no time.
+const notATime = "(a value that is no time)"
+
+// shownSuspension is an installation's suspended_at, as GitHub's answer named it, as a refusal may
+// print it: the time it parses as (RFC 3339, as GitHub writes it), written out again, or notATime.
+// Whatever answers in GitHub's place can echo the request back there, the App's JWT and all; the
+// suspension is still decided on the field as it came, null or not.
+func shownSuspension(suspendedAt string) string {
+	at, err := time.Parse(time.RFC3339, suspendedAt)
+	if err != nil {
+		return notATime
+	}
+	return at.UTC().Format(time.RFC3339)
 }
 
 // sayShortfalls logs shortfallMessage at warn for each of short the first time a mint of role for
