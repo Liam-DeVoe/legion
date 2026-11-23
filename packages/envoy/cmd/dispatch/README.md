@@ -4065,7 +4065,8 @@ An argument `envoy-dispatch` does not know is refused with exit 2, never served,
 It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
 It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
 It records the read sequence that snapshot saw, the highest `graph_tuples.seq` it holds, or 0 for a store that holds no tuple, as R29 of the parent change has a query, a census and an approval each record the read sequence they read.
-It reads that sequence inside its own transaction, so the sequence names the commit every count it prints answers, and not the end of the log when the census finishes.
+It reads that sequence inside its own transaction, and not at the end of the log when the census finishes.
+It names no commit: `seq` is taken when a tuple is inserted, not when it commits, so a write holding a lower seq may commit after the snapshot, and no count the census prints saw it.
 The summary line after the kinds prints it last, `census: store rows_checked=<rows> differences=<differences> read_seq=<seq>`, in plain digits where the counts carry thousands separators, since it is a position to hold against `graph_tuples.seq` and not a count.
 
 For each projected kind it counts the nodes the store holds at any state but `gone` against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
