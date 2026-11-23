@@ -148,3 +148,24 @@ func TestALaunchItsPodRefusedQueuesAStartWhereNoQueuedStartBringsTheClaimBack(t 
 		})
 	}
 }
+
+// The claim whose start a refused launch queues is the worker of its role's step by the one rule
+// every reader of that claim reads (record.WorkerClaim), not the claim the role's phases row
+// names: a row whose step a new generation cleared keeps the claim of the agent that last worked
+// it, here another key's, and the worker of the role is then the role's own claim, whose launch
+// the pod refused. So that claim is sent the owed entry's start, the entry and the task the row
+// holds, as a resend.
+func TestARefusedLaunchOfTheRolesWorkerIsSentTheOwedEntryWhateverClaimItsRowNames(t *testing.T) {
+	pool := migratedPool(t)
+	seedTestingIssue(t, pool, "LEGION-209")
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: "legion-legion-legion-209-implementer", Entry: 3,
+		EntryTask: refusedTesterTask, EntryRaisedAt: time.Now().UTC().Add(-time.Hour)})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	reportRefusal(t, pool, engine, "pod-refused:legion-legion-legion-209-tester:1", "legion-legion-legion-209-tester")
+	got := queuedStarts(t, pool)
+	if len(got) != 1 {
+		t.Fatalf("the report queued %+v, want one start", got)
+	}
+	wantOwedEntryStart(t, got[0])
+}
