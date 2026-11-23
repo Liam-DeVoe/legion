@@ -9,21 +9,13 @@ import { PanelTrigger } from "../../components/PanelTrigger";
 import { SearchBox } from "../../components/SearchBox";
 import { SelectionBar } from "../../components/SelectionBar";
 import { StepButton } from "../../components/StepButton";
-import { useAddressUpdate } from "../../lib/page-address";
 import { borderDefault, issueStatusScale, surfaceMutedBg } from "../../theme/classes";
 import { statusLabel } from "./board-model";
 import { IssueFlagChips, NarrowingList, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import { countStatuses, statusSegments } from "./issues-table-bar";
 import { type OwnNarrowings, viewChips } from "./issues-table-chips";
-import {
-  COLUMNS,
-  defaultView,
-  type Item,
-  readUrl,
-  UNCLAIMED_FACET,
-  writeUrl,
-} from "./issues-table-model";
+import { COLUMNS, type Item, UNCLAIMED_FACET } from "./issues-table-model";
 
 /**
  * A priority page's status strip: every status of the rows the table holds, each as wide as its
@@ -80,32 +72,30 @@ type ToolbarPanel = "flags" | "view";
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
  * narrow no column of the table, the chips of every narrowing that differs from the view's own -
  * the issues a link names (`only=`) first, then the chips of `viewChips`, which the Board draws
- * too - **Clear filters** (which the row draws), the page's own controls (the columns menu where
- * the page gives none), and the display menu, named Group by for the grouping it holds
- * (INFRA-3135, R1 and R3). A column's filter is set on that column's header, where
+ * too - **Clear filters** where the page gives it (`onClear`), the page's own controls (the
+ * columns menu where the page gives none), and the display menu, named Group by for the grouping
+ * it holds (INFRA-3135, R1 and R3). A column's filter is set on that column's header, where
  * `ColumnFilter` draws it, and its chip is drawn here as well, whether its column is shown or
  * hidden, so a column the reader hid keeps its narrowing in sight.
  */
 export function IssueTableToolbar({
-  clear,
   controls,
   narrowings,
+  onClear,
   own,
   searchRef,
   selection,
-  stateKey,
   table,
   unclaimedUnchecked,
 }: {
-  /** The Issues tab's **Clear filters**: shown while `on`, the view's own narrowings back.
-   *  Unset, the row clears by the table's own rule: back to the open statuses, with no search
-   *  and no flag. */
-  clear?: { readonly on: boolean; readonly run: () => void };
   /** The page's own controls, in the place of the columns menu the row draws by itself. */
   controls?: ReactNode;
   /** The narrowings an address carries that are no column and no flag (`exclude_tree`): each a
    *  chip of the row and a line of the Filters panel, with its remove. */
   narrowings: readonly FilterChip[];
+  /** **Clear filters**, which the row draws while the page gives it: the page leaves it unset
+   *  while nothing is narrowed. */
+  onClear: (() => void) | undefined;
   /** What the open view narrows by of itself, which draws no chip and which a chip's press goes
    *  back to (`viewChips`). */
   own: OwnNarrowings;
@@ -113,17 +103,13 @@ export function IssueTableToolbar({
   searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
   selection?: FilterChip;
-  /** The prefix this table's view is written under (`useTableView`), which **Clear filters**
-   *  rewrites; unset is the bare one the project page publishes. */
-  stateKey?: string;
   table: Table<Item>;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
 }): ReactNode {
   const flags = useIssueFilters();
-  const update = useAddressUpdate();
   const [openPanel, setOpenPanel] = useState<ToolbarPanel | undefined>(undefined);
-  const { globalFilter: search, columnFilters: filters, grouping } = table.getState();
+  const { globalFilter: search, grouping } = table.getState();
   const setSearch = table.setGlobalFilter;
   const setGrouping = table.setGrouping;
   const setExpanded = table.setExpanded;
@@ -140,30 +126,10 @@ export function IssueTableToolbar({
     claim?.setFilterValue(next.length === 0 ? undefined : next);
   };
   const viewed = viewChips({ columns: table.getAllLeafColumns(), flags, narrowings, own });
-  // Exactly the scope it has always had: the table's own filters and search, and the two flags
-  // the write below takes out of the address.
-  const narrowed = filters.length > 0 || search !== "" || flags.needsYou || flags.unread;
   const chips = filterChips(
     [...(selection === undefined ? [] : [selection]), ...viewed],
     "compact"
   );
-  const clearFilters = () =>
-    update((current) => {
-      const next = writeUrl(
-        current,
-        {
-          ...readUrl(current, stateKey),
-          // Back to the view the table opens with, not to no filter at all: an empty status pick
-          // asks the server for every closed issue in the project.
-          filters: defaultView.filters,
-          search: "",
-          page: 0,
-        },
-        stateKey
-      );
-      for (const flag of ["needs-you", "unread"]) next.delete(flag);
-      return next;
-    });
   return (
     <>
       <ControlRow
@@ -201,15 +167,7 @@ export function IssueTableToolbar({
             size="compact"
           />
         }
-        onClear={
-          clear === undefined
-            ? narrowed
-              ? clearFilters
-              : undefined
-            : clear.on
-              ? clear.run
-              : undefined
-        }
+        onClear={onClear}
         search={
           <SearchBox
             className="w-full"

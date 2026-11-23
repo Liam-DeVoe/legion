@@ -520,7 +520,6 @@ function IssuesTabView({
   return (
     <IssueTableFrame
       actions={actions}
-      clear={{ on: narrowed, run: clearView }}
       closedUnloaded={!reads.doneLoaded}
       controls={
         <>
@@ -535,6 +534,7 @@ function IssuesTabView({
       name={NAME}
       narrowings={excludedChips}
       notices={notices}
+      onClear={narrowed ? clearView : undefined}
       own={own}
       readStates={readStates}
       state={state}

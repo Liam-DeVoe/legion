@@ -529,10 +529,11 @@ export const projectOpenCountQuery = (project: string) =>
   });
 
 /**
- * What a query under a project's listing prefix (`projectIssuesQueryKey(project)`) holds, by the
- * query that writes it: a listing's issues (`projectIssuesQuery`, `projectDoneIssuesQuery`, and
- * an advances listing's `advancesIssuesQuery` too), a page of a listing with its rows in
- * `issues` (`projectDonePageQuery`), or Open's count (`projectOpenCountQuery`).
+ * What a query under a project's listing prefix (`projectIssuesQueryKey(project)`) holds where it
+ * holds rows, by the query that writes it: a listing's issues (`projectIssuesQuery`,
+ * `projectDoneIssuesQuery`, and an advances listing's `advancesIssuesQuery` too), or a page of a
+ * listing with its rows in `issues` (`projectDonePageQuery`). Open's count
+ * (`projectOpenCountQuery`), a number under the same prefix, is no shape of it.
  */
 export type IssueListData =
   | { readonly kind: "listing"; readonly issues: readonly IssueSummary[] }
@@ -540,15 +541,13 @@ export type IssueListData =
       readonly kind: "page";
       readonly issues: readonly IssueSummary[];
       readonly page: IssueSummaryPage;
-    }
-  | { readonly kind: "count"; readonly count: number };
+    };
 
 /** `data`, what a query under a project's listing prefix holds, read by its shape. Undefined for
- *  no answer yet and for any other value; a page whose `issues` is null holds no row, and reads
- *  as no shape. */
+ *  no answer yet, for Open's count and for any other value; a page whose `issues` is null holds
+ *  no row, and reads as no shape. */
 export function readIssueList(data: unknown): IssueListData | undefined {
   if (Array.isArray(data)) return { kind: "listing", issues: data as IssueSummary[] };
-  if (typeof data === "number") return { kind: "count", count: data };
   if (typeof data !== "object" || data === null || !("issues" in data)) return undefined;
   return Array.isArray(data.issues)
     ? { kind: "page", issues: data.issues as IssueSummary[], page: data as IssueSummaryPage }
@@ -556,10 +555,9 @@ export function readIssueList(data: unknown): IssueListData | undefined {
 }
 
 /** The rows `data` holds where it is a listing or a page of one (`readIssueList`), else
- *  undefined: Open's count holds no row. */
+ *  undefined. */
 export function issueListRows(data: unknown): readonly IssueSummary[] | undefined {
-  const read = readIssueList(data);
-  return read === undefined || read.kind === "count" ? undefined : read.issues;
+  return readIssueList(data)?.issues;
 }
 
 /** Resolves once no board move on `project` is pending; rejects if the fetch is cancelled first. */

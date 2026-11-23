@@ -2020,7 +2020,7 @@ test("a second tab offers no Finish or Dismiss while the first tab's Start next 
     await expect(two.locator("[data-issue-row]").first()).toBeVisible();
     // Tab two has its answer from the lock once it has asked for the lock tab one holds: its
     // request then waits in the browser's lock manager, which the page shares with tab one. The
-    // lock is named for the stored record (`actionLockName` in issues-table-recovery.ts).
+    // lock is named for the listing (`actionLockName` in issues-table-recovery.ts).
     await expect
       .poll(
         () =>

@@ -145,7 +145,6 @@ export function ReadStates({
  */
 export function IssueTableFrame({
   actions,
-  clear,
   closedUnloaded,
   controls,
   header,
@@ -154,15 +153,13 @@ export function IssueTableFrame({
   name,
   narrowings,
   notices,
+  onClear,
   own,
   readStates,
   state,
-  stateKey,
   strip,
 }: {
   actions: IssueTableActions;
-  /** The Issues tab's **Clear filters** (`IssueTableToolbar`). */
-  clear?: { readonly on: boolean; readonly run: () => void };
   /** The closed issues are not read yet, so the Status filter does not count Done. */
   closedUnloaded: boolean;
   /** The page's own controls in the toolbar, in the place of the columns menu. */
@@ -176,11 +173,11 @@ export function IssueTableFrame({
   /** The narrowings that are no column and no flag (`exclude_tree`), with their removes. */
   narrowings: readonly FilterChip[];
   notices: ReactNode;
+  /** **Clear filters**, unset while nothing is narrowed (`IssueTableToolbar`). */
+  onClear: (() => void) | undefined;
   own: OwnNarrowings;
   readStates: ReactNode;
   state: IssueTableState;
-  /** The prefix the table's view is written under (`useTableView`), unset on the Issues tab. */
-  stateKey?: string;
   strip: ReactNode;
 }): ReactNode {
   const { lastMarked, model, panel, table } = state;
@@ -233,13 +230,12 @@ export function IssueTableFrame({
         {strip}
 
         <IssueTableToolbar
-          clear={clear}
           controls={controls}
           narrowings={narrowings}
+          onClear={onClear}
           own={own}
           searchRef={searchRef}
           selection={state.pickedChip}
-          stateKey={stateKey}
           table={table}
           unclaimedUnchecked={panel.unclaimedUnchecked}
         />

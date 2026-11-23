@@ -145,8 +145,8 @@ test("a second tab's bulk action is refused while the first tab's record is live
 // R14, with the architect's decision: two tabs that begin at once on one listing never both
 // begin. The store cannot decide it, since a tab's write reaches another tab's copy of the store
 // at no fixed time, in no fixed order with the locks. Here no write reaches the store until both
-// tabs have their answer. The second tab finds the first tab's record lock held in the lock
-// manager, which the tabs share, and is refused.
+// tabs have their answer. The second tab finds the listing's lock, which the first tab's move
+// holds, held in the lock manager, which the tabs share, and is refused.
 test("of two tabs that begin at once on one listing, the second is refused and the first's record stays", async () => {
   const client = new QueryClient();
   undraws.push(() => client.clear());
@@ -218,10 +218,9 @@ test("a tab's end leaves the record another tab kept in place of its own", async
 });
 
 // k18 (R14), the architect's decision: a second tab offers nothing that ends a move the first
-// tab still runs. The tab that runs Start next holds a lock named for its record for as long as
-// the move runs, and another tab offers Finish and Dismiss for that record only once no tab
-// holds the lock: the move stopped with its record still kept, as a closed or crashed tab
-// leaves it.
+// tab still runs. The tab that runs Start next holds the listing's lock for as long as the move
+// runs, and another tab offers Finish and Dismiss for that record only once no tab holds the
+// lock: the move stopped with its record still kept, as a closed or crashed tab leaves it.
 test("a second tab offers no Finish or Dismiss while the first tab's move holds its lock, and offers them once the lock goes", async () => {
   const client = new QueryClient();
   undraws.push(() => client.clear());

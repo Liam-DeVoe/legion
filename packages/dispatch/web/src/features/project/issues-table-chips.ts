@@ -7,15 +7,18 @@ import {
 import { type IssueFiltersState, readIssueFlags } from "./issue-filters";
 import { sameSet } from "./issues-filter-picks";
 import { defaultView, type Item, readUrl, UNCLAIMED_FACET, type View } from "./issues-table-model";
-import { expandView } from "./issues-views";
+import { expandView, readExcludedTrees } from "./issues-views";
 
-/** What the open view narrows its rows by of itself, which draws no chip: its column filters,
- *  its search and its two flags. */
+/** What the open view narrows its rows by of itself: its column filters, its search and its two
+ *  flags, which draw no chip (`viewChips`), and the issues it names (`only=`) and the trees it
+ *  leaves out (`exclude_tree`), which its tab's count narrows by too (`openListingCount`). */
 export interface OwnNarrowings {
   readonly filters: View["filters"];
   readonly search: string;
   readonly needsYou: boolean;
   readonly unread: boolean;
+  readonly selection: View["selection"];
+  readonly excluded: readonly string[];
 }
 
 /** What a table another page draws narrows by of itself: the open statuses it opens with, which
@@ -25,14 +28,23 @@ export const LISTING_OWN: OwnNarrowings = {
   search: "",
   needsYou: false,
   unread: false,
+  selection: null,
+  excluded: [],
 };
 
 /** What the view at `own`, the address the Issues tab's open view opens at (its built-in
- *  address, or a saved view's query), narrows by of itself. */
+ *  address, or a saved view's query), narrows by of itself, all of it read from the address
+ *  with its view written out (`expandView`). */
 export function ownNarrowings(own: URLSearchParams): OwnNarrowings {
   const expanded = expandView(own);
   const view = readUrl(expanded);
-  return { filters: view.filters, search: view.search, ...readIssueFlags(expanded) };
+  return {
+    filters: view.filters,
+    search: view.search,
+    ...readIssueFlags(expanded),
+    selection: view.selection,
+    excluded: readExcludedTrees(expanded),
+  };
 }
 
 /**

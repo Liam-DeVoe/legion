@@ -293,7 +293,7 @@ export function shownOn(
   }
   if (cache === "list") {
     const read = readIssueList(data);
-    if (read === undefined || read.kind === "count") return data;
+    if (read === undefined) return data;
     const shown = mapRows(read.issues, (row) =>
       showings.reduce(
         (issue, showing) =>

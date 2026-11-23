@@ -46,11 +46,13 @@ export function QueryError({
   retrying = false,
 }: QueryErrorProps): ReactNode {
   const refilling = isAgentListRefilling(error);
+  // The compact line is for a failure: a refilling agent list draws its notice in the full form.
+  const line = compact && !refilling;
   const retry =
     onRetry === undefined ? null : (
       <button
         aria-label={retryLabel}
-        className={`${compact ? "font-semibold" : "font-medium"} underline disabled:cursor-not-allowed disabled:opacity-50`}
+        className={`${line ? "font-semibold" : "font-medium"} underline disabled:cursor-not-allowed disabled:opacity-50`}
         disabled={retrying}
         onClick={onRetry}
         type="button"
@@ -58,7 +60,7 @@ export function QueryError({
         Retry
       </button>
     );
-  if (compact && !refilling)
+  if (line)
     return (
       <p className={`min-w-0 break-words text-xs ${dangerText}`} role="alert">
         {message}
@@ -67,7 +69,7 @@ export function QueryError({
     );
   return (
     <div
-      className={`flex flex-wrap items-center gap-3 ${compact ? "text-xs" : "text-sm"} ${refilling ? textSecondaryOnSurface : dangerText}`}
+      className={`flex flex-wrap items-center gap-3 text-sm ${refilling ? textSecondaryOnSurface : dangerText}`}
       role={refilling ? undefined : "alert"}
     >
       {refilling ? <AgentListRefilling /> : <p className="min-w-0 break-words">{message}</p>}

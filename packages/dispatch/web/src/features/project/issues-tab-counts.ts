@@ -7,24 +7,17 @@ import {
 } from "../../api/queries";
 import type { UserState } from "../../api/types";
 import { copyAddress } from "../../lib/page-address";
-import { readIssueFlags } from "./issue-filters";
+import { ownNarrowings } from "./issues-table-chips";
 import { type DoneRead, listingsOf } from "./issues-table-data";
 import {
   type Item,
   isBoardFedColumn,
   matchesFilters,
   matchesSearch,
-  readUrl,
   type View,
 } from "./issues-table-model";
 import { type Narrowings, passesNarrowings, picksOf } from "./issues-table-state";
-import {
-  type ActiveView,
-  builtInAddress,
-  expandView,
-  readExcludedTrees,
-  type SavedView,
-} from "./issues-views";
+import { type ActiveView, builtInAddress, type SavedView } from "./issues-views";
 
 /** What Open's own address asks of its rows, which Open's tab counts by on another view. */
 const OPEN_ADDRESS = builtInAddress("open");
@@ -71,18 +64,16 @@ export interface TabCounts {
  */
 function openListingCount(query: URLSearchParams, reads: TabReads): number | undefined {
   if (!reads.openIn) return undefined;
-  const own = readUrl(expandView(query));
-  const excluded = readExcludedTrees(query);
-  const { needsYou, unread } = readIssueFlags(query);
+  const own = ownNarrowings(query);
   if (listingsOf(picksOf(own.filters, "status")).done) return undefined;
-  if (!reads.boardIn && narrowsByBoard(own.filters, excluded)) return undefined;
-  if (unread && reads.userState === undefined) return undefined;
+  if (!reads.boardIn && narrowsByBoard(own.filters, own.excluded)) return undefined;
+  if (own.unread && reads.userState === undefined) return undefined;
   const narrowings: Narrowings = {
     selection: own.selection,
-    needsYou,
-    unread,
+    needsYou: own.needsYou,
+    unread: own.unread,
     userState: reads.userState,
-    excluded,
+    excluded: own.excluded,
   };
   return reads.items.filter(
     (item) =>

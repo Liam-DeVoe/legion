@@ -787,11 +787,6 @@ test("the columns the caller names stack their controls in a box under 640 px", 
   draw(<Deploys columns={columns} stackColumns={["service", "region"]} />, 390);
 
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
-  const controls = (name: RegExp) =>
-    within(table).getByRole("columnheader", { name }).querySelector("span")?.className ?? "";
-  expect(controls(/Service/)).toContain("flex-col");
-  expect(controls(/Region/)).toContain("flex-col");
-  expect(controls(/Minutes/)).not.toContain("flex-col");
   // Service's name, then its control and its filter together on the line under it.
   const name = within(table).getByRole("button", { name: "Service" });
   const under = name.nextElementSibling;

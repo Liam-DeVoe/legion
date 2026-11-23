@@ -270,17 +270,16 @@ export function ageOf(iso: string): string {
 }
 
 /**
- * How each of the five measures is taken, in the words of the Design's method table: the
- * sentences its header's tooltip, a Board card's fact and the Columns menu's muted line say.
- * Each says what the server computes (`legion/metrics` and `api/legion_board.go` on #3578). Time
- * per phase, Review rounds and Time waiting split the table's longer sentences, so no sentence
- * has more than 20 words (R9).
+ * How each of the five measures is taken, word for word as the Design's method table gives it:
+ * the sentences its header's tooltip, a Board card's fact and the Columns menu's muted line say.
+ * Each says what the server computes (`legion/metrics` and `api/legion_board.go` on #3578), and no
+ * sentence has more than 20 words (R9).
  */
 export const MEASURE_METHODS: Readonly<Partial<Record<ColumnId, string>>> = {
   work_hours:
     "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours when Legion has admitted the issue but not started it.",
   phase_hours:
-    "Work time goes to Waiting on a person while the issue's ask or root waits. The rest goes to the issue's Legion phase, or to Other. A root does not count the hours it waits on its children.",
+    "Each hour goes to Waiting on a person while the issue's ask or root waits, else to that hour's phase. Other holds the rest, and a root's hours waiting on its children do not count.",
   review_rounds:
     "Dispatch counts each start of the Reviewing phase. For an issue with no recorded Legion phases, it counts each move to Needs review.",
   waited:

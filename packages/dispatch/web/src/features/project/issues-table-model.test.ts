@@ -937,16 +937,19 @@ test("Group by offers main's groupings and Legion phase, in the board's order wi
   expect(readUrl(new URLSearchParams("group=legion_phase")).grouping).toEqual(["legion_phase"]);
 });
 
-test("each measure names its method in the words of the Design's table", () => {
-  expect(Object.keys(MEASURE_METHODS).sort()).toEqual(
-    ["phase_hours", "review_rounds", "time_in_phase", "waited", "work_hours"].sort()
-  );
-  expect(MEASURE_METHODS.time_in_phase).toBe(
-    "Dispatch shows the time since Legion first recorded the issue in its current Legion phase."
-  );
-  expect(MEASURE_METHODS.review_rounds).toBe(
-    "Dispatch counts each start of the Reviewing phase. For an issue with no recorded Legion phases, it counts each move to Needs review."
-  );
+test("each measure names its method word for word as the Design's table gives it", () => {
+  expect(MEASURE_METHODS).toEqual({
+    work_hours:
+      "Dispatch counts the hours from the first Legion worker event until the issue closes, or until Dispatch last read it. It does not count Backlog or Icebox hours, or hours when Legion has admitted the issue but not started it.",
+    phase_hours:
+      "Each hour goes to Waiting on a person while the issue's ask or root waits, else to that hour's phase. Other holds the rest, and a root's hours waiting on its children do not count.",
+    review_rounds:
+      "Dispatch counts each start of the Reviewing phase. For an issue with no recorded Legion phases, it counts each move to Needs review.",
+    waited:
+      "Dispatch shows the time since Legion asked a person, when the issue waits on a person. If it does not wait on a person, it shows the time since its Legion phase started.",
+    time_in_phase:
+      "Dispatch shows the time since Legion first recorded the issue in its current Legion phase.",
+  });
 });
 
 test("a view's layout shows its own columns in its order, with each header and its button whole", () => {

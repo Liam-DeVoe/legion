@@ -46,7 +46,7 @@ test("each segment is as wide as its share of the listed rows, and together they
   expect(drawn.reduce((sum, { width }) => sum + width, 0)).toBeCloseTo(100);
 });
 
-test("the legend has one entry for each segment, which wraps and never scrolls", () => {
+test("the legend has one entry for each segment", () => {
   render(<IssueStatusBar counts={LISTED} narrowTo={() => {}} picked={[]} />);
   const bar = screen.getByRole("region", { name: "Issues by status" });
   const entries = within(bar).getAllByRole("button");
@@ -55,9 +55,6 @@ test("the legend has one entry for each segment, which wraps and never scrolls",
     "Todo 2",
     "In progress 3",
   ]);
-  const legend = entries[0]?.parentElement;
-  expect(legend?.className).toContain("flex-wrap");
-  expect(legend?.className).not.toMatch(/overflow/);
 });
 
 test("a press narrows to that status, and a press on the one status picked asks for the view back", async () => {

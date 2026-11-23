@@ -210,7 +210,7 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
     return recovery.active(record.id);
   };
   /** Sends a start-next action for queued issues already checked by `startNext`. The controls are
-   *  held (`perform`) from the press, before the begin waits for the record's lock, so the focus
+   *  held (`perform`) from the press, before the begin asks for the listing's lock, so the focus
    *  moves as the press's doing when the action changes the rows. */
   const runQueued = (queued: readonly string[], { items, clearSelection }: ActionRows) => {
     if (!startNextWrites(items, queued).length) {
@@ -231,7 +231,7 @@ export function useIssueTableActions(listing: IssueListing): IssueTableActions {
             (remaining, error) =>
               `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
           );
-          // Ended while this tab still holds the record's lock, so no tab finds it left behind.
+          // Ended while this tab still holds the listing's lock, so no tab finds it left behind.
           if (ran) recovery.end(record.id);
           return ran;
         });

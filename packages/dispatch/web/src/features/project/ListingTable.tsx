@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { FilterChip } from "../../components/filter-chips";
 import { useTableLayout } from "../../components/table-layout";
+import { useAddressUpdate } from "../../lib/page-address";
 import { useIssueTableActions } from "./issues-table-actions";
 import { LISTING_OWN } from "./issues-table-chips";
 import { issueTableLayout, listingColumns, type ShownColumnId } from "./issues-table-columns";
@@ -11,7 +12,7 @@ import {
   useAdvancesTableItems,
 } from "./issues-table-data";
 import { IssueTableFrame, ListingNotices, ReadStates } from "./issues-table-frame";
-import { tableStorageKey } from "./issues-table-model";
+import { defaultView, readUrl, tableStorageKey, writeUrl } from "./issues-table-model";
 import { IssueTableStatus } from "./issues-table-page";
 import { picksOf, useIssueTable, useIssueTableReads } from "./issues-table-state";
 import { useTableView } from "./issues-table-view";
@@ -105,6 +106,27 @@ export function ListingTable({
     userState: userState.data,
     viewKey: params.toString(),
   });
+  const update = useAddressUpdate();
+  // Clear filters shows while the table has a column filter, a search or one of the two flags,
+  // which it takes out of the address.
+  const narrowed = view.filters.length > 0 || view.search !== "" || flags.needsYou || flags.unread;
+  const clearFilters = () =>
+    update((current) => {
+      const next = writeUrl(
+        current,
+        {
+          ...readUrl(current, stateKey),
+          // Back to the view the table opens with, not to no filter at all: an empty status pick
+          // asks the server for every closed issue in the project.
+          filters: defaultView.filters,
+          search: "",
+          page: 0,
+        },
+        stateKey
+      );
+      for (const flag of ["needs-you", "unread"]) next.delete(flag);
+      return next;
+    });
   return (
     <IssueTableFrame
       actions={actions}
@@ -122,6 +144,7 @@ export function ListingTable({
           />
         ) : null
       }
+      onClear={narrowed ? clearFilters : undefined}
       own={LISTING_OWN}
       readStates={
         <ReadStates
@@ -140,7 +163,6 @@ export function ListingTable({
         />
       }
       state={state}
-      stateKey={stateKey}
       // Its strip of every status the table holds, a press showing only that status and a second
       // press every status.
       strip={loaded ? <IssueTableStatus items={rows.allItems} table={state.table} /> : null}
