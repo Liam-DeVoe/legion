@@ -120,60 +120,43 @@ func (w Walk) AgentAt(place record.TaskPlace) claim.Agent {
 	return ""
 }
 
-// stepAt is the step whose agent does the work of place on w (stepOfWork), the one place the
-// workflow reads a step's agent from (Engine.stepToken): for a step, that step, so the steps of one
-// key are one agent; for the retro, the task's last step of the type implementation, which runs it.
-// A walk with no plan rows holds none, and neither does the merge or a place the task does not
-// hold: there the role stands for the agent.
+// stepAt is the step whose agent does the work of place on w, the one rule of which agent works a
+// place: the workflow reads a step's agent from it alone (Engine.stepToken, AgentAt, agentIDAt),
+// so the claim a start of the place's work runs on and the identity the start names are always one
+// agent. For a step, that step, so the steps of one key are one agent; for the retro, the task's
+// last step of the type implementation, which runs it. A walk with no plan rows holds none, and
+// neither does the merge or a place the task does not hold: there the role stands for the agent.
 func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
-	if at := w.stepOfWork(place); at > 0 {
-		return w.Steps[at-1], true
+	if !w.Stored {
+		return record.PlanStep{}, false
+	}
+	switch place.Kind {
+	case record.PlaceStep:
+		if place.Position >= 1 && place.Position <= len(w.Steps) {
+			return w.Steps[place.Position-1], true
+		}
+	case record.PlaceRetro:
+		for i := len(w.Steps) - 1; i >= 0; i-- {
+			if w.Steps[i].Type == plan.TypeImplementation {
+				return w.Steps[i], true
+			}
+		}
 	}
 	return record.PlanStep{}, false
 }
 
 // agentIDAt is the identity of the agent that does the work of place on w (plan.Agent.ID), the
-// agent AgentAt names, of the same step (stepOfWork): the agent of its key or of its own task and
-// place. It is "" where AgentAt is: for the merge, for a walk with no plan rows, for a step of the
-// key owner and for a place the task does not hold. A start of the work of place names it
-// (record.SuperviseRequest.Agent), and the claim it reaches starts in a new session where its
-// session is another agent's (supervise.Claim.SessionAgent).
+// agent AgentAt names, of the same step (stepAt): the agent of its key or of its own task and
+// place (record.PlanStep.PlanAgent). It is "" where AgentAt is: for the merge, for a walk with no
+// plan rows, for a step of the key owner and for a place the task does not hold. A start of the
+// work of place names it (record.SuperviseRequest.Agent), and the claim it reaches starts in a new
+// session where its session is another agent's (supervise.Claim.SessionAgent).
 func (w Walk) agentIDAt(place record.TaskPlace) plan.AgentID {
-	at := w.stepOfWork(place)
-	if at == 0 {
-		return ""
+	step, ok := w.stepAt(place)
+	if agent := step.PlanAgent(); ok && !agent.Owner() {
+		return agent.ID()
 	}
-	step := w.Steps[at-1]
-	agent := plan.AgentOf(w.Task, at, plan.Step{Role: step.Role, Key: step.AgentKey})
-	if agent.Owner() {
-		return ""
-	}
-	return agent.ID()
-}
-
-// stepOfWork is the place, from 1, of the step whose agent does the work of place on w: the step
-// itself, and for the retro the task's last step of the type implementation, which runs it. It is
-// 0 for the merge, for a walk with no plan rows and for a place the task does not hold. It is the
-// one rule of which agent works a place: stepAt gives that step, whose agent's claim the start of
-// the place's work runs on (Engine.stepToken), AgentAt names that agent, and agentIDAt gives the
-// identity the start names, so the two are always one agent.
-func (w Walk) stepOfWork(place record.TaskPlace) int {
-	if !w.Stored {
-		return 0
-	}
-	switch place.Kind {
-	case record.PlaceStep:
-		if place.Position >= 1 && place.Position <= len(w.Steps) {
-			return place.Position
-		}
-	case record.PlaceRetro:
-		for i := len(w.Steps) - 1; i >= 0; i-- {
-			if w.Steps[i].Type == plan.TypeImplementation {
-				return i + 1
-			}
-		}
-	}
-	return 0
+	return ""
 }
 
 // placeIn is where w's task stands while its issue stands in p: for a stored walk, w.Place where
