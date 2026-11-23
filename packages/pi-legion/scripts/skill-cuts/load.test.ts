@@ -2000,7 +2000,8 @@ describe("skill-cuts load applies the listing rule", () => {
     const summary = z
       .looseObject({ listing: z.unknown(), dispatch: z.unknown() })
       .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
-    expect(summary.dispatch).toEqual({ carryBlock: 2, assumed: 1, legionRole: 1, transcript: 0 });
+    // No transcript count: a load test has no transcript messages for arms.ts's `dispatchOf`.
+    expect(summary.dispatch).toEqual({ carryBlock: 2, assumed: 1, legionRole: 1 });
   });
 });
 

@@ -493,17 +493,20 @@ import {
   appendFileSync,
   closeSync,
   existsSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
+  renameSync,
   rmSync,
   statSync,
+  writeFileSync,
   writeSync,
 } from "node:fs";
 import path from "node:path";
-import { messageFor } from "@legion/envoy-client/errors";
+import { hasErrnoCode, messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { mapLimit, outRefusal } from "../skill-scenarios/production-dispatch";
 import {
@@ -531,7 +534,7 @@ import {
   type Via,
   vias,
 } from "./attribute";
-import { armPromptBlocks, type SavedHead, sessionHeads } from "./capture";
+import { armPromptBlocks, listingOf, type SavedHead, sessionHeads } from "./capture";
 import {
   Case,
   listedName,
@@ -552,11 +555,13 @@ import {
   firstLine,
   GhRetries,
   json,
+  lastTryError,
   parse,
   RATE_LIMITED,
   Refused,
   rateLimitWait,
   required,
+  type Sent,
   STORE_QUIET_MS,
   schemaFaults,
   textOf,
@@ -566,7 +571,7 @@ import {
   writeWhole,
 } from "./common";
 import { type SkillCutsConfig, storeNamed } from "./config";
-import { composedAt, DAEMON_IMAGE_ITEM, PROMPTS_GO } from "./context";
+import { composedAt, DAEMON_IMAGE_ITEM, PROMPTS_GO, readFrontmatter } from "./context";
 import {
   BLOB_BATCH,
   BLOB_BATCH_BYTES,
@@ -580,6 +585,7 @@ import {
   GitBlob,
   graphqlArgs,
   type InstallerPin,
+  ignoredSkillMatch,
   installerPins,
   keepsEntry,
   type Manifest,
@@ -865,40 +871,76 @@ function processLives(pid: number): boolean {
 /**
  * The directory a build pulls transcripts into, `<out>.spool`, held by this run and made empty: one
  * file for each session open, removed once the session is decided, and the directory once the
- * build ends. The run holds it by its lock file (SPOOL_LOCK, made with O_EXCL, holding its pid), so
- * no two runs of one `--out` share a spool, and none empties or removes the files of another:
- * while the lock's process runs, the directory is refused (exit 2), naming it. A lock whose process
- * runs no more (a build that was killed) is taken over, and `io.err` says so. `main` gives the lock
- * up as the command ends, with the directory when nothing else is left in it.
+ * build ends. The run holds it by its lock file (SPOOL_LOCK, holding its pid), so no two runs of
+ * one `--out` share a spool, and none empties or removes the files of another: while the lock's
+ * process runs, the directory is refused (exit 2), naming it. The lock is made in one step with
+ * its pid: written whole to a file of this run's, which is then linked as SPOOL_LOCK, a link that
+ * fails while a lock is there; so no run reads a lock whose pid is not written yet. A lock that
+ * is gone when it is read (its run gave it up in between) is tried again. A lock whose process
+ * runs no more (a build that was killed) is taken over, and `io.err` says so: it is first moved
+ * to a name of this run's (one rename, so of two runs that found it dead, one moves it), and a
+ * run that moved a lock whose text is not the dead one's (another run's lock, made since it was
+ * read) puts that lock back and reads it again. `main` gives the lock up as the command ends,
+ * with the directory when nothing else is left in it.
  */
 function spoolDir(out: string, io: BuildIo): string {
   const dir = `${out}.spool`;
-  mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, SPOOL_LOCK);
-  const text = `${process.pid} ${randomUUID()}`;
+  const token = randomUUID();
+  const text = `${process.pid} ${token}`;
+  const made = path.join(dir, `${SPOOL_LOCK}.${token}`);
   for (let tries = 0; ; tries += 1) {
     try {
-      const fd = openSync(lock, "wx");
-      try {
-        writeSync(fd, `${text}\n`);
-      } finally {
-        closeSync(fd);
-      }
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(made, `${text}\n`);
+      linkSync(made, lock);
       break;
     } catch (error) {
-      if (!isObject(error) || error.code !== "EEXIST" || tries > 0) throw error;
+      // EEXIST: a lock is there. ENOENT: the run that holds it emptied the spool, this run's file
+      // with it, or gave it up with its directory, between this run's steps.
+      const locked = hasErrnoCode(error, "EEXIST") || hasErrnoCode(error, "ENOENT");
+      if (!locked || tries > 2) throw error;
+    } finally {
+      rmSync(made, { force: true });
     }
-    const held = readFileSync(lock, "utf8").trim();
+    let held: string;
+    try {
+      held = readFileSync(lock, "utf8").trim();
+    } catch (error) {
+      if (hasErrnoCode(error, "ENOENT")) continue;
+      throw error;
+    }
     const pid = Number(held.split(" ")[0]);
     if (Number.isInteger(pid) && pid > 0 && processLives(pid)) {
       throw new Refused(
         `${dir} is in use: the run of process ${pid} holds its lock ${lock} ("${held}"), so this run would empty the spool under it; wait for that run to end, or give another --out`
       );
     }
+    const aside = path.join(dir, `${SPOOL_LOCK}.${token}.dead`);
+    try {
+      renameSync(lock, aside);
+    } catch (error) {
+      if (hasErrnoCode(error, "ENOENT")) continue;
+      throw error;
+    }
+    const moved = readFileSync(aside, "utf8").trim();
+    if (moved !== held) {
+      try {
+        linkSync(aside, lock);
+      } catch (error) {
+        if (!hasErrnoCode(error, "EEXIST")) throw error;
+        throw new Refused(
+          `${dir} is in use: this run took the lock ${lock} ("${moved}") of another run for the dead one it read ("${held}"), and a third run made its own lock before this run could put it back; stop the runs of this --out and start one`
+        );
+      } finally {
+        rmSync(aside, { force: true });
+      }
+      continue;
+    }
+    rmSync(aside, { force: true });
     io.err(
       `the lock ${lock} ("${held}") is of process ${Number.isInteger(pid) ? pid : "unknown"}, which runs no more: this run takes it over`
     );
-    rmSync(lock, { force: true });
   }
   for (const entry of readdirSync(dir)) {
     if (entry !== SPOOL_LOCK) rmSync(path.join(dir, entry), { recursive: true, force: true });
@@ -1001,11 +1043,12 @@ async function storeRows(command: string, db: string, query: string): Promise<un
 
 /**
  * Runs `query` by the store command `command` on the database `db` and gives each row to `visit`
- * as the command prints it, read by psql-rows.ts's `PsqlTable`, so no more than one row's text is
- * held. A command that prints nothing for `quietMs` is ended and reported first, naming the
- * command and the limit; then a command that fails, with its first error line; then a fault of
- * its output; then a throw of `visit`, after which no row is given. Returns the rows the table
- * holds.
+ * as the command prints it, read by psql-rows.ts's `PsqlTable`: what is held is the row being read
+ * and the chunks of output it spans (common.ts's `eachChunk` lets each chunk go once it is read),
+ * never the whole answer. A command that prints nothing for `quietMs` is ended and reported
+ * first, naming the command and the limit; then a command that fails, with its first error line;
+ * then a fault of its output; then a throw of `visit`, after which no row is given. Returns the
+ * rows the table holds.
  */
 async function eachStoreRow(
   command: string,
@@ -1046,9 +1089,9 @@ async function eachStoreRow(
 
 /** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE rows a call, each
  *  row checked by psql-rows.ts's `PullCheck` and its bytes written as it comes (`eachStoreRow`),
- *  so one row (a slice of 1 MiB and at most 3 bytes more) is held at a time however long the
- *  file; a call that prints nothing for `quietMs` is ended and fails the pull. Returns the bytes
- *  it wrote and the calls it took. */
+ *  so one row (a slice of 1 MiB and at most 3 bytes more), with the chunks of psql's output it
+ *  spans, is held at a time however long the file; a call that prints nothing for `quietMs` is
+ *  ended and fails the pull. Returns the bytes it wrote and the calls it took. */
 export async function pullTranscript(
   command: string,
   db: string,
@@ -1558,9 +1601,13 @@ function pathKind(
   const copyDir = placed.prefix.replace(/\/$/, "");
   const resolved = resolvedReadPath(copyDir, dirs);
   if (resolved === undefined) {
-    const needs = /^[:@]?~/.test(copyDir)
-      ? "the home directory the session ran under, which its transcript's path does not name (no /.omp/ in it)"
-      : "the session's working directory, which its header does not name";
+    // A path that does not resolve with a working directory given needs a home (cases.ts's
+    // resolvedReadPath: `~`, `~/…`, `~name/…`, `@~`, `@~/…`); any other needs the working
+    // directory (`@~name/…` too, which Oh My Pi's read takes relative to it).
+    const needs =
+      resolvedReadPath(copyDir, { cwd: "/" }) === undefined
+        ? "the home directory the session ran under, which its transcript's path does not name (no /.omp/ in it)"
+        : "the session's working directory, which its header does not name";
     return { kind: "path-relative", why: `${where}, at ${copyDir}, which needs ${needs}` };
   }
   if (!PATH_COPY_DIR.safeParse(resolved).success) {
@@ -2352,10 +2399,13 @@ interface ProjectRead {
 const HIDDEN_RULE =
   "Oh My Pi 18.18.6 sets a skill's hide from its SKILL.md frontmatter's hide: true or disable-model-invocation: true (extensibility/skills.ts, lines 289, 494, 554 and 649; packages/utils/src/frontmatter.ts, lines 14-44, reads disable-model-invocation as disableModelInvocation), loads it, so skill:// reads it, and lists only the skills whose hide is not true (system-prompt.ts, lines 961-983)";
 
-/** Whether the SKILL.md text `text` keeps its skill out of Oh My Pi's listing (HIDDEN_RULE). */
+/** Whether the SKILL.md text `text` keeps its skill out of Oh My Pi's listing (HIDDEN_RULE), read
+ *  by context.ts's rule, the one the capture's context uses (`readFrontmatter`, as its
+ *  `skillFrontmatter` reads `hidden`): a frontmatter strict YAML refuses is read again as Oh My Pi
+ *  reads it, and `disable-model-invocation` is `disableModelInvocation`. */
 function hiddenFromListing(text: string): boolean {
-  const fields = frontmatter(text);
-  return fields?.hide === true || fields?.["disable-model-invocation"] === true;
+  const fields = readFrontmatter(text);
+  return fields.hide === true || fields.disableModelInvocation === true;
 }
 
 /** `cache`'s promise for `key`, made by `make` when it holds none. A promise that rejects with a
@@ -2399,18 +2449,25 @@ function transientFailure(error: unknown): boolean {
  *  time: the ref had no commit then. Callers tell it apart from every other failure by its type. */
 class NoCommitThen extends Error {}
 
+/** The reason a gh read that failed (`result`, as `GithubReads.send` gave it) failed for, when it
+ *  failed for a transient reason on every try: the reason of common.ts's TRANSIENT_FAILURES that
+ *  the last try's error names, or `rate limit` for a read GitHub still refused for its rate limit
+ *  after every wait; undefined otherwise. Read from the last try alone (`lastTryError`): a read
+ *  whose first try gave a 502 and whose last a 404 failed for good. */
+function transientOf(result: Sent<GhResult>): string | undefined {
+  const last = lastTryError(result);
+  return transientReason(last) ?? (RATE_LIMITED.test(last) ? "rate limit" : undefined);
+}
+
 /** The standard output of `result`, gh's answer to `args`; throws a GhFailed naming `args` and
  *  gh's first error line (each try's, when the read was sent more than once) when it failed. A
  *  read GitHub still refused for its rate limit after every wait (`GithubReads.send`) is a
- *  transient failure: its caller fails rather than taking the read as done (a skill left out of a
- *  profile because the limit was spent would change the case in silence). */
-function ghAnswer(args: readonly string[], result: GhResult): string {
+ *  transient failure (`transientOf`): its caller fails rather than taking the read as done (a
+ *  skill left out of a profile because the limit was spent would change the case in silence). */
+function ghAnswer(args: readonly string[], result: Sent<GhResult>): string {
   if (result.code !== 0) {
     const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
-    const transient =
-      transientReason(result.stderr) ??
-      (RATE_LIMITED.test(result.stderr) ? "rate limit" : undefined);
-    throw new GhFailed(`gh ${args.join(" ")} failed: ${line}`, transient);
+    throw new GhFailed(`gh ${args.join(" ")} failed: ${line}`, transientOf(result));
   }
   return result.stdout;
 }
@@ -2510,7 +2567,7 @@ export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
  *  (`tarball`) is sent again by the same rule, and is never kept. Exported for copies.test.ts,
  *  which checks that it reads a repository's files as copies.ts does. */
 export class GithubReads {
-  private readonly made = new Map<string, Promise<GhResult>>();
+  private readonly made = new Map<string, Promise<Sent<GhResult>>>();
   private readonly held = new Map<string, Promise<RepositoryAt>>();
   private readonly projects = new Map<string, Promise<ProjectRead>>();
   private readonly blobs = new Map<string, Promise<string>>();
@@ -2559,8 +2616,8 @@ export class GithubReads {
   }
 
   /** gh's answer to `args`, sent again as `retries` says, the read made once: an answer that
-   *  failed for a transient reason on every try is dropped once it does. */
-  private call(args: readonly string[]): Promise<GhResult> {
+   *  failed for a transient reason on every try (`transientOf`) is dropped once it does. */
+  private call(args: readonly string[]): Promise<Sent<GhResult>> {
     const key = args.join("\0");
     const held = this.made.get(key);
     if (held !== undefined) return held;
@@ -2570,12 +2627,7 @@ export class GithubReads {
       if (this.made.get(key) === made) this.made.delete(key);
     };
     made.then((result) => {
-      if (
-        result.code !== 0 &&
-        (transientReason(result.stderr) !== undefined || RATE_LIMITED.test(result.stderr))
-      ) {
-        drop();
-      }
+      if (result.code !== 0 && transientOf(result) !== undefined) drop();
     }, drop);
     return made;
   }
@@ -3073,7 +3125,7 @@ const DEVBOX_INSTALLERS_RULE =
   "a dev box installs every unit the installers of its own repository install into Oh My Pi at the session's start, whether or not the session read from it: the one repository of the copies output (manifests.tsv) that holds both an installer script (installers/*.sh) and Claude Code's settings (.claude/settings.json), whose .claude/ is the dev box's Claude Code config directory, read at its commit of the session's start with each repository its installers pin, and resolved by copies.ts's rules (resolveInstallers)";
 /** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
 const IGNORED_RULE =
-  "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
+  "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob, matched against the skill's own name and again against the name it is listed under, <namespace>/<name> for a later copy of a name whose text differs (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
 /** When a pool new at a subagent's start is installed (fault A of the misses diagnosis). */
 const POOL_AT_START_RULE =
   "Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts and merges the skill directories its extensions give then into the snapshot its parent gave it (session/session-tools.ts, discoverStartupSkillPaths, lines 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420), so a pool the dev box's skills-sources.json names at the subagent's start is listed where its clone is there then; which clones the host had then no repository records, so the profile installs such a pool only where the subagent's recorded listing names one of its skills, an inference from that listing, and the listing measure marks each name taken so (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against";
@@ -3697,20 +3749,11 @@ function stepBuild(
   return topBuild(lines, start, index, how);
 }
 
-/** The lines of the `<skills>` listing of the recorded prompt `blocks` (`- <name>: <text>`), as
- *  capture.ts's `skillListing` reads a body's: each name with the text it is listed under, the
- *  first line of each name, in order. */
+/** The lines of the `<skills>` listing of the recorded prompt `blocks` (`- <name>: <text>`), read
+ *  by capture.ts's `listingOf`, the parser its `skillListing` reads a body's with: each name with
+ *  the text it is listed under, the first line of each name, in order. */
 function listingLines(blocks: readonly string[]): { name: string; text: string }[] {
-  const lines: { name: string; text: string }[] = [];
-  for (const text of blocks) {
-    const block = /<skills>\n([\s\S]*?)<\/skills>/.exec(text)?.[1];
-    for (const line of block?.split("\n") ?? []) {
-      const [, name, listed] = /^- ([^:\s]+): (.*)$/.exec(line) ?? [];
-      if (name === undefined || listed === undefined) continue;
-      if (!lines.some((each) => each.name === name)) lines.push({ name, text: listed });
-    }
-  }
-  return lines;
+  return [...listingOf(blocks)].map(([name, text]) => ({ name, text }));
 }
 
 /** The names of the `<skills>` listing of the recorded prompt `blocks`, in order
@@ -5324,20 +5367,24 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   offers.push(...projectOffers);
   // The dev box's Oh My Pi config, read at the session's start: Oh My Pi loads no skill whose name
-  // a pattern of its skills.ignoredSkills matches (IGNORED_RULE).
+  // a pattern of its skills.ignoredSkills matches (IGNORED_RULE, copies.ts's `ignoredSkillMatch`).
   const ignores =
     home === undefined
       ? []
       : (held.get(home)?.manifests ?? []).flatMap((manifest) =>
           manifest.facts.flatMap((fact) =>
             fact.type === "ignores"
-              ? fact.patterns.map((pattern) => ({ pattern, file: manifest.path }))
+              ? fact.patterns.map((pattern) => ({
+                  pattern,
+                  file: manifest.path,
+                  matches: ignoredSkillMatch(pattern),
+                }))
               : []
           )
         );
   for (let at = offers.length - 1; at >= 0 && ignores.length > 0; at--) {
     const offer = offers[at];
-    const by = ignores.find(({ pattern }) => new Bun.Glob(pattern).match(offer?.copy.name ?? ""));
+    const by = ignores.find(({ matches }) => matches(offer?.copy.name ?? ""));
     if (offer === undefined || by === undefined) continue;
     offers.splice(at, 1);
     const inProject = projectOffers.indexOf(offer);
@@ -5425,6 +5472,17 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         offer.namespace === undefined
           ? undefined
           : listedName({ name: offer.copy.name, namespace: offer.namespace });
+      // Oh My Pi matches skills.ignoredSkills against the name it would list the copy under too,
+      // and loads none it matches (IGNORED_RULE).
+      const ignoredAs =
+        namespaced === undefined ? undefined : ignores.find(({ matches }) => matches(namespaced));
+      if (differs && namespaced !== undefined && ignoredAs !== undefined) {
+        evidence.push({
+          item: `left out: skill ${namespaced} (${offer.copy.repo} ${offer.copy.path})`,
+          source: `${offer.source}; under the name ${offer.copy.name} ${why}, and this copy's text differs, so Oh My Pi would list it as ${namespaced} (${NAMESPACE_RULE}); ${home}:${ignoredAs.file} at ${commits.get(home ?? "")} names ${ignoredAs.pattern} in skills.ignoredSkills: ${IGNORED_RULE}`,
+        });
+        continue;
+      }
       if (differs && namespaced !== undefined && !skills.has(namespaced)) {
         skills.set(namespaced, { ...offer.copy, namespace: offer.namespace });
         if (offer.fromRecorded === true) fromRecorded.add(namespaced);
@@ -5781,6 +5839,9 @@ interface CaseRun {
   readonly placer: Placer;
   /** The ids (attribute.ts's `modelId`) of the configuration's `servedModels`. */
   readonly servedIds: ReadonlySet<string>;
+  /** Runs one read of the store when the store's other reads of the build have ended: the store
+   *  is read one query at a time, whichever sessions are open. */
+  readStore<T>(read: () => Promise<T>): Promise<T>;
 }
 
 /** One session's record in the summary. `model`: the session's model as its last `model_change`
@@ -5891,6 +5952,11 @@ function sessionHeader(
 /** The schema a written task profile must pass: the one load reads it with (cases.ts's Profile
  *  and the context of a case). */
 const WrittenProfile = Profile.extend({ context: Case.shape.context });
+
+/** The skills of a task profile a build keeps, whatever else it holds: a written profile holds a
+ *  `context` beside cases.ts's Profile, and the listing its measure sets it against
+ *  (`withRecordedListing`), which the strict Profile refuses. */
+const KeptSkills = z.looseObject({ skills: Profile.shape.skills });
 
 /** A rebuilt task profile its readers would refuse (WrittenProfile), which is never written. */
 class ProfileRefused extends Error {}
@@ -6236,7 +6302,9 @@ async function caseOf(
   if (init !== undefined) {
     try {
       const hash = pathHash(transcriptPath);
-      const rows = await digestRows(run.config.psqlCommand, store.name, [hash]);
+      const rows = await run.readStore(() =>
+        digestRows(run.config.psqlCommand, store.name, [hash])
+      );
       reach = [parentLoad(rows.get(hash), sessionStart, store.name)];
     } catch (error) {
       return drop("profile-failed", messageFor(error));
@@ -7440,6 +7508,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     ),
     placer: placing,
     servedIds: new Set(config.servedModels.map(modelId)),
+    readStore: oneAtATime,
   };
   const caseRecords: Record<string, unknown>[] = [];
   const sessions: SessionRecord[] = [];
@@ -8881,12 +8950,13 @@ async function reprofileTasks(
     sessionQueries += 1;
     for (const [key, each] of found) subagents.set(`${store}\0${key}`, each);
   }
-  /** The measure of a task that keeps its old profile `text`: not measurable, for `why`. */
+  /** The measure of a task that keeps its old profile `text`: not measurable, for `why`, listing
+   *  the profile's skills (KeptSkills), each under the name Oh My Pi lists it by (`listedName`). */
   const keptMeasure = (text: string | undefined, why: string) => {
-    const kept = Profile.safeParse(parseJson(text ?? ""));
+    const kept = KeptSkills.safeParse(parseJson(text ?? ""));
     return listingMeasure(
       {
-        listed: kept.success ? kept.data.skills.map((each) => each.name) : [],
+        listed: kept.success ? kept.data.skills.map((each) => listedName(each)) : [],
         recorded: undefined,
         sessionDigest: null,
       },

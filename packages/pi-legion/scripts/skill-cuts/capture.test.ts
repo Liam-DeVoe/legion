@@ -18,6 +18,7 @@ import {
   type CaptureOptions,
   captureBody,
   type HintWriter,
+  listingOf,
   NEUTRAL_CLAUDE_CONFIG_DIR,
   NEUTRAL_CWD,
   NEUTRAL_OS,
@@ -326,6 +327,21 @@ function withoutListingLine(blocks: readonly string[], skill: string): string[] 
       .join("\n")
   );
 }
+
+// Catches: two readers of one listing that disagreed on a name listed twice: build.ts's kept its
+// first line, capture.ts's `skillListing` its last.
+test("a skill listing reads a name listed twice under its first line, in the capture and in build.ts alike (listingOf)", () => {
+  const blocks = [
+    "<skills>\n- alpha: Use for the first alpha.\n- beta: Use for beta.\n</skills>",
+    "<skills>\n- alpha: Use for the second alpha.\n</skills>",
+  ];
+  const first = new Map([
+    ["alpha", "Use for the first alpha."],
+    ["beta", "Use for beta."],
+  ]);
+  expect(listingOf(blocks)).toEqual(first);
+  expect(skillListing({ system: blocks.map((text) => ({ type: "text", text })) })).toEqual(first);
+});
 
 test("an arm's recorded prompt is the recording with only the skill's listing line changed: under the arm's hint, or left out", () => {
   expect(SUBAGENT_PROMPT.length).toBeGreaterThan(1);

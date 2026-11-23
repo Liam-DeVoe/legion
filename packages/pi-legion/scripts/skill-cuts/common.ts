@@ -90,12 +90,13 @@ export const MAX_RATE_RETRIES = 5;
 /** gh's error text for a failure the same call may not meet again, with its reason: the union of
  *  the two lists the runner had before it shared one rule, copies.ts's and context.ts's. The
  *  connection timed out, was reset or refused, or ended early; GitHub's front end answered a 5xx,
- *  or the npm registry a 429 (too many requests: build.ts's registry read);
- *  the gh process ran past the time limit its caller gave it and was ended (context.ts's reads
- *  have one); a name did not resolve, or did not resolve yet; a pipe broke; or the text names a
- *  timeout in any other words. The first pattern that matches gives the reason, so a more
- *  particular reason comes before a more general one. A call that fails so is sent again
- *  (`GhRetries.waitToRetry`); no other failure is. */
+ *  or the npm registry a 429 (`HTTP 429 (too many requests)`, the words of build.ts's registry
+ *  read alone: GitHub's 429 is a rate limit, RATE_LIMITED, waited out at most MAX_RATE_RETRIES
+ *  times and then not sent again); the gh process ran past the time limit its caller gave it and
+ *  was ended (context.ts's reads have one); a name did not resolve, or did not resolve yet; a pipe
+ *  broke; or the text names a timeout in any other words. The first pattern that matches gives
+ *  the reason, so a more particular reason comes before a more general one. A call that fails so
+ *  is sent again (`GhRetries.waitToRetry`); no other failure is. */
 const TRANSIENT_FAILURES: readonly (readonly [reason: string, pattern: RegExp])[] = [
   ["TLS handshake timeout", /TLS handshake timeout/i],
   ["connection reset", /connection reset|reset by peer|ECONNRESET/i],
@@ -106,7 +107,7 @@ const TRANSIENT_FAILURES: readonly (readonly [reason: string, pattern: RegExp])[
   ["HTTP 503", /HTTP 503\b/],
   ["HTTP 504", /HTTP 504\b/],
   ["other HTTP 5xx", /HTTP 5\d\d/i],
-  ["HTTP 429", /HTTP 429\b/],
+  ["HTTP 429", /HTTP 429 \(too many requests\)/],
   ["time limit", /timed out after \d+ ms/],
   ["timed out", /timed out/i],
   ["TLS handshake", /TLS handshake/i],
@@ -146,6 +147,17 @@ export function triesError(errors: readonly string[]): string {
 export interface GhTry {
   readonly code: number;
   readonly stderr: string;
+}
+
+/** What `GhRetries.send` gives: the try it ended on, whose `stderr` is each try's error
+ *  (`triesError`) when there were several, and then `lastStderr` is that last try's own error. */
+export type Sent<T extends GhTry> = T & { readonly lastStderr?: string };
+
+/** The error text of the try a call `GhRetries.send` made ended on. A call is sent again only
+ *  after a transient failure or a rate limit, so a last try that failed so is a call that failed
+ *  so on every try, and one that failed for good (a 404) after a 502 failed for good. */
+export function lastTryError(result: Sent<GhTry>): string {
+  return result.lastStderr ?? result.stderr;
 }
 
 /** Where `GhRetries` waits, and says that it does. */
@@ -210,12 +222,13 @@ export class GhRetries {
   }
 
   /** The first try of the call `send` makes that exits 0, else the last try, which no rule sends
-   *  again, its `stderr` each try's error (`triesError`) when there were several. `splits`: the
-   *  call is a GraphQL batch of more than one item, which its caller splits. `rateWait`: the
-   *  milliseconds to wait before a call GitHub refused for its rate limit is sent again, at its
-   *  `refused`-th refusal (from 0); without it a rate limit is not waited out. Each such wait is
-   *  said on standard error first: the call, gh's first error line, the wait and when it ends. `send` takes any
-   *  read slot itself, so no wait holds one. */
+   *  again, its `stderr` each try's error (`triesError`) when there were several, and its own
+   *  error then kept as `lastStderr` (`lastTryError`). `splits`: the call is a GraphQL batch of
+   *  more than one item, which its caller splits. `rateWait`: the milliseconds to wait before a
+   *  call GitHub refused for its rate limit is sent again, at its `refused`-th refusal (from 0);
+   *  without it a rate limit is not waited out. Each such wait is said on standard error first:
+   *  the call, gh's first error line, the wait and when it ends. `send` takes any read slot
+   *  itself, so no wait holds one. */
   async send<T extends GhTry>(
     send: () => Promise<T>,
     options: {
@@ -224,7 +237,7 @@ export class GhRetries {
       /** What the call is, in the line said on each retry (`a gh call` when absent). */
       readonly read?: string;
     } = {}
-  ): Promise<T> {
+  ): Promise<Sent<T>> {
     const errors: string[] = [];
     let limited = 0;
     let transient = 0;
@@ -246,7 +259,8 @@ export class GhRetries {
         limited++;
       } else if (await this.waitToRetry(result.stderr, transient, options.splits, options.read)) {
         transient++;
-      } else return errors.length === 1 ? result : { ...result, stderr: `${triesError(errors)}\n` };
+      } else if (errors.length === 1) return result;
+      else return { ...result, stderr: `${triesError(errors)}\n`, lastStderr: result.stderr };
     }
   }
 
@@ -346,21 +360,19 @@ export function timeLimit(child: { kill(): void }, ms: number | undefined): Time
 }
 
 /** Gives each chunk of `stream` to `take` until the stream ends, or until `limit` ends its child:
- *  the stream is then let go, since a process the child started (psql under the store's wrapper
- *  script, the binary under gh's) can hold it open after the child is gone. */
+ *  the reader is then cancelled, which ends a pending read at once, since a process the child
+ *  started (psql under the store's wrapper script, the binary under gh's) can hold the stream open
+ *  after the child is gone. A chunk is let go once `take` returns. */
 export async function eachChunk(
   stream: ReadableStream<Uint8Array>,
   limit: TimeLimit,
   take: (chunk: Uint8Array) => void
 ): Promise<void> {
   const reader = stream.getReader();
-  const ended = limit.ended.then(() => {
-    reader.cancel().catch(() => {});
-    return undefined;
-  });
+  void limit.ended.then(() => reader.cancel().catch(() => {}));
   for (;;) {
-    const next = await Promise.race([reader.read(), ended]);
-    if (next === undefined || next.done) return;
+    const next = await reader.read();
+    if (next.done) return;
     take(next.value);
   }
 }

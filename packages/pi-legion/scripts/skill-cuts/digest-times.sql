@@ -17,13 +17,19 @@ SET LOCAL statement_timeout = '15min';
 -- `.jsonl` (Oh My Pi writes a subagent's transcript under its parent's path less `.jsonl`,
 -- task/executor.ts, line 4743, so a subagent of a subagent is below its root's directory too); a
 -- file below no such directory, a top-level session, is its own root. Of each root, once however
--- many listed sessions it is the root of, the file row's
--- `content` and each part of public.omp_session_files_parts, each part with the last 400
--- characters of the text before it (the part before it, or the file row's `content` for the first
--- part), so a line a cut splits is read whole; of those, only the `timestamp` and the `data` (the
--- prompt's digest) of each `system-prompt-digest` line (a custom entry Oh My Pi writes when the
--- prompt changes, just before the first reply under the new prompt: session/session-tools.ts,
--- lines 1818-1827), found by one pattern. No other text leaves the database.
+-- many listed sessions it is the root of (`digests` is materialized), the file row's `content`
+-- and each part of public.omp_session_files_parts, each part with the last 400 characters of the
+-- text before it (the part before it, or the file row's `content` for the first part), so a line
+-- a cut splits is read whole; of those, only the pieces that hold the text
+-- `"customType":"system-prompt-digest"`, each split into its lines, as count.sql splits a piece,
+-- so the pattern runs over one line at a time: Postgres's regexp_matches takes 4 bytes a byte of
+-- its input in one allocation, which it refuses past 1 GB, so a match over a whole piece of 256
+-- MiB or more (a file row that holds a whole older file can be one) would fail the query. Of the
+-- lines that hold that text, only the `timestamp` and the `data` (the prompt's digest) of each
+-- `system-prompt-digest` line (a custom entry Oh My Pi writes when the prompt changes, just before
+-- the first reply under the new prompt: session/session-tools.ts, lines 1818-1827), found by one
+-- pattern. Oh My Pi writes each entry as one JSON line, so no digest line spans two lines. No
+-- other text leaves the database.
 --
 -- Rows, one JSON value per listed session the store holds (psql prints each on one line), in hash
 -- order:
@@ -67,14 +73,17 @@ pieces AS (
     WHERE pt.path = r.root
   ) x
 ),
-digests AS (
+digests AS MATERIALIZED (
   SELECT DISTINCT p.root, m[2] AS at, m[1] AS digest
   FROM pieces p
+  CROSS JOIN LATERAL string_to_table(p.piece, E'\n') t(ln)
   CROSS JOIN LATERAL regexp_matches(
-    p.piece,
+    t.ln,
     '"customType":"system-prompt-digest","data":"([^"]*)","id":"[^"]*","parentId":(?:"[^"]*"|null),"timestamp":"([^"]+)"',
     'g'
   ) m
+  WHERE strpos(p.piece, '"customType":"system-prompt-digest"') > 0
+    AND strpos(t.ln, '"customType":"system-prompt-digest"') > 0
 )
 SELECT json_build_object(
   'hash', s.hash,

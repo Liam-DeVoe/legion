@@ -477,9 +477,13 @@ export function readFrontmatter(content: string): Record<string, unknown> {
 /** The frontmatter of the skill in `dir`, as Oh My Pi reads it for the listing (`readFrontmatter`):
  *  its `description` ("" when it has none), and whether it is hidden from the listing, which Oh My
  *  Pi does for `hide: true` or `disable-model-invocation: true` (extensibility/skills.ts at the
- *  pinned tag). */
+ *  pinned tag). The file is decoded as Oh My Pi reads a SKILL.md (`Bun.file(…).text()`,
+ *  capability/fs.ts's `readFile`), which drops a leading byte order mark, as load.ts's
+ *  `sessionDescription` decodes the session's copy. */
 export function skillFrontmatter(dir: string): { description: string; hidden: boolean } {
-  const frontmatter = readFrontmatter(readFileSync(path.join(dir, "SKILL.md"), "utf8"));
+  const frontmatter = readFrontmatter(
+    new TextDecoder().decode(readFileSync(path.join(dir, "SKILL.md")))
+  );
   const description = frontmatter.description;
   return {
     description: typeof description === "string" ? description : "",

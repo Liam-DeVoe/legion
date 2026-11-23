@@ -2598,6 +2598,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   };
   // Each task whose capture carries the Envoy plugin's block of the skill, by where the answer
   // that its session had Dispatch comes from (arms.ts's `dispatchOf`), counted beside the listing.
+  // A load test has no transcript messages, so the answer comes from a Legion role or is assumed.
   const froms =
     o.host === "omp"
       ? profiled.flatMap(({ profile }) =>
@@ -2610,7 +2611,6 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     carryBlock: froms.length,
     assumed: froms.filter((from) => from === "assumed").length,
     legionRole: froms.filter((from) => from === "legion-role").length,
-    transcript: froms.filter((from) => from === "transcript").length,
   };
   // With no --hint-model the hint model is the model itself, and Oh My Pi's hints are written on
   // the Messages route only, so each capture to be made would fail.

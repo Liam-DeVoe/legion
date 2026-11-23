@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { SQL } from "bun";
@@ -46,12 +46,15 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // its first line, so that its model_change line is in its second part; in the fifth a file made
 // here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
 // Ki; in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe; and
-// in the seventh a made-up session and three forks of it, which the fork tests describe.
+// in the seventh a made-up session and three forks of it, which the fork tests describe. Two
+// digest-times.sql rows each make one more database, and drop it in their own `finally`: F1's
+// session cut inside its digest line, and a made-up root of 256 MiB.
 // The rows of count.sql, models.sql and the pull, tasks and sessions queries on the fixture
 // databases must equal those of their F7 captures (psql-rows.test.ts and this header give the
 // capture commands), so a change to one of those queries that changes such a result fails here
-// until F7 is captured again. The other rows (the made-up files', session-head.sql's and
-// session-paths.sql's) are checked against values the test computes from its inputs.
+// until F7 is captured again. The other rows (the made-up files', session-head.sql's,
+// session-paths.sql's, subagents.sql's and digest-times.sql's) are checked against values the
+// test computes from its inputs.
 //
 // F1c, F1d and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, in the shell
 // that ran psql-rows.test.ts's capture commands (its N, SERVER, FIRST, F1 and store()):
@@ -266,9 +269,13 @@ describe("countsql.ts fills the SQL", () => {
         `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
       );
     }
-    expect(() => subagentsSql([{ hash, from: null, to: "'; DROP TABLE y; --" }])).toThrow(
-      "is not a time"
-    );
+    // A time Date.parse reads but that is not an ISO time (an HTTP date, a date alone) is refused
+    // too: the query compares the text as given with `::timestamptz`.
+    for (const bad of ["'; DROP TABLE y; --", "Fri, 20 Nov 2026 01:59:48 GMT", "2026-11-20"]) {
+      expect(() => subagentsSql([{ hash, from: null, to: bad }])).toThrow(
+        `${JSON.stringify(bad)} is not a time`
+      );
+    }
   });
 
   test("digest-times.sql is filled with the sessions' path hashes, each a SHA-256 in lowercase hex, and refuses any other", () => {
@@ -282,6 +289,20 @@ describe("countsql.ts fills the SQL", () => {
         `${JSON.stringify(bad)} is not a path hash of 64 hex characters`
       );
     }
+  });
+
+  // Catches: a store query with no statement_timeout (pull.sql, sessions.sql and session-paths.sql
+  // had none), which only the client's quiet limit ended, and ending the client does not cancel
+  // the query on the server: common.ts's STORE_QUIET_MS and the README say every SQL of the runner
+  // ends itself after 15 minutes.
+  test("every SQL file of the runner starts with the 15-minute statement_timeout", () => {
+    const files = readdirSync(import.meta.dir).filter((file) => file.endsWith(".sql"));
+    expect(files.length).toBeGreaterThanOrEqual(9);
+    const first = (file: string) =>
+      readFileSync(path.join(import.meta.dir, file), "utf8").split("\n")[0];
+    expect(
+      files.filter((file) => first(file) !== "SET LOCAL statement_timeout = '15min';")
+    ).toEqual([]);
   });
 });
 
@@ -1150,5 +1171,39 @@ describe.skipIf(serverDsn === undefined)(
         await server.close();
       }
     });
+
+    // Catches: the digest pattern run over a whole piece. Postgres's regexp_matches takes 4 bytes
+    // a byte of its input in one allocation and refuses one past 1 GB, so a file row of 256 MiB
+    // (count.sql's header: a file row that holds a whole older file) failed the whole query. The
+    // row is made by the server (`repeat`), so no 256 MiB passes through this process.
+    test("digest-times.sql: a root whose file row is one piece of 256 MiB of short lines gives its digest line, read line by line", async () => {
+      const ROOT = "made-up/2026-11-01T10-00-00-000Z_0a0b0c0d-0000-4000-8000-000000000001.jsonl";
+      const at = "2026-11-01T10:00:01.000Z";
+      const line = `{"type":"custom","customType":"system-prompt-digest","data":"d1","id":"a1","parentId":null,"timestamp":"${at}"}\n`;
+      const root = createHash("sha256").update(ROOT).digest("hex");
+      const name = `skill_cuts_count_${stamp}_digest_big`;
+      const server = new SQL(serverDsn ?? "");
+      try {
+        await server.unsafe(`CREATE DATABASE ${name}`);
+        await loadFixtures(dsnOf(name), [], { parts: 2 });
+        const db = new SQL(dsnOf(name));
+        try {
+          // 262144 lines of 1 KiB, then the digest line.
+          await db.unsafe(
+            `INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+             SELECT $1, repeat(repeat('x', 1023) || E'\\n', 262144) || $2, 0, 0`,
+            [ROOT, line]
+          );
+        } finally {
+          await db.close();
+        }
+        expect(run(name, digestTimesSql([root]))).toEqual([
+          { hash: root, root, rootHeld: true, digests: [{ at, digest: "d1" }] },
+        ]);
+      } finally {
+        await server.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+        await server.close();
+      }
+    }, 120_000);
   }
 );

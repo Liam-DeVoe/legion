@@ -309,6 +309,19 @@ test("the git blob id, the frontmatter description and the role of a context are
   expect(legionRole("devbox")).toBeUndefined();
 });
 
+// Catches: the tested copy's SKILL.md read with its byte order mark kept, so its frontmatter was
+// none (no `---` at its start) while load.ts's read of the session's copy, which drops the mark as
+// Oh My Pi's `Bun.file(…).text()` does, found the description: two equal files differed.
+test("a SKILL.md that starts with a byte order mark is read as Oh My Pi reads it: the mark dropped, its frontmatter found", () => {
+  writeTree(path.join(dir, "bom"), {
+    "SKILL.md": "\uFEFF---\nname: bom\ndescription: Use when the file starts with a mark.\n---\n",
+  });
+  expect(skillFrontmatter(path.join(dir, "bom"))).toEqual({
+    description: "Use when the file starts with a mark.",
+    hidden: false,
+  });
+});
+
 test("each skill is its repository's directory at its commit, through the cache, and the case's skill is the arm's", async () => {
   const root = path.join(dir, "skills");
   const c = aCase("devbox", {

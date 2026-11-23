@@ -1,3 +1,4 @@
+SET LOCAL statement_timeout = '15min';
 -- The candidate sessions of the behaviour test: for a skill, the paths of the sessions with a
 -- read of a given copy in the window, and no text. count.sql's rows already name, per (skill,
 -- copy, kind),

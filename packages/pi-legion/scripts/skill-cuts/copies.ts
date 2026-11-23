@@ -2807,14 +2807,16 @@ function parseInstaller(file: string, text: string): ParsedManifest {
   // `gh skill install <repo> <skill> … [--pin <ref>]`: GitHub CLI installs the skill of that name
   // of <repo> (`skills/<skill>`) at <ref>; with `--agent universal --scope user`, into
   // ~/.agents/skills/<skill>, which Oh My Pi's agents provider reads (`resolveInstallers`).
-  // A repository, skill or ref given by a variable the script sets (`NAME="value"`) is read so.
+  // A repository, skill or ref given by a variable the script sets (`NAME="value"`) is read so,
+  // as `shellVariables` unquoted it once: a value whose text holds quotes keeps them, as the shell
+  // passes them.
   for (const raw of lines) {
     const call = /^\s*gh\s+skill\s+install\s+(\S+)\s+(\S+)(.*)$/.exec(raw);
     if (call === null) continue;
     const resolve = (word: string) => {
       const bare = unquote(word);
       const named = /^\$\{?(\w+)\}?$/.exec(bare)?.[1];
-      return named === undefined ? bare : unquote(vars.get(named) ?? "");
+      return named === undefined ? bare : (vars.get(named) ?? "");
     };
     const repo = resolve(call[1] ?? "");
     const skill = resolve(call[2] ?? "");
@@ -3128,9 +3130,19 @@ export class CopyIndex {
   }
 }
 
-/** A glob of skill names (`*` any run of characters) as a regular expression. */
+/** A glob of skill names (`*` any run of characters) as a regular expression: a `find -name`
+ *  test of an installer's prune (`prunes`). */
 function nameGlob(pattern: string): RegExp {
   return new RegExp(`^${pattern.split("*").map(escapeRegExp).join(".*")}$`);
+}
+
+/** Whether the skills.ignoredSkills pattern `pattern` leaves out a skill of a name, as Oh My Pi
+ *  18.18.6 matches one: as a Bun.Glob (extensibility/skills.ts, lines 386-389, 401-406, 437 and
+ *  544; build.ts's IGNORED_RULE), so `?`, `[…]` and `{…}` match as they do there. The `ignores`
+ *  rows and build.ts's profile both match with it. */
+export function ignoredSkillMatch(pattern: string): (name: string) => boolean {
+  const glob = new Bun.Glob(pattern);
+  return (name) => glob.match(name);
 }
 
 /** What the installers give: their rows, the units that ship skills, the prefix rows, and notes on
@@ -3194,38 +3206,49 @@ export function releaseTag(manifestPath: string, version: string): string {
 }
 
 /** The names of the skills an npm tarball of an Oh My Pi plugin package ships, from its files
- *  (`files`, by path inside the package: the tarball's `package/` taken off): each directory its
- *  manifest (`omp`, else `pi`) declares (`declaredSkillEntries`) that stays inside the package,
- *  else `skills/`, the directory itself when it holds a SKILL.md, else each directory one level
- *  below it that does, as Oh My Pi scans a skill directory. */
+ *  (`files`, by path inside the package: the tarball's `package/` taken off), read by the rule
+ *  this file reads a package of a repository's tree by: its package.json as `parsePackage` reads
+ *  one, each SKILL.md a copy whose name and description are read as `skillFields` reads a blob,
+ *  and the names of the copies the package's unit ships (`resolveInstallers`, which scans each
+ *  skill directory by `CopyIndex.scan`: Oh My Pi's namespace level, its skip of names that start
+ *  with ".", and its rule that a skill with no description is not listed). A tarball whose
+ *  package.json is missing or is not JSON ships none. */
 export function tarballSkills(files: ReadonlyMap<string, string>): string[] {
-  let pkg: unknown;
-  try {
-    pkg = JSON.parse(files.get("package.json") ?? "null");
-  } catch {
-    return [];
-  }
-  const manifest =
-    pkg !== null && typeof pkg === "object"
-      ? (Reflect.get(pkg, "omp") ?? Reflect.get(pkg, "pi"))
-      : undefined;
-  const dirs = (declaredSkillEntries(manifest) ?? ["skills"]).flatMap((entry) => {
-    const dir = insidePackage(entry);
-    return dir === undefined ? [] : [dir];
-  });
-  const names = new Set<string>();
-  for (const dir of dirs) {
-    const prefix = dir === "" ? "" : `${dir}/`;
-    if (files.has(`${prefix}SKILL.md`)) {
-      names.add(path.posix.basename(dir));
-      continue;
-    }
-    for (const file of files.keys()) {
-      const rest = file.startsWith(prefix) ? file.slice(prefix.length).split("/") : [];
-      if (rest.length === 2 && rest[1] === "SKILL.md" && rest[0] !== undefined) names.add(rest[0]);
-    }
-  }
-  return [...names].sort();
+  const text = files.get("package.json");
+  const pkg = text === undefined ? undefined : parseJson(text);
+  if (text === undefined || pkg === undefined) return [];
+  const named = pkg !== null && typeof pkg === "object" ? Reflect.get(pkg, "name") : undefined;
+  // The index names a repository; a root SKILL.md with no name takes its last part, as Oh My Pi
+  // names one after its directory, node_modules/<name>.
+  const repository = `npm/${typeof named === "string" ? (named.split("/").pop() ?? "") : ""}`;
+  const manifest: Manifest = {
+    repository,
+    path: "package.json",
+    kind: "omp-package",
+    source: "tree",
+    ...parseManifest("omp-package", "package.json", text),
+    error: "",
+    rows: 0,
+  };
+  const copies = [...files]
+    .filter(([file]) => file === "SKILL.md" || file.endsWith("/SKILL.md"))
+    .map(([file, skill]): SkillCopy => {
+      const dir = dirOf(file);
+      return {
+        repository,
+        path: dir,
+        file,
+        blob: "",
+        fork: false,
+        archived: false,
+        parent: "",
+        ...skillFields(dir, repository, skill),
+      };
+    });
+  const shipped = resolveInstallers([manifest], new CopyIndex(copies)).rows.filter(
+    (row) => row.action === "ships" && row.copyPath !== undefined
+  );
+  return [...new Set(shipped.map((row) => row.skill))].sort();
 }
 
 /** A repository an installer pins: a `github:` dependency of an Oh My Pi plugins package.json, an
@@ -3429,16 +3452,22 @@ export function resolveInstallers(
         ? ""
         : `Oh My Pi lists no skill of it without a description: ${undescribed.join(", ")}`;
     // A package that declares no skill, or falls back to a skills/ the tree does not hold, ships
-    // none, and is no unit.
+    // none, and is no unit; one whose skills all lack a description is a unit with no member, so
+    // its note says why Oh My Pi lists none of them.
     if (
       members.length === 0 &&
+      undescribed.length === 0 &&
       (!fact.declared || fact.skillDirs.length + fact.outside.length === 0)
     )
       continue;
+    // The declared directories whose scan found no SKILL.md, described or not.
+    const empty = scans
+      .filter((scan) => scan.members.length === 0 && scan.undescribed.length === 0)
+      .map((scan) => scan.rel);
     const said = [
-      ...(fact.skillDirs.length > 0
+      ...(empty.length > 0
         ? [
-            `${fact.manifestKey}.skills ${fact.skillDirs.map(shown).join(", ")} holds no SKILL.md in the tree`,
+            `${fact.manifestKey}.skills ${empty.map(shown).join(", ")} holds no SKILL.md in the tree`,
           ]
         : []),
       ...(fact.outside.length > 0
@@ -3462,7 +3491,7 @@ export function resolveInstallers(
       note:
         members.length > 0
           ? leftOut
-          : [`${said.join("; ")}, and no prepack script stages it`, leftOut]
+          : [said.length > 0 ? `${said.join("; ")}, and no prepack script stages it` : "", leftOut]
               .filter((part) => part !== "")
               .join("; "),
     };
@@ -3843,8 +3872,8 @@ export function resolveInstallers(
   }
   for (const { manifest, fact } of factsOf(manifests, "ignores")) {
     for (const pattern of fact.patterns) {
-      const glob = nameGlob(pattern);
-      const matched = index.copies.filter((copy) => glob.test(copy.name));
+      const matches = ignoredSkillMatch(pattern);
+      const matched = index.copies.filter((copy) => matches(copy.name));
       if (matched.length === 0)
         row(
           manifest,
@@ -5245,6 +5274,17 @@ const RepositoryInfo = z.looseObject({
   parent: z.looseObject({ full_name: z.string() }).nullish(),
 });
 
+/** What one read at a pin gives `readPinned`: the failure of a listed repository's read there,
+ *  else the repository as read at the pin, its read (undefined when it failed), and the listed
+ *  repository it takes the place of. */
+type PinnedRead =
+  | { readonly failure: string }
+  | {
+      readonly repo: Repository;
+      readonly read: RepositoryRead | undefined;
+      readonly listed: Repository | undefined;
+    };
+
 /**
  * The end of step 1: each repository an installer of the repositories read pins, and each clone
  * the configuration's `clones` states (`installerPins`), read at the ref the pin names as
@@ -5256,7 +5296,9 @@ const RepositoryInfo = z.looseObject({
  * first pin of a repository decides its ref; another at another ref goes to `failures`. A
  * marketplace read at its pin names the plugins an installer installs from it, whose source
  * repositories it pins in turn (`installerPins`), so the pins are read again until no new
- * repository is pinned.
+ * repository is pinned. The reads of one round run at once, and each lands (its read, its place
+ * in `repositories`, its failure) once all of them have ended, in the pins' order: so the next
+ * round's pins, and `failures`, are what one read at a time gives, whichever read ends first.
  */
 async function readPinned(
   github: Github,
@@ -5290,65 +5332,77 @@ async function readPinned(
       }
     }
     if (fresh.length === 0) return;
-    await mapLimit(fresh, options.repositoryJobs ?? REPOSITORY_JOBS, async (pin) => {
-      const listed = repositories.find(
-        (repo) => repo.repository.toLowerCase() === pin.repository.toLowerCase()
-      );
-      if (listed !== undefined && (pin.ref === "" || pin.ref === listed.branch)) return;
-      let marks: Pick<Repository, "fork" | "archived" | "parent" | "branch"> | undefined = listed;
-      let error = "";
-      if (marks === undefined) {
-        try {
-          const info =
-            cache.get("repository-info", pin.repository, RepositoryInfo) ??
-            (await github.api(`repos/${pin.repository}`, RepositoryInfo, pin.repository));
-          cache.put("repository-info", pin.repository, info);
-          marks = {
-            fork: info.fork,
-            archived: info.archived,
-            parent: info.parent?.full_name ?? "",
-            branch: info.default_branch,
-          };
-        } catch (failed) {
-          rethrowStop(failed);
-          error = `repository read failed: ${(failed as Error).message}`;
-        }
-      }
-      const repo: Repository = {
-        repository: listed?.repository ?? pin.repository,
-        owner: listed?.owner ?? pin.repository.split("/")[0] ?? "",
-        fork: marks?.fork ?? false,
-        archived: marks?.archived ?? false,
-        parent: marks?.parent ?? "",
-        branch: pin.ref === "" ? (marks?.branch ?? "") : pin.ref,
-        commit: "",
-        tree: [],
-        treeEntries: 0,
-        treeRead: "",
-        forkRead: "",
-        changed: undefined,
-        error,
-      };
-      const started = io.now();
-      const step =
-        error === ""
-          ? await readRepositoryStep(github, cache, repo, options.at, config.excludePaths)
-          : { read: undefined, calls: 0, cached: false };
-      const seconds = Math.round((io.now() - started) / 1000);
-      io.err(
-        repo.error === ""
-          ? `copies: pinned ${repo.repository} at ${repo.branch} (${named(pin)}): ${repo.treeEntries} entries, ${step.calls} tree reads, ${seconds} s, ${step.cached ? "cached" : "read"}`
-          : `copies: pinned ${repo.repository} at ${at(pin.ref)} (${named(pin)}): failed (${repo.error}), ${seconds} s`
-      );
-      if (listed !== undefined && step.read === undefined) {
-        failures.push(
-          `${repo.repository} at ${pin.ref}, which ${named(pin)} pins: ${repo.error}; its read at ${listed.branch} stands`
+    const landed = await mapLimit(
+      fresh,
+      options.repositoryJobs ?? REPOSITORY_JOBS,
+      async (pin): Promise<PinnedRead | undefined> => {
+        const listed = repositories.find(
+          (repo) => repo.repository.toLowerCase() === pin.repository.toLowerCase()
         );
-        return;
+        if (listed !== undefined && (pin.ref === "" || pin.ref === listed.branch)) return undefined;
+        let marks: Pick<Repository, "fork" | "archived" | "parent" | "branch"> | undefined = listed;
+        let error = "";
+        if (marks === undefined) {
+          try {
+            const info =
+              cache.get("repository-info", pin.repository, RepositoryInfo) ??
+              (await github.api(`repos/${pin.repository}`, RepositoryInfo, pin.repository));
+            cache.put("repository-info", pin.repository, info);
+            marks = {
+              fork: info.fork,
+              archived: info.archived,
+              parent: info.parent?.full_name ?? "",
+              branch: info.default_branch,
+            };
+          } catch (failed) {
+            rethrowStop(failed);
+            error = `repository read failed: ${(failed as Error).message}`;
+          }
+        }
+        const repo: Repository = {
+          repository: listed?.repository ?? pin.repository,
+          owner: listed?.owner ?? pin.repository.split("/")[0] ?? "",
+          fork: marks?.fork ?? false,
+          archived: marks?.archived ?? false,
+          parent: marks?.parent ?? "",
+          branch: pin.ref === "" ? (marks?.branch ?? "") : pin.ref,
+          commit: "",
+          tree: [],
+          treeEntries: 0,
+          treeRead: "",
+          forkRead: "",
+          changed: undefined,
+          error,
+        };
+        const started = io.now();
+        const step =
+          error === ""
+            ? await readRepositoryStep(github, cache, repo, options.at, config.excludePaths)
+            : { read: undefined, calls: 0, cached: false };
+        const seconds = Math.round((io.now() - started) / 1000);
+        io.err(
+          repo.error === ""
+            ? `copies: pinned ${repo.repository} at ${repo.branch} (${named(pin)}): ${repo.treeEntries} entries, ${step.calls} tree reads, ${seconds} s, ${step.cached ? "cached" : "read"}`
+            : `copies: pinned ${repo.repository} at ${at(pin.ref)} (${named(pin)}): failed (${repo.error}), ${seconds} s`
+        );
+        if (listed !== undefined && step.read === undefined) {
+          return {
+            failure: `${repo.repository} at ${pin.ref}, which ${named(pin)} pins: ${repo.error}; its read at ${listed.branch} stands`,
+          };
+        }
+        return { repo, read: step.read, listed };
       }
-      if (step.read !== undefined) {
-        reads.set(repo, step.read);
-        searches.add(step.read.copies.map((copy) => copy.name));
+    );
+    for (const each of landed) {
+      if (each === undefined) continue;
+      if ("failure" in each) {
+        failures.push(each.failure);
+        continue;
+      }
+      const { repo, read, listed } = each;
+      if (read !== undefined) {
+        reads.set(repo, read);
+        searches.add(read.copies.map((copy) => copy.name));
       }
       if (listed === undefined) {
         repositories.push(repo);
@@ -5356,7 +5410,7 @@ async function readPinned(
         reads.delete(listed);
         repositories[repositories.indexOf(listed)] = repo;
       }
-    });
+    }
   }
 }
 

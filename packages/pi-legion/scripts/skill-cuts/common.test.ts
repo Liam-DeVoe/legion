@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { MAX_RATE_WAIT_MS, type ResetIo, untilInstallationReset } from "./common";
+import {
+  eachChunk,
+  GhRetries,
+  MAX_RATE_RETRIES,
+  MAX_RATE_WAIT_MS,
+  type ResetIo,
+  type TimeLimit,
+  transientReason,
+  untilInstallationReset,
+} from "./common";
 import { graphqlArgs } from "./copies";
 
 // Catches: a wait for a primary rate limit's reset that read `gh api rate_limit`, which names no
@@ -197,5 +206,78 @@ describe("untilInstallationReset", () => {
       stdout: included("200 OK", seconds(NOW) + 3_600, {}),
     }));
     expect(await untilInstallationReset(["api", "repos/acme/x"], io)).toBe(900_000);
+  });
+});
+
+describe("GhRetries", () => {
+  // Catches: TRANSIENT_FAILURES' `HTTP 429`, made for the npm registry's 429, matching GitHub's
+  // 429 too, so a gh call still refused after its MAX_RATE_RETRIES rate waits was sent 4 times
+  // more as a transient failure.
+  test("a gh call GitHub refuses with HTTP 429 on every try is sent MAX_RATE_RETRIES times again, after its rate waits, and no more; the registry's own 429 is transient", async () => {
+    const refused = "gh: Too Many Requests (HTTP 429)";
+    const retries = new GhRetries({ sleep: async () => {}, err: () => {} }, "copies");
+    let tries = 0;
+    const result = await retries.send(
+      async () => {
+        tries += 1;
+        return { code: 1, stderr: `${refused}\n` };
+      },
+      { rateWait: async () => 0 }
+    );
+    expect(tries).toBe(1 + MAX_RATE_RETRIES);
+    expect(retries.record()).toEqual({});
+    expect(result.lastStderr).toBe(`${refused}\n`);
+    expect(transientReason(refused)).toBeUndefined();
+    expect(transientReason("HTTP 429 (too many requests)")).toBe("HTTP 429");
+  });
+});
+
+describe("eachChunk", () => {
+  /** A time limit that never fires. */
+  const never: TimeLimit = {
+    touch() {},
+    timedOut: () => false,
+    clear() {},
+    ended: Promise.withResolvers<void>().promise,
+  };
+
+  // Catches: each read raced against the time limit's `ended`, which stays pending while the
+  // limit does not fire: every race left a reaction on it that held its chunk, so a store read
+  // held all of its output (a pull page, 64 MiB and more) until it ended.
+  test("lets each chunk go once take returns: of 40 chunks of 1 MiB, none of the first 35 is held at the 40th", async () => {
+    const CHUNKS = 40;
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        sent += 1;
+        if (sent > CHUNKS) controller.close();
+        else controller.enqueue(new Uint8Array(1 << 20).fill(sent));
+      },
+    });
+    const refs: WeakRef<Uint8Array>[] = [];
+    let held = -1;
+    await eachChunk(stream, never, (chunk) => {
+      refs.push(new WeakRef(chunk));
+      if (refs.length === CHUNKS) {
+        Bun.gc(true);
+        held = refs.slice(0, CHUNKS - 5).filter((ref) => ref.deref() !== undefined).length;
+      }
+    });
+    expect(refs).toHaveLength(CHUNKS);
+    expect(held).toBe(0);
+  });
+
+  test("ends a pending read once the limit fires, though the stream is never closed", async () => {
+    const { promise: ended, resolve: fire } = Promise.withResolvers<void>();
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => controller.enqueue(new Uint8Array([104, 105])),
+    });
+    const taken: number[] = [];
+    // The limit fires once the first chunk is taken, while the next read waits.
+    await eachChunk(stream, { ...never, ended }, (chunk) => {
+      taken.push(chunk.length);
+      fire();
+    });
+    expect(taken).toEqual([2]);
   });
 });

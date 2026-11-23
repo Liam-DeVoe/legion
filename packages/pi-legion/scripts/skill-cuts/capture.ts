@@ -752,18 +752,25 @@ export function promptDigest(body: unknown): string {
   return hash.toString(16);
 }
 
-/** The skills a body's system prompt lists (`<skills>` … `</skills>`), each with the text it is
- *  listed under, in order. */
-export function skillListing(body: unknown): Map<string, string> {
+/** The skills the `<skills>` listing of the system prompt blocks `blocks` lists (`- <name>:
+ *  <text>`), each with the text it is listed under, in order; a name listed twice keeps its first
+ *  line. build.ts reads a recorded prompt's listing with it. */
+export function listingOf(blocks: readonly string[]): Map<string, string> {
   const listing = new Map<string, string>();
-  for (const text of systemTexts(body)) {
+  for (const text of blocks) {
     const block = /<skills>\n([\s\S]*?)<\/skills>/.exec(text)?.[1];
     for (const line of block?.split("\n") ?? []) {
       const match = /^- ([^:\s]+): (.*)$/.exec(line);
-      if (match?.[1] !== undefined && match[2] !== undefined) listing.set(match[1], match[2]);
+      if (match?.[1] !== undefined && match[2] !== undefined && !listing.has(match[1]))
+        listing.set(match[1], match[2]);
     }
   }
   return listing;
+}
+
+/** The skills a body's system prompt lists (`listingOf` of its system blocks). */
+export function skillListing(body: unknown): Map<string, string> {
+  return listingOf(systemTexts(body));
 }
 
 /** What became of the case skill's line of a recorded skill listing in an arm's prompt. */

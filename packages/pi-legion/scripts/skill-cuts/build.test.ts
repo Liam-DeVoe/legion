@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
+import * as nodeFs from "node:fs";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -29,7 +30,7 @@ import {
   SPOOL_CHUNK,
   STOP_AFTER_SESSIONS,
 } from "./build";
-import { type Case, loadCases, pathHash } from "./cases";
+import { type Case, listedName, loadCases, pathHash } from "./cases";
 import { GhRetries, MAX_RATE_RETRIES, SECONDARY_WAIT_MS } from "./common";
 import {
   type GhResult,
@@ -599,7 +600,8 @@ const readsUnder = (dir: string) => (lines: Record<string, unknown>[]) => {
  *  copy F1 read, which the prefix table places at the cut's copy, by its absolute path
  *  (path-read), relative to F1's working directory (path-relative-read), or under `~` in a
  *  session whose transcript is under that home's `.omp/` (path-home); the relative ones in a
- *  session whose header names no working directory (path-no-cwd), and the `~` ones in one whose
+ *  session whose header names no working directory (path-no-cwd), and so the `@~dev/` ones, which
+ *  are relative too (path-at-name), and the `~` ones in one whose
  *  transcript's path names no home (path-no-home); with a read selector (path-range); of
  *  acme/other's copy (path-other); or in a directory of `skills/alpha` that no directory of the
  *  path says the repository of, which three copies have (path-unattributed). path-mixed keeps
@@ -624,6 +626,16 @@ const BY_PATH: Record<
     },
   },
   "path-no-home": { change: readsUnder(F1_TILDE) },
+  // `@~dev/…` in a session whose header names no working directory: Oh My Pi's read takes `@`
+  // off only before `/`, `~` alone or `~/` (cases.ts's resolvedReadPath), so this path is
+  // relative to the working directory, not under a home.
+  "path-at-name": {
+    change: (lines) => {
+      readsUnder(F1_TILDE.replace("~", "@~dev"))(lines);
+      const header = lines.find((line) => line.type === "session");
+      if (header !== undefined) header.cwd = undefined;
+    },
+  },
   "path-range": {
     change: (lines) => {
       readByPathAt(1, `${F1_SKILLS}/alpha/SKILL.md:1-20`)(lines);
@@ -777,10 +789,11 @@ const TASK_ROWS = [
 
 /** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql, session-head.sql,
  *  session-paths.sql, subagents.sql and digest-times.sql from the store file `storeFile`, and
- *  appends each call to `logFile`. */
+ *  appends each call to `logFile`, with the times (ms since the epoch) it started and ended. */
 const STANDIN_PSQL = (storeFile: string, logFile: string) => `
 import { appendFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+const started = Date.now();
 const db = process.argv[2] ?? "";
 const query = await Bun.stdin.text();
 const store = JSON.parse(readFileSync(${JSON.stringify(storeFile)}, "utf8"))[db];
@@ -943,7 +956,7 @@ if (query.includes("omp_session_files_parts pt") && place) {
 // A row that needs a pull to take a while (two runs of one --out) sets this delay.
 const delay = Number(process.env.SKILL_CUTS_STANDIN_PULL_DELAY_MS ?? 0);
 if (kind === "pull" && delay > 0) await Bun.sleep(delay);
-appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows.length, after, first: rows[0] && [rows[0].o, rows[0].k], limit64: kind !== "pull" || query.includes("LIMIT 64") }) + "\\n");
+appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows.length, after, first: rows[0] && [rows[0].o, rows[0].k], limit64: kind !== "pull" || query.includes("LIMIT 64"), started, ended: Date.now() }) + "\\n");
 process.stdout.write(" value \\n-------\\n" + rows.map((row) => " " + JSON.stringify(row) + "\\n").join("") + "(" + rows.length + (rows.length === 1 ? " row" : " rows") + ")\\n\\n");
 `;
 
@@ -1262,8 +1275,10 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     "skills/dropped/SKILL.md": skillMd("dropped"),
     "skills/quiet/SKILL.md":
       "---\nname: quiet\ndescription: Use for quiet work.\ndisable-model-invocation: true\n---\n\n# quiet\n",
+    // A description that holds `: `, which strict YAML refuses: Oh My Pi reads the block again with
+    // it quoted, so `hide: true` is still true (context.ts's readFrontmatter).
     "skills/shy/SKILL.md":
-      "---\nname: shy\ndescription: Use for shy work.\nhide: true\n---\n\n# shy\n",
+      "---\nname: shy\ndescription: Use when: the work is shy.\nhide: true\n---\n\n# shy\n",
   },
   "acme/skills": {
     "skills/alpha/SKILL.md": skillMd("alpha"),
@@ -3455,6 +3470,10 @@ describe("build-cases over reads of the skill by path", () => {
         "path-relative",
         `message 2 answers the read of ${F1_TILDE}/SKILL.md (path-relative: the prefix table rule places it at acme/skills skills/alpha, at ${F1_TILDE}, which needs the home directory the session ran under, which its transcript's path does not name (no /.omp/ in it))`,
       ],
+      "path-at-name": [
+        "path-relative",
+        `message 2 answers the read of ${F1_TILDE.replace("~", "@~dev")}/SKILL.md (path-relative: the prefix table rule places it at acme/skills skills/alpha, at ${F1_TILDE.replace("~", "@~dev")}, which needs the session's working directory, which its header does not name)`,
+      ],
     };
     for (const [name, [reason, detail]] of Object.entries(expected)) {
       expect({ name, reason: record(name)?.reason }).toEqual({ name, reason });
@@ -3490,7 +3509,7 @@ describe("build-cases over reads of the skill by path", () => {
       "path-range": 1,
       "other-copy": 1,
       unattributed: 1,
-      "path-relative": 2,
+      "path-relative": 3,
       "path-form": 1,
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
@@ -3859,6 +3878,33 @@ test("a dev-box profile installs the units its dev box's own installers install 
   expect(alphas).toEqual([
     { repo: "acme/home", commit: SHA, path: "skills/alpha", name: "alpha", namespace: "agent" },
   ]);
+  // Catches: skills.ignoredSkills matched against a copy's own name alone, where Oh My Pi 18.18.6
+  // matches the name it lists a later copy of a name under too (`<namespace>/<name>`), so a
+  // pattern agent/* left the home's alpha listed as agent/alpha. The same task again, with that
+  // pattern in the dev box's Oh My Pi config.
+  const home = REPOSITORIES["acme/home"] ?? {};
+  const homeConfig = home["omp/config.yml"] ?? "";
+  home["omp/config.yml"] = "skills:\n  ignoredSkills:\n    - dropped\n    - agent/*\n";
+  try {
+    const ignoredDir = path.join(scratch, "devbox-home", "profiles-ignored");
+    expect(await main([...args, "--reprofile", from, "--profiles-out", ignoredDir], io([]))).toBe(
+      EXIT.ok
+    );
+    const [ignored] = reprofileSummary(ignoredDir).profiles.tasks;
+    const left = ignored?.differs.added.find(
+      (item) => item.item === "left out: skill agent/alpha (acme/home skills/alpha)"
+    );
+    expect(left?.source).toContain("so Oh My Pi would list it as agent/alpha");
+    expect(left?.source).toContain("names agent/* in skills.ignoredSkills");
+    const ignoredProfile = JSON.parse(
+      readFileSync(path.resolve(ignoredDir, `${ignored?.task}.json`), "utf8")
+    );
+    expect(
+      ignoredProfile.skills.filter((skill: { name: string }) => skill.name === "alpha")
+    ).toEqual([]);
+  } finally {
+    home["omp/config.yml"] = homeConfig;
+  }
 }, 60_000);
 
 test("a Legion profile installs what its deployment gives each role at its start: the every-role plugin and every other plugin of the catalog its role setup names but those the project leaves out, and the skill its worker image installs from a release", async () => {
@@ -7209,8 +7255,9 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
   }
   const summary = reprofileSummary(dir);
   const byTask = new Map(summary.profiles.tasks.map((each) => [each.task, each]));
-  // A kept task's evidence says why, and its listing measure is not measurable for that reason;
-  // the measure its old build wrote is the one item it drops.
+  // A kept task's evidence says why, and its listing measure is not measurable for that reason,
+  // counting the names its old profile lists (a namespaced copy under `<namespace>/<name>`); the
+  // measure its old build wrote is the one item it drops.
   const kept = (task: string, gone: Evidence) => {
     const note = byTask.get(task) as {
       outcome: string;
@@ -7222,6 +7269,11 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
     const measure = ListingMeasure.parse(JSON.parse(note.differs.added[1]?.source ?? "{}"));
     expect(measure.kind).toBe("not measurable");
     expect(measure.why).toEndWith(gone.source);
+    const profile = JSON.parse(
+      readFileSync(String(tasks.find((each) => each.id === task)?.profile), "utf8")
+    ) as { skills: { name: string; namespace?: string }[] };
+    expect(profile.skills.length).toBeGreaterThan(0);
+    expect(measure.listed).toBe(new Set(profile.skills.map((each) => listedName(each))).size);
     expect(note.differs.removed.map((each) => each.item)).toEqual([LISTING_MEASURE]);
   };
   kept("t1", {
@@ -7236,6 +7288,36 @@ test("build-tasks --reprofile keeps the old profile of a task whose session its 
     });
   }
   expect(summary.counts).toEqual({ changed: 0, unchanged: 1, kept: 9, leftOut: 0 });
+
+  // A kept profile's namespaced copy is listed under `<namespace>/<name>`, beside the bare copy of
+  // its name: t1's old profile given a copy of beta under the namespace agent lists 3 names.
+  const namespaced = path.join(scratch, "reprofile-gone-namespaced");
+  mkdirSync(namespaced, { recursive: true });
+  const t1 = tasks.find((each) => each.id === "t1");
+  const t1Profile = JSON.parse(readFileSync(String(t1?.profile), "utf8"));
+  const beta = t1Profile.skills.find((each: { name: string }) => each.name === "beta");
+  const t1File = path.join(namespaced, "t1.json");
+  writeFileSync(
+    t1File,
+    `${JSON.stringify({ ...t1Profile, skills: [...t1Profile.skills, { ...beta, namespace: "agent" }] }, null, 2)}\n`
+  );
+  const fromNamespaced = path.join(namespaced, "tasks.jsonl");
+  writeFileSync(
+    fromNamespaced,
+    tasks
+      .map((each) => `${JSON.stringify(each.id === "t1" ? { ...each, profile: t1File } : each)}\n`)
+      .join("")
+  );
+  writeFileSync(`${fromNamespaced}.summary.json`, readFileSync(`${from}.summary.json`));
+  const namespacedDir = path.join(namespaced, "profiles");
+  expect(await main(reprofileArgs(gone, fromNamespaced, namespacedDir), io([]))).toBe(EXIT.ok);
+  const t1Note = reprofileSummary(namespacedDir).profiles.tasks.find(
+    (each) => each.task === "t1"
+  ) as { differs: { added: Evidence[] } } | undefined;
+  const t1Measure = ListingMeasure.parse(
+    JSON.parse(t1Note?.differs.added.find((each) => each.item === LISTING_MEASURE)?.source ?? "{}")
+  );
+  expect(t1Measure.listed).toBe(3);
 
   // A store command that fails fails the run, and no tasks file is written.
   const failing = path.join(setupDir, "reprofile-failing");
@@ -7770,6 +7852,137 @@ test("a second build-cases of an --out another run holds is refused (exit 2), na
   expect(existsSync(`${out}.spool`)).toBe(false);
 }, 60_000);
 
+// Catches: a spool lock made in two steps, the file first and its pid after, so a run that read it
+// between them read no pid, took it for a dead run's lock and shared the spool; and a lock its run
+// gave up between another run's failed make and its read, which failed that run (ENOENT). node:fs
+// is wrapped for the build (Bun's mock.module updates the bindings build.ts imported): after each
+// call that can make or write the lock, the lock's text is kept; and the first make that finds a
+// lock there removes that lock before it fails, as a run that gave it up in between.
+test("the spool lock never exists without its pid, and a lock given up while a run makes its own is taken by that run, which builds", async () => {
+  const out = path.join(scratch, "spool-atomic", "cases.jsonl");
+  const lock = `${out}.spool/run.lock`;
+  const sessions = sessionsFile("spool-atomic.jsonl", ["good"]);
+  mkdirSync(`${out}.spool`, { recursive: true });
+  // A lock of this live process: the run must wait for it, unless it is given up.
+  const planted = `${process.pid} a-run-still-going\n`;
+  writeFileSync(lock, planted);
+  const real = { ...nodeFs };
+  const seen: string[] = [];
+  let givenUp = false;
+  const watched =
+    <A extends unknown[], R>(call: (...args: A) => R) =>
+    (...args: A): R => {
+      try {
+        return call(...args);
+      } catch (error) {
+        if (!givenUp && args.includes(lock) && String(error).includes("EEXIST")) {
+          givenUp = true;
+          real.rmSync(lock);
+        }
+        throw error;
+      } finally {
+        if (real.existsSync(lock)) seen.push(real.readFileSync(lock, "utf8"));
+      }
+    };
+  mock.module("node:fs", () => ({
+    ...real,
+    openSync: watched(real.openSync),
+    writeSync: watched(real.writeSync),
+    closeSync: watched(real.closeSync),
+    writeFileSync: watched(real.writeFileSync),
+    linkSync: watched(real.linkSync),
+  }));
+  const lines: string[] = [];
+  let code: number;
+  try {
+    code = await main(buildArgs(sessions, out, "1"), io(lines));
+  } finally {
+    mock.module("node:fs", () => real);
+  }
+  expect({ code, said: lines.join("") }).toEqual({
+    code: EXIT.ok,
+    said: expect.not.stringContaining("ENOENT"),
+  });
+  expect(givenUp).toBe(true);
+  // The run's own lock was seen, and never without its pid: `<pid> <uuid>`.
+  const own = seen.filter((text) => text !== planted);
+  expect(own.length).toBeGreaterThan(0);
+  expect(own.filter((text) => !/^\d+ [0-9a-f-]{36}\n$/.test(text))).toEqual([]);
+  expect(existsSync(`${out}.spool`)).toBe(false);
+}, 60_000);
+
+// Catches: two runs that both read one dead lock both taking the spool: each removed the lock it
+// found and made its own, so the run that came second removed the first run's live lock. node:fs
+// is wrapped for the build: just before the run takes the dead lock
+// over (its first remove or rename of the lock), another run's live lock replaces the dead one,
+// as a second run that took it over first would leave it.
+test("a dead spool lock another run takes over first is not taken from that run: this run is refused (exit 2), and the other run's lock stays", async () => {
+  const out = path.join(scratch, "spool-takeover", "cases.jsonl");
+  const lock = `${out}.spool/run.lock`;
+  const sessions = sessionsFile("spool-takeover.jsonl", ["good"]);
+  mkdirSync(`${out}.spool`, { recursive: true });
+  const dead = Bun.spawnSync(["true"]).pid;
+  writeFileSync(lock, `${dead} a-killed-run\n`);
+  // The other run's lock: of this live process, so it holds the spool.
+  const other = `${process.pid} the-run-that-took-it-first\n`;
+  const real = { ...nodeFs };
+  let swapped = false;
+  const first =
+    <A extends unknown[], R>(call: (...args: A) => R) =>
+    (...args: A): R => {
+      if (!swapped && args[0] === lock) {
+        swapped = true;
+        real.writeFileSync(lock, other);
+      }
+      return call(...args);
+    };
+  mock.module("node:fs", () => ({
+    ...real,
+    rmSync: first(real.rmSync),
+    renameSync: first(real.renameSync),
+  }));
+  const lines: string[] = [];
+  let code: number;
+  try {
+    code = await main(buildArgs(sessions, out, "1"), io(lines));
+  } finally {
+    mock.module("node:fs", () => real);
+  }
+  expect(swapped).toBe(true);
+  expect(code).toBe(EXIT.refused);
+  expect(lines.join("")).toContain(
+    `${out}.spool is in use: the run of process ${process.pid} holds its lock ${lock} ("${other.trim()}")`
+  );
+  expect(readFileSync(lock, "utf8")).toBe(other);
+}, 60_000);
+
+// Catches: a subagent's digest-times.sql read (the times of its root's prompt builds) made
+// outside build-cases' one-query-at-a-time queue, so at --concurrency 2 it ran beside the other
+// session's pull. The subagent's pull comes first and each pull takes 400 ms, so its digest read
+// is due while the other session pulls: a whole build, hence the explicit timeout.
+test("at --concurrency 2 a subagent's digest-times.sql read waits for the other session's pull: no two store queries run at once", async () => {
+  const out = path.join(scratch, "one-query", "cases.jsonl");
+  // Seed 1 swaps two sessions: the subagent is pulled first.
+  const sessions = sessionsFile("one-query.jsonl", ["good", "subagent"]);
+  const logged = psqlLogLength();
+  process.env.SKILL_CUTS_STANDIN_PULL_DELAY_MS = "400";
+  try {
+    expect(await main(buildArgs(sessions, out, "1", "--concurrency", "2"), io([]))).toBe(EXIT.ok);
+  } finally {
+    delete process.env.SKILL_CUTS_STANDIN_PULL_DELAY_MS;
+  }
+  expect(summaryOf(out).order[0]?.hash).toBe(fileHash(sessionPath("subagent")));
+  const calls = psqlLines(logged) as unknown as { kind: string; started: number; ended: number }[];
+  expect(calls.map((call) => call.kind)).toContain("digests");
+  const together = calls.flatMap((a, index) =>
+    calls
+      .slice(index + 1)
+      .filter((b) => a.started < b.ended && b.started < a.ended)
+      .map((b) => `${a.kind} with ${b.kind}`)
+  );
+  expect(together).toEqual([]);
+}, 60_000);
+
 describe("GithubReads", () => {
   const COMMIT = "1111111111111111111111111111111111111111";
   const BLOB = "2222222222222222222222222222222222222222";
@@ -7832,6 +8045,24 @@ describe("GithubReads", () => {
       expect(outcome).toContain("gh: Not Found (HTTP 404)");
     }
     expect(calls).toEqual([`repos/acme/request-timeout/git/trees/${COMMIT}?recursive=1`]);
+  });
+
+  // Catches: a read taken as transient from every try's errors joined, so a read whose first try
+  // met a 502 and whose last a 404 rejected the whole repository's read where the file is a fault
+  // of it, and was sent again for every later case.
+  test("a SKILL.md read whose first try meets a 502 and whose last a 404 failed for good: it is a fault of the read, kept, not a transient failure", async () => {
+    let tries = 0;
+    const { gh, calls } = standIn("acme/skills", () =>
+      failed(tries++ === 0 ? "gh: Bad Gateway (HTTP 502)" : "gh: Not Found (HTTP 404)")
+    );
+    const reads = new GithubReads(gh, new Map(), noWait());
+    const read = await reads.at("acme/skills", COMMIT, []);
+    const why = `SKILL.md read failed: gh api repos/acme/skills/git/blobs/${BLOB} failed: 2 tries: try 1: gh: Bad Gateway (HTTP 502); try 2: gh: Not Found (HTTP 404)`;
+    expect(read.faults).toEqual([{ file: "skills/alpha/SKILL.md", why }]);
+    expect(read.copies.map((copy) => copy.fault)).toEqual([why]);
+    // The read is kept: a second read of the commit sends nothing.
+    await reads.at("acme/skills", COMMIT, []);
+    expect(calls.filter((call) => call.endsWith(`/git/blobs/${BLOB}`))).toHaveLength(2);
   });
 
   // Catches: a SKILL.md read GitHub refused for its secondary rate limit (an HTTP 403, no

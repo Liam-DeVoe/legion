@@ -759,7 +759,8 @@ test("each reason a case's block cannot be rebuilt has its kind, injectionFault 
   expect(injectionFaults(f1Case)).toEqual([]);
   expect(injectionFault(f1Case)).toBeUndefined();
   // buildArm's refusal carries no kind (injectionFaults gives each); a capture's carries
-  // `autoload-no-block` (capture.ts).
+  // `autoload-no-block` (capture.ts), which cli.test.ts checks end to end (its case c-autoload,
+  // dropped as `injection-unrebuildable: autoload-no-block`).
   const refusal = (() => {
     try {
       buildArm(c, "old", { old: oldDir, new: newDir }, path.join(scratch, "kinds"));
@@ -770,7 +771,6 @@ test("each reason a case's block cannot be rebuilt has its kind, injectionFault 
   })();
   expect(refusal).toBeInstanceOf(InjectionRefused);
   expect(refusal instanceof InjectionRefused ? refusal.kind : "not thrown").toBeUndefined();
-  expect(new InjectionRefused("case c: …", "autoload-no-block").kind).toBe("autoload-no-block");
 });
 
 /** A tool call of `name` with `args`, alone in an assistant message. */

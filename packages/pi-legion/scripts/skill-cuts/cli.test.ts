@@ -1177,7 +1177,8 @@ describe("behaviour", () => {
     copyFileSync(resultText, slowResult);
     expect(falseControl.code).toBe(0);
     const controlLine = falseControl.stdout.split("\n").find((line) => line.includes("case c04: "));
-    const [, otherSeconds = ""] = /, other (\d+\.\d), total/.exec(controlLine ?? "") ?? [];
+    // No default: with no such line, or another format, Number(undefined) is NaN and fails.
+    const [, otherSeconds] = /, other (\d+\.\d), total/.exec(controlLine ?? "") ?? [];
     expect(Number(otherSeconds)).toBeLessThan(1);
     expect(passes(result(falseLoss.out, "c04"), "control")).toEqual({
       old: 40,

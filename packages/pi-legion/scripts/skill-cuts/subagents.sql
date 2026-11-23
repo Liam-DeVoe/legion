@@ -16,11 +16,12 @@ SET LOCAL statement_timeout = '15min';
 --
 -- What it reads. The path of every file of public.omp_session_files, once, to hash it, as
 -- session-head.sql does (the store names a file by its path alone, and its one index on the path
--- is a btree under the database's collation, which serves no match of a path's start); then each
--- file one level below a listed session's directory, the session's path less `.jsonl` and a `/`
--- (Oh My Pi 18.18.6 writes a subagent's transcript at `<artifacts dir>/<id>.jsonl`,
--- task/executor.ts, line 4743, the artifacts dir being its parent's transcript path less `.jsonl`,
--- as testdata/F1 shows), matched by `starts_with` in the same scan; and of each such file, once
+-- is a btree under the database's collation, which serves no match of a path's start); then, in a
+-- second scan, each file whose directory (its path up to and including its last `/`) is a listed
+-- session's directory, the session's path less `.jsonl` and a `/` (Oh My Pi 18.18.6 writes a
+-- subagent's transcript at `<artifacts dir>/<id>.jsonl`, task/executor.ts, line 4743, the
+-- artifacts dir being its parent's transcript path less `.jsonl`, as testdata/F1 shows), matched
+-- by equality, so the listed sessions are a hash table the scan probes; and of each such file, once
 -- however many times its session is listed, only its head, as session-head.sql reads one: the file
 -- row's `content`, then each part of public.omp_session_files_parts whose start_offset is below
 -- 262144, in start_offset order, each piece cut to its first 262144 characters and the head too
@@ -59,9 +60,8 @@ children AS MATERIALIZED (
   SELECT p.hash AS parent, c.path
   FROM public.omp_session_files c
   JOIN parents p
-    ON starts_with(c.path, p.dir)
-    AND strpos(substr(c.path, length(p.dir) + 1), '/') = 0
-    AND right(c.path, length('.jsonl')) = '.jsonl'
+    ON left(c.path, length(c.path) - strpos(reverse(c.path), '/') + 1) = p.dir
+  WHERE right(c.path, length('.jsonl')) = '.jsonl'
 ),
 heads AS MATERIALIZED (
   SELECT
