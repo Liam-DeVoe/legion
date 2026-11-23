@@ -172,12 +172,16 @@ func TestRotationsJoinTheVerbsOfTexts(t *testing.T) {
 }
 
 // Held reads the texts that a text holds once (HeldOf), and keeps of them only the sets of verbs of
-// each group that they use, so its Rotations reads those sets and no held text again: the held
-// texts written three times over give the same Held. And its Rotations is Rotations as its comment
-// defines it, each held text read for each set of own verbs: for 20,000 sets of own verbs and of 0
-// to 40 held texts, drawn at random from the verbs of the synonym groups, the two agree. The cases
-// hold groups that a held text uses each verb of and groups it does not (counted), so both answers
-// of the rule are read.
+// each group that they use, so its Rotations reads those sets and no held text again, whatever it
+// would keep of one: the held texts followed by more texts that add no set to a group, each held text
+// again and texts made of the parts of different held texts, each group's part of one, in an order of
+// their own, give the same Held, so its value holds nothing of a text but the sets of its groups; and
+// its Rotations, asked after other texts are read into another Held, is still the answer for its own,
+// so it reads no text kept outside its value. And its Rotations is Rotations as its comment defines
+// it, each held text read for each set of own verbs: for 20,000 sets of own verbs and of 0 to 40 held
+// texts, drawn at random from the verbs of the synonym groups, the two agree. The cases hold groups
+// that a held text uses each verb of and groups it does not (counted), so both answers of the rule
+// are read.
 func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 	definition := func(own Verbs, held []Verbs) Verbs {
 		all := own
@@ -205,11 +209,28 @@ func TestHeldReadsTheHeldTextsOnceAsRotationsReadsThemEach(t *testing.T) {
 		}
 		want := definition(own, held)
 		read := HeldOf(held)
-		if got := read.Rotations(own); got != want {
-			t.Fatalf("own %b, held %b: Held gives %b, the definition %b", own, held, got, want)
+		// more is texts that add no set of verbs to a group: each held text again, and as many texts
+		// made of the part of each group of a held text drawn for that group.
+		more := slices.Concat(held, held)
+		for range held {
+			var mixed Verbs
+			for _, group := range rules.groups {
+				mixed |= held[random.IntN(len(held))] & group
+			}
+			more = append(more, mixed)
 		}
-		if again := HeldOf(slices.Concat(held, held, held)); !reflect.DeepEqual(again, read) {
-			t.Fatalf("held %b: the held texts written three times over give the Held %+v, and once %+v: want the same, a Held that keeps no held text", held, again, read)
+		random.Shuffle(len(more), func(a, b int) { more[a], more[b] = more[b], more[a] })
+		if again := HeldOf(slices.Concat(held, more)); !reflect.DeepEqual(again, read) {
+			t.Fatalf("held %b: the held texts followed by %b, which add no set of verbs to a group, give the Held %+v, and alone %+v: want the same, a Held that keeps nothing of a text but its groups' sets", held, more, again, read)
+		}
+		// Other texts, drawn as the held ones are, read into another Held before read's Rotations.
+		others := make([]Verbs, len(held)+1)
+		for index := range others {
+			others[index] = draw(random)
+		}
+		HeldOf(others)
+		if got := read.Rotations(own); got != want {
+			t.Fatalf("own %b, held %b: Held gives %b after the Held of %b was read, the definition %b", own, held, got, others, want)
 		}
 		if want != 0 {
 			rotated++
