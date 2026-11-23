@@ -262,10 +262,10 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - a drain the lock holds: the stop drained on a moving link and waits for its drain to end, with
 //     a message still buffered, under a context that never ends; a write then holds nats.go's lock,
 //     under which nats.go ends no drain, and the stop and a second StopDelivering return while it is
-//     held. The drain's own wait (intakeDrainWait) is kept from ending it;
+//     held. The drain's own wait (intakeTuning.drainWait) is kept from ending it;
 //   - a given-up handler woken as the give-up is armed: as the second, with one stop, whose
 //     give-up runs at once under its ended context; the stop waits, once its give-up is armed
-//     (stopGiveUpArmed), for the handler it woke to decide its hand-back, and the server is sent
+//     (intakeTuning.stopArmed), for the handler it woke to decide its hand-back, and the server is sent
 //     no hand-back of either message.
 //
 // The negative control is the stop as it was (DrainSubscription, the hand-backs and Unsubscribe
@@ -596,7 +596,7 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 // A hand-back's publish count returns to zero even when every callNATS outlives its wait. A
 // callNATS that runs its call inside bus.Bounded skips the call when its context has already
 // ended; the decrement inside the call never runs, handBacksLanded never closes, and the
-// finalizer waits forever. With callNATSWait set to 0, callNATS's timer is ready at once, so a call
+// finalizer waits forever. With the intake's callWait set to 0, callNATS's timer is ready at once, so a call
 // may outlive its wait (select picks between the timer and a fast answer), and the row checks that
 // handBacksLanded closes either way. The negative control is such a callNATS (bus.Bounded
 // with a context.WithTimeout of the intake's callWait).

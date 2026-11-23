@@ -80,6 +80,19 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	}, func() string {
 		return "the intakes' durables are not both push-bound: " + consumers()
 	})
+	// StartIntakes times both intakes by production's tuning (newIntakeTuning), which the delivery
+	// durable it created carries: an ack wait of maxAckPending message timeouts plus a minute, and
+	// that maxAckPending. A tuning of a test's, or none, gives the durable other values.
+	delivery, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+	if err != nil {
+		t.Fatalf("read the delivery durable: %v", err)
+	}
+	if got, want := delivery.Config.AckWait, time.Duration(intakeMaxAckPending)*intakeMessageTimeout+time.Minute; got != want {
+		t.Errorf("the delivery durable StartIntakes created waits %s for an acknowledgement, want %s: production's tuning", got, want)
+	}
+	if got := delivery.Config.MaxAckPending; got != intakeMaxAckPending {
+		t.Errorf("the delivery durable StartIntakes created has max_ack_pending %d, want %d: production's tuning", got, intakeMaxAckPending)
+	}
 	// The server can read the two durables while one registration's unsubscribe is still on its way
 	// to it, so both are read again a moment later: nothing binds an unbound durable again.
 	time.Sleep(time.Second)

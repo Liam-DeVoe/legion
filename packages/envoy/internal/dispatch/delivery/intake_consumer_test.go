@@ -95,7 +95,7 @@ func TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft(t *testing.T) 
 	// The bound this release holds: what NATS may have outstanding has to be acknowledgeable
 	// inside the ack wait, handled one at a time under intakeMessageTimeout.
 	if worst := time.Duration(intakeMaxAckPending) * intakeMessageTimeout; worst >= tuningFor(t).ackWait() {
-		t.Fatalf("intakeMaxAckPending*intakeMessageTimeout = %s, want less than intakeAckWait (%s)", worst, tuningFor(t).ackWait())
+		t.Fatalf("intakeMaxAckPending*intakeMessageTimeout = %s, want less than the ack wait, intakeTuning.ackWait (%s)", worst, tuningFor(t).ackWait())
 	}
 }
 

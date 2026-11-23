@@ -773,8 +773,12 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	waitFor(t, 20*time.Second, holder.client.Connected, func() string {
 		return "the holder's NATS connection did not come back"
 	})
-	// Time for the holder's client to send its subscriptions again.
-	time.Sleep(2 * time.Second)
+	// The holder's client sends its subscriptions again as it reconnects, before anything else it
+	// writes; a round trip on that connection (a flush) returns only once the server has read them,
+	// so from here the holder's old deliver subject is subscribed on the server.
+	if err := holder.client.Connection().FlushTimeout(10 * time.Second); err != nil {
+		t.Fatalf("flush the holder's restored connection: %v", err)
+	}
 
 	later := make([]int, 20)
 	for i := range later {
@@ -792,8 +796,19 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 		return fmt.Sprintf("not every later message was handled: standby %v, holder %v; %s",
 			fetchesOf(standby, later), fetchesOf(holder, later), consumerState(publisher))
 	})
-	// Time for a second delivery of any of them to land.
-	time.Sleep(2 * time.Second)
+	// Every message is acknowledged and none is pending, so the server has nothing left to send of
+	// them; a flush of the holder's connection then returns only once anything the server sent the
+	// holder has reached its client. A short window still lets a handler the holder started finish.
+	waitFor(t, 30*time.Second, func() bool {
+		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		return err == nil && info.NumAckPending == 0 && info.NumPending == 0
+	}, func() string {
+		return "the later messages were not all acknowledged: " + consumerState(publisher)
+	})
+	if err := holder.client.Connection().FlushTimeout(10 * time.Second); err != nil {
+		t.Fatalf("flush the holder's connection: %v", err)
+	}
+	time.Sleep(time.Second)
 	for _, number := range later {
 		if got := standby.fetches(number) + holder.fetches(number); got != 1 {
 			t.Errorf("message %d was handled %d times (standby %d, holder %d), want exactly once",
