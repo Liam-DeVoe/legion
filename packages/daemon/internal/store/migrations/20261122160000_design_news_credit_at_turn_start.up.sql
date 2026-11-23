@@ -38,12 +38,16 @@
 -- 20261121170714_dispatch_issue_applied_seq runs between the two): it writes
 -- design_news_told_in back as 20261119203047 wrote it, drops the comment this file set (that
 -- migration set none), and deletes this migration's version row, so the roll forward runs this file
--- again. The release before this one, which carries 20261119203047 and not the task numbers, then
--- reads the function it wrote. Nothing else is reversed: no row changes here, and a copy on a
--- confirmed row that the earlier function counts at once, its take's turn not yet started, is the
--- credit that release would have written at the confirmation of the same turn. docs/kubernetes.md
--- gives this block under "Rolling back the release that credits a holder's news at its take's
--- turn".
+-- again. The release before this one, contract 217 (the one whose internal/api/version.go carries
+-- the entry for dispatch://INFRA-3531 and dispatch://INFRA-4567) as main releases it with
+-- cybermonklabs/legion#4903, whose newest migration is 20261121170714_dispatch_issue_applied_seq,
+-- carries 20261119203047 and not the task numbers, and then reads the function it wrote; a
+-- rollback to contract 213 or before crosses 217 and takes that release's own steps too
+-- (docs/kubernetes.md, "Rolling back below the release that guards the controller's pod's
+-- memory"). Nothing else is reversed: no row changes here, and a copy on a confirmed row that the
+-- earlier function counts at once, its take's turn not yet started, is the credit that release
+-- would have written at the confirmation of the same turn. docs/kubernetes.md gives this block
+-- under "Rolling back the release that credits a holder's news at its take's turn".
 --
 -- begin;
 -- create or replace function design_news_told_in(tree text)

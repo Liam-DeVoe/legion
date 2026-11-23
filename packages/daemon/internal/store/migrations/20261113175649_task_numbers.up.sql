@@ -258,17 +258,22 @@
 -- writes #3995's function design_news_told_in again, reading pending_task_deliveries.turn_started,
 -- which this block drops, so its way back, the last paragraph of its header, runs before this
 -- block and writes #3995's text of the function back; every rollback of this release starts with
--- it. The release before this one carries the other twenty-one: it is contract 213 as main
--- releases it with cybermonklabs/legion#3995 and cybermonklabs/legion#4903, neither of which
--- changes the contract number, so the rollback to it runs that way back and this block and leaves
--- the twenty-one standing. A rollback to a release before #4903 runs the way back in the header of
+-- it. The release before this one carries the other twenty-one: it is contract 217, the one whose
+-- internal/api/version.go carries the entry for dispatch://INFRA-3531 and dispatch://INFRA-4567,
+-- as main releases it with cybermonklabs/legion#4903, which changes no contract number, so the
+-- rollback to it runs that way back and this block and leaves the twenty-one standing. A rollback
+-- to a release before #4903 runs the way back in the header of
 -- 20261121170714_dispatch_issue_applied_seq, its last paragraph, between those two, after
 -- 20261122160000's way back and before this block, with every daemon of the database stopped: it
--- drops dispatch_issues.applied_seq and deletes its version row. A rollback to a release before
--- #3995, contract 213 without it or contract 205, runs those three and then #3995's four statements
--- (docs/kubernetes.md, "Rolling back the release that tells a holder of an approved new
--- version"), which read none of the fourteen columns. A rollback to contract 202, the release
--- before 20261120012547_set_back_observed_seq, runs those, #3995's four statements and then
+-- drops dispatch_issues.applied_seq and deletes its version row. A rollback to contract 213, or to
+-- any release before it, crosses contract 217 too, and so also takes that release's two steps of
+-- its own (docs/kubernetes.md, "Rolling back below the release that guards the controller's pod's
+-- memory"): runtime.kubernetes.memory_guard.controller_pod comes out of legion.yaml before the
+-- earlier image is pinned, and the unsent memory-guard-kill notices are deleted once. A rollback
+-- to a release before #3995, contract 213 without it or contract 205, runs those three and then
+-- #3995's four statements (docs/kubernetes.md, "Rolling back the release that tells a holder of an
+-- approved new version"), which read none of the fourteen columns. A rollback to contract 202, the
+-- release before 20261120012547_set_back_observed_seq, runs those, #3995's four statements and then
 -- that migration's own statement, the last paragraph of its header (docs/kubernetes.md, "Rolling
 -- back the release that lets the owning architect's status stand"), which takes observedSeq off
 -- each set-back of the project. A rollback to contract 188, the release before

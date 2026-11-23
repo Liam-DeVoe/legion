@@ -20,9 +20,9 @@ import (
 // one. A token no claim carries is refused. It is one transaction, because the write carries what
 // the task names of the decisions a person made while nobody in its root's tree could hear them:
 // queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
-// The news of the approved design the task carries is held the other way round: taken, the row is
-// itself the credit of what the accepted take's text carried; final, the write folds that credit
-// into the told rows (design_news_told.go).
+// The news of the approved design the task carries is held the other way round: a taken delivery
+// whose take's turn has started (turn_started) is itself the credit of what the accepted take's
+// text carried; final, the write folds that credit into the told rows (design_news_told.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
@@ -35,8 +35,9 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // this delivery id, taking each from the start row that claimed it and from whatever id the
 // claim's previous delivery held it under; the write that records the confirmation tells them.
 // The news the accepted take's text carried (Delivery.Carried) is the delivery's credit while the
-// row holds that take, which the readers of what an audience took read from the row; the write of
-// a final credit (Delivery.Ran) folds it into the told rows (settleDesignNews).
+// row is a taken delivery whose take's turn has started (turn_started), which the readers of what
+// an audience took read from the row; the write of a final credit (Delivery.Ran) folds it into the
+// told rows (settleDesignNews).
 // All of it is in the caller's transaction, so no row is ever held by a delivery the store does
 // not hold, and no confirmation commits without telling what it confirmed.
 func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {

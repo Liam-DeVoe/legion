@@ -85,9 +85,11 @@
 -- carried: written by the accept, in the one write that records the take and the text it was
 -- answered with, after the working-copy adoption and the identity mint succeeded, and never
 -- design_news, which a later take after a take-back may render again with more in it
--- (20261113175649_task_numbers, which the take came in with). While the row holds that take
--- (confirmed_at) and carried_ran is false, it is the delivery's credit: each item and each opening
--- it carries counts in what its audience took (design_news_told_in), and nothing else is written.
+-- (20261113175649_task_numbers, which the take came in with). While the row is a taken delivery
+-- whose take's turn has started (turn_started, the rule since
+-- 20261122160000_design_news_credit_at_turn_start) and carried_ran is false, it is the delivery's
+-- credit: each item and each opening it carries counts in what its audience took
+-- (design_news_told_in), and nothing else is written.
 -- So the write that takes the take back, or the retirement of the delivery, ends that credit and no
 -- other, and the news goes back to owed for a later task to carry. carried_ran says the finish of
 -- the take's turn said the turn ran with no provider error: the write that sets it folds the copy

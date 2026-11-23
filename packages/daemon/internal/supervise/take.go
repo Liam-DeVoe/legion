@@ -685,10 +685,11 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // the delivery when its task is finished, and the handshake is what keeps when the worker took
 // that entry's work. The same write carries it, since the claim is half of it.
 //
-// News of the approved design is told the same way, by the copy this write makes the delivery's
-// credit (Delivery.Carried): the news the text answered here carries, which is the delivery's News
-// as the decision of this take rendered it from the record (currentNews, takeable), since the text
-// is composed from the task that render left beside it. The store reads a taken row's copy as what
+// News of the approved design is told the same way, by the copy this write gives the delivery
+// (Delivery.Carried), its credit once the take's turn starts: the news the text answered here
+// carries, which is the delivery's News as the decision of this take rendered it from the record
+// (currentNews, takeable), since the text is composed from the task that render left beside it.
+// The store reads the copy of a taken delivery whose take's turn has started (turn_started) as what
 // its audiences took (design_news_told_in), and the finish of the take's turn makes it final
 // (Delivery.Ran, finishTask); a take-back ends it with the take (interrupted, clearTake). Only an
 // accepted take confirms a task, so no turn of the worker's own credits news its text never

@@ -20,17 +20,18 @@ import (
 // (supervise.Delivery.Carried, persisted as pending_task_deliveries.carried_news), written by the
 // accept itself, in the one write that records the take and its text.
 //
-// That copy, on a taken delivery (confirmed_at set), is the delivery's credit, and it is held
-// nowhere else: the record of what each audience took (design_news_told,
+// That copy, on a taken delivery whose take's turn has started (turn_started), is the delivery's
+// credit, and it is held nowhere else: the record of what each audience took (design_news_told,
 // 20261119203047_design_news) is read as a function of the told rows and of every credit that
 // stands (the SQL function design_news_told_in), so no write raises or puts back a told version
-// for a take. The write that records the accepted take makes the credit by writing the delivery;
-// the write that takes it back and the retirement of the delivery end it by writing or deleting
-// the delivery, and touch no credit of any other delivery, whatever has been credited since. A
-// write that fails leaves the row, and with it the credit, as the last write that landed left it,
-// which the machine's next write of the same delivery finishes or undoes. Once the finish of the
-// take's turn says the turn ran (supervise.Delivery.Ran), the write that records it folds the copy
-// into the told rows (settleDesignNews), so the credit is final and outlives the delivery's row.
+// for a take. The write that records the start of the take's turn makes the credit by writing the
+// delivery, whose copy the accept wrote; the write that takes the take back and the retirement of
+// the delivery end it by writing or deleting the delivery, and touch no credit of any other
+// delivery, whatever has been credited since. A write that fails leaves the row, and with it the
+// credit, as the last write that landed left it, which the machine's next write of the same
+// delivery finishes or undoes. Once the finish of the take's turn says the turn ran
+// (supervise.Delivery.Ran), the write that records it folds the copy into the told rows
+// (settleDesignNews), so the credit is final and outlives the delivery's row.
 //
 // Only an accepted take confirms a task (supervise's accept), and a turn the worker started by
 // itself confirms none, so an Envoy message's turn records no news the worker never read, and a

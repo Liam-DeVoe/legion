@@ -75,9 +75,10 @@ import (
 // that version stands above every other of this list but dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and the copy's applied sequence, 20261121170714, so an
-// upgrade of a database main migrated applies it just before those seven. It adds
-// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and
+// dispatch://INFRA-2811's 20261122160000, so an upgrade of a database main migrated applies it just
+// before those eight. It adds pull_requests.statuses at its default, the empty list, and it
+// touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), it stands below the design news too, and it touches no
@@ -121,29 +122,33 @@ import (
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
 // (20261119003157) stands above every other version of this list but the design news,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and the copy's applied sequence, 20261121170714: it names
-// every kind the plan-record list names and its own two, phase_ended among them. The same
-// migration deletes the queued phase_ended rows, the seeded one below among them, and adds
-// pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and
+// dispatch://INFRA-2811's 20261122160000: it names every kind the plan-record list names and its
+// own two, phase_ended among them. The same migration deletes the queued phase_ended rows, the
+// seeded one below among them, and adds pull_requests.conflict_read and
+// pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
-// 20261120012547, 20261120042902, 20261120055717 and 20261121170714, is the last of them to
-// rewrite outbox_kind_check: it names those kinds and design_changes.
+// 20261120012547, 20261120042902, 20261120055717, 20261121170714 and 20261122160000, is the last of
+// them to rewrite outbox_kind_check: it names those kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717 and 20261121170714. It runs no statement, so it changes
-// nothing on a database main migrated, and it touches no outbox_kind_check.
+// dispatch://INFRA-4729's 20261120055717, 20261121170714 and dispatch://INFRA-2811's 20261122160000.
+// It runs no statement, so it changes nothing on a database main migrated, and it touches no
+// outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
-// dispatch://INFRA-4729's 20261120055717 and 20261121170714; it adds
-// claims.agent_resume_generation at its default, 0, on every row it finds, and touches no
-// outbox_kind_check, so it needs no row of its own here.
+// dispatch://INFRA-4729's 20261120055717, 20261121170714 and dispatch://INFRA-2811's
+// 20261122160000; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
+// and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these but one, the design news among them, and touches no
-// outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on its parent,
-// and a refill mark for each project the copy holds rows of.
+// is applied after all of these, the design news among them, but two, 20261121170714 and
+// dispatch://INFRA-2811's 20261122160000, and touches no outbox_kind_check: it adds columns to
+// dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
+// copy holds rows of.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
-// these and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on
-// every row it finds. So the design news stays the last word of that check.
+// these but dispatch://INFRA-2811's 20261122160000, and touches no outbox_kind_check: it adds
+// dispatch_issues.applied_seq at its default, 0, on every row it finds. So the design news stays
+// the last word of that check.
 // dispatch://INFRA-2811's credit of the design news at the take's turn start (20261122160000) is
 // applied last of all: it writes the design news's function design_news_told_in again, reading
 // pending_task_deliveries.turn_started, which the task numbers add, and touches no table.

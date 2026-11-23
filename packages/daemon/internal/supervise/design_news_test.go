@@ -390,11 +390,11 @@ func TestATaskCarryingNewsABusyAnswerHoldsIsSentOnceMoreAtTheTurnsEnd(t *testing
 
 // A task that carries news whose take's answer was lost is taken again under the same number, and
 // the record answers that take the text it kept (answeredFromRecord): nothing renders the news
-// again and nothing is credited anew, since the accept already credited what that text carries.
-// The take's turn, when it starts, is the accepted take's, and the report that names the number
-// finishes the task, which first makes the take's credit final (Delivery.Ran, finishTask) in a
-// write of its own before the retirement. The worker is answered twice in all and the news is
-// credited by the one accept.
+// again and nothing is copied anew, since the accept already wrote the copy of what that text
+// carries. The take's turn, when it starts, is the accepted take's, and makes that copy the take's
+// credit; the report that names the number finishes the task, which first makes the credit final
+// (Delivery.Ran, finishTask) in a write of its own before the retirement. The worker is answered
+// twice in all and the news is credited by the one accept's copy, from the take's turn's start.
 func TestATaskCarryingNewsIsConfirmedByTheLateTurnOfItsFirstPrompt(t *testing.T) {
 	for _, tc := range newsCarryingStarts() {
 		t.Run(tc.name, func(t *testing.T) {

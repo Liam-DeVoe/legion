@@ -954,6 +954,110 @@ func TestTaskCostLogStopsTheClockAtACloseAndStartsItWholeAtTheAnswerOfNoTurn(t *
 	}
 }
 
+// No act of the worker starts the number's clock while the machine's view of its turns is cut
+// (claimClock.runs reads cut), as the machine's first wait waits for a whole view (firstWaitNow):
+// a seen report the worker makes over HTTP while its connection is closed starts none. A close, a
+// task written and reported seen while no connection stands, a gap past the first bound, the hello
+// and the agent's answer, then no take for a bound: the daemon charges the first wait one bound
+// after the answer, and the reading lists the number from the answer, not from the seen report.
+//
+// The negative control is the seen report starting the clock over a cut view (claimClock.runs
+// without its cut): the reading lists a bound that passed while no connection stood.
+func TestTaskCostLogStartsNoClockAtASeenReportMadeWhileNoConnectionStands(t *testing.T) {
+	h, log := jsonHarness(t, currentPlugin, longReconnect)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.reconnectLater()
+	h.advance(time.Minute)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	number := h.pending().Number
+	h.seen()
+	h.advance(takeBound + time.Minute)
+	h.wantCharges()
+	h.helloOf(true, false)
+	h.advance(time.Minute)
+	h.answerAsk(false)
+	answered := h.clock.Now()
+	h.wantArmedFromNow(TimerTake, takeBound, "at the answer")
+	h.advance(takeBound)
+	h.wantCharges(WaitTake)
+
+	cost := readLogCost(t, h, log)
+	if want := unreachedFrom(h, number, answered); !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A turn frame on the connection a reconnect hello opened, before the agent's answer, makes the
+// machine's view of the worker's turns whole (seeView) through the one writer of that view, which
+// logs the crossing (setView, viewWholeLine): the machine arms the first wait there, and the
+// reading starts the number's clock there. A value reported seen and left untaken, a close, a gap
+// past the first bound, the hello over the pending task, and a turn's end frame before the answer:
+// the frame writes the whole line, the daemon charges the first wait one bound after it, and the
+// reading lists the number from the frame.
+//
+// The negative control is the frame's view made whole with no line (connSeen set past setView):
+// the close's line holds the reading's clock still, and the number is not listed.
+func TestTaskCostLogStartsTheClockAtTheTurnFrameThatMakesTheViewWhole(t *testing.T) {
+	h, log := jsonHarness(t, currentPlugin, longReconnect)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	number := h.pending().Number
+	h.seen()
+	h.advance(time.Minute)
+	h.reconnectLater()
+	h.advance(takeBound + time.Minute)
+	h.wantCharges()
+	h.helloOf(true, false)
+	h.advance(time.Minute)
+	wholeLines := len(h.records.of(viewWholeLine))
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	whole := h.clock.Now()
+	if got := len(h.records.of(viewWholeLine)); got != wholeLines+1 {
+		t.Fatalf("the turn frame wrote %d whole lines, want the one of the view it made whole", got-wholeLines)
+	}
+	h.wantArmedFromNow(TimerTake, takeBound, "at the turn frame")
+	h.advance(takeBound)
+	h.wantCharges(WaitTake)
+
+	cost := readLogCost(t, h, log)
+	if want := unreachedFrom(h, number, whole); !slices.Equal(cost.Unreached, want) {
+		t.Fatalf("the numbers owed that no take reached within the first bound are\n%s\nwant\n%s",
+			strings.Join(cost.Unreached, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The view lines are written where the machine's view of the worker's turns crosses whole, and
+// nowhere else (setView): a view set whole over one already whole changes no bound, since the
+// machine arms a bound again only where it was disarmed or its take changed (armWaits), so a whole
+// line there would start the reading's clocks, and a take's second wait, again where the machine's
+// run on. The walk sets the view whole over a whole one five times — at the launch (launchNow's
+// letGo), at the process's first hello (helloed), at a hello over no pending task with no close
+// before it (helloView), and at a suspension's two let-gos, its stop's (suspendProcess) and its
+// own (suspended) — and crosses once each way, at a close and at the hello over no task after it:
+// the log holds the cut line and the whole line of that crossing alone.
+//
+// The negative control is a whole line at every set to whole: the log holds five more.
+func TestTaskCostLogWritesNoWholeLineWhereTheViewWasWholeAlready(t *testing.T) {
+	h, _ := jsonHarness(t, currentPlugin)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.connect()
+	h.reconnectLater()
+	h.connect()
+	h.reach(StateSuspended)
+
+	var lines []string
+	for _, r := range h.records.ofAny(viewCutLine, viewWholeLine) {
+		lines = append(lines, r.message)
+	}
+	if want := []string{viewCutLine, viewWholeLine}; !slices.Equal(lines, want) {
+		t.Fatalf("the view lines are\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // A close over no pending task, and the hello after it over none: that hello asks nothing, and the
 // view is whole at it (helloView), which the machine logs (viewWholeLine), so the reading's clocks
 // run again from there. A task written after it is taken and no turn starts: the daemon charges
@@ -1134,6 +1238,34 @@ func TestTaskCostLogCountsNoGapBetweenTwoDaemonsTowardTheFirstBoundBeforeATakeOr
 					strings.Join(cost.Unreached, "\n"), strings.Join(tc.want, "\n"))
 			}
 		})
+	}
+}
+
+// `legion start`'s configuration warnings, which the next daemon's process writes before its
+// starting line (cmd/legion's start logs them before daemon.Run, whose first line is the starting
+// line), are no line of the daemon before: the reading decodes none of them, so none says that
+// daemon lived any longer (alive), and the start judges every clock as of the last line the
+// reading decoded before it. A number seen at 09:00:01, no line until a warning at 09:19, the
+// starting line, the restore's cut line, the start line, the whole line and a take a minute after
+// it: the number was owed no bound with no take.
+//
+// The negative control is alive taken from every line the reading reads: the warning says the
+// daemon before lived to 09:19, and the number is listed as owed past its bound from 09:05:01.
+func TestTaskCostLogReadsAWarningBeforeTheStartingLineAsNoLineOfTheDaemonBefore(t *testing.T) {
+	const claim = "owed-across-a-gap"
+	b := costLines{t: t, at: time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)}
+	cost := b.readCost([]string{
+		b.written(0, claim, 1, 1, TaskValueQueued),
+		b.seen(time.Second, claim, 1, 1),
+		b.line(19*time.Minute, "setting max_fix_attempts changes nothing: remove max_fix_attempts from legion.yaml", "", "level", "WARN"),
+		b.line(19*time.Minute+time.Second, DaemonStartingLine, "", "project", "INFRA"),
+		b.line(20*time.Minute, viewCutLine, claim, "task", 1),
+		b.line(20*time.Minute, DaemonStartedLine, "", "project", "INFRA"),
+		b.line(21*time.Minute, viewWholeLine, claim, "task", 1),
+		b.answered(22*time.Minute, claim, 1, TakeOutcomeAccepted, ""),
+	})
+	if len(cost.Unreached) != 0 || len(cost.TakenNotOncePerOwed) != 0 {
+		t.Fatalf("%q were owed past the first bound, and the third verdict fails on %q; want neither", cost.Unreached, cost.TakenNotOncePerOwed)
 	}
 }
 

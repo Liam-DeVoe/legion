@@ -1287,9 +1287,9 @@ func takeOfferedUnless(ctx context.Context, t *testing.T, machine *supervise.Mac
 var turnSequence atomic.Uint64
 
 // endTurn ends the turn a machine is in as the agent really ends one: the agent_end, and behind it
-// the worker's turn-outcome report naming the task whose take's turn it was, which is what
-// finishes that task. A turn no take of the daemon's was running in ends with no report behind
-// it, exactly as such a turn does from a worker whose turn had no task.
+// the worker's turn-outcome report naming the task whose take's turn it was (reportTakesTurn),
+// which is what finishes that task. A turn no take of the daemon's was running in ends with no
+// report behind it, exactly as such a turn does from a worker whose turn had no task.
 func endTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token) {
 	t.Helper()
 	pending := machine.Claim().Pending
@@ -1299,10 +1299,18 @@ func endTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, toke
 	if !takesTurnStarted(pending) {
 		return
 	}
+	reportTakesTurn(ctx, t, machine, token, pending.Number)
+}
+
+// reportTakesTurn is the worker's turn-outcome report of the turn of task number's take, which
+// names that number: under the take it is what finishes the task, and what folds the news of the
+// approved design its take's text carried into what the holder was told.
+func reportTakesTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token, number uint64) {
+	t.Helper()
 	report := supervise.RequestTurnOutcome{Claim: token, Generation: machine.Claim().Generation,
-		Sequence: turnSequence.Add(1), Task: pending.Number}
+		Sequence: turnSequence.Add(1), Task: number}
 	if err := machine.Handle(ctx, report); err != nil {
-		t.Fatalf("report the end of the turn of task %d on %s: %v", pending.Number, token, err)
+		t.Fatalf("report the end of the turn of task %d on %s: %v", number, token, err)
 	}
 }
 

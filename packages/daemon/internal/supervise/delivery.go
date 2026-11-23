@@ -169,12 +169,13 @@ type Delivery struct {
 	// delivery holds is exactly what its text names: no writer keeps one beside a text it did not
 	// render with it. Empty for a task that carries none, which no take asks about.
 	News []byte
-	// Carried is the copy of News that the text of this task's accepted take carried, and, while
-	// that take stands, its credit: what its audiences are read as having taken from it (the claim
-	// store's design_news_told_in), held by this delivery's row and by nothing else, so the write
-	// that takes the take back, or the retirement, ends exactly that credit, whatever has been
-	// credited since. News is rendered again at each take, so a take after a take-back can carry
-	// more than the one taken back, and each accepted take credits only what its own text said.
+	// Carried is the copy of News that the text of this task's accepted take carried, and, on a
+	// taken delivery whose take's turn has started (turn_started), its credit: what its audiences
+	// are read as having taken from it (the claim store's design_news_told_in), held by this
+	// delivery's row and by nothing else, so the write that takes the take back, or the
+	// retirement, ends exactly that credit, whatever has been credited since. News is rendered
+	// again at each take, so a take after a take-back can carry more than the one taken back, and
+	// each accepted take credits only what its own text said.
 	//
 	// It is written by the accept itself (accept), in the one write that records the take and the
 	// text it was answered with, since the text is composed from News at that moment: a take a hold
@@ -746,14 +747,14 @@ func (m *Machine) given(request RequestDeliver) bool {
 // (Delivery.NewsOnly). It holds no work, only the news, and the start of an entry carries that
 // same news itself: the start executor reads what the record owes the claim when the start runs
 // (the daemon's newsForStart), and p's news is still owed then, since a task no take holds holds
-// no credit (the claim store counts only a taken row's copy, design_news_told_in), and the take
-// renders it again from the record (currentNews). So the entry's task goes first and alone, and
-// the work the role is owed never waits a turn and a backoff behind news. Kept in front of it, p
-// would also hold a root architect's entry out of the first stall arm, which reads only a task of
-// the row's entry (admit's architectStalls). A start of no entry carries no news (the daemon's
-// startNewsOf), so p is not superseded by it: queue refuses it behind p and writes p's value
-// first, as behind any untaken task, and the reconcile tells p's news where no later start of an
-// entry does.
+// no credit — the claim store counts only the copy of a taken delivery whose take's turn has
+// started (turn_started, design_news_told_in) — and the take renders it again from the record
+// (currentNews). So the entry's task goes first and alone, and the work the role is owed never
+// waits a turn and a backoff behind news. Kept in front of it, p would also hold a root
+// architect's entry out of the first stall arm, which reads only a task of the row's entry
+// (admit's architectStalls). A start of no entry carries no news (the daemon's startNewsOf), so p
+// is not superseded by it: queue refuses it behind p and writes p's value first, as behind any
+// untaken task, and the reconcile tells p's news where no later start of an entry does.
 //
 // The second is the rule only a tree's root architect is held to (queue): request carries a run,
 // is no resend of an entry (RequestDeliver.ResendEntry), and p is a task of a run that is either
@@ -769,10 +770,10 @@ func (m *Machine) given(request RequestDeliver) bool {
 // It answers false once a take of p is accepted (taken): that take's turn is the session's next,
 // and the text the worker runs in it is p's (replaceable says the same of the relaunch's record).
 // A superseded p ends no credit, since it holds none: its retirement removes a row no take holds,
-// and the claim store counts only a taken row's copy as a credit (design_news_told_in). So what p
-// carried of the approved design stays owed on the told rows, whatever became of p before — never
-// taken, or taken and then taken back — and the task that takes its place, or the reconcile,
-// tells it.
+// and the claim store counts as a credit only the copy of a taken delivery whose take's turn has
+// started (turn_started, design_news_told_in). So what p carried of the approved design stays owed
+// on the told rows, whatever became of p before — never taken, or taken and then taken back — and
+// the task that takes its place, or the reconcile, tells it.
 func (m *Machine) supersedes(p Delivery, request RequestDeliver) bool {
 	if p.taken() {
 		return false

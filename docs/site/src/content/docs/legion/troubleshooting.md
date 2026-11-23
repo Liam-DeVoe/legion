@@ -217,8 +217,9 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   A model key that fails at boot refuses the boot even when the cause is a passing network blip,
   since the probe cannot tell the two apart. Start the daemon again once the cause is gone.
 
-Every boot's first line is `legion daemon starting`, with the `project`, before the plugin gate and the store, and the boot logs `legion daemon started` once the daemon serves: a log that holds the first and not the second is a boot still under way, or one that stopped short, whose refusal follows it.
-[Task delivery cost](/legion/legion/task-delivery-cost/) reads the first line as where that daemon began, so no time between two daemons counts toward a worker's bounds there.
+Every boot writes `legion daemon starting`, with the `project`, as its first line, before the plugin gate and the store; only the configuration warnings of `legion start` come before it.
+The boot logs `legion daemon started` once the daemon serves: a log that holds `legion daemon starting` and not `legion daemon started` is a boot still under way, or one that stopped short, whose refusal follows it.
+[Task delivery cost](/legion/legion/task-delivery-cost/) reads `legion daemon starting` as where that daemon began, and does not read the time of the warnings before it, so no time between two daemons counts toward a worker's bounds there.
 
 ## The daemon stops
 

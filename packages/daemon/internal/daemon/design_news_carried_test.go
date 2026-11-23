@@ -624,7 +624,15 @@ func TestARestartBetweenAReopeningAndTheTurnOfATaskThatCarriedTheEarlierOpening(
 	r.wantTold("after the restart's confirmation of the task that carried the earlier opening", pathRoot, record.AudienceHolder, 4, true)
 
 	conn.SetStreaming(false)
-	endTurn(r.ctx, t, restored, token)
+	taken := restored.Claim().Pending
+	if err := restored.Handle(r.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+		t.Fatalf("end the turn of the restored take: %v", err)
+	}
+	// Main's step here is the end frame alone. Under the take, the worker's report that names the
+	// take's number is what finishes the task and folds its copy into what the holder was told
+	// (reportTakesTurn): without it nothing folds, and the sweep's next task waits behind the taken
+	// one until the report bound.
+	reportTakesTurn(r.ctx, t, restored, token, taken.Number)
 	r.wantTold("after the take's turn and its clean report", pathRoot, record.AudienceHolder, 4, true)
 
 	r.sweepNews()

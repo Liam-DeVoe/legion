@@ -16,24 +16,108 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
+// owedFinishAwaitingItsTurn is a claim on the current plugin, ready, whose take of a task awaits
+// its turn while the finish its report decided is owed (Machine.finishOwed): the report named the
+// take's number ahead of the turn's start, the store refused the finish, and the take was then
+// put back to await its turn, as a put-back leaves a take (putBack). No path of the daemon is
+// shown to reach that state (review handoff v4's Q1), so the put-back is made in memory, and the
+// next decision writes it as a put-back's own write would (settle). refusing is whether the store
+// still refuses the finish when this returns.
+func owedFinishAwaitingItsTurn(t *testing.T, refusing bool, set ...func(*Deps)) (*harness, uint64) {
+	t.Helper()
+	return owedFinishOfAwaitingItsTurn(t, RequestDeliver{Task: "the task whose report came ahead of its turn"}, refusing, set...)
+}
+
+// owedFinishOfAwaitingItsTurn is owedFinishAwaitingItsTurn over the task deliver queues, for a row
+// that reads what the delivery carries: its run and its entry.
+func owedFinishOfAwaitingItsTurn(t *testing.T, deliver RequestDeliver, refusing bool, set ...func(*Deps)) (*harness, uint64) {
+	t.Helper()
+	h := newHarnessOf(t, queuedClaim(), append([]func(*Deps){currentPlugin, withWaits}, set...)...)
+	h.manualTakes()
+	h.reach(StateReady)
+	deliver.Claim = h.token
+	h.must(deliver)
+	h.mustTake()
+	number := h.pending().Number
+	h.store.fail("RetireDelivery", errBoom)
+	if err := h.reportTurn(number, nil); err == nil {
+		t.Fatal("the report whose finish the store refused answered no failure")
+	}
+	h.m.mu.Lock()
+	p := h.m.claim.Pending
+	p.TurnStarted, h.m.turns.take, h.m.reportedAhead, h.m.unsaved = false, 0, aheadReport{}, true
+	owed, awaits := h.m.finishOwed, p.awaitsStart()
+	h.m.mu.Unlock()
+	if !owed || !awaits {
+		t.Fatalf("the claim holds %+v with its finish owed %t, want task %d's take awaiting its turn with its finish owed", h.pending(), owed, number)
+	}
+	if !refusing {
+		h.store.fail("RetireDelivery", nil)
+	}
+	return h, number
+}
+
+// owedFinishOverATurnThatRan is a claim on the current plugin, ready, whose take of a task ran its
+// turn, started and ended, and whose finish the report naming its number decided and the store
+// refused (Machine.finishOwed): the state every live order reaches, which owedFinishAwaitingItsTurn
+// makes by hand over a take put back. refusing is whether the store still refuses the finish when
+// this returns.
+func owedFinishOverATurnThatRan(t *testing.T, refusing bool) (*harness, uint64) {
+	t.Helper()
+	h := newHarnessOf(t, queuedClaim(), currentPlugin, withWaits)
+	h.manualTakes()
+	h.reach(StateReady)
+	number := h.takeOf("the task whose report's finish the store refused")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	h.store.fail("RetireDelivery", errBoom)
+	if err := h.reportTurn(number, nil); err == nil {
+		t.Fatal("the report whose finish the store refused answered no failure")
+	}
+	if !refusing {
+		h.store.fail("RetireDelivery", nil)
+	}
+	return h, number
+}
+
+// wantOwedFinishMade holds that task number was finished once, by its report, and nothing of it
+// taken back: the store records it finished, and no value of it is left for a process to take.
+func (h *harness) wantOwedFinishMade(number uint64) {
+	h.t.Helper()
+	h.wantFinishedOnce(finishedByReport)
+	for _, r := range h.recordsNaming(takenBackLine, number) {
+		cause, _ := r.attr("cause")
+		h.t.Fatalf("task %d was taken back (%s), want it finished by its owed report", number, cause)
+	}
+	if p := h.claim().Pending; p != nil && p.Number == number {
+		h.t.Fatalf("the claim still holds %+v, want task %d finished", p, number)
+	}
+	if stored := h.store.load(h.token); stored.TaskFinished != number {
+		h.t.Fatalf("the store records task %d finished, want %d", stored.TaskFinished, number)
+	}
+	if value, held := h.values.value(h.token); held && value.Number == number {
+		h.t.Fatalf("the bucket still holds %+v, want task %d's value deleted", value, number)
+	}
+}
+
 // Every caller of the three take-backs, each driven over a take awaiting its turn while its
 // finish is owed (owedFinishAwaitingItsTurn), ends with the task finished once by its report,
 // nothing of it taken back, and no value of it left for a process to take (wantOwedFinishMade).
-// The callers, at the head this test was written on (77beb282):
+// The callers:
 //
-//   - interrupted (delivery.go): settle (delivery.go:1063), here at the claim's failure; died
-//     (machine.go:3660); replaceNow's take-back (repoint.go:211), made at once by launchReplacing
-//     (machine.go:2982) for a stale address (repoint.go:42), the stale-plugin relaunch
-//     (plugin.go:362) and the stall backstop (stallbackstop.go:179), or carried to the wake's turn
-//     (machine.go:2992, launchWake at wake.go:550); the wake's own take-back (wake.go:547);
-//     reportMissed (reportwait.go:360), for the wait's bound and the held suspension's deadline;
-//     the held suspension's deadline in a turn and under a compaction (suspend.go:377, :387);
-//     suspendOverADeadProcess (suspend.go:682); and reconnectDeadline (waits.go:334), to which
-//     this change adds the relaunch at the reconnect deadline of a hello no answer followed;
-//   - takeBackUnstarted (delivery.go): a retirement (machine.go:4047) and a suspension
-//     (suspended, suspend.go:516);
-//   - takeBack (take.go): the operator's compaction (compactStart, compact.go:350), R5's second
-//     wait (waits.go:281) and a provider error's report (takeToLadder, providererror.go:98).
+//   - interrupted (delivery.go): settle (delivery.go), here at the claim's failure; died
+//     (machine.go); replaceNow's take-back (repoint.go), made at once by launchReplacing
+//     (machine.go) for a stale address (repoint.go), the stale-plugin relaunch (plugin.go) and the
+//     stall backstop (stallbackstop.go), or carried to the wake's turn (machine.go, launchWake in
+//     wake.go); the wake's own take-back (wake.go); reportMissed (reportwait.go), for the wait's
+//     bound and the held suspension's deadline; the held suspension's deadline in a turn and under
+//     a compaction (suspend.go); suspendOverADeadProcess (suspend.go); and reconnectDeadline
+//     (connview.go), to which this change adds the relaunch at the reconnect deadline of a hello no
+//     answer followed;
+//   - takeBackUnstarted (delivery.go): a retirement (machine.go) and a suspension (suspended,
+//     suspend.go);
+//   - takeBack (take.go): the operator's compaction (compactStart, compact.go), R5's second wait
+//     (waits.go) and a provider error's report (takeToLadder, providererror.go).
 //
 // A caller that runs only in a turn meets the owed finish with the take's turn started, since a
 // turn's start over a take awaiting its turn is that take's turn (turnStarted): those cases start
@@ -41,7 +125,7 @@ import (
 // (secondWaitNow, reportBounded), which their cases show by letting both bounds pass; and a
 // compaction under which a suspension's deadline would come finds no owed take to cut, since its
 // own start finishes it (the compaction's case). The wake's own take-back with no replacement's
-// carried on it (wake.go:547) is reached only by a wake no replacement raised over a live process,
+// carried on it (wake.go) is reached only by a wake no replacement raised over a live process,
 // which no take awaiting its turn meets; its take-back is interrupted's all the same.
 //
 // The negative control is the commit under this change, where each of them gave the take back
