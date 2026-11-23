@@ -2693,6 +2693,7 @@ describe("heads_fixture", () => {
         [
           "set -euo pipefail",
           fn("fail"),
+          fn("pr_line"),
           fn("heads_routes"),
           `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
           'heads_routes ci-pass-and-fail "$2"',
@@ -2861,6 +2862,7 @@ describe("heads_fixture", () => {
       [
         "set -euo pipefail",
         fn("fail"),
+        fn("pr_line"),
         fn("heads_routes"),
         `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "heads_routes reviewer-own-head sibling-fails",
@@ -3094,6 +3096,7 @@ describe("heads_fixture", () => {
       [
         "set -euo pipefail",
         fn("fail"),
+        fn("pr_line"),
         fn("heads_routes"),
         `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "heads_routes reviewer-own-head sibling-fails",
@@ -3163,6 +3166,7 @@ describe("heads_fixture", () => {
         [
           "set -euo pipefail",
           fn("fail"),
+          fn("pr_line"),
           fn("heads_routes"),
           `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
           `heads_routes ${scenario} ${scenarioCase}`,
@@ -3239,6 +3243,7 @@ describe("heads_fixture", () => {
       [
         "set -euo pipefail",
         fn("fail"),
+        fn("pr_line"),
         fn("heads_routes"),
         `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "heads_routes architect-pass-and-fail",
