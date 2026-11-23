@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
@@ -62,6 +63,13 @@ type idleRigPods struct {
 	dirMu   sync.Mutex
 	dirRoot string
 	dirNext int
+
+	// workspace is the issue workspace every launcher of the rig reads when the daemon asks
+	// (launcher.Config.Workspace): one jj repository holding no work, made once in newIdleRigPods,
+	// so the release of a pod no claim owns reads it clean through the pod's launcher (R6). This
+	// container has no issue pod's layout, and the launcher's own working directory is the test
+	// package's, which is no jj workspace.
+	workspace string
 }
 
 // idleRigPodProcesses is one pod's launchers and what runs beside them (run): the worker stream
@@ -99,9 +107,11 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
 	// that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	fixturegit.Isolated(t, t.TempDir()).Run(filepath.Dir(workspace), fixturegit.JJInit(workspace, false)...)
 	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
-		dirRoot: root}
+		dirRoot: root, workspace: workspace}
 	t.Cleanup(p.stopAll)
 	return p
 }
@@ -136,7 +146,7 @@ func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, reco
 		cfg := launcher.Config{
 			Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
 			Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
-			SessionDatabase: p.session, SessionDialer: p.dial,
+			SessionDatabase: p.session, SessionDialer: p.dial, Workspace: p.workspace,
 		}
 		processes.run(func(ctx context.Context) {
 			if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
