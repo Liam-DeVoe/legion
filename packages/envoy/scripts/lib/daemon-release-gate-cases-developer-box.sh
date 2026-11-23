@@ -510,6 +510,21 @@ for shape in package-parent claude-record-parent outside-claude profiles omp-tre
   check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
 done
 
+# Two surfaces hidden at once, the profiles directory and the dotfiles' @sjawhar directory, which
+# ~/.omp/plugins links to: a profiles directory the gate cannot list still leaves it ~/.omp/plugins
+# to read, so the one UNKNOWN line names both, and the operator sees every surface to fix at once.
+echo "case: --clients, the profiles and ~/.omp/plugins' copy both hidden"
+box_case box-unseen-profiles-and-plugins
+home="${case_root}/home"
+mkdir -p "$home/.omp/profiles/work/plugins"
+chmod 000 "$home/.omp/profiles" "$home/.dotfiles/omp/plugins/node_modules/@sjawhar"
+run_gate -- --clients "$commit"
+chmod 755 "$home/.omp/profiles" "$home/.dotfiles/omp/plugins/node_modules/@sjawhar"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the unlisted profiles and ~/.omp/plugins' copy in one line" \
+  "$(grep -qF "$home/.omp/profiles cannot be listed: Permission denied, $home/.omp/plugins/node_modules/@sjawhar/pi-envoy: Permission denied" "$out" && echo true || echo false)"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
 # A plugin name the gate cannot read, a tab in it among them, is refused whole: the record's fields
 # are never shifted into one another.
 echo "case: --clients, a Claude Code record whose plugin name holds a tab"
