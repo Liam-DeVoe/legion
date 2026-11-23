@@ -22,16 +22,17 @@ import (
 // task it carries, a stop; a start that waits for its pod excepted, below), an architect's notice, the words a hook fired on a move back puts in
 // front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
 // (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
-// (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer and
-// the word to the worker of the phase the issue stays in (record.MergeForwardMessage). Two reads of
-// GitHub reach no session themselves, but their answers are what write a message, so each holds
-// the pod as its message does: the read that comes before a merge-queue removal's message
-// (record.MergeQueueRead), and the second read of a head a first read found conflicting, whose
-// confirmation writes a merge forward's messages (record.ConflictConfirm). The issue's board
-// writes — its Dispatch status, its messages on the Dispatch issue — reach no session and hold no
-// pod. The same set is what the release's boundary is read over (IssueRelease), so the rule that
-// holds a pod and the rule that cancels its release never disagree about which row speaks to a
-// role. Every kind of the role-message lane belongs here: one left out lets the daemon release the
+// (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer or,
+// in merging, the merger, and the word to the worker of the phase the issue stays in
+// (record.MergeForwardMessage). Two reads of GitHub reach no session themselves, but their
+// answers are what write a message, so each holds the pod as its message does: the read that
+// comes before a merge-queue removal's message (record.MergeQueueRead), and the second read of a
+// head a first read found conflicting, whose confirmation writes a merge forward's messages
+// (record.ConflictConfirm). The issue's board writes — its Dispatch status, its messages on the
+// Dispatch issue — reach no session and hold no pod. The same set is what the release's boundary
+// is read over (IssueRelease), so the rule that holds a pod and the rule that cancels its release
+// never disagree about which row speaks to a role. Every kind of the role-message lane belongs
+// here: one left out lets the daemon release the
 // issue's pod out from under the row that was just written for one of its roles, and that role
 // never reads it. An update ask holds the pod only while its row is pending, which is one attempt
 // where the publish goes through or finds no holder.
@@ -42,11 +43,29 @@ var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_as
 // built before the deployment defined its role (the outbox's roleWaitsForItsPod writes its last
 // error with pods.StartWaitsForPodPrefix, the parameter %s names). Such a start is no delivery the
 // pod waits for: the pod cannot run it, and only its update round or its release lets it start.
-// So both reads of idleWaitingKinds leave it out, `and not` it after `kind = any(…)`: the view's
-// Waiting (readIdleView), which main's rule and the idle rule read, and the release's boundary
-// (IssueReleaseStop), so the rule that holds a pod and the rule that cancels its release still
-// never disagree.
+// The view's StartsWaitingForPod lists the roles of such starts (readIdleView).
 const startWaitsForPodRow = `(kind = 'supervise' and payload->>'op' = 'start' and starts_with(coalesce(last_error, ''), %s))`
+
+// idleWaitingRow is the predicate, over the outbox with idleWaitingKinds as $2 and
+// pods.StartWaitsForPodPrefix as the parameter prefix names, of a row that waits for a role of the
+// pod, and so holds the pod and cancels its release at the boundary (readIdleView,
+// IssueReleaseStop) and, where it is a start, at the teardown (IssueRelease): a row of one of
+// those kinds, but two kinds of start. One is a start queued for news of the approved design alone
+// (record.SuperviseRequest.News, which its payload writes as `"news": true`). Such a start
+// reaches only a claim already given its phase's entry, and the claim an idle release suspended
+// is one: the start resumes it as any start does, so a release under the start loses nothing, and
+// the role comes back with its news. And such a start can wait a long time. A merger's waits for
+// its tree's design gate for the whole time the gate stays closed (the daemon's
+// mergerWaitsForTheDesignGate), and any one waits behind a task its claim has not finished
+// (supervise's queue). A pod held for it would stand idle for all that time. The other is a start
+// that waits because the pod was built before its role (startWaitsForPodRow): the pod cannot run
+// it, and the release is one of the two things that let it start, so it neither holds the pod nor
+// cancels the release. All three reads take this one rule, so the rule that holds a pod and the
+// rules that cancel its release never disagree.
+func idleWaitingRow(prefix string) string {
+	return `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true') and not ` +
+		fmt.Sprintf(startWaitsForPodRow, prefix)
+}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
@@ -695,8 +714,8 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
 	}
 
-	if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists (
-		select 1 from outbox where issue = $1 and kind = any($2) and not %s)`, fmt.Sprintf(startWaitsForPodRow, "$3")),
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from outbox where issue = $1 and `+idleWaitingRow("$3")+`)`,
 		issue, idleWaitingKinds, pods.StartWaitsForPodPrefix).Scan(&view.Waiting); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the queued rows of %s for its idle view: %w", issue, err)
 	}

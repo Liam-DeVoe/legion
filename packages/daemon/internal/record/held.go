@@ -35,8 +35,9 @@ const (
 	// (Issue.AwaitingPerson, answered or not): the daemon starts no issue of that tree before
 	// that root resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
-	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
-	// deployment gates (TreeGate.Open).
+	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step that holds the
+	// tree (TreeGate.Open over TreeSteps): a step the deployment gates, or a criteria step the root
+	// registered beside a deployment that gates spec and not criteria.
 	HeldDesignGate HeldReason = "design_gate"
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).
@@ -45,7 +46,7 @@ const (
 	// work starts while they stand open (LineFacts.ChildWaits).
 	HeldChildrenFirst HeldReason = "children_first"
 	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
-	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
+	// nothing of it starts while that ancestor stands in retro or merging (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldChildrenBeforeRetro is a parent whose task's last step is not the owner's acceptance, held before its retro
 	// while issues beneath it are still in the workflow (HoldForChildren, HeldForChildren). heldBy
@@ -70,13 +71,13 @@ const (
 	// that keeps none of the cap's slots where it stands, whose workers run as they did and which
 	// no other issue holds. KeepsSlot is InWorkflow and a phase that keeps a slot
 	// (PhaseKeepsSlot, over StandsAt), and HeldList keeps only InWorkflow candidates, so the
-	// issues that read this word are the ones in accepting, retro or merging (PastReview), whose
+	// issues that read this word are the ones in accepting, retro or merging (InSlotlessPhase), whose
 	// sign-off, retro and merge run on no slot at all. An issue held from one of those
 	// phases keeps no slot either, but its hold stopped its work, so it does not read this word:
 	// a parent held there for its children reads children_before_retro, a stopped task reads
 	// task_stopped, and any other hold falls to unclassified (HeldReasonOf states why at the
 	// clause). Of the issues that read it, one whose tree runs is served no `why` (projection's
-	// atWorkPastReview), so `why` serves this word's sentence only to a member in accepting, retro or merging of
+	// atWorkInSlotlessPhase), so `why` serves this word's sentence only to a member in accepting, retro or merging of
 	// a tree that runs nothing. This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
 	// HeldUnclassified is an issue none of the words above is true of (C2). The record holds

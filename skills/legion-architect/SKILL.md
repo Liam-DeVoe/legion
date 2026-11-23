@@ -1,6 +1,6 @@
 ---
 name: legion-architect
-description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing or parking children, a delivered wake, a worker's escalation, or accepting an issue's head."
+description: "Use when you are a Legion root or child architect, before any lifecycle action: decomposing or adopting children, the design gate, an issue's plan, releasing children, a delivered wake, a worker's escalation, or accepting an issue's head."
 ---
 
 # Legion architect
@@ -8,7 +8,6 @@ description: "Use when you are a Legion root or child architect, before any life
 You own one issue and every issue under it until the merge that closes it.
 The daemon starts every worker and moves every phase; you write no code.
 Your role prompt holds the lifecycle rules, this skill the procedures.
-Where it disagrees with the code or a `--help`, follow those and say so.
 
 ## Every turn
 
@@ -34,7 +33,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
    Record it on the issue or in `plan.md`, with your reason wherever you do not follow it.
    Run it again when a push-back or a review changes what the design is for.
 
-3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since any new version closes the gate.
+3. A root: write and edit the spec as `skill://legion-architect/references/design-gate.md` says, since a new version closes the gate, except two kinds it names.
    A child: after step 4, for the part that stays.
 
 4. Decompose, adopt, split across repositories or record a wait on outside work as `skill://legion-architect/references/decomposition.md` says, red-team check first.
@@ -65,10 +64,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
   Never hold a release back for a close, except as `skill://legion-architect/references/decomposition.md` says: the daemon refuses one under an accepted issue.
   Never block a child on its own parent, which merges last.
 
-- On each `child-closed`, read the child's handoff, edit the specs of open children it changes, and `park_child` each child it makes unneeded.
-
-- Before you park a child for good, take it off each sibling's `--blocked-by` list (`--clear-blocked-by` where it was the only one), or park that sibling too:
-  a parked child is not `done`, and its dependents stay held with no notice.
+- On each `child-closed`, read the child's handoff, edit the specs of open children it changes.
 
 ## 3. Children complete
 
@@ -82,7 +78,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
 
-- Where the work is a page or a tool a person uses, offer that person a running build before the review; the deployment instructions say how a pod runs one.
+- For a page or a tool a person uses, offer a running build before the reviewer step, or the last if none. The deployment instructions say how a pod runs one.
 
 ## 5. Retro
 

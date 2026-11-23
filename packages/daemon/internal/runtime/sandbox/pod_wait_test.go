@@ -85,17 +85,17 @@ func TestAPodBuiltBeforeARoleDriftsOnItsRoles(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	restarted := secondRuntime(t, g, withChecker)()
-	if drifted := driftOf(t, g.ctx, restarted, loc); !slices.Equal(drifted, want) {
+	if drifted := driftOf(t, g, restarted, loc); !slices.Equal(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q", drifted, want)
 	}
 	forgetPodShape(t, g, restarted, loc.Sandbox.Name)
-	if drifted := driftOf(t, g.ctx, restarted, loc); !slices.Equal(drifted, want) {
+	if drifted := driftOf(t, g, restarted, loc); !slices.Equal(drifted, want) {
 		t.Errorf("PodDrift of a pod written before the shape record = %q, want %q", drifted, want)
 	}
 
 	built := deploymentRig(t)
 	withRole := built.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
-	for _, reason := range driftOf(t, built.ctx, built.r, withRole) {
+	for _, reason := range driftOf(t, built, built.r, withRole) {
 		if strings.HasPrefix(reason, "roles ") {
 			t.Errorf("PodDrift of a pod built with every role names %q, want no roles reason", reason)
 		}

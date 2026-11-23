@@ -13,15 +13,15 @@ import (
 
 // mergeForwardMessage publishes one message of a merge forward (record.MergeForwardMessage,
 // dispatch://INFRA-4374 R1) to the Envoy topic of the role it names on the row's issue, and to
-// nothing else: the ask that the implementer merge the base forward and push, the hold that tells
-// the worker of the phase the issue stays in to stop writing the workspace while it does, and, once
-// the merge lands, the landed to that worker and the review to the reviewer of an issue past its
-// review whose task has a reviewer step (payload.Message, composed from the pull request as this
-// attempt reads it). It stops nothing it reaches.
+// nothing else: the ask that the implementer, or in merging the merger, merge the base forward and
+// push, the hold that tells the worker of the phase the issue stays in to stop writing the
+// workspace while it does, and, once the merge lands, the landed to that worker and the review to
+// the reviewer of an issue whose task's reviewer step already ran (payload.Message,
+// composed from the pull request as this attempt reads it). It stops nothing it reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
 // message to a released claim is (roleMessage): the issue keeps its phase while the merge runs and
-// no phase start carries the ask, so a released implementer that is not told never merges, and the
+// no phase start carries the ask, so a released role that is not told never merges, and the
 // conflicting head stands with no CI and nobody at work on it. So the row is delivered as
 // deliverHeld delivers a held message: a released role is woken, and the row waits until a session
 // holds the role.
@@ -32,12 +32,13 @@ import (
 // record holds no such issue, the issue has left the workflow, its tree lingers, the row's role is
 // one the deployment this daemon booted with no longer defines (r.deployment: a restart since the
 // row was queued dropped it, and a wake would resume a claim whose launch then fails), the record
-// holds no pull request or one that is not open, it holds no merge forward or one of another head,
-// or the row is an ask or a hold and the merge forward has landed.
-// Role-message rows run in no order of the issue's, so a hold still queued behind its landed would
-// otherwise tell the worker to wait for a head that already came. What follows - a claim that
-// failed or retired, the design gate, the wake and the publish - is deliverHeld's, as it is a
-// merge-queue removal's.
+// holds no pull request or one that is not open, the row is to the merger and the issue no longer
+// stands in merging, the record holds no merge forward or one of another head, or the row is an ask
+// or a hold and the merge forward has landed. Role-message rows run in no order of the issue's, so
+// a hold still queued behind its landed would otherwise tell the worker to wait for a head that
+// already came.
+// What follows - a claim that failed or retired, the design gate, the wake and the publish - is
+// deliverHeld's, as it is a merge-queue removal's.
 func (r *outbox) mergeForwardMessage(ctx context.Context, row record.OutboxRow, payload record.MergeForwardMessage) error {
 	if r.notices == nil {
 		return errors.New("merge-forward message executor has no Envoy publisher")

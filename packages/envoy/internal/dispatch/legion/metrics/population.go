@@ -80,6 +80,15 @@ type StepRun struct {
 	Returned bool
 }
 
+// RunPlan is the plan one run of the issue ran from, as Dispatch holds it (workflowstore's plan
+// node): when its node was made, which is when the run's work started, and the roles of its one
+// task's steps, in the task's order (`acceptance` for `acceptance:owner`). Steps is empty for a
+// plan whose tasks are not exactly one, which the fallback timeline reads as the default steps.
+type RunPlan struct {
+	Made  time.Time
+	Steps []string
+}
+
 // Issue is one issue of the population with every fact the rules read of it.
 type Issue struct {
 	Key       string
@@ -113,6 +122,11 @@ type Issue struct {
 
 	// Runs are the runs of the steps of roles the deployment defines, oldest first (readRuns).
 	Runs []StepRun
+
+	// Plans is the plan of each run of the issue, oldest first: what the fallback timeline reads
+	// the order of the task's steps from (phaseLine). An issue Legion ran before it recorded
+	// plans has none.
+	Plans []RunPlan
 
 	// Observed is every value a read found changed, by legion_observations field (legion's
 	// FieldPhase, FieldSlot, ClaimFieldPrefix+role and the rest), oldest first within a field.
@@ -200,6 +214,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readRuns(ctx, pool, keys) },
+		func(ctx context.Context) error { return population.readPlans(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readSampled(ctx, pool, project, keys) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, github, keys) },
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
@@ -610,6 +625,33 @@ func (p *Population) readRuns(ctx context.Context, pool *store.Pool, keys []stri
 			}
 			issue.Runs = append(issue.Runs, StepRun{Role: run.Role, Start: run.StartedAt.UTC(), End: run.EndedAt,
 				Returned: run.Result == workflowstore.ResultFailed && run.ReturnedTo != nil})
+		}
+	}
+	return nil
+}
+
+// readPlans reads the plan of each run of the issues (workflowstore.IssuesPlans), oldest first:
+// what the fallback timeline reads the order of a task's steps from (Issue.phaseLine). A plan
+// whose tasks are not exactly one keeps no steps, which reads as the default steps.
+func (p *Population) readPlans(ctx context.Context, pool *store.Pool, keys []string) error {
+	plans, err := workflowstore.IssuesPlans(ctx, pool, keys)
+	if err != nil {
+		return err
+	}
+	for key, held := range plans {
+		issue := p.Issues[key]
+		if issue == nil {
+			continue
+		}
+		for _, made := range held {
+			var steps []string
+			if len(made.Plan.Tasks) == 1 {
+				for _, step := range made.Plan.Tasks[0].Steps {
+					role, _, _ := strings.Cut(step, ":")
+					steps = append(steps, role)
+				}
+			}
+			issue.Plans = append(issue.Plans, RunPlan{Made: made.Made, Steps: steps})
 		}
 	}
 	return nil

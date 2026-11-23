@@ -108,7 +108,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	// the words: LEGION-171 dispatch_blocker, LEGION-172 at_work, LEGION-173 accepted_ancestor and
 	// LEGION-174 unclassified. LEGION-172, in merging, is an ancestor the daemon has accepted
 	// (record.Accepted) and holds no slot, since merging keeps none (record.KeepsSlot); nothing
-	// of LEGION-173 under it starts before that close. LEGION-174 is the issue at work in
+	// of LEGION-173 under it starts while it stands in merging. LEGION-174 is the issue at work in
 	// implementing, a phase that keeps a slot, that holds no row and that the line does not
 	// place, and LEGION-175, at work holding one, is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
