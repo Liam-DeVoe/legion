@@ -26,7 +26,9 @@ func promptPart(t *testing.T, name string) string {
 //     where its step writes none (pi-shared's findHandoffReport), and the daemon refuses a review
 //     step's report without one (api's stepReportRefusal, MISSING_FIELD);
 //   - a read of an issue with no pull request compares a `before_merge` check with nothing unless
-//     it names a commit (`dispatch results --at`), and a `ci_check` there reads `no_head`;
+//     it names a commit (`dispatch results --at`), and a `ci_check` there reads `no_head` and can
+//     never pass, since no role records it (CHECK_PROVED_BY_CI): a step that reads it holds or
+//     fails, never passes;
 //   - the fresh agent's pass refused SIGNOFF_CHILD_IN_WORKFLOW is applied only when it is sent
 //     again (workflow's handoff leaves it unspent);
 //   - an issue with a pull request goes from its retro to its merge whatever its steps (workflow's
@@ -39,7 +41,12 @@ func TestTheNoPullRequestAndOwnerStepWordsSayWhatTheCodeDoes(t *testing.T) {
 	for _, pin := range []struct{ part, words string }{
 		{"reviewer.md", "The `legion` tool sends that handoff's `head` as the completion's `commit`, so you pass no commit yourself."},
 		{"reviewer.md", "Read the checks there with `dispatch results --issue <issue> --at <the commit you read>`."},
-		{"reviewer.md", "A `ci_check` check reads `no_head` there: no run can prove it without a pull request."},
+		{"reviewer.md", "A `ci_check` check reads `no_head` there: no run can prove it without a pull request, so its words are wrong for this task."},
+		{"reviewer.md", "Send it to the architect and wait for the rewrite, with a `WAITING` line naming it, as for a check whose `run` is a whole test suite."},
+		{"reviewer.md", "Never `pass` while such a check stands."},
+		{"core/reviewer.md", "Send it to the architect and give no `pass` while it stands."},
+		{"acceptance.md", "and wait for the rewrite with a `WAITING` line naming it. Or end your step with a `fail` that names no `return_to`."},
+		{"acceptance.md", "Never `pass` while such a check stands."},
 		{"reviewer.md", "or in your handoff's `body` where the issue has no pull request"},
 		{"reviewer.md", "on an issue with no pull request also `body`, the text a review body would carry"},
 		{"tester.md", "Give `implementerProof.verdict` the one your completion gives: `verified` with `pass`, `rejected` with `fail`."},
@@ -75,6 +82,9 @@ func TestTheNoPullRequestAndOwnerStepWordsSayWhatTheCodeDoes(t *testing.T) {
 	}
 	for _, retired := range []struct{ part, words string }{
 		{"reviewer.md", "and that `commit`, as the daemon part below says"},
+		{"reviewer.md", "Wait for no run of it, fail nothing for it"},
+		{"core/reviewer.md", "so wait for none: send it to the architect"},
+		{"acceptance.md", "Wait for none, and send it to your architect as a finding"},
 		{"tester.md", "the commit of the working copy you tested"},
 		{"go/reviewer.md", "and the `commit` you read, which the daemon requires there"},
 		{"go/acceptance.md", "Legion applies that same report once they have left"},
