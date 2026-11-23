@@ -140,10 +140,23 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
 
+// MigrateThrough is Migrate for the embedded migrations numbered version or below alone: it leaves
+// the schema a release whose newest migration is version leaves, and a later Migrate applies the
+// rest, as the next release's boot does over that deployment. It refuses a version no embedded
+// migration carries, which names no release. Tests read a store as an earlier release left it
+// through it (cmd/dispatch's supertag node tests).
+func (s *Store) MigrateThrough(ctx context.Context, version int) error {
+	return s.migrateThrough(ctx, migrationFiles, version)
+}
+
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "schema_migrations"
 
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
+	return s.migrateThrough(ctx, fsys, math.MaxInt)
+}
+
+func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) error {
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")
 	}
@@ -151,10 +164,16 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)
 	}
+	if version != math.MaxInt && !slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version == version }) {
+		return fmt.Errorf("migrate through %d: no embedded migration carries that version, none applied", version)
+	}
 	if err := s.prepareVersionTable(ctx, migrations); err != nil {
 		return err
 	}
 	for _, migration := range migrations {
+		if migration.Version > version {
+			break
+		}
 		if err := s.applyMigration(ctx, migrations, migration); err != nil {
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
 		}
