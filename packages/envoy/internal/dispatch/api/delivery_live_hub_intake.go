@@ -476,11 +476,23 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// and a recompute that reads the same evals sends nothing. The refresher's commit that
 		// moves that project (delivery.JudgingMoved) marks every such view too; a person's write
 		// of a default repository marks none until it does.
+		//
+		// A project timeline counts a row no issue attributes for the project whose published
+		// default repository holds it, and a deploy that ships nothing for the project whose deploy
+		// source reads its repository under the published defaults (evals.Attribution). The
+		// refresher's commit that publishes the defaults logs each project whose default it moved,
+		// which marks that project's timeline views, and each deploy repository whose judging
+		// project (the one whose source reads it) it moved, which marks every timeline view, since
+		// the change names the repository and not the projects it moved between
+		// (delivery.EvalDaysWrittenByDefaults).
 		switch view.spec.classes().reads {
 		case viewReadsEvals:
 			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
 		case viewReadsEvalItems:
 			return change.Ref == evals.EvalID(view.spec.project, view.spec.slug) || delivery.SettingsApplied(change)
+		}
+		if view.spec.kind == deliveryLiveProjectTimeline {
+			return change.RunKind == delivery.EvalDaysWrittenByDefaults && (change.Repo == view.spec.project || delivery.JudgingMoved(change))
 		}
 		if delivery.JudgingMoved(change) {
 			return len(view.spec.classes().evalVersions) > 0

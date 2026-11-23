@@ -491,8 +491,9 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// id (a merge's pull request id, a run's id). The maps, counts, session groups, window and
 	// freshness are a timeline view's, and sent as its are; the envelope's numbers and the waiting
 	// line, which is null until the view's limit reaches the window's total, are sent whole. It
-	// carries no measures, so it shows no unowned P0 list and judges by no eval's target, and a
-	// delivery change marks it as it marks a timeline view (touchedByDeliveryRow).
+	// carries no measures, so it shows no unowned P0 list and judges by no eval's target; a delivery
+	// change marks it as it marks a timeline view (touchedByDeliveryRow), and so does the
+	// refresher's publishing of the default repositories its rows are counted under (touchedBy).
 	deliveryLiveProjectTimeline: {
 		body:  reflect.TypeFor[projectTimelineResponse](),
 		lists: []string{"items", "session_groups"},
