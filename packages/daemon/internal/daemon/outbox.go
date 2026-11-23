@@ -3430,29 +3430,37 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, role clai
 // disk that role worked on, so the disk is read first, as the idle release reads it. A read that
 // finds work that origin does not hold, or that fails, declines the close (declineFor,
 // store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through is
-// told once, and the rule holds the pod while the decline stands. The decline's hold commits in the
-// decline's own transaction, and its line is that commit's hook, as a release's decline has them
-// (declineRelease). A read that finds nothing queues the close's stops and the issue's Sandbox
-// suspension (leftPodStopRows) in one transaction with a view read again
+// told once, and the rule holds the pod while the decline stands; its hold and its line go as a
+// cancel's do (cancelRelease). A read that finds nothing queues the close's stops and the issue's
+// Sandbox suspension (leftPodStopRows) in one transaction with a view read again
 // (workflow.LeftPodCloseAfterCheck), so a role that started a turn since the pass that queued the
 // check (payload.TurnStart) — one that ended while the read ran too — or that is in one or was
 // given work now, is not stopped; the next pass decides that pod again. A clean read also forgets
-// the decline on record, whose work it found gone.
+// the decline on record, whose work it found gone, in that same transaction.
 //
-// The close that queues the stops finishes the check's own row in the same transaction
-// (FinishLeasedOutbox, fenced on the row's lease). A close whose commit outcome is unknown so
-// leaves no row to run again: the stops it committed run on the lane, and a retry of the check
-// would read the workspace after they took the role's shim away, and decline a close already
-// done, under a hold that no pass ends, since no pass visits a pod with no Sandbox.
+// Either way the check finishes its own row in the transaction that records what it decided
+// (FinishLeasedOutbox), so that transaction commits only while this run's lease holds the row: a
+// run whose lease another lane took writes nothing, and the lane that holds the row decides the
+// close. And a check whose commit outcome is unknown leaves no row to run again: the stops it
+// committed run on the lane, and a retry would read the workspace after they took the role's shim
+// away, and decline a close already done, under a hold that no pass ends, since no pass visits a
+// pod with no Sandbox.
 func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
 	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
-	if failed != nil || work.HoldsWork() {
-		decline, hold, why, err := r.declineFor(row.Issue, payload.Role, readAt, work, failed)
-		if err != nil {
+	declines := failed != nil || work.HoldsWork()
+	var decline store.IdleReleaseDecline
+	var hold workflow.IdleHold
+	var why string
+	if declines {
+		var err error
+		if decline, hold, why, err = r.declineFor(row.Issue, payload.Role, readAt, work, failed); err != nil {
 			return err
 		}
-		return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+	}
+	now := r.now().UTC()
+	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if declines {
 			told, err := r.trees.DeclineLeftPodClose(ctx, r.project, row.Issue, decline)
 			if err != nil {
 				return err
@@ -3465,28 +3473,24 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 				r.log.Info("outbox: the close of the pod of an issue that left the workflow is declined, and the pod stays with its workspace",
 					"issue", row.Issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", told)
 			})
-			return nil
-		})
-	}
-	if err := r.trees.ForgetIdleDecline(ctx, r.project, row.Issue); err != nil {
-		return err
-	}
-	now := r.now().UTC()
-	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, payload.TurnStart))
-		if err != nil {
-			return err
-		}
-		if closed {
-			if err := r.records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
+		} else {
+			if err := r.trees.ForgetIdleDecline(ctx, r.project, row.Issue); err != nil {
 				return err
 			}
+			closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, payload.TurnStart))
+			if err != nil {
+				return err
+			}
+			store.OnCommit(ctx, func() {
+				r.log.Info("outbox: the close of the pod of an issue that left the workflow read its workspace and found nothing that no branch or tag on origin holds",
+					"issue", row.Issue, "role", payload.Role, "head", work.Head, "closing", closed)
+			})
 		}
-		store.OnCommit(ctx, func() {
-			r.log.Info("outbox: the close of the pod of an issue that left the workflow read its workspace and found nothing that no branch or tag on origin holds",
-				"issue", row.Issue, "role", payload.Role, "head", work.Head, "closing", closed)
-		})
-		return nil
+		// The check's row is finished twice: here, fenced on this run's lease, so a lease another
+		// lane holds fails the whole transaction (record.ErrOutboxLeaseLost); and once the check
+		// returns, by the lane's own finish (outbox.finish), whose FinishOutbox then deletes
+		// nothing and answers nil.
+		return r.records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken)
 	})
 }
 
@@ -3537,11 +3541,8 @@ func (r *outbox) declineFor(issue string, role claim.Role, readAt time.Time, wor
 // (store.DeclineIssueRelease, declineFor), which the idle rule reads to keep the pod under that
 // reason with no new mark and no new read while it stands (pods.IdleDecline.Stands). So a pod that
 // keeps its work is asked once, and its role is told once: a read after a turn that finds the same
-// work keeps the decline and tells nobody.
-//
-// The decline's hold (store.RecordPodHoldTx) commits in that same transaction, as a cancel's does
-// (cancelRelease), so it is ordered with every other hold record, and the line is the commit's
-// hook.
+// work keeps the decline and tells nobody. Its hold and its line go as a cancel's do
+// (cancelRelease).
 func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) error {
 	decline, hold, why, err := r.declineFor(issue, payload.Role, readAt, work, failed)
 	if err != nil {

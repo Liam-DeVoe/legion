@@ -431,12 +431,16 @@ func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began tim
 
 // renewOnce is one tick's renewal of the row's lease. A tick that was in flight when the run ended
 // may find the row gone because its own settle finished it; that is no lost lease, so a renewal that
-// found nothing is reported only while the run is still on.
+// found nothing is reported only while the run is still on. A row found finished while the run is
+// on is no lost lease either: the row's own effect may finish it inside the run (a left pod's check
+// finishes its row in the transaction that records what it decided, checkLeftPodWorkspace), or
+// another lane may have after this lease lapsed. Only a row another lane leases is logged as a lost
+// lease, at Warn; a finished one is logged at Info. Either is logged once per run.
 func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
-	var held bool
+	var held, gone bool
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		held, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, now.Add(outboxLease))
+		held, gone, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, now.Add(outboxLease))
 		return err
 	}); err != nil {
 		if ctx.Err() == nil {
@@ -444,10 +448,16 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 		}
 		return
 	}
-	if !held && !renewal.ended() && renewal.lostOnce() {
-		r.log.Warn("outbox row lease lost; the row runs on to its end and its finish or retry fences on the token",
-			"row", row.ID, "kind", row.Kind, "issue", row.Issue)
+	if held || renewal.ended() || !renewal.lostOnce() {
+		return
 	}
+	if gone {
+		r.log.Info("outbox row finished while its run goes on: its own effect or another lane finished it; the run's finish or retry fences on the token",
+			"row", row.ID, "kind", row.Kind, "issue", row.Issue)
+		return
+	}
+	r.log.Warn("outbox row lease lost; the row runs on to its end and its finish or retry fences on the token",
+		"row", row.ID, "kind", row.Kind, "issue", row.Issue)
 }
 
 // warnHeld is one tick's look at the lifecycle rows of the row's issue held behind it

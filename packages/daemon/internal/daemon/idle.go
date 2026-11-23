@@ -529,15 +529,11 @@ func (w *workflowRuntime) recordKeptPod(ctx context.Context, issue string, hold 
 // recordIdleHold records one pass of the idle rule that kept a pod past the idle period, under
 // the rule's own word for the reason and the detail that word leaves out ("" where there is
 // none), and ends every streak of that pod under another reason (store.RecordPodHold). It writes
-// every hold it is given: the passes read recordableHold before they call (recordKeptPod), and
-// the teardown's holds come from releaseHold, which names only recordable ones. Ending a streak
-// is recordKeptPod's, which knows whether the pod has one. A record that cannot be written is
-// logged and nothing else: the records are a deployment's measurement, and a release is a
-// saving, so nothing waits on either.
+// every hold it is given: the passes read recordableHold before they call (recordKeptPod). Ending
+// a streak is recordKeptPod's, which knows whether the pod has one. A record that cannot be
+// written is logged and nothing else: the records are a deployment's measurement, and a release
+// is a saving, so nothing waits on either.
 func recordIdleHold(ctx context.Context, st *store.Store, project, issue string, hold workflow.IdleHold, detail string, at time.Time, log *slog.Logger) {
-	if st == nil {
-		return
-	}
 	if err := st.RecordPodHold(ctx, store.PodHold{Project: project, Issue: issue, Reason: hold.String(), Detail: detail, At: at}); err != nil {
 		log.Warn("idle release: could not record a pod's hold", "issue", issue, "hold", hold.String(), "error", err)
 	}
@@ -546,9 +542,6 @@ func recordIdleHold(ctx context.Context, st *store.Store, project, issue string,
 // endIdleHolds ends every hold streak of a pod, which is what a pass that reads no hold worth a
 // row leaves behind.
 func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, log *slog.Logger) {
-	if st == nil {
-		return
-	}
 	if err := st.EndPodHoldStreaks(ctx, project, issue); err != nil {
 		log.Warn("idle release: could not end a pod's hold streaks", "issue", issue, "error", err)
 	}
