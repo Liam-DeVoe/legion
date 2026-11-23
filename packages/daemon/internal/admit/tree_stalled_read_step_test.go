@@ -2,17 +2,21 @@ package admit
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Main's tree-stalled notice (admit/stalled.go:stalledTreeReason at d46ec4e0 and c03d3afe) ends:
 // "Read the tree and decide what it needs. You can ask a role what it waits on. You can move an
-// issue back a phase. You can park the tree." dispatch://INFRA-2560's R5 (approved, done) has the
+// issue back a phase. You can park the tree." Main's #4622 (dispatch://INFRA-4673) took out 'You can
+// move an issue back a phase.', because no operation of the controller's legion tool makes that move,
+// so R8 keeps R5's read step and its other two choices. dispatch://INFRA-2560's R5 (approved, done) has the
 // notice give that step: "It tells the controller to read the tree and decide: ask a role what it
 // waits on, move an issue back a phase, or park the tree." dispatch://INFRA-3686's R8 keeps it: "a
 // fact or a step that it has the text give stays as a field". The branch's record names the three
@@ -25,8 +29,8 @@ func TestATreeStalledNoticeTellsTheControllerToReadTheTreeAsAField(t *testing.T)
 		{Key: "LEGION-1231", Tree: "LEGION-1230", Phase: phase.Testing},
 	}
 	notice := TreeStalledNotice("LEGION-1230", record.TreeQuiet{Quiet: 6 * time.Hour}, members, nil)
-	if len(notice.Decide) != 3 {
-		t.Fatalf("the tree-stalled notice decides among %q; want R5's three choices", notice.Decide)
+	if !slices.Equal(notice.Decide, []string{texts.DecideAskRole, texts.DecidePark}) {
+		t.Fatalf("the tree-stalled notice decides among %q; want the two choices main keeps since #4622: ask a role what it waits on, park the tree", notice.Decide)
 	}
 	encoded, err := json.Marshal(notice)
 	if err != nil {
