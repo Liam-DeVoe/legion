@@ -215,3 +215,100 @@ func TestAVersionThatChangesWhetherATaskAtItsMergeMergesIsRefused(t *testing.T) 
 		})
 	}
 }
+
+// A version that leaves a done task whose work did not merge needed by no task is refused for
+// good, since that work would merge by itself and a done task does not start again: of c (no
+// needs, no merges), done at its last step, and e, which needs c and is stopped, version 2 removes
+// e. It is refused with the one reason of c, and the rows are as they were. A version 2 that also
+// changes c's block is answered TASK_DONE alone, the refusal of a change of a done task, with no
+// second reason.
+//
+// The fault it catches is the work of a done task that never reaches main, needed by no task (its
+// control: mergeChangeRefusals with no case of a done task, which takes the version and leaves c's
+// work on no branch that merges).
+func TestAVersionThatLeavesADoneUnmergedTaskNeededByNoTaskIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		exTask("c", nil, record.TaskDone, atStep(2)), exTask("e", []string{"c"}, record.TaskRunning, atStep(1)))
+	seedTaskBranch(t, pool, root.Key, "c", "legion/"+root.Key+".c")
+	apply := applyFacts(t, pool, engine)
+	if result := apply("stop-e", ownersStop(t, root, "e")); result.Refusal != nil {
+		t.Fatalf("the owner's stop of e was refused: %+v", result.Refusal)
+	}
+	before := tasksOf(t, pool, engine, root.Key)
+
+	result := apply("version-2", laterVersion(t, root.Key, root.Generation, 2, exBlock(t, "c")))
+	want := []plan.Refusal{{Task: "c", Reason: "task c is done and its work did not merge, and in this version no task needs it, so its work would merge by itself; " +
+		"a done task does not start again. Add a task that needs task c, or keep a need on it."}}
+	if result.Refusal == nil || result.Refusal.Code != "PLAN_REFUSED" || !reflect.DeepEqual(result.Refusal.Reasons, want) {
+		t.Fatalf("version 2, which removes e, the one task that needs the done c, = %+v, want PLAN_REFUSED with %+v", result, want)
+	}
+	if after := tasksOf(t, pool, engine, root.Key); !reflect.DeepEqual(after, before) {
+		t.Fatalf("the plan's rows after the refused version = %+v, want them as before, %+v", after, before)
+	}
+
+	result = apply("version-2-changes-c", laterVersion(t, root.Key, root.Generation, 2, keyed(t, "c", " Again.", []string{"implementer", "reviewer"})))
+	if result.Refusal == nil || result.Refusal.Code != "TASK_DONE" || len(result.Refusal.Reasons) != 0 {
+		t.Fatalf("version 2, which removes e and changes the done c, = %+v, want TASK_DONE alone", result)
+	}
+}
+
+// A version may add a need on a task whose work merged, and remove it again: nothing of that task
+// runs again, whatever the rule now answers of it. Of b, done at its merge, and c, which runs, (1)
+// with b's block naming no merges, version 2 adds f, which needs b: it is taken, b stays done at
+// its merge, and f starts in the same transaction. (2) The same where b's block says merges. (3) As
+// (1) with f needing c too, so f waits; version 3 removes f, so no task needs b again: it is taken,
+// since b's work merged.
+//
+// The faults it catches are a merged task that refuses a task that needs it (its control: the case
+// of a done task refusing each done task whose answer the version changes, which refuses (1)), and
+// a merged task read as one whose work did not merge once a version needed it, so a later removal
+// is refused with a false text (its control: the case of a done task reading the rule of the plan
+// in force in place of the stored fact of its merge, which refuses version 3 of (3)).
+func TestAVersionThatAddsANeedOnAMergedTaskIsTaken(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		says   bool
+		fNeeds []string
+	}{
+		{"b names no merges", false, []string{"b"}},
+		{"b says merges", true, []string{"b"}},
+		{"f needs c too and goes again", false, []string{"b", "c"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := returnEngine()
+			root := stepRoot(t, pool, phase.Implementing)
+			seedTasks(t, pool, root.Key, root.Generation,
+				exTask("b", nil, record.TaskDone, record.TaskPlace{Kind: record.PlaceMerge}), exTask("c", nil, record.TaskRunning, atStep(1)))
+			seedTaskBranch(t, pool, root.Key, "b", "legion/"+root.Key+".b")
+			bBlock := exBlock(t, "b")
+			if tc.says {
+				markMerges(t, pool, root.Key, "b")
+				bBlock.Merges = true
+			}
+			apply := applyFacts(t, pool, engine)
+
+			mustTake(t, "version 2, which adds f needing the merged b", apply("version-2",
+				laterVersion(t, root.Key, root.Generation, 2, bBlock, exBlock(t, "c"), exBlock(t, "f", tc.fNeeds...))))
+			tasks := tasksOf(t, pool, engine, root.Key)
+			assertTask(t, tasks, "b", record.TaskDone, record.TaskPlace{Kind: record.PlaceMerge})
+			if retro, merge := actStarts(t, pool, root.Key, "b", record.PlaceRetro), actStarts(t, pool, root.Key, "b", record.PlaceMerge); retro != 0 || merge != 0 {
+				t.Fatalf("task b counts %d starts of its retro and %d of its merge, want none: nothing of a merged task runs again", retro, merge)
+			}
+			if len(tc.fNeeds) == 1 {
+				assertTask(t, tasks, "f", record.TaskRunning, atStep(1))
+				return
+			}
+			assertTask(t, tasks, "f", record.TaskWaiting, record.TaskPlace{})
+
+			mustTake(t, "version 3, which removes f, so no task needs the merged b", apply("version-3",
+				laterVersion(t, root.Key, root.Generation, 3, bBlock, exBlock(t, "c"))))
+			if _, ok := tasksOf(t, pool, engine, root.Key)["f"]; ok {
+				t.Fatalf("the plan of %s holds f after version 3 removed it", root.Key)
+			}
+		})
+	}
+}
