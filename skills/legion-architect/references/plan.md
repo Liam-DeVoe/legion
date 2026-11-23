@@ -8,7 +8,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 ## The task block
 
 You choose which of Legion's steps each issue of your tree runs.
-The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
+The plan is the issue's `plan.md` document (`dispatch artifact` on the issue), or `owner-plan.md` where a planner of the default steps wrote `plan.md` (below).
 In this release it holds one `plan_task` block, the issue's one task:
 
 ```markdown
@@ -56,8 +56,8 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
-A `plan.md` that a planner of the default steps wrote holds that planner's task blocks.
-The version you give replaces them with your own one block: delete theirs, and put what the next steps still need from the planner's plan into your task's text.
+A `plan.md` that a planner of the default steps wrote is the planner's: leave it as it is.
+On such an issue, write your plan, after a stop of the task `default` too, as a document of your own on the issue, `owner-plan.md`, and give each later version of yours as a version of that same document.
 
 ## Reading how plans went
 
