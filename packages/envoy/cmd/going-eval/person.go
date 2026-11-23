@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/going/agent"
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/going/eval"
 )
 
@@ -71,6 +72,7 @@ type runRead struct {
 	Used       struct {
 		Calls     int   `json:"calls"`
 		WorkingMS int64 `json:"working_ms"`
+		PaceMS    int64 `json:"pace_ms"`
 		Tokens    int   `json:"tokens"`
 	} `json:"used"`
 }
@@ -113,6 +115,36 @@ type tryOutcome struct {
 	Answer   string            `json:"answer"`
 	Blocks   []json.RawMessage `json:"blocks,omitempty"`
 	Timedout bool              `json:"timed_out,omitempty"`
+	// WorkingMS is the run's working time over all its turns, and PaceMS how much of it the
+	// agent's pacer held the run's model calls before they were sent, as the run's budget_used
+	// holds them: a run stopped at its level's time (agent.ReasonTimeBudget) says by PaceMS how
+	// much of that time it waited for the model's quota.
+	WorkingMS int64 `json:"working_ms"`
+	PaceMS    int64 `json:"pace_ms"`
+	// Turns is how many turns of the run ended (its end frames); ModelCalls is each model call of
+	// the run, in order, and Checks each check the no-plan guard made of a reply in prose, each
+	// read off the reply frame of the model call it belongs to (readFrame).
+	Turns      int          `json:"turns"`
+	ModelCalls []modelCall  `json:"model_calls,omitempty"`
+	Checks     []proseCheck `json:"checks,omitempty"`
+}
+
+// modelCall is one model call of a run as its reply frame says it: the tokens the provider
+// generated for its reply, its reasoning among them (output_tokens), and of those the tokens that
+// were reasoning (reasoning_tokens).
+type modelCall struct {
+	OutputTokens    int `json:"output_tokens"`
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+// proseCheck is one check the no-plan guard made of a reply in prose before the reply could end
+// its turn (going/agent's checkProse), as the reply's frame says it: the turn of the run it was
+// made in, counted from 1, its milliseconds (check_ms), which the run's working time counts, and
+// the tokens it spent, its prompt's and its reply's (check_tokens).
+type proseCheck struct {
+	Turn   int   `json:"turn"`
+	MS     int64 `json:"ms"`
+	Tokens int   `json:"tokens"`
 }
 
 // mostPlans is how many plans the person answers in one run; a run that proposes more is stopped.
@@ -164,6 +196,7 @@ func (p *person) drive(ctx context.Context, task eval.Task) (tryOutcome, error) 
 		outcome.Reason = *run.StopReason
 	}
 	outcome.Calls = run.Used.Calls
+	outcome.WorkingMS, outcome.PaceMS = run.Used.WorkingMS, run.Used.PaceMS
 	outcome.Seconds = time.Since(started).Seconds()
 	if err := p.readFrames(ctx, run.ID, &outcome); err != nil {
 		return outcome, err
@@ -199,8 +232,8 @@ func (p *person) answerPlan(ctx context.Context, task eval.Task, run string, ans
 }
 
 // readFrames reads every frame the run stored from its events stream, reading it again after the
-// last frame it holds when the stream closes before the run's end: the prose of each reply, joined
-// in order, is the answer, and each block frame a block the answer drew.
+// last frame it holds when the stream closes before the run's end, each as readFrame takes it: the
+// prose of each reply, joined in order, is the answer.
 func (p *person) readFrames(ctx context.Context, run string, outcome *tryOutcome) error {
 	last := ""
 	var replies []string
@@ -224,16 +257,8 @@ func (p *person) readFrames(ctx context.Context, run string, outcome *tryOutcome
 				last = id
 			}
 			closedIdle = name == "keepalive"
-			switch name {
-			case "reply":
-				var reply struct {
-					Text string `json:"text"`
-				}
-				if json.Unmarshal(data, &reply) == nil && strings.TrimSpace(reply.Text) != "" {
-					replies = append(replies, strings.TrimSpace(reply.Text))
-				}
-			case "block":
-				outcome.Blocks = append(outcome.Blocks, json.RawMessage(bytes.Clone(data)))
+			if prose := outcome.readFrame(name, data); prose != "" {
+				replies = append(replies, prose)
 			}
 		})
 		_ = response.Body.Close()
@@ -251,4 +276,35 @@ func (p *person) readFrames(ctx context.Context, run string, outcome *tryOutcome
 	}
 	outcome.Answer = strings.Join(replies, "\n\n")
 	return nil
+}
+
+// readFrame takes one frame the run stored into the outcome and answers the prose of a reply
+// frame, "" for none: each reply frame is one model call of the run, whose tokens go to ModelCalls,
+// and whose check by the no-plan guard, where its frame says one (check_ms), goes to Checks, under
+// the turn it was made in; each block frame is a block the answer drew; and each end frame ends a
+// turn.
+func (o *tryOutcome) readFrame(name string, data []byte) string {
+	switch name {
+	case "reply":
+		var reply struct {
+			Text            string `json:"text"`
+			OutputTokens    int    `json:"output_tokens"`
+			ReasoningTokens int    `json:"reasoning_tokens"`
+			CheckMS         *int64 `json:"check_ms"`
+			CheckTokens     int    `json:"check_tokens"`
+		}
+		if json.Unmarshal(data, &reply) != nil {
+			return ""
+		}
+		o.ModelCalls = append(o.ModelCalls, modelCall{OutputTokens: reply.OutputTokens, ReasoningTokens: reply.ReasoningTokens})
+		if reply.CheckMS != nil {
+			o.Checks = append(o.Checks, proseCheck{Turn: o.Turns + 1, MS: *reply.CheckMS, Tokens: reply.CheckTokens})
+		}
+		return strings.TrimSpace(reply.Text)
+	case "block":
+		o.Blocks = append(o.Blocks, json.RawMessage(bytes.Clone(data)))
+	case agentwire.FrameEnd:
+		o.Turns++
+	}
+	return ""
 }

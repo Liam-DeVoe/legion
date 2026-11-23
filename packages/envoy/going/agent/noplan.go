@@ -91,20 +91,33 @@ type proseReply struct {
 	frame replyFrame
 }
 
+// checkCost is what the check's model call took (checkProse): its milliseconds, from its request
+// to its end, and the tokens it spent, its prompt's and its reply's (going.SpentTokens).
+type checkCost struct {
+	ms     int64
+	tokens int
+}
+
 // endProse ends the run's turn with prose, or holds it back and goes on. A new-issue run's prose is
 // flagged with no check; any other is checked (checkProse), and a check that fails flags nothing:
 // the reply ends the turn as it is, and the failure is logged. A reply that passes ends the turn
 // done as it is. A flagged reply is held back where the turn held back none before it and the
 // run's level leaves it a model call (saveNoPlan): the turn goes on, and the next step's model is
-// told noPlanTold. Any other flagged reply ends the turn done with noPlanSaid before its text. A
-// run that is no longer the worker's to go on with by the check's end saves nothing.
+// told noPlanTold. Any other flagged reply ends the turn done with noPlanSaid before its text. The
+// frame of a reply the check was made for says what the check took (replyFrame.CheckMS), held back
+// or not, and whatever the check answered. A run that is no longer the worker's to go on with by
+// the check's end saves nothing.
 func (w *worker) endProse(prose *proseReply) stepOutcome {
 	flagged := w.run.Kind == agentwire.RunNewIssue
 	if !flagged {
+		var cost *checkCost
 		var err error
-		flagged, err = w.checkProse(prose.body.Text)
+		flagged, cost, err = w.checkProse(prose.body.Text)
 		if w.lost.Load() || w.grantEnded.Load() != nil || w.ctx.Err() != nil {
 			return stepOutcome{}
+		}
+		if cost != nil {
+			prose.frame.CheckMS, prose.frame.CheckTokens = &cost.ms, &cost.tokens
 		}
 		if err != nil {
 			slog.Warn("agent: the check of a reply in prose failed, so the reply ends the turn unchecked", "run", w.run.ID, "error", err)
@@ -147,12 +160,13 @@ func (w *worker) saveNoPlan(prose *proseReply) {
 // through the agent's pacer, under the watchdog as a step's call is. Its tokens are charged to the
 // pacer and its output tokens to the run's tokens, and its time is added to the run's working
 // time; it is no model call of the run's level, and adds nothing to the run's model time. It
-// answers an error where no answer came: a run with no working time left, a call that failed, was
-// refused or timed out, or an answer that does not read.
-func (w *worker) checkProse(prose string) (bool, error) {
+// answers what the call took (checkCost) wherever the call was made and the run kept, whatever it
+// answered, and an error where no answer came: a run with no working time left, which makes no
+// call, a call that failed, was refused or timed out, or an answer that does not read.
+func (w *worker) checkProse(prose string) (bool, *checkCost, error) {
 	left := w.level.Time - time.Duration(w.used.WorkingMS)*time.Millisecond
 	if left <= 0 {
-		return false, errors.New("the run has no working time left")
+		return false, nil, errors.New("the run has no working time left")
 	}
 	model := w.agent.config.Model
 	model.Effort = noPlanEffort
@@ -181,31 +195,32 @@ func (w *worker) checkProse(prose string) (bool, error) {
 	if !finished() {
 		// The watchdog gave the run up: its goroutine was counted stuck, and it writes nothing.
 		w.lose()
-		return false, errors.New("the watchdog gave the run up")
+		return false, nil, errors.New("the watchdog gave the run up")
 	}
 	w.turn.WorkingMS += working
 	w.used.WorkingMS += working
 	w.turn.Tokens += result.Usage.Output
 	w.used.Tokens += result.Usage.Output
+	cost := &checkCost{ms: working, tokens: going.SpentTokens(result.Usage)}
 	switch {
 	case err != nil:
-		return false, err
+		return false, cost, err
 	case result.Fault != "":
-		return false, fmt.Errorf("%s: %s", result.Fault, faultDetail(result.Detail))
+		return false, cost, fmt.Errorf("%s: %s", result.Fault, faultDetail(result.Detail))
 	}
 	var answer struct {
 		Verdict string `json:"verdict"`
 	}
 	if err := json.Unmarshal(result.Value, &answer); err != nil {
-		return false, fmt.Errorf("the check's answer does not read: %w", err)
+		return false, cost, fmt.Errorf("the check's answer does not read: %w", err)
 	}
 	switch answer.Verdict {
 	case noPlanFlagged:
-		return true, nil
+		return true, cost, nil
 	case noPlanPasses:
-		return false, nil
+		return false, cost, nil
 	}
-	return false, fmt.Errorf("the check answered the verdict %q, which is neither %s nor %s", answer.Verdict, noPlanFlagged, noPlanPasses)
+	return false, cost, fmt.Errorf("the check answered the verdict %q, which is neither %s nor %s", answer.Verdict, noPlanFlagged, noPlanPasses)
 }
 
 // noPlanText is what the check's model call is given: the person's words of the turn and the

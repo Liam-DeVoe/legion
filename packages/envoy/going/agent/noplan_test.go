@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
@@ -240,6 +241,55 @@ func TestAnAnswerTheCheckPassesEndsTheTurnAsItIs(t *testing.T) {
 	}
 }
 
+// TestACheckedReplysFrameSaysWhatItsCheckTook: the check is one more model call on every turn that
+// ends in prose with no plan, so the reply it judged says what it took: its milliseconds, which
+// the run's working time counts, and the tokens it spent, its prompt's and its reply's. A reply
+// the check holds back says it as a reply the check passes does. The fake takes checkWait over
+// each check, and counts each at 120 prompt tokens and 9 reply tokens.
+func TestACheckedReplysFrameSaysWhatItsCheckTook(t *testing.T) {
+	const checkWait = 20 * time.Millisecond
+	const words = "reopen ACME-7 as todo and set it to P0"
+	const prose = "Reopening ACME-7 as todo and setting it to P0."
+	const answer = "ACME-7 is reopened as todo and set to P0 once you approve a plan for it."
+	fake := agenttest.New(t, func(request *agenttest.Request) agenttest.Reply {
+		switch {
+		case isCheck(request):
+			// The check's time is what the frame says, so the fake takes a known time over it.
+			time.Sleep(checkWait)
+			reply := verdict(noPlanPasses)
+			if strings.Contains(request.Text(), noPlanText(words, prose)) {
+				reply = verdict(noPlanFlagged)
+			}
+			reply.Prompt, reply.Output = 120, 9
+			return reply
+		case strings.Contains(request.Text(), noPlanNote):
+			return agenttest.Reply{Text: answer}
+		}
+		return agenttest.Reply{Text: prose}
+	})
+	server, client := newFakeServer(t, keptPlan)
+	workRun(t, fake.Model(), client, words)
+	end, _ := server.end(t)
+	replies := server.replyFrames(t)
+	if end.State != agentwire.StateDone || len(replies) != 2 || !replies[0].NoPlan || replies[1].Text != answer {
+		t.Fatalf("the run ended %s with %q and the reply frames %+v, want the prose held back and the answer the check passed", end.State, end.Reason, replies)
+	}
+	var checked int64
+	for i, reply := range replies {
+		if reply.CheckMS == nil || reply.CheckTokens == nil {
+			t.Fatalf("reply %d's frame says its check took %v ms and %v tokens, want what the check took", i+1, reply.CheckMS, reply.CheckTokens)
+		}
+		if *reply.CheckMS < checkWait.Milliseconds() || *reply.CheckTokens != 129 {
+			t.Errorf("reply %d's frame says its check took %d ms and %d tokens, want at least the fake's %d ms and its 120 prompt and 9 reply tokens",
+				i+1, *reply.CheckMS, *reply.CheckTokens, checkWait.Milliseconds())
+		}
+		checked += *reply.CheckMS
+	}
+	if end.Used.WorkingMS < checked {
+		t.Errorf("the turn worked %d ms, want at least the %d ms its checks took", end.Used.WorkingMS, checked)
+	}
+}
+
 // TestARunRestartedAfterAHeldReplyGoesOn: a worker that starts from saved steps whose last is a
 // reply the guard held back does not read it as the end of the turn: it makes the next step,
 // whose model is given the reply and the note that nothing changed. The turn already held a reply
@@ -287,7 +337,8 @@ func TestARunRestartedAfterAHeldReplyGoesOn(t *testing.T) {
 // TestANewIssueRunsProseIsHeldBackWithNoCheck: new_issue-06 of the eval answered "OPS-21 already
 // tracks the noisy CPU alert at night, so I will not create a second issue." and filed nothing. A
 // new-issue run's words always ask to file, so its prose is held back with no check, and its model
-// is told to file the issue now; its next step proposes the issue.
+// is told to file the issue now; its next step proposes the issue. No check was made, so the held
+// reply's frame says no check's time or tokens.
 func TestANewIssueRunsProseIsHeldBackWithNoCheck(t *testing.T) {
 	const prose = "ACME-21 already tracks the noisy CPU alert at night, so I will not create a second issue."
 	file := agenttest.Call{Name: toolProposePlan, Arguments: map[string]any{
@@ -312,6 +363,15 @@ func TestANewIssueRunsProseIsHeldBackWithNoCheck(t *testing.T) {
 	}
 	if steps := stepRequests(fake); len(steps) != 2 || !toldAfter(steps[1], prose, newIssueNoPlanNote) {
 		t.Errorf("the run made %d steps' calls, want the second given the prose and the note to file the issue now", len(steps))
+	}
+	replies := server.replyFrames(t)
+	if len(replies) != 2 || !replies[0].NoPlan {
+		t.Fatalf("the reply frames are %+v, want the held prose's and then the proposal's", replies)
+	}
+	for i, reply := range replies {
+		if reply.CheckMS != nil || reply.CheckTokens != nil {
+			t.Errorf("reply %d's frame carries a check's time (%t) or tokens (%t), want neither", i+1, reply.CheckMS != nil, reply.CheckTokens != nil)
+		}
 	}
 }
 

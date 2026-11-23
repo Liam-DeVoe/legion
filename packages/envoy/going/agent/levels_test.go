@@ -15,21 +15,24 @@ import (
 )
 
 // TestEachLevelSetsItsBudgetsAndEffort: Fast, Standard and Deep each bound a run's model calls,
-// its working time and each call's output tokens, and ask each call for their effort (R10, the
-// spec's Design): a run that has made its level's calls, or worked its level's time, is spent, and
-// one a call or a millisecond short is not; the last call it may make is offered no tool, so it
-// must answer; and the request a step sends the chat model carries the level's output tokens and
-// effort, as the fake model reads them off the wire.
+// its working time and each call's output tokens, reserve each call's reasoning tokens in the
+// pacer, and ask each call for their effort (R10, the spec's Design): a run that has made its
+// level's calls, or worked its level's time, is spent, and one a call or a millisecond short is
+// not; the last call it may make is offered no tool, so it must answer; the pacer reserves for a
+// call a token for each charsPerToken characters of its prompt, the level's output tokens and its
+// reasoning tokens; and the request a step sends the chat model carries the level's output tokens
+// and effort, as the fake model reads them off the wire.
 func TestEachLevelSetsItsBudgetsAndEffort(t *testing.T) {
 	want := map[string]struct {
-		calls  int
-		time   time.Duration
-		tokens int
-		effort string
+		calls     int
+		time      time.Duration
+		tokens    int
+		reasoning int
+		effort    string
 	}{
-		"fast":     {6, 90 * time.Second, 1000, "low"},
-		"standard": {24, 5 * time.Minute, 2500, "medium"},
-		"deep":     {80, 20 * time.Minute, 5000, "high"},
+		"fast":     {6, 90 * time.Second, 1000, 353, "low"},
+		"standard": {24, 5 * time.Minute, 2500, 865, "medium"},
+		"deep":     {80, 20 * time.Minute, 5000, 1967, "high"},
 	}
 	fake := agenttest.New(t, func(*agenttest.Request) agenttest.Reply { return agenttest.Reply{Text: "An answer."} })
 	sent := func(t *testing.T, level Level) *agenttest.Request {
@@ -74,6 +77,13 @@ func TestEachLevelSetsItsBudgetsAndEffort(t *testing.T) {
 		t.Run(fmt.Sprintf("%s writes %d output tokens a call", name, w.tokens), func(t *testing.T) {
 			if got := sent(t, level).Field("max_tokens"); got != float64(w.tokens) {
 				t.Errorf("a %s step asks for max_tokens %v, want %d", name, got, w.tokens)
+			}
+		})
+		t.Run(fmt.Sprintf("%s reserves %d reasoning tokens a call", name, w.reasoning), func(t *testing.T) {
+			const prompt = 40 * charsPerToken
+			if got := level.estimate(prompt); got != 40+w.tokens+w.reasoning {
+				t.Errorf("the pacer reserves %d tokens for a %s call of %d prompt characters, want 40 for the prompt, %d output and %d reasoning",
+					got, name, prompt, w.tokens, w.reasoning)
 			}
 		})
 		t.Run(fmt.Sprintf("%s asks for %s effort", name, w.effort), func(t *testing.T) {

@@ -142,6 +142,7 @@ func selectTasks(tasks []eval.Task, names string) ([]eval.Task, error) {
 type tryResult struct {
 	Task    string     `json:"task"`
 	Kind    eval.Kind  `json:"kind"`
+	Level   eval.Level `json:"level"`
 	Try     int        `json:"try"`
 	Pass    bool       `json:"pass"`
 	Outcome tryOutcome `json:"outcome"`
@@ -442,7 +443,7 @@ func serverTokenLimit(parallel int) int {
 // runTry runs one try of task on a copy of the seed, with a server, an agent and a fake Envoy of
 // its own, and grades it.
 func (e *evalRun) runTry(ctx context.Context, task eval.Task, try int) (result tryResult) {
-	result = tryResult{Task: task.ID, Kind: task.Kind, Try: try}
+	result = tryResult{Task: task.ID, Kind: task.Kind, Level: task.Level, Try: try}
 	phase := time.Now()
 	lap := func(into *float64) {
 		*into = time.Since(phase).Seconds()
@@ -915,6 +916,8 @@ func writeReport(w io.Writer, in reportInput) bool {
 	}
 	fmt.Fprintf(w, "The most chat tokens spent within any 60 seconds: %d, over %d calls of the run; the limit is %d: %s.\n\n", in.highest, in.calls, tokenLimit, meets(tokensOK))
 
+	writeLevelCalls(w, in.tasks, byTask)
+	writeChecks(w, in.tasks, byTask)
 	writeReferenceReads(w, in.tasks, byTask)
 
 	failedTries := 0

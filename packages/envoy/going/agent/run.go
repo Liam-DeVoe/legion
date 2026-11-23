@@ -111,7 +111,8 @@ type toolFrame struct {
 // reply of tool calls alone, how long the agent's pacer held it, the tokens of its prompt, those of
 // the provider's cache included, of its reply, its reasoning among them, and of that reasoning,
 // the tokens the pacer reserved for it before it was made, and the tokens the pacer charged it in
-// the end.
+// the end. A reply in prose that the guard checked before it could end the turn (checkProse), held
+// back or not, also says what the check took: its milliseconds and its tokens.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -143,6 +144,15 @@ type replyFrame struct {
 	// call's HTTP attempts, at most a minute's share each, and the tokens the call spent past
 	// them (going.Pacer.Owe), counted where no quota is named too.
 	ChargedTokens int `json:"charged_tokens"`
+	// CheckMS is the milliseconds the guard's check of the reply took (checkProse), from its
+	// request to its end, which the run's working time counts and its model time does not, and
+	// CheckTokens the tokens the check spent, its prompt's and its reply's (going.SpentTokens).
+	// endProse sets both, 0 included, on a reply the check was made for, held back or not, and
+	// whatever the check answered; every other reply leaves both out: one that called a tool,
+	// asked the person or was cut, one in a turn that holds a plan, a new-issue run's, which is
+	// held back with no check, and one whose run had no working time left for the check.
+	CheckMS     *int64 `json:"check_ms,omitempty"`
+	CheckTokens *int   `json:"check_tokens,omitempty"`
 }
 
 // errStepTaken ends agentloop.Run once its one model call of a step finished and was saved: each

@@ -52,15 +52,23 @@
 // of each kind and of all tasks with the floors of going/eval and whether each is met, the tries
 // the judge could not read with its error, the judge's agreement with the labels, what the tries
 // did of their planted instructions, the person's messages and comments the rule does not let
-// stand, the most chat tokens of any minute, and the tasks whose tries read the reference graph
+// stand, the most chat tokens of any minute, for each level the p99 and the max of one model
+// call's output tokens, its reasoning among them, and of its reasoning tokens, over every model
+// call of its tries as their reply frames say them, each run stopped at a model call's output
+// tokens (OUTPUT_TOKEN_BUDGET) with the tokens of that call, and each run stopped at its working
+// time (TIME_BUDGET) with how long the agent's pacer held its model calls, the checks the no-plan
+// guard made of replies in prose, with the median and the p99 of the time they added to the turns
+// of each kind and how many the run made, and the tasks whose tries read the reference graph
 // (GET /api/v1/references and an issue's and a document's references), with how many tries of
 // each did, to run again after a change to those routes. No floor is given over a kind that holds
 // an unjudged try, and the report's RESULT then says the run is incomplete. Each failing or
 // unjudged try keeps its database, which its line names. --answers-out writes each try as one
-// JSON line, with its answer, the tools its runs called and how many of those calls read the
-// reference graph, and a try the judge read again at the run's end once more. run exits 0 when
-// the report meets every floor, 1 when it misses one, is incomplete or fails, and 2 on a usage
-// error.
+// JSON line, with its answer, its level, its run's working time and the pacer's hold of it, the
+// turns its run ended, the output and reasoning tokens of each of its model calls and the turn,
+// time and tokens of each check of the no-plan guard, the tools its runs called and how many of
+// those calls read the reference graph, and a try the judge read again at the run's end once more.
+// run exits 0 when the report meets every floor, 1 when it misses one, is incomplete or fails, and
+// 2 on a usage error.
 package main
 
 import (
