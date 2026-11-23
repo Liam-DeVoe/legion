@@ -86,10 +86,9 @@ jobs:
       # version, so it hooks the nats-server the workspace links, 2.15.1, which the VM hub runs;
       # when go.mod moves to a version internal/testnats/testdata/hooked has no hooks for, the
       # script refuses it and the step fails until the hooks are ported. The second step hooks
-      # v2.15.3, which the clustered hub runs, and the third v2.10.29. The
-      # script also fails a package that declares no such test. No
-      # step sets an environment variable: check-ci-filters.sh reduces no go command of a job one
-      # of whose steps sets a GO* name.
+      # v2.15.3, which the clustered hub runs, and the third v2.10.29. The script also fails a
+      # package that declares no such test. No step sets an environment variable:
+      # check-ci-filters.sh reduces no go command of a job one of whose steps sets a GO* name.
       - name: Test forced-order.sh's refusals
         run: scripts/forced-order.test.sh
         working-directory: packages/envoy
