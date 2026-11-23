@@ -1014,14 +1014,16 @@ test("the owner's retro of its own implementation step acts as the implement App
 test("the plan guide names which ci_check holds the merge on a task with no review step", () => {
   expect([
     ...lacks("legion-architect/references/plan.md", [
-      /a `ci_check` whose run has not concluded holds the merge only where the base branch requires it\./,
+      /a `ci_check` whose run has not concluded holds the merge only where it is among the checks the base branch requires\./,
     ]),
   ]).toEqual([]);
 });
 
 test("the worker skill says a TASK_STOPPED report is never sent again", () => {
   expect([
-    ...lacks("legion-worker/SKILL.md", [/`TASK_STOPPED`: your handoff counts as used; never send it again\./]),
+    ...lacks("legion-worker/SKILL.md", [
+      /`TASK_STOPPED`: your handoff counts as used; never send it again\./,
+    ]),
   ]).toEqual([]);
 });
 
