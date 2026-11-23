@@ -119,8 +119,8 @@ func fixBesideStepsStore(t *testing.T) *Store {
 		{"the existing task's fixes_ci", `select fixes_ci::text from plan_tasks where issue = 'LEGION-208'`, "false"},
 		{"the fixes", `select count(*)::text from task_fixes`, "0"},
 		{"the CI failures", `select count(*)::text from ci_failures`, "0"},
-		{"the review's start", `select row(start_commit, end_commit, fix_check)::text from step_starts where issue = 'LEGION-208'`, "(,,)"},
-		{"the reviewer's delivery", `select row(fix, fix_from, move_to)::text from pending_task_deliveries`, "(0,,)"},
+		{"the review's start", `select row(start_commit, end_commit, fix_check)::text from step_starts where issue = 'LEGION-208'`, `("","","")`},
+		{"the reviewer's delivery", `select row(fix, fix_from, move_to)::text from pending_task_deliveries`, `(0,"","")`},
 	} {
 		if got := rowsAsText(t, store, read.query); !reflect.DeepEqual(got, []string{read.want}) {
 			t.Fatalf("%s after the migration = %v, want %s", read.what, got, read.want)
