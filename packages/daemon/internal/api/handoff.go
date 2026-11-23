@@ -721,7 +721,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 	// that moved rather than the pull request on it. That empty list is the production refusal
 	// this rule was changed for: every implementer handoff of a tree opened before the transfer
 	// was refused HANDOFF_NO_PULL_REQUEST below.
-	pull, found, err := github.OpenPullRequestOn(ctx, repository.Owner(), branch)
+	pull, found, err := github.OpenPullRequestOn(ctx, repository, branch)
 	if err != nil {
 		logUnread(err)
 		return true

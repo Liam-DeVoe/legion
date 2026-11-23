@@ -25,9 +25,9 @@ func tasksRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 }
 
 // openedOn is GitHub's open of pull request number on branch of sjawhar/legion at at, or its
-// reopen.
+// reopen, its head a branch of sjawhar/legion itself.
 func openedOn(number int, branch string, at time.Time, reopened bool) intake.PullRequestOpened {
-	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: number, Branch: branch, Base: "main", HeadSHA: "head-" + branch,
+	return intake.PullRequestOpened{Repo: "sjawhar/legion", Number: number, Branch: branch, Base: "main", HeadSHA: "head-" + branch, HeadRepo: "sjawhar/legion",
 		UpdatedAt: at, Reopened: reopened}
 }
 

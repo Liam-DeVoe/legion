@@ -146,7 +146,7 @@ func TestAReopenedPullRequestTakesItsNewHeadAndKeepsItsReview(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	if _, err := intake.ApplyFact(ctx, pool, "github", "reopened", intake.PullRequestOpened{
-		Repo: "acme/widgets", Number: 7, Branch: "legion/LEGION-208", HeadSHA: "new",
+		Repo: "acme/widgets", Number: 7, Branch: "legion/LEGION-208", HeadSHA: "new", HeadRepo: "acme/widgets",
 		UpdatedAt: time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC), Reopened: true,
 	}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact reopened: %v", err)
@@ -217,7 +217,7 @@ func TestImplementationReachesTestingWhenHandoffAndPullRequestArriveInEitherOrde
 				}
 			}
 			pullRequest := func() {
-				if _, err := intake.ApplyFact(ctx, pool, "github", "opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head"}, engine, admissionStub{}); err != nil {
+				if _, err := intake.ApplyFact(ctx, pool, "github", "opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", HeadRepo: "sjawhar/legion"}, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact pull request: %v", err)
 				}
 			}

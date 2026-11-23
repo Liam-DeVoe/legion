@@ -625,7 +625,7 @@ func (r *tasksRig) retroAndMerge(task string) {
 	r.gh.merged(number)
 	payload, err := json.Marshal(map[string]string{
 		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number), "merged": "true",
-		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": "main", "head_ref": branch,
+		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": "main", "head_ref": branch, "head_repo": liveRepo,
 		"updated_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {

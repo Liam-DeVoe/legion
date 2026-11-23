@@ -567,7 +567,7 @@ func TestNothingMovesAWaitingMergedRoot(t *testing.T) {
 // TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves asserts them.
 func TestANewPullRequestFromAWaitingRootsBranchLeavesItsMergeStanding(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
-	rig.apply("follow-up-opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 99, Branch: "legion/LEGION-208", HeadSHA: "follow-up",
+	rig.apply("follow-up-opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 99, Branch: "legion/LEGION-208", HeadSHA: "follow-up", HeadRepo: "sjawhar/legion",
 		UpdatedAt: time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)})
 	assertPhase(t, rig.pool, phase.Merging)
 

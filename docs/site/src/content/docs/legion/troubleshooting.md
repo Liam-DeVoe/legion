@@ -1546,7 +1546,8 @@ These arrive as messages on the Dispatch issue:
   parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
-  branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
+  branch, `legion/<KEY>`, of the repository itself (a fork's pull request on a branch of that name
+  is none of the issue's): the issue moves to testing only on an open pull request, or one the
   daemon recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
   waiting) is recorded there and the issue moves on. A pull request merged while the issue was in
   `implementing` already told the architect (`pr-merged`), and the completion is applied and moves
@@ -1694,8 +1695,9 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
 
 - **`waiting`** is how many messages the consumer has not handled: not yet delivered, or delivered
   and not yet acknowledged. It counts the events the daemon acknowledges without acting on too: a
-  pull request on a branch that is not an issue's `legion/<KEY>`, a review or CI settlement of a
-  pull request the daemon does not record, and a run of a workflow that is no configured deploy.
+  pull request on a branch that is not an issue's `legion/<KEY>` or a task's branch, or whose head
+  is a branch of a fork, a review or CI settlement of a pull request the daemon does not record,
+  and a run of a workflow that is no configured deploy.
   Those take no database transaction, so a backlog of them drains quickly. `0 waiting` is a
   consumer that is caught up.
 - **`oldest`** (`oldestAt`, `oldestAgeSeconds`) is how long ago the oldest waiting message was
