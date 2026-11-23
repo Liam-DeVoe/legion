@@ -105,13 +105,24 @@ function MissingSources({
   );
 }
 
-/** The window and compare range of an answer, which are the same in every view of one scope. */
-function daysOf(answer: EvalListResponse): Pick<EvalListResponse, "window" | "compare"> {
-  return { window: answer.window, compare: answer.compare };
+/** The window and compare range of an answer, which are the same in every view of one scope, and
+ *  the project's delivery freshness, which only the delivery view answers (null in every other
+ *  view, and for a project with no deploy source). */
+function headOf(
+  answer: EvalListResponse
+): Pick<EvalListResponse, "window" | "compare" | "delivery_freshness"> {
+  return {
+    compare: answer.compare,
+    delivery_freshness: answer.delivery_freshness,
+    window: answer.window,
+  };
 }
 
-/** The header, naming the days of the first answer any of the tab's views gives. It reads only
- *  each view's window and compare range, so a delta that moves neither renders no header. */
+/** The header, naming the days of the first answer any of the tab's views gives, and the
+ *  freshness line of the delivery view's `delivery_freshness`, read at that view's last answer
+ *  (plan D2). It reads only each view's window, compare range and delivery freshness, and the
+ *  delivery view's answer time, so a delta of another view that moves none of them renders no
+ *  header. */
 function LiveHeader({
   kinds,
   onChange,
@@ -123,16 +134,23 @@ function LiveHeader({
   scope: EvalsScope;
   state: EvalsUrlState;
 }): ReactNode {
-  const days = useQueries({
+  const heads = useQueries({
     queries: kinds.map((kind) => ({
       ...evalsViewQuery({ ...scope, kind, offset: 0 }),
-      select: daysOf,
+      select: headOf,
     })),
   });
-  const first = days.find((view) => view.data !== undefined)?.data;
+  const first = heads.find((view) => view.data !== undefined)?.data;
+  const delivery = heads[kinds.indexOf("delivery")];
+  const freshness = delivery?.data?.delivery_freshness;
   return (
     <EvalsHeader
       compare={first?.compare}
+      freshness={
+        delivery === undefined || freshness === undefined || freshness === null
+          ? undefined
+          : { freshness, readAtMs: delivery.dataUpdatedAt }
+      }
       onChange={onChange}
       state={state}
       window={first?.window}

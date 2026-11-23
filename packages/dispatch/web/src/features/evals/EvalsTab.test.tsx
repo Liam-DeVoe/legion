@@ -1136,6 +1136,37 @@ test('a live section with no data reads "no data", not 0', async () => {
   }
 });
 
+// Plan D2: the header's freshness line is SourceFreshness fed by the delivery evals view's
+// `delivery_freshness`, which Dispatch answers null for a project with no deploy source.
+test("the header's freshness line is the delivery view's delivery_freshness, and none while it is null", async () => {
+  renderTab();
+  const socket = await openSocket();
+  await answerView(socket, "legion");
+  await waitFor(() => expect(screen.getByTestId("evals-days")).toBeTruthy());
+  const sub = await answerView(socket, "delivery");
+  await waitFor(() => expect(cardsDrawn()).toContain("deploy-frequency"));
+  expect(screen.queryByRole("region", { name: "Source freshness" })).toBeNull();
+
+  serve(socket, {
+    ...deltaFrame(sub, []),
+    set: {
+      delivery_freshness: {
+        last_error: "acme/deploys: rate limited",
+        last_event_at: "2026-11-23T10:00:00Z",
+        last_reconcile_at: "2026-11-23T10:00:00Z",
+        unfetchable_count: 2,
+      },
+    },
+  });
+  const line = await screen.findByRole("region", { name: "Source freshness" });
+  const prs = line.querySelector<HTMLElement>('[data-source="prs"]');
+  expect(prs).toHaveAttribute("data-red", "true");
+  expect(prs?.textContent).toContain("acme/deploys: rate limited");
+  expect(line.querySelector('[data-source="unfetchable"]')?.textContent).toBe(
+    "2 pull requests can no longer be fetched from GitHub"
+  );
+});
+
 test("the four views open at once, with the Legion daemon and delivery settings reads in parallel", async () => {
   const { getLegionDaemon, getProjectDeliverySettings } = renderTab(
     "pending",
