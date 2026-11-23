@@ -177,6 +177,11 @@ type Engine struct {
 	// fact's transaction commits, and facts commit on each consumer's goroutine and the API's, so
 	// the set takes its own lock (intake.RecentKeys).
 	droppedSettlements *intake.RecentKeys[intake.SettlementIdentity]
+	// noFixRule takes the fix rule out of the tail of every fact (apply), and everyRoleToldCI tells
+	// a CI settlement of a task that takes a fix to every role, as for any other task
+	// (tellChecks). Only a test sets either, as the control of the rule it takes out.
+	noFixRule       bool
+	everyRoleToldCI bool
 }
 
 var _ intake.Handler = (*Engine)(nil)
