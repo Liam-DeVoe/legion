@@ -14,11 +14,15 @@ import (
 // restoreStaleTake is a daemon start over a claim restored ready on a plugin that names its task's
 // number (TaskTakeContract), which this daemon's later contract makes stale, holding a take the
 // daemon before accepted and whose turn has not started: the boot's pass has posted the claim its
-// relaunch, which waits for the agent's word on whether it is in a turn (askTurn).
-func restoreStaleTake(t *testing.T) *harness {
+// relaunch, which waits for the agent's word on whether it is in a turn (askTurn). set changes the
+// daemon's deps before the start.
+func restoreStaleTake(t *testing.T, set ...func(*Deps)) *harness {
 	t.Helper()
 	h := newBareHarness(t)
 	h.deps.PluginContract, h.deps.PluginRelaunchable = TaskTakeContract+1, true
+	for _, change := range set {
+		change(&h.deps)
+	}
 	h.manualTakes()
 	c := fixture(StateReady)
 	c.PluginContract = TaskTakeContract
@@ -40,7 +44,7 @@ func restoreStaleTake(t *testing.T) *harness {
 // The negative control is the head before this change (1d8f65eb), where the deadline runs the
 // held suspension with no look at the take: it stops the process in the take's own turn and takes
 // the task back as a cut turn, though that turn runs whole and its report comes, so the task runs
-// again on resume (the class of R3-1 of review round 3 of #3993).
+// again on resume.
 func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testing.T) {
 	t.Run("a hello, the ask unanswered, and the take's turn running at the deadline", func(t *testing.T) {
 		h := restoreStaleTake(t)
@@ -97,7 +101,7 @@ func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testi
 // decided by the next hello's answer or by that deadline, and never left to the stall backstop:
 //
 //   - the next hello asks again (askView), and an answer of no turn ends the turn the claim
-//     is read in (applyTurnAnswer): the relaunch waits for the take's report, which finishes the
+//     is read in (answerView): the relaunch waits for the take's report, which finishes the
 //     task once before the relaunch runs;
 //   - with no answer and no turn frame on that connection by the reconnect deadline, the process is
 //     relaunched, charged nothing, and the task taken back as a cut turn, as at the deadline of
@@ -179,15 +183,14 @@ func TestTakeOfARestoredStaleClaimInATurnWhoseEndWasLostIsDecidedByTheNextAnswer
 //
 // The negative control is the head before this change (1d8f65eb), whose second wait reads the
 // pause's hold first and arms nothing (claimHold): a stop with no deadline waits for a turn the
-// worker may never start, and the claim stays idle and held while the pause stands (the class of
-// R3-2 of review round 3 of #3993).
+// worker may never start, and the claim stays idle and held while the pause stands.
 func TestChargeOnceAtTheSecondBoundForAPutBackWhilePausedThenThePausesStopLands(t *testing.T) {
 	h, flag, stops := pauseHarness(t, queuedClaim(), withWaits, currentPlugin)
 	h.manualTakes()
 	h.reach(StateReady)
 	number := h.takeOf("implement the plan")
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); !p.turnStarted() {
+	if p := h.pending(); !p.startRecorded() {
 		t.Fatalf("the run that started after the take is %+v, want it given to the take", p)
 	}
 	flag.set(7)
@@ -197,7 +200,7 @@ func TestChargeOnceAtTheSecondBoundForAPutBackWhilePausedThenThePausesStopLands(
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	h.wantState(StateIdle)
 	h.reportOf(h.worker.sequence+1, 0)
-	if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
 		t.Fatalf("after the report of the run given the take the claim holds %+v, want task %d's take awaiting its turn again", p, number)
 	}
 

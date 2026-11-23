@@ -41,24 +41,26 @@ type EndedWork struct {
 	// suspension runs at the end of its turn or its compaction (suspendHeldAtEnd). TaskTurn is
 	// whether the pending task's turn was cut off: the decision that let the process go took the
 	// task back from its turn (interrupted, Machine.cutTurnOf), whatever the claim's state, or a
-	// turn was running and it was the turn of the task's accepted take (Delivery.turnStarted). So
-	// TaskTurn can stand without Turn, where the let-go reads the claim after the turn that
-	// decision took the task back from has ended: a relaunch the pacing parked lets the process go
-	// at a wake's turn (launchNow). A take that awaits its turn is in no turn cut off where the
-	// claim's connection showed every frame of its turns: the worker ran nothing of it, and it goes
-	// back with no note of an interruption. Where it did not, that turn may have run unseen, so
-	// TaskTurn says it was cut off and the take goes back as a cut turn (turnMayHaveRunUnseen,
-	// Machine.turnUnseen); and one whose report came with its finish refused by the store goes back
-	// at no let-go, which finishes it by that report (takePhase, waitFinish). A take whose turn
-	// ended with its report still to come, a compaction running after it or not, is settled by
-	// its claim's contract (interrupted). For a plugin below TaskTakeContract it is in no turn
-	// cut off: a let-go finishes it by its end frame rather than take it back (finishTask), as
-	// settle finishes the task of the held stop at a turn's end and the task an idle claim's
-	// let-go leaves it (suspendNow). For a plugin that names its number only the report finishes
-	// it, and every let-go that can wait for the report waits instead (reportwait.go); one that
-	// does not — a held suspension's deadline, the bound of that wait — takes it back first, as a
-	// cut turn (reportMissed), and its mark says so (Machine.cutTurnOf), while a death or a
-	// displacement records its end before it takes the task back, and names no task's turn.
+	// take-back that kept the process sent it back as a cut turn before this let-go (takeBack,
+	// Machine.cutTurnOf), or a turn was running and it was the turn of the task's accepted take
+	// (Delivery.startRecorded). So TaskTurn can stand without Turn, where the let-go reads the
+	// claim after the turn that decision took the task back from has ended: a relaunch the pacing
+	// parked lets the process go at a wake's turn (launchNow). A take that awaits its turn is in no
+	// turn cut off where the claim's connection showed every frame of its turns: the worker ran
+	// nothing of it, and it goes back with no note of an interruption. Where it did not, that turn
+	// may have run unseen, so TaskTurn says it was cut off and the take goes back as a cut turn
+	// (turnMayHaveRunUnseen, Machine.turnUnseen); and one whose report came with its finish refused
+	// by the store goes back at no let-go, which finishes it by that report (takePhase,
+	// waitFinish). A take whose turn ended with its report still to come, a compaction running
+	// after it or not, is settled by its claim's contract (interrupted). For a plugin below
+	// TaskTakeContract it is in no turn cut off: a let-go finishes it by its end frame rather than
+	// take it back (finishTask), as settle finishes the task of the held stop at a turn's end and
+	// the task an idle claim's let-go leaves it (suspendNow). For a plugin that names its number
+	// only the report finishes it, and every let-go that can wait for the report waits instead
+	// (reportwait.go); one that does not — a held suspension's deadline, the bound of that wait —
+	// takes it back first, as a cut turn (reportMissed), and its mark says so (Machine.cutTurnOf),
+	// while a death or a displacement records its end before it takes the task back, and names no
+	// task's turn.
 	Turn     bool `json:"turn,omitempty"`
 	TaskTurn bool `json:"taskTurn,omitempty"`
 	// Background is whether the process's own last activity report of its launch said background
@@ -230,19 +232,21 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 //
 // Before anything else it reads whether a take awaiting its turn may have had that turn run with
 // no frame of it reaching the machine (turnMayHaveRunUnseen: the claim's connection not showing
-// every frame of its turns), and keeps that as the take's mark (Machine.turnUnseen), so the
-// take-back of the let-go — made after this, by a death or a displacement (died, displaced), and
-// after letGo has made the view whole for the next process, by a retirement or a suspension
-// (takeBackUnstarted) — takes it back as a turn cut off, as the record here says it was. Then it
-// gives back what an accepted take that awaits its turn told (untellUnstarted): no turn the
-// daemon saw ran that take's text, and the let-go takes it back, so the record that take had
-// marked told is untold again and the record written here joins it.
+// every frame of its turns, or the take marked so), and keeps that as the take's mark
+// (Machine.turnUnseen, setTurnUnseen): a writer of the mark beside markTurnUnseen, which also
+// clears a mark where the take no longer awaits its turn. So the take-back of the let-go — made
+// after this, by a death or a displacement (died, displaced), and after letGo has made the view
+// whole for the next process, by a retirement or a suspension (takeBackUnstarted) — takes it back
+// as a turn cut off, as the record here says it was. Then it gives back what an accepted take
+// that awaits its turn told (untellUnstarted): no turn the daemon saw ran that take's text, and
+// the let-go takes it back, so the record that take had marked told is untold again and the record
+// written here joins it.
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, the retirement's, or the death's charge — carries
 // it, and the untelling with it. So it costs the relaunch one read and waits for nothing else.
 func (m *Machine) recordEnd(ctx context.Context, cause string) {
-	m.turnUnseen = m.turnMayHaveRunUnseen()
+	m.setTurnUnseen(m.turnMayHaveRunUnseen())
 	m.untellUnstarted()
 	if cause == noEnd || m.claim.Locator == nil {
 		return
@@ -253,12 +257,13 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	state := m.endState()
 	ended := EndedWork{Cause: cause, Generation: m.claim.Generation, Turn: state == StateWorking}
 	// The pending task's turn was cut off where this let-go's own decision takes the task back
-	// from its turn (interrupted, cutTurnOf), whatever the claim's state, and where a turn was
-	// running over a take whose turn ran, as the one rule of where the take stands reads it
-	// (takesTurnRan). A take that awaits its turn is in no turn cut off: the worker ran nothing of
-	// it, unless that turn may have run with no frame of it reaching the machine
-	// (turnMayHaveRunUnseen), which the take-back that follows reads as a turn cut off. Nor is a
-	// take of a plugin below TaskTakeContract whose turn ended with its report still to come,
+	// from its turn (interrupted, cutTurnOf), whatever the claim's state, where a take-back that
+	// kept the process sent it back as a cut turn before this let-go (takeBack, cutTurnOf), and
+	// where a turn was running over a take whose turn ran, as the one rule of where the take
+	// stands reads it (takesTurnRan). A take that awaits its turn is in no turn cut off: the
+	// worker ran nothing of it, unless that turn may have run with no frame of it reaching the
+	// machine (turnMayHaveRunUnseen), which the take-back that follows reads as a turn cut off. Nor
+	// is a take of a plugin below TaskTakeContract whose turn ended with its report still to come,
 	// which a let-go finishes rather than take back (interrupted), the take of the turn whose end
 	// runs a held suspension (suspendHeldAtEnd) and that of an idle claim's let-go that takes
 	// nothing back (suspendNow) among them, whose task settle finishes. Such a take of a plugin

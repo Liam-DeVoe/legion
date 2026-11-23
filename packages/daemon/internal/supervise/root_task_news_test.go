@@ -14,7 +14,7 @@ import (
 // decision whose issue has left the tree is dropped from the task (Deps.RootTask). The task's text
 // and the news it carries are written by the one render (Deps.DesignNews, and Deps.RootTask's own
 // narrowing through it), so a narrowed task carries exactly the news its text names: the accepted
-// take's text holds that news, the accept credits exactly what that text named, and a later take
+// take's text holds that news, the accept copies exactly what that text named, and a later take
 // renders from the narrowed text, never naming the released decision again.
 
 const (
@@ -113,7 +113,7 @@ func wantNamesExactly(t *testing.T, when, message string, news []byte) {
 
 // A root architect's entry task held with kept decisions and news, one of whose decisions leaves
 // the tree before its take, is taken narrowed with its news: the accepted take's text names that
-// news and not the released decision, the accept credits exactly the news that text named, and
+// news and not the released decision, the accept copies exactly the news that text named, and
 // the take after a provider error takes the task back renders from the narrowed text again.
 func TestANarrowedRootTaskIsSentWithTheNewsItCarriesAndCreditsOnlyThat(t *testing.T) {
 	h := newBareHarness(t)

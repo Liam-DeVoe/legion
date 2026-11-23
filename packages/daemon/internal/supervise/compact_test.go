@@ -271,7 +271,7 @@ func TestTakeBackByACompactionKeepsTheNumberAndTheTaskIsTakenAgainAfterIt(t *tes
 
 // A turn Oh My Pi starts as the compaction ends — a follow-up an Envoy delivery queued while the
 // session was being compacted — leaves the claim working for that turn. Idling it there would
-// send the owed task into a running agent, and that turn's own end would then arrive at an idle
+// offer the owed task while a turn runs, and that turn's own end would then arrive at an idle
 // claim, where it means nothing.
 func TestATurnThatStartsDuringACompactionKeepsTheClaimWorkingUntilItEnds(t *testing.T) {
 	notices := 0
@@ -389,8 +389,8 @@ func TestACompactionWhoseShimIsNotConnectedSaysNothingWasAsked(t *testing.T) {
 
 // A compaction whose end the store would not write is told apart from one that was refused: Oh
 // My Pi compacted the session, the write that gives the claim back failed, and the task the
-// claim owes is unsent. Answered as a compaction that did not run, it would tell its caller the
-// claim was back and its task had gone again (api's compact).
+// claim owes is not offered. Answered as a compaction that did not run, it would tell its caller
+// the claim was back and its task offered again (api's compact).
 func TestACompactionWhoseEndTheStoreWouldNotWriteSaysTheClaimWasNotGivenBack(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)
@@ -980,7 +980,7 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 	if prompts[ladderSends].DeliveryID != owed {
 		t.Fatalf("the take after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
 	}
-	if got := h.pending(); got.ID != owed || !got.awaitsTurn() {
+	if got := h.pending(); got.ID != owed || !got.awaitsStart() {
 		t.Fatalf("the claim holds %+v, want the task %s taken and its turn still to come", got, owed)
 	}
 }

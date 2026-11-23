@@ -84,7 +84,7 @@ import (
 // re-keyed or told by another state than they carry, or whose openings it dropped, took on,
 // numbered anew or said closed, is answered with its news encoded again, so any later take reads
 // what this render told, and so does the copy the accept of that take records
-// (supervise.Delivery.Carried), which is what that accepted take credits.
+// (supervise.Delivery.Carried), which is that accepted take's credit once its turn has started.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
 // (record.QueueDesignNews) where a reconcile has something to send it: the item no longer stands,

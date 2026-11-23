@@ -420,7 +420,7 @@ func TestTakeAcceptedWritesTheKeptDecisionsWithTheTake(t *testing.T) {
 	h.mustTake()
 
 	stored, ok := h.store.delivery(testToken)
-	if !ok || !stored.awaitsTurn() || !bytes.Equal(stored.Kept, []byte(keptDecision)) {
+	if !ok || !stored.awaitsStart() || !bytes.Equal(stored.Kept, []byte(keptDecision)) {
 		t.Fatalf("the stored delivery after the take = %+v (held %t), want it taken, its turn to come, and still naming %q",
 			stored, ok, keptDecision)
 	}
@@ -757,13 +757,13 @@ func TestTakeFromAClaimRestoredWorkingIsTheWorkersWordThatItIsIdle(t *testing.T)
 	if text := h.mustTake(); text != "the task" {
 		t.Fatalf("the take of the restored working claim = %q, want the task", text)
 	}
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("pending %+v, want the take accepted and its turn to come", p)
 	}
 
 	h.must(StreamTurnStart{Claim: testToken})
 	h.wantState(StateWorking)
-	if p := h.pending(); !p.turnStarted() {
+	if p := h.pending(); !p.startRecorded() {
 		t.Fatalf("pending %+v, want the turn that followed the take's own", p)
 	}
 }
@@ -822,7 +822,7 @@ func TestTakeOfARelaunchedProcessIsDecidedAfreshWhileItsPredecessorsTakeAdopts(t
 		if newErr != nil || newAnswer.Outcome != TakeOutcomeAccepted || newAnswer.Text != "implement the plan" {
 			t.Fatalf("the relaunched process's take = %+v, %v, want it decided afresh and accepted with the task's text", newAnswer, newErr)
 		}
-		if p := h.pending(); !p.awaitsTurn() {
+		if p := h.pending(); !p.awaitsStart() {
 			t.Fatalf("pending %+v, want the new process's take accepted and its turn to come", p)
 		}
 		h.wantCalls("AdoptWorkingCopy", 2)

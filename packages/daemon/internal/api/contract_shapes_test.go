@@ -417,7 +417,9 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			PendingCause: causeWords[(cause+1)%len(causeWords)],
 			PendingTask: &PendingTaskView{
 				Phase: taskPhase, QueuedAt: at,
-				SendFailures: 1, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+				SendFailures: 1, LastSendError: "worker-stream: legion-values-VALUES-1-implementer refused adopt-working-copy: " +
+					"Command failed (exit 1): jj metaedit: the git lock /legion/workspaces/acme/widgets/VALUES-1/.git/index.lock " +
+					"was last written 31m ago",
 			},
 		}
 	}
@@ -555,7 +557,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerIssueRecord: {roots: typesOf(Issue{}), bodies: issues},
 		AnswerHealth:      {roots: typesOf(Health{}), bodies: []any{Health{Status: "ok", Project: "legion"}}},
 		// The register golden's own value (TestRegisterResponseGolden): a claim whose bucket holds
-		// a value, which writes every key of `task` (contract 221).
+		// a value, which writes every key of `task` (contract 223).
 		AnswerRegister: {roots: typesOf(claim.RegisterResponse{}), bodies: []any{claim.RegisterResponse{
 			ClaimToken:   "legion-legion-legion-208-architect",
 			Tree:         "LEGION-208",
@@ -684,7 +686,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Pause: ended, Released: 3,
 		}}},
 		// Richer than the golden, which reads a bucket that holds no value: the record describes
-		// every key of the value a read answers (contract 221) and of the takes held behind the
+		// every key of the value a read answers (contract 223) and of the takes held behind the
 		// caller's turn (contract 231).
 		AnswerTask: {roots: typesOf(claim.TaskResponse{}), bodies: []any{claim.TaskResponse{
 			Task:     &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
@@ -692,7 +694,7 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 			Holds:    []claim.HeldTake{{Role: claim.RoleTester, Task: 7}},
 		}}},
 		// The three goldens' own values (TestTakeResponseGolden), one for each outcome of a take,
-		// which between them carry every key of the answer (contract 221).
+		// which between them carry every key of the answer (contract 223).
 		AnswerTake: {roots: typesOf(claim.TakeResponse{}), bodies: []any{
 			claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
 				Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."},

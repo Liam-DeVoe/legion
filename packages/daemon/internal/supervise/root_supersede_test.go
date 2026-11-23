@@ -31,7 +31,7 @@ func wakeTask(row int64, generation uint64) RequestDeliver {
 // the claim holds no delivery.
 func takeTurn(h *harness, delivery string) {
 	h.t.Helper()
-	if p := h.pending(); p.ID != delivery || !p.awaitsTurn() {
+	if p := h.pending(); p.ID != delivery || !p.awaitsStart() {
 		h.t.Fatalf("the claim holds %+v, want the take of %s accepted and its turn to come", p, delivery)
 	}
 	h.must(StreamTurnStart{Claim: h.token})
@@ -176,7 +176,7 @@ func TestARootArchitectsTaskATakeHoldsIsNotSuperseded(t *testing.T) {
 	h.reach(StateReady)
 	old, newer := startTask(rootToken, 3, 1, 1), startTask(rootToken, 15, 2, 2)
 	h.must(old)
-	if p := h.pending(); p.ID != old.ID || !p.awaitsTurn() {
+	if p := h.pending(); p.ID != old.ID || !p.awaitsStart() {
 		t.Fatalf("the claim holds %+v, want the take of %s accepted and its turn to come", p, old.ID)
 	}
 	sent := len(h.prompts())

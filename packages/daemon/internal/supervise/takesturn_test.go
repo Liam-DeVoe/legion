@@ -43,7 +43,7 @@ func (h *harness) givesARunNoTakeStartedToTheTake() string {
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
 	text := h.mustTake()
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); !p.turnStarted() || p.TakenText != text {
+	if p := h.pending(); !p.startRecorded() || p.TakenText != text {
 		h.t.Fatalf("the run that started after the take is %+v, want it given to the take, its text kept", p)
 	}
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -70,22 +70,22 @@ func TestTurnReportNamingNoTaskGivesTheTakeItsTurnBack(t *testing.T) {
 			t.Fatalf("report the run as no task's: %v", err)
 		}
 
-		if p := h.pending(); !p.awaitsTurn() || p.TakenText != text {
+		if p := h.pending(); !p.awaitsStart() || p.TakenText != text {
 			t.Fatalf("after the report the task is %+v, want its take awaiting its turn again with the text %q", p, text)
 		}
-		if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsTurn() || stored.TakenText != text {
+		if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsStart() || stored.TakenText != text {
 			t.Fatalf("the store holds %+v, want the take awaiting its turn again", stored)
 		}
 		if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 1 {
 			t.Fatalf("logged %q, want the take's turn given back once", lines)
 		}
 		h.advance(2 * testRPC)
-		if p := h.claim().Pending; p == nil || p.Number != number || !p.awaitsTurn() {
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.awaitsStart() {
 			t.Fatalf("two end-frame bounds after the report the claim holds %+v, want task %d still awaiting its turn", p, number)
 		}
 
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the turn after the report is %+v, want it the take's", p)
 		}
 		h.must(StreamTurnEnd{Claim: h.token})
@@ -166,7 +166,7 @@ func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
 		if err := h.reportTurn(0, nil); err != nil {
 			t.Fatalf("report R1 as no task's: %v", err)
 		}
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("after R1's report the task is %+v, want its take's turn still started, moved to R2", p)
 		}
 		if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 0 {
@@ -187,7 +187,7 @@ func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
 		h.must(StreamTurnStart{Claim: h.token})
 
 		wantAttr(t, h.records.of(turnStartedLine)[starts], "task", strconv.FormatUint(next, 10))
-		if p := h.pending(); p.Number != next || !p.turnStarted() {
+		if p := h.pending(); p.Number != next || !p.startRecorded() {
 			t.Fatalf("while the next task's turn runs the claim holds %+v, want task %d's take with its turn started", p, next)
 		}
 		h.must(StreamTurnEnd{Claim: h.token})
@@ -250,7 +250,7 @@ func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
 			t.Fatalf("report R1 as no task's: %v", err)
 		}
 
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("after R1's late report the task is %+v, want its take's turn still started", p)
 		}
 		if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 0 {
@@ -277,7 +277,7 @@ func TestTurnReportReachesTheTakeOnlyFromTheTurnItWasGiven(t *testing.T) {
 			t.Fatalf("report R1 as no task's: %v", err)
 		}
 
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("after the late report of the run before ready the task is %+v, want its take's turn still started", p)
 		}
 		if lines := h.logs.lines(notTheTakesTurnLine); len(lines) != 0 {
@@ -349,14 +349,14 @@ func TestChargeTheSecondWaitOnATakeAReportGaveItsTurnBackAfterADaemonRestart(t *
 	h.must(RequestDeliver{Claim: h.token, Task: "the take a run of the host's own meets"})
 	text := h.mustTake()
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); !p.turnStarted() || p.TakenText != text {
+	if p := h.pending(); !p.startRecorded() || p.TakenText != text {
 		t.Fatalf("the run that started after the take is %+v, want it given to the take", p)
 	}
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	if err := h.reportTurn(0, nil); err != nil {
 		t.Fatalf("report the run as no task's: %v", err)
 	}
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Errorf("after the report the task is %+v, want its take awaiting its turn again", p)
 	}
 
@@ -413,7 +413,7 @@ func TestTakeRepeatedAfterItsTurnStartedIsAnsweredTheSameAndRecordsNothing(t *te
 				t.Errorf("the workflow was told %d times, want once", confirmed)
 			}
 			h.wantCalls("AdoptWorkingCopy", 1)
-			if p := h.pending(); !p.turnStarted() || p.TakenText != first {
+			if p := h.pending(); !p.startRecorded() || p.TakenText != first {
 				t.Fatalf("pending %+v after the repeated take, want the take's turn still started with its text", p)
 			}
 		})
@@ -440,7 +440,7 @@ func TestTurnOutcomeSentAgainToARestartedDaemonReachesItsTask(t *testing.T) {
 
 		h.outage(time.Minute)
 		h.advance(2 * testRPC)
-		if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.startRecorded() {
 			t.Fatalf("two end-frame bounds after the restart, with no act of the worker's, the claim holds %+v, want task %d's turn still waiting for its report", p, number)
 		}
 		if err := h.reportTurn(number, &ProviderError{Message: "overloaded_error", Status: 529}); err != nil {
@@ -463,7 +463,7 @@ func TestTurnOutcomeSentAgainToARestartedDaemonReachesItsTask(t *testing.T) {
 		h.advance(2 * testRPC)
 		h.connect()
 		h.advance(testRPC - time.Second)
-		if p := h.claim().Pending; p == nil || !p.turnStarted() {
+		if p := h.claim().Pending; p == nil || !p.startRecorded() {
 			t.Fatalf("less than a bound after the hello the claim holds %+v, want its take's turn still waiting for its report", p)
 		}
 		h.advance(time.Second)
@@ -496,7 +496,7 @@ func TestTurnOutcomeAloneFinishesTheTaskOfAPluginThatNamesItsNumber(t *testing.T
 			}
 
 			h.advance(10 * testRPC)
-			if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+			if p := h.claim().Pending; p == nil || p.Number != number || !p.startRecorded() {
 				t.Fatalf("ten end-frame bounds after the turn's end the claim holds %+v, want task %d's turn still waiting for its report", p, number)
 			}
 			if finished := h.records.of(finishedLine); len(finished) != 0 {
@@ -537,7 +537,7 @@ func TestTurnOutcomeRepeatedAfterItsTaskFinishedAnswersTheSameAndAppliesNothing(
 	h.must(RequestDeliver{Claim: h.token, Task: "the second task"})
 	h.must(StreamTurnStart{Claim: h.token})
 	second := h.pending()
-	if second.Number == number || !second.turnStarted() {
+	if second.Number == number || !second.startRecorded() {
 		t.Fatalf("the claim holds %+v, want the second task's take with its turn started", second)
 	}
 
@@ -546,7 +546,7 @@ func TestTurnOutcomeRepeatedAfterItsTaskFinishedAnswersTheSameAndAppliesNothing(
 	}
 	h.m.Wait()
 
-	if p := h.pending(); p.Number != second.Number || !p.turnStarted() {
+	if p := h.pending(); p.Number != second.Number || !p.startRecorded() {
 		t.Fatalf("after the repeated report the claim holds %+v, want task %d's turn still started", p, second.Number)
 	}
 	if finished := h.records.of(finishedLine); len(finished) != 1 {

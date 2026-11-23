@@ -68,7 +68,7 @@ func TestChargeNoneForATurnStarting30sAfterItsTake(t *testing.T) {
 	h := waitsHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("pending %+v, want the worker's take accepted", p)
 	}
 
@@ -298,7 +298,7 @@ func TestChargeTheThirdRetiresEvenWhenItTakesAfterEach(t *testing.T) {
 	for charge := 1; charge < testLimits().PromptFailures; charge++ {
 		h.advance(turnStartBound)
 		h.wantBudgets(Budgets{PromptFailures: charge})
-		if p := h.pending(); !p.awaitsTurn() {
+		if p := h.pending(); !p.awaitsStart() {
 			t.Fatalf("pending %+v after charge %d, want the worker to have taken it again", p, charge)
 		}
 	}
@@ -478,7 +478,7 @@ func TestChargeNoneAfterADaemonRestartUntilABoundAfterTheReconnectHello(t *testi
 		h := waitsHarness(t)
 		h.reach(StateReady)
 		h.must(RequestDeliver{Claim: testToken, Task: "the task"})
-		if p := h.pending(); !p.awaitsTurn() {
+		if p := h.pending(); !p.awaitsStart() {
 			t.Fatalf("pending %+v, want the worker's take accepted", p)
 		}
 		h.advance(turnStartBound / 2)
@@ -818,7 +818,7 @@ func TestSilentReconnectHelloAfterADaemonRestartClearsNothing(t *testing.T) {
 				where, c.TaskSeenRevision, c.TaskTakeState, before.TaskSeenRevision, before.TaskTakeState)
 		}
 	}
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("pending %+v after the reconnect hello, want the accepted take still awaiting its turn", p)
 	}
 }
@@ -846,7 +846,7 @@ func TestChargeTheSecondWaitOneBoundAfterThePutBackNotTheAcceptance(t *testing.T
 	if err := h.reportTurn(0, nil); err != nil {
 		t.Fatalf("report the run as no task's: %v", err)
 	}
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("pending %+v after the report, want the take awaiting its turn again", p)
 	}
 
@@ -875,7 +875,7 @@ func TestChargeNoneAtTheEndOfALongTurnOverATakeAwaitingItsTurn(t *testing.T) {
 	if err := h.reportTurn(0, nil); err != nil {
 		t.Fatalf("report the run as no task's: %v", err)
 	}
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("pending %+v after the report, want the take awaiting its turn again", p)
 	}
 

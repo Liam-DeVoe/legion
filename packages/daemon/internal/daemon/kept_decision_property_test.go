@@ -2716,7 +2716,7 @@ func (r *keptRun) restartStreaming(tree *keptTree) {
 }
 
 // awaitingItsTurn is whether this tree's architect holds a task its take answered and no turn has
-// started on: the take was answered, the machine waits for the turn to start (Delivery.awaitsTurn),
+// started on: the take was answered, the machine waits for the turn to start (Delivery.awaitsStart),
 // and the next agent_start is taken for this task's and starts it (table.go's turnStarted). It is
 // the window both take-backs of a take's turn are reached through, and the claim is the same one
 // the turn step would drive.
@@ -2820,7 +2820,7 @@ func (r *keptRun) confirmedPending(tree *keptTree) bool {
 }
 
 // endTurnUnconfirmed ends a turn that started no take's, which is a turn this machine takes for a
-// foreign one: a restart loses the wait for the task's turn (Delivery.awaitsTurn) while the store
+// foreign one: a restart loses the wait for the task's turn (Delivery.awaitsStart) while the store
 // keeps the task taken, and a turn of the agent's own is then nobody's to confirm. There is no
 // take's turn to take back, so the step counts nothing and leaves the claim as the turn step
 // would.

@@ -1307,13 +1307,13 @@ func endTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, toke
 }
 
 // takeAwaitsTurn is whether p is a task a take holds whose turn has not started, as supervise's
-// Delivery.awaitsTurn reads it.
+// Delivery.awaitsStart reads it.
 func takeAwaitsTurn(p *supervise.Delivery) bool {
 	return p != nil && !p.ConfirmedAt.IsZero() && !p.TurnStarted
 }
 
 // takesTurnStarted is whether p is a task a take holds whose turn has started, as supervise's
-// Delivery.turnStarted reads it.
+// Delivery.startRecorded reads it.
 func takesTurnStarted(p *supervise.Delivery) bool {
 	return p != nil && !p.ConfirmedAt.IsZero() && p.TurnStarted
 }

@@ -388,8 +388,8 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	}
 	reaches := m.claim.reportOfTake(r.Generation, r.Task)
 	o.Refused = r.Refused && (r.ProviderError == nil || !reaches)
-	if p := m.claim.Pending; r.ProviderError != nil && reaches && p != nil {
-		o.ProviderErrorRetries = p.ProviderErrorRetries + 1
+	if r.ProviderError != nil && reaches {
+		o.ProviderErrorRetries = m.claim.Pending.ProviderErrorRetries + 1
 	}
 	if first, applied := m.appliedTurnOutcome(r); applied && r.ProviderError != nil {
 		o.Refused, o.ProviderErrorRetries = first.Refused, first.ProviderErrorRetries
@@ -449,7 +449,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // turn's sequence, and the take's number places it among the turns the machine saw.
 func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
-	if p == nil || !m.claim.reportOfTake(r.Generation, r.Task) {
+	if !m.claim.reportOfTake(r.Generation, r.Task) {
 		if r.Task != 0 {
 			m.log.Info("supervise: a turn's report names a task that no take of this claim holds; it finishes nothing",
 				"task", r.Task, "generation", r.Generation, "pending", pendingNumber(p))
@@ -571,7 +571,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 	if !count.known {
 		return m.heldUnrun(ctx, r)
 	}
-	if !p.turnStarted() || count.take == 0 || r.Sequence != count.take {
+	if !p.startRecorded() || count.take == 0 || r.Sequence != count.take {
 		return nil
 	}
 	if m.startedSince(count.take) {
@@ -598,7 +598,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 // (takePhase, waitFinish), whichever of its three callers asks: that report decides, the take
 // stays where it put it, and the end-frame bound makes its finish again. Put back, the take would
 // await a turn that has run, and the start of that turn, late, would be given it as a second run
-// of the task. With no task pending it puts nothing back.
+// of the task.
 func (m *Machine) putBack(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	if p == nil || m.takePhase() == waitFinish {
@@ -637,8 +637,7 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 // no task. A busy claim marks nothing (busy): in a turn, its start frame has come already, and the
 // turn running is the report's; under a compaction with no turn started under it, a start is given
 // no take and reads no mark (turnStartedWhileBusy), so a mark left for a start that comes under
-// the compaction would outlive it and name this task in a later start. With no task pending it
-// starts nothing.
+// the compaction would outlive it and name this task in a later start.
 func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	if p == nil {

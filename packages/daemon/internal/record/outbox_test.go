@@ -54,6 +54,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
 		ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect,
 			Reason: ArchitectTookNothing.Words() + ": the task of phase entry 1 was first queued to the architect's claim of LEGION-208"},
+		ControllerNotice{Kind: MemoryGuardKillNotice, Role: claim.RoleController,
+			Reason: "The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: `python3` (pid 4242)"},
 		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
 			Reason: "the model provider is down"}},
 		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
@@ -410,6 +412,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice for an architect", payload: Notice{Kind: ArchitectStalledNotice}, reason: "unknown notice kind"},
+		{name: "a memory-guard-kill notice for an architect", payload: Notice{Kind: MemoryGuardKillNotice, Role: claim.RoleController}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
@@ -763,8 +766,7 @@ func TestAMergeForwardAskAndHoldNameGitHubsMergeStateAndWhenItWasRead(t *testing
 		" GitHub answered mergeState=dirty for head c0de at 2026-11-19T02:01:00Z." +
 		" The issue stays in testing. A check that main requires has not passed on this head, and GitHub runs no checks on a head that conflicts with its base." +
 		" Merge main forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace." +
-		" First do the working-copy check of skill://legion-worker/references/foreign-path.md." +
-		" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
+		" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
 		" Write no handoff and make no completion for this forward merge."
 	if got := ask.Message("LEGION-208", "sjawhar/legion"); got != want {
 		t.Fatalf("Message of the ask =\n%q\nwant\n%q", got, want)
@@ -791,8 +793,7 @@ func TestAMergeForwardAskAndHoldNameGitHubsMergeStateAndWhenItWasRead(t *testing
 		" GitHub answered mergeState=dirty for head c0de at 2026-11-19T02:01:00Z." +
 		" The issue stays in merging. The next step of the issue is the merge, and GitHub cannot merge a head that conflicts with its base." +
 		" Merge main forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace." +
-		" First do the working-copy check of skill://legion-worker/references/foreign-path.md." +
-		" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
+		" Merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch." +
 		" Write no handoff and make no completion for this forward merge." +
 		" The merge and its conflict are yours to resolve, as your role says." +
 		" When your merge lands, the daemon asks the reviewer to read it and approve the new head."

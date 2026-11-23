@@ -838,7 +838,7 @@ func (c Claim) RuleHoldError() error {
 // ends the claim is in its task's turn, and two roles of one issue that each read the other as
 // idle would otherwise adopt at the same moment (dispatch://INFRA-314).
 func (c Claim) InTurn() bool {
-	return c.State == StateWorking || (c.Pending != nil && c.Pending.awaitsTurn())
+	return c.State == StateWorking || (c.Pending != nil && c.Pending.awaitsStart())
 }
 
 // ClaimView is a claim as its machine last published it (Machine.View), with what only the decision
@@ -1478,9 +1478,10 @@ type Machine struct {
 	// step unrecorded (Claim.owedReport, NewMachine): the take-back and the ladder's step, or the
 	// claim's failure, that the daemon before this one decided and the store never took. It holds
 	// the error's status alone, which is all that decides between the two (takeToLadder). The
-	// claim's first decision makes them, in settle, and drops it; a claim not ready, idle or
-	// working by then has its take settled by its let-go instead (settle, interrupted). It is
-	// memory only, as finishOwed is.
+	// claim's first decision makes them, in settle, and drops it, a write of them the store
+	// refuses leaving them in memory, owed, with the decision going on to its row; a claim not
+	// ready, idle or working by then has its take settled by its let-go instead (settle,
+	// interrupted). It is memory only, as finishOwed is.
 	ladderOwed *ProviderError
 	// valueWrittenAt is when this machine last wrote the claim's value (putValue), the zero time
 	// before its first write: what the state route names as an unseen value's writtenAt. It is
@@ -1605,17 +1606,14 @@ type Machine struct {
 	// replay was still to show running as one no turn ran, and take it back with no note
 	// (dispatch://INFRA-2811, T3's rule three). A claim holding no take has no task the order can
 	// run twice, and the boot's pass relaunches it as before. askedAt is when the first hello
-	// asked, the zero time before it, and askTrigger the pass whose relaunch the answer waits for
+	// asked, dated where that hello opens its view, before any step of its decision that can fail
+	// (helloView), so a decision that failed before the ask was made leaves it dated too; it is
+	// the zero time before that hello. askTrigger is the pass whose relaunch the answer waits for
 	// ("boot", "sweep"), for the line the relaunch logs. letGo clears all three with the process;
 	// they are memory only, as askFirst is.
 	askTurn    bool
 	askedAt    time.Time
 	askTrigger string
-	// atReconnectDeadline is whether the decision running is the reconnect deadline's own
-	// stale-plugin relaunch (reconnectDeadline): that deadline is the bound of the wait for a whole
-	// view, so the relaunch it decides passes refreshPlugin's guard of the view. It is set for that
-	// one call and cleared when it returns.
-	atReconnectDeadline bool
 	// unansweredAsks counts the asks in a row the agent left unanswered while askFirst or askTurn
 	// stayed armed (askTurnOver, askRestoredTurn); from unansweredAsksWarn on, each one is logged
 	// at Warn.
@@ -1623,20 +1621,23 @@ type Machine struct {
 	// connSeen is how much of the worker's turns the claim's connection shows the machine
 	// (connView, connview.go): whole, so the bounds that judge the worker by its frames run; or cut,
 	// by a daemon start before the shim's first hello (NewMachine), by a close (closeView), or by a
-	// reconnect hello over a pending task until the agent's answer or a turn frame (askView). It is
+	// reconnect hello over a pending task until the agent's answer or a turn frame (helloView). It is
 	// memory only, as the connection is. Every change of it goes through setView, which logs the
 	// changes that cross whole for the cost reading.
 	connSeen connView
-	// closedAt is when the claim's connection last closed (closeView), which a ready that comes
-	// over that cut view counts the reconnect deadline from (readyView). It is read only while the
-	// view is closed, and is memory only, as connSeen is.
+	// closedAt is when the claim's connection last closed (closeView), which the reconnect deadline
+	// a close sets is counted from, at the close and at a ready that comes over that cut view
+	// (reconnectFromClose, readyView). It is read only while the view is closed, and is memory only,
+	// as connSeen is.
 	closedAt time.Time
-	// helloAsked is whether the hello of the claim's connection asked its agent whether it is in a
-	// turn over a pending task (askView): its own ask, or a daemon start's own that serves it
-	// (startAskServes). No sweep asks that connection again (observe), since the reconnect deadline
-	// armed at that hello bounds the ask, and the answer, when it comes, ends the daemon start's own
-	// asks with it (answerView). A close clears it (closeView), and so does the let-go of the
-	// process (letGo); it is memory only, as connSeen is.
+	// helloAsked is whether the hello of the claim's connection opened it over a pending task
+	// (helloView), so that the hello asks its agent whether it is in a turn (askView), or a daemon
+	// start's own ask that serves it does (startAskServes). It is set before any step of the
+	// hello's decision that can fail, so a hello whose decision failed before its ask is one too. No
+	// sweep asks that connection again (observe), since the reconnect deadline armed at that hello
+	// bounds the ask, and the answer, when it comes, ends the daemon start's own asks with it
+	// (answerView). A close clears it (closeView), and so does the let-go of the process (letGo); it
+	// is memory only, as connSeen is.
 	helloAsked bool
 	// held is the suspension held for the agent's turn (holdSuspension), behind the wait for the
 	// report of its take's turn (reportwait.go), or for a launch's ready (holdSuspendUntilReady),
@@ -1705,15 +1706,19 @@ type Machine struct {
 	// whose hello did not say the shim's backlog is whole (markRestoredTurnUnseen, turnCount.cut),
 	// and a trim of that backlog can drop a whole turn; or a turn this daemon never saw begin ended
 	// over the take, which may have been the take's own, its start frame lost as the connection
-	// broke (blindTurnEnded); or a reconnect deadline passed, or a let-go was recorded — a
-	// death's, a displacement's, a retirement's, a suspension's — while the claim's connection did
-	// not show its turns whole (reconnectDeadline, recordEnd, turnMayHaveRunUnseen, connview.go).
-	// Each site marks by one test (markTurnUnseen): a take awaiting its turn whose finish is not
-	// owed. Every take-back that follows takes such a take back with the note of a cut turn rather
-	// than unstarted (interrupted, takeBackUnstarted, clearTake), so the next process is told its
-	// turn on the task may have run. It stays through the let-go, for the take-back made after it,
-	// where the view reads whole again; the next accepted take clears it (accept), and it is memory
-	// only.
+	// broke (blindTurnEnded); or a reconnect deadline passed (reconnectDeadline); or a let-go was
+	// recorded — a death's, a displacement's, a retirement's, a suspension's — while the claim's
+	// connection did not show its turns whole (recordEnd, turnMayHaveRunUnseen, connview.go).
+	// Every write of it goes through one writer (setTurnUnseen). The first three sites mark it by
+	// one test (markTurnUnseen): a take awaiting its turn whose finish is not owed. The record of a
+	// let-go writes it too: it sets it to what the let-go reads (turnMayHaveRunUnseen), which
+	// marks it over a view not whole, keeps a mark standing, and clears it where the take no longer
+	// awaits its turn — its own turn started after the mark, or its report came — so a stale mark
+	// says nothing to that record, which reads the field itself (recordEnd). The next accepted take
+	// clears it (accept). Every take-back that follows a mark takes such a take back with the note of
+	// a cut turn rather than unstarted (interrupted, takeBackUnstarted, clearTake: dropTake), so the
+	// next process is told its turn on the task may have run. It stays through the let-go, for the
+	// take-back made after it, where the view reads whole again, and it is memory only.
 	turnUnseen bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
@@ -1730,17 +1735,25 @@ type Machine struct {
 	// The first wait's bound over such a revision writes the value again rather than charging
 	// (takeBoundOver). It is memory only: a daemon that starts next reads the store's report again.
 	seenFromStore bool
-	// cutTurnOf is the delivery id of the pending task the decision that lets the claim's process
-	// go takes back from its turn (interrupted), and "" while no decision has taken one back from
-	// it. interrupted sets it where it takes back a take whose turn was running. The take-back
-	// clears the take, so this, rather than the take or the claim's state, is what tells the
-	// let-go that follows — in the same decision, or at the turn of a wake the replacement parked
-	// — that the task's turn was cut off (recordEnd, EndedWork.TaskTurn). The two decisions that
+	// cutTurnOf is the delivery id of the pending task a take-back sent back as a cut turn before
+	// the let-go of the claim's process recorded anything, and "" while none has (dropTake):
+	// interrupted, in the decision that lets the process go, where it takes back a take whose turn
+	// was running or may have run unseen, and takeBack, which keeps the process, where its take went
+	// back as a cut turn (takeBackInMemory). The take-back clears the take, so this, rather than the
+	// take or the claim's state, is what tells the let-go that follows — in the same decision, at the
+	// turn of a wake the replacement parked, or in a later decision before the task's next take —
+	// that the task's turn was cut off (recordEnd, EndedWork.TaskTurn). The two decisions that
 	// record the end of a process they found gone before they take its task back (died,
-	// displaced) need no mark: that record reads the take itself. The delivery id never changes,
-	// so the mark stands under it across the take-back. letGo clears it with the process. It is
-	// memory only: a daemon restarted inside such a park records the end without it, from what
-	// the claim still holds.
+	// displaced) need no mark: that record reads the take itself. The take-back a let-go makes
+	// after its record (takeBackUnstarted) sets none (dropTake). The delivery id never changes, so
+	// the mark stands under it across the take-back. letGo clears it with the process, and accept
+	// with the task's next take: that take's turn has not run, and a let-go before it starts reads
+	// the take and the view instead (turnMayHaveRunUnseen). It is memory only: a daemon restarted
+	// inside such a park records the end without it, from what the claim still holds, and so does
+	// one restarted between a take-back that keeps the process (takeBack) and the let-go that
+	// follows. The take is gone by then, so that let-go records no turn of the task cut off, and
+	// the next take reads "You were not in a turn then", as every head before 0ec3c031 recorded in
+	// that case.
 	cutTurnOf string
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
@@ -1853,21 +1866,17 @@ type Machine struct {
 	// own closure (retryHolding). The mark itself is the claim's and durable, written by the
 	// launch that commits this intent.
 	pluginRelaunch *pluginIntent
-	// refreshCredit is whether this machine holds a credit of the stale-plugin refresh gate: one
-	// of the K the lane may have in the wake pacing at once, taken before the relaunch it pays
-	// for was decided — by the daemon's pass, which hands what it took on the event it posts
-	// (StalePlugin.Admitted), or inside the decision itself, where a relaunch reached with none
-	// asks for its own (refreshPlugin's guard, admitRefresh) — and given back at the end of the
-	// decision that holds it unless a refresh wake of this machine's own is waiting for its turn
-	// (endRefreshLane, releaseRefresh).
-	//
-	// One is enough, and one is all a machine can hold: refreshPlugin decides nothing for a
-	// claim that already holds a wake, and a post that arrives carrying a credit over a machine
-	// that already holds one gives the new one straight back to the gate rather than losing it
-	// behind this one flag (refreshPlugin). It is memory only, as the wake it is taken for is: a
-	// restart leaves the gate empty and the first pass fills it from the claims it reads
-	// (RefreshGate, refreshStalePlugins).
-	refreshCredit bool
+	// refreshCredit is the credit of the stale-plugin refresh gate this machine holds, nil for
+	// none: one of the K the lane may have in the wake pacing at once, taken before the relaunch
+	// it pays for was decided — by the daemon's pass, which hands it over on the post it makes
+	// (StalePlugin.Credit), or inside the decision itself (refreshPlugin, admitRefresh) — and made
+	// this machine's own in one place (holdCredit). It goes back at the end of the decision that
+	// holds it unless a refresh wake of this machine's own is waiting (endRefreshLane), and a
+	// sweep's correction takes it back from a machine that holds it for no such wake
+	// (reclaimCredit). One is all a machine holds: a post that arrives carrying a credit over one
+	// held gives its own straight back (refreshPlugin). It is memory only, as the wake it is
+	// taken for is: a restart leaves the gate empty.
+	refreshCredit *RefreshCredit
 	// identity is the latest hello2 identity for the claim's current incarnation,
 	// kept until its enrollment lands; enrollmentSent is whether that enrollment has been handed
 	// to the shim over the claim's current connection.
@@ -2003,7 +2012,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		// again to this daemon, and the time no daemon served it is no time it had to do so
 		// (dispatch://INFRA-2811). A plugin that names its task's number has its task finished
 		// by that report alone.
-		if p := c.Pending; p != nil && p.turnStarted() && TakesNoTask(m.claim.PluginContract) {
+		if p := c.Pending; p != nil && p.startRecorded() && TakesNoTask(m.claim.PluginContract) {
 			m.finishAtAct = true
 		}
 		// A claim holding a take that the stale-plugin lane will relaunch waits for its agent's
@@ -2032,7 +2041,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	// pending owes nothing.
 	p := m.claim.Pending
 	if owed, ok := m.claim.owedReport(); ok && p != nil {
-		if p.awaitsTurn() {
+		if p.awaitsStart() {
 			p.TurnStarted = true
 			m.resetPromptBudgets()
 			m.unsaved = true
@@ -2095,6 +2104,12 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	m.mu.Lock()
 	defer m.unlock()
+	// A refresh post carries a credit of the gate, and this decision is the last place that credit
+	// can come back if the machine does not take it: a state whose row ignores the post, a settle
+	// or fence that returns first, or a post for another claim (RefreshGate, the rule of return).
+	if stale, ok := ev.(StalePlugin); ok && stale.Credit != nil {
+		defer m.settleUntakenCredit(stale.Credit)
+	}
 	m.decide(ev)
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
@@ -2718,10 +2733,10 @@ func (m *Machine) stoppingProcess() func() {
 // ends in unlock, and a section that takes mu without it reads the claim or counts goroutines
 // and changes none of them. The sections that defer it are Handle, which every event and every
 // timer of this package comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold),
-// PublishUpdateAsk, StartedBy, ReadProcess and Retree; the sections that take mu without it are
-// Claim, OnDurableState, Wait, compaction, Machine.Take's own sections (take.go), and the
-// goroutine tail in secrets.go. It is that rule a section added later has to keep, rather than
-// this list of the sections there are now.
+// PublishUpdateAsk, StartedBy, ReadProcess, Retree and the refresh gate's reclaimCredit; the
+// sections that take mu without it are Claim, OnDurableState, Wait, compaction, Machine.Take's own
+// sections (take.go), and the goroutine tail in secrets.go. It is that rule a section added later
+// has to keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.armFinishAtAct()

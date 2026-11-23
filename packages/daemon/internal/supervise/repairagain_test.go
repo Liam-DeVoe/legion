@@ -87,7 +87,7 @@ func TestAConfirmOwedWriteIsMadeWholeWithItsReport(t *testing.T) {
 	if stored.State != StateWorking {
 		t.Fatalf("the repaired row reads %s, want working", stored.State)
 	}
-	if stored.Pending == nil || stored.Pending.ID != delivery || !stored.Pending.turnStarted() {
+	if stored.Pending == nil || stored.Pending.ID != delivery || !stored.Pending.startRecorded() {
 		t.Fatalf("the stored delivery is %+v, want %s written with its turn started beside the working claim", stored.Pending, delivery)
 	}
 	if seen := states(reports()); !slices.Equal(seen, []ClaimState{StateReady, StateWorking}) {

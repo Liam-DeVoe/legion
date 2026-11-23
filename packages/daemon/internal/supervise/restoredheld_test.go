@@ -52,7 +52,7 @@ func (h *harness) wantNextTaskStartsItsOwnTurn() {
 	starts := len(h.records.of(turnStartedLine))
 	h.must(StreamTurnStart{Claim: h.token})
 	wantAttr(h.t, h.records.of(turnStartedLine)[starts], "task", strconv.FormatUint(next, 10))
-	if p := h.pending(); p.Number != next || !p.turnStarted() {
+	if p := h.pending(); p.Number != next || !p.startRecorded() {
 		h.t.Fatalf("the next task's start left %+v, want task %d's take with its turn started", p, next)
 	}
 }
@@ -91,14 +91,14 @@ func (h *harness) wantLateReportFinishesOnce(number, sequence uint64) {
 //
 // The negative controls: the head before this change (4f4e1107), which anchors no restored take,
 // fails each where the take is to await its turn again; and a restored take read only while the
-// machine has seen no turn start since it was built (the candidate condition the plan review
-// dropped) fails the first, whose given run's start this machine saw: its take is never put back.
+// machine has seen no turn start since it was built fails the first, whose given run's start this
+// machine saw: its take is never put back.
 func TestAHeldReportGivesATakeRestoredFromTheStoreItsTurnBack(t *testing.T) {
 	t.Run("a take awaiting its turn, a run of the host's own starting only after the restart", func(t *testing.T) {
 		h, number := takeAcrossARestart(t, nothingMore, withWaits)
 		h.connect()
 		h.hostsRun()
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the first start after the restart left %+v, want it given the take", p)
 		}
 		putBacks := len(h.records.of(notTheTakesTurnLine))
@@ -136,7 +136,7 @@ func TestAHeldReportGivesATakeRestoredFromTheStoreItsTurnBack(t *testing.T) {
 		h.wantPutBackBy(number, putBacks, "held")
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the start after the given run left %+v, want it given the take", p)
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -166,8 +166,7 @@ func TestAHeldReportGivesATakeRestoredFromTheStoreItsTurnBack(t *testing.T) {
 
 // A restored take whose own turn may have run under the daemon before the restart, its frames
 // seen by that daemon alone, is given its turn back by no report; nor is one whose own turn this
-// daemon saw start, nor one whose connection is no longer the first hello's. The cases are the
-// orders the plan review asked for:
+// daemon saw start, nor one whose connection is no longer the first hello's. The cases:
 //
 //   - the given run ended before the restart, its report after it: the store cannot tell whether
 //     the take's own turn also started there, so the report puts nothing back, and the take's own
@@ -258,12 +257,12 @@ func TestAHeldReportPutsBackNoRestoredTakeWhoseOwnTurnMayHaveRun(t *testing.T) {
 
 // A restored take's anchor reads the first connection after the daemon start as one that carries
 // every frame its shim held while no daemon was connected (bindRestoredAnchor), but a shim's
-// backlog drops its oldest frames past its bound. The probe of review round 3 of #3993 (R3-5): the
-// run the daemon before the restart gave the take was running at the restart; while no daemon was
-// connected it ended and the take's own turn started, and the backlog dropped both frames; that
-// run's report, saying the take's text was held, lands before the first hello. Nothing puts the
-// take back, so the report of its own turn finishes the task, and the next task's start is its
-// own rather than the one a mark left for a turn still to come (Machine.reportedAhead):
+// backlog drops its oldest frames past its bound. Here the run the daemon before the restart gave
+// the take was running at the restart; while no daemon was connected it ended and the take's own
+// turn started, and the backlog dropped both frames; that run's report, saying the take's text was
+// held, lands before the first hello. Nothing puts the take back, so the report of its own turn
+// finishes the task, and the next task's start is its own rather than the one a mark left for a
+// turn still to come (Machine.reportedAhead):
 //
 //   - the hello does not say its shim's backlog is whole: one that dropped frames, and one of a
 //     release before the word, which says nothing of it;

@@ -169,7 +169,7 @@ func (r *newsPathRig) sweepNews() {
 // when the gate then closed and opened again the reviewer was still owed that news: its row owes
 // the opening and no opened message went. The booted daemon restores the take with the text it
 // kept, and the agent answers its hello's ask that it is streaming: over a take awaiting its turn
-// that answer is the take's turn start (supervise's applyTurnAnswer), and the turn carried no
+// that answer is the take's turn start (supervise's answerView), and the turn carried no
 // opening, so its start makes the take's credit stand, version 4 taken, and leaves the opening owed.
 func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t *testing.T) {
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
@@ -593,7 +593,7 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 // and the daemon is restarted. The take's copy is no standing credit until its turn starts, so the
 // reopening finds the reviewer owed and its row owes the new opening. The booted daemon restores
 // the take, and the agent's answer to its hello's ask says it is streaming, which over a take
-// awaiting its turn is that take's turn start (supervise's applyTurnAnswer): its start makes the
+// awaiting its turn is that take's turn start (supervise's answerView): its start makes the
 // credit stand, version 4 taken, and the earlier opening it carried clears nothing of the new one.
 // The turn ends and the worker's report naming the take's number finishes the task, which makes
 // that credit final (main's push path ended this turn with no result the booted daemon waited on,
@@ -624,6 +624,9 @@ func TestARestartBetweenAReopeningAndTheTurnOfATaskThatCarriedTheEarlierOpening(
 	r.wantTold("after the restart's confirmation of the task that carried the earlier opening", pathRoot, record.AudienceHolder, 4, true)
 
 	conn.SetStreaming(false)
+	// Under the take, endTurn sends the end frame and then the worker's report naming the take's
+	// number, which finishes the task and folds its copy into what the holder was told: without
+	// that report nothing folds.
 	endTurn(r.ctx, t, restored, token)
 	r.wantTold("after the take's turn and its clean report", pathRoot, record.AudienceHolder, 4, true)
 

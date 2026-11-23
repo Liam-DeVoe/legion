@@ -50,7 +50,7 @@ func (h *harness) wantRetakenAndRunOnce(number uint64) {
 	}
 	wantSays(h.t, again[0].Message, saysTaskTurn)
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); p.Number != number || !p.turnStarted() {
+	if p := h.pending(); p.Number != number || !p.startRecorded() {
 		h.t.Fatalf("the turn after the retake left %+v, want it task %d's", p, number)
 	}
 	h.must(StreamTurnEnd{Claim: h.token})
@@ -108,7 +108,7 @@ func TestTakeBoundedWithNothingHeldAfterADroppedText(t *testing.T) {
 		h.reportHeldOf(2, 0, number)
 		h.wantPutBackBy(number, putBacks, "held")
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the card's start after the put-back left %+v, want it given the take", p)
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -123,11 +123,11 @@ func TestTakeBoundedWithNothingHeldAfterADroppedText(t *testing.T) {
 		h.reach(StateReady)
 		number := h.takeOf("the take whose text the host dropped")
 		h.reportOf(1, 0)
-		if p := h.pending(); !p.awaitsTurn() || len(h.logs.lines(notTheTakesTurnLine)) != 0 {
+		if p := h.pending(); !p.awaitsStart() || len(h.logs.lines(notTheTakesTurnLine)) != 0 {
 			t.Fatalf("after the no-task report ahead of its start the claim holds %+v, want the take awaiting its turn, nothing put back", p)
 		}
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the reported turn's start left %+v, want it given the take", p)
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})

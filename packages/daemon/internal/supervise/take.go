@@ -35,7 +35,7 @@ import (
 // as PodUpdateContract does, and internal/api's own test pins the two to one number
 // (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 221
+const TaskTakeContract = 223
 
 // TakesNoTask is whether a plugin that declared contract takes no task: it is below
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to
@@ -688,10 +688,11 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // the delivery when its task is finished, and the handshake is what keeps when the worker took
 // that entry's work. The same write carries it, since the claim is half of it.
 //
-// News of the approved design is told the same way, by the copy this write makes the delivery's
-// credit (Delivery.Carried): the news the text answered here carries, which is the delivery's News
-// as the decision of this take rendered it from the record (currentNews, takeable), since the text
-// is composed from the task that render left beside it. The store reads a taken row's copy as what
+// News of the approved design is told the same way, by the copy this write gives the delivery
+// (Delivery.Carried), its credit once the take's turn starts: the news the text answered here
+// carries, which is the delivery's News as the decision of this take rendered it from the record
+// (currentNews, takeable), since the text is composed from the task that render left beside it.
+// The store reads the copy of a taken delivery whose take's turn has started (turn_started) as what
 // its audiences took (design_news_told_in), and the finish of the take's turn makes it final
 // (Delivery.Ran, finishTask); a take-back ends it with the take (interrupted, clearTake). Only an
 // accepted take confirms a task, so no turn of the worker's own credits news its text never
@@ -754,7 +755,9 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
 	m.anchorTake(first)
-	m.restoredTake, m.turnUnseen = false, false
+	m.restoredTake = false
+	m.setTurnUnseen(false)
+	m.cutTurnOf = ""
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)
@@ -842,7 +845,7 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 	// A task that carries news of the approved design is rendered again from the record here,
 	// where the take is decided, and one queued for its news alone that has nothing left to say is
 	// dropped (currentNews): what the accepted take's text carries is what the record owes now, and
-	// that is what the accept credits.
+	// that is the copy the accept writes (Delivery.Carried).
 	says, err := m.currentNews(ctx)
 	if err != nil {
 		return "", false, err
@@ -912,7 +915,7 @@ func (m *Machine) takeable(ctx context.Context, owed bool) (hold string, dropped
 // (offer), so that decision asks the record once; and an operator's task over a launch the pacing
 // parked above the claim's process (runParkedLaunchNow), which asks before the row's queue does,
 // so that the launch runs for the operator's task where queue would drop the task it arrived
-// behind. A read of the record that fails drops nothing. With no task pending it drops nothing.
+// behind. A read of the record that fails drops nothing.
 func (m *Machine) dropUnowed(ctx context.Context) (bool, error) {
 	p := m.claim.Pending
 	if p == nil {
@@ -988,54 +991,4 @@ func (m *Machine) stateHold() string {
 		return HoldProviderError
 	}
 	return ""
-}
-
-// takeBack returns a taken task to waiting under the number it has, for a reason that keeps the
-// process: a provider error's turn, a compaction, and the second wait. The take goes (ConfirmedAt,
-// TakenText, TurnStarted, TakeTold, the four clearTake and interrupted reset together), so the
-// next take of the number is decided afresh and its text composed
-// again with whatever note the cause left (Delivery.message); the end of the task's turn is no
-// longer awaited. The take state the claim recorded stays, which is how the end of the cause's
-// hold knows the worker asked at this revision and writes the value again (offerPending), and the
-// machine remembers the number (Machine.rewrite), so that write is logged as the retake it is.
-//
-// What the take told and, for a take whose turn had not started, the handshake's confirmation go
-// back with it (giveBackTake): a provider error's turn started on the take's text, and a
-// compaction's and the second wait's had not. Where either moved, the claim goes with the
-// delivery in one write.
-//
-// What the take-back establishes holds in memory at once, whether or not its write lands: a
-// write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
-//
-// A take awaiting its turn while the claim's connection does not show every frame of its turns, or
-// one marked so, goes back as a cut turn with its note (clearTake, turnMayHaveRunUnseen): the
-// operator's compaction can take it back while the view waits for the agent's answer to a hello.
-//
-// A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
-// finished, by that report (makeOwedFinish): the report decides whichever turn the take awaits,
-// and taken back under its number the task would run again.
-func (m *Machine) takeBack(ctx context.Context, cause string) error {
-	if owed, err := m.makeOwedFinish(ctx); owed {
-		return err
-	}
-	if m.takeBackInMemory(cause) {
-		return m.putClaimAndPendingOwed(ctx)
-	}
-	return m.putPending(ctx)
-}
-
-// takeBackInMemory is takeBack with no write: the take goes from the delivery and the claim in
-// memory, for a caller that writes them in a write of its own, together with what it decides
-// next — the ladder's step, which must land with the take-back or not at all (takeToLadder). It
-// answers whether the claim moved with it (giveBackTake). With no task pending it takes nothing
-// back.
-func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
-	p := m.claim.Pending
-	if p == nil {
-		return false
-	}
-	m.disarm(TimerFinish)
-	claimMoved = m.clearTake(p, cause)
-	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
-	return claimMoved
 }

@@ -39,8 +39,7 @@ func (h *harness) cutHello() {
 // makes it known again (learnTurns): T keeps the take, and T's report finishes the task once.
 //
 // The negative control is the head before this change (1d8f65eb), whose count stays known across
-// the hello: G's late report puts back the take while T runs (the class of R3-5 of review round 3
-// of #3993).
+// the hello: G's late report puts back the take while T runs.
 func TestABacklogCutAtAReconnectLosesTheTurnCountSoALateReportKeepsTheTakesTurn(t *testing.T) {
 	h := newHarnessOf(t, queuedClaim(), currentPlugin)
 	h.manualTakes()
@@ -73,7 +72,7 @@ func TestABacklogCutAtAReconnectLosesTheTurnCountSoALateReportKeepsTheTakesTurn(
 //
 // The negative control is the head before this change (1d8f65eb), where the mark stands through
 // the hello and takes the next task's start in the first three cases, and names T's task in T's
-// late start in the fourth (the class of R3-5 of review round 3 of #3993).
+// late start in the fourth.
 func TestABacklogCutLeavesNoMarkSoTheNextTakeKeepsItsOwnTurnStart(t *testing.T) {
 	disconnected := func(t *testing.T) (*harness, uint64) {
 		t.Helper()
@@ -130,8 +129,7 @@ func TestABacklogCutLeavesNoMarkSoTheNextTakeKeepsItsOwnTurnStart(t *testing.T) 
 //
 // The negative control is the head before this change (1d8f65eb), which gives the take back
 // unstarted after either hello, at the answer and at the deadline alike: the next process runs a
-// task whose turn may have run as one never begun, with no word of it (the class of R3-5 of review
-// round 3 of #3993).
+// task whose turn may have run as one never begun, with no word of it.
 func TestAStaleRelaunchBehindABacklogCutTakesTheTakeBackAsACutTurn(t *testing.T) {
 	for _, decided := range []struct {
 		name           string

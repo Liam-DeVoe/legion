@@ -217,8 +217,10 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
   A model key that fails at boot refuses the boot even when the cause is a passing network blip,
   since the probe cannot tell the two apart. Start the daemon again once the cause is gone.
 
-Every boot's first line is `legion daemon starting`, with the `project`, before the plugin gate and the store, and the boot logs `legion daemon started` once the daemon serves: a log that holds the first and not the second is a boot still under way, or one that stopped short, whose refusal follows it.
-[Task delivery cost](/legion/legion/task-delivery-cost/) reads the first line as where that daemon began, so no time between two daemons counts toward a worker's bounds there.
+Every boot writes `legion daemon starting`, with the `project`, as its first line, before the plugin gate and the store; only the configuration warnings of `legion start` come before it.
+The boot logs `legion daemon started` once the daemon serves: a log that holds `legion daemon starting` and not `legion daemon started` is a boot still under way, or one that stopped short, whose refusal follows it.
+[Task delivery cost](/legion/legion/task-delivery-cost/) reads `legion daemon starting` as where that daemon began, and reads no warning before it as a line of the daemon before, so the time of a warning stops no clock and no time between two daemons counts toward a worker's bounds there.
+Without `--claim`, that command still counts a warning in its window as a line of the window, so the time of a warning can be the time of the first line in the window that its output gives.
 
 ## The daemon stops
 
@@ -592,6 +594,17 @@ recorded session is forgotten, by `legion claims retry --fresh-session`, the con
 go. The notice is the claim's own — the issue and the role that names it — so
 two claims of one issue each get a notice of their own, and in a provider outage every claim that
 reaches six is told.
+
+**When the memory guard of the controller's own pod ends one of the controller's programs**, the
+controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a
+`tick` is (`workflow: the controller whose program the memory guard ended is told why`). The
+notice names the program by its executable, with none of its arguments, and its pid, the memory
+it held, the pod's reading and the pod's limit. The controller's session and the pod's other
+processes go on; nothing is held. Each kill is a notice of its own, and a report the launcher
+sends twice is still one notice. The notice's own reason tells the controller what to do: not to
+run the same program again unchanged, but to bound its output or send heavy work where the
+deployment's instructions say. An `eval` cell of the controller that answered
+`Kernel died during execution; completion is uncertain` at that moment is that kill.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, tasks it did
 not take or started no turn for within their bounds, takes whose adoption of the working copy the
@@ -1092,7 +1105,7 @@ A jj commit gets them from the role's jj overlay: the `omp-attribution-<session 
 The overlay sets `templates.commit_trailers`, `templates.revert_description` and `templates.duplicate_description`, so a `jj revert` and a `jj duplicate` get the two lines too.
 A `git commit` gets them from the git wrapper first on the role's `PATH`, which hands the commit to `legion git`: the image's `/opt/legion/bin/git` in a pod, and under tmux the `git` in the state directory's `bin/`, or the image's wrapper where that is the first git on the daemon's `PATH`.
 `Omp-Session` holds the role's session id, and `Legion-Role` holds the role process's `LEGION_ROLE`.
-Read the two lines of each commit on a branch with the template of `skills/legion-worker/references/default-branch-check.md`:
+Read the two lines of each commit on a branch with this template:
 
 ```sh
 jj log --no-graph -r 'trunk()..<branch>@origin' -T '
@@ -1223,7 +1236,7 @@ On such a daemon, an update round or a message wake can take the author of the c
 
 - `JJ_USER` and `JJ_EMAIL` rank above every jj configuration file, and only `--config` and `--config-file` on the command line rank above them.
 
-So a role sets no `user.name`, no `user.email`, none of the overlay's three templates and no `trailer.*` key in any jj or git scope (`skills/legion-worker/references/default-branch-check.md`).
+So a role sets no `user.name`, no `user.email`, none of the overlay's three templates and no `trailer.*` key in any jj or git scope.
 
 ## A pod does not come up
 
@@ -1420,6 +1433,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   A later hello, on a new connection, asks again, as every reconnect hello over a pending task does, and its answer decides the relaunch the same way.
   An ask with no answer is logged `… did not say whether it is in a turn; its stale-plugin relaunch waits for that answer or for the reconnect deadline of its hello`, at Info and at Warn from the third in a row (`unanswered=`); whether that connection is asked again is decided at the hello: where the claim held its task at that hello, that connection is not asked again, and the reconnect deadline armed at that hello relaunches it, while a claim that held none at its hello is asked again at every sweep while it is in no turn.
   At the reconnect deadline, counted from the first hello and armed again whole at each later one, **`supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged`** at Warn relaunches it without the answer.
+  The daemon dates the first hello's ask and arms that deadline before any step of the hello that can fail, so a first hello whose handling failed on the database ends at this line too, uncharged, even where a turn of the take started on its connection before the deadline.
   A suspension held over the claim's turn, or behind the report of its take's turn, is not stopped at that deadline: it waits for that turn's end and that report, and the relaunch waits with it.
   A claim that a replayed start made working, whose connection then broke, may have lost that turn's end with the connection, so the next hello's ask decides it: an answer of no turn ends that turn, and the relaunch follows as it does after any turn of the take.
   With no answer and no turn frame on that connection by the deadline, or no hello at all, the deadline does not wait for that turn's end: the process is relaunched uncharged, or retired as a shim that never reconnected, a held suspension stopping it instead, and the task is taken back as a cut turn.
@@ -1444,6 +1458,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing to do.
 - **`supervise: a provider error's report was applied before this daemon started and its take-back never written; the task goes to the ladder now`** at Warn, with the `task`, its `httpStatus` and the `providerErrorRun`, is a claim a daemon start restored over a turn-outcome report that carried a provider error: the earlier daemon applied the report and stopped before it wrote the task's take-back.
   The claim's first decision makes that take-back, and the task goes on the provider-error ladder ([An issue is held](#an-issue-is-held)), or, for an error that holds the issue, the claim fails.
+  A database that refuses that write leaves the take-back and the ladder's step standing in the daemon's memory, and the claim's next decision writes them; the decision goes on, so a shim's hello that is that first decision still waits for its agent's answer under the reconnect deadline of its hello.
   Nothing to do.
 - **`supervise: a task value was written`**, **`supervise: a task value was reported seen`**,
   **`supervise: a take was answered`**, **`supervise: a task was taken back`**, **`supervise: a
@@ -1489,14 +1504,16 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   task value to its worker did not reach it: an Envoy listener stopped or older than the relay, or
   a session no listener relays to. `legion state` names the claim
   ([Observe](/legion/legion/running-legion/#observe)); look at the listener's log.
-- **`supervise: the shim never reconnected after the daemon started; retired its process`** and **`supervise: the shim never reconnected after its connection closed; retired its process`** at Warn mean a live process whose shim never said hello within the reconnect deadline, the registration deadline's bound: after a daemon start, for a claim the daemon restored ready, idle or working, or after its connection closed while its claim held a task.
+- **`supervise: the shim never reconnected after the daemon started; retired its process`** and **`supervise: the shim never reconnected after its connection closed; retired its process`** at Warn mean a live process whose shim never said hello within the reconnect deadline, the registration deadline's bound: after a daemon start, for a claim the daemon restored ready, idle or working, or after its connection closed while its claim held a task, a whole bound from that close at the earliest.
   The daemon takes its task back under its number, a take still awaiting its turn as a cut turn, and relaunches it, charging a launch failure; a claim whose launches run out fails with the cause word `never_reconnected`.
+  A close while the claim holds no task ends that deadline, so a claim with no task is not retired for a shim that reconnects late.
 - **`supervise: the shim reconnected over a pending task; the daemon asks its agent whether it is in a turn, and the bounds on the worker wait for that answer or a turn frame`** at Info is the hello of a worker whose connection closed, or which a daemon start restored, while its claim holds a task.
   The take, turn-start and report waits judge the worker by the frames its connection carries, and a frame lost in the socket when the connection broke is not replayed, so none of them runs until the agent answers or a turn starts or ends on the new connection.
   An answer that the agent is in a turn is that turn starting, the task's own over a take awaiting its turn, and an answer that it is in no turn ends the turn the daemon read it in.
   **`supervise: the agent said whether it is in a turn after its shim reconnected; the bounds on the worker run again from here`** at Info is that answer, with `streaming=`.
   **`supervise: the agent did not say whether it is in a turn after its shim reconnected; the bounds on the worker wait for a turn frame or the reconnect deadline`** at Warn is an ask the agent did not answer, which is not asked again.
   **`supervise: the agent did not say whether it is in a turn within the reconnect deadline of its shim's hello; it is relaunched, uncharged, and its task taken back as a cut turn`** at Warn is that deadline passing with no answer and no turn frame: nothing is charged, and the relaunched worker takes the task again, told that its turn on it may have run.
+  The daemon arms that deadline before any step of the hello that can fail, so a hello whose handling failed on the database ends the same way.
   A connection that closes again before a bound passes postpones that bound each time to a whole bound after its next hello, and the reconnect deadline bounds each gap.
   Nothing to do unless it repeats: a worker that reconnects and never answers has a hung agent, or a shim that cannot reach its agent.
 - **`supervise: the daemon no longer sees every frame of the worker's turns; the bounds on the worker stand still until it does again`** and **`supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here`** at Info, with the `task` where the claim holds one, mark each change of what the daemon sees of the worker's turns on its connection.
@@ -1574,7 +1591,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   delivery of the daemon's own tells its agent what the relaunch ended`): a numbered task of
   origin `notice`, whose delivery id starts `relaunch:`, which the worker takes and which the
   report naming its number finishes as any task, or the end of its turn for a worker whose plugin
-  is below contract 221 and names no task in its reports. A newer task replaces
+  is below contract 223 and names no task in its reports. A newer task replaces
   it while no take of it is accepted, and carries the sentence in front of itself instead. The
   same task is given when the claim's held task is dropped rather than taken: the issue left the
   task's phase, the task is an ask an older daemon queued for an update round, or a root
@@ -1636,8 +1653,8 @@ These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
   implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
-  phase raises the count, and a move made while the head conflicts with its base is a conflict
+  ([what counts a round](/legion/legion/concepts/#review-signalling)): only a review that requests
+  changes raises the count, and one made while the head conflicts with its base is a conflict
   round, which the cap leaves out and the message's second number names. The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes

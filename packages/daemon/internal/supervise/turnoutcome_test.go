@@ -507,12 +507,12 @@ func TestTurnOutcomeRepeatedAfterARestartIsAppliedOnce(t *testing.T) {
 	h.restart()
 	h.connect()
 	h.wantPrompts(2)
-	if p := h.pending(); !p.awaitsTurn() || p.Number != number {
+	if p := h.pending(); !p.awaitsStart() || p.Number != number {
 		t.Fatalf("after the restart the task is %+v, want task %d taken again and its turn not started", p, number)
 	}
 
 	h.repeatReport(first)
-	if p := h.pending(); !p.awaitsTurn() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+	if p := h.pending(); !p.awaitsStart() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
 		t.Fatalf("after the repeated report the task is %+v with a run of %d provider errors, want the take standing, one retry and a run of one",
 			p, h.claim().ProviderErrorRun)
 	}
@@ -560,7 +560,7 @@ func TestTurnOutcomeSentAgainAfterItLeftTheWindowIsARepeat(t *testing.T) {
 				t.Fatalf("the window keeps %+v, want report %d out of it", kept, first.Sequence)
 			}
 			h.advance(promptRetryDelay(1))
-			if p := h.pending(); !p.awaitsTurn() || p.Number != number {
+			if p := h.pending(); !p.awaitsStart() || p.Number != number {
 				t.Fatalf("after the ladder's wait the task is %+v, want task %d taken again and its turn not started", p, number)
 			}
 			if restart {
@@ -571,7 +571,7 @@ func TestTurnOutcomeSentAgainAfterItLeftTheWindowIsARepeat(t *testing.T) {
 
 			h.repeatReport(first)
 
-			if p := h.pending(); !p.awaitsTurn() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
+			if p := h.pending(); !p.awaitsStart() || p.ProviderErrorRetries != 1 || h.claim().ProviderErrorRun != 1 {
 				t.Fatalf("after report %d was sent again the task is %+v with a run of %d provider errors, want the take standing, one retry and a run of one",
 					first.Sequence, p, h.claim().ProviderErrorRun)
 			}
@@ -613,7 +613,7 @@ func TestTurnOutcomeSentAgainAfterNewerOnesFilledTheWindowIsAppliedWhenItWasNeve
 					t.Fatalf("report a turn no take started: %v", err)
 				}
 			}
-			if p := h.pending(); p.Number != number || !p.turnStarted() {
+			if p := h.pending(); p.Number != number || !p.startRecorded() {
 				t.Fatalf("after the newer reports the claim holds %+v, want task %d's turn still waiting for its report", p, number)
 			}
 			if restart {
@@ -655,7 +655,7 @@ func TestTurnOutcomeRepeatedAfterItsWriteFailedIsApplied(t *testing.T) {
 			}
 			h.m.Wait()
 			h.store.fail("PutClaim", nil)
-			if p := h.pending(); !p.turnStarted() || h.claim().ProviderErrorRun != 0 {
+			if p := h.pending(); !p.startRecorded() || h.claim().ProviderErrorRun != 0 {
 				t.Fatalf("after the failed write the task is %+v with a run of %d, want it still taken and no provider error counted",
 					p, h.claim().ProviderErrorRun)
 			}

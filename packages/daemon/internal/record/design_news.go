@@ -24,17 +24,17 @@ const (
 // gated step's document it took, and whether the gate's opening is owed to it.
 //
 // A holder row rises only by a credit: a taken delivery's, the copy of news its accepted take's
-// text carried, counted while the delivery holds that take and folded in once the finish of the
-// take's turn says the turn ran, or a raise where what it would be told changes nothing of the work
-// (DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all), which tells nobody
-// anything. A credit reaches only a row that took the version it counts from, and its give-back
-// ends it alone (Postgres.TreeTold reads the row as its credits make it). So it says what the
-// session holding the issue's phase was given, never what the daemon meant to give it. Its first
-// value is the baseline: the approved versions the issue's first working phase of its generation
-// started from (workflow's Engine.enter), and for a tree root's architect row those its tree's
-// first opening released (workflow's putGateTold), or the gate a hand-over carried to it (admit's
-// readmit). The rows go with the issue's generation (Postgres.ClearGeneration), so the next
-// generation takes its own baseline.
+// text carried, counted once that take's turn has started (turn_started) and folded in once the
+// finish of the take's turn says the turn ran, or a raise where what it would be told changes
+// nothing of the work (DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all),
+// which tells nobody anything. A credit reaches only a row that took the version it counts from,
+// and its give-back ends it alone (Postgres.TreeTold reads the row as its credits make it). So it
+// says what the session holding the issue's phase was given, never what the daemon meant to give
+// it. Its first value is the baseline: the approved versions the issue's first working phase of
+// its generation started from (workflow's Engine.enter), and for a tree root's architect row those
+// its tree's first opening released (workflow's putGateTold), or the gate a hand-over carried to it
+// (admit's readmit). The rows go with the issue's generation (Postgres.ClearGeneration), so the
+// next generation takes its own baseline.
 type DesignTold struct {
 	Issue    string
 	Audience DesignAudience

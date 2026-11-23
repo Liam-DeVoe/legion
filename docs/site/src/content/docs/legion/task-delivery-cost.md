@@ -42,7 +42,7 @@ kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-co
 
 - `--claim <token>` is optional.
   With it, the command counts the lines of one claim only.
-  It still reads the time of every line and each start of the daemon, since those bound every claim's clock.
+  It still reads the time of every line of any claim that the command decodes (a turn, a task value, a take, a finish, a charge, a death, a registration or a view line) and each start of the daemon, since those bound every claim's clock.
   A claim token is `legion-<project>-<issue key in lower case>-<role>`, for example `legion-infra-infra-2811-implementer`.
 
 - `--take-timeout <seconds>` is optional.
@@ -223,9 +223,13 @@ So each figure that names a task names its claim too.
     The daemon writes `supervise: the daemon sees every frame of the worker's turns again; the bounds on the worker run again, whole, from here` when it sees them again: at the first hello of a new process, at a hello of a worker whose agent has not said it is ready yet, at a hello over no pending task, at the agent's answer to the daemon's ask whether it is in a turn, at a turn's start or end, and when the daemon lets the worker's process go.
     That line starts the clock again, and the bound starts again from zero.
 
-  - A start of the daemon stops the clock as of the last line that the command read from the daemon before it.
+  - A start of the daemon stops the clock at the time of the last line of the daemon before it that the command decodes: a turn, a task value, a take, a finish, a charge, a death, a registration or a view line.
     No time between the two daemons counts, because the new daemon runs none of its waits until the worker acts and the daemon sees every frame again.
-    The first line of every daemon is `legion daemon starting`, with the `project`, so the command reads each line before it as a line of the daemon before, and each line after it as a line of the new daemon.
+    The daemon writes `legion daemon starting`, with the `project`, as its first line.
+    Only the configuration warnings of `legion start` come before it.
+    The command decodes no warning, so a warning is not a line of the daemon before, and its time stops no clock.
+    So the command reads each line that it decodes before `legion daemon starting` as a line of the daemon before, and each line after it as a line of the new daemon.
+    Without `--claim`, the command still counts each warning in the window as a line of the window, so the time of a warning can be the time of the first line in the window that the output gives.
     The new daemon then restores its claims and writes `legion daemon started`.
     The clock of a claim that it restores with a process starts again at the line that starts it, before `legion daemon started` or after it.
     The clock of every other claim starts again at the worker's next act that the command reads in the log: a report that it saw the task, a take, a turn, a report that put a take back, or a registration.
@@ -258,7 +262,7 @@ So each figure that names a task names its claim too.
   - `report` is a worker's report of the task's turn, which named the task.
 
   - `end-frame` is the end of the task's turn, when no report named the task in time.
-    Only a worker whose plugin takes no task, a contract below 221 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
+    Only a worker whose plugin takes no task, a contract below 223 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
     A current worker's task finishes only by the report that names it.
 
 - `charges by wait` is the number of charges against the workers' prompt budget, by wait.

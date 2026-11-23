@@ -843,7 +843,7 @@ func TestAstraCrashBetweenTurnStartAndDeliveryPersistence(t *testing.T) {
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
 	sent := h.wantPrompts(1)[0]
-	if stored, ok := h.store.delivery(testToken); !ok || !stored.awaitsTurn() {
+	if stored, ok := h.store.delivery(testToken); !ok || !stored.awaitsStart() {
 		t.Fatalf("stored delivery %+v, want it taken and its turn still to come", stored)
 	}
 
@@ -853,10 +853,10 @@ func TestAstraCrashBetweenTurnStartAndDeliveryPersistence(t *testing.T) {
 
 	h.wantState(StateWorking)
 	h.wantPrompts(1)
-	if p := h.pending(); p.Number != sent.Number || !p.turnStarted() {
+	if p := h.pending(); p.Number != sent.Number || !p.startRecorded() {
 		t.Errorf("pending %+v, want the taken task's turn started", p)
 	}
-	if stored, _ := h.store.delivery(testToken); !stored.turnStarted() {
+	if stored, _ := h.store.delivery(testToken); !stored.startRecorded() {
 		t.Error("the turn's start was not persisted")
 	}
 	h.must(StreamTurnEnd{Claim: testToken})

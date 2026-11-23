@@ -355,7 +355,7 @@ func TestTakeRecordsItsAdoptionFailuresAndAnAcceptedTakeClearsThem(t *testing.T)
 			h.observe(runtime.Alive)
 
 			p = h.pending()
-			if !p.awaitsTurn() {
+			if !p.awaitsStart() {
 				t.Fatalf("pending %+v, want the take the sweep offered accepted", p)
 			}
 			if p.SendFailures != 0 || !p.LastSendFailureAt.IsZero() || p.LastSendError != "" {

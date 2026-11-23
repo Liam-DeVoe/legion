@@ -39,7 +39,7 @@ func TestTakeBackByADeathKeepsItsNumberAndItsNextTakeNamesTheDeath(t *testing.T)
 		if want := interruptedTask(h.claim().EndedWork.Cause) + "implement the plan"; again.Message != want {
 			t.Fatalf("death %d: the take was answered %q, want %q", death, again.Message, want)
 		}
-		if p := h.pending(); !p.awaitsTurn() {
+		if p := h.pending(); !p.awaitsStart() {
 			t.Fatalf("death %d: pending %+v, want the task taken again and its turn still to come", death, p)
 		}
 		stored := h.store.load(testToken)

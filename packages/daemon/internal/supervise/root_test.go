@@ -108,7 +108,7 @@ func TestARootsExitRetiresItsPhasesTaskWhoseTurnHasNotStarted(t *testing.T) {
 			// end here (TestAnOperatorsTaskSurvivesASuspensionAndGoesOnResume).
 			h.must(RequestDeliver{Claim: rootToken, Task: "the task", Phase: phase.Implementing})
 			h.wantPrompts(1)
-			if stored, ok := h.store.delivery(rootToken); !ok || !stored.awaitsTurn() {
+			if stored, ok := h.store.delivery(rootToken); !ok || !stored.awaitsStart() {
 				t.Fatalf("stored delivery %+v (ok=%v), want it taken and its turn still to come", stored, ok)
 			}
 			if failSuspend {

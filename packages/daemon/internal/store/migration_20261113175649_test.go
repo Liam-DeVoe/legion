@@ -253,7 +253,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	t.Logf("before the migration the task number write is refused: %v", err)
 
 	// The fixture stands just below this migration, so the run applies it and every embedded
-	// migration above it — at this release the twenty-one recorded after it,
+	// migration above it — at this release the twenty-two recorded after it,
 	// 20261113181500_architect_stalled_notices, 20261113182000_architect_entry_upgrade,
 	// 20261114020537_claim_entry_handshake, 20261114031356_merge_queue_removal,
 	// 20261114061900_phase_entry_verbatim, 20261115194357_project_pause,
@@ -267,7 +267,9 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	// columns of pending_task_deliveries stand beside this one's five, and whose functions read
 	// confirmed_at, which this one keeps), 20261120012547_set_back_observed_seq,
 	// 20261120042902_claim_agent_resume_generation,
-	// 20261120055717_dispatch_issue_value_sequences and
+	// 20261120055717_dispatch_issue_value_sequences,
+	// 20261121170714_dispatch_issue_applied_seq (which adds dispatch_issues.applied_seq at its
+	// default) and
 	// 20261122160000_design_news_credit_at_turn_start (which writes design_news_told_in again to
 	// read turn_started, a column this migration adds), which run after its fill and touch no column
 	// the fill writes or this test reads — and nothing else. So the fill runs here before the
@@ -377,7 +379,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	}
 	// The confirmed row's take reads as one whose turn started, with no text kept, as it read when
 	// a confirmed take with no text was read so: the fill set its turn_started, which is all the
-	// claim reads of where the take stands (supervise's Delivery.turnStarted). On an idle claim
+	// claim reads of where the take stands (supervise's Delivery.startRecorded). On an idle claim
 	// such a take no longer works its task; one awaiting its turn would.
 	if started == nil || started.TakenText != "" || !started.TurnStarted ||
 		started.StillWorked(started.Generation, started.Phase, supervise.StateIdle) {

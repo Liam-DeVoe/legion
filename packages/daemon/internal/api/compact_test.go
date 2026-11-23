@@ -418,7 +418,7 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 func suspendedCompactionRefusal(token claim.Token) string {
 	return string(token) + "'s session was compacted, and a suspension held over the claim ended that " +
 		"compaction rather than the claim coming back: it was not given back, and the task it owes " +
-		"was not sent. " + wantAskAgainLater
+		"was not offered. " + wantAskAgainLater
 }
 
 // A suspension that arrives while the session is being compacted is held for the compaction's
@@ -739,8 +739,8 @@ func TestACompactionOfAClaimWhoseShimIsNotConnectedSaysNothingWasAsked(t *testin
 
 // A compaction whose end the store would not write is answered as the store failure it is. Oh My
 // Pi compacted the session and the write that gives the claim back did not happen, so the claim
-// is left working and the task it owes is unsent: answered 200 it would tell the caller a
-// compaction that did not run, whose answer promises the claim is back and its task has gone
+// is left working and the task it owes is not offered: answered 200 it would tell the caller a
+// compaction that did not run, whose answer promises the claim is back and its task offered
 // again.
 func TestACompactionWhoseEndTheStoreWouldNotWriteAnswersTheStoreFailure(t *testing.T) {
 	h := compactHarness(t, nil)
@@ -767,9 +767,9 @@ func TestACompactionWhoseEndTheStoreWouldNotWriteAnswersTheStoreFailure(t *testi
 
 // A claim that loses its process while its session is being compacted is handed nothing by the
 // compaction's end: that end reaches a claim the relaunch has moved past, so it decides nothing.
-// The answer says the claim was not given back and its owed task was not sent, and says nothing
-// of when that task goes, where a compaction reported as run would have the CLI say the task
-// had gone again when nothing had sent it.
+// The answer says the claim was not given back and its owed task was not offered, and says
+// nothing of when that task goes, where a compaction reported as run would have the CLI say the
+// task was offered again when nothing had offered it.
 func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := idleOnTheLadder(t, h)
@@ -786,7 +786,7 @@ func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.
 	release()
 
 	refusedSaying(t, <-answered, http.StatusConflict, compactionFailed,
-		string(token)+" lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. "+wantAskAgainLater)
+		string(token)+" lost its process while its session was being compacted: it was not given back, and the task it owes was not offered. "+wantAskAgainLater)
 	settled(h, token)
 	wantNoValueWritten(t, h, token, writes, "the compaction's end reached a claim its relaunch had moved past")
 

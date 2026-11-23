@@ -50,7 +50,7 @@ func TestRelaunchOfAHeldSuspensionWaitsForTheTaskReport(t *testing.T) {
 		h.advance(testStop - time.Second)
 		h.wantState(StateIdle)
 		h.wantCalls("Suspend", stops)
-		if p := h.pending(); p.Number != number || !p.turnStarted() {
+		if p := h.pending(); p.Number != number || !p.startRecorded() {
 			t.Fatalf("the claim holds %+v before the report, want task %d's turn waiting for it", p, number)
 		}
 
@@ -129,7 +129,7 @@ func TestASuspensionAskedAgainWhileTheHoldWaitsForTheReportJoinsTheHold(t *testi
 			}
 			h.wantState(StateIdle)
 			h.wantCalls("Suspend", stops)
-			if p := h.pending(); p.Number != number || !p.turnStarted() {
+			if p := h.pending(); p.Number != number || !p.startRecorded() {
 				t.Fatalf("the claim holds %+v once the suspension was asked again, want task %d's turn waiting for its report", p, number)
 			}
 
@@ -164,7 +164,7 @@ func (h *harness) wantStillAwaitingItsReport(number uint64, stops int) {
 	h.wantState(StateIdle)
 	h.wantCalls("Suspend", stops)
 	h.wantCalls("Resume", 0)
-	if p := h.pending(); p.Number != number || !p.turnStarted() {
+	if p := h.pending(); p.Number != number || !p.startRecorded() {
 		h.t.Fatalf("the claim holds %+v, want task %d's turn still waiting for its report", p, number)
 	}
 }
@@ -489,7 +489,7 @@ func runGivenTheTakeUnderHeldWork(t *testing.T, held heldBehindTheTake) (h *harn
 	h.reach(StateReady)
 	number = h.takeOf("implement the plan")
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); !p.turnStarted() {
+	if p := h.pending(); !p.startRecorded() {
 		t.Fatalf("the run that started after the take is %+v, want it given to the take", p)
 	}
 	held.hold(h)
@@ -503,7 +503,7 @@ func runGivenTheTakeUnderHeldWork(t *testing.T, held heldBehindTheTake) (h *harn
 // nothing took it back, as a cut turn or otherwise.
 func (h *harness) wantTakesTurnStanding(number uint64, when string) {
 	h.t.Helper()
-	if p := h.pending(); p.Number != number || !p.turnStarted() || p.Interrupted {
+	if p := h.pending(); p.Number != number || !p.startRecorded() || p.Interrupted {
 		h.t.Fatalf("%s the claim holds %+v, want task %d's take standing with its turn started", when, p, number)
 	}
 }
@@ -527,14 +527,13 @@ func (h *harness) wantTakesTurnStanding(number uint64, when string) {
 //
 // The negative control is 7ade1c0c, where the stale-plugin relaunch's wait for the report, armed
 // at G's end for the stop timeout, takes back as a cut turn the take whose turn T is running, in
-// the first two orders, and the relaunched worker runs the task again (R3-1 of review round 3
-// of #3993).
+// the first two orders, and the relaunched worker runs the task again.
 func TestHeldWorkOverARunGivenTheTakeRunsAfterTheTakesOwnTurn(t *testing.T) {
 	for _, held := range []heldBehindTheTake{staleRelaunchHeld, daemonSuspensionHeld} {
 		t.Run(held.name+", G's report first", func(t *testing.T) {
 			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
 			h.reportOf(g, 0)
-			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+			if p := h.pending(); p.Number != number || !p.awaitsStart() {
 				t.Fatalf("after G's report the claim holds %+v, want task %d's take awaiting its turn again", p, number)
 			}
 			held.idle(h)
@@ -606,13 +605,13 @@ func TestHeldWorkOverARunGivenTheTakeRunsAfterTheTakesOwnTurn(t *testing.T) {
 //
 // The negative control is 7ade1c0c, where the put-back leaves the suspension waiting for a report
 // no longer owed (heldForReport), and both holds keep R5's second wait from arming (claimHold): no
-// bound ever ends them, and the claim stays idle and held (R3-2 of review round 3 of #3993).
+// bound ever ends them, and the claim stays idle and held.
 func TestAPutBackLeavesHeldWorkToTheTakesTurnOrTheSecondBound(t *testing.T) {
 	for _, held := range []heldBehindTheTake{daemonSuspensionHeld, staleRelaunchHeld} {
 		t.Run(held.name, func(t *testing.T) {
 			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
 			h.reportOf(g, 0)
-			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+			if p := h.pending(); p.Number != number || !p.awaitsStart() {
 				t.Fatalf("after the report of the run given the take the claim holds %+v, want task %d's take awaiting its turn again", p, number)
 			}
 			if held.name == daemonSuspensionHeld.name {
@@ -625,7 +624,7 @@ func TestAPutBackLeavesHeldWorkToTheTakesTurnOrTheSecondBound(t *testing.T) {
 			h.wantState(StateIdle)
 			h.wantCharges()
 			held.idle(h)
-			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+			if p := h.pending(); p.Number != number || !p.awaitsStart() {
 				t.Fatalf("a second bound less a second after the put-back the claim holds %+v, want task %d's take still awaiting its turn", p, number)
 			}
 
@@ -674,7 +673,7 @@ func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testi
 		h.observe(runtime.StaleAddress)
 		due = h.wantWaitingWake(WakeLaunch).At
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the run that started in the wait is %+v, want it given to the take", p)
 		}
 		daemonSuspensionHeld.hold(h)
@@ -691,7 +690,7 @@ func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testi
 		h.wantState(StateIdle)
 		h.wantCalls("Suspend", 0)
 		h.wantCalls("Resume", 0)
-		if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+		if p := h.pending(); p.Number != number || !p.awaitsStart() {
 			t.Fatalf("after the wake's turn the claim holds %+v, want task %d's take awaiting its turn", p, number)
 		}
 		h.advance(turnStartBound)
@@ -724,10 +723,9 @@ func TestAWakeWhileHeldWorkWaitsOnTheTakeIsSpentIntoTheHoldOutsideATurn(t *testi
 // to come, each with the work that waits behind it. Each refusal records nothing.
 //
 // The negative control is the switch that asks whether a suspension is held before it asks the
-// phase (holdSuspension before review round 4 of #3993): a held suspension behind a put-back take
-// is told it waits for the report, a held suspension behind a refused finish is told it waits for
-// the report that came, and a relaunch behind a refused finish is told the report is still to
-// come.
+// phase (holdSuspension): a held suspension behind a put-back take is told it waits for the
+// report, a held suspension behind a refused finish is told it waits for the report that came,
+// and a relaunch behind a refused finish is told the report is still to come.
 func TestASuspensionThatMayNotBeHeldNamesWhatTheHoldWouldWaitFor(t *testing.T) {
 	reportsRefusedFinish := func(h *harness) {
 		h.t.Helper()
@@ -749,7 +747,7 @@ func TestASuspensionThatMayNotBeHeldNamesWhatTheHoldWouldWaitFor(t *testing.T) {
 			t.Helper()
 			h, number, g := runGivenTheTakeUnderHeldWork(t, held)
 			h.reportOf(g, 0)
-			if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+			if p := h.pending(); p.Number != number || !p.awaitsStart() {
 				t.Fatalf("after the report of the run given the take the claim holds %+v, want task %d's take awaiting its turn again", p, number)
 			}
 			return h

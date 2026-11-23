@@ -341,7 +341,7 @@ func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLi
 		if want := interruptedTask(h.claim().EndedWork.Cause) + "implement the plan"; retaken.Message != want {
 			t.Fatalf("stall exit %d: the take was answered %q, want %q", exit, retaken.Message, want)
 		}
-		if p := h.pending(); p.ID != retaken.DeliveryID || !p.awaitsTurn() {
+		if p := h.pending(); p.ID != retaken.DeliveryID || !p.awaitsStart() {
 			t.Fatalf("stall exit %d: pending %+v, want the task taken again and still owed", exit, p)
 		}
 		h.must(StreamTurnStart{Claim: testToken}) // the relaunched worker walks into the same stall
@@ -770,7 +770,7 @@ func TestTakeResetsNoBudgetAndItsTurnStartResetsBoth(t *testing.T) {
 
 	h.rt.FailAdoptWorkingCopy(nil)
 	h.observe(runtime.Alive)
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("pending %+v, want the take the sweep offered accepted", p)
 	}
 	h.wantBudgets(Budgets{PromptFailures: 1, PromptRetires: 1})

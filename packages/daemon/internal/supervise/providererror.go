@@ -35,8 +35,8 @@ const (
 //
 // The shift is clamped before it is taken, as internal/backoff clamps its own: five doublings of
 // 30 seconds is already 16 minutes, past the cap, and a shift any wider than that leaves int64
-// and comes back a negative wait, which arms the timer to fire at once and sends the task with no
-// wait at all.
+// and comes back a negative wait, which arms the timer to fire at once and writes the task's value
+// again with no wait at all.
 func promptRetryDelay(attempt int) time.Duration {
 	return min(promptRetryFirst<<min(max(attempt-1, 0), 5), promptRetryMax)
 }
@@ -123,14 +123,14 @@ const ladderOwedLine = "supervise: a provider error's report was applied before 
 
 // holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
 // holds the issue for its architect: a client error, 400 to 499, that is none of 401, 403, 408
-// and 429. A malformed request is the case this exists for. Every other error sends the task
-// again:
+// and 429. A malformed request is the case this exists for. Every other error writes the task's
+// value again for the worker to take:
 //
 //   - 5xx, 408 and 429 are the provider saying "not now", which the ladder waits out;
 //   - 401 and 403 are a credential, which is the fleet's and not this claim's work
 //     (dispatch://INFRA-956/comment/838bf35d-69dd-4fb2-a1b3-4b474b4525b3). Failing every claim
-//     whose turn hits one is worse than sending the task again, and the notice the project's
-//     controller is given at six such turns in a row is what tells a person
+//     whose turn hits one is worse than writing the task's value again, and the notice the
+//     project's controller is given at six such turns in a row is what tells a person
 //     (tellControllerOfProviderErrors);
 //   - no status at all is a turn that ends with nothing but a message, two kinds among them.
 //     A content-filter refusal clears because the plugin has already moved the session down its
