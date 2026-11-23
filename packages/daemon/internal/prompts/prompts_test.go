@@ -85,6 +85,9 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 		{"roles/implementer.md", rolePart(t, "implementer.md"), []string{
 			"its `Step <i> (<role>) reported:` line and that step's summary after it, since that step writes no handoff",
 		}, []string{"line and the `Reason:` line"}},
+		{"go/reviewer.md", goPart(t, "reviewer.md"), []string{
+			"A `verdict` is the tester's or a role of the deployment's, never yours, and the daemon refuses one from you (`VERDICT_ROLE_FORBIDDEN`)",
+		}, []string{"the tester's and a role of the deployment's"}},
 	} {
 		holdsAndRetires(t, part.name, part.text, part.want, part.retired)
 	}

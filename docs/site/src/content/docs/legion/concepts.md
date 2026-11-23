@@ -195,9 +195,10 @@ The table is the line of the **default steps**. Each architect of a tree, the ro
 sub-architect's, is an owner of each issue that stands in that tree now, and can give an issue a
 **plan** that picks which of these steps it runs and in what order: one task whose steps are
 some of `planner implementer tester reviewer acceptance:owner` and of the roles the deployment
-defines, in the order the owner names them,
+defines, each named once, in the order the owner names them,
 with `implementer` among them and before each `tester`, `reviewer` and `acceptance:owner` step,
 since each of those reads the pull request the implementer opens,
+and after each step of the type implementation, since Legion's retro is done by the implementer,
 where `acceptance:owner` is the architect's own acceptance in `accepting`. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
