@@ -62,9 +62,9 @@ export const SCOPE_ORDER: readonly KeymapScope[] = [
  * it stood when `?` was pressed (`Keymap.describe`) — with focus still on the row the user was
  * on, so per-row bindings report the right availability — and `null` while closed. The help
  * draws the snapshot as it comes: each row under the scope the snapshot lists it in, which the
- * filter matches too, and greyed where the snapshot marks it disabled, as it marks every key of
- * the shell and of the page beneath an open dialog. A route change closes it, like the search
- * palette. Its foot links to Settings' Keyboard shortcuts, where the person changes these keys.
+ * filter matches too, and greyed where the snapshot marks it disabled. A route change closes it,
+ * like the search palette. Its foot links to Settings' Keyboard shortcuts, where the person
+ * changes these keys.
  */
 export function ShortcutHelp({
   onClose,

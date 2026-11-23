@@ -123,15 +123,17 @@ function layOutPressOn(view: EditorView, target: Element): void {
 
 /** A press of the primary button on `target` at `place`, with `keys` held, as a browser sends it:
  *  the editor's own handlers hear it, then ProseMirror's, which starts its press there
- *  (`layOutPressOn`) unless the press was prevented or taken first. Answers the press. */
+ *  (`layOutPressOn`) unless the press was prevented or taken first. `detail` is the browser's
+ *  count of the clicks in a row: 2 for the second press of a double click. Answers the press. */
 function press(
   view: EditorView,
   target: Element,
   [clientX, clientY]: Place,
-  keys: MouseEventInit = {}
+  keys: MouseEventInit = {},
+  detail = 1
 ): MouseEvent {
   layOutPressOn(view, target);
-  return dispatch(target, "mousedown", { ...keys, clientX, clientY, detail: 1 });
+  return dispatch(target, "mousedown", { ...keys, clientX, clientY, detail });
 }
 
 /** The pointer moved to `place` with the primary button held, heard on the page, where
@@ -141,14 +143,16 @@ function moveTo(view: EditorView, [clientX, clientY]: Place, over?: Element): vo
   dispatch(over ?? view.dom.ownerDocument, "mousemove", { buttons: 1, clientX, clientY });
 }
 
-/** The release of the primary button on `target` at `place`, with `keys` held. Answers the
- *  release, whose default ProseMirror prevents when `handleClick` took it as a click. */
+/** The release of the primary button on `target` at `place`, with `keys` held, `detail` counting
+ *  the clicks in a row as `press` does. Answers the release, whose default ProseMirror prevents
+ *  when `handleClick` took it as a click. */
 function release(
   target: Element,
   [clientX, clientY]: Place,
-  keys: MouseEventInit = {}
+  keys: MouseEventInit = {},
+  detail = 1
 ): MouseEvent {
-  return dispatch(target, "mouseup", { ...keys, clientX, clientY, detail: 1 });
+  return dispatch(target, "mouseup", { ...keys, clientX, clientY, detail });
 }
 
 /** Sends `target` a click, `init` naming its place, its keys and its `detail` - 1 for a pointer's,
@@ -189,31 +193,32 @@ function commonAncestor(pressed: Element, released: Element): Element {
 }
 
 /** One pointer click: where the press goes down, the places the pointer moves through with the
- *  button held, the element the release lands on (the press's own unless named), and the keys
- *  held throughout. */
+ *  button held, the element the release lands on (the press's own unless named), the keys held
+ *  throughout, and the browser's count of the clicks in a row (`press`), 1 unless named. */
 interface PointerClick {
   readonly at: Place;
   readonly through?: readonly Place[];
   readonly releaseOn?: Element;
   readonly keys?: MouseEventInit;
+  readonly detail?: number;
 }
 
 /** A pointer click on `target` as a browser sends it: the press (`press`), each move, the release
- *  where the pointer last was, then the click, with `detail` 1, sent to the nearest element
- *  holding both the press and the release (`commonAncestor`). Answers whether the editor prevented
- *  the click's default. ProseMirror reads a press within 10 px and 500 ms of its last one as a
- *  double click, which starts no press of its own (prosemirror-view's `handlers.mousedown`,
- *  `isNear`), so the plain presses of a row go down 20 px or more apart. */
+ *  where the pointer last was, then the click, sent to the nearest element holding both the press
+ *  and the release (`commonAncestor`). Answers whether the editor prevented the click's default.
+ *  ProseMirror reads a press within 10 px and 500 ms of its last one as a double click, which
+ *  starts no press of its own (prosemirror-view's `handlers.mousedown`, `isNear`), so the plain
+ *  presses of a row go down 20 px or more apart unless the row makes a double click. */
 function pointerClick(
   view: EditorView,
   target: Element,
-  { at, through = [], releaseOn = target, keys = {} }: PointerClick
+  { at, through = [], releaseOn = target, keys = {}, detail = 1 }: PointerClick
 ): boolean {
-  press(view, target, at, keys);
+  press(view, target, at, keys, detail);
   for (const place of through) moveTo(view, place);
   const [clientX, clientY] = through.at(-1) ?? at;
-  release(releaseOn, [clientX, clientY], keys);
-  return click(commonAncestor(target, releaseOn), { ...keys, clientX, clientY, detail: 1 });
+  release(releaseOn, [clientX, clientY], keys, detail);
+  return click(commonAncestor(target, releaseOn), { ...keys, clientX, clientY, detail });
 }
 
 /** A middle click on `target` as a browser sends it - the press, the release, then `auxclick` -
@@ -583,20 +588,18 @@ test("a press held across a reconfigure of the editor's plugins opens the link o
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
     LINKS,
-    async ({ view }) => {
+    ({ view }) => {
       const issue = linkOf(view, "the other issue");
 
       // The press, the plugins reconfigured, and the release and the click in place.
       press(view, issue, [60, 10]);
       reconfigure(view);
-      await Promise.resolve();
       release(issue, [60, 10]);
       const clicked = click(issue, { clientX: 60, clientY: 10, detail: 1 });
 
       // The same with the pointer 5 px on before the release.
       press(view, issue, [100, 10]);
       reconfigure(view);
-      await Promise.resolve();
       moveTo(view, [105, 10]);
       release(issue, [105, 10]);
       const dragged = click(issue, { clientX: 105, clientY: 10, detail: 1 });
@@ -775,6 +778,212 @@ test("a Shift or an Alt click on a link opens nothing and is prevented", async (
         opened: [],
         prevented: { alt: true, altKeyboard: true, shift: true, shiftKeyboard: true },
       });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: ProseMirror reads a press within 500 ms and 10 px of its last one,
+// with the same button, as a double or a triple click (prosemirror-view's `handlers.mousedown`,
+// `isNear`): it starts no press of its own for it, so no `handleClick` hears its release, and it
+// calls `handleDoubleClick` or `handleTripleClick` at the press instead. A double click on a link
+// opens it once, on its first release, and its second click opens nothing.
+test("a double click on a link opens it once, on the first release, and its second click is prevented", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      press(view, issue, [60, 10]);
+      const firstRelease = release(issue, [60, 10]).defaultPrevented;
+      const openedOnRelease = [...opened];
+      const first = click(issue, { clientX: 60, clientY: 10, detail: 1 });
+      // The second click 2 px on, the browser counting it the second in a row.
+      const second = pointerClick(view, issue, { at: [62, 10], detail: 2 });
+
+      expect({ opened, openedOnRelease, prevented: { first, firstRelease, second } }).toEqual({
+        opened: [["dispatch://CORE-2", false]],
+        openedOnRelease: [["dispatch://CORE-2", false]],
+        prevented: { first: true, firstRelease: true, second: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+test("a triple click on a link opens it once, and its second and third clicks are prevented", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      // Three clicks 1 px apart, the browser counting them 1, 2 and 3.
+      const prevented = [1, 2, 3].map((detail) =>
+        pointerClick(view, issue, { at: [60 + detail, 10], detail })
+      );
+
+      expect({ opened, prevented }).toEqual({
+        opened: [["dispatch://CORE-2", false]],
+        prevented: [true, true, true],
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: Chromium sends no click for a press held across a reconfigure of the
+// editor's plugins. `handleClick` opens the link on that press's release, and a press within
+// 500 ms and 10 px after it is a double click to ProseMirror, whose click opens nothing: the link
+// opens once.
+test("a press and a release on a link that no click followed, then a click on it within half a second, open it once", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      press(view, issue, [60, 10]);
+      reconfigure(view);
+      const released = release(issue, [60, 10]).defaultPrevented;
+      // No click; the second press 2 px on, the browser counting it the second in a row.
+      const second = pointerClick(view, issue, { at: [62, 10], detail: 2 });
+
+      expect({ opened, prevented: { released, second } }).toEqual({
+        opened: [["dispatch://CORE-2", false]],
+        prevented: { released: true, second: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a row of clicks ends at a press ProseMirror reads as a single click,
+// so a link a click of an earlier row opened keeps no later double click from opening a link.
+test("a click beside a link and, within half a second, a click on the link open it once after an earlier click opened another link", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const away = linkOf(view, "the plan");
+      const issue = linkOf(view, "the other issue");
+      const paragraph = view.dom.querySelector("p");
+      if (paragraph === null || issue.parentElement !== paragraph) {
+        throw new Error("the link is not drawn straight inside its paragraph");
+      }
+
+      const earlier = pointerClick(view, away, { at: [20, 10] });
+      // 35 px from the earlier press, a single click to ProseMirror, which opens nothing.
+      const beside = pointerClick(view, paragraph, { at: [55, 10] });
+      const onLink = pointerClick(view, issue, { at: [60, 10] });
+
+      expect({ opened, prevented: { beside, earlier, onLink } }).toEqual({
+        opened: [
+          ["https://example.com/a", false],
+          ["dispatch://CORE-2", false],
+        ],
+        prevented: { beside: false, earlier: true, onLink: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a click on a link within 500 ms and 10 px of a click that opened
+// nothing is a double click to ProseMirror, and opens the link once all the same.
+test("a click on the text beside a link and, within half a second, a click on the link open it once", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+      const paragraph = view.dom.querySelector("p");
+      if (paragraph === null || issue.parentElement !== paragraph) {
+        throw new Error("the link is not drawn straight inside its paragraph");
+      }
+
+      // A click on " and ", 5 px left of the link: it lands on no link, and is the browser's.
+      const beside = pointerClick(view, paragraph, { at: [55, 10] });
+      const onLink = pointerClick(view, issue, { at: [60, 10] });
+
+      expect({ opened, prevented: { beside, onLink } }).toEqual({
+        opened: [["dispatch://CORE-2", false]],
+        prevented: { beside: false, onLink: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a Shift press is never a click to ProseMirror, and a press within
+// 500 ms and 10 px of it is a double click to it: a plain click on a link straight after a Shift
+// click on it opens the link once.
+test("a plain click on a link within half a second of a Shift click on it opens it once", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      const shifted = pointerClick(view, issue, { at: [60, 10], keys: { shiftKey: true } });
+      const plain = pointerClick(view, issue, { at: [60, 10] });
+
+      expect({ opened, prevented: { plain, shifted } }).toEqual({
+        opened: [["dispatch://CORE-2", false]],
+        prevented: { plain: true, shifted: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: the editor takes a Ctrl or Cmd press on a link, so ProseMirror never
+// sees it and no `handleClick` hears its release. With Ctrl let go before the button the click
+// carries no Ctrl, and opens the link once in the same tab, as the platform follows such a click.
+test("a Ctrl press on a link, Ctrl let go before the release, opens the link once in the same tab", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      const ctrlPress = press(view, issue, [60, 10], { ctrlKey: true }).defaultPrevented;
+      release(issue, [60, 10]);
+      const clicked = click(issue, { clientX: 60, clientY: 10, detail: 1 });
+
+      expect({ opened, prevented: { clicked, ctrlPress } }).toEqual({
+        opened: [["dispatch://CORE-2", false]],
+        prevented: { clicked: true, ctrlPress: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a press beside a link and its release on the link, within 4 px, is a
+// click to ProseMirror, which hands the release to `handleClick`. The browser sends that click to
+// the nearest element holding both the press and the release, which is no link, so the platform
+// opens nothing, and nor does the editor.
+test("a press beside a link and its release on the link within 4 px open nothing", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+      const paragraph = view.dom.querySelector("p");
+      if (paragraph === null || issue.parentElement !== paragraph) {
+        throw new Error("the link is not drawn straight inside its paragraph");
+      }
+
+      // The press on " and ", 2 px left of the link, and the release on the link 2 px on.
+      const prevented = pointerClick(view, paragraph, {
+        at: [58, 10],
+        releaseOn: issue,
+        through: [[60, 10]],
+      });
+
+      expect({ opened, prevented }).toEqual({ opened: [], prevented: false });
     },
     { openLink }
   );
