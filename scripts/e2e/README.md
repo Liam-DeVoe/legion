@@ -2993,7 +2993,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`;
   Dispatch `done` within 120 s), the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
-  The `pr-merged` count is read in the architect's session only where that session shows a notice delivered earlier in the run; a session that shows none fails as UNKNOWN.
+  The `pr-merged` count is read in the architect's session only where that session shows a notice delivered earlier in the run; a session that shows none fails the check with exit 1, since a count of 0 there says nothing.
   No issue of tree 1 holds an admission slot at the close: the root's row went when it reached `accepting`, its children's at their parks, and the close frees whatever is left.
   The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
   — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:

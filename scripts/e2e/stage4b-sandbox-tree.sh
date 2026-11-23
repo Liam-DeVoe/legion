@@ -6499,10 +6499,11 @@ waited=$(log_lines "workflow: a merged issue's close waits for the issues beneat
 [ "$waited" = 0 ] ||
   fail "the daemon logged $tree1's merged close waiting for the issues beneath it $waited times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
 # A count of pr-merged notices is only as good as the read of the session it counts in: the
-# architect's session must show the notices it was delivered earlier in the run, or a 0 says nothing.
+# architect's session must show the notices it was delivered earlier in the run, or a 0 says nothing,
+# and the check fails, as every check of this driver that cannot be read does (fail exits 1).
 delivered=$(notice_deliveries "$tree1" architect "summary: ")
 [ "$delivered" -ge 1 ] ||
-  fail "UNKNOWN: $tree1's architect session shows no delivered notice at all, so it cannot show whether a pr-merged notice was sent"
+  fail "$tree1's pr-merged count cannot be read: its architect session shows no delivered notice at all, so a count of 0 there would say nothing"
 told=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
 [ "$told" = 0 ] ||
   fail "$tree1's architect was told $told pr-merged notices, which only a close that waits for the issues beneath it sends: $(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")" | tail -1 | cut -c1-300)"
