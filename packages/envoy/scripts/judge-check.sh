@@ -699,7 +699,9 @@ sign_in() { # <email> <label for this run's own directory>
 # page_of reads a record's approval page as the person SIGNED_IN_COOKIE signs in, and answers in
 # PAGE_FORM whether it offers a decision form for that record ("yes" or "no"), in PAGE_NOTE whether
 # it says the model judge decides it, and in PAGE_TOKEN_FIELDS the page's hidden token fields as a
-# urlencoded string, for a POST that reuses them.
+# urlencoded string, for a POST that reuses them. Those include each profile_digest field, "<record>
+# <name> <digest>" with its spaces sent as "+": an approval checks that each profile the page
+# printed is the one served now, and refuses one whose form carries none as PROFILE_CHANGED.
 page_of() { # <record id>
 	local body="$WORK_DIR/page-$1.html"
 	curl -sS -o "$body" -H "Cookie: $SIGNED_IN_COOKIE" "$AGENT_SECRETS_URL/approve/$1"
@@ -707,8 +709,8 @@ page_of() { # <record id>
 	if grep -q "name=\"record\" value=\"$1\"" "$body"; then PAGE_FORM=yes; fi
 	PAGE_NOTE=no
 	if grep -q 'The model judge is deciding this request, so nobody approves or denies it here' "$body"; then PAGE_NOTE=yes; fi
-	PAGE_TOKEN_FIELDS="$(grep -o 'name="\(printed\|token\|expires\)" value="[^"]*"' "$body" |
-		sed 's/name="\([a-z]*\)" value="\([^"]*\)"/\1=\2/' | paste -sd '&' -)"
+	PAGE_TOKEN_FIELDS="$(grep -o 'name="\(printed\|token\|expires\|profile_digest\)" value="[^"]*"' "$body" |
+		sed 's/name="\([a-z_]*\)" value="\([^"]*\)"/\1=\2/; s/ /+/g' | paste -sd '&' -)"
 }
 
 # post_decision POSTs one approve decision of a record from the broker's own origin, with the token
