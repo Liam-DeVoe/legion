@@ -289,12 +289,11 @@ test("a row that adds labels keeps the issue's others and shows them, and nothin
   // The person's edit of the labels is the whole set they chose, which may take one out.
   const edited = rowChanges(planned, { labels: ["board", "ui"] }, new Map());
   expect(edited[0]).toMatchObject({ edited: true, next: ["board", "ui"] });
-  expect(removalWords(planned, edited)).toBe("Removes API");
+  expect(removalWords(edited)).toBe("Removes API");
 });
 
 test("a row that takes values out names each of them, and a close says it closes", () => {
-  const words = (planned: GoingPlanRow) =>
-    removalWords(planned, rowChanges(planned, undefined, new Map()));
+  const words = (planned: GoingPlanRow) => removalWords(rowChanges(planned, undefined, new Map()));
   const labels = (now: string[], next: string[], extra: Record<string, unknown> = {}) =>
     row(0, {
       arguments: { issue: "DEMO-1", labels: next, ...extra },

@@ -518,7 +518,7 @@ test("a sign-out forgets the command bar's runs and stops reading their streams"
     return Promise.withResolvers<void>().promise;
   });
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     await act(() => startRun("count the moons", { path: "/" }, "alice"));
     expect(await screen.findByTestId("going-chip")).toHaveTextContent("Working · count the moons");
 
@@ -529,7 +529,7 @@ test("a sign-out forgets the command bar's runs and stops reading their streams"
 
     login = "bob";
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     expect(screen.queryByTestId("going-chip")).not.toBeInTheDocument();
   } finally {
     start.mockRestore();

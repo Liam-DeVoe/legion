@@ -881,7 +881,7 @@ export function PlanRowView({
           {body}
           {removes ? (
             <p className={`text-xs font-medium ${dangerText}`} data-testid="going-plan-removes">
-              {removalWords(row, changes)}
+              {removalWords(changes)}
             </p>
           ) : null}
           {changed ? (

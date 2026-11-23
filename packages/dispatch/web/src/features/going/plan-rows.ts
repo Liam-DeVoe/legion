@@ -410,11 +410,12 @@ export function rowRemoves(row: GoingPlanRow, changes: readonly RowChange[]): bo
   );
 }
 
-/** What a row `rowRemoves` marks in red says in words beside the mark (design v3, state 6): each
- *  value its changes take out, by name, so the person reads before Approve what the row drops -
- *  "Removes board", "Removes board and api" - and "Closes" where it closes its issue; "Removes"
- *  alone for a row whose tool removes something and names no value of a field. */
-export function removalWords(row: GoingPlanRow, changes: readonly RowChange[]): string {
+/** What a row `rowRemoves` marks in red says in words beside the mark (design v3, state 6), given
+ *  the row's `changes`: each value they take out, by name, so the person reads before Approve
+ *  what the row drops - "Removes board", "Removes board and api" - and "Closes" where it closes
+ *  its issue; "Removes" alone for a row whose tool removes something and names no value of a
+ *  field. */
+export function removalWords(changes: readonly RowChange[]): string {
   const removed = changes.flatMap(removedValues).filter((words) => words !== "");
   const closes = changes.some((change) => change.field === "status" && change.next === "done");
   if (removed.length === 0) return closes ? "Closes" : "Removes";

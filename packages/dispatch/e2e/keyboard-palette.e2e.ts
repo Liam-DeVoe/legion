@@ -53,10 +53,17 @@ test("the palette lists the issue page's actions once their names are typed, gua
     // An open issue offers no Reopen. `$mod+k` fires inside an input, as the bar's own close, so
     // it is no row, and `/` would only reopen the bar the reader is in. A binding that opens
     // anything else is a row: it runs once this bar has closed (the rows below). Each name is
-    // typed, and the search's answer to it says the list was drawn for those words.
+    // typed, and the search the bar sends for it says the list was drawn for those words: the
+    // bar filters its actions in the render that takes the words, and sends the search after
+    // it. What that search finds does not matter here: the issue's title shares a word with one
+    // of the names, so the issue can be a hit.
     for (const absent of ["Reopen issue", "Search and actions", "Search"]) {
+      const searched = page.waitForRequest((request) => {
+        const url = new URL(request.url());
+        return searchPath(url) && url.searchParams.get("q") === absent;
+      });
       await input.fill(absent);
-      await expect(dialog.getByText(`No results for "${absent}"`)).toBeVisible();
+      await searched;
       await expect(dialog.getByRole("option", { exact: true, name: absent })).toHaveCount(0);
     }
 
