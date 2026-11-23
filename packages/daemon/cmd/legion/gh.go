@@ -159,7 +159,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return answerVisibilityRead(beforeGh, read, stdout, stderr)
 	}
 	if real := env[leakguard.RunByRealGhVar]; real != "" {
-		printGhRefusal(stderr, fmt.Errorf("the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path", real))
+		printGhRefusal(stderr, ghReentryRefusal(real))
 		return 2
 	}
 	gh := env["LEGION_GH_PATH"]
@@ -1299,7 +1299,10 @@ func init() {
 // an end of ctx that came before gh started, which exec then never starts, is said as such, and
 // never as an answer of gh's. gh's error output is not printed: it can quote the command's words,
 // which the walk names by their place where gh's help lists none of them (ghWalk.named). It runs
-// under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
+// under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there, and that
+// refusal, which this command wrote itself and which names only LEGION_GH_PATH, is the one text of
+// gh's error output read back (ghReentryRefusal): the read fails with it when the output holds it
+// whole.
 func readGhHelp(ctx context.Context, gh string, env, path []string) (string, error) {
 	bound := programbound.Of(&ghHelpTimeout)
 	ctx, cancel := context.WithTimeout(ctx, bound)
@@ -1307,8 +1310,8 @@ func readGhHelp(ctx context.Context, gh string, env, path []string) (string, err
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
 	killed := procgroup.Configure(cmd)
 	cmd.Env = append(slices.Clone(env), leakguard.RunByRealGhVar+"="+gh)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		switch {
 		case killed() && errors.Is(ctx.Err(), context.DeadlineExceeded):
@@ -1320,12 +1323,24 @@ func readGhHelp(ctx context.Context, gh string, env, path []string) (string, err
 		case ctx.Err() != nil && errors.Is(err, ctx.Err()):
 			return "", fmt.Errorf("gh's help read was stopped before gh started: %v", context.Cause(ctx))
 		}
+		reentry := ghReentryRefusal(gh)
+		var printed bytes.Buffer
+		printGhRefusal(&printed, reentry)
+		if bytes.Contains(stderr.Bytes(), printed.Bytes()) {
+			return "", reentry
+		}
 		return "", fmt.Errorf("gh answered its help with %v; its error output is not printed, since it can quote the command's words", err)
 	}
 	if stdout.Len() == 0 {
 		return "", errors.New("gh printed no help")
 	}
 	return stdout.String(), nil
+}
+
+// ghReentryRefusal is the refusal of a `legion gh` run under leakguard.RunByRealGhVar, which names
+// real, the real gh that ran it: that gh leads back to this command, as a wrapper or a shim does.
+func ghReentryRefusal(real string) error {
+	return fmt.Errorf("the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path", real)
 }
 
 // ghRoutingKeys are the keys of a gh directory's files that send gh's requests, with the
