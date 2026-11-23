@@ -20,6 +20,13 @@ func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
 
 const testStream = "NAMES"
 
+// rigCreateWithin bounds a rig's stream and bucket creates. With no deadline of its own a
+// jetstream API call takes nats.go's 5 s (defaultAPITimeout, jetstream/jetstream.go), and the first
+// create on a new 3-node cluster has run past that on a loaded machine:
+// TestTheKVStoreReadsAReplicatedBucketsWrongLastSequenceAsAConflict/3_copies failed its bucket
+// create with "context deadline exceeded" at a 1-minute load near 1,000.
+const rigCreateWithin = time.Minute
+
 // jsFamily is a family of this file's own on a real server: consumers of testStream filtering on
 // names.>, created by start sequence or by a native policy, and its Server.
 type jsFamily struct {
@@ -99,7 +106,8 @@ func newLiveStoreAt(t *testing.T, uri string, state *StoreState, replicas int) *
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), rigCreateWithin)
+	defer cancel()
 	if _, err := js.CreateStream(ctx, jetstream.StreamConfig{Name: testStream, Subjects: []string{"names.>"}, Replicas: replicas}); err != nil {
 		t.Fatalf("create %s: %v", testStream, err)
 	}
@@ -533,7 +541,9 @@ func TestTheKVStoreReadsAReplicatedBucketsWrongLastSequenceAsAConflict(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := js.CreateKeyValue(ctx, SessionBucketConfig(replicas)); err != nil {
+			createCtx, cancel := context.WithTimeout(ctx, rigCreateWithin)
+			defer cancel()
+			if _, err := js.CreateKeyValue(createCtx, SessionBucketConfig(replicas)); err != nil {
 				t.Fatal(err)
 			}
 			store := NewKVStore(ConnRequester{conn})
