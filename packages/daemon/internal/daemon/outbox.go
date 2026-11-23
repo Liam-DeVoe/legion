@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -126,6 +127,14 @@ type outbox struct {
 	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
 	mergeStateWait        func() time.Duration
 	queueMergeStateFollow func(issue, head string)
+	// deployment is the roles a step can name under the settings this daemon booted with
+	// (config.Config.Deployment), the deployment its workflow engine reads, set by attach after
+	// newOutbox. A merge forward's message reads it (mergeForwardMessage, workflow.MergeForwardAt):
+	// a row queued for a role of the deployment by a daemon before a restart whose settings no
+	// longer define that role ends undelivered. A test that builds the outbox by hand and leaves
+	// it zero defines no role of the deployment, and such a row to a role of the deployment ends
+	// undelivered there; a row to one of Legion's own roles is judged the same either way.
+	deployment stepplan.Deployment
 	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
 	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
 	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three
