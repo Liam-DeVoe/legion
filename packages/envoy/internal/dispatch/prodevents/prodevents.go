@@ -86,6 +86,8 @@ type Event struct {
 	RestoredAt       *time.Time   `json:"restored_at"`
 	RestoredBy       *model.Actor `json:"restored_by"`
 	RestoredByDeploy *string      `json:"restored_by_deploy"`
+	// Note is what the writer says of the row, empty where it says nothing.
+	Note string `json:"note"`
 }
 
 // Error is a refusal a caller can name: its code and its reason, which a route answers as
@@ -115,7 +117,7 @@ var ErrNotFound = errors.New("no such production event")
 // columns is every column of a row, in Event's order, as scan reads them.
 const columns = `id::text, project_key, kind, environment, status, source, source_ref, started_at, finished_at,
 	repo, commits, pull_requests, url, actor, created_at, deploy_id::text, signal, detected_at, state,
-	state_reason, state_by, state_at, restored_at, restored_by, restored_by_deploy::text`
+	state_reason, state_by, state_at, restored_at, restored_by, restored_by_deploy::text, note`
 
 // scan reads one row of columns.
 func scan(row pgx.Row) (Event, error) {
@@ -125,7 +127,7 @@ func scan(row pgx.Row) (Event, error) {
 	err := row.Scan(&event.ID, &event.ProjectKey, &event.Kind, &event.Environment, &event.Status, &event.Source,
 		&event.SourceRef, &event.StartedAt, &event.FinishedAt, &event.Repo, &event.Commits, &event.PullRequests,
 		&event.URL, &actor, &event.CreatedAt, &event.DeployID, &event.Signal, &event.DetectedAt, &event.State,
-		&event.StateReason, &stateBy, &event.StateAt, &event.RestoredAt, &restoredBy, &event.RestoredByDeploy)
+		&event.StateReason, &stateBy, &event.StateAt, &event.RestoredAt, &restoredBy, &event.RestoredByDeploy, &event.Note)
 	if err != nil {
 		return Event{}, err
 	}
@@ -206,13 +208,13 @@ func Write(ctx context.Context, pool *store.Pool, event Event) (Event, bool, err
 	stored, err := scan(tx.QueryRow(ctx, `
 		insert into production_events (id, project_key, kind, environment, status, source, source_ref,
 			started_at, finished_at, repo, commits, pull_requests, url, actor, deploy_id, signal, detected_at,
-			restored_at, restored_by, restored_by_deploy)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::uuid, $16, $17, $18, $19, $20::uuid)
+			restored_at, restored_by, restored_by_deploy, note)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::uuid, $16, $17, $18, $19, $20::uuid, $21)
 		on conflict (project_key, source_ref) do nothing
 		returning `+columns,
 		uuid.Must(uuid.NewV7()).String(), event.ProjectKey, event.Kind, environment, event.Status, event.Source,
 		event.SourceRef, event.StartedAt, event.FinishedAt, event.Repo, commits, pulls, event.URL, actor,
-		event.DeployID, event.Signal, event.DetectedAt, event.RestoredAt, restoredBy, event.RestoredByDeploy))
+		event.DeployID, event.Signal, event.DetectedAt, event.RestoredAt, restoredBy, event.RestoredByDeploy, event.Note))
 	created := true
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = false
@@ -389,32 +391,39 @@ func Get(ctx context.Context, q delivery.Querier, project, id string) (Event, er
 }
 
 // ListQuery is one page of a project's rows: a window over a deploy's finished_at and a failure's
-// detected_at, [From, To), optionally one kind and one state, newest first.
+// detected_at, [From, To), optionally one kind, one state and the failures that blame one deploy
+// (DeployID, a deploy row's uuid), newest first.
 type ListQuery struct {
-	Project string
-	From    time.Time
-	To      time.Time
-	Kind    string
-	State   string
-	Limit   int
-	Offset  int
+	Project  string
+	From     time.Time
+	To       time.Time
+	Kind     string
+	State    string
+	DeployID string
+	Limit    int
+	Offset   int
 }
+
+// listMatches is the rows a ListQuery matches, its parameters $1 to $6 being the query's project,
+// window, kind, state and deploy, in that order. A DeployID keeps the project's failures that
+// blame that deploy, so it matches no row of another project.
+const listMatches = `
+	from production_events
+	where project_key = $1
+	  and (kind = 'deploy' and finished_at >= $2 and finished_at < $3
+	    or kind = 'failure' and detected_at >= $2 and detected_at < $3)
+	  and ($4 = '' or kind = $4)
+	  and ($5 = '' or state = $5)
+	  and ($6 = '' or kind = 'failure' and deploy_id = nullif($6, '')::uuid)`
 
 // List reads one page of a project's rows and the count of every row the query matches.
 func List(ctx context.Context, q delivery.Querier, query ListQuery) ([]Event, int, error) {
 	rows, err := q.Query(ctx, `
-		with matched as (
-			select *, coalesce(finished_at, detected_at) as at from production_events
-			where project_key = $1
-			  and (kind = 'deploy' and finished_at >= $2 and finished_at < $3
-			    or kind = 'failure' and detected_at >= $2 and detected_at < $3)
-			  and ($4 = '' or kind = $4)
-			  and ($5 = '' or state = $5)
-		)
+		with matched as (select *, coalesce(finished_at, detected_at) as at `+listMatches+`)
 		select `+columns+`, count(*) over () from matched
 		order by at desc, id desc
-		limit $6 offset $7`,
-		query.Project, query.From, query.To, query.Kind, query.State, query.Limit, query.Offset)
+		limit $7 offset $8`,
+		query.Project, query.From, query.To, query.Kind, query.State, query.DeployID, query.Limit, query.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list %s's production events: %w", query.Project, err)
 	}
@@ -432,12 +441,8 @@ func List(ctx context.Context, q delivery.Querier, query ListQuery) ([]Event, in
 		return nil, 0, fmt.Errorf("list %s's production events: %w", query.Project, err)
 	}
 	if len(events) == 0 && query.Offset > 0 {
-		if err := q.QueryRow(ctx, `select count(*) from production_events
-			where project_key = $1
-			  and (kind = 'deploy' and finished_at >= $2 and finished_at < $3
-			    or kind = 'failure' and detected_at >= $2 and detected_at < $3)
-			  and ($4 = '' or kind = $4) and ($5 = '' or state = $5)`,
-			query.Project, query.From, query.To, query.Kind, query.State).Scan(&total); err != nil {
+		if err := q.QueryRow(ctx, `select count(*) `+listMatches,
+			query.Project, query.From, query.To, query.Kind, query.State, query.DeployID).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("count %s's production events: %w", query.Project, err)
 		}
 	}

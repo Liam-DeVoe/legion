@@ -75,6 +75,9 @@ create table production_events (
   restored_at        timestamptz,
   restored_by        jsonb,
   restored_by_deploy uuid references production_events (id),
+  -- What the writer says of the row: a person's or an agent's word on a failure, which the
+  -- Evals tab's drill-down shows beside the pull requests it blames (dispatch://INFRA-2918, R14).
+  note               text not null default '',
   unique (project_key, source_ref),
   constraint production_events_shape check (
     (kind = 'deploy' and finished_at is not null and deploy_id is null and signal is null

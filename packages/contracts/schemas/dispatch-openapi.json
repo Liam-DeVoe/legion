@@ -12301,6 +12301,242 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/projects/{key}/production-events": {
+      "get": {
+        "description": "The project's deploys and failed changes, one page {items, total, limit, offset} newest first (limit 1-200, default 50): a deploy by its finished_at and a failure by its detected_at within [from, to) (RFC3339, a moment of the UTC years 1 to 9999, default the last 7 days, at most 84); kind keeps deploy or failure rows, state counted or rejected ones (a deploy is always counted), and deploy_id (a uuid) the project's failures that blame that deploy, an empty page for an id of no row. 400 INVALID_QUERY names a malformed key, or a key the route does not take (any but these and the global session parameter), 404 PROJECT_NOT_FOUND an unknown project.",
+        "operationId": "getApiV1ProjectsByKeyProductionEvents",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "deploy",
+                "failure"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "counted",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "deploy_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionEventList"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "post": {
+        "description": "Post one deploy or failure {kind, source_ref, environment?, status?, url?, started_at?, finished_at?, detected_at?, repo?, commits?, pull_requests?, deploy_id?, commit_sha?, actor?}, taking OpenTelemetry's deployment.environment.name, deployment.status, cicd.pipeline.run.url.full and cicd.pipeline.run.id beside environment, status and url (both names alike, or one): 201 with the new row, or 200 with the row the project already holds under source_ref, writing nothing. A deploy needs finished_at and an agent or service token; a credential holding the person scope is 403 PRODUCTION_EVENT_DEPLOY_FORBIDDEN. A failure names the deploy it blames one way, by deploy_id, by cicd.pipeline.run.id (the GitHub run of repo) or by commit_sha (the first deploy that shipped it), 409 PRODUCTION_EVENT_NO_DEPLOY when no deploy row matches; a system's failure is the signal api, and a person's is the signal person with the person as actor and the server's source_ref person:\u003cdeploy id\u003e:\u003clogin\u003e. A system's post without source_ref, and any field no row can hold, is 400 PRODUCTION_EVENT_INPUT naming it; 404 PROJECT_NOT_FOUND an unknown project.",
+        "operationId": "postApiV1ProjectsByKeyProductionEvents",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductionEventInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionEvent"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionEvent"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/projects/{key}/production-events/{id}/state": {
+      "put": {
+        "description": "Reject, re-count or restore one failure of the project {state, reason, restored_by_deploy?}: rejected and counted keep their reason (required), writer and time, and restored sets the restore time, its writer and the restoring deploy where named; the answer is the row. A reject and a re-count are a person's (the person scope) or the project's controller's: the session the project's Legion daemon names as its controller, proven by that session's broker-issued token. A restore is a person's. Anyone else is 403 PRODUCTION_EVENT_STATE_FORBIDDEN; a row the project does not hold 404 PRODUCTION_EVENT_NOT_FOUND, a deploy's row or a missing reason 400 PRODUCTION_EVENT_STATE_INPUT, a restoring deploy no deploy row is 409 PRODUCTION_EVENT_NO_DEPLOY, an unknown project 404 PROJECT_NOT_FOUND.",
+        "operationId": "putApiV1ProjectsByKeyProductionEventsByIdState",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProductionEventStateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionEvent"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
     "/api/v1/projects/{key}/related": {
       "get": {
         "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
@@ -20358,6 +20594,9 @@
               "null"
             ]
           },
+          "project": {
+            "type": "string"
+          },
           "staging_apply_job_name": {
             "type": [
               "null",
@@ -28391,6 +28630,357 @@
           "count",
           "by_priority",
           "issues"
+        ],
+        "type": "object"
+      },
+      "ProductionEvent": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "commits": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deploy_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "detected_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "environment": {
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "deploy",
+              "failure"
+            ],
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "project_key": {
+            "type": "string"
+          },
+          "pull_requests": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "restored_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "restored_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "restored_by_deploy": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "signal": {
+            "enum": [
+              "check_fail",
+              "revert",
+              "incident_issue",
+              "api",
+              "person",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "source": {
+            "enum": [
+              "github",
+              "api",
+              "person",
+              "check_results",
+              "reverts",
+              "incident_label"
+            ],
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "enum": [
+              "counted",
+              "rejected"
+            ],
+            "type": "string"
+          },
+          "state_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_key",
+          "kind",
+          "environment",
+          "status",
+          "source",
+          "source_ref",
+          "started_at",
+          "finished_at",
+          "repo",
+          "commits",
+          "pull_requests",
+          "url",
+          "actor",
+          "created_at",
+          "deploy_id",
+          "signal",
+          "detected_at",
+          "state",
+          "state_reason",
+          "state_by",
+          "state_at",
+          "restored_at",
+          "restored_by",
+          "restored_by_deploy",
+          "note"
+        ],
+        "type": "object"
+      },
+      "ProductionEventInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cicd.pipeline.run.id": {
+            "type": "string"
+          },
+          "cicd.pipeline.run.url.full": {
+            "type": "string"
+          },
+          "commit_sha": {
+            "type": "string"
+          },
+          "commits": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "deploy_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deployment.environment.name": {
+            "type": "string"
+          },
+          "deployment.status": {
+            "type": "string"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "environment": {
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "deploy",
+              "failure"
+            ],
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "pull_requests": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "ProductionEventList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProductionEvent"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
+      "ProductionEventStateInput": {
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "restored_by_deploy": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "state": {
+            "enum": [
+              "counted",
+              "rejected",
+              "restored"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
         ],
         "type": "object"
       },

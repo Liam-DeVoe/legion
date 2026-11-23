@@ -155,9 +155,10 @@ var readListAnswers = map[string]struct {
 	status int
 	code   string
 }{
-	"GET /api/v1/projects/{key}/architecture": {http.StatusNotFound, "SOURCE_NOT_FOUND"},
-	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
-	"GET /api/v1/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
+	"GET /api/v1/projects/{key}/architecture":      {http.StatusNotFound, "SOURCE_NOT_FOUND"},
+	"GET /api/v1/issues/{key}/steps":               {http.StatusNotFound, "NOT_FOUND"},
+	"GET /api/v1/projects/{key}/plans":             {http.StatusNotFound, "PROJECT_NOT_FOUND"},
+	"GET /api/v1/projects/{key}/production-events": {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 }
 
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,

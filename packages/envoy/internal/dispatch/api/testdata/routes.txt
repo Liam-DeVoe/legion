@@ -190,6 +190,9 @@ DELETE /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/legion/daemon any
 PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/plans any
+GET /api/v1/projects/{key}/production-events any
+POST /api/v1/projects/{key}/production-events any
+PUT /api/v1/projects/{key}/production-events/{id}/state any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/reference-targets any
