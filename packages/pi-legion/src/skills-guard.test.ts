@@ -457,7 +457,9 @@ test("the body guide runs no simplify pass on a docs-only diff, as the implement
   expect(prBody).toContain(
     "**Thermo:** `simplify-settled-diff` <once at <head-sha> | not run (docs-only change)>: <0 applied | applied → new head <sha>>;"
   );
-  expect(prBody).toContain("The pass covers every file the diff touches, and a docs-only diff needs none.");
+  expect(prBody).toContain(
+    "The pass covers every file the diff touches, and a docs-only diff needs none."
+  );
   expect(prBody).not.toContain("a docs-only PR included");
   expect(prBody).not.toContain("a docs-only diff included");
 });
@@ -1018,6 +1020,19 @@ test("the plan guide finds the roles of the deployment in the addressing line", 
     'your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.'
   );
   expect(plan).not.toContain("your launch lists both after your addressing");
+});
+
+// The architect reads each version of a child's spec itself, and uses a reader where the reading
+// needs one (go/architect-common.md, b537812fb53), so the decomposition guide asks for a
+// `plan-reviewer` only there.
+test("the decomposition guide asks for a reader of a child's spec where the reading needs one", () => {
+  const decomposition = collapsed(
+    path.join(staged, "legion-architect", "references", "decomposition.md")
+  );
+  expect(decomposition).toContain(
+    "1. Read them against your own spec (a root's at its approved version, a child's at the version its parent approved). Where the reading needs a reader, a fresh `task(agent=\"plan-reviewer\")` reads them, told what they are, with this mandate:"
+  );
+  expect(decomposition).not.toContain('1. Have a fresh `task(agent="plan-reviewer")`');
 });
 
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
