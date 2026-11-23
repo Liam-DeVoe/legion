@@ -49,8 +49,9 @@ import (
 // stand above all of them and are applied after them, in version order: the kind list with the
 // update ask, the record of what a relaunch ended, the drop, then the merge-queue kind list.
 // dispatch://INFRA-175's design news (20261119203047) stands above those four and is named here
-// the same way. It is the last word of outbox_kind_check: the upgrade applies it last of the kind
-// lists, after 20261029120800 has deleted main's merge-lane rows, and it names every other kind
+// the same way. It is the last word of outbox_kind_check but one: the upgrade applies it last of
+// the kind lists but 20261123134547's, which restates its list with fix_job_read, after
+// 20261029120800 has deleted main's merge-lane rows, and it names every other kind
 // main's daemon writes (mainsOutboxKinds), with update_ask, the two merge-queue kinds,
 // role_holders_publish, step_record, plan_record, conflict_confirm, merge_forward and
 // design_changes besides, which main's daemon never writes.
@@ -73,8 +74,9 @@ import (
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's design news (20261119203047),
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the check states' 20261121065041, the phase verdict's
-// removal (20261121074614) and the copy's applied sequence, 20261121170714, so an upgrade of a
-// database main migrated applies it just before those nine. It adds
+// removal (20261121074614), the copy's applied sequence, 20261121170714, and the fix beside the
+// other steps of a task, 20261123134547, so an upgrade of a database main migrated applies it just
+// before those ten. It adds
 // pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
@@ -99,7 +101,7 @@ import (
 // t-e-54's claim sessions (20261116144907) are named here too: it creates claim_sessions and fills
 // it from each claim's session and the session it last abandoned (claims.abandoned_session, which
 // this branch's 20261029121200 adds), it stands below the design news, and it touches no
-// outbox_kind_check, so the design news stays the last word of that check.
+// outbox_kind_check, so the design news's list stands over it.
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit, the step records' three, the plan record's kind list
 // (20261117023932), the plan of an issue (20261117034837), dispatch://INFRA-1997's
@@ -123,37 +125,45 @@ import (
 // (20261119003157) stands above every other version of this list but the design news,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the check states' 20261121065041, the phase verdict's
-// removal (20261121074614) and the copy's applied sequence, 20261121170714: it names
+// removal (20261121074614), the copy's applied sequence, 20261121170714, and the fix beside the
+// other steps of a task, 20261123134547: it names
 // every kind the plan-record list names and its own two, phase_ended among them. The same
 // migration deletes the queued phase_ended rows, the seeded one below among them, and adds
 // pull_requests.conflict_read and pull_requests.merge_forward, both null on every row it finds.
 // The design news's list, applied after it and after every other version of this list but
-// 20261120012547, 20261120042902, 20261120055717, 20261121065041, 20261121074614 and
-// 20261121170714, is the last of them to rewrite outbox_kind_check: it names those kinds and
-// design_changes.
+// 20261120012547, 20261120042902, 20261120055717, 20261121065041, 20261121074614, 20261121170714
+// and 20261123134547, is the last of them but 20261123134547 to rewrite outbox_kind_check: it names
+// those kinds and design_changes.
 // dispatch://INFRA-3178's set-back sequence (20261120012547) is applied after all of these, the
 // design news among them, and before dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, 20261121065041, 20261121074614 and 20261121170714. It
+// dispatch://INFRA-4729's 20261120055717, 20261121065041, 20261121074614, 20261121170714 and
+// 20261123134547. It
 // runs no statement, so it changes nothing on a database main migrated, and it touches no
 // outbox_kind_check.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list, the design news among them, but
-// dispatch://INFRA-4729's 20261120055717, 20261121065041, 20261121074614 and 20261121170714; it
+// dispatch://INFRA-4729's 20261120055717, 20261121065041, 20261121074614, 20261121170714 and
+// 20261123134547; it
 // adds claims.agent_resume_generation at its default, 0, on every row it finds, and touches no
 // outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
-// is applied after all of these but three, the design news among them, and touches no
+// is applied after all of these but four, the design news among them, and touches no
 // outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on its parent,
 // and a refill mark for each project the copy holds rows of.
 // The check states the daemon keeps of Dispatch's check.state_changed (20261121065041) are applied
-// after all of these but two, and touch no outbox_kind_check: the migration creates check_states,
+// after all of these but three, and touch no outbox_kind_check: the migration creates check_states,
 // check_state_sets and check_state_serials, empty, and adds issues.check_states_seq at 0.
 // The phase verdict's removal (20261121074614) is applied after it and touches no
 // outbox_kind_check: it gives phases.verdict, kept for the release before, the empty string for a
 // default, adds phases.states_serial at 0, and takes the key verdict out of each queued notice.
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
-// these and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on
-// every row it finds. So the design news stays the last word of that check.
+// these but one and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its
+// default, 0, on every row it finds.
+// The fix beside the other steps of a task (20261123134547) is applied after all of these. It adds
+// plan_tasks.fixes_ci and columns of step_starts and of pending_task_deliveries at their defaults,
+// creates task_fixes and ci_failures, empty, and is the last word of outbox_kind_check: its list is
+// the design news's with fix_job_read added, so it names every kind main's daemon writes that the
+// upgrade keeps.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -165,7 +175,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121065041,
-	20261121074614, 20261121170714,
+	20261121074614, 20261121170714, 20261123134547,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -184,7 +194,8 @@ var thisBranchsMigrations = []int{
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
 // dispatch://INFRA-4729's 20261120055717, the check states' 20261121065041, the phase verdict's
-// removal, 20261121074614, and the copy's applied sequence, 20261121170714. That is why the loop
+// removal, 20261121074614, the copy's applied sequence, 20261121170714, and the fix beside the other
+// steps of a task, 20261123134547. That is why the loop
 // below holds the list rather than counting it, so that a version added above any of them is named
 // here rather than read as main's.
 const mainsNewestMigration = 20261111212544
