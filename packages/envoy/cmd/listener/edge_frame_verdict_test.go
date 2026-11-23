@@ -134,6 +134,9 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 	}
 	pubRepo := payload(field{"repo", text("acme/pub")})
 	secretRepo := payload(field{"repo", text("acme/secret")})
+	// privEvent is a Dispatch payload of the token's project, so a Dispatch frame below is judged
+	// by the rule the row names and not by its payload (dispatchFrameWithheld).
+	privEvent := payload(field{"issue_key", text("PRIV-1")}, field{"project", text("PRIV")}, field{"type", text("comment.created")})
 	passed := frameVerdict{action: framePass, answered: true}
 	notHeld := frameDrops(withheldProjectNotHeld)
 	notInProject := frameDrops(withheldNotInProject)
@@ -192,9 +195,9 @@ func TestEdgeFrameVerdictReadsEachFieldByItsExactKey(t *testing.T) {
 		{name: "the session's own message with a misspelt literal", subject: own,
 			data: []byte(`{"source":"agent","topic":"` + own + `","payload":tru}`), want: notHeld},
 		{name: "the token's project's event with text after it (control: judged by its subject, as the encoding/json read judged it)", subject: ownIssue,
-			data: []byte(`{"source":"dispatch","topic":"` + ownIssue + `"} x`), want: framePasses()},
+			data: []byte(`{"source":"dispatch","topic":"` + ownIssue + `","payload":` + privEvent + `} x`), want: framePasses()},
 		{name: "another project's event with text after it, under the token's project", subject: ownIssue,
-			data: []byte(`{"source":"dispatch","topic":"` + otherIssue + `"} x`), want: notHeld},
+			data: []byte(`{"source":"dispatch","topic":"` + otherIssue + `","payload":` + privEvent + `} x`), want: notHeld},
 		{name: "a GitHub event of the token's repository with text after it", subject: github,
 			data: append(object(field{"topic", text(github)}, field{"payload", pubRepo}), " x"...), want: notInProject},
 		{name: "control: a frame that is no JSON, under the token's project, passes by its subject as the encoding/json read passed it", subject: ownIssue,
@@ -429,8 +432,9 @@ func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
 	}
 	topic := func(s string) [2]string { return [2]string{"topic", text(s)} }
 	role := func(s string) [2]string { return [2]string{"role", text(s)} }
-	pubComment := [2]string{"payload", text(`{"issue":"PUB-1","comment":"PUB's comment"}`)}
-	dispatch := [2]string{"source", text("dispatch")}
+	pubComment := [2]string{"payload", text(`{"issue_key":"PUB-1","project":"PUB","type":"comment.created","payload":{"body":"PUB's comment"}}`)}
+	privComment := [2]string{"payload", text(`{"issue_key":"PRIV-1","project":"PRIV","type":"comment.created","payload":{"body":"PRIV's comment"}}`)}
+	dispatch, agent := [2]string{"source", text("dispatch")}, [2]string{"source", text("agent")}
 	privKey, pubKey := store.RoleClaimKeyOf(privRole), store.RoleClaimKeyOf(pubRole)
 
 	for _, tc := range []struct {
@@ -442,6 +446,8 @@ func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
 	}{
 		{"another project's issue event under the token's role mark (the review's frame)",
 			frame(topic(otherIssue), role(privRole), dispatch, pubComment), privKey, notHeld},
+		{"another project's issue topic under the token's role mark, its Dispatch payload of the token's project",
+			frame(topic(otherIssue), role(privRole), dispatch, privComment), privKey, notHeld},
 		{"a GitHub event under the token's role mark",
 			frame(topic(github), role(privRole), [2]string{"payload", text(`{"repo":"acme/secret"}`)}), privKey, notHeld},
 		{"another session's agent subject under another project, with the token's role mark",
@@ -449,7 +455,7 @@ func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
 		{"the wildcard project's agent subject with the token's role mark",
 			frame(topic(contracts.AgentTopicPrefix+"*."+session), role(privRole)), privKey, notHeld},
 		{"no topic, with the token's role mark",
-			frame(role(privRole), dispatch, pubComment), privKey, notHeld},
+			frame(role(privRole), agent), privKey, notHeld},
 		{"a null topic, with the token's role mark",
 			frame([2]string{"topic", "null"}, role(privRole)), privKey, notHeld},
 		{"a topic that is no string, with the token's role mark",
@@ -466,7 +472,7 @@ func TestEdgeFrameVerdictCountsARoleMarkOnlyOnAnAgentSubject(t *testing.T) {
 		{"control: a copy on the previous holder's subject in the new form under the token's project",
 			frame(topic(contracts.AgentSubject("PRIV", "ses_w")), role(privRole)), privKey, framePasses()},
 		{"control: the token's project's lane forward",
-			frame(topic(privLane), dispatch), privKey, framePasses()},
+			frame(topic(privLane), agent), privKey, framePasses()},
 		{"control: the token's project's lane forward carrying its own role mark",
 			frame(topic(privLane), role(privRole)), privKey, framePasses()},
 		{"control: another project's lane forward carrying the token's role mark",

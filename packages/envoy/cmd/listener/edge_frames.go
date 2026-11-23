@@ -42,6 +42,13 @@ const withheldAmbiguousKey = "ambiguous_key"
 // holds a top-level "__proto__" key (errPrototypeFrameKey).
 const withheldPrototypeKey = "prototype_key"
 
+// withheldDispatchProjectUnread is the reason envoy_edge_github_withheld_total counts a Dispatch
+// frame under whose event names no project the edge can read (dispatchFrameProject): no payload,
+// a payload encoding/json does not read, or an event that names no project and no issue, or two
+// projects that disagree. The frame cannot be shown to be of a project the token lists, so it is
+// withheld; the log line names its subject and this reason, never its content.
+const withheldDispatchProjectUnread = "dispatch_project_unread"
+
 // frameKeyWithheld is the verdict on a frame whose read of a field the edge judges by answered err
 // (exactFrameField): withheld, counted under withheldPrototypeKey for a "__proto__" key and under
 // withheldAmbiguousKey for a key readers disagree on, so the log and the count say why.
@@ -101,7 +108,10 @@ func frameAnswerUnknownVerdict() frameVerdict {
 // a frame that holds such a field under more than one key, or under a key that differs from the
 // field's name only in case, is withheld: readers disagree on which of those keys a field is. A
 // frame with a top-level "__proto__" key is withheld too, on every branch: the plugin reads that
-// key's fields as the envelope's own (errPrototypeFrameKey).
+// key's fields as the envelope's own (errPrototypeFrameKey). A Dispatch frame (source "dispatch")
+// is withheld, on every branch and before its subject or topic is judged, unless the event its
+// payload carries is of a project the token lists (dispatchFrameWithheld, dispatchFrameProject);
+// one the edge cannot place in a project is withheld under dispatch_project_unread.
 //
 //   - a GitHub event is the repository rule's (relayVerdict), with no reader withheld
 //     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
@@ -129,6 +139,14 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 	topic, named, err := exactFrameTopic(data)
 	if err != nil {
 		return frameKeyWithheld(err)
+	}
+	// A Dispatch frame (source "dispatch") is judged by the project of the event its payload
+	// carries, on every branch, before its subject or topic: Dispatch routes an issue's event to a
+	// session by the session's name - a route, a claim, a follow, a mention, a targeted message, a
+	// role forward - and sends it on the session's own agent subject or the role's lane, under a
+	// topic that names no project, so only the payload says whose event it is.
+	if verdict, withheld := dispatchFrameWithheld(data, projects); withheld {
+		return verdict
 	}
 	if strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
 		if named && !strings.HasPrefix(topic, contracts.GithubTopicPrefix) {
@@ -286,18 +304,104 @@ func exactFrameField(data []byte, key string) (string, bool, error) {
 	return exactJSONString(bytes.TrimPrefix(data, utf8BOM), key)
 }
 
+// dispatchFrameWithheld is the edge's verdict on a Dispatch frame (an envelope whose exact "source"
+// key holds "dispatch", as the plugin tells one, packages/envoy-client/src/delivery.ts) and true
+// when it withholds it: under withheldProjectNotHeld when the project of the event it carries
+// (dispatchFrameProject) is not one of projects, under withheldDispatchProjectUnread when the event
+// names none the edge can read, and under ambiguous_key or prototype_key when the source, the
+// payload or a field of the event is a key readers disagree on. It answers false for any other
+// frame, and for a Dispatch frame of one of projects, which the rest of the rule then judges; the
+// verdict beside false is a drop, so a caller that ignores the bool withholds the frame. Every
+// edge token is an outside token, restricted to the projects it lists, and edgeFrameVerdict runs
+// at the edge alone (sessionRelays.edgeWithholds, relaySocket.forward), so a listener that is no
+// edge one hands a Dispatch frame on as before.
+func dispatchFrameWithheld(data []byte, projects []string) (frameVerdict, bool) {
+	source, _, err := exactFrameField(data, "source")
+	if err != nil {
+		return frameKeyWithheld(err), true
+	}
+	if source != "dispatch" {
+		return frameDrops(withheldProjectNotHeld), false
+	}
+	project, err := dispatchFrameProject(data)
+	switch {
+	case err != nil:
+		return frameKeyWithheld(err), true
+	case project == "":
+		return frameDrops(withheldDispatchProjectUnread), true
+	case !slices.Contains(projects, project):
+		return frameDrops(withheldProjectNotHeld), true
+	}
+	return frameDrops(withheldProjectNotHeld), false
+}
+
+// dispatchFrameProject is the project of the Dispatch event the frame data carries in its payload,
+// read as the plugin reads it (parseDispatchFrame in packages/envoy-client/src/delivery.ts): the
+// payload is a JSON string; a payload with a "delivery" key is a targeted frame (a mention or a
+// targeted message the API sends), whose event is its "event" field, and any other payload is the
+// event itself (an outbox copy on an owner topic, a route, a follow or a role forward). The
+// project is the event's "project", or, where that is empty, the project its "issue_key" names
+// (contracts.IssueProject): Dispatch's mention and targeted-message frames carry an issue's event
+// with an empty project. Both named must agree. It answers "" for a frame it cannot place in one
+// project: no payload, a payload encoding/json does not read, an event that is no object or names
+// neither field, an issue key that is none, or a project and an issue key that disagree. A key of
+// the payload or the event that readers disagree on is errAmbiguousFrameKey or
+// errPrototypeFrameKey (exactJSONField). The edge pin requires this function by name.
+func dispatchFrameProject(data []byte) (string, error) {
+	payload, named, err := exactFrameField(data, "payload")
+	if err != nil || !named || !json.Valid([]byte(payload)) {
+		return "", err
+	}
+	event := json.RawMessage(payload)
+	if _, targeted, err := exactJSONField(event, "delivery"); err != nil {
+		return "", err
+	} else if targeted {
+		if event, _, err = exactJSONField(event, "event"); err != nil {
+			return "", err
+		}
+	}
+	project, _, err := exactJSONString(event, "project")
+	if err != nil {
+		return "", err
+	}
+	issueKey, keyed, err := exactJSONString(event, "issue_key")
+	if err != nil || !keyed {
+		return project, err
+	}
+	issueProject, ok := contracts.IssueProject(issueKey)
+	if !ok || (project != "" && project != issueProject) {
+		return "", nil
+	}
+	return issueProject, nil
+}
+
 // exactJSONString is the string value of the top-level field key of the JSON object doc, read by
-// its exact key as JSON.parse reads one, and whether doc names it: false for a doc that is no JSON
-// object (topLevelJSONFields, the reader the relay's readRoleFrame reads through too), that has no
-// key, or whose value under it is null, empty or no string. It reads the fields of an object with
-// text after it, which frameIsJSON judges. A doc whose top-level keys hold key more than once, or
-// hold a key that equals key ignoring case as encoding/json matches a key into a struct field
-// (strings.EqualFold) and is not key, is errAmbiguousFrameKey whatever its values: JSON.parse takes
-// the last key, encoding/json the last of any case, and another reader the first, so no read of
-// such a field is the one every reader of the frame makes. A doc with a top-level "__proto__" key
-// is errPrototypeFrameKey, whichever field is asked for.
+// its exact key as JSON.parse reads one (exactJSONField), and whether doc names it: false for a doc
+// that is no JSON object, that has no key, or whose value under it is null, empty or no string.
 func exactJSONString(doc []byte, key string) (string, bool, error) {
-	var value []byte
+	value, found, err := exactJSONField(doc, key)
+	if err != nil || !found {
+		return "", false, err
+	}
+	var text string
+	if err := json.Unmarshal(value, &text); err != nil || text == "" {
+		return "", false, nil
+	}
+	return text, true, nil
+}
+
+// exactJSONField is the raw value of the top-level field key of the JSON object doc, read by its
+// exact key as JSON.parse reads one, and whether doc names it: false for a doc that is no JSON
+// object (topLevelJSONFields, the reader the relay's readRoleFrame reads through too) or that has
+// no key. It reads the fields of an object with text after it, which frameIsJSON judges. A doc
+// whose top-level keys hold key more than once, or hold a key that equals key ignoring case as
+// encoding/json matches a key into a struct field (strings.EqualFold) and is not key, is
+// errAmbiguousFrameKey whatever its values: JSON.parse takes the last key, encoding/json the last
+// of any case, and another reader the first, so no read of such a field is the one every reader
+// of the frame makes. A doc with a top-level "__proto__" key is errPrototypeFrameKey, whichever
+// field is asked for.
+func exactJSONField(doc []byte, key string) (json.RawMessage, bool, error) {
+	var value json.RawMessage
 	found, ambiguous, prototype := false, false, false
 	_, err := topLevelJSONFields(doc, func(name string, raw json.RawMessage) {
 		if name == "__proto__" {
@@ -315,19 +419,13 @@ func exactJSONString(doc []byte, key string) (string, bool, error) {
 	})
 	switch {
 	case err != nil:
-		return "", false, nil
+		return nil, false, nil
 	case prototype:
-		return "", false, errPrototypeFrameKey
+		return nil, false, errPrototypeFrameKey
 	case ambiguous:
-		return "", false, errAmbiguousFrameKey
-	case !found:
-		return "", false, nil
+		return nil, false, errAmbiguousFrameKey
 	}
-	var text string
-	if err := json.Unmarshal(value, &text); err != nil || text == "" {
-		return "", false, nil
-	}
-	return text, true, nil
+	return value, found, nil
 }
 
 // ownFrameAgentSubject reports whether subject is sessionID's own agent subject in a form a

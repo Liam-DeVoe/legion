@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  An edge listener now passes a Dispatch frame (an envelope whose `source` is `dispatch`) only
+  when the event its payload carries is of a project the session's token lists
+  (`dispatchFrameWithheld`, `dispatchFrameProject`). Before, Dispatch could send another
+  project's event to an outside session by the session's name - an owner route, a claim, a
+  document's or an author's route, a follow, the previous claimant, a mention, a targeted message,
+  a role forward - on its own agent subject or its role's lane, under a topic that names no
+  project, and the edge passed it. The project is the event's `project`, or the project its
+  `issue_key` names where Dispatch leaves that empty, as it does for a mention's and a targeted
+  message's event; both named must agree. A Dispatch frame the edge cannot place in one project
+  is withheld under `reason="dispatch_project_unread"` and logged with its subject, never its
+  content, so a direct message on no issue no longer reaches an outside session. A listener that
+  is no edge one hands every Dispatch frame on as before.
+time: 2026-11-23T21:09:22Z
+custom:
+    Issue: pr5192
