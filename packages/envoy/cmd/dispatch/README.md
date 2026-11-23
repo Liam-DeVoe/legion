@@ -2571,7 +2571,7 @@ The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261121192021_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionagents.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
+Migration `20261121192021_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionrole.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The check is dropped without `cascade` and added back `not valid`, so no stored row is read: each was written under the narrower check.
 It narrows nothing, so it rolls: the release before it writes only the six, which the wider check takes, and reads a role as text.
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
@@ -4185,7 +4185,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
   The Legion board of the project its path names, from what the sampler recorded of that project's daemon; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
-  Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  Twelve columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `step`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure.
+  The `step` column holds an issue at a step of a role the Legion deployment defines.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
@@ -4841,7 +4842,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; the actor must be the Legion daemon's session)
 
   Publish the session that holds each role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
-  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionagents.IsRole`).
+  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionrole.IsRole`).
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.

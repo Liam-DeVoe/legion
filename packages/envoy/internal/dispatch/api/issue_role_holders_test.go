@@ -16,7 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/legionrole"
 )
 
 // putRoleHoldersAs sends PUT /api/v1/issues/{key}/role-holders over the deployment's bearer, the
@@ -215,7 +215,7 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 	requireHeldRole(t, database, issue, "ses-a", "tester")
 }
 
-// A role the deployment defines holds a role of an issue as Legion's six do (legionagents.IsRole):
+// A role the deployment defines holds a role of an issue as Legion's six do (legionrole.IsRole):
 // a set naming checker and linter beside the tester is stored whole, and the read the results route
 // makes finds the checker's session. A role is a name of the role grammar, so one of 32 characters
 // is taken too. The set reads back with Legion's six in the order of the default steps, then
@@ -256,7 +256,7 @@ func TestARoleTheDeploymentDefinesHoldsARoleOfAnIssue(t *testing.T) {
 			"actor":   daemonSessionOf("ACME"),
 		})
 		code, message := refusalOf(t, response)
-		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, legionagents.RolePattern) {
+		if response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" || !strings.Contains(message, legionrole.Pattern) {
 			t.Errorf("%s: status=%d body=%s, want 400 INVALID_ROLE_HOLDER naming the role grammar", name, response.Code, response.Body.String())
 		}
 	}
@@ -419,14 +419,14 @@ func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
 
 // The contract spells a role as the route takes it, a name of the role grammar, in the `pattern` of
 // each shape, and lists no enum of roles: the route takes a role the deployment defines, which no
-// list names. The tag must spell the pattern legionagents.IsRole matches.
+// list names. The tag must spell the pattern legionrole.IsRole matches.
 func TestTheRoleHolderShapesSpellTheRoleGrammar(t *testing.T) {
 	for _, shape := range []any{issueRoleHolder{}, issueRoleHolderRecord{}} {
 		field, ok := reflect.TypeOf(shape).FieldByName("Role")
 		if !ok {
 			t.Fatalf("%T has no Role", shape)
 		}
-		if got, want := field.Tag.Get("pattern"), legionagents.RolePattern; got != want {
+		if got, want := field.Tag.Get("pattern"), legionrole.Pattern; got != want {
 			t.Errorf("%T.Role spells the pattern %q, want %q", shape, got, want)
 		}
 		if enum, listed := field.Tag.Lookup("enum"); listed {
@@ -478,7 +478,7 @@ func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
 	}
 }
 
-// The table's own check on role holds the role grammar the route takes (legionagents.IsRole), so a
+// The table's own check on role holds the role grammar the route takes (legionrole.IsRole), so a
 // row the route writes is never refused by the table, a 500, and a row written past the route is
 // held to the same rule: a role the deployment defines and a name of 32 characters are stored, and
 // the controller, a name with a capital and a name of 33 characters are refused by the check.

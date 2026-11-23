@@ -21,13 +21,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/legionrole"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // Entry is one Legion session as the registry stores it, which the listener's wire package
 // declares (listenerwire.LegionAgentEntry). Its role is one of Roles or a role the deployment
-// defines: a name of roleGrammar but controller (Validate). Readers ignore fields they do not
-// know, so a later writer may add some.
+// defines: a name of legionrole.Grammar but controller (Validate). Readers ignore fields they do
+// not know, so a later writer may add some.
 type Entry = listenerwire.LegionAgentEntry
 
 // Agent is an entry with what a read derives from the other sessions of its role token, ordered by
@@ -53,16 +54,10 @@ const (
 	maxSessionIDBytes = 128
 	maxProjectBytes   = 64
 	maxIssueBytes     = 32
-	// maxRoleBytes is the longest role the grammar takes (roleGrammar).
+	// maxRoleBytes is the longest role the grammar takes (legionrole.Grammar).
 	maxRoleBytes  = 32
 	maxTitleBytes = 1024
 )
-
-// roleGrammar is the grammar of an issue's role, one of Roles or a role the deployment defines:
-// the grammar the daemon's claim.IsRole and isStepRole in packages/contracts take, which Dispatch's
-// step write takes too (internal/dispatch/workflowstore). The controller's name is of the grammar
-// and is no role of an issue (isRole).
-const roleGrammar = `[a-z][a-z0-9-]{0,31}`
 
 var (
 	// sessionIDPattern is a session id that is one KV key token: nats.go's key alphabet without
@@ -73,18 +68,7 @@ var (
 	projectTokenPattern = regexp.MustCompile(`^[a-z0-9]+$`)
 	// issueKeyPattern is a Dispatch issue key (claim.IsIssueKey, DISPATCH_KEY_PATTERN).
 	issueKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
-	// rolePattern is a role of the grammar.
-	rolePattern = regexp.MustCompile(`^` + roleGrammar + `$`)
-	// roleTokenPattern is an issue role's token: legion-<project>-<issue project>-<number>-<role>,
-	// the issue's project lowercased (RoleToken). Neither a project token nor an issue key's parts
-	// hold a "-", so the issue's project, its number and the role are the three groups.
-	roleTokenPattern = regexp.MustCompile(`^legion-[a-z0-9]+-([a-z][a-z0-9]*)-([0-9]+)-(` + roleGrammar + `)$`)
 )
-
-// isRole reports whether role is a role of an issue: a name of the grammar but the controller's.
-func isRole(role string) bool {
-	return role != "controller" && rolePattern.MatchString(role)
-}
 
 // ErrInvalid is a session id, issue key, role token or entry the registry refuses. Each refusal
 // wraps it with the field and the rule it breaks.
@@ -158,29 +142,15 @@ func ValidateIssue(issue string) error {
 	return nil
 }
 
-// ValidateRoleToken refuses a token that is not the token of an issue's role.
+// ValidateRoleToken refuses a token that is not the token of an issue's role (legionrole.ParseToken).
 func ValidateRoleToken(token string) error {
 	if limit := len("legion-") + maxProjectBytes + 1 + maxIssueBytes + 1 + maxRoleBytes; len(token) > limit {
 		return invalid("role_token is %d bytes, past %d", len(token), limit)
 	}
-	if _, _, ok := ParseRoleToken(token); !ok {
+	if _, _, ok := legionrole.ParseToken(token); !ok {
 		return invalid("role_token %q is not legion-<legion_project>-<issue>-<role>", token)
 	}
 	return nil
-}
-
-// ParseRoleToken is the Dispatch issue key and the role an issue role's token names (RoleToken):
-// ACME-7 and planner for legion-acme-acme-7-planner, and a role the deployment defines as one of
-// Legion's six (IsRole). It is false for a token that is no issue role's: the controller's, which
-// names a project and no issue, a claim on the controller's name, and a role outside the grammar.
-// It is the one reading of such a token, which the registry's checks (ValidateRoleToken) and the
-// secrets broker's read of a pod's claim take alike.
-func ParseRoleToken(token string) (issue, role string, ok bool) {
-	match := roleTokenPattern.FindStringSubmatch(token)
-	if match == nil || !isRole(match[3]) {
-		return "", "", false
-	}
-	return strings.ToUpper(match[1]) + "-" + match[2], match[3], true
 }
 
 // RoleToken is the token of issue's role under the Legion project token project, the one a valid
@@ -204,8 +174,8 @@ func Validate(entry Entry) error {
 	if err := ValidateIssue(entry.Issue); err != nil {
 		return err
 	}
-	if !isRole(entry.Role) {
-		return invalid("role %q is not one of %s or a role of the grammar ^%s$ but controller", entry.Role, strings.Join(Roles, ", "), roleGrammar)
+	if !legionrole.IsRole(entry.Role) {
+		return invalid("role %q is not one of %s or a role of the grammar %s but controller", entry.Role, strings.Join(Roles, ", "), legionrole.Pattern)
 	}
 	if want := RoleToken(entry.LegionProject, entry.Issue, entry.Role); entry.RoleToken != want {
 		return invalid("role_token %q is not legion-<legion_project>-<issue>-<role>, %q", entry.RoleToken, want)

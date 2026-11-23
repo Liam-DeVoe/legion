@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/legionrole"
 )
 
 // Assignees answers the person a Dispatch issue is assigned to, "" for an issue nobody is. The
@@ -39,9 +39,9 @@ const AssigneeUnreadMessage = "broker: the assignee of a Legion pod's issue coul
 // issueKeyOfClaim is the Dispatch issue key a pod's claim (enrollments.claim) names, such as
 // ACME-7 for legion-acme-acme-7-planner (packages/daemon/internal/claim.NewToken), and "" for a
 // claim that is no Legion role claim token. A role the deployment defines names its issue as one
-// of Legion's six does, and the controller's token names none (legionagents.ParseRoleToken).
+// of Legion's six does, and the controller's token names none (legionrole.ParseToken).
 func issueKeyOfClaim(claim string) string {
-	issue, _, ok := legionagents.ParseRoleToken(claim)
+	issue, _, ok := legionrole.ParseToken(claim)
 	if !ok {
 		return ""
 	}
