@@ -65,8 +65,8 @@ from the runners' spread rather than from the maximum, because on that step the 
 verdict on the runner. On main's four legs its 11 minutes, the maximum plus 15 per cent, cut a
 leg of run 44985914477 whose every row had passed, on a runner that ran the same rows 1.75
 times slower than another of the same minute. Its budget is that factor times the largest leg
-this job's two legs have run under main's split by time, at the head that merged it, times the
-worst drift a row-time table up to a week old was measured to give, and
+of this job's two legs in the full lane it was last read from, under main's split by time, times
+the worst drift a row-time table up to a week old was measured to give, and
 [the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)
 holds the derivation and the runs it was read from.
 
@@ -83,25 +83,33 @@ dispatch-browser-nightly.yaml's full job declares the first two: its call passes
 ## What the job set costs, and the machine-time ceiling the run holds it to
 
 What the job set of dispatch-browser.yaml costs, measured rather than estimated, on
-2026-11-23 at the head that merged main's split by time. Its three green full lanes, runs
-45130372249 at a650b091, 45130540632 at a6d8e108 and 45130647066 at 5e22df0a, cost 2,460, 2,595
-and 2,317 s, each over eight jobs for 1,727 rows: 1.42, 1.50 and 1.34 machine-seconds a row, in
-own times of 1,098, 1,245 and 1,019 s - each run's binaries job, longest leg and merge job, end
-to end. The same lane on the default branch that day, every green merge-queue full lane up to
-08:09:40Z, is 32 runs of twelve jobs for 1,677 rows that cost 3,431 to 4,034 s, a median of
-3,821.5 s and 2.27758 s a row at the median of their per-row figures. So those three lanes cost
-0.606 to 0.679 of that median, and spend 0.589 to 0.660 of its row's machine time. The
-pull-request lane, run 45130649093 at 5e22df0a: 701 s over five jobs for 290 rows, in an own
-time of 432 s.
+2026-11-23 at e2399655. Its full lane there is run 45151841335, read over three attempts: a
+workflow_dispatch of ci.yaml, and two re-runs of its browser jobs from the binaries job on,
+which is the rule the architect set on 2026-11-23 after INFRA's controller, since a dispatch of
+ci.yaml runs every suite it holds. The three cost 2,635, 2,706 and 2,674 s, each over eight jobs
+for 1,730 rows: 1.523, 1.564 and 1.546 machine-seconds a row, in own times of 1,270, 1,241 and
+1,166 s - each attempt's binaries job, longest leg and merge job, end to end - and wall times of
+1,276, 1,248 and 1,496 s. Attempts 1 and 3 read no flaky row, and attempt 2 one of its 1,730
+(approval.e2e.ts:747, on chromium). The same lane on the default branch that day, every green
+merge-queue full lane of ci.yaml up to 13:11:30Z, is 43 runs of twelve jobs for 1,677 to 1,681
+rows that cost 3,431 to 4,034 s, a median of 3,840 s and 2.28571 s a row at the median of their
+per-row figures. So the three attempts cost 0.686, 0.705 and 0.696 of that median, and spend
+0.666, 0.684 and 0.676 of its row's machine time. The pull-request lane's reading at this head is
+in pull request #3513; the last one measured here is run 45130649093 at 5e22df0a: 701 s over five
+jobs for 290 rows, in an own time of 432 s.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
 ceiling less that job's own worst case. Both are written in
 .github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum` in its `machine-time`
-branch); the worst case is the 44 s of job 132733634671, the most a merge job of pull request
-#3513's runs of 2026-11-15 up to 17:44Z read. The readings above, taken as the budget takes them,
-which is each lane less its own merge job, are 2,425, 2,554 and 2,286 s (merge jobs of 35, 41 and
-31 s), and the pull-request lane's 682 s (45130649093, 19 s); all are inside that budget.
+branch); the worst case is the 45 s of job 137694934103 (run 45151841335, attempt 2), the most
+of the ten merge jobs of pull request #3513's runs of 2026-11-23, which replaces the 44 s of job
+132733634671, the most a merge job of that pull request's runs of 2026-11-15 up to 17:44Z read.
+The readings above, taken as the budget takes them, which is each lane less its own merge job,
+are the merge job's lines of the three attempts, 2,597, 2,661 and 2,634 s (merge jobs of 38, 45
+and 40 s) against the 3,156 s that run read, and the pull-request lane's 682 s at 5e22df0a
+(45130649093, 19 s) against the 856 s it read; all are inside the budget, which is 3,155 s on the
+full lane and 855 s on the pull-request lane from this commit on.
 
 That ceiling is a coarse guard and no reading of what dispatch://INFRA-1109 delivers: no job can
 read another run, so a figure written here cannot be a ratio against the day's default branch,
@@ -115,10 +123,10 @@ of the default branch up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126
 runs were 0.72 and 0.78 of that median, so the suite is as cheap as it was and the ceiling is
 what moved. It became 3,200 s on 2026-11-17, when pull request #3513's full lanes at 61e5c402
 and 1ba866a9 read 2,062 to 2,484 s at that step, the worst 6.5 per cent under 2,656 s. Read as
-that step reads a lane, its merge job apart, the full lane's 3,156 s is 27 per cent above that
+that step reads a lane, its merge job apart, the full lane's 3,155 s is 27 per cent above that
 tree's worst reading (2,484 s), under one and a half times its median (2,231 s), and under the
 median of the 27 green default-branch full lanes of 2026-11-16 (3,189 s), though 10 of those 27
-read under it. The pull-request lane's is 856 s, its 900 s less the same 44 s.
+read under it. The pull-request lane's is 855 s, its 900 s less the same 45 s.
 .github/scripts/dispatch-browser-run-reads.sh's `machine-time` branch
 carries the arithmetic and the runs each figure came from. Nothing else in this tree refused
 a run that cost more than the one before it, which is how this suite went from about 25
@@ -451,14 +459,14 @@ minutes: a backstop above the sum of the step budgets, as this file's head says 
 is, and above the 913 s the slowest leg took whole (job 132671046743), and the 860 s of job
 131642902948, the leg the old 13 minutes stopped.
 
-The browser step's 17 minutes are a hang guard of 30 now, for the reason this file's head
+The browser step's 17 minutes are a hang guard of 32 now, for the reason this file's head
 gives and
 [the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)
 derives: on that step the rule's maximum is a verdict on the runner. The largest leg of the
-three green full lanes at the head that merged main's split by time, 901 s (shard 1 of run
-45130540632), is already past the 835 s the 17 minutes were read from, and on the slowest
-runner main's legs met, which ran the same rows 1.75 times slower, it would run 1,577 s and be
-cut at 1,020 with its rows passing. The job's budget below carries the 30.
+three attempts of the full lane at e2399655, 985 s (shard 1 of run 45151841335, attempt 1), is
+already past the 835 s the 17 minutes were read from, and on the slowest runner main's legs
+met, which ran the same rows 1.75 times slower, it would run 1,724 s and be cut at 1,020 with
+its rows passing. The job's budget below carries the 32.
 
 THE TWO NETWORK READS, AT A BUSY HOUR. That sum read the binaries download at 12 s and the
 image pull, `Initialize containers`, at 50 s, and on 2026-11-18 a leg of each job of the
@@ -476,9 +484,9 @@ and a second attempt
 and the pull is counted at that 355 s: no step
 holds it, so no step budget can cut it and no step can read it again, and Docker's own
 retry ("Retrying in 5 seconds" in that log) answers a failed read, not a slow one. The
-job's budget is the browser step's 1,800 s, the two download attempts' 120 s each, and the
-steps without a budget at 132 - 12 - 50 + 355 = 425 s: 2,465 s, 41 min 5 s, rounded up to
-the 42 minutes of the shard job's `timeout-minutes`, whose 55 s left over hold the step that
+job's budget is the browser step's 1,920 s, the two download attempts' 120 s each, and the
+steps without a budget at 132 - 12 - 50 + 355 = 425 s: 2,585 s, 43 min 5 s, rounded up to
+the 44 minutes of the shard job's `timeout-minutes`, whose 55 s left over hold the step that
 places the binaries. The browser step's own budget still fires before the job's.
 
 The readings these replace were taken at other shapes, and no number of this section rests on
@@ -489,8 +497,8 @@ maxima of 24 four-leg legs in five runs on the image build sha256:ba003193 (run
 there and 10 s here, now that the store starts just after the checkout and comes up while
 the install runs, and `bun install --frozen-lockfile`, 62 s there and 15 s here. The browser
 step's hang guard takes main's runner factor and drift from main's four-leg runs, and its leg
-from this job's own two-leg full lanes at a650b091, a6d8e108 and 5e22df0a; its section says which
-is which.
+from this job's own two-leg full lane at e2399655, run 45151841335's attempts 1 to 3; its
+section says which is which.
 
 The rows: listed at `fc1baefb` on 2026-11-16 with `bunx playwright test --config
 e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,511 rows in 206
@@ -703,27 +711,27 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 30`, is a hang guard. It is not the maximum plus 15 per
+The step's budget, `timeout-minutes: 32`, is a hang guard. It is not the maximum plus 15 per
 cent of this file's head, because on this step that rule made the limit a verdict on the
 runner: on main's four legs the 11 minutes it gave cut shard (4) of run 44985914477 (job
 137096923636) with 401 rows passed and none failed, on a machine that ran them slower than
 another of the same minute, and the 17 minutes it gave this job's two legs (835 x 1.15, the
-job's head) would cut this job's largest leg, 901 s, on such a machine the same way. The
+job's head) would cut this job's largest leg, 985 s, on such a machine the same way. The
 formula is main's (#4987): a leg's time, times the slowest runner seen, times the worst drift
 a row-time table up to a week old was measured to give. The leg is this job's own; the runner
-and the drift are main's, read from main's four-leg runs. How the 30 minutes are read:
+and the drift are main's, read from main's four-leg runs. How the 32 minutes are read:
 
-- The leg: 901 s, the largest browser step of this job's two legs over the three green full
-  lanes at the head that merged main's split by time, the first lanes of these two legs under
-  that split: workflow_dispatch runs of ci.yaml on legion/INFRA-1109, read on 2026-11-23 from
-  each run's jobs in the jobs API, the step "Browser-test dispatch dashboard (shard N of 2)":
-  run 45130372249 at a650b091, shard 1 680 s and shard 2 810 s; run 45130540632 at a6d8e108,
-  901 s and 636 s; run 45130647066 at 5e22df0a, 702 s and 596 s. The heavier leg's step is
-  1.087, 1.172 and 1.082 times the two legs' mean in those runs, inside the 1.225 times the mean
-  main's count split gave its heaviest leg, so e2e/shard-weights.json is not read again for
-  them. The red full lane before them at the merged split, run 45122396660 at 53286717 (930 s
-  and 817 s), is not counted: each of its legs ran a failing row's two attempts of 46 s each, a
-  row fixed since.
+- The leg: 985 s, the largest browser step of this job's two legs over the three attempts of
+  the full lane at e2399655, under main's split by time: run 45151841335, a workflow_dispatch
+  of ci.yaml on legion/INFRA-1109, and two re-runs of its browser jobs from the binaries job
+  on, read on 2026-11-23 from each attempt's jobs in the jobs API, the step "Browser-test
+  dispatch dashboard (shard N of 2)": attempt 1, shard 1 985 s and shard 2 667 s; attempt 2,
+  901 s and 733 s; attempt 3, 838 s and 800 s. The heavier leg's step is 1.193, 1.103 and
+  1.023 times the two legs' mean in those attempts, inside the 1.225 times the mean main's
+  count split gave its heaviest leg, so e2e/shard-weights.json is not read again for them. The
+  red full lane before them at the merged split, run 45122396660 at 53286717 (930 s and 817 s),
+  is not counted: each of its legs ran a failing row's two attempts of 46 s each, a row fixed
+  since.
 - The factor: 1.75, the slowest runner seen. The leg that was cut ran its 401 rows at a
   per-row median 1.75 times the time job 137096931568 of run 44985911309 took for the same rows,
   started 3 s later (p10 1.42, p90 2.12; 660 s against 391 s of step). It is a figure of the
@@ -752,46 +760,52 @@ and the drift are main's, read from main's four-leg runs. How the 30 minutes are
   four legs that has not been read for two: placing those two tables' lane on two legs needs
   the reports the tables were built from, which nobody has read for it. Two legs share the
   same misplaced files over twice the row time each, which should give the heaviest a smaller
-  share rather than a larger one, so 1.11 is kept until it is read. Without it, the 901 s leg
-  on the slowest runner seen under such a table would end at about 1,750 s, past the
-  27-minute guard 901 x 1.75 = 1,577 s would give, and be cut with its rows passing.
-- 901 s x 1.75 x 1.11 = 1,750 s, rounded up to 30 minutes, 1,800 s.
+  share rather than a larger one, so 1.11 is kept until it is read. Without it, the 985 s leg
+  on the slowest runner seen under such a table would end at about 1,913 s, past the
+  29-minute guard 985 x 1.75 = 1,724 s would give, and be cut with its rows passing.
+- 985 s x 1.75 x 1.11 = 1,913 s, rounded up to 32 minutes, 1,920 s.
 
-The guard was set twice before, and both readings are replaced by the one above. First it was
-carried over as main's own leg figure rescaled to two legs (main's p90 of its 347 four-leg legs,
-534 s, as 1,044 s for half main's row time, and 34 minutes), which rested on main's rows and
-main's four-leg runs rather than on any leg this job ran. Then it was set from this job's own
-legs before the merge 01ca837e brought main's split: 855 s, the largest of the eight browser
-steps of four full lanes that ran under Playwright's count split (runs 44997458055,
-44997506117, 44997560086 and 45005495938, 666 to 855 s), and 855 x 1.75 x 1.11 = 1,661 s, 28
-minutes. The lanes at a650b091, a6d8e108 and 5e22df0a are the first that ran the split this job
-runs now, and their largest leg is the one above.
+The guard was set three times before, and every one of those readings is replaced by the one
+above. First it was carried over as main's own leg figure rescaled to two legs (main's p90 of
+its 347 four-leg legs, 534 s, as 1,044 s for half main's row time, and 34 minutes), which
+rested on main's rows and main's four-leg runs rather than on any leg this job ran. Then it
+was set from this job's own legs before the merge 01ca837e brought main's split: 855 s, the
+largest of the eight browser steps of four full lanes that ran under Playwright's count split
+(runs 44997458055, 44997506117, 44997560086 and 45005495938, 666 to 855 s), and
+855 x 1.75 x 1.11 = 1,661 s, 28 minutes. Third it was set from the first lanes that ran the
+split this job runs now, the three green full lanes at a650b091, a6d8e108 and 5e22df0a (runs
+45130372249, 45130540632 and 45130647066, whose six legs read 596 to 901 s): 901 s, shard 1 of
+run 45130540632, and 901 x 1.75 x 1.11 = 1,750 s, 30 minutes, with the shard job's
+1,800 + 120 + 120 + 425 = 2,465 s, 42 minutes. The full lane at e2399655 ran a larger leg under
+the same split, 985 s, and that leg is the one above.
 
 What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
 e2e/playwright.config.ts's `testTimeout` or the longer one a row sets, and the leg goes on. What
-reaches 30 minutes is a leg that has stopped running rows - a stack that never comes up in
+reaches 32 minutes is a leg that has stopped running rows - a stack that never comes up in
 `globalSetup`, a teardown or a blob write that never returns, a worker that stops reporting -
 whose log has stopped gaining rows. The runner cancels the step and names it (`The action
-'<step name>' has timed out after 30 minutes.`). The leg's blob report is never written, since
+'<step name>' has timed out after 32 minutes.`). The leg's blob report is never written, since
 Playwright writes it when the run ends: the always-run upload finds no file (run 44985914477's
 cut shard 4 logged `No files were found with the provided path: /__w/_temp/leg-report`), and
 the merge job says so by name - reading one's `no blob report arrived from: shard-4` in that
 run, `shard-2` for this job's second leg, and reading three's `... uploaded no blob report, so
 the merged report holds none of its rows` - and fails on the leg's result. No row of a green leg
-rests on the guard: the 901 s leg on the slowest runner seen, under a table up to a week old,
-ends at about 1,750 s, under it. A red leg can pass it: a failing row's retries lengthen its leg,
-and red shard 1 of run 45122396660, 930 s, would end at about 1,807 s on that runner under such a
-table. That leg is cut, and the merge job names it as a leg with no blob report rather than
-naming its failing rows; its own log still holds them. What the guard costs is time: a hung leg
-is cut 13 minutes later than at the 17 the rule gave this job's legs.
+rests on the guard: the 985 s leg on the slowest runner seen, under a table up to a week old,
+ends at about 1,913 s, under it. A red leg can pass it: a failing row's retries lengthen its
+leg. Red shard 1 of run 45122396660, 930 s, would end near 1,807 s on that runner under such a
+table, under the guard now, but a red leg longer than about 988 s on an ordinary runner
+(1,920 / 1.75 / 1.11) would pass it there. That leg is cut, and the merge job names it as a
+leg with no blob report rather than naming its failing rows; its own log still holds them.
+What the guard costs is time: a hung leg is cut 15 minutes later than at the 17 the rule gave
+this job's legs.
 
 The week is what the guard holds, so each leg says when its table is past it: below its
 placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
 before the run, or when a tenth of its rows sit in files the table has no entry for
 (packages/dispatch/e2e/shard-split.ts, `tableWarnings`). Either one means
 `bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at 1.21, the share main's
-count split gave the heaviest of its four legs, the 901 s leg on that runner would end near
-1,908 s, past the guard.
+count split gave the heaviest of its four legs, the 985 s leg on that runner would end near
+2,086 s, past the guard.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -1715,11 +1729,17 @@ The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of
 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment
 carried before was measured on another branch and is replaced by that sample. The merge
 jobs of pull request #3513's runs of 2026-11-15 up to 17:44Z read at most 44 s whole (job
-132733634671, run 43687205491), which is the figure `merge_maximum` takes off the lane's
-bound, and their steps without a budget sum to 48 s at their maxima (checkout 10 s, `bun
-install` 12 s and the merge of the blob reports 5 s among them), 49 s with the 1 s the
-refused-download step is allotted below, since no run of that day ran it. 180 + 49 = 229 s
-is 3 min 49 s, so the rule gives the same 4 minutes as the older sample below.
+132733634671, run 43687205491), the figure `merge_maximum` took off the lane's bound until the
+ten merge jobs of its runs of 2026-11-23 read up to 45 s whole (job 137694934103, run
+45151841335 attempt 2), which it takes now. The steps without a budget of the 2026-11-15 jobs
+sum to 48 s at their maxima (checkout 10 s, `bun install` 12 s and the merge of the blob
+reports 5 s among them), 49 s with the 1 s the refused-download step is allotted below, since
+no run of that day ran it. 180 + 49 = 229 s is 3 min 49 s, so the rule gives the same 4 minutes
+as the older sample below. What made job 137694934103 the longest is its checkout, 13 s, and
+"Reading one, the rows", 11 s, the reading of its attempt's one flaky row, and its log holds no
+rate-limit wait. That checkout is 3 s past the 10 s above: counted, the steps without a budget
+sum to 52 s with the refused-download step's 1 s, and 180 + 52 = 232 s is still 4 minutes. The
+other nine jobs' steps were not read.
 
 Each step's own maximum over that sample, summed, is 40 s: Set up job 2 s, checkout 9 s,
 setup-bun 3 s, `bun install` 7 s, Download every leg's blob report 2 s, Take the newest
@@ -1757,10 +1777,10 @@ gives the same 4 min: its 40 s less reading one's 4 s is 36 s, and 1 s each for 
 it does not hold - that one, "Reading four, the row durations", which runs one jq over the
 merged report, and "Reading five, the lane's machine time", which runs one jq over the jobs
 file reading one already wrote and makes no request at all - makes 39 s, and 180 + 39 = 219 s.
-The lane's budget takes this job's whole measured maximum off its bound, 44 s with these steps
-in it (.github/scripts/dispatch-browser-run-reads.sh, `merge_maximum`). The job's budget is
-above the step's, so the step's own budget fires first and names the step, which is the reason
-this file's head gives for putting budgets on steps.
+The lane's budget takes this job's whole measured maximum off its bound, the 45 s of 2026-11-23
+with these steps in it (.github/scripts/dispatch-browser-run-reads.sh, `merge_maximum`). The
+job's budget is above the step's, so the step's own budget fires first and names the step, which
+is the reason this file's head gives for putting budgets on steps.
 
 What that sample does not hold: no browser step failed in any of those runs, so no blob
 report in them carries a failed row's trace, and the download, the merge and reading
@@ -1870,7 +1890,7 @@ lane's budget the step exits 1 and the job is red. Each lane's budget is its com
 ceiling less this job's own worst case, both written in
 .github/scripts/dispatch-browser-run-reads.sh (`bound` and `merge_maximum`), which a job
 reading inside its own run cannot see of itself: its `completed_at` is null while it runs.
-The script's `machine-time` branch carries that subtraction, the runs the measured 44 s of it
+The script's `machine-time` branch carries that subtraction, the runs the measured 45 s of it
 came from, and why a jobs file it cannot read refuses rather than passes.
 
 The lane is this workflow's own input, which every job of the file but the embedder's

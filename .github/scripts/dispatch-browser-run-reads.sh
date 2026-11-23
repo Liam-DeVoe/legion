@@ -362,22 +362,22 @@ case "$mode" in
     # this issue delivers. What this issue delivers is read after the run, against the day's
     # base: R5's four fifths and R4's machine-seconds a row.
     #
-    #   full lane:         3,200 - 44 = 3,156 s
-    #   pull-request lane:   900 - 44 =   856 s
+    #   full lane:         3,200 - 45 = 3,155 s
+    #   pull-request lane:   900 - 45 =   855 s
     #
-    # The full lane's 3,156 s sits between the two limits such a ceiling has: its margin over
+    # The full lane's 3,155 s sits between the two limits such a ceiling has: its margin over
     # this tree is wider than the spread of the default branch's own green lanes, and it is below
     # a suite grown by half. Every figure of the three points below is a lane as this step reads
     # it, its merge job apart, from the jobs API.
     #
     # - It is 27 per cent above this tree's worst full-lane reading, 2,484 s (run 43885980414,
-    #   at 61e5c402): 3,156 / 2,484 = 1.27. That margin is wider than the 14 per cent between
+    #   at 61e5c402): 3,155 / 2,484 = 1.27. That margin is wider than the 14 per cent between
     #   the cheapest and the dearest of the 27 green default-branch full lanes of 2026-11-16
     #   (3,032 and 3,444 s), and wider than the 12 per cent between that day's median, 3,189 s,
     #   and the median of the 23 green ones of 2026-11-11, 2,845 s.
     # - It is below one and a half times this tree's median full-lane reading, 2,231 s (runs
     #   43877804247, 43885980414 and 43897620046 read 2,062, 2,484 and 2,231 s), which is
-    #   3,347 s, so it refuses a suite grown by more than 41 per cent (3,156 / 2,231 = 1.41).
+    #   3,347 s, so it refuses a suite grown by more than 41 per cent (3,155 / 2,231 = 1.41).
     # - It is below the median of the 2026-11-16 default-branch runs, 3,189 s, so it refuses
     #   that day's median run of the suite this issue replaced, but not its cheaper ones: 10 of
     #   those 27 read 3,032 to 3,146 s, and every one of the 23 of 2026-11-11 read under it. So
@@ -404,25 +404,35 @@ case "$mode" in
     # 5929818647 of pull request #3513).
     # The pull-request lane keeps 900 s, since the default branch runs no such lane and there
     # is no same-day figure to take a ratio against.
-    # The 44 s is measured, not allowed for: it is the most the `dispatch-browser / merge` job
-    # took over pull request #3513's fifteen full-lane runs and twenty-one pull-request runs of
-    # 2026-11-15 up to 17:44Z, read from the jobs API - job 132733634671 of run 43687205491,
-    # above the 39 s of job 132868945016 (run 43731214579) and the 38 s of runs 43672161759 and
-    # 43656706589.
+    # The 45 s is measured, not allowed for: it is the most the `dispatch-browser / merge` job
+    # took over the ten merge jobs of pull request #3513's runs of 2026-11-23, read from the jobs
+    # API as each job's `completed_at` less its `started_at` - job 137694934103 of run
+    # 45151841335, attempt 2 (12:32:50Z to 12:33:35Z), where the other nine read 19 to 41 s
+    # (runs 45130372249, 45130540632, 45130647066 and 45151753447, run 45130649093's three
+    # attempts, and run 45151841335's first and third). What made that job the longest is its
+    # checkout, 13 s (12:32:52Z to 12:33:05Z), and "Reading one, the rows", 11 s (12:33:18Z to
+    # 12:33:29Z, the reading of attempt 2's one flaky row), beside `bun install` 5 s, the merge of
+    # the blob reports 3.5 s and about 1 s for each other step, by the start stamps of its log
+    # (2,859 lines, read on 2026-11-23). It replaces 44 s, the most that job took over the same
+    # pull request's fifteen full-lane runs and twenty-one pull-request runs of 2026-11-15 up to
+    # 17:44Z (job 132733634671 of run 43687205491, above the 39 s of job 132868945016, run
+    # 43731214579, and the 38 s of runs 43672161759 and 43656706589), which job 137694934103 went
+    # past.
     # Every one of those jobs ran the step this mode is the body of, so the figure holds that
-    # step's second. It replaces 37 s, which was 36 s measured over five runs of 2026-11-11,
-    # before that step existed, plus 1 s allotted to the step; pull request #3513's own merge jobs
-    # went past it. That job's timeout-minutes is 4, so a merge job above the whole figure and
-    # not cancelled is one whose seconds this figure then understates, and this budget is the
-    # looser for it by exactly the difference. The same holds for a wait out of a GitHub rate
-    # limit: since main's #4893 a read of the jobs API waits for the limit's reset within the
+    # step's second. The 44 s replaced 37 s, which was 36 s measured over five runs of
+    # 2026-11-11, before that step existed, plus 1 s allotted to the step; pull request #3513's
+    # own merge jobs went past it. That job's timeout-minutes is 4, so a merge job above the whole
+    # figure and not cancelled is one whose seconds this figure then understates, and this budget
+    # is the looser for it by exactly the difference. The same holds for a wait out of a GitHub
+    # rate limit: since main's #4893 a read of the jobs API waits for the limit's reset within the
     # step's 3 minutes and the job's 4, whichever ends first (gh-read.sh's gh_wait_reset, with
     # STEP_TIMEOUT_MINUTES on "Reading one, the rows", the step that makes that read, and
-    # JOB_TIMEOUT_MINUTES on the merge job), and none of the runs the 44 s was read from waited,
-    # so that wait is outside the figure.
+    # JOB_TIMEOUT_MINUTES on the merge job). Job 137694934103's log holds no rate-limit line and
+    # no `waiting N s`, so no such wait is inside its 45 s; the logs of the nine others were not
+    # read for a wait, and the seconds of none of them are the figure. So that wait is outside it.
     # Subtracting the maximum rather than the median is what keeps this reading stricter than
-    # the ceiling itself and never looser: a lane that passes here at 3,156 s and then spends a
-    # worst-case 44 s in this job lands on 3,200 exactly.
+    # the ceiling itself and never looser: a lane that passes here at 3,155 s and then spends a
+    # worst-case 45 s in this job lands on 3,200 exactly.
     #
     # This reading is what refuses the growth before the run ends; what the run is held to
     # afterwards, against the day's own base, is R5's and R4's.
@@ -455,7 +465,7 @@ case "$mode" in
     # This job's own worst case, and the one subtraction both lanes' budgets are: a figure
     # changed here moves each budget with it, where a budget written out beside its bound could
     # leave this job's seconds counted twice or not at all.
-    merge_maximum=44
+    merge_maximum=45
     budget=$(( bound - merge_maximum ))
     if [ ! -f "$jobs_file" ]; then
       echo "::error::this run's machine time could not be summed: the jobs of this run are" \
