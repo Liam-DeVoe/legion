@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -282,9 +283,11 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 // yes-* step prints interface 1 for pi-legion, and 1 for pi-envoy except the steps that test a
 // missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
 // compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
-// release.
+// release. invocation is path as the gate's OMP invocation holds it, one shell word
+// (shellprefix.Word), as omplaunch.ResolveInvocation quotes LEGION_OMP_PATH: a temporary path can
+// hold a space or a quote.
 type fakeOmp struct {
-	dir, path, prefix string
+	dir, path, prefix, invocation string
 }
 
 func newFakeOmp(t *testing.T, plan ...string) fakeOmp {
@@ -294,12 +297,13 @@ func newFakeOmp(t *testing.T, plan ...string) fakeOmp {
 		t.Fatalf("write the plan: %v", err)
 	}
 	script := `#!/bin/sh
-dir=` + dir + `
+dir=` + shellprefix.Literal(dir) + `
 n=$(( $(cat "$dir/count" 2>/dev/null || echo 0) + 1 ))
 # Renamed into place: the test reads this file while a later attempt writes it, and a plain
 # redirection truncates before it writes, so the reader can see it empty.
 echo "$n" >"$dir/count.$n" && mv "$dir/count.$n" "$dir/count"
-printf '%s\n' "$*" >"$dir/argv.$n"
+# One argument a line: the probe's path is a temporary one, which can hold a space.
+printf '%s\n' "$@" >"$dir/argv.$n"
 env >"$dir/env.$n"
 cp "$3" "$dir/probe.$n"
 step=$(sed -n "${n}p" "$dir/plan")
@@ -343,10 +347,10 @@ esac
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	prefix := filepath.Join(dir, "launch-prefix")
-	if err := os.WriteFile(prefix, []byte("#!/bin/sh\necho prefixed >\""+dir+"/prefixed\"\nexec \"$@\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(prefix, []byte("#!/bin/sh\necho prefixed >"+shellprefix.Literal(filepath.Join(dir, "prefixed"))+"\nexec \"$@\"\n"), 0o755); err != nil {
 		t.Fatalf("write the launch prefix: %v", err)
 	}
-	return fakeOmp{dir: dir, path: path, prefix: prefix}
+	return fakeOmp{dir: dir, path: path, prefix: prefix, invocation: shellprefix.Word(path)}
 }
 
 func (f fakeOmp) attempts(t *testing.T) int {
@@ -398,7 +402,7 @@ func gateUnder(t *testing.T, f fakeOmp, legion string) (pluginGate, *bytes.Buffe
 			"XDG_DATA_HOME": filepath.Join(home, "state", "home", ".local", "share"),
 		},
 		workDir:    t.TempDir(),
-		invocation: f.path,
+		invocation: f.invocation,
 		prefix:     []string{f.prefix},
 		timeout:    answerBudget,
 		retry:      bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond},
@@ -531,7 +535,7 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 	if n := f.attempts(t); n != 1 {
 		t.Fatalf("Oh My Pi ran %d times, want once", n)
 	}
-	argv := strings.Fields(f.read(t, "argv.1"))
+	argv := strings.Split(strings.TrimSuffix(f.read(t, "argv.1"), "\n"), "\n")
 	if len(argv) != 4 || argv[0] != "models" || argv[1] != "--extension" || argv[3] != "--json" {
 		t.Errorf("omp argv = %q, want models --extension <probe> --json", argv)
 	}
@@ -890,7 +894,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", f.prefix + " " + f.path, "secrets: ANTHROPIC_API_KEY was denied"} {
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(shellprefix.Command([]string{f.prefix}) + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}

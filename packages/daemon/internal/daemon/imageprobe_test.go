@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +16,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // imageOmp is an `omp` that answers each of the image's probes by its own plan, one step per
 // attempt of that probe (the last step repeats), telling them apart by argv as a real Oh My Pi
 // would run them, and recording the order they ran in and each attempt's argv and environment.
-type imageOmp struct{ dir, path string }
+// invocation is path as ImageProbe.Omp holds it, one shell word (shellprefix.Word): a temporary
+// path can hold a space or a quote.
+type imageOmp struct{ dir, path, invocation string }
 
 func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 	t.Helper()
@@ -31,7 +35,7 @@ func newImageOmp(t *testing.T, agents, load, session []string) imageOmp {
 		}
 	}
 	script := `#!/bin/sh
-dir=` + dir + `
+dir=` + shellprefix.Literal(dir) + `
 # The pod's load arm, three extensions, comes before the pane's, one, whose glob would swallow it.
 case "$*" in
 "models --extension "*" --extension "*" --extension "*" --json") kind=load lane=pod ;;
@@ -43,7 +47,8 @@ esac
 n=$(( $(cat "$dir/$kind.count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" >"$dir/$kind.count"
 echo "$kind" >>"$dir/calls"
-printf '%s\n' "$*" >"$dir/$kind.argv.$n"
+# One argument a line: the probe's and the roots' paths are temporary ones, which can hold a space.
+printf '%s\n' "$@" >"$dir/$kind.argv.$n"
 env >"$dir/$kind.env.$n"
 step=$(sed -n "${n}p" "$dir/$kind.plan")
 [ -n "$step" ] || step=$(tail -n 1 "$dir/$kind.plan")
@@ -90,7 +95,7 @@ echo "fake omp: no step $step for $kind" >&2; exit 65
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
-	return imageOmp{dir: dir, path: path}
+	return imageOmp{dir: dir, path: path, invocation: shellprefix.Word(path)}
 }
 
 // calls are the probes the fake ran, in order.
@@ -124,6 +129,13 @@ func (f imageOmp) read(t *testing.T, name string) string {
 		t.Fatalf("read %s: %v", name, err)
 	}
 	return string(raw)
+}
+
+// args are the arguments one attempt of a probe ran Oh My Pi with, as the fake recorded them, one
+// a line, in name.
+func (f imageOmp) args(t *testing.T, name string) []string {
+	t.Helper()
+	return strings.Split(strings.TrimSuffix(f.read(t, name), "\n"), "\n")
 }
 
 // imageHome is a HOME laid out as the worker image lays it out: the Legion plugin's manifest
@@ -160,7 +172,7 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 		pluginRoot:      legionRootOf(home),
 		envoyPluginRoot: envoyRootOf(home),
 		workDir:         t.TempDir(),
-		invocation:      f.path,
+		invocation:      f.invocation,
 		timeout:         answerBudget,
 		retry:           bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond, Attempts: attempts},
 		contract:        3,
@@ -202,14 +214,14 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 	root, envoyRoot := legionRootOf(home), envoyRootOf(home)
 
 	err := ProbeImage(context.Background(), ImageProbe{
-		Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(), PluginRoot: root, EnvoyPluginRoot: envoyRoot,
+		Omp: f.invocation, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(), PluginRoot: root, EnvoyPluginRoot: envoyRoot,
 		RoleReferences: promptrefs.New(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
 
 	if err != nil {
 		t.Fatalf("ProbeImage = %v, want every probe to pass", err)
 	}
-	argv := f.read(t, "load.argv.1")
+	argv := strings.Join(f.args(t, "load.argv.1"), " ")
 	if !strings.HasPrefix(argv, "models --extension "+envoyRoot+" --extension "+root+" --extension ") {
 		t.Errorf("the load probe ran `omp %s`, want it to run as a pod does: `models --extension %s --extension %s …`, the two roots first and discovery on", strings.TrimSpace(argv), envoyRoot, root)
 	}
@@ -233,7 +245,7 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 	} {
 		f = newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 		probe := testCase.probe
-		probe.Omp, probe.Contract, probe.Env, probe.WorkDir = f.path, 3, imageEnv(home), t.TempDir()
+		probe.Omp, probe.Contract, probe.Env, probe.WorkDir = f.invocation, 3, imageEnv(home), t.TempDir()
 		probe.RoleReferences, probe.Log = promptrefs.New(), slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
 		err = ProbeImage(context.Background(), probe)
 		if err == nil || !strings.Contains(err.Error(), testCase.want) {
@@ -252,7 +264,7 @@ func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
 	home := imageHome(t, contractCurrent)
 
 	err := ProbeImage(context.Background(), ImageProbe{
-		Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(), PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
+		Omp: f.invocation, Contract: 3, Env: imageEnv(home), WorkDir: t.TempDir(), PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
 		Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
 
@@ -272,7 +284,7 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 	t.Chdir(home)
 
 	err := ProbeImage(context.Background(), ImageProbe{
-		Omp: f.path, Contract: 3, Env: imageEnv(home), WorkDir: home,
+		Omp: f.invocation, Contract: 3, Env: imageEnv(home), WorkDir: home,
 		PluginRoot: filepath.Join("opt-legion", "pi-legion"), EnvoyPluginRoot: filepath.Join("opt-legion", "pi-envoy"),
 		RoleReferences: promptrefs.New(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
@@ -280,7 +292,7 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeImage with relative plugin roots = %v, want every probe to pass", err)
 	}
-	if argv := f.read(t, "load.argv.1"); !strings.Contains(argv, "--extension "+envoyRootOf(home)+" --extension "+legionRootOf(home)+" ") {
+	if argv := strings.Join(f.args(t, "load.argv.1"), " "); !strings.Contains(argv, "--extension "+envoyRootOf(home)+" --extension "+legionRootOf(home)+" ") {
 		t.Errorf("the load probe ran `omp %s`, want the plugin roots as the absolute %s and %s", strings.TrimSpace(argv), envoyRootOf(home), legionRootOf(home))
 	}
 }
@@ -349,7 +361,7 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 	env := imageEnv(home)
 
 	err := ProbeImage(context.Background(), ImageProbe{
-		Omp: f.path, Contract: 3, Env: env, WorkDir: t.TempDir(), PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
+		Omp: f.invocation, Contract: 3, Env: env, WorkDir: t.TempDir(), PluginRoot: legionRootOf(home), EnvoyPluginRoot: envoyRootOf(home),
 		RoleReferences: promptrefs.New(), Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
 
@@ -360,7 +372,7 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 		t.Fatalf("probes ran as %q, want pi.agents, the plugin load, then the session-storage setting", got)
 	}
 	for _, kind := range []string{"agents", "load"} {
-		argv := strings.Fields(f.read(t, kind+".argv.1"))
+		argv := f.args(t, kind+".argv.1")
 		probe := argv[len(argv)-2]
 		if _, err := os.Stat(probe); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("the %s probe file %s outlived the probe: %v", kind, probe, err)
@@ -438,8 +450,8 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 					t.Errorf("verifyImage = %v, want a refusal saying %q", err, want)
 				}
 			}
-			if testCase.refusal != nil && !strings.Contains(err.Error(), f.path) {
-				t.Errorf("the refusal does not name the launch command %s: %v", f.path, err)
+			if testCase.refusal != nil && !strings.Contains(err.Error(), strconv.Quote(f.invocation)) {
+				t.Errorf("the refusal does not name the launch command %s: %v", f.invocation, err)
 			}
 			if n := f.attempts(t, "agents"); n != testCase.attempts {
 				t.Errorf("the pi.agents probe ran %d times, want %d", n, testCase.attempts)
@@ -514,7 +526,7 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 
 			err := gate.verifyImage(context.Background())
 
-			for _, want := range append(testCase.want, f.path) {
+			for _, want := range append(testCase.want, strconv.Quote(f.invocation)) {
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Errorf("verifyImage = %v, want an error saying %q", err, want)
 				}

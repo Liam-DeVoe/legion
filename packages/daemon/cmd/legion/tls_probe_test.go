@@ -3376,11 +3376,11 @@ func TestTheProbesDeadlineIsItsBudgetCountedFromTheCall(t *testing.T) {
 // its run first; its limit is counted from that line (standInLog), and the probe's deadline passes
 // once the AAA control's run has logged it (probeDeadlineOnceLogged), not at a budget of seconds
 // a loaded machine can spend before the emSign control's curl has answered. Its --probe-budget is
-// not shortProbeBudget, the other such tests' value, and is an hour: longer than any budget a
-// caller passes, the 240 s of the daemon's probe the longest, so a probe that asked for one fixed
-// budget, or for the flag's value cut to a bound a caller's budget fits under, rather than the
-// flag's value fails here. The deadline itself is the stand-in's, so the length costs the test
-// nothing.
+// not shortProbeBudget, the other such tests' value, and is an hour: longer than the 240 s the
+// daemon's probe passes by default (its budget follows the operator's boot and command timeouts),
+// so a probe that asked for one fixed budget, or for the flag's value cut to any bound below an
+// hour, rather than the flag's value fails here. The deadline itself is the stand-in's, so the
+// length costs the test nothing.
 func TestTLSProbeKeepsAFailureSeenBeforeTheDeadline(t *testing.T) {
 	const budget = "1h0m0s"
 	omp := imageOmp(t)
