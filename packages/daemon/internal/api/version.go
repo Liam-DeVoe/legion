@@ -3257,4 +3257,30 @@ package api
 // kept it at the merge of main at 51d1a21ff7a6 (main at 213, #4553's, the entry right above). That
 // is a reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)
-const DaemonAPIVersion = 217
+//
+// 230: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
+// LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
+// object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
+// commits as, keys sorted (runtime.RoleIdentities). The push step of `legion jj` reads it
+// (runtime.ReadRoleIdentities) to set the author of each commit a push sends from the role its
+// first `Legion-Role` trailer names. The daemon puts it in every worker's spec.Env
+// (specs.workerSpawnSpec), which the tmux runtime passes as a pane's -e pair and the Sandbox runtime
+// in a role's start command; a failed mint of the claim's own App's lease fails the launch, and a
+// failed mint of the other App's fails none: that launch's table holds its own App's roles alone,
+// and the daemon logs a warning naming the claim, that App and the error. The controller's launch
+// carries none, and `legion controller start` drops one it inherits.
+// An operator's `runtime.tmux.pane_env`, `runtime.kubernetes.pod.env` and provider keys may not
+// name it (runtime.PaneVariableRefusal, sandbox's podVariables). A role process of an earlier
+// release has no table, and its step does nothing; the reader passes over a field of an identity
+// it does not know, so a field a later release adds turns no step off. No shape of `GET
+// /legion/v1/state` or of a request moves, and this change adds no store migration; its records
+// in contract-shapes.json and request-shapes.json are 217's, written again at 230 by `-update`.
+// (This entry keeps 230, above main's 217: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head of each of the 34 open pull requests of cybermonklabs/legion, of 502 open,
+// whose file list names this file, made on 2026-11-23 between 02:14:11Z and 02:20:05Z, found 218
+// declared by #3831, 219 by #4611, 220 by #4930, 221 by #3993, #4049, #4392, #4432, #4771, #4940
+// and #5164, 222 by #4661, #5156 and #5160, 223 by #4805, 224 by #4960, 225 by #3712, 226 by
+// #4175, 227 by #4065 and #5162, 228 by #4590 and 229 by #2230, and none but this change
+// declaring 230. This entry stood at 200, 202, 209, 212, 221 and 225 before. Read the base's own
+// number and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 230
