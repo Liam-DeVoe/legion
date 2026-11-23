@@ -619,13 +619,15 @@ provider_keys:
   value. One such member costs the pane every attribute of the variable, the operator's own among
   them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
-  Legion adds no overlay of its own to the list: it writes none, so the operator's are the whole of
-  it, with a role's own (`role_config_files`) after them. The
+  Legion adds no overlay of its own to the list, since it writes none. The operator's come first,
+  then a role's own (`role_config_files`), then those of each experiment arm the pane's unit was
+  drawn into. The
   boot plugin gate probes Oh My Pi under the same overlays and variables.
 - **`role_config_files`**, a top-level key beside the block, gives one role's panes overlays no
   other role's get (`role_config_files: {implementer: [/etc/legion-operator/fallback.yml]}`, the
-  controller's pane under `controller: daemon` too): such a pane's `PI_CONFIG_FILES` is
-  `pi_config_files`, then the role's own in order, and nothing after them. Each
+  controller's pane under `controller: daemon` too). Such a pane's `PI_CONFIG_FILES` is
+  `pi_config_files`, then the role's own in order, then those of each experiment arm its unit was
+  drawn into. Each
   path must be absolute; boot and `legion config check` refuse one the host does not hold
   as a file the daemon's user can read, naming the role and the path, and a pane of a role the key
   leaves out is told what it was told without it. After the plugin gate passes, the boot gate runs
