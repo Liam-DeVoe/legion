@@ -41,6 +41,15 @@ import { type ContextRecord, localSource, skillFrontmatter } from "./context";
 import { BudgetSpent, type MessagesBody } from "./gateway";
 import { END_TURN_REPLY, messageSse, sseResponse, startRecorder } from "./recorder";
 import { BLOCK_REASON, MESSAGES_VARIABLE } from "./replay-hook";
+import {
+  BASE_COMMIT,
+  COMPOSED,
+  HEAD_COMMIT,
+  ROLE_LINE,
+  ROLE_REPO,
+  SKILLS_ONLY_PLUGIN,
+  writeRolePromptRepository,
+} from "./testdata/roleprompt";
 
 // The capture on the pinned Oh My Pi (capture.ts), against the recorder, with made-up skills and
 // repositories: `alpha` and `beta` of a made-up `acme/skills`, read from local directories in
@@ -1784,6 +1793,66 @@ export default function bootProbe(pi) {
         expect(record.injections).toEqual([{ by: "autoload", path: autoloadPath, at: 0 }]);
         expect(autoloadedTexts[0]?.includes("Then stop.")).toBe(name === "new");
       }
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  // R8's arm: with --old-role-prompt-at and --new-role-prompt-at, each arm's capture composes its
+  // role prompt at its own commit of the case's plugin repository (testdata/roleprompt.ts: two
+  // commits whose implementer part differs by one line) and records it.
+  test(
+    "with role-prompt commits, the old and the new arm of a Legion case get the two composed prompts and each capture records its commit; one commit in both arms gives equal system-prompt digests",
+    async () => {
+      await captures();
+      writeRolePromptRepository(path.join(dir, "repos"));
+      const base = f1Case("role-at");
+      const c: Case = {
+        ...base,
+        context: "legion:acme:implementer",
+        profile: { ...base.profile, plugins: [SKILLS_ONLY_PLUGIN], contextFiles: [] },
+      };
+      const capture = (out: string, name: ArmName, at: { old: string; new: string }) => {
+        const old = path.join(dir, "old");
+        const arm = buildArm(c, name, { old, new: old, rolePromptAt: at }, path.join(dir, "arms"));
+        return captureBody(c, arm, {
+          omp: binary(),
+          outDir: path.join(dir, out),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints,
+          session: SESSION,
+        });
+      };
+      const apart = { old: BASE_COMMIT, new: HEAD_COMMIT };
+      const oldApart = await capture("role-apart", "old", apart);
+      const newApart = await capture("role-apart", "new", apart);
+      const system = (made: Capture) => systemBlocks(made.body).join("\n");
+      expect(system(oldApart)).toContain(COMPOSED.base);
+      expect(system(newApart)).toContain(COMPOSED.head);
+      expect(system(newApart)).not.toContain(ROLE_LINE);
+      expect(oldApart.record.context.rolePrompt).toMatchObject({
+        repo: ROLE_REPO,
+        commit: BASE_COMMIT,
+        commitOf: "arm",
+      });
+      expect(newApart.record.context.rolePrompt).toMatchObject({
+        repo: ROLE_REPO,
+        commit: HEAD_COMMIT,
+        commitOf: "arm",
+      });
+      expect(oldApart.record.captureDigest).not.toBe(newApart.record.captureDigest);
+
+      const same = { old: BASE_COMMIT, new: BASE_COMMIT };
+      const oldSame = await capture("role-same", "old", same);
+      const newSame = await capture("role-same", "new", same);
+      expect(newSame.record.context.rolePrompt).toMatchObject({
+        commit: BASE_COMMIT,
+        commitOf: "arm",
+      });
+      expect(newSame.record.captureDigest).toBe(oldSame.record.captureDigest);
+      expect(newSame.record.captureDigest).toBe(oldApart.record.captureDigest);
     },
     ROW_TIMEOUT_MS
   );

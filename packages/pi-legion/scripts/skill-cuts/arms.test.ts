@@ -26,6 +26,7 @@ import {
   snapshotTag,
 } from "./arms";
 import { type Case, pathHash } from "./cases";
+import { BASE_COMMIT, HEAD_COMMIT, ROLE_LINE, ROLE_PART } from "./testdata/roleprompt";
 
 // The arms of a case, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch profile with
 // the made-up skills alpha and beta, captured with `HOME=<scratch> omp -p
@@ -1482,4 +1483,68 @@ test("a whole read by path of another skill of the profile, by count.sql's rule,
   };
   const both = buildArm(shared, "old", { old: oldDir, new: newDir }, path.join(scratch, "shared"));
   expect(otherSkillRead(both, copies, target)).toBeUndefined();
+});
+
+// R8's arm: with role-prompt commits (cli.ts's --old-role-prompt-at and --new-role-prompt-at),
+// each arm names the commit its role prompt is composed at, and the arm of no skill and minus of
+// a case of a role prompt's line (`rolePromptLine`) keep the skill and leave that line out of the
+// old arm's prompt, so "informative" measures the role line and not the skill.
+test("with role-prompt commits, each arm names its commit; a role-line case's none and minus keep the skill and leave out its role line, and a skill case's minus leaves out its line of the skill", () => {
+  const rolePromptAt = { old: BASE_COMMIT, new: HEAD_COMMIT };
+  const dirs = { old: oldDir, new: oldDir, rolePromptAt };
+  const legion: Case = { ...f1Case, id: "s1", context: "legion:acme:implementer" };
+  const role: Case = {
+    ...legion,
+    id: "r1",
+    baseFile: ROLE_PART,
+    line: { text: ROLE_LINE, lineNumber: 2, lineCount: 3 },
+    rolePromptLine: { role: "implementer", part: ROLE_PART },
+  };
+  const names = ["old", "new", "none", "minus", "twin"] as const;
+  const armsOf = (c: Case, given: Parameters<typeof buildArm>[2]) =>
+    Object.fromEntries(
+      names.map((name) => [name, buildArm(c, name, given, path.join(scratch, `${c.id}-${name}`))])
+    ) as Record<(typeof names)[number], Arm>;
+
+  const roleArms = armsOf(role, dirs);
+  expect(Object.fromEntries(names.map((name) => [name, roleArms[name].rolePrompt]))).toEqual({
+    old: { commit: BASE_COMMIT },
+    new: { commit: HEAD_COMMIT },
+    none: { commit: BASE_COMMIT, less: ROLE_LINE },
+    minus: { commit: BASE_COMMIT, less: ROLE_LINE },
+    twin: { commit: BASE_COMMIT },
+  });
+  // The role line's none and minus keep the skill: the old directory, its reads, its profile.
+  for (const name of ["none", "minus"] as const) {
+    expect(roleArms[name].skillDir).toBe(oldDir);
+    expect(roleArms[name].messages).toEqual(roleArms.old.messages);
+    expect(roleArms[name].profileSkills).toEqual(role.profile.skills);
+  }
+  // A planted line is left out of the prompt in place of the role line, by minus alone.
+  const planted = armsOf(role, { ...dirs, plantedLine: "End with the word done." });
+  expect(planted.minus.rolePrompt).toEqual({ commit: BASE_COMMIT, less: "End with the word done." });
+  expect(planted.none.rolePrompt).toEqual({ commit: BASE_COMMIT, less: ROLE_LINE });
+
+  // A skill case: none has no skill, minus the old text less its line, each at the old commit.
+  const skillArms = armsOf(legion, dirs);
+  expect(Object.fromEntries(names.map((name) => [name, skillArms[name].rolePrompt]))).toEqual({
+    old: { commit: BASE_COMMIT },
+    new: { commit: HEAD_COMMIT },
+    none: { commit: BASE_COMMIT },
+    minus: { commit: BASE_COMMIT },
+    twin: { commit: BASE_COMMIT },
+  });
+  expect(skillArms.none.skillDir).toBeUndefined();
+  expect(readFileSync(path.join(skillArms.minus.skillDir ?? "", "SKILL.md"), "utf8")).toBe(
+    f1File(2)
+      .split("\n")
+      .filter((line) => line !== LINE)
+      .join("\n")
+  );
+
+  // With no commits, no arm names one, and a role-line case has none to compose at.
+  expect(arm("old").rolePrompt).toBeUndefined();
+  expect(() => buildArm(role, "old", { old: oldDir, new: oldDir }, scratch)).toThrow(
+    "case r1: it is a role-line case, and its arms are given no role-prompt commits (--old-role-prompt-at, --new-role-prompt-at)"
+  );
 });

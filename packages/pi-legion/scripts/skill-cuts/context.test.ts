@@ -15,7 +15,7 @@ import {
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { SessionMessage } from "../skill-scenarios/transcript";
-import { type Arm, buildArm } from "./arms";
+import { type Arm, type ArmName, buildArm } from "./arms";
 import { type Case, pathHash } from "./cases";
 import {
   type AgentDefinition,
@@ -36,6 +36,17 @@ import {
   subagentDefinition,
   UnreadableDirectory,
 } from "./context";
+import {
+  BASE_COMMIT,
+  COMPOSED,
+  HEAD_COMMIT,
+  IMPLEMENTER_PARTS,
+  ROLE_LINE,
+  ROLE_PART,
+  ROLE_REPO,
+  SKILLS_ONLY_PLUGIN,
+  writeRolePromptRepository,
+} from "./testdata/roleprompt";
 
 // The case context (context.ts) built from made-up repositories, read from local
 // directories in place of `gh`: `acme/skills` (the skills alpha and beta), `acme/project` (an
@@ -682,6 +693,95 @@ describe.skipIf(goMissing && !onActions)("a Legion context", () => {
       });
     }
   }, 60_000);
+
+  // R8's arm: with --old-role-prompt-at and --new-role-prompt-at, each arm's role prompt is
+  // composed at its own commit of the case's plugin repository (testdata/roleprompt.ts: two
+  // commits whose implementer part differs by one line), in place of the daemon image's commit.
+  describe("with role-prompt commits", () => {
+    const root = path.join(dir, "role-prompt-at");
+    const c = aCase("legion:acme:implementer", { plugins: [SKILLS_ONLY_PLUGIN], contextFiles: [] });
+    const role: Case = {
+      ...c,
+      id: "role-case",
+      baseFile: ROLE_PART,
+      line: { text: ROLE_LINE, lineNumber: 2, lineCount: 3 },
+      rolePromptLine: { role: "implementer", part: ROLE_PART },
+    };
+    /** The system prompt file and the record of `of`'s arm `name`, with the old directory in both
+     *  arms and `plantedLine` for minus. */
+    const prompt = async (of: Case, name: ArmName, plantedLine?: string) => {
+      const { options } = setUp(root, of);
+      writeRolePromptRepository(path.join(root, "repos"));
+      const old = path.join(root, "old");
+      const dirs = {
+        old,
+        new: old,
+        rolePromptAt: { old: BASE_COMMIT, new: HEAD_COMMIT },
+        ...(plantedLine === undefined ? {} : { plantedLine }),
+      };
+      const arm: Arm = buildArm(of, name, dirs, path.join(root, "arms"));
+      const built = await buildContext(of, arm, options);
+      return { text: readFileSync(built.appendSystemPrompt ?? "", "utf8"), record: built.record };
+    };
+
+    test("the old and the new arm get the role prompts Compose names at their two commits, which differ by the one line, and each record names its commit (commitOf arm), whatever commit the daemon image's evidence names", async () => {
+      const old = await prompt(c, "old");
+      const fresh = await prompt(c, "new");
+      expect(old.text).toBe(COMPOSED.base);
+      expect(fresh.text).toBe(COMPOSED.head);
+      expect(old.text.split("\n").filter((line) => line !== ROLE_LINE)).toEqual(
+        fresh.text.split("\n")
+      );
+      expect(old.record.rolePrompt).toMatchObject({
+        repo: ROLE_REPO,
+        commit: BASE_COMMIT,
+        commitOf: "arm",
+        role: "implementer",
+        parts: [...IMPLEMENTER_PARTS],
+      });
+      expect(fresh.record.rolePrompt).toMatchObject({
+        repo: ROLE_REPO,
+        commit: HEAD_COMMIT,
+        commitOf: "arm",
+      });
+      const named: Case = {
+        ...c,
+        evidence: [
+          {
+            item: `the daemon image's commit of ${ROLE_REPO}`,
+            source: `a made-up deployment gives the project ACME a daemon image, so the role prompt is composed from ${ROLE_REPO} at ${HEAD_COMMIT}: the Legion daemon of a pod composes its role prompt as it was at the commit its daemon image was built from`,
+          },
+        ],
+      };
+      expect((await prompt(named, "old")).record.rolePrompt).toMatchObject({
+        commit: BASE_COMMIT,
+        commitOf: "arm",
+      });
+    }, 300_000);
+
+    test("a role-line case's arm of no skill and its minus leave exactly the role line out of the old arm's prompt and still install the skill; a skill case's none installs no skill under the old arm's prompt", async () => {
+      const less = COMPOSED.base
+        .split("\n")
+        .filter((line) => line !== ROLE_LINE)
+        .join("\n");
+      for (const name of ["none", "minus"] as const) {
+        const built = await prompt(role, name);
+        expect(built.text).toBe(less);
+        expect(built.record.rolePrompt).toMatchObject({
+          commit: BASE_COMMIT,
+          commitOf: "arm",
+          lineLeftOut: { text: ROLE_LINE, count: 1 },
+        });
+        expect(built.record.skills).toContainEqual({ name: "alpha", from: "arm" });
+      }
+      const skillNone = await prompt(c, "none");
+      expect(skillNone.text).toBe(COMPOSED.base);
+      expect(skillNone.record.skills.map((skill) => skill.name)).toEqual(["beta"]);
+      await expect(prompt(role, "minus", "A line no part holds.")).rejects.toThrow(
+        `case role-case arm minus: its role prompt at ${BASE_COMMIT} holds no line "A line no part holds.", so the arm would equal old`
+      );
+    }, 300_000);
+  });
 });
 
 // A SKILL.md's frontmatter as Oh My Pi 18.18.6 reads it (packages/utils/src/frontmatter.ts at the

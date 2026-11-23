@@ -54,6 +54,16 @@ import {
   STAGE_RUNS,
   scoreSkill,
 } from "./score";
+import {
+  BASE_COMMIT,
+  HEAD_COMMIT,
+  MISSING_COMMIT,
+  ROLE_LINE,
+  ROLE_PART,
+  ROLE_REPO,
+  SKILLS_ONLY_PLUGIN,
+  writeRolePromptRepository,
+} from "./testdata/roleprompt";
 
 // The runner's command line, end to end: each command runs as its own `bun cli.ts` process, with
 // every GH_* and GITHUB_* variable taken out of its environment, against a stand-in gateway on
@@ -2235,6 +2245,144 @@ describe("refusals before any model call", () => {
     const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
     expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
   }, 60_000);
+});
+
+// R8's arm: `--old-role-prompt-at` and `--new-role-prompt-at` compose each arm's role prompt at a
+// commit of the case's plugin repository (testdata/roleprompt.ts, read through --repos). Each
+// refusal of the option is exit 2, naming its reason, before any model call.
+describe("behaviour with role-prompt commits: refusals before any model call", () => {
+  const repos = path.join(scratch, "role-repos");
+  /** A Legion implementer's case of alpha, its profile installing the made-up plugin. */
+  const legionCase = (id: string): Case => ({
+    ...makeCase(id),
+    context: "legion:acme:implementer",
+    profile: { ...makeCase(id).profile, plugins: [SKILLS_ONLY_PLUGIN] },
+  });
+  /** A case of the implementer prompt's line ROLE_LINE. */
+  const roleCase = (id: string): Case => ({
+    ...legionCase(id),
+    baseFile: ROLE_PART,
+    line: { text: ROLE_LINE, lineNumber: 2, lineCount: 3 },
+    rolePromptLine: { role: "implementer", part: ROLE_PART },
+  });
+  /** A scenario whose case file holds `cases`. */
+  const roleScenario = (name: string, cases: readonly Case[]): Scenario => {
+    writeRolePromptRepository(repos);
+    const s = scenario(name, f1File(2), []);
+    writeFileSync(s.casesFile, cases.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    return { ...s, cases };
+  };
+  const at = (old: string, fresh: string) => [
+    "--old-role-prompt-at",
+    old,
+    "--new-role-prompt-at",
+    fresh,
+  ];
+  /** Runs `args` and gives its exit code and its standard error, checking it made no call. */
+  const refused = async (args: readonly string[]) => {
+    const from = recorder.requests.length;
+    const ran = await cli(args);
+    expect(requestsSince(from)).toHaveLength(0);
+    return { code: ran.code, stderr: ran.stderr };
+  };
+
+  test("one option alone, a role-line case with neither, a case that holds its own role prompt, a case with no Legion role and a commit the repository does not hold are each refused, naming why", async () => {
+    const legion = roleScenario("role-refused", [legionCase("l1")]);
+    const together = "--old-role-prompt-at and --new-role-prompt-at go together: give both, or neither";
+    for (const one of [
+      ["--old-role-prompt-at", BASE_COMMIT],
+      ["--new-role-prompt-at", HEAD_COMMIT],
+    ]) {
+      for (const args of [behaviour("screen", legion, ...one), [...report(legion), ...one]]) {
+        const ran = await refused([...args, "--repos", repos]);
+        expect(ran.code).toBe(2);
+        expect(ran.stderr).toContain(`skill-cuts: ${together}`);
+      }
+    }
+
+    const role = roleScenario("role-no-commit", [roleCase("r1")]);
+    for (const args of [behaviour("screen", role), report(role)]) {
+      const ran = await refused([...args, "--repos", repos]);
+      expect(ran.code).toBe(2);
+      expect(ran.stderr).toContain(
+        `case r1 (${role.casesFile}:1): it is a role-line case (rolePromptLine), whose line is checked against its prompt part at the old arm's commit, and no --old-role-prompt-at names one`
+      );
+    }
+
+    const own = legionCase("a1");
+    own.profile.appendSystemPrompt = "You are a made-up role of a made-up project.";
+    const devbox = makeCase("d1");
+    for (const [c, why] of [
+      [
+        own,
+        "case a1 holds profile.appendSystemPrompt, its own role prompt text, so no commit composes its role prompt",
+      ],
+      [
+        devbox,
+        "case d1 has no Legion role context (its context is devbox), so it has no role prompt to compose at a commit",
+      ],
+    ] as const) {
+      const s = roleScenario(`role-${c.id}`, [c]);
+      const ran = await refused([
+        ...behaviour("confirm", s, ...at(BASE_COMMIT, HEAD_COMMIT)),
+        "--repos",
+        repos,
+      ]);
+      expect({ code: ran.code, said: ran.stderr.includes(`skill-cuts: ${why}`) }).toEqual({
+        code: 2,
+        said: true,
+      });
+    }
+
+    for (const [old, fresh, flag] of [
+      [MISSING_COMMIT, HEAD_COMMIT, "--old-role-prompt-at"],
+      [BASE_COMMIT, MISSING_COMMIT, "--new-role-prompt-at"],
+    ] as const) {
+      const ran = await refused([
+        ...behaviour("control", legion, ...at(old, fresh)),
+        "--repos",
+        repos,
+      ]);
+      expect(ran.code).toBe(2);
+      expect(ran.stderr).toContain(
+        `skill-cuts: ${flag} ${MISSING_COMMIT}: no plugin repository of case l1 (${ROLE_REPO}) holds packages/daemon/internal/prompts/prompts.go at that commit: the repository does not hold the commit, or holds no role prompt composer there`
+      );
+    }
+  }, 120_000);
+
+  test("an --out that holds captures composed at other commits than the run's is refused, with the options and without them", async () => {
+    const s = roleScenario("role-other-commits", [legionCase("l1")]);
+    const texts = { old: textDigest(s.old), new: textDigest(s.new) };
+    const dirs = { old: s.old, new: s.new, rolePromptAt: { old: BASE_COMMIT, new: HEAD_COMMIT } };
+    const c = legionCase("l1");
+    const arm = buildArm(c, "new", dirs, path.join(s.dir, "arms"));
+    const files = capturePaths(armCaptureDir(s.out, arm, texts), c.id, "new");
+    mkdirSync(path.dirname(files.record), { recursive: true });
+    writeFileSync(files.body, "{}");
+    writeFileSync(
+      files.record,
+      JSON.stringify({
+        case: c.id,
+        arm: "new",
+        harness: { head: null, replaced: [] },
+        context: { rolePrompt: { repo: ROLE_REPO, commit: HEAD_COMMIT, commitOf: "arm" } },
+      })
+    );
+    const same = await refused([
+      ...behaviour("screen", s, ...at(BASE_COMMIT, BASE_COMMIT)),
+      "--repos",
+      repos,
+    ]);
+    expect(same.code).toBe(2);
+    expect(same.stderr).toContain(
+      `skill-cuts: ${s.out} holds captures composed at other commits than this run's: ${files.record} (case l1, arm new) was composed at ${HEAD_COMMIT} (an arm's commit), where this run composes it at ${BASE_COMMIT} (an arm's commit); give the same --old-role-prompt-at and --new-role-prompt-at as the run that made them, or another --out`
+    );
+    const without = await refused([...behaviour("screen", s), "--repos", repos]);
+    expect(without.code).toBe(2);
+    expect(without.stderr).toContain(
+      `skill-cuts: ${s.out} holds captures composed at other commits than this run's: ${files.record} (case l1, arm new) was composed at ${HEAD_COMMIT} (an arm's commit), where this run composes it at the daemon image's or the plugin's commit; give the same --old-role-prompt-at and --new-role-prompt-at as the run that made them, or another --out`
+    );
+  }, 120_000);
 });
 
 // The architect, 2026-11-22T07:48:46Z: "Count, per report, the cases resting on the assumption,

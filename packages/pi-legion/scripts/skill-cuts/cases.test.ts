@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -6,11 +6,22 @@ import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-sc
 import {
   type Case,
   loadCases,
+  loadCasesAt,
   pathHash,
   pathReadFile,
   resolvedReadPath,
   skillReadFile,
 } from "./cases";
+import { localSource, rolePromptParts } from "./context";
+import {
+  BASE_COMMIT,
+  HEAD_COMMIT,
+  ROLE_LINE,
+  ROLE_PART,
+  ROLE_REPO,
+  SKILLS_ONLY_PLUGIN,
+  writeRolePromptRepository,
+} from "./testdata/roleprompt";
 
 // The loader of the case file, on F1 (testdata/F1): an Oh My Pi 18.18.6 session of a scratch
 // profile with the made-up skills alpha and beta, captured with
@@ -496,4 +507,74 @@ test("refuses a whole read by path of the copy that skillReads leaves out, a pat
       `case c-dir (${bad}:1) is not a case: pathCopy.dir: is not an absolute directory with no / at its end`
     );
   }
+});
+
+// R8's arm: a case of a line of a role prompt (`rolePromptLine`) is checked against its prompt part
+// at the old arm's commit (--old-role-prompt-at), in the made-up repository of
+// testdata/roleprompt.ts, and a skill case still against the skill's directory.
+describe("a role-line case", () => {
+  /** F1's `task` step in a Legion implementer's session, as a case of ROLE_LINE. */
+  function roleCase(id: string, rolePromptLine: unknown = { role: "implementer", part: ROLE_PART }) {
+    return {
+      ...f1Case(id),
+      baseFile: ROLE_PART,
+      line: { text: ROLE_LINE, lineNumber: 2, lineCount: 3 },
+      context: "legion:acme:implementer",
+      profile: { ...f1Case(id).profile, plugins: [SKILLS_ONLY_PLUGIN] },
+      rolePromptLine,
+    };
+  }
+  const repos = path.join(scratch, "role-repos");
+  writeRolePromptRepository(repos);
+  /** The prompt parts of the made-up repository at `commit`, as the behaviour commands read them. */
+  const at = (commit: string) => rolePromptParts(commit, localSource(repos));
+
+  test("loads at the old arm's commit where its line stands in its prompt part, beside a skill case checked against the skill's directory", async () => {
+    const base = alphaDir("base-role");
+    const file = caseFile("role-loads", [roleCase("r1"), f1Case("c1")]);
+    const cases = await loadCasesAt(file, base, at(BASE_COMMIT));
+    expect(cases.map((c) => [c.id, c.rolePromptLine])).toEqual([
+      ["r1", { role: "implementer", part: ROLE_PART }],
+      ["c1", undefined],
+    ]);
+  });
+
+  test("is refused where its line is no line of its prompt part at the commit, and where its rolePromptLine lacks its role or its part; a skill case still meets the skill-directory check", async () => {
+    const base = alphaDir("base-role-refused");
+    const atHead = caseFile("role-at-head", [roleCase("r1")]);
+    await expect(loadCasesAt(atHead, base, at(HEAD_COMMIT))).rejects.toThrow(
+      `case r1 (${atHead}:1): its line is not a whole line of ${ROLE_REPO}:${ROLE_PART} at ${HEAD_COMMIT}: ${JSON.stringify(ROLE_LINE)}`
+    );
+    const otherLine = {
+      ...roleCase("r2"),
+      line: { text: "Answer in French.", lineNumber: 2, lineCount: 3 },
+    };
+    const skillLine = { ...f1Case("c5"), line: { text: ROLE_LINE, lineNumber: 9, lineCount: 10 } };
+    const file = caseFile("role-refused", [
+      otherLine,
+      roleCase("r3", { part: ROLE_PART }),
+      roleCase("r4", { role: "implementer" }),
+      skillLine,
+    ]);
+    const refused = await loadCasesAt(file, base, at(BASE_COMMIT)).then(
+      () => "",
+      (error: Error) => error.message
+    );
+    expect(refused.split("\n")).toEqual([
+      "refused cases:",
+      `case r2 (${file}:1): its line is not a whole line of ${ROLE_REPO}:${ROLE_PART} at ${BASE_COMMIT}: "Answer in French."`,
+      expect.stringStartingWith(`case r3 (${file}:2) is not a case: rolePromptLine.role: `),
+      expect.stringStartingWith(`case r4 (${file}:3) is not a case: rolePromptLine.part: `),
+      `case c5 (${file}:4): its line is not a whole line of ${path.join(base, "SKILL.md")}: ${JSON.stringify(ROLE_LINE)}`,
+    ]);
+  });
+
+  test("loadCases, which names no commit, refuses a role-line case and loads a skill case", () => {
+    const base = alphaDir("base-role-no-commit");
+    const file = caseFile("role-no-commit", [roleCase("r1")]);
+    expect(() => loadCases(file, base)).toThrow(
+      `case r1 (${file}:1): it is a role-line case (rolePromptLine), whose line is checked against its prompt part at the old arm's commit, and no --old-role-prompt-at names one`
+    );
+    expect(loadCases(caseFile("skill-no-commit", [f1Case("c1")]), base)).toEqual([f1Case("c1")]);
+  });
 });
