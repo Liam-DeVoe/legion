@@ -860,13 +860,19 @@ func wayBackOf(t *testing.T, suffix string) string {
 
 // runSQL runs sql on a connection of its own to dsn, as psql runs it under ON_ERROR_STOP: a
 // statement that fails ends the run with its error, and the transaction it stood in is rolled
-// back.
+// back. dsn is a URL a pgx pool reads (testdb.Database), which holds pgxpool's keys, and
+// pgx.Connect would send them to the server as settings it does not know, so the connection is
+// made to the same database by the URL with those keys taken out (testdb.DatabaseURL).
 func runSQL(t *testing.T, dsn, sql string) error {
 	t.Helper()
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
+	plain, err := testdb.DatabaseURL(dsn, "")
 	if err != nil {
-		t.Fatalf("connect to %s: %v", dsn, err)
+		t.Fatal(err)
+	}
+	conn, err := pgx.Connect(ctx, plain)
+	if err != nil {
+		t.Fatalf("connect to %s: %v", plain, err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, sql); err != nil {
