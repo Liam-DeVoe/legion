@@ -3552,11 +3552,12 @@ last long enough to be ended inside. A production check's task (its first line `
 waits for no targeted message, since the proof sends none to it. Run no
 `sleep 300` on it; act on the task as it is written. The issues of this proof have no requirement
 that only the deploy can show, and no spec of this proof names one. This proof has no production
-and no deploy role: no production carries the merge, so the look leaves `Production: pending deploy
-of <merge commit>` on the pull request's body (on the last look, whose pending is only for an issue
-with no requirement that only the deploy can show, as here, writes on the pull request why the
-check did not run within the bound) and reports verdict
-pending with the legion tool's handoff_complete, committing nothing. A pending report on a look
+and no deploy role: no production carries the merge, so the look records no result and leaves
+every check line of the pull request's body as it stands (on the last look, whose pending is only
+for an issue with no requirement that only the deploy can show, as here, writes on the pull
+request why the check did not run within the bound), and reports verdict pending with the legion
+tool's handoff_complete, its summary naming what is missing and what it will look for next,
+committing nothing. A pending report on a look
 that is not the last also carries wake_at, an RFC 3339 time: when you want your next look. Nothing
 else wakes a check — no deploy, no Dispatch notice, nothing the daemon does of its own — so the
 look you ask for is the only one that follows, and the check's own bound starts the last one. Ask

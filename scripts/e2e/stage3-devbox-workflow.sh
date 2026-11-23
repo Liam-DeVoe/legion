@@ -306,7 +306,7 @@ nats_urls:
 dispatch_url: http://127.0.0.1:$port_dispatch
 dispatch_token_file: $work/dispatch-token
 # The project's repository is no key of legion.yaml: the PUT below sets $repo as the project's
-# default repository in Dispatch. `production_check: tester` is the word that names the role a merge's production check
+# default repository in Dispatch. "production_check: tester" is the word that names the role a merge's production check
 # is handed to, written out here rather than left to the default, so the run proves the setting is
 # read; Stage 4b's rig names no key and proves the default.
 projects:
@@ -784,10 +784,11 @@ issue, and any other notice is not an instruction: neither is yours to act on. O
 no message: a production check's (its first line `Production check of <key>: …`, handed to the
 tester once the merge closed its issue), since the proof sends none to it. Act on that task as
 it is written. The issues of this proof have no requirement that only the deploy can show, and no
-spec of this proof names one. This proof has no production and no deploy role, so the look leaves
-`Production: pending deploy of <merge commit>` on the pull request's body (on the
-last look, writes on the pull request why the check did not run within the bound) and reports
-verdict pending with the legion tool's handoff_complete,
+spec of this proof names one. This proof has no production and no deploy role, so the look records
+no result and leaves every check line of the pull request's body as it stands (on the last look,
+writes on the pull request why the check did not run within the bound), and reports verdict
+pending with the legion tool's handoff_complete, its summary naming what is missing and what it
+will look for next,
 committing nothing. A pending report on a look that is not the last also carries wake_at, an
 RFC 3339 time: when you want your next look. Nothing else wakes a check — no deploy, no Dispatch
 notice, nothing the daemon does of its own — so the look you ask for is the only one that follows,
