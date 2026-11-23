@@ -75,7 +75,19 @@ ARG RUNNER_UID=1001
 
 # One layer for everything that is installed. The apt lists are removed in the same layer, so
 # they never reach the pushed image.
-RUN set -eux; \
+#
+# Each read of the network in it is bounded, so a host that answers and then all but stops fails
+# this build by name rather than holding the job that builds it until its limit; the bounds and
+# their measurements are in .github/ci-notes/browser-image.md. The key is read by curl, whose
+# --max-time bounds each attempt's whole transfer, its body included. apt-get update and the
+# packages' download (--download-only) run through .github/scripts/network-install.sh,
+# bind-mounted for this RUN alone (the build's context is .github for that one file, which
+# browser.Dockerfile.dockerignore says), under its bound for apt. The update carries
+# --error-on=any, because apt-get update exits 0 on a mirror it could not read. The install from
+# what was downloaded (--no-download) reads no network and runs unwrapped, so no bound can end it
+# while dpkg writes.
+RUN --mount=type=bind,source=scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    set -eux; \
     # postgresql-common's postinst runs `pg_createcluster` and so a whole `initdb` for a cluster
     # at /var/lib/postgresql/18/main that nothing here ever starts: the harness makes its own
     # under the run's temporary directory. Turning it off keeps both the build and the image
@@ -83,7 +95,7 @@ RUN set -eux; \
     install -d /etc/postgresql-common; \
     echo 'create_main_cluster = false' > /etc/postgresql-common/createcluster.conf; \
     install -d /usr/share/postgresql-common/pgdg; \
-    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    curl -fsSL --retry 2 --retry-all-errors --max-time 60 https://www.postgresql.org/media/keys/ACCC4CF8.asc \
       -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc; \
     # The key is checked before the source that trusts it is written, so no index signed by an
     # unexpected key is ever read. The ARG above says what the value is and where it came from.
@@ -93,8 +105,9 @@ RUN set -eux; \
     rm -f /tmp/pgdg-key.sha256; \
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
+    network-install.sh apt -- apt-get update --error-on=any; \
+    # The packages, named once: the download and the install below both read this list.
+    set -- \
       "postgresql-${PG_MAJOR}" \
       "postgresql-client-${PG_MAJOR}" \
       "postgresql-${PG_MAJOR}-pgvector" \
@@ -150,6 +163,8 @@ RUN set -eux; \
       # GStreamer libraries and plugins WebKit links and loads, not the command-line tools. The
       # registry assertion below is the thing that needs it.
       gstreamer1.0-tools; \
+    network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@"; \
+    apt-get install -y --no-install-recommends --no-download "$@"; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 

@@ -125,16 +125,22 @@ def row_tag(kind: str, source: str, digest: str) -> str:
 # ---------------------------------------------------------------- a built row's build recipe
 def recipe_sha256(dockerfile: str, workflow: str) -> str:
     """The sha256 of the whole recipe a `built:` row's image is built from: the Dockerfile's own
-    path, every file of the build context directory, which is the directory that Dockerfile sits
-    in, and the workflow file that runs the build. Both paths are relative to the repository
-    root, which is where every reader of this runs.
+    path, every file of the directory that Dockerfile sits in, and the workflow file that runs
+    the build. Both paths are relative to the repository root, which is where every reader of
+    this runs.
 
     Each file is folded in as its path and the sha256 of its bytes, in the order those paths
     sort, so a byte changed in any of them moves the hash, and so do a file added to the
-    context and a file renamed inside it — both of which change what the build receives while
+    directory and a file renamed inside it — both of which change what the build receives while
     every file it reads today stays as it was.
 
-    The Dockerfile's path is folded in ahead of them because the context is the directory and
+    The build's context is that directory's parent, .github, which the Dockerfile's own
+    .dockerignore cuts to that directory and one script, .github/scripts/network-install.sh: the
+    install RUN bind-mounts it for that RUN alone, so it leaves nothing in the image. It decides
+    how long an install may wait on the network and never which bytes the image holds, so it is
+    no part of the recipe, and an edit of it builds no new image.
+
+    The Dockerfile's path is folded in ahead of them because what is hashed is the directory and
     not the file: two rows naming two Dockerfiles of one directory read the same files, so
     without that path they would hash alike, and a row built from the other file of
     .github/docker would carry the hash the browser image's own label holds — rule 10 of
@@ -144,7 +150,7 @@ def recipe_sha256(dockerfile: str, workflow: str) -> str:
     so that name is as much of the recipe as the bytes it names.
 
     All three are in it because all three decide the bytes that get pushed. The Dockerfile and
-    every other file of the context, because the build reads them: a `COPY` takes a context
+    every other file of its directory, because the build reads them: a `COPY` takes a context
     file into the image, and a context file no `COPY` names today is one the next edit of the
     Dockerfile can name. The workflow, because the build is more than its Dockerfile: its
     `labels:`, `outputs:`, `platforms:`, `provenance:` and build-args, the pin of the action

@@ -59,6 +59,12 @@
 # accounts for every row. It copies with `crane` from PATH (.github/actions/install-crane
 # installs it) under a login that may write the package.
 #
+# Every crane call runs through .github/scripts/network-install.sh's bound for crane, beside this
+# script: crane's registry client sets no deadline of its own on an answer, so a registry that
+# accepts and never answers, or sends part of a manifest and then all but stops, would otherwise
+# hold the ci-images job until its limit. The wrapper keeps crane's standard output, which the
+# reads below take, and prints one line of its own for each attempt on standard error.
+#
 # Run from anywhere: .github/scripts/mirror-ci-images.sh
 # CI runs it in ci.yaml's ci-images job, before the package mode of
 # .github/scripts/check-ci-images.sh reads the package in that same job. That job is the one
@@ -71,6 +77,11 @@ if ! command -v crane >/dev/null 2>&1; then
   echo "::error file=.github/scripts/mirror-ci-images.sh::crane is not on PATH, and this script copies with it. Run .github/actions/install-crane first." >&2
   exit 1
 fi
+
+# crane_bounded <crane argument…>: one crane call, under the wrapper's bound for crane.
+crane_bounded() {
+  .github/scripts/network-install.sh crane -- crane "$@"
+}
 
 # The reference grammar is .github/scripts/ci_images.py's, beside this script in the repository
 # it copies for, which PYTHONPATH names: the gate reads a row's upstream with the same two
@@ -130,7 +141,7 @@ fi
 # image_go <reference>: the GOLANG_VERSION of that image's config, which library/golang's own
 # build writes there. Prints nothing where the config carries no such entry.
 image_go() {
-  crane config --platform linux/amd64 "$1" | PYTHONDONTWRITEBYTECODE=1 python3 -c '
+  crane_bounded config --platform linux/amd64 "$1" | PYTHONDONTWRITEBYTECODE=1 python3 -c '
 import json
 import sys
 
@@ -170,7 +181,9 @@ while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
     built=$((built + 1))
     continue
   fi
-  have=$(crane digest "$registry:$tag" 2>/dev/null || true)
+  # Its standard error, crane's and the wrapper's, is dropped: a tag the package does not hold is
+  # crane's own refusal, which the copy below answers, and no fault of this run.
+  have=$(crane_bounded digest "$registry:$tag" 2>/dev/null || true)
   if [ "$have" = "$digest" ]; then
     # The Go check on the package's own copy: `crane copy` kept the manifest digest, so those
     # are this row's bytes under this row's digest, and a run that copies nothing — the common
@@ -188,8 +201,8 @@ while IFS=$'\t' read -r registry tag digest source kind claimed_go; do
     check_go "$source" "$claimed_go" "${source%@*}"
   fi
   echo "copy   $source -> $registry:$tag"
-  crane copy "$source" "$registry:$tag"
-  have=$(crane digest "$registry:$tag")
+  crane_bounded copy "$source" "$registry:$tag"
+  have=$(crane_bounded digest "$registry:$tag")
   if [ "$have" != "$digest" ]; then
     echo "::error file=.github/ci-images.yaml::$registry:$tag landed at $have, and the row says $digest. This copy read $source, so the bytes it copied are the row's: another writer moved this tag after the copy. Read the package for what else writes this tag, then re-run the ci-images job." >&2
     exit 1

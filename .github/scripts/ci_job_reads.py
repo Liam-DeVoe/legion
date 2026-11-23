@@ -1251,9 +1251,13 @@ def forced_order_run(job, step, workdir, pkgs):
 
 
 def forced_order_reads(job, step):
-    """forced-order.sh itself and the hooks it applies, which `job`'s `step` reads."""
+    """forced-order.sh itself, the hooks it applies, and the bound its download of nats-server's
+    module runs under, which `job`'s `step` reads."""
     return reads((FORCED_ORDER, f"{at(job, step)} runs it"),
-                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"))
+                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"),
+                 (".github/scripts/network-install.sh",
+                  f"{FORCED_ORDER}, run by {at(job, step)}, downloads nats-server's module through it, under "
+                  f"its bound for go"))
 
 
 def two_builds_go_step():
@@ -2493,9 +2497,11 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("mirror_ci_images_test", "Test the CI image mirror", f"{SCRIPTS}/mirror-ci-images.test.sh", [
         (f"{SCRIPTS}/mirror-ci-images.sh", "the script under test"),
-        (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:437 runs the gate over the registry a copy left"),
-        (f"{SCRIPTS}/ci_images.py", "mirror-ci-images.test.sh:140 symlinks in the grammar both scripts read a row with"),
-        (".github/ci-images.yaml", "mirror-ci-images.test.sh:362-419 builds its ordering fixture from this repository's own rows"),
+        (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:439 runs the gate over the registry a copy left"),
+        (f"{SCRIPTS}/ci_images.py", "mirror-ci-images.test.sh:141 symlinks in the grammar both scripts read a row with"),
+        (f"{SCRIPTS}/network-install.sh", "mirror-ci-images.test.sh:142 symlinks in the bound every crane call of the "
+                                          "script under test runs under"),
+        (".github/ci-images.yaml", "mirror-ci-images.test.sh:364-421 builds its ordering fixture from this repository's own rows"),
     ]),
     # The tool scripts, in the order the job runs them: the fetch helper every install goes
     # through, the filler that puts the bytes in the copy that helper reads, the gate that holds
@@ -3141,6 +3147,8 @@ GATES = [
         ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
+        (".github/scripts/network-install.sh", f"{at('pi-legion', 'Pull the judge image rig.sh runs')} pulls rig.sh's "
+                                               f"judge_image through it, under its bound for docker"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
@@ -3984,11 +3992,13 @@ GATES = [
         (".github/ci-images.yaml", f"{at('ci-images', COPY_STEP)} copies the rows it holds, and "
                                    f"{at('ci-images', PACKAGE_STEP)} reads each row's digest"),
         (".github/scripts/mirror-ci-images.sh", f"{at('ci-images', COPY_STEP)} runs it"),
+        (".github/scripts/network-install.sh", f"{at('ci-images', COPY_STEP)}: mirror-ci-images.sh runs every crane "
+                                               f"call through it, under its bound for crane"),
         (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
         (".github/scripts/ci_images.py", "every reader of a row goes through it, the recipe hash "
                                          "rule 10 compares among them"),
-        (".github/docker/**", f"{at('ci-images', PACKAGE_STEP)} hashes every file of the build "
-                              f"context, which is this directory, and refuses the built row whose "
+        (".github/docker/**", f"{at('ci-images', PACKAGE_STEP)} hashes every file of the directory the "
+                              f"browser image's Dockerfile sits in, and refuses the built row whose "
                               f"published image carries another recipe's sha256 in its "
                               f"legion.browser-image.source-sha256 label"),
         (".github/workflows/browser-image.yaml", f"the other half of that recipe: "

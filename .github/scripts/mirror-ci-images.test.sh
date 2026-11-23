@@ -14,10 +14,11 @@
 # `crane config` can read, `package` is one digest per line, `copied` is one reference per line
 # the stand-in copied, and `references` is every reference the stand-in was asked for, in the
 # order it was asked, which is what a case reads to say where a run went. The cases before the
-# last build a miniature repository under a temporary directory and symlink the real script, and
-# the reference grammar it reads a row with (ci_images.py), into it, so the script under test is
-# the file CI runs: it resolves its root from its own path (`cd "$(dirname "$0")/../.."`), which
-# the symlink puts at the fixture root.
+# last build a miniature repository under a temporary directory and symlink the real script, the
+# reference grammar it reads a row with (ci_images.py) and the bound every crane call of it runs
+# under (network-install.sh) into it, so the script under test is the file CI runs: it resolves
+# its root from its own path (`cd "$(dirname "$0")/../.."`), which the symlink puts at the
+# fixture root.
 #
 # The last case is the ordering ci.yaml's ci-images job keeps: the package mode of
 # check-ci-images.sh reads which rows the package holds, so the copy for this change must run
@@ -138,6 +139,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/state"
   ln -s "$mirror_script" "$root/.github/scripts/mirror-ci-images.sh"
   ln -s "$script_dir/ci_images.py" "$root/.github/scripts/ci_images.py"
+  ln -s "$script_dir/network-install.sh" "$root/.github/scripts/network-install.sh"
   cat > "$root/.github/ci-images.yaml" <<YAML
 registry: $REGISTRY
 

@@ -30,10 +30,10 @@ jobs:
     # (run 44807153227), plus that one guard, 250 s: 755 s, or 13 minutes. And at least the waits
     # on the network before its tests, so each can fail by name:
     # why: .github/ci-notes/ci-job-pi-envoy.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
-    # 180 s + 1,207 s + 2 x 245 s + 425 s = 2,302 s -> 39 min.
-    timeout-minutes: 39
+    # 240 s + 1,207 s + 2 x 245 s + 425 s = 2,362 s -> 40 min.
+    timeout-minutes: 40
     env:
-      JOB_TIMEOUT_MINUTES: 39 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 40 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.

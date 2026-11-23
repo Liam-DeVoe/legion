@@ -27,24 +27,40 @@ inside it. That package's tests are where the rest of the time is.
 Each job's limit is held, beside what its comment derives from its go test steps, to every wait on
 the network the job makes, so each one fails by name before GitHub's cancellation, which names
 nothing: up to each step that installs, the bounds of every step before it (its own limit, or its
-installs and its go tests' own `-timeout` where it sets none), the runner's pulls and the step's own
-installs. Both jobs make the same waits but for the NATS images:
+installs and its go tests' worst case where it sets none), the runner's pulls and the step's own
+installs. Both jobs make the same waits but for the NATS images, the uv install and the
+forced-order step's download:
 
-- 180 s: before the first step the runner pulls the Postgres service image with `docker pull`,
+- 240 s: before the first step the runner pulls the Postgres service image with `docker pull`,
   which has no bound of its own and takes none from a workflow, so the job's limit is its one
-  bound; it counts at what a healthy pull takes (`.github/ci-notes/ci.md`, "The runner's own pulls
-  of a job's service and container images").
+  bound; it counts at twice the slowest green pull, rounded up to the minute
+  (`.github/ci-notes/ci.md`, "The runner's own pulls of a job's service and container images").
 - 490 s: the two apt commands of `.github/scripts/runner-tmux.sh`, 245 s each (three attempts of
   apt's 60 s, each killed 15 s after its SIGTERM, with two 10 s pauses). They run only on a runner
   image without tmux, which a later image can be, so they count.
+- 1,444 s: `.github/actions/install-jj`, at the worst case `.github/ci-notes/ci.md`'s "The worst
+  case of the tool installs that read .github/scripts/ci-tools.sh" derives.
 - 1,207 s: `.github/actions/install-omp`'s download of the pinned Oh My Pi, `curl --retry 3
   --retry-all-errors --max-time 300`: four attempts of 300 s, with curl's own pauses of 1, 2 and
   4 s between them, before the action fails by name.
+- 248 s, in daemon-go alone: `.github/actions/install-uv`, from that same section.
 - 425 s for each NATS test image `.github/actions/pull-test-images` pulls: one in daemon-go
   (testnats.Image), three in daemon-go-race (Image, SkippingImage and Envoy's HubImage).
+- In daemon-go alone, the forced-order step's download of nats-server's module, which
+  `packages/envoy/scripts/forced-order.sh` runs under network-install.sh's bound for go, 425 s
+  (three attempts of 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses). It comes
+  after the two go test steps, so their worst cases, as the job's comment derives them, are in its
+  sum: the plain step's slowest green run and its -timeout, 15.0 min + 15 min = 1,800 s, and the
+  race-impossible step's, 0.5 min + 10 min = 630 s.
 
-daemon-go: 180 s + 490 s + 1,207 s + 425 s = 2,302 s, which its 60 minutes (3,600 s) hold.
-daemon-go-race: 180 s + 490 s + 1,207 s + 1,275 s = 3,152 s, which its 70 minutes (4,200 s) hold.
+daemon-go: 240 s + 490 s + 1,444 s + 1,207 s + 248 s + 425 s + 1,800 s + 630 s + 425 s = 6,909 s,
+which its 116 minutes (6,960 s) hold.
+daemon-go-race: 240 s + 490 s + 1,444 s + 1,207 s + 1,275 s = 4,656 s, which its 78 minutes
+(4,680 s) hold.
+
+The 60 and 70 minutes the two jobs had end before those sums: they held the waits as they stood
+before install-jj and install-uv were counted, before forced-order.sh's download was bounded and
+before the runner's pull was counted at 240 s, 2,302 s and 3,152 s.
 
 The Postgres image `scripts/e2e/stage1-skeleton.sh` pulls (425 s) is left out: the pull stands in
 that script's `if [ -z "${LEGION_E2E_PG_DSN:-}" ]` branch, the devbox's path, and daemon-go's env

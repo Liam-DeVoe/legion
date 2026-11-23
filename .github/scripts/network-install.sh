@@ -59,7 +59,11 @@
 # Unavailable`; apt `Could not connect to`, `Connection failed`, `503  Service Unavailable`; elan
 # `Could not connect to server`, `Connection reset by peer`, `tunnel failed, response 503`;
 # Playwright `ECONNREFUSED`, `ECONNRESET`, `server returned code 503`; docker `connect: connection
-# refused`. And the words Go's own HTTP client, which docker, containerd and the go command are
+# refused`; crane 0.22.1, measured on 2026-11-23 against the same three and a server that answers
+# 429, `connect: connection refused`, `connection reset by peer`, `unexpected status code 503
+# Service Unavailable` and `unexpected status code 429 Too Many Requests`, the last three after
+# go-containerregistry's own retries of 8 or 9 s. And the words Go's own HTTP client, which
+# docker, containerd, crane and the go command are
 # built on, gives a server that fails it otherwise, read from their sources (go 1.27.3's net/http,
 # containerd 1.7.30's remotes/docker): `net/http: timeout awaiting response headers` (docker gave up
 # with it after 41 s on a registry that accepted and never answered), `Client.Timeout exceeded`,
@@ -69,7 +73,8 @@
 # `http2: server sent GOAWAY`; and a registry's rate limit, `429 Too Many Requests`, containerd's
 # `toomanyrequests` and bun's `GET <url> - 429`. Their own faults name none of these: bun `lockfile
 # had changes, but lockfile is frozen`, go `404 Not Found … unknown revision`, apt `Unable to locate
-# package`, elan `no such release`, Playwright `Invalid installation targets`, docker `not found`.
+# package`, elan `no such release`, Playwright `Invalid installation targets`, docker `not found`,
+# crane `MANIFEST_UNKNOWN: manifest unknown`.
 # apt-get update exits 0 on a mirror it could not read unless it is given `--error-on=any`, so each
 # wrapped update is.
 NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefused|econnreset|etimedout|eai_again|could not connect|connection failed|failed to connect|connection timed out|operation timed out|i/o timeout|tls handshake timeout|timeout awaiting response headers|client\.timeout exceeded|request canceled while waiting for connection|unexpected eof|stream error: stream id [0-9]+|server sent goaway|too ?many ?requests|temporary failure (in name )?resolv|could not resolve host|no such host|network is unreachable|tunnel failed|failure when receiving data from the peer|server returned code (429|5[0-9][0-9])|get [^ ]+ - (429|5[0-9][0-9])|5[0-9][0-9] +(service unavailable|bad gateway|gateway time-?out|internal server error)'
@@ -140,8 +145,23 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 #               dl.google.com. The worker image's SDK RUN, which holds its download, install.sh and
 #               the bytecode compile: 30.2 s at its slowest of 40 green builds, job 136124064333.
 #               2 × 30.2 s is 60.4 s, so 120 s an attempt.
-#   mise needs no kind: its own 30 s bound on each request covers the body too, so a stalled
-#   `mise install` ends by itself.
+#   crane       crane's reads and copies of an image in a registry: the `crane digest`, `crane
+#               config` and `crane copy` of .github/scripts/mirror-ci-images.sh, and the `crane
+#               config`, `crane tag` and `crane manifest` of .github/workflows/browser-image.yaml.
+#               Slowest of the 2 copies and 39 reads of three green ci-images jobs (127377032837,
+#               128456601595 and 128563140918, 2026-11-05 to 2026-11-07): 18.2 s, the copy of
+#               Playwright's 990 MB image from mcr.microsoft.com in job 128456601595 (the other
+#               copy, golang:1.27.3-alpine from Docker Hub, 12.4 s in job 127377032837); every read
+#               ended inside 1.1 s. 2 × 18.2 s is 36.4 s, so 60 s an attempt. crane 0.22.1's registry
+#               client sets no deadline of its own on an answer's headers or its body: a
+#               `crane digest` of a registry that accepted and never answered had not ended
+#               after 300 s (2026-11-23).
+#   mise needs no kind: each request carries a bound of its own that covers the body too, so a
+#   stalled `mise install` ends by itself. mise 2026.8.12 gives an API request 30 s
+#   (http_timeout) and a download 30 minutes (http_download_timeout), each tried 3 more times
+#   (http_retries); a `mise install` of the jj spec behind a proxy that accepted and never
+#   answered gave up after 336 s. .github/actions/install-jj, the one action of the required jobs
+#   that runs it, sets the download's to 60 s, and the comment on that setting says why.
 #   yarn has no kind: no required job installs with Yarn, so no run measures a bound for it, and
 #   npm's would be borrowed; a job that adds one measures that install's runs and adds the kind here.
 #
@@ -157,7 +177,7 @@ set -eu
 ATTEMPTS=3
 DEFAULT_PAUSE=10
 DEFAULT_KILL_AFTER=15
-KINDS="apt bun bun-image docker playwright go elan apk npm uv gcloud"
+KINDS="apt bun bun-image docker playwright go elan apk npm uv gcloud crane"
 
 # bound_of <kind>: the kind's bound per attempt in seconds, from THE KINDS above, or nothing.
 bound_of() {
@@ -173,6 +193,7 @@ bound_of() {
     npm) echo 120 ;;
     uv) echo 120 ;;
     gcloud) echo 120 ;;
+    crane) echo 60 ;;
   esac
 }
 
