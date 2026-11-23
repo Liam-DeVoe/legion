@@ -1038,6 +1038,36 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 	}
 }
 
+// A step's task names the report of each earlier step whose row holds a handoff record, the
+// agent's own earlier steps among them and a role at two steps at each of its places (workflow's
+// reportsBefore), and its `Handoff:` line names the report of the row its move carried: the step
+// that just passed, the step an acceptance accepted, or the step that sent the work back
+// (workflow's task). Every worker's composed prompt says so, and gives the read of its own handoff
+// whole, since `dispatch_handoff_read` takes the issue and the phase. This shows the text ships,
+// never that a worker reads it.
+func TestEveryWorkerPromptSaysWhichReportsItsTaskNames(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
+		t.Run(string(role), func(t *testing.T) {
+			text := composedText(t, composer, role, false)
+			for _, terms := range [][]string{
+				{"one `Step <j> (<step>) reported: <word> version <v>.`", "for each earlier step of the task that recorded a handoff", "your agent's own earlier steps among them", "two steps has one at each of its places"},
+				{"The `Handoff:` line", "on a move forward", "the step that just passed", "the step it accepted"},
+				{"after a return", "the step that sent the work back", "`Reason:` line"},
+				{"your handoff on the Dispatch issue (`dispatch handoff-read --issue <issue> --phase <word>`)"},
+				{"Read the report your task's `Handoff:` line names with the command that line quotes"},
+			} {
+				if !clauseHolds(text, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", role, terms)
+				}
+			}
+		})
+	}
+}
+
 // Every part of both trees holds the production check's rule clause by clause, not only the parts
 // Compose joins for the tester and the implementer. A sentence left in a part that neither role
 // composes still reaches whichever role does compose it, and a part Compose joins for nobody today
