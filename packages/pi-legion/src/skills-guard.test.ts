@@ -707,7 +707,7 @@ test("the architect's skill routes its own steps to the reference that names own
   expect([
     ...lacks("legion-architect/SKILL.md", [
       /key is `owner` is yours[^.;]*references\/own-steps\.md`/,
-      /`acceptance` whose key is not `owner` is another agent's[^.;]*; you sign off nothing for it/,
+      /`acceptance` whose key is not `owner` is another agent's[^.;]*\. You sign off nothing for it/,
     ]),
     ...lacks("legion-architect/references/own-steps.md", [
       /no such step, or that step's key is `owner`, it is yours/,
@@ -915,7 +915,7 @@ test("the architect's wake table sends each owner-plan notice to where its handl
       /\| `pr-blocked` \|[^|]*references\/capped-pull-request\.md`/,
     ]),
     ...lacks("legion-architect/references/capped-pull-request.md", [
-      /a tester's fail and a move back count none/,
+      /A tester's fail and a move back count none/,
     ]),
     ...lacks("legion-architect/references/plan-changes.md", [
       /\*\*`task-stopped`:\*\*[^*]*later version that changes the task, or end the work/,

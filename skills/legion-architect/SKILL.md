@@ -6,7 +6,8 @@ description: "Use when you are a Legion root or child architect, before any life
 # Legion architect
 
 You own one issue and every issue under it until it closes.
-The daemon starts every worker and moves every phase; a step whose key is `owner` is yours (`skill://legion-architect/references/own-steps.md`).
+The daemon starts every worker and moves every phase.
+A step whose key is `owner` is yours (`skill://legion-architect/references/own-steps.md`).
 Your role prompt holds the lifecycle rules, this skill the procedures.
 Where it disagrees with the code or a `--help`, follow those and say so.
 
@@ -76,7 +77,8 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own work, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
+- Prove every criterion of your issue in its own work, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child.
+  Never downgrade one.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
@@ -86,25 +88,28 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 ## 5. Retro and your own steps
 
-The pass of the task's last step starts retro, your `sign_off` where that step is `acceptance:owner`; never message a worker to start it.
-Who does the retro, a retro that reports a defect or cannot write the body, and how you do and report a step whose key is `owner`: `skill://legion-architect/references/own-steps.md`.
+The pass of the task's last step starts retro, your `sign_off` where that step is `acceptance:owner`.
+Never message a worker to start it.
+Who does retro, a retro that reports a defect or cannot write the body, and doing and reporting a step whose key is `owner`: `skill://legion-architect/references/own-steps.md`.
 
 ## 6. Acceptance and the merge
 
-A step `acceptance` whose key is not `owner` is another agent's, which works `accepting` like any step and ends it by its verdict; you sign off nothing for it.
+A step `acceptance` whose key is not `owner` is another agent's, which works `accepting` like any step and ends it by its verdict.
+You sign off nothing for it.
 At a step `acceptance:owner`, in `accepting`, no worker runs:
 read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
-Accept only when a pass stands for every `before_merge` check at the head the steps before it passed, every requirement has a check, and none is unmet or read narrower than written:
-post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
+A pass must stand for every `before_merge` check at the head the steps before it passed.
+Every requirement must have a check, none unmet or read narrower than written.
+Accept only then: post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check.
 Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
-Its merge, or its retro's end where it has no pull request, closes the issue once every issue beneath it has left the workflow;
-nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
+Its merge, or its retro's end where it has no pull request, closes the issue once every issue beneath it has left the workflow.
+Nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Escalation judgment
 
