@@ -74,7 +74,7 @@ func (s *server) readProjectDeployRun(ctx context.Context, project, repo string,
 		return delivery.DeliveryRunDetailView{}, errorf(http.StatusNotFound, "NOT_FOUND", "%s is the deploy source of no project with delivery on", repo)
 	}
 	rule := rules[index]
-	run, err := readDeliveryRun(ctx, pool, rule.DeployRepo, runID)
+	run, err := readDeliveryRun(ctx, pool, []string{rule.DeployRepo}, runID)
 	if err != nil {
 		return delivery.DeliveryRunDetailView{}, err
 	}
@@ -93,20 +93,27 @@ func (s *server) readProjectDeployRun(ctx context.Context, project, repo string,
 // timeline keeps its run rows (projectTimelinePopulation): a deploy run on main counts by the rule
 // the eval registry's day rows count a deploy by (evals.Attribution.CountsDeploy), through the pull
 // requests it ships first, or, shipping none, as the project whose deploy source reads its
-// repository. What it ships first is delivery.Deploys.ShippedBy over the rows
-// delivery.ReadWindowRows reads for a window holding the run's start alone, which reads the deploys
-// before it and the pull requests they leave to it as a wider window's read does. Any other run is
-// no deploy of a window, which no row of a timeline lists, so it counts for no project.
+// repository. What it ships first is delivery.Deploys.ShippedBy over the pull requests merged in a
+// window holding the run's start alone (delivery.ListPullRequestsInWindow) and the runs
+// delivery.ReadWindowRuns reads of rule's repository for it, which reads the deploys before it and
+// the pull requests they leave to it as a wider window's read does. Any other run is no deploy of a
+// window, which no row of a timeline lists, so it counts for no project.
 func (s *server) deployRunCountsFor(ctx context.Context, rule delivery.DeliverySettings, run delivery.DeliveryRun, project string) (bool, error) {
+	pool := s.deps.Store.Pool
 	// Postgres keeps microseconds, so the window ends a microsecond past the start it holds.
-	merged, deploys, err := delivery.ReadWindowRows(ctx, s.deps.Store.Pool, rule, run.StartedAt, run.StartedAt.Add(time.Microsecond), false, true)
+	from, to := run.StartedAt, run.StartedAt.Add(time.Microsecond)
+	prs, err := delivery.ListPullRequestsInWindow(ctx, pool, from, to)
+	if err != nil {
+		return false, fmt.Errorf("read the pull requests merged as run %d of %s started: %w", run.RunID, run.Repo, err)
+	}
+	applies, deploys, err := delivery.ReadWindowRuns(ctx, pool, rule, from, to, false, true)
 	if err != nil {
 		return false, fmt.Errorf("read what run %d of %s ships: %w", run.RunID, run.Repo, err)
 	}
 	if !slices.ContainsFunc(deploys.Started.Runs, func(started delivery.DeliveryRun) bool { return started.RunID == run.RunID }) {
 		return false, nil
 	}
-	shipped := deploys.ShippedBy(merged, rule)[run.RunID]
+	shipped := deploys.ShippedBy(delivery.MergedRows{PullRequests: prs, ApplyRuns: applies.Runs, ApplyJobs: applies.Jobs}, rule)[run.RunID]
 	var keys []string
 	for _, pr := range shipped {
 		if pr.IssueKey != nil {

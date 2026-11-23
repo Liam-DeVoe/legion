@@ -102,7 +102,6 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legion
 	t.Helper()
 	ctx, pool := t.Context(), r.database.Pool
 	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
-	seedProjectSettings(t, pool, deliveries)
 	legion := legiontest.Seed(t, pool, legiontest.Spec{Trees: 6, Now: deliverytest.DefaultNow})
 	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliverytest.DefaultNow)
 	if err != nil {
@@ -116,17 +115,6 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legion
 	}
 	t.Logf("stored %d facts rows and %d filings of %s", len(rows), len(filings), legion.Project)
 	return deliveries, legion
-}
-
-// seedProjectSettings writes, after deliverytest.Seed, the fixture's delivery settings as its
-// project's own (project_delivery_settings, project_deploy_sources): delivery on, the fixture's
-// population rule, and one github_workflow source that names no repository, so it reads the
-// project's default repository (the fixture's deploy repository) under the fixture's rule. A second
-// call saves the same settings and moves nothing. Removed when deliverytest writes the project
-// tables.
-func seedProjectSettings(t testing.TB, pool *store.Pool, fixture deliverytest.Fixture) {
-	t.Helper()
-	putSources(t, pool, fixture.Project, fixture.Settings.PopulationAuthors, sourceOf(fixture.Settings, nil))
 }
 
 // deployRule is the rule of the deploy source that reads repo as a pass reads it

@@ -196,6 +196,8 @@ POST /api/v1/projects/{key}/production-events any
 PUT /api/v1/projects/{key}/production-events/{id}/state any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
+GET /api/v1/projects/{key}/settings/delivery any
+PUT /api/v1/projects/{key}/settings/delivery any
 GET /api/v1/projects/{key}/timeline any
 GET /api/v1/reference-targets any
 GET /api/v1/references any

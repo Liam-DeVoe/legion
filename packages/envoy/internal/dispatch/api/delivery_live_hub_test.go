@@ -629,13 +629,11 @@ func subscribeFrame(sub string, view DeliveryLiveView) deliverySubscription {
 // seedHubSettings writes the delivery settings the hub tests run under.
 func seedHubSettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 }
 
 // hubPR is acme/widgets#n by octocat, opened two hours before it merged at merged.

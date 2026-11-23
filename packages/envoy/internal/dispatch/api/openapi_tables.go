@@ -163,6 +163,10 @@ var schemaNames = map[reflect.Type]string{
 	// The record of deploys and failed changes, whose one-word Go name the prodevents package can
 	// carry and which model.Event's schema, Event, already holds for a client.
 	reflect.TypeOf(prodevents.Event{}): "ProductionEvent",
+
+	// A refused save of a project's delivery settings, whose one-word Go name the delivery package
+	// carries: the client names it for what it refuses.
+	reflect.TypeOf(delivery.SettingsError{}): "DeliverySettingsRefusal",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
@@ -241,6 +245,11 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// (evals/charts: an integer apart from a float, a lone surrogate escape kept). Absent carries
 	// the newest version's charts forward; null is a value the validator refuses as no list.
 	{reflect.TypeOf(evalRegisterInput{}), "charts"}: rawField{Fragment: openAPIEvalCharts},
+	// The delivery settings' targets (project_settings_delivery.go): each named eval's target, a
+	// number or "off". A save's leaves a target it does not name as it is (parseDeliveryTargets),
+	// and the answer names each eval the project holds.
+	{reflect.TypeOf(projectDeliverySettingsInput{}), "targets"}: rawField{Fragment: openAPIDeliveryTargets},
+	{reflect.TypeOf(projectDeliverySettings{}), "targets"}:      rawField{Fragment: openAPIDeliveryTargets},
 }
 
 // The schemas rawFieldSchemas writes out, where no Go type names what a field's bytes hold.
@@ -271,6 +280,21 @@ var (
 		"description": "an eval's whole list of declared charts, each the declaration of one chart " +
 			"as the eval platform's validate_charts rules take it",
 	}
+	// openAPIDeliveryTargets is the delivery settings' targets: an object of the slugs of
+	// deliverySettingsTargetSlugs, each a number or "off" (deliveryTargetOff), and no other key.
+	openAPIDeliveryTargets = func() map[string]any {
+		properties := map[string]any{}
+		for _, slug := range deliverySettingsTargetSlugs {
+			properties[slug] = map[string]any{"anyOf": []any{
+				map[string]any{"type": "number"},
+				map[string]any{"type": "string", "enum": []any{deliveryTargetOff}},
+			}}
+		}
+		return map[string]any{
+			"type": "object", "properties": properties, "additionalProperties": false,
+			"description": `each eval's target, a number or "off" for none`,
+		}
+	}()
 )
 
 // openAPIMultipartSchema is the multipart/form-data body the three upload routes take beside

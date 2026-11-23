@@ -876,7 +876,6 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	r := newRig(t)
 	ctx := t.Context()
 	fixture := deliverytest.Seed(t, r.database.Pool, recorded.Fixture.Spec)
-	seedProjectSettings(t, r.database.Pool, fixture)
 	settings := deployRule(t, r.database.Pool, fixture.DeployRepo)
 	written := map[string]map[string]bool{}
 	days, rows := 0, 0

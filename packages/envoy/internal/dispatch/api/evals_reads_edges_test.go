@@ -137,11 +137,17 @@ func TestTheMedianRankLeavesOutAJobWithNoTimedResult(t *testing.T) {
 func TestAnItemsLinkKeepsItsRepository(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
+	rule := deployRule("acme/web", "release / release")
+	saveProjectRules(t, database, "EVL", rule)
 	today := measures.Midnight(time.Now())
+	// deploy-frequency and pr-ci read the deploy repository: their rows are kept under it
+	// (eval_days.deploy_repo), and a read folds those of the repositories the refresher published
+	// (publishDeployRepo), here EVL's one source, acme/web.
+	publishDeployRepo(t, database, "EVL", rule, today)
 	if _, err := database.Pool.Exec(t.Context(), `
-		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, samples, counts, built_by)
-		values ('EVL', 'EVL/deploy-frequency', 'deploys', 'acme/web', $1, true, 2, 2, null, '{}', 'test'),
-		       ('EVL', 'EVL/pr-ci', 'job:unit', 'acme/web', $1, false, 2, null, '{3, 5}', '{"success": 2}', 'test')
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, samples, counts, built_by)
+		values ('EVL', 'EVL/deploy-frequency', 'acme/web', 'deploys', 'acme/web', $1, true, 2, 2, null, '{}', 'test'),
+		       ('EVL', 'EVL/pr-ci', 'acme/web', 'job:unit', 'acme/web', $1, false, 2, null, '{3, 5}', '{"success": 2}', 'test')
 	`, today); err != nil {
 		t.Fatalf("write the repository's rows: %v", err)
 	}

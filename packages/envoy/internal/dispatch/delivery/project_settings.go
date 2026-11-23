@@ -206,6 +206,13 @@ func newSourceRules(rules []DeliverySettings, population Population, defaults ma
 	return &SourceRules{rules: rules, byRepo: byRepo, population: population, defaults: defaults}
 }
 
+// SourceRulesOf is the SourceRules of rules alone, each found by its DeployRepo, with no
+// population and no default repositories: what judges runs and pull requests by rules read
+// elsewhere, such as those the eval registry's day rows stand built under (api's evalNarrowing).
+func SourceRulesOf(rules []DeliverySettings) *SourceRules {
+	return newSourceRules(rules, Population{}, nil)
+}
+
 // ReadSourceRules reads every project's delivery settings in q (ListProjectSettings) and answers
 // their SourceRules.
 func ReadSourceRules(ctx context.Context, q Querier) (*SourceRules, error) {
@@ -243,6 +250,17 @@ func (r *SourceRules) Population() Population {
 		return Population{}
 	}
 	return r.population
+}
+
+// DefaultRepo is the default repository, as this read found it, of project, where project is a
+// delivery-on project holding a github_workflow source that names no repository: the repository
+// that source reads. It is false for every other project, and nil where the project has none.
+func (r *SourceRules) DefaultRepo(project string) (*string, bool) {
+	if r == nil {
+		return nil, false
+	}
+	repo, held := r.defaults[project]
+	return repo, held
 }
 
 // sortedSet is values sorted, each once.
@@ -422,12 +440,14 @@ func (e *SettingsError) Error() string { return e.Code + ": " + e.Message }
 // ErrProjectNotFound is a save of a project no row holds.
 var ErrProjectNotFound = errors.New("no such project")
 
-// The codes of a refused save.
+// The codes of a refused save. DELIVERY_SETTINGS_ACCESS is the settings route's own, for a source
+// whose repository the GitHub App cannot read, which the route proves before it saves.
 const (
 	CodeDeliveryRepositoryShared    = "DELIVERY_REPOSITORY_SHARED"
 	CodeDeliveryNoDefaultRepository = "DELIVERY_NO_DEFAULT_REPOSITORY"
 	CodeDeliveryNeedsRepository     = "DELIVERY_NEEDS_REPOSITORY"
 	CodeDeliverySettingsInput       = "DELIVERY_SETTINGS_INPUT"
+	CodeDeliverySettingsAccess      = "DELIVERY_SETTINGS_ACCESS"
 )
 
 // LockProject takes the transaction-scoped lock of one project's delivery settings, so two saves of
@@ -505,7 +525,7 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 			input.Sources[i].Repo = new(strings.ToLower(strings.TrimSpace(*source.Repo)))
 		}
 	}
-	if err := validateProjectSettings(input); err != nil {
+	if err := ValidateProjectSettings(input); err != nil {
 		return ProjectSettings{}, err
 	}
 	if err := LockProject(ctx, tx, input.Project); err != nil {
@@ -732,9 +752,10 @@ func ClearRepositoryProgress(ctx context.Context, tx pgx.Tx, repos []string) err
 	return nil
 }
 
-// validateProjectSettings refuses an input no reader could read, naming its field and its source,
+// ValidateProjectSettings refuses an input no reader could read, naming its field and its source,
 // before any statement runs: the tables' checks hold the same rules (migration 20261123010254).
-func validateProjectSettings(input ProjectSettingsInput) error {
+// PutProjectSettings runs it, and the settings route runs it before it asks GitHub anything.
+func ValidateProjectSettings(input ProjectSettingsInput) error {
 	refuse := func(index *int, field, format string, args ...any) error {
 		return &SettingsError{Code: CodeDeliverySettingsInput, Message: field + ": " + fmt.Sprintf(format, args...), Field: field, Source: index}
 	}

@@ -1695,7 +1695,6 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 func TestARefoldSendsTheWholeFoldsRowsInKeyOrderOnceEachInBoundedStatements(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
-	seedProjectSettings(t, r.database.Pool, deliveries)
 	r.settle(t)
 	ctx, project := t.Context(), deliveries.Project
 	scope, folded, err := readFigureScope(ctx, r.database.Pool, r.build, project)

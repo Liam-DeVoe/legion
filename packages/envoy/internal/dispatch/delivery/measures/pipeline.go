@@ -379,15 +379,23 @@ func prChecksParts(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.D
 }
 
 // PRChecks is the PR-checks workflow's Pipeline numbers (pipeline.py:113-167), from the parts
-// PRChecksDay builds of each shown day's runs: run, every run's wall time from its start to its
-// completion and its outcome, each day folded alone and the shown days together by FoldTiming;
-// slowest, the first SlowestJobs of FoldSlowestJobs' ranking of the jobs with slowestMinResults
-// timed results; and failing, FailingJobs up to end. A run on no shown day adds to no cell. The
-// caller passes the shown days' runs, each with its event and branch already selected.
+// PRChecksDay builds of each shown day's runs: run and slowest, PRChecksTimings'; and failing,
+// FailingJobs up to end. The caller passes the shown days' runs, each with its event and branch
+// already selected.
 func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, end time.Time, rollupJob string, slowestMinResults int) (run Timing, slowest []JobTiming, failing []FailingJob) {
+	run, slowest = PRChecksTimings(runs, jobsByRun, days, slowestMinResults)
+	return run, slowest, FailingJobs(runs, jobsByRun, end, rollupJob)
+}
+
+// PRChecksTimings is PRChecks' run and slowest: run, every run's wall time from its start to its
+// completion and its outcome, each day folded alone and the shown days together by FoldTiming; and
+// slowest, the first SlowestJobs of FoldSlowestJobs' ranking of the jobs with slowestMinResults
+// timed results. A run on no shown day adds to no cell. A reader of several repositories' runs
+// tallies their failing jobs apart, each run's without its own repository's roll-up job.
+func PRChecksTimings(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, slowestMinResults int) (run Timing, slowest []JobTiming) {
 	parts := prChecksParts(runs, jobsByRun, days)
 	ranked := FoldSlowestJobs(parts, days, slowestMinResults)
-	return timingByDay(parts, days, FoldTiming), ranked[:min(len(ranked), SlowestJobs)], FailingJobs(runs, jobsByRun, end, rollupJob)
+	return timingByDay(parts, days, FoldTiming), ranked[:min(len(ranked), SlowestJobs)]
 }
 
 // FailingJobs is PRChecks' failing tally (pipeline.py:144-157): every job that failed in a run
@@ -556,16 +564,49 @@ func DeployJobsDay(day time.Time, runs []delivery.DeliveryRun, jobsByRun map[int
 // adds nothing. Every card gets a timing, all of its days empty when no run lists its jobs, and
 // its job field is its names joined by " or ".
 func DeployJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, cards []DeployJobCard, days []string) map[DeployJobCardID]DeployJobTiming {
-	midnights, byDay := onShownDays(runs, func(run delivery.DeliveryRun) time.Time { return run.StartedAt }, days)
-	parts := make(map[DeployJobCardID][]DayPart, len(cards))
-	for i, d := range midnights {
-		for card, cardParts := range DeployJobsDay(d, byDay[i], jobsByRun, cards) {
-			parts[card] = append(parts[card], cardParts...)
+	return DeployJobsOf([]SourceDeployRuns{{Runs: runs, Jobs: jobsByRun, Cards: cards}}, days)
+}
+
+// SourceDeployRuns is one source repository's deploy workflow push runs on main with their jobs,
+// and the cards its own rule follows (DeployCards).
+type SourceDeployRuns struct {
+	Runs  []delivery.DeliveryRun
+	Jobs  map[int64][]delivery.DeliveryRunJob
+	Cards []DeployJobCard
+}
+
+// DeployJobsOf is DeployJobs over several source repositories, each repository's runs judged by its
+// own cards (dispatch://INFRA-978, D9): each shown day's parts of a card are built of each
+// repository's runs under that repository's card of the id (DeployJobsDay), and folded together,
+// so a card times every repository's runs of it. A card gets a timing where any repository's rule
+// names it, and its job field is every name a repository's card of it follows, each once in the
+// order the repositories and their cards name them, joined by " or ".
+func DeployJobsOf(sources []SourceDeployRuns, days []string) map[DeployJobCardID]DeployJobTiming {
+	parts := map[DeployJobCardID][]DayPart{}
+	names := map[DeployJobCardID][]string{}
+	var order []DeployJobCardID
+	for _, source := range sources {
+		for _, card := range source.Cards {
+			if _, named := names[card.CardID]; !named {
+				order = append(order, card.CardID)
+				names[card.CardID] = []string{}
+			}
+			for _, name := range card.JobNames {
+				if !slices.Contains(names[card.CardID], name) {
+					names[card.CardID] = append(names[card.CardID], name)
+				}
+			}
+		}
+		midnights, byDay := onShownDays(source.Runs, func(run delivery.DeliveryRun) time.Time { return run.StartedAt }, days)
+		for i, d := range midnights {
+			for card, cardParts := range DeployJobsDay(d, byDay[i], source.Jobs, source.Cards) {
+				parts[card] = append(parts[card], cardParts...)
+			}
 		}
 	}
-	timings := make(map[DeployJobCardID]DeployJobTiming, len(cards))
-	for _, card := range cards {
-		timings[card.CardID] = DeployJobTiming{Job: strings.Join(card.JobNames, " or "), Timing: timingByDay(parts[card.CardID], days, FoldTiming)}
+	timings := make(map[DeployJobCardID]DeployJobTiming, len(order))
+	for _, card := range order {
+		timings[card] = DeployJobTiming{Job: strings.Join(names[card], " or "), Timing: timingByDay(parts[card], days, FoldTiming)}
 	}
 	return timings
 }

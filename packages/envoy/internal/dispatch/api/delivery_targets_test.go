@@ -245,19 +245,21 @@ func TestAFigureItsJudgesDoNotNameHasNoVerdict(t *testing.T) {
 }
 
 // TestATargetWriteMovesTheLiveDeliveryVerdicts: a register write of merge-to-production's target
-// and judges in the project whose published default repository is the deploy repository (which
-// the test publishes as the evals refresher's page commit does, publishDefaultRepos) reaches an
-// open measures view and an open Pipeline view: the write's version marks both, and each delta
-// lands on its GET route's body, which states the new target, its inclusiveness, the eval's
-// direction and the judge the write named. The Pipeline view is pinned at the test's start, the
-// at its GET route reads, since that route reads at alone and the hub's clock runs on.
+// and judges in the project whose deploy source reads the deploy repository, here through its
+// published default repository (which the test publishes as the evals refresher's page commit
+// does, publishDefaultRepos), reaches an open measures view and an open Pipeline view: the write's
+// version marks both, and each delta lands on its GET route's body, which states the new target,
+// its inclusiveness, the eval's direction and the judge the write named. The Pipeline view is
+// pinned at the test's start, the at its GET route reads, since that route reads at alone and the
+// hub's clock runs on.
 func TestATargetWriteMovesTheLiveDeliveryVerdicts(t *testing.T) {
 	rig := newHubRig(t, nil)
-	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HUB")
 	if _, err := rig.database.Pool.Exec(t.Context(), `update projects set default_repo = 'acme/widgets' where key = 'HUB'`); err != nil {
 		t.Fatalf("make acme/widgets HUB's default repository: %v", err)
 	}
+	// HUB's one source names no repository, so it reads the default repository, as published.
+	saveProjectRules(t, rig.database, "HUB", deployRule("acme/widgets", "release / release"))
 	publishDefaultRepos(t, rig.database.Pool)
 	now := rig.clock.Now()
 	upsertPR(t, rig.database, hubPR(1, now.Add(-3*time.Hour)))

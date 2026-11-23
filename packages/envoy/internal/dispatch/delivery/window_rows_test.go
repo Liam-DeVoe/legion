@@ -15,9 +15,10 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// TestAWindowsReadAnswersWhatItsTwoReadsAnswer: a delivery route's one read of a window
-// (ReadWindowRows) answers what the two reads it stands for answer (ReadMergedRows and
-// ReadDeploys, which read every apply run to the present and the window's deploys apart), over
+// TestAWindowsReadAnswersWhatItsTwoReadsAnswer: a delivery route's read of a window's runs
+// (ReadWindowRuns, beside the window's pull requests) answers what the two reads it stands for
+// answer (ReadMergedRows and ReadDeploys, which read every apply run to the present and the
+// window's deploys apart), over
 // generated histories of deploy runs on main and off it, re-runs, rows stored before created_at,
 // production jobs that succeeded, failed, were cancelled or stood down, failed guards beside them,
 // and pull requests merged anywhere among them, for windows that end inside the history and one
@@ -56,14 +57,12 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 			wantApplies := ProductionApplies(wantMerged.ApplyRuns, wantMerged.ApplyJobs, production).Applies
 			for _, failedJobs := range []bool{false, true} {
 				label := label + ", failed jobs " + strconv.FormatBool(failedJobs)
-				merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, true)
+				applyRows, deploys, err := ReadWindowRuns(ctx, pool, settings, from, to, failedJobs, true)
 				if err != nil {
-					t.Fatalf("%s: ReadWindowRows: %v", label, err)
+					t.Fatalf("%s: ReadWindowRuns: %v", label, err)
 				}
+				merged := MergedRows{PullRequests: wantMerged.PullRequests, ApplyRuns: applyRows.Runs, ApplyJobs: applyRows.Jobs}
 				windows++
-				if !reflect.DeepEqual(merged.PullRequests, wantMerged.PullRequests) {
-					t.Fatalf("%s: the pull requests differ from ReadMergedRows'", label)
-				}
 				if !reflect.DeepEqual(deploys, wantDeploys) {
 					t.Fatalf("%s: the deploys differ from ReadDeploys':\n got:  %+v\n want: %+v", label, deploys, wantDeploys)
 				}

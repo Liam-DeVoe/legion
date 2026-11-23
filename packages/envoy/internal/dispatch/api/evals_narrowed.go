@@ -2,8 +2,8 @@ package api
 
 import (
 	"context"
+	"maps"
 	"net/url"
-	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -62,16 +62,16 @@ func parseEvalNarrowing(query url.Values) *evalNarrowing {
 }
 
 // keep is the read's evals.Narrowing: of input's pull requests, those the delivery timeline shows
-// under n (deliveryRow.matches, over the rows deliveryPopulation.derive makes of them), each
-// derived with the rule and the apply runs of the deploy source repository that is its own
-// repository (input.Sources), which ship it as the eval rows ship it, so its deployed status is
-// the one its rows count, and one of no source's repository with none, as no deploy tracks it;
-// reading in q, the read's snapshot, what a facet or the search selects by: the labels of the pull
-// requests (readDeliveryLabels) and the session groups a Parent agent is read from, once for every
-// pull request. It records the issues and the sessions those pull requests name (issues,
-// sessions).
+// under n (deliveryRow.matches, over the rows deliveryPopulation.derive makes of them), derived
+// with the rules and the apply runs of the deploy source repositories the rows are built for
+// (input.Sources, delivery.SourceRulesOf), each pull request shipped by its own repository's
+// deploys as the eval rows ship it, so its deployed status is the one its rows count, and one of
+// no source's repository by none, as no deploy tracks it; reading in q, the read's snapshot, what
+// a facet or the search selects by: the labels of the pull requests (readDeliveryLabels) and the
+// session groups a Parent agent is read from, once for every pull request. It records the issues
+// and the sessions those pull requests name (issues, sessions).
 func (n *evalNarrowing) keep(ctx context.Context, q delivery.Querier, input evals.NarrowInput) ([]bool, error) {
-	pop := deliveryPopulation{query: n.query, prs: input.PullRequests}
+	pop := deliveryPopulation{query: n.query, prs: input.PullRequests, jobsByRun: map[int64][]delivery.DeliveryRunJob{}}
 	var err error
 	if pop.groups, err = delivery.ListSessionGroups(ctx, q); err != nil {
 		return nil, err
@@ -79,21 +79,16 @@ func (n *evalNarrowing) keep(ctx context.Context, q delivery.Querier, input eval
 	if err := readDeliveryLabels(ctx, q, &pop); err != nil {
 		return nil, err
 	}
-	derived := map[string]deliveryDerived{}
+	rules := make([]delivery.DeliverySettings, len(input.Sources))
+	for i, source := range input.Sources {
+		rules[i] = source.Settings
+		pop.applyRuns = append(pop.applyRuns, source.ApplyRuns...)
+		maps.Copy(pop.jobsByRun, source.ApplyJobs)
+	}
+	derived := pop.derive(delivery.SourceRulesOf(rules))
 	keep := make([]bool, len(pop.prs))
-	for i, pr := range pop.prs {
-		var source evals.NarrowSource
-		if at := slices.IndexFunc(input.Sources, func(s evals.NarrowSource) bool { return s.Settings.DeployRepo == pr.Repo }); at >= 0 {
-			source = input.Sources[at]
-		}
-		one, held := derived[source.Settings.DeployRepo]
-		if !held {
-			sourced := pop
-			sourced.applyRuns, sourced.jobsByRun = source.ApplyRuns, source.ApplyJobs
-			one = sourced.derive(source.Settings)
-			derived[source.Settings.DeployRepo] = one
-		}
-		keep[i] = one.rows[i].matches(one.selection, "")
+	for i := range pop.prs {
+		keep[i] = derived.rows[i].matches(derived.selection, "")
 	}
 	n.issues, n.sessions = map[string]struct{}{}, map[string]string{}
 	for _, pr := range pop.prs {

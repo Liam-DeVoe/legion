@@ -134,7 +134,7 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
-	settings          delivery.DeliverySettings
+	rules             *delivery.SourceRules
 	pop               deliveryPopulation
 	pipe              pipelinePopulation
 	from, at          time.Time
@@ -196,26 +196,25 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 			// one, and no change of the new log was recorded at it.
 			read.seq, read.changedAt = 0, nil
 		}
-		view.settings, view.pop, view.pipe, view.readFrom = read.settings, read.pop, read.pipe, read.from
+		view.rules, view.pop, view.pipe, view.readFrom = read.rules, read.pop, read.pipe, read.from
 		view.body, view.seq, view.changedAt = &read.body, read.seq, read.changedAt
 		view.from, view.at, view.expiry = read.from, read.at, read.expiry
 		view.issues, view.ancestors, view.sessions = read.issues, read.ancestors, read.sessions
 		sent = h.sendLocked(g, view)
 		if classes.reads != viewReadsDelivery {
-			// A view that reads no delivery row holds no delivery settings, so it judges no
+			// A view that reads no delivery row holds no delivery rules, so it judges no
 			// freshness: the verdict stays the one the delivery views' own reads set.
 			break
 		}
 		if !g.known {
-			// The first verdict is set silently, from the first settings read.
-			g.fresh = deliveryFreshnessHeard{
-				lastEventAt: read.settings.LastEventAt, lastReconcileAt: read.settings.LastReconcileAt,
-				lastError: read.settings.LastError, unfetchable: read.unfetchable,
-			}
+			// The first verdict is set silently, from the first rules read.
+			g.fresh = deliveryFreshnessHeard{unfetchable: read.unfetchable}
+			g.fresh.heardRules(read.rules)
 			g.sent = g.verdictLocked(now)
 			g.known = true
 		} else {
 			g.fresh.unfetchable = read.unfetchable
+			g.fresh.heardRules(read.rules)
 			h.judgeLocked(g, now)
 		}
 	}
@@ -328,8 +327,9 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 // the change log carries (touchedBy). The one list the clock moves is pr-ci's failures
 // (sort=failures), which counts the jobs that failed in the 24 hours before the range's end, and a
 // preset's range ends at now: a preset failures view expires by the Pipeline's failing-jobs rule
-// (failingJobsNextExpiry) over the runs the window's list was read from, and its expiry reads it
-// again (runDue). Every other items view sets no expiry.
+// (failingJobsNextExpiry) over the runs the window's list was read from, of every deploy
+// repository it reads, and its expiry reads it again (runDue). Every other items view sets no
+// expiry.
 func (h *deliveryHub) readEvalItemsView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	answer, err := h.server.readProjectEvalItems(ctx, spec.evalsQuery(now), spec.project, spec.slug)
 	if err != nil {
@@ -341,24 +341,24 @@ func (h *deliveryHub) readEvalItemsView(ctx context.Context, spec deliveryLiveSp
 	return answer.body, nil
 }
 
-// readPipelineView is a pipeline view's read: the delivery settings and the runs, jobs and merges
-// of the seven days ending on its at, or on the present for a view that names none, with the
-// min_n its slowest jobs are ranked by, through the GET route's own read and compute
+// readPipelineView is a pipeline view's read: the delivery rules and the runs, jobs and merges of
+// the seven days ending on its at, or on the present for a view that names none, with the min_n
+// its slowest jobs are ranked by, through the GET route's own read and compute
 // (readPipelinePopulation, deliveryPipelineCompute), so the view ranks them as the route does.
 func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
-	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+	if read.rules, err = readDeliveryRules(ctx, pool); err != nil {
 		return nil, err
 	}
 	read.at = now
 	if spec.at != nil {
 		read.at = *spec.at
 	}
-	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.settings, read.at); err != nil {
+	if read.pipe, err = h.server.readPipelinePopulation(ctx, read.rules, read.at); err != nil {
 		return nil, err
 	}
-	body := deliveryPipelineCompute(read.settings, read.pipe, read.at, now)
+	body := deliveryPipelineCompute(read.rules, read.pipe, read.at, now)
 	if spec.at == nil {
 		read.expiry = failingJobsNextExpiry(read.pipe.checks.Runs, now)
 	}
@@ -368,26 +368,25 @@ func (h *deliveryHub) readPipelineView(ctx context.Context, spec deliveryLiveSpe
 	return body, nil
 }
 
-// readDeliveryView is a timeline or measures view's read: the delivery settings, the population
-// of its window and facets, and, where that population is labeled, the ancestors of every issue
-// it names.
+// readDeliveryView is a timeline or measures view's read: the delivery rules, the population of its
+// window and facets, and, where that population is labeled, the ancestors of every issue it names.
 func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
 	pool := h.server.deps.Store.Pool
 	var err error
-	if read.settings, err = delivery.GetSettings(ctx, pool); err != nil {
+	if read.rules, err = readDeliveryRules(ctx, pool); err != nil {
 		return nil, err
 	}
 	from, to := spec.from, spec.to
 	if spec.preset > 0 {
 		from, to = now.Add(-spec.days()), now
 	}
-	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
+	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.rules, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
 	}
 	if err := h.nameShown(ctx, read); err != nil {
 		return nil, err
 	}
-	body := deliveryLiveCompute(spec, read.settings, read.pop, from, to, now)
+	body := deliveryLiveCompute(spec, read.rules, read.pop, from, to, now)
 	if spec.preset > 0 {
 		read.expiry = nextExpiry(read.pop, spec.days(), now)
 	}
@@ -432,13 +431,13 @@ func (h *deliveryHub) nameShown(ctx context.Context, read *deliveryViewRead) err
 
 // expire answers a view whose preset window, or whose pipeline day, moved past something it holds,
 // reading nothing: the compute over the population as last read, narrowed to the window now, with
-// the settings that read held. The population and its read's start stay as read, and the next
-// expiry comes from the narrowed population.
+// the rules that read held. The population and its read's start stay as read, and the next expiry
+// comes from the narrowed population.
 func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	started := time.Now()
 	h.mu.Lock()
 	view.computing = true
-	spec, settings, pop, pipe := view.spec, view.settings, view.pop, view.pipe
+	spec, rules, pop, pipe := view.spec, view.rules, view.pop, view.pipe
 	h.mu.Unlock()
 	h.note(deliveryHubNote{what: "recompute begin", view: spec.key, cause: deliveryCauseExpiry})
 
@@ -448,15 +447,15 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 	var prs, runs int
 	if spec.kind == deliveryLivePipeline {
 		at = now
-		narrowed := pipe.narrowedTo(settings, at)
-		body = deliveryPipelineCompute(settings, narrowed, at, now)
+		narrowed := pipe.narrowedTo(rules, at)
+		body = deliveryPipelineCompute(rules, narrowed, at, now)
 		expiry = failingJobsNextExpiry(narrowed.checks.Runs, now)
 		from = measures.WindowStart(at)
 		prs, runs = len(narrowed.leadTimes.prs), len(narrowed.checks.Runs)+len(narrowed.deploys.Runs)
 	} else {
 		from = now.Add(-spec.days())
-		narrowed := pop.narrowedTo(settings, from)
-		body = deliveryLiveCompute(spec, settings, narrowed, from, now, now)
+		narrowed := pop.narrowedTo(rules, from)
+		body = deliveryLiveCompute(spec, rules, narrowed, from, now, now)
 		expiry = nextExpiry(narrowed, spec.days(), now)
 		prs, runs = len(narrowed.prs), len(narrowed.applyRuns)+len(narrowed.windowRuns)
 	}
@@ -487,16 +486,17 @@ func (h *deliveryHub) finishRecompute(spec deliveryLiveSpec, cause string, start
 }
 
 // deliveryLiveCompute is a timeline's, a measures' or a project timeline's body for [from, to),
-// from a population read for that window or narrowed to it: a project timeline's population is its
-// project's (projectTimelinePopulation), cut to the view's limit from its newest row.
-func deliveryLiveCompute(spec deliveryLiveSpec, settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) any {
+// from a population read for that window or narrowed to it, each source repository's runs judged
+// by its own rule of rules: a project timeline's population is its project's
+// (projectTimelinePopulation), cut to the view's limit from its newest row.
+func deliveryLiveCompute(spec deliveryLiveSpec, rules *delivery.SourceRules, pop deliveryPopulation, from, to, now time.Time) any {
 	switch spec.kind {
 	case deliveryLiveTimeline:
-		return deliveryTimelineCompute(settings, pop, from, to, now)
+		return deliveryTimelineCompute(rules, pop, from, to, now)
 	case deliveryLiveProjectTimeline:
-		return projectTimelineCompute(settings, pop, from, to, spec.projectTimelineLimit(), 0)
+		return projectTimelineCompute(rules, pop, from, to, spec.projectTimelineLimit(), 0)
 	}
-	return deliveryMeasuresCompute(settings, pop, from, to, now)
+	return deliveryMeasuresCompute(rules, pop, from, to, now)
 }
 
 // sendLocked answers every sub of view from its body, and counts the frames it sent.

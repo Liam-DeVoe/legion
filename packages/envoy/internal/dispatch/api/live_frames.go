@@ -260,8 +260,9 @@ type viewReads int
 
 const (
 	// viewReadsDelivery is the deployment's delivery rows: a change of one can move the view
-	// (touchedBy), its read holds the delivery settings, its freshness is the hub's one verdict,
-	// and a deployment with no delivery settings is DELIVERY_NOT_CONFIGURED.
+	// (touchedBy), its read holds every delivery-on project's source rules (readDeliveryRules), its
+	// freshness is the hub's one verdict, and a deployment with no delivery-on project is
+	// DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
 	// viewReadsLegion is one project's Legion daemon as the sampler recorded it, and the stored
 	// per-issue facts of the issues its board shows: the view names that project, a read of its

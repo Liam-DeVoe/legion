@@ -124,12 +124,12 @@ func compareProjectTimelineEntries(a, b projectTimelineEntry) int {
 	return cmp.Or(b.at.Compare(a.at), cmp.Compare(a.kind, b.kind), strings.Compare(a.merge, b.merge), cmp.Compare(a.run, b.run))
 }
 
-// projectTimelineRead is what one read of the project timeline holds: the delivery settings, the
+// projectTimelineRead is what one read of the project timeline holds: the delivery rules, the
 // project's population (projectTimelinePopulation), and the page computed from them.
 type projectTimelineRead struct {
-	settings delivery.DeliverySettings
-	pop      deliveryPopulation
-	body     projectTimelineResponse
+	rules *delivery.SourceRules
+	pop   deliveryPopulation
+	body  projectTimelineResponse
 }
 
 // parseProjectTimelinePage reads the page of a project timeline query: limit, 1 to maxLimit
@@ -146,7 +146,8 @@ func parseProjectTimelinePage(query url.Values, maxLimit int) (limit, offset int
 // project its path names counts, over [from, to) (default the last 7 days), under the facets and
 // the search the delivery timeline takes (readProjectTimeline). A key that is no project key is
 // 400 INVALID_PROJECT, a malformed query 400 INVALID_QUERY, a project no row holds 404
-// PROJECT_NOT_FOUND, and a deployment with no delivery settings 404 DELIVERY_NOT_CONFIGURED.
+// PROJECT_NOT_FOUND, and a deployment with no project with delivery on 404
+// DELIVERY_NOT_CONFIGURED.
 func (s *server) getProjectTimeline(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -180,25 +181,26 @@ func (s *server) getProjectTimeline(w http.ResponseWriter, r *http.Request) {
 
 // readProjectTimeline is GET /api/v1/projects/{key}/timeline's body for project over [from, to),
 // query's facets and search, and the page of limit rows from offset: the project found
-// (loadProject, 404 PROJECT_NOT_FOUND for a project no row holds), the delivery settings
-// (delivery.ErrNoSettings where none are saved), the project's population of the window
-// (projectTimelinePopulation), and the page computed from it (projectTimelineCompute). The live
-// hub's project-timeline view reads its body through this too (readProjectTimelineView), so the
-// two answer one query alike, and keeps the settings and the population it answers with.
+// (loadProject, 404 PROJECT_NOT_FOUND for a project no row holds), the delivery rules of every
+// source repository (readDeliveryRules, delivery.ErrNoSettings where no project has delivery on),
+// the project's population of the window (projectTimelinePopulation), and the page computed from
+// it (projectTimelineCompute). The live hub's project-timeline view reads its body through this
+// too (readProjectTimelineView), so the two answer one query alike, and keeps the rules and the
+// population it answers with.
 func (s *server) readProjectTimeline(ctx context.Context, project string, from, to time.Time, query url.Values, limit, offset int) (projectTimelineRead, error) {
 	pool := s.deps.Store.Pool
 	if _, err := s.loadProject(ctx, pool, project); err != nil {
 		return projectTimelineRead{}, err
 	}
-	settings, err := delivery.GetSettings(ctx, pool)
+	rules, err := readDeliveryRules(ctx, pool)
 	if err != nil {
 		return projectTimelineRead{}, err
 	}
-	pop, err := s.projectTimelinePopulation(ctx, settings, project, from, to, query)
+	pop, err := s.projectTimelinePopulation(ctx, rules, project, from, to, query)
 	if err != nil {
 		return projectTimelineRead{}, err
 	}
-	return projectTimelineRead{settings: settings, pop: pop, body: projectTimelineCompute(settings, pop, from, to, limit, offset)}, nil
+	return projectTimelineRead{rules: rules, pop: pop, body: projectTimelineCompute(rules, pop, from, to, limit, offset)}, nil
 }
 
 // projectTimelinePopulation is the project's population of [from, to): the delivery timeline's read
@@ -211,8 +213,8 @@ func (s *server) readProjectTimeline(ctx context.Context, project string, from, 
 // (a failed run among them), as the project whose deploy source reads its repository. The runs
 // started outside the window stay, since a pull request of the window can ship with one; a run of
 // the window that counts for other projects alone ships none of project's first.
-func (s *server) projectTimelinePopulation(ctx context.Context, settings delivery.DeliverySettings, project string, from, to time.Time, query url.Values) (deliveryPopulation, error) {
-	pop, err := s.readDeliveryPopulation(ctx, settings, from, to, query, true)
+func (s *server) projectTimelinePopulation(ctx context.Context, rules *delivery.SourceRules, project string, from, to time.Time, query url.Values) (deliveryPopulation, error) {
+	pop, err := s.readDeliveryPopulation(ctx, rules, from, to, query, true)
 	if err != nil {
 		return deliveryPopulation{}, err
 	}
@@ -257,12 +259,12 @@ func (s *server) projectTimelinePopulation(ctx context.Context, settings deliver
 // project's population (projectTimelinePopulation), read for that window or narrowed to it: the
 // base timeline's answer over it (deliveryTimelineOf), cut to the page (projectTimelinePage). It
 // reads nothing.
-func projectTimelineCompute(settings delivery.DeliverySettings, pop deliveryPopulation, from, to time.Time, limit, offset int) projectTimelineResponse {
+func projectTimelineCompute(rules *delivery.SourceRules, pop deliveryPopulation, from, to time.Time, limit, offset int) projectTimelineResponse {
 	runs := make(map[int64]delivery.DeliveryRun, len(pop.applyRuns))
 	for _, run := range pop.applyRuns {
 		runs[run.RunID] = run
 	}
-	return projectTimelinePage(deliveryTimelineOf(settings, pop, pop.derive(settings), from, to), runs, limit, offset)
+	return projectTimelinePage(deliveryTimelineOf(rules, pop, pop.derive(rules), from, to), runs, limit, offset)
 }
 
 // projectTimelinePage is a timeline's merges and runs listed as rows in the one total order
@@ -353,7 +355,7 @@ func (spec deliveryLiveSpec) projectTimelineLimit() int {
 // project, window, facets and search, its limit of rows from the newest, through the function the
 // route answers with (readProjectTimeline), so the body is the route's for the same query, byte for
 // byte. A project no row holds is refused as the route refuses it (viewReads.refusal), and so is a
-// deployment with no delivery settings. It holds the settings and the population the body was
+// deployment with no project with delivery on. It holds the rules and the population the body was
 // computed from, as a timeline view does: they judge the freshness, the issues and sessions its
 // rows name mark it (deliveryHub.nameShown), and an expiry narrows the population (expire).
 func (h *deliveryHub) readProjectTimelineView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
@@ -365,7 +367,7 @@ func (h *deliveryHub) readProjectTimelineView(ctx context.Context, spec delivery
 	if err != nil {
 		return nil, err
 	}
-	read.settings, read.pop = answer.settings, answer.pop
+	read.rules, read.pop = answer.rules, answer.pop
 	if err := h.nameShown(ctx, read); err != nil {
 		return nil, err
 	}

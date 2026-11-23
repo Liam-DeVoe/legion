@@ -49,7 +49,6 @@ func newSettingsHistory(t *testing.T, batch int) (*refresherRig, deliverytest.Fi
 	r := newRefresherRig(t)
 	r.batch = batch
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 5})
-	seedProjectSettings(t, r.database.Pool, deliveries)
 	r.exec(t, "record the production jobs' apply step", `
 		update delivery_run_jobs
 		set apply_step = $2, apply_step_conclusion = case when run_id % 10 = 3 then 'skipped' else 'success' end
@@ -1145,7 +1144,6 @@ func TestAProductionRuleThatShipsAnEarlierPullRequestFirstRewritesTheDaysUpToThe
 	for i := range rigs {
 		rigs[i] = newRefresherRig(t)
 		deliveries = deliverytest.Seed(t, rigs[i].database.Pool, deliverytest.Spec{Days: 5})
-		seedProjectSettings(t, rigs[i].database.Pool, deliveries)
 		none := deliveries.Settings
 		none.ProductionJobNames = []string{"production-release / apply-v0"}
 		rigs[i].putSettings(t, none, alice)
@@ -1238,7 +1236,6 @@ func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t
 func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
-	seedProjectSettings(t, r.database.Pool, deliveries)
 	r.settle(t)
 	ctx, project := t.Context(), deliveries.Project
 	scope, folded, err := readFigureScope(ctx, r.database.Pool, r.build, project)

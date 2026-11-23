@@ -55,14 +55,15 @@ func writeProductionEvent(t *testing.T, pool *store.Pool, event prodevents.Event
 	return written
 }
 
-// seedFailureHistory writes the deployment's delivery settings (the measures route's) and FAIL, the
-// one delivery-on project, whose events source reads the deploys posted to it and which counts
-// posted failures from failuresDay: P1 and P2 on the first day, P3 on the second; FA, a posted
-// failure of P1, restored at 13:00 by P2, and FB of P3, not restored. It answers the rows by name.
+// seedFailureHistory writes FAIL, the one delivery-on project, whose delivery settings the
+// deployment-wide measures route reads too (readDeliveryRules: a project with delivery on is all it
+// needs), whose events source reads the deploys posted to it and which counts posted failures from
+// failuresDay: P1 and P2 on the first day, P3 on the second; FA, a posted failure of P1, restored
+// at 13:00 by P2, and FB of P3, not restored. It answers the rows by name. No other project has
+// delivery on, since the route answers the failure measures of the one delivery-on project alone.
 func seedFailureHistory(t *testing.T, database *store.Store) map[string]prodevents.Event {
 	t.Helper()
 	pool := database.Pool
-	seedMeasuresSettings(t, database)
 	if _, err := pool.Exec(t.Context(), `insert into projects (key, name, default_assignee, default_repo)
 		values ('FAIL', 'Failures', 'alice', 'acme/fail-app'), ('MORE', 'More', 'alice', 'acme/more-app')`); err != nil {
 		t.Fatalf("seed the projects: %v", err)

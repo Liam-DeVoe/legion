@@ -20,17 +20,21 @@ import (
 // moved (expectDays).
 
 // deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDay)
-// with the deploy repository the settings name, the one repository of the history that holds runs,
-// as the deploy repository: that repository's read of each day.
+// with the one repository a deploy source reads, the one repository of the history that holds
+// runs, as the deploy repository: that repository's read of each day.
 func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	t.Helper()
-	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
+	projects, err := delivery.ListProjectSettings(t.Context(), r.database.Pool)
 	if err != nil {
 		t.Fatalf("read the delivery settings: %v", err)
 	}
+	rules := delivery.DeployRules(projects)
+	if len(rules) != 1 {
+		t.Fatalf("%d deploy sources read a repository, want the history's one", len(rules))
+	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), []keptRepo{{name: settings.DeployRepo, deploys: true, rule: deployRule(t, r.database.Pool, settings.DeployRepo)}}, day, nil)
+		read, err := r.registry.readDeliveryDay(t.Context(), []keptRepo{{name: rules[0].DeployRepo, deploys: true, rule: rules[0]}}, day, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -894,10 +898,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 	t.Logf("%s's %d rows of %s were deleted in the evals %v; eval_days changes of the pass: %v",
 		repo, len(held), day.Format(time.DateOnly), slices.Sorted(maps.Keys(evalsDeleted)), changes)
 
-	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
+	settings := deployRule(t, r.database.Pool, deliveries.DeployRepo)
 	if settings.StagingE2EJobName == nil {
 		t.Fatal("the history's settings make no staging gate's card, and the check needs one")
 	}
