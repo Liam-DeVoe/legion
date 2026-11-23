@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -42,7 +43,8 @@ func (e *CallbackError) HasCode(code string) bool { return e.code.Equal(code) }
 
 // ParseCallback extracts the code and state (or the error and its description) from an
 // `/auth/callback?...` query string. It returns a CallbackError for an issuer-side error and a
-// plain error for a malformed callback.
+// plain error for a malformed callback, one whose code is longer than oidc.MaxCallbackCode
+// included.
 func ParseCallback(req *http.Request) (code, state string, err error) {
 	q := req.URL.Query()
 	if errCode := q.Get("error"); errCode != "" {
@@ -52,6 +54,9 @@ func ParseCallback(req *http.Request) (code, state string, err error) {
 	state = strings.TrimSpace(q.Get("state"))
 	if code == "" || state == "" {
 		return "", "", errors.New("missing code or state in callback")
+	}
+	if len(code) > oidc.MaxCallbackCode {
+		return "", "", fmt.Errorf("the callback's code is longer than %d bytes", oidc.MaxCallbackCode)
 	}
 	return code, state, nil
 }

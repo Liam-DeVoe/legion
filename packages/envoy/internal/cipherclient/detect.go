@@ -22,10 +22,12 @@ import (
 	"path"
 	"strings"
 
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -170,12 +172,13 @@ func (e *ExternalAccountIdentity) account() string {
 // credentials itself (the subject token it read, the client's Basic pair, the access token it
 // minted and spends on the impersonation call) and hands back only its error text, so its
 // construction and each Token run under one record scope, over the identity's client (clientOf
-// HTTP) under a RefusalClient (withStatusOf).
+// HTTP) under a RefusalClient (oauthrefusal.Record).
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
-	answered := &statusOf{}
-	s := redact.Scope[*google.Credentials](withStatusOf(ctx, clientOf(ctx, e.HTTP), answered))
+	answered := &oauthrefusal.Recorder{}
+	identity := context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(clientOf(ctx, e.HTTP)))
+	s := redact.Scope[*google.Credentials](oauthrefusal.Record(identity, answered))
 	creds, err := redact.OAuth2(s.Read(google.CredentialsFromJSONWithType(s.Context(), e.CredentialsJSON, google.ExternalAccount, poolScope)))
 	if err != nil {
 		return "", "", fmt.Errorf("the external_account credential %s names is not one this client reads", credentialsFileVar)
@@ -200,7 +203,7 @@ func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, er
 // or else the subject token source its credential_source names (a url, or AWS's metadata) - and
 // the status and registered code its answer carried (redact.Answered); any other failure prints
 // as its class (redact.Class).
-func externalAccountFailure(credential []byte, answered *statusOf, err error) string {
+func externalAccountFailure(credential []byte, answered *oauthrefusal.Recorder, err error) string {
 	var fields struct {
 		TokenURL string `json:"token_url"`
 		Source   struct {
@@ -213,17 +216,17 @@ func externalAccountFailure(credential []byte, answered *statusOf, err error) st
 			return "read the subject token file its credential_source names: " + redact.File(readErr).Error()
 		}
 	}
-	if answered.status/100 <= 2 {
+	if answered.Status/100 <= 2 {
 		return redact.Class(err).Error()
 	}
 	service := "the subject token source its credential_source names"
 	switch tokenURL, _ := url.Parse(fields.TokenURL); {
-	case answered.host == "sts.googleapis.com":
+	case answered.Host == "sts.googleapis.com":
 		service = "Google's security token service"
-	case answered.host == "iamcredentials.googleapis.com":
+	case answered.Host == "iamcredentials.googleapis.com":
 		service = "IAM Credentials"
-	case parsed && tokenURL != nil && answered.host == tokenURL.Host:
+	case parsed && tokenURL != nil && answered.Host == tokenURL.Host:
 		service = "the token service the credential names"
 	}
-	return service + ": " + redact.Answered(answered.status, answered.answer())
+	return service + ": " + redact.Answered(answered.Status, answered.Answer())
 }

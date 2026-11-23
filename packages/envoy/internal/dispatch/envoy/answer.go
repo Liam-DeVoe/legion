@@ -74,13 +74,13 @@ func unavailableGetStatus(response *http.Response, route string) error {
 
 // listenerResponseError is the error a role lookup or a send reports for a non-200 answer. A 502,
 // 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says: the listener behind its
-// starting gate answers 503 {"error":"service starting"} (cmd/listener/main.go startingGate), and
-// a gateway in front of one that is gone answers 502 or 504, so either is "ask again" rather than
-// the listener's verdict on the request. Any other status with a JSON reason is that reason alone,
-// which a delivery records and a person reads verbatim ("no live session <id>", "message is
-// required", "unauthorized"). The reason is kept on the unavailable error too, for the same
-// reader. Any other status without one is ErrUnavailable alone: the listener answered, and asking
-// again repeats it.
+// starting gate answers 503 {"error":"service starting"} (cmd/listener/starting_gate.go
+// startingGate), and a gateway in front of one that is gone answers 502 or 504, so either is "ask
+// again" rather than the listener's verdict on the request. Any other status with a JSON reason is
+// that reason alone, which a delivery records and a person reads verbatim ("no live session <id>",
+// "message is required", "unauthorized"). The reason is kept on the unavailable error too, for the
+// same reader. Any other status without one is ErrUnavailable alone: the listener answered, and
+// asking again repeats it.
 func listenerResponseError(response *http.Response) error {
 	var body listenerwire.APIErrorAs[redact.RemoteText]
 	if err := decodeAnswer(response, &body); err != nil {

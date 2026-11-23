@@ -31,10 +31,10 @@ var ErrUnavailable = errors.New("envoy listener unavailable")
 // ErrUnreachable marks the ErrUnavailable failures no listener answered: the request found no
 // connection, lost it, or ran out of time before an answer, or a 502, 503 or 504 came back - a
 // gateway in front of a listener that is gone, or a listener behind its starting gate
-// (cmd/listener/main.go startingGate). Those are what a listener being replaced gives for a few
-// seconds, so asking again a little later may be answered. Every other ErrUnavailable - a status
-// the listener chose, such as the 401 it gives a token it refuses, or an answer that does not
-// decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
+// (cmd/listener/starting_gate.go startingGate). Those are what a listener being replaced gives for
+// a few seconds, so asking again a little later may be answered. Every other ErrUnavailable - a
+// status the listener chose, such as the 401 it gives a token it refuses, or an answer that does
+// not decode - is the listener's own answer, which asking again only repeats. An ErrUnreachable
 // failure is ErrUnavailable too, with the same text, so a caller that asks only errors.Is(err,
 // ErrUnavailable) reads it exactly as before.
 var ErrUnreachable = errors.New("envoy listener unreachable")
@@ -299,7 +299,11 @@ type SendInput struct {
 // reports that the stream already held this message, so it stored nothing new; the publish still
 // reached the agent's subject. What recognises that repeat, and for how long, is stated on
 // DELIVERY_DUPLICATE_WINDOW_MS in @legion/contracts (contracts.DeliveryDuplicateWindow here). The
-// envelope id then names an envelope JetStream discarded.
+// envelope id then names the copy the stream holds under the same key where the listener is of
+// this release, which may be an earlier attempt's or another sender's (whose text the answer
+// leaves out, listenerwire.ReadsKeyTaken), and the envelope it built for the repeat, which
+// JetStream discarded, where it is older; the answer does not say which, so a caller reads no
+// envelope id from a duplicate.
 //
 // State is what the target was when the listener stored the message, SendStateConnected or
 // SendStateStopped. A listener that predates the field answers none, which reads as a connected
@@ -930,6 +934,11 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, redact.Cause(err, c.baseURL))
 		}
 		request.Header.Set("Content-Type", "application/json")
+		// Dispatch reads the key-taken answer (SendResult): a duplicate's envelope id is never
+		// recorded, and a kept copy's 202 names that copy's event_id. Without the header the
+		// listener answers a copy Dispatch cannot prove its own, as every copy that names no
+		// session is, with the envelope it built for this request, whose id names no stored copy.
+		request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
 		return request, nil
 	}, func(err error) error { return sendTransportError(redact.Cause(err, c.baseURL), written.Load()) })
 	if err != nil {
