@@ -124,15 +124,13 @@ import (
 // so every row an upgrade finds passes them (migration_20261117223524_test.go), and it touches no
 // outbox_kind_check.
 // The claim of each resume (20261121183336) is applied after all of these and touches no
-// outbox_kind_check: it adds pod_resumes.claim and names on every row it finds the claim of its
-// role, so it needs no row of its own here (migration_20261121183336_test.go).
+// outbox_kind_check: it adds pod_resumes.claim, names on every row it finds the claim of its role,
+// and makes the one open resume per role one per claim, and closes no row, so it needs no row of
+// its own here (migration_20261121183336_test.go).
 // The claim of each backstop (20261122072945) is applied after it and touches no
 // outbox_kind_check: it adds pod_wake_backstops.claim, names on every row it finds the claim of its
 // role, and makes the one open backstop per role one per claim, so it needs no row of its own here
 // (migration_20261122072945_test.go).
-// One open resume per claim (20261122074350) is applied after it and touches no
-// outbox_kind_check: it makes the one open resume per role one per claim, and closes no row, so it
-// needs no row of its own here (migration_20261122074350_test.go).
 // The claims a release suspended (20261122102933) is applied after it and touches no
 // outbox_kind_check: it rewrites a release's mark in flight as the tokens of the claims of the
 // roles it names and adds pod_releases.claims at its default, the empty string, on every row it
@@ -150,7 +148,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717, 20261121183336,
-	20261122072945, 20261122074350, 20261122102933, 20261123033101,
+	20261122072945, 20261122102933, 20261123033101,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -168,9 +166,9 @@ var thisBranchsMigrations = []int{
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
 // 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
-// the claim of each resume's 20261121183336, the claim of each backstop's 20261122072945, one
-// open resume per claim's 20261122074350, the claims a release suspended's 20261122102933 and the
-// record that a claim took another role's 20261123033101.
+// the claim of each resume's 20261121183336, the claim of each backstop's 20261122072945, the
+// claims a release suspended's 20261122102933 and the record that a claim took another role's
+// 20261123033101.
 // That is why the loop below holds the list rather than counting it, so that a version added above
 // any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
