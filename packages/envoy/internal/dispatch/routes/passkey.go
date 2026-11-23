@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/errkind"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -333,6 +334,7 @@ func writePasskeyRefusal(w http.ResponseWriter, err error, enrollment bool) {
 			return
 		}
 	}
-	slog.Error("dispatch: a passkey ceremony failed", "error", err)
+	// By its kind alone: the passkey store's errors name the address (errkind.Of).
+	slog.Error("dispatch: a passkey ceremony failed", "error_kind", errkind.Of(err))
 	writeCodeError(w, http.StatusInternalServerError, "the passkey ceremony could not be completed", "PASSKEY_ERROR")
 }

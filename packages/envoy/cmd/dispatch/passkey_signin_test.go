@@ -368,10 +368,13 @@ func TestAFullMembersLinkEnrollsNoPasskey(t *testing.T) {
 
 // TestAPasskeySignInWithALowerSignCountIsRefused (R5): a sign-in whose signature counter is above
 // the stored one signs in and stores it; one whose counter is lower than the stored one is 401
-// PASSKEY_SIGN_COUNT, sets no cookie and leaves the stored counter.
+// PASSKEY_SIGN_COUNT, sets no cookie and leaves the stored counter. Its WARN line names the person
+// by their login's hash, and no line of the refused sign-in, its access-log line included, holds
+// the address.
 //
 // Control: accept a counter that did not advance (identity.Passkeys.FinishSignIn ignoring the clone
-// warning), and the lower counter signs in and the row fails.
+// warning), and the lower counter signs in and the row fails; log "email", stored.Email on the
+// warning again, and the row fails on the address.
 func TestAPasskeySignInWithALowerSignCountIsRefused(t *testing.T) {
 	r := newPasskeyRig(t, nil)
 	device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
@@ -380,6 +383,8 @@ func TestAPasskeySignInWithALowerSignCountIsRefused(t *testing.T) {
 	if signedIn := r.signIn(t, r.handler, device); signedIn.Code != http.StatusOK {
 		t.Fatalf("a sign-in at counter 6 answered %d %s, want 200", signedIn.Code, signedIn.Body.String())
 	}
+	logged := &logtest.Buffer{}
+	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
 	device.count = 2
 	refused := r.signIn(t, r.handler, device)
 	wantCode(t, "a sign-in at counter 3, below the stored 6", refused, http.StatusUnauthorized, "PASSKEY_SIGN_COUNT")
@@ -389,6 +394,13 @@ func TestAPasskeySignInWithALowerSignCountIsRefused(t *testing.T) {
 	var stored int64
 	if err := r.database.Pool.QueryRow(context.Background(), `select sign_count from passkeys where email = $1`, outsiderEmail).Scan(&stored); err != nil || stored != 6 {
 		t.Fatalf("the stored counter is %d (%v) after the refusal, want 6", stored, err)
+	}
+	warning := logged.Lines("its signature counter did not advance")
+	if strings.Count(warning, "\n") != 1 || !strings.Contains(warning, "login_hash="+model.LoginHash(outsiderEmail)) {
+		t.Errorf("the refusal's warning = %q, want one line naming login_hash=%s", warning, model.LoginHash(outsiderEmail))
+	}
+	if strings.Contains(strings.ToLower(logged.String()), strings.ToLower(outsiderEmail)) {
+		t.Errorf("the refused sign-in's lines hold the address %s:\n%s", outsiderEmail, logged.String())
 	}
 }
 

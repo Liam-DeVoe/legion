@@ -1,16 +1,22 @@
 kind: Changed
 body: |-
-  Dispatch's sign-in and membership log lines no longer carry a person's address. A sign-out, the
-  hourly confirmation and the end of a sign-in, a Workspace Directory check under IAP identity, a
-  stored refresh token that does not open, and a decision, mint or scope change refused because a
-  caller's standing could not be read each name the person as `login_hash`, the first 16 hex
-  digits of the SHA-256 of their canonical login, where they named `email` before; an end's
-  `reason` names the address a refreshed sign-in carried the same way. Each failed store or broker
-  call on those lines is named by `error_kind` (`database SQLSTATE <code>`, `broker HTTP <status>`,
-  `deadline exceeded` and others) in place of `error`, whose text quoted the address. The Dispatch
-  server README's section "A person in the sign-in and membership lines" gives the command that
-  hashes an address and the statement that reads the address a value stands for from the people
-  table. A document socket's answer before its upgrade is now sent as `text/plain` with
+  Dispatch's access log and its sign-in and membership log lines no longer carry a person's
+  address. The access log names a person caller (`user`, `token`, `broker-token`) by `login_hash`
+  in place of `caller`, the first 16 hex digits of the SHA-256 of their canonical login, writes a
+  session's `credential` as `token:<login_hash>` or `broker-token:<login_hash>`, and writes a path
+  segment a route names `{login}` or `{email}` as `login_hash:<value>`. A line that reads `caller`
+  for a person now reads `login_hash`. The lines of a sign-in, a dev sign-in, a sign-out, a refused
+  sign-in or IAP assertion, the hourly confirmation and the end of a sign-in, the membership pass, a
+  Workspace Directory check under IAP identity, a passkey sign-in or ceremony refused, a stored
+  refresh token that does not open, and a decision, mint or scope change refused because a
+  caller's standing could not be read name the person as `login_hash` where they named `email`; a
+  refusal's or an end's `reason` gives the refusal's words, never its text, and names the address a
+  refreshed sign-in carried by its hash. Each failed store or broker call on those lines is named
+  by `error_kind` (`database SQLSTATE <code>`, `broker HTTP <status>`, `deadline exceeded` and
+  others) in place of `error`, whose text quoted the address. The Dispatch server README's section
+  "A person in the access log and the sign-in lines" gives the command that hashes an address and
+  the statement that reads the address a value stands for from the people table. A document
+  socket's answer before its upgrade is now sent as `text/plain` with
   `X-Content-Type-Options: nosniff` whatever wrote it; ygo's own answers, which already were, reach
   the peer unchanged. CodeQL's `go/clear-text-logging` and `go/reflected-xss` queries reported
   these lines and that writer.

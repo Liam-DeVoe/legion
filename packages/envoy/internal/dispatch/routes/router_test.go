@@ -471,7 +471,7 @@ func TestSignInNamesThePersonByTheirUsernameNotTheEmailClaim(t *testing.T) {
 }
 
 // Someone the pool vouches for but who is not in the group is told so in the browser and named in
-// the log; they get neither a session nor a recorded sign-in.
+// the log by their login's hash; they get neither a session nor a recorded sign-in.
 func TestSignInRefusesSomeoneOutsideTheGroupWithPageAndLog(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
@@ -491,8 +491,9 @@ func TestSignInRefusesSomeoneOutsideTheGroupWithPageAndLog(t *testing.T) {
 	if _, found := rig.people.get(rigEmail); found {
 		t.Error("someone outside the group was recorded as signed in")
 	}
-	if logged := logs.String(); !strings.Contains(logged, "sign-in refused") || !strings.Contains(logged, rigEmail) {
-		t.Errorf("refusal was not logged with the person: %q", logged)
+	if logged := logs.String(); !strings.Contains(logged, "sign-in refused") || !strings.Contains(logged, "login_hash="+model.LoginHash(rigEmail)) ||
+		!strings.Contains(logged, "reason=") || strings.Contains(strings.ToLower(logged), strings.ToLower(rigEmail)) {
+		t.Errorf("refusal was not logged with the person's login hash and reason, and no address: %q", logged)
 	}
 }
 
@@ -698,8 +699,9 @@ func TestDomainSignInAdmitsAVerifiedAccountOfTheDomain(t *testing.T) {
 
 // An account outside the domain, one whose email Google has not verified, and one with no email
 // each reach Dispatch's refusal page with their reason; none gets a session or a recorded sign-in,
-// and each refusal is logged with the email and hd. The page is laid out at the device's width, so
-// a phone shows it at a size its reader can read rather than as a desktop page scaled down.
+// and each refusal is logged with the login's hash, the hd and the refusal's words, and no address.
+// The page is laid out at the device's width, so a phone shows it at a size its reader can read
+// rather than as a desktop page scaled down.
 func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -708,13 +710,13 @@ func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 		logged []string
 	}{
 		{"an account of another domain", func(claims map[string]any) { claims["hd"] = "other.example" },
-			rigGoogleEmail + " is not in the domain that may use Dispatch", []string{"email=A.Person@example.com", "hd=other.example"}},
+			rigGoogleEmail + " is not in the domain that may use Dispatch", []string{"login_hash=" + model.LoginHash("A.Person@example.com"), "hd=other.example", `reason="not in the domain that may use Dispatch"`}},
 		{"an account outside any Workspace", func(claims map[string]any) { delete(claims, "hd") },
-			rigGoogleEmail + " is not in the domain that may use Dispatch", []string{"email=A.Person@example.com", `hd=""`}},
+			rigGoogleEmail + " is not in the domain that may use Dispatch", []string{"login_hash=" + model.LoginHash("A.Person@example.com"), `hd=""`}},
 		{"an email Google has not verified", func(claims map[string]any) { claims["email_verified"] = false },
-			rigGoogleEmail + ": email not verified", []string{"email=A.Person@example.com", "hd=" + rigDomain}},
+			rigGoogleEmail + ": email not verified", []string{"login_hash=" + model.LoginHash("A.Person@example.com"), "hd=" + rigDomain, `reason="email not verified by Google"`}},
 		{"no email", func(claims map[string]any) { delete(claims, "email") },
-			"No email: this sign-in carries no email address", []string{`email=""`, "hd=" + rigDomain}},
+			"No email: this sign-in carries no email address", []string{`login_hash=""`, "hd=" + rigDomain}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := captureRouterLogs(t)
@@ -745,6 +747,9 @@ func TestDomainSignInRefusesWithItsReasonOnThePageAndInTheLog(t *testing.T) {
 				if !strings.Contains(logged, want) {
 					t.Errorf("the refusal's log line does not carry %s: %q", want, logged)
 				}
+			}
+			if strings.Contains(strings.ToLower(logged), "a.person@example.com") {
+				t.Errorf("the refusal's log line holds the address: %q", logged)
 			}
 		})
 	}

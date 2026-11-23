@@ -72,7 +72,7 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	}
 	signedIn, refused := i.Rule.Person(r.Context(), claims)
 	if refused != nil {
-		slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(claims), "reason", refused)...)
+		slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(claims), "reason", RefusalReason(refused))...)
 		return "", ErrNoIdentity
 	}
 	if expired != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/errkind"
@@ -58,9 +59,19 @@ func googleRefusal(email string, claims oidc.Claims, err error) error {
 	}
 }
 
-// RefusalLogFields names the email and hd Google's token carried.
+// RefusalLogFields names the person Google's token carried by their login's hash (`login_hash`,
+// empty for a token with no email), and its hd.
 func (r DomainRule) RefusalLogFields(claims oidc.Claims) []any {
-	return []any{"email", claims.Email, "hd", claims.HostedDomain}
+	return []any{"login_hash", refusedLoginHash(claims.Email), "hd", claims.HostedDomain}
+}
+
+// refusedLoginHash is login's hash for a refusal's line (model.LoginHash), or "" for no login,
+// whose hash would name nobody.
+func refusedLoginHash(login string) string {
+	if strings.TrimSpace(login) == "" {
+		return ""
+	}
+	return model.LoginHash(login)
 }
 
 // Subject is the Google account (claims.Subject) a domain sign-in records with the person.

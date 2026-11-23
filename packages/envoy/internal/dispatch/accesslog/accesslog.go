@@ -4,7 +4,9 @@
 // callers behind the requests it was serving. Handler wraps one route and logs, when the request
 // ends, the method, the route pattern (never a path's ids alone), the caller the authentication
 // layer resolved and the credential behind it, the address and user agent it came from, the
-// status, the time it took and the bytes of body it wrote.
+// status, the time it took and the bytes of body it wrote. A person - a signed-in browser's, a
+// personal token's owner, the person a broker-issued token acts for - is named by their login's
+// hash (model.LoginHash), never by their address.
 //
 // The line never carries a token, a cookie, a query string, a request body or a response body.
 // The text in it a caller wrote - the method, the path, the session id a bearer names, the
@@ -18,25 +20,28 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The caller kinds the line names, one per way Dispatch authenticates a request.
 const (
-	// KindUser is a signed-in person, named by their lowercase email.
+	// KindUser is a signed-in person, named by their login's hash.
 	KindUser = "user"
 	// KindSession is an agent session a bearer named in its request's actor.
 	KindSession = "session"
-	// KindToken is a personal agent token with no session named, by its owner's email.
+	// KindToken is a personal agent token with no session named, by its owner's login's hash.
 	KindToken = "token"
 	// KindService is a verified Kubernetes service-account token, by its subject.
 	KindService = "service"
 	// KindBrokerToken is an access token the secrets broker issued, presented under the DPoP
-	// scheme and proved against the key it is bound to, by the person its session acts for.
+	// scheme and proved against the key it is bound to, by the login's hash of the person its
+	// session acts for.
 	KindBrokerToken = "broker-token"
 	// KindSharedToken is the deployment's shared agent token with no session named: it proves
 	// no owner, so the line names none.
@@ -164,9 +169,9 @@ func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
 // wherever it resolves a caller, and the last resolution wins: a bearer is noted by what its
 // token proved and then by the session it named, which is the caller a reader wants. A session
 // named after a credential of its own keeps that credential as the line's `credential`:
-// `token:<owner>`, `service:<subject>`, `broker-token:<person>` or `shared-token`. For the first
-// three that session is text the caller wrote, except under a broker-issued token, where the
-// token itself names it.
+// `token:<owner's login_hash>`, `service:<subject>`, `broker-token:<person's login_hash>` or
+// `shared-token`. For the first three that session is text the caller wrote, except under a
+// broker-issued token, where the token itself names it.
 func Note(ctx context.Context, kind, id string) {
 	rec, _ := ctx.Value(callerKey{}).(*recorder)
 	if rec == nil {
@@ -176,13 +181,21 @@ func Note(ctx context.Context, kind, id string) {
 	switch {
 	case kind == KindSession && rec.kind == KindSharedToken:
 		rec.credential = KindSharedToken
-	case kind == KindSession && (rec.kind == KindToken || rec.kind == KindService || rec.kind == KindBrokerToken):
+	case kind == KindSession && (rec.kind == KindToken || rec.kind == KindBrokerToken):
+		rec.credential = rec.kind + ":" + model.LoginHash(rec.id)
+	case kind == KindSession && rec.kind == KindService:
 		rec.credential = rec.kind + ":" + rec.id
 	case kind != KindSession:
 		rec.credential = ""
 	}
 	rec.kind, rec.id = kind, id
 	rec.mu.Unlock()
+}
+
+// personKind reports whether a caller of kind is a person, whom the line names by their login's
+// hash (`login_hash`) in place of `caller`.
+func personKind(kind string) bool {
+	return kind == KindUser || kind == KindToken || kind == KindBrokerToken
 }
 
 // Detached returns ctx with its request's recorder masked, so a caller resolved on it names no
@@ -208,19 +221,24 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 			status = http.StatusInternalServerError
 		}
 	}
-	attrs := []any{
+	who := []any{"caller", clip(id)}
+	if personKind(kind) {
+		who = []any{"login_hash", model.LoginHash(id)}
+	}
+	attrs := append([]any{
 		"method", clip(r.Method),
 		"route", route,
-		"path", clip(r.URL.EscapedPath()),
+		"path", clip(loggedPath(route, r.URL.EscapedPath())),
 		"caller_kind", kind,
-		"caller", clip(id),
+	}, who...)
+	attrs = append(attrs,
 		"address", clip(auth.ForwardedAddress(r)),
 		"peer", peerAddress(r),
 		"user_agent", clip(r.UserAgent()),
 		"status", status,
 		"elapsed_ms", elapsed.Milliseconds(),
 		"bytes", rec.written,
-	}
+	)
 	if credential != "" {
 		attrs = append(attrs, "credential", credential)
 	}
@@ -237,6 +255,34 @@ func peerAddress(r *http.Request) string {
 		return host
 	}
 	return clip(r.RemoteAddr)
+}
+
+// loginSegments are the route wildcards whose path segment is a person's login
+// (`/api/v1/people/{login}/nodes`, `/api/v1/projects/{key}/access/people/{email}`).
+var loginSegments = map[string]bool{"{login}": true, "{email}": true}
+
+// loggedPath is the escaped path as the line writes it: each segment that route names a person's
+// login in is written `login_hash:<hash>` (model.LoginHash of the segment, unescaped), so the line
+// holds no address, and every other segment as it was sent.
+func loggedPath(route, path string) string {
+	if !strings.Contains(route, "{login}") && !strings.Contains(route, "{email}") {
+		return path
+	}
+	pattern, segments := strings.Split(route, "/"), strings.Split(path, "/")
+	if len(pattern) != len(segments) {
+		return path
+	}
+	for i, wildcard := range pattern {
+		if !loginSegments[wildcard] {
+			continue
+		}
+		login, err := url.PathUnescape(segments[i])
+		if err != nil {
+			login = segments[i]
+		}
+		segments[i] = "login_hash:" + model.LoginHash(login)
+	}
+	return strings.Join(segments, "/")
 }
 
 // clip cuts caller-written text to fieldBytes, dropping a rune the cut splits.

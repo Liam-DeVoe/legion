@@ -4898,6 +4898,7 @@ Each item below names a field of the line, then what it holds.
 - `path`
 
   The request path as it was sent, still escaped (`a%2Fb` stays `a%2Fb`), without its query string.
+  A segment the route names `{login}` or `{email}` (`/api/v1/people/{login}/nodes`, `/api/v1/projects/{key}/access/people/{email}`) is written `login_hash:<value>`, the hash of the login it holds, so the path names no address.
 
 - `caller_kind`
 
@@ -4905,8 +4906,15 @@ Each item below names a field of the line, then what it holds.
 
 - `caller`
 
-  Who that is: the person's lowercase email, the session id, the personal token's owner, the service-account subject, or the person a broker-issued token acts for.
+  Who that is, for a caller that is no person: the session id or the service-account subject.
+  A person, on a `user`, `token` or `broker-token` line, is named by `login_hash` in its place.
   `shared-token` and `anonymous` name nobody.
+
+- `login_hash`
+
+  Only on a `user`, `token` or `broker-token` line, in place of `caller`: the hash of the signed-in person's login, of the personal token's owner's, or of the person a broker-issued token acts for (`model.LoginHash`).
+  The line never names a person's address.
+  To find a person's requests, hash their address, or read the address a value stands for from the people table, as [A person in the access log and the sign-in lines](#a-person-in-the-access-log-and-the-sign-in-lines) says.
 
 - `address`
 
@@ -4942,7 +4950,7 @@ Each item below names a field of the line, then what it holds.
 - `credential`
 
   Only on a `session` line: the credential behind the session.
-  `token:<owner>`, `service:<subject>`, `shared-token` or `broker-token:<person>`.
+  `token:<login_hash>` (the token's owner), `service:<subject>`, `shared-token` or `broker-token:<login_hash>` (the person the token acts for).
   For every one but the last that session id is the caller's own text; under a broker-issued token the credential itself named it.
 
 - `aborted`
@@ -4950,7 +4958,7 @@ Each item below names a field of the line, then what it holds.
   Only when the handler panicked (an artifact download whose store fails mid-stream aborts this way): `true`.
   The line is still written, and the panic still reaches the server.
 
-The line never carries a token, a cookie, a query string, a request body or a response body.
+The line never carries a token, a cookie, a query string, a request body, a response body or a person's address.
 The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes.
 
 A websocket resolves its caller again on every heartbeat, and that resolution does not change the line: it names the caller the connection was admitted as.
@@ -4964,14 +4972,13 @@ the `403` a cookie request from another origin gets, the `421` a request for ano
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
 
-## A person in the sign-in and membership lines
+## A person in the access log and the sign-in lines
 
-The access log names a request's caller by address (`caller`, above).
-The lines the sign-in and membership code writes about a person name them by `login_hash` instead: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`).
-These are the lines of a sign-out, of the hourly confirmation and the end of a sign-in, of a Workspace Directory check under IAP identity, of a stored refresh token that does not open, and of a decision, mint or scope change refused because whether Dispatch holds its caller could not be read.
-An end's `reason` names the address a refreshed sign-in carried by its `login_hash` too.
+The access log (`login_hash`, and a `credential` or `path` that names a person, above) and the lines the sign-in and membership code writes name a person by `login_hash`: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`), never their address.
+The sign-in and membership lines are those of a sign-in, a dev sign-in, a sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in (a passkey's among them), the membership pass, a Workspace Directory check under IAP identity, a passkey sign-in or ceremony refused, a stored refresh token that does not open, and a decision, mint or scope change refused because whether Dispatch holds its caller could not be read.
+A refusal's or an end's `reason` gives the refusal's words, and names the address a refreshed sign-in carried by its `login_hash`.
 One login has one value in every process and every build.
-To find a person's lines, hash their address the same way:
+To find a person's lines, the requests they made among them, hash their address the same way:
 
 ```
 printf %s alice@example.com | sha256sum | cut -c1-16

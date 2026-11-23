@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -39,8 +40,8 @@ func accessLines(t *testing.T, logged *logBuffer) []string {
 	return lines
 }
 
-// A person's read writes one line naming the route, the person and the answer, and no request
-// after it writes a second line for the same request.
+// A person's read writes one line naming the route, the person (by their login's hash) and the
+// answer, and no request after it writes a second line for the same request.
 func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	seedTestProject(t, database)
@@ -60,7 +61,7 @@ func TestAPersonsRequestWritesOneAccessLogLineNamingThem(t *testing.T) {
 		`route=/api/v1/issues`,
 		`path=/api/v1/issues`,
 		`caller_kind=user`,
-		`caller=alice`,
+		`login_hash=` + model.LoginHash("alice"),
 		`status=200`,
 		`elapsed_ms=`,
 		`bytes=`,

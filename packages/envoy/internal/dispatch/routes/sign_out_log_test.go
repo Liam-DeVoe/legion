@@ -130,17 +130,11 @@ func TestASignOutsLinesNameThePersonByTheirLoginsHash(t *testing.T) {
 					t.Errorf("the line %q does not hold %s", lines, want)
 				}
 			}
-			// The access log's line of the request names its caller (accesslog), the record of who
-			// made each request; every other line names the person by their login's hash alone.
-			var others strings.Builder
-			for line := range strings.Lines(logged.String()) {
-				if !strings.Contains(line, `"msg":"dispatch: request"`) {
-					others.WriteString(line)
-				}
-			}
-			all := others.String()
+			// Every line names the person by their login's hash alone, the request's access-log line
+			// among them (accesslog).
+			all := logged.String()
 			if strings.Contains(strings.ToLower(all), person) {
-				t.Errorf("the log holds the address %s outside the access log's line:\n%s", person, all)
+				t.Errorf("the log holds the address %s:\n%s", person, all)
 			}
 			for _, word := range []string{"of \\\"ada", "the database is down", "agent-secrets", "broker returned"} {
 				if strings.Contains(all, word) {

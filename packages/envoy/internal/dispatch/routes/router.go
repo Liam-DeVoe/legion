@@ -635,14 +635,14 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	person, err := r.ctx.SignInRule.Person(req.Context(), session.Claims)
 	if err != nil {
-		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
+		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", identity.RefusalReason(err))...)
 		writeSignInRefusedPage(w, person.Email, err)
 		return
 	}
 	email := person.Email
 	subject := r.ctx.SignInRule.Subject(session.Claims)
 	if err := r.ctx.SignInRule.WriteSignIn(req.Context(), r.ctx.People, person, subject, session.RefreshToken); err != nil {
-		slog.Error("dispatch: record sign-in failed", "email", email, "error", err)
+		slog.Error("dispatch: record sign-in failed", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 		writeError(w, http.StatusInternalServerError, "record sign-in")
 		return
 	}
@@ -672,7 +672,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 		var err error
 		generation, err = r.ctx.Sessions.EnsureSession(req.Context(), email)
 		if err != nil {
-			slog.Error("dispatch: ensure session generation failed", "email", email, "error", err)
+			slog.Error("dispatch: ensure session generation failed", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 			writeError(w, http.StatusInternalServerError, "session generation")
 			return false
 		}
@@ -680,11 +680,11 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 	if r.ctx.SignInRule != nil {
 		if err := r.ctx.SignInRule.ConfirmCookie(req.Context(), r.ctx.People, email, subject); err != nil {
 			if errors.Is(err, identity.ErrSignInSuperseded) {
-				slog.Warn("dispatch: sign-in superseded: another Google account signed in to the address before its cookie", "email", email)
+				slog.Warn("dispatch: sign-in superseded: another Google account signed in to the address before its cookie", "login_hash", model.LoginHash(email))
 				writeCodeError(w, http.StatusConflict, "another Google account signed in to this address meanwhile; start over at /auth/start", "SIGNIN_SUPERSEDED")
 				return false
 			}
-			slog.Error("dispatch: read the account the sign-in recorded failed", "email", email, "error", err)
+			slog.Error("dispatch: read the account the sign-in recorded failed", "login_hash", model.LoginHash(email), "error_kind", errkind.Of(err))
 			writeError(w, http.StatusInternalServerError, "record sign-in")
 			return false
 		}
