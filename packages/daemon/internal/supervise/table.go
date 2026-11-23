@@ -2255,9 +2255,10 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
 // reaches refreshPlugin with none and asks the gate at that guard, which is where every
-// uncredited relaunch of this lane asks and which states why the ask lives there rather than
-// here. The claim here is never the controller's, which that guard spares: m.staleRelaunch is
-// written by holdStaleRelaunch alone, and that is reached under StateWorking and no controller.
+// uncredited relaunch of this lane asks: refreshPlugin's doc names the three roads that reach it
+// holding none, this one among them. The claim here is never the controller's, which that guard
+// spares: m.staleRelaunch is written by holdStaleRelaunch alone, and that is reached under
+// StateWorking and no controller.
 // Refused, the relaunch is left to the next sweep, which posts StalePlugin for a claim that is
 // idle by then and relaunches it on the first credit that comes free — a minute at the rate the
 // lane is held to, against the hours a lane with no gate costs every other wake of the daemon.
