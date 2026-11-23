@@ -59,13 +59,18 @@ var errVerdictSet = errors.New("the verdict set is minted only as the daemon's o
 type GitIdentity = runtime.GitIdentity
 
 // Lease is one installation-token lease, including its expiry, when it was minted and the App bot
-// identity.
+// identity: the git identity work is done under, and the bot user's id.
 type Lease struct {
 	Token     string
 	ExpiresAt time.Time
 	// Minted is when GitHub issued the token: one moments old may not be accepted yet.
 	Minted   time.Time
 	Identity GitIdentity
+	// BotUserID is the id of the App's bot user, as GET /users/<login> answered it: the creator.id
+	// of each commit status the bot creates. A rename of the App changes the bot's login and not
+	// this id, so the writer of legion-verdict tells the bot's statuses by it. 0 where GitHub
+	// answered no whole positive number, which tells no status as the bot's.
+	BotUserID int64
 }
 
 // TransientError is a GitHub answer that says nothing about the App or its installation, so the
@@ -227,7 +232,7 @@ type Manager struct {
 	// installations holds the App's installation on each owner, by lowercased login, as the last
 	// discovery or release of every installation found them; nil until one has.
 	installations     map[string]string
-	identities        map[string]GitIdentity
+	identities        map[string]botUser
 	pendingIdentities map[string]*pendingIdentity
 	// pendingInstallations is the installation read running now under the App's JWT, so
 	// overlapping reads share one (InstalledOwners), nil while none runs. It is dropped the moment
@@ -273,8 +278,21 @@ type refusedNarrowingAt struct {
 
 type pendingIdentity struct {
 	done     chan struct{}
-	identity GitIdentity
+	identity botUser
 	err      error
+}
+
+// botUser is what the Manager reads once of the App's bot user and keeps by App id: the git
+// identity work is done under (Lease.Identity), and the bot user's id (Lease.BotUserID).
+type botUser struct {
+	identity GitIdentity
+	id       int64
+}
+
+// onto is lease with the bot user's identity and id set on it.
+func (b botUser) onto(lease Lease) Lease {
+	lease.Identity, lease.BotUserID = b.identity, b.id
+	return lease
 }
 
 // pendingInstallations is the App's installation read in flight under its JWT, and what it
@@ -334,7 +352,7 @@ func New(app config.GitHubApp, options Options) *Manager {
 		log:               log,
 		leases:            map[scope]Lease{},
 		pending:           map[scope]*pendingLease{},
-		identities:        map[string]GitIdentity{},
+		identities:        map[string]botUser{},
 		pendingIdentities: map[string]*pendingIdentity{},
 		commands:          map[scope]*commandRun{},
 		keys:              map[string]*rsa.PrivateKey{},
@@ -631,14 +649,13 @@ func (m *Manager) mint(ctx context.Context, request mintRequest) (Lease, error) 
 	if err != nil {
 		return Lease{}, err
 	}
-	identity, err := m.identity(ctx, app.AppID, func(ctx context.Context) (GitIdentity, error) {
+	bot, err := m.identity(ctx, app.AppID, func(ctx context.Context) (botUser, error) {
 		return m.fetchIdentity(ctx, jwt, lease.Token)
 	})
 	if err != nil {
 		return Lease{}, err
 	}
-	lease.Identity = identity
-	return lease, nil
+	return bot.onto(lease), nil
 }
 
 // installation is app's installation on owner: the one its configuration names, else the one
@@ -941,9 +958,9 @@ func installationID(raw json.RawMessage) (string, error) {
 	return "", fmt.Errorf("invalid installation id")
 }
 
-// identity is the bot identity of the App appID, read once by fetch and cached; concurrent callers
+// identity is the bot user of the App appID, read once by fetch and cached; concurrent callers
 // share the one read.
-func (m *Manager) identity(ctx context.Context, appID string, fetch func(context.Context) (GitIdentity, error)) (GitIdentity, error) {
+func (m *Manager) identity(ctx context.Context, appID string, fetch func(context.Context) (botUser, error)) (botUser, error) {
 	m.mu.Lock()
 	if identity, ok := m.identities[appID]; ok {
 		m.mu.Unlock()
@@ -955,7 +972,7 @@ func (m *Manager) identity(ctx context.Context, appID string, fetch func(context
 		case <-waiting.done:
 			return waiting.identity, waiting.err
 		case <-ctx.Done():
-			return GitIdentity{}, ctx.Err()
+			return botUser{}, ctx.Err()
 		}
 	}
 	waiting := &pendingIdentity{done: make(chan struct{})}
@@ -974,73 +991,54 @@ func (m *Manager) identity(ctx context.Context, appID string, fetch func(context
 	return identity, err
 }
 
-func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken string) (GitIdentity, error) {
+func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken string) (botUser, error) {
 	slug, err := m.appSlug(ctx, jwt)
 	if err != nil {
-		return GitIdentity{}, err
+		return botUser{}, err
 	}
 	return m.botIdentity(ctx, slug+"[bot]", installationToken)
 }
 
-// botIdentity is the git identity of the App bot login, its noreply email naming the bot user's
-// id, read from GET /users/<login> under installationToken. BotUserID reads that id back.
-func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
+// botIdentity is the App bot user of login, read from GET /users/<login> under installationToken:
+// its git identity, whose noreply email names the bot user's id, and that id as a number, 0 where
+// GitHub answered no whole positive number.
+func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (botUser, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
 	if err != nil {
-		return GitIdentity{}, err
+		return botUser{}, err
 	}
 	request.Header.Set("Authorization", "token "+installationToken)
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("User-Agent", "legion-daemon")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", err)}
+		return botUser{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return GitIdentity{}, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
+		return botUser{}, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App bot identity lookup", responseBound)
 	if err != nil {
-		return GitIdentity{}, err
+		return botUser{}, err
 	}
 	var bot struct {
 		ID json.RawMessage `json:"id"`
 	}
 	if err := json.Unmarshal(body, &bot); err != nil {
-		return GitIdentity{}, fmt.Errorf("GitHub App bot identity lookup returned an invalid bot user id")
+		return botUser{}, fmt.Errorf("GitHub App bot identity lookup returned an invalid bot user id")
 	}
 	id, err := installationID(bot.ID)
 	if err != nil {
-		return GitIdentity{}, fmt.Errorf("GitHub App bot identity lookup returned an invalid bot user id")
+		return botUser{}, fmt.Errorf("GitHub App bot identity lookup returned an invalid bot user id")
 	}
-	return GitIdentity{
-		Name:  login,
-		Email: id + "+" + login + noreplySuffix,
+	userID, err := strconv.ParseInt(id, 10, 64)
+	if err != nil || userID <= 0 {
+		userID = 0
+	}
+	return botUser{
+		identity: GitIdentity{Name: login, Email: id + "+" + login + "@users.noreply.github.com"},
+		id:       userID,
 	}, nil
-}
-
-// noreplySuffix ends the noreply email botIdentity writes: "<id>+<login>" before it.
-const noreplySuffix = "@users.noreply.github.com"
-
-// BotUserID is the App bot user's id that a lease's identity names: the id GET /users/<login>
-// answered, which botIdentity writes into the noreply email, "<id>+<login>@users.noreply.github.com".
-// The bot's login changes with the App's slug when the App is renamed, and its id does not, so the
-// writer of legion-verdict tells the bot's commit statuses by it (a status's creator.id). 0 where
-// the identity names no whole positive number there.
-func BotUserID(identity GitIdentity) int64 {
-	local, ok := strings.CutSuffix(identity.Email, noreplySuffix)
-	if !ok {
-		return 0
-	}
-	id, _, ok := strings.Cut(local, "+")
-	if !ok {
-		return 0
-	}
-	parsed, err := strconv.ParseInt(id, 10, 64)
-	if err != nil || parsed <= 0 {
-		return 0
-	}
-	return parsed
 }
 
 // appSlug is the slug of the App jwt signs for, read from GET /app: its bot login is the slug's,

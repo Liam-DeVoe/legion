@@ -319,38 +319,55 @@ func TestSetForRefusesARoleOutsideTheSets(t *testing.T) {
 	}
 }
 
-// The bot user's id a lease's identity names (BotUserID) is the id GET /users/<login> answered,
-// which botIdentity writes into the identity's noreply email. The writer of legion-verdict tells the
-// App bot's commit statuses by it, since a rename of the App changes the bot's login and not its
-// id. An identity that names no id, or one that is not a whole number, gives 0, which tells no
-// status as the bot's.
-func TestBotUserIDIsTheIDALeasesIdentityNames(t *testing.T) {
+// The bot user's id a lease carries (Lease.BotUserID) is the id GET /users/<login> answered, kept
+// as a number beside the git identity, never read back out of the noreply email. The writer of
+// legion-verdict tells the App bot's commit statuses by it, since a rename of the App changes the
+// bot's login and not its id. An id GitHub answers as a string is read as one; an id that is no
+// whole positive number gives 0, which tells no status as the bot's, and the git identity stays
+// what it was.
+func TestTheBotUserIDIsTheIDGitHubAnswered(t *testing.T) {
 	_, privatePEM := testAppKey(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/users/legion-renamed[bot]" {
-			t.Errorf("unexpected GitHub path %s", r.URL.Path)
-		}
-		fmt.Fprint(w, `{"id":271566630}`)
-	}))
-	defer server.Close()
-	m := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}, Options{BaseURL: server.URL, HTTPClient: server.Client()})
-	defer m.Close()
-	identity, err := m.botIdentity(context.Background(), "legion-renamed[bot]", "installation-1")
-	if err != nil {
-		t.Fatalf("read the bot identity: %v", err)
-	}
-	if got := BotUserID(identity); got != 271566630 {
-		t.Fatalf("BotUserID(%+v) = %d, want 271566630, the id GitHub answered", identity, got)
-	}
-	for _, none := range []GitIdentity{
-		{},
-		{Name: "legion[bot]", Email: "legion@example.invalid"},
-		{Name: "legion[bot]", Email: "x7+legion[bot]@users.noreply.github.com"},
-		{Name: "legion[bot]", Email: "+legion[bot]@users.noreply.github.com"},
+	for _, tc := range []struct {
+		answer string
+		email  string
+		id     int64
+	}{
+		{answer: `271566630`, email: "271566630+legion-renamed[bot]@users.noreply.github.com", id: 271566630},
+		{answer: `"271566630"`, email: "271566630+legion-renamed[bot]@users.noreply.github.com", id: 271566630},
+		{answer: `"x7"`, email: "x7+legion-renamed[bot]@users.noreply.github.com", id: 0},
+		{answer: `"-3"`, email: "-3+legion-renamed[bot]@users.noreply.github.com", id: 0},
 	} {
-		if got := BotUserID(none); got != 0 {
-			t.Errorf("BotUserID(%+v) = %d, want 0: it names no id", none, got)
-		}
+		t.Run(tc.answer, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/users/legion-renamed[bot]" {
+					t.Errorf("unexpected GitHub path %s", r.URL.Path)
+				}
+				fmt.Fprintf(w, `{"id":%s}`, tc.answer)
+			}))
+			defer server.Close()
+			m := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}, Options{BaseURL: server.URL, HTTPClient: server.Client()})
+			defer m.Close()
+			bot, err := m.botIdentity(context.Background(), "legion-renamed[bot]", "installation-1")
+			if err != nil {
+				t.Fatalf("read the bot user: %v", err)
+			}
+			if want := (GitIdentity{Name: "legion-renamed[bot]", Email: tc.email}); bot.identity != want || bot.id != tc.id {
+				t.Fatalf("bot user = %+v, want identity %+v and id %d", bot, want, tc.id)
+			}
+		})
+	}
+	for _, refused := range []string{`0`, `-3`, `""`, `null`} {
+		t.Run("refused "+refused, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprintf(w, `{"id":%s}`, refused)
+			}))
+			defer server.Close()
+			m := New(config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}, Options{BaseURL: server.URL, HTTPClient: server.Client()})
+			defer m.Close()
+			if bot, err := m.botIdentity(context.Background(), "legion-renamed[bot]", "installation-1"); err == nil {
+				t.Fatalf("bot user = %+v, want the answer refused as no bot user id", bot)
+			}
+		})
 	}
 }
 
@@ -406,8 +423,9 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first token: %v", err)
 	}
-	if first.Token != "installation-1" || first.Identity.Name != "legion-implementer[bot]" || first.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" {
-		t.Fatalf("first lease = %+v", first)
+	if first.Token != "installation-1" || first.Identity.Name != "legion-implementer[bot]" || first.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" ||
+		first.BotUserID != 271566630 {
+		t.Fatalf("first lease = %+v, want the bot's identity and its user id 271566630", first)
 	}
 	if _, err := tokens.Token(context.Background(), SetImplementer, "SJAWHAR"); err != nil {
 		t.Fatalf("cached token: %v", err)

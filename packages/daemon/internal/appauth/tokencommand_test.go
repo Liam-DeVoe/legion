@@ -171,8 +171,9 @@ func TestTokenModeMintsTheOwnersEntryAndRefreshes(t *testing.T) {
 		t.Fatalf("Token: %v", err)
 	}
 	if lease.Token != "ghs_sjawhar_write" || !lease.ExpiresAt.Equal(now.Add(time.Hour)) ||
-		lease.Identity.Name != "legion-implementer[bot]" || lease.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" {
-		t.Fatalf("lease = %+v", lease)
+		lease.Identity.Name != "legion-implementer[bot]" || lease.Identity.Email != "271566630+legion-implementer[bot]@users.noreply.github.com" ||
+		lease.BotUserID != 271566630 {
+		t.Fatalf("lease = %+v, want the bot's identity and its user id 271566630", lease)
 	}
 	if _, err := tokens.Token(context.Background(), SetImplementer, "sjawhar"); err != nil {
 		t.Fatalf("cached Token: %v", err)

@@ -490,11 +490,11 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 	if !ok {
 		return Lease{}, notInstalled
 	}
-	identity, err := m.tokenIdentity(ctx, app.AppID, installation.token)
+	bot, err := m.tokenIdentity(ctx, app.AppID, installation.token)
 	if err != nil {
 		return Lease{}, err
 	}
-	return Lease{Token: installation.token, ExpiresAt: installation.expiresAt, Minted: m.now(), Identity: identity}, nil
+	return bot.onto(Lease{Token: installation.token, ExpiresAt: installation.expiresAt, Minted: m.now()}), nil
 }
 
 // anyInstallation is one installation of the release of every installation app's token_command
@@ -532,24 +532,24 @@ func (m *Manager) anyInstallation(ctx context.Context, app config.GitHubApp) (re
 	return installations[owners[0]], nil
 }
 
-// tokenIdentity is the bot identity of the App whose installation token token is, with no JWT:
+// tokenIdentity is the bot user of the App whose installation token token is, with no JWT:
 // verifyTokenApp checks the token is appID's App's and names its bot login, run for every token,
-// and GET /users/<login> gives the bot user's id for its noreply email, read once per App.
-func (m *Manager) tokenIdentity(ctx context.Context, appID, token string) (GitIdentity, error) {
+// and GET /users/<login> gives the bot user's id, read once per App.
+func (m *Manager) tokenIdentity(ctx context.Context, appID, token string) (botUser, error) {
 	login, err := m.verifyTokenApp(ctx, appID, token)
 	if err != nil {
-		return GitIdentity{}, err
+		return botUser{}, err
 	}
-	identity, err := m.identity(ctx, appID, func(ctx context.Context) (GitIdentity, error) {
+	bot, err := m.identity(ctx, appID, func(ctx context.Context) (botUser, error) {
 		return m.botIdentity(ctx, login, token)
 	})
 	if err != nil {
-		return GitIdentity{}, err
+		return botUser{}, err
 	}
-	if identity.Name != login {
-		return GitIdentity{}, fmt.Errorf("the App's %s released a token that acts as %s, where the App acted as %s", tokenCommandField, login, identity.Name)
+	if bot.identity.Name != login {
+		return botUser{}, fmt.Errorf("the App's %s released a token that acts as %s, where the App acted as %s", tokenCommandField, login, bot.identity.Name)
 	}
-	return identity, nil
+	return bot, nil
 }
 
 // verifyTokenApp returns the bot login token acts as, refusing a token that is not the App appID's:

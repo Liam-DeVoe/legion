@@ -58,11 +58,11 @@ func (m *Manager) AppLogin(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read the App's login: %w", err)
 		}
-		identity, err := m.tokenIdentity(ctx, app.AppID, installation.token)
+		bot, err := m.tokenIdentity(ctx, app.AppID, installation.token)
 		if err != nil {
 			return "", fmt.Errorf("read the App's login: %w", err)
 		}
-		return identity.Name, nil
+		return bot.identity.Name, nil
 	}
 	jwt, err := m.generateJWT(app.AppID, app.PrivateKey, m.now())
 	if err != nil {

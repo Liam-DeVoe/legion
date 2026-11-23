@@ -903,9 +903,9 @@ type listedStatus struct {
 // verdict token (appauth.Tokens.VerdictToken), and records each write in the store
 // (store.VerdictWrite) and in one legion_verdict_write line. It reads the head's legion-verdict
 // check runs and commit statuses first. It tells the one App's runs by the App's id, and its bot's
-// statuses by the bot user's id that the verdict lease's identity names (appauth.BotUserID), the
-// creator.id C56 reads: a rename of the App changes neither. What each run and status of the App
-// there should show is the head's conclusion, or failure where the head has none (spec R19):
+// statuses by the bot user's id the verdict lease carries (appauth.Lease.BotUserID), the creator.id
+// C56 reads: a rename of the App changes neither. What each run and status of the App there should
+// show is the head's conclusion, or failure where the head has none (spec R19):
 //   - each run of the App the record does not hold is updated to it, whatever it shows, and so
 //     becomes one the record holds;
 //   - each run the record holds is updated to it where GitHub shows it at another conclusion,
@@ -986,7 +986,7 @@ func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdic
 	if err != nil {
 		return false, fmt.Errorf("list the commit statuses of %s at %s: %w", serving, target.head, err)
 	}
-	bot := appauth.BotUserID(lease.Identity)
+	bot := lease.BotUserID
 	for _, status := range statuses {
 		if status.Context != verdict.CheckName || bot == 0 || status.Creator.ID != bot {
 			continue

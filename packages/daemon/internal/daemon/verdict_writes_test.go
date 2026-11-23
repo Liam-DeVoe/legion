@@ -45,15 +45,30 @@ const (
 )
 
 // botLeases is tokens whose verdict lease carries the one App's bot identity, as appauth's leases
-// do: its noreply email names the bot user's id (appauth.BotUserID), by which the writer tells the
-// bot's commit statuses.
+// do: its git identity, and its bot user's id (appauth.Lease.BotUserID), by which the writer tells
+// the bot's commit statuses. A lease the tokens it wraps give an identity of their own keeps it.
 type botLeases struct{ appauth.Tokens }
 
 func (t botLeases) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
 	lease, err := t.Tokens.VerdictToken(ctx, owner)
-	if err == nil {
+	if err == nil && lease.Identity == (appauth.GitIdentity{}) {
 		lease.Identity = appauth.GitIdentity{Name: verdictAppLogin, Email: fmt.Sprintf("%d+%s@users.noreply.github.com", verdictBotNumber, verdictAppLogin)}
+		lease.BotUserID = verdictBotNumber
 	}
+	return lease, err
+}
+
+// verdictLeaseAs is roleTokens whose verdict lease carries identity as the App bot's git identity
+// and bot as its bot user's id, for a case that gives the lease's two parts apart.
+type verdictLeaseAs struct {
+	roleTokens
+	identity appauth.GitIdentity
+	bot      int64
+}
+
+func (t verdictLeaseAs) VerdictToken(ctx context.Context, owner string) (appauth.Lease, error) {
+	lease, err := t.roleTokens.VerdictToken(ctx, owner)
+	lease.Identity, lease.BotUserID = t.identity, t.bot
 	return lease, err
 }
 
@@ -1328,14 +1343,66 @@ func TestLegionVerdictTellsTheBotsStatusesByItsID(t *testing.T) {
 	if len(statuses) != 3 || statuses[2].State != "failure" || statuses[2].creatorID() != verdictBotNumber {
 		t.Fatalf("statuses on code = %+v, want a newer legion-verdict status of the daemon's own at failure", statuses)
 	}
+	if over := statusesOver(t, rig.pool, "code"); !slices.Equal(over, []int64{600}) {
+		t.Fatalf("the daemon's statuses went over %v, want over the App's bot's status 600 alone, not the other account's 601", over)
+	}
+}
+
+// statusesOver is the id of the status each legion-verdict status the store records the daemon
+// set on head went over, 0 for one of its own, in the order it set them.
+func statusesOver(t *testing.T, pool *store.Pool, head string) []int64 {
+	t.Helper()
 	var over []int64
-	for _, written := range verdictWrites(t, rig.pool, "code") {
+	for _, written := range verdictWrites(t, pool, head) {
 		if written.Kind == store.VerdictWriteStatus {
 			over = append(over, written.ForeignID)
 		}
 	}
-	if !slices.Equal(over, []int64{600}) {
-		t.Fatalf("the daemon's statuses went over %v, want over the App's bot's status 600 alone, not the other account's 601", over)
+	return over
+}
+
+// R19, C56: the bot user's id the writer tells the bot's statuses by is the verdict lease's own
+// (appauth.Lease.BotUserID), never a reading of the lease's git identity, so the form of the Git
+// author email changes nothing. Here the email names no id at all, and the writer still sets a
+// status of its own over the bot's.
+func TestLegionVerdictTellsTheBotsStatusesWhateverTheLeasesEmailSays(t *testing.T) {
+	tokens := verdictLeaseAs{identity: appauth.GitIdentity{Name: verdictAppLogin, Email: verdictAppLogin + "@example.invalid"}, bot: verdictBotNumber}
+	rig := newVerdictRig(t, tokens, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig.github.mu.Lock()
+	rig.github.statuses = append(rig.github.statuses,
+		fakeStatus{ID: 600, Head: "code", Context: verdict.CheckName, State: "success", Creator: verdictAppLogin})
+	rig.github.mu.Unlock()
+	rig.apply(t, reviewerVerdict("changes", "code", 1))
+	rig.written(t)
+	if over := statusesOver(t, rig.pool, "code"); !slices.Equal(over, []int64{600}) {
+		t.Fatalf("the daemon's statuses went over %v, want over the App's bot's status 600, which the lease's bot user id names", over)
+	}
+}
+
+// R19: a verdict lease whose bot user's id is 0, unknown, tells no status as the bot's: not the
+// bot's own, though the lease's email names the bot's id, and not one whose creator GitHub names
+// with id 0. The writer still writes its check run, and sets no status.
+func TestLegionVerdictTellsNoStatusAsTheBotsWhereTheLeaseNamesNoBotUserID(t *testing.T) {
+	tokens := verdictLeaseAs{identity: appauth.GitIdentity{Name: verdictAppLogin, Email: fmt.Sprintf("%d+%s@users.noreply.github.com", verdictBotNumber, verdictAppLogin)}}
+	rig := newVerdictRig(t, tokens, []config.VerdictRepository{widgetsEntry}, reviewingWithPass)
+	rig.github.mu.Lock()
+	rig.github.statuses = append(rig.github.statuses,
+		fakeStatus{ID: 600, Head: "code", Context: verdict.CheckName, State: "success", Creator: verdictAppLogin},
+		fakeStatus{ID: 601, Head: "code", Context: verdict.CheckName, State: "success", Creator: "a-writer"})
+	rig.github.mu.Unlock()
+	rig.apply(t, reviewerVerdict("changes", "code", 1))
+	rig.written(t)
+	if runs := rig.github.legionRuns("code"); len(runs) != 1 || runs[0].Conclusion != "failure" {
+		t.Fatalf("legion-verdict runs on code = %+v, want the daemon's own run at failure", runs)
+	}
+	rig.github.mu.Lock()
+	statuses := slices.Clone(rig.github.statuses)
+	rig.github.mu.Unlock()
+	if len(statuses) != 2 {
+		t.Fatalf("statuses on code = %+v, want the two there before and none of the daemon's own", statuses)
+	}
+	if over := statusesOver(t, rig.pool, "code"); len(over) != 0 {
+		t.Fatalf("the daemon's statuses went over %v, want none: the lease names no bot user id", over)
 	}
 }
 
