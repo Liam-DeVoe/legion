@@ -3059,11 +3059,7 @@ type claimTarget struct {
 // reaches the claim the record gives that role's step when the row runs, and treats a request for
 // a claim that does not exist as done.
 func (e *Engine) claimTargets(ctx context.Context, tx pgx.Tx, issue record.Issue, except claim.Role) ([]claimTarget, error) {
-	project, err := claim.ProjectToken(issue.Project)
-	if err != nil {
-		return nil, fmt.Errorf("the claims of %s: %w", issue.Key, err)
-	}
-	claims, err := e.store.IssueClaims(ctx, tx, project, issue.Key)
+	project, claims, err := e.issueClaims(ctx, tx, issue)
 	if err != nil {
 		return nil, err
 	}
