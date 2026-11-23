@@ -136,16 +136,17 @@ func (s *Postgres) ResetOwnerRestarts(ctx context.Context, tx pgx.Tx, issue stri
 	return nil
 }
 
-// OwnerTold is the owner's claim an owner-step of a step's run reached, as the outbox read it when
-// the listener took the notice: its launch generation and its session id. The zero OwnerTold is a
-// run no owner-step has reached.
+// OwnerTold is whom an owner-step of a step's run reached: the session the listener forwarded it
+// to, and the launch generation of the owner's claim where that claim ran in that session when
+// the outbox read it, 0 where it did not (the daemon's ownerStepTold). The zero OwnerTold is a run
+// no owner-step has reached.
 type OwnerTold struct {
 	Launch  uint64
 	Session string
 }
 
-// MarkOwnerStepTold records that the owner-step of the run step names reached told, the owner's
-// claim as the outbox read it for the publish the listener took (the daemon's deliverNotice). It
+// MarkOwnerStepTold records that the owner-step of the run step names reached told, for the
+// publish the listener took (the daemon's ownerStepTold, which says what told names). It
 // writes only while that run is the place's open run, so a notice of a run that ended, or of a
 // run a later start replaced, marks nothing. A published row is deleted, so this is the one
 // record that a session holds the notice, which the owner's catch-up at a launch reads

@@ -2348,13 +2348,18 @@ func (s *Postgres) ControllerNoticesPending(ctx context.Context, tx pgx.Tx, proj
 	return pending, nil
 }
 
-// NoticePending reads whether issue's outbox still holds an unpublished architect notice of kind:
-// a published row is finished and deleted, so any row of it is one still to publish.
-func (s *Postgres) NoticePending(ctx context.Context, tx pgx.Tx, issue string, kind NoticeKind) (bool, error) {
+// OwnerStepPending reads whether issue's outbox still holds an unpublished owner-step of the run
+// step names, or one that names no run (a row written before notices named one, which the
+// executor judges by its App alone): a published row is finished and deleted, so any such row is
+// one still to publish. An owner-step of another run of the place, or of another place, is not
+// that telling: the executor finishes it undelivered when it runs (the daemon's ownerStepRuns).
+func (s *Postgres) OwnerStepPending(ctx context.Context, tx pgx.Tx, issue string, step NoticeStep) (bool, error) {
 	var pending bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3)`,
-		string(OutboxKindNotice), issue, string(kind)).Scan(&pending); err != nil {
-		return false, fmt.Errorf("read whether %s has a %s notice pending: %w", issue, kind, err)
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3
+		and (payload->'ownerStep' is null or (payload->'ownerStep'->>'task' = $4 and payload->'ownerStep'->>'kind' = $5
+		and (payload->'ownerStep'->>'place')::int = $6 and (payload->'ownerStep'->>'starts')::bigint = $7)))`,
+		string(OutboxKindNotice), issue, string(OwnerStepNotice), step.Task, step.Kind, step.Place, step.Starts).Scan(&pending); err != nil {
+		return false, fmt.Errorf("read whether %s has an owner-step of %s/%s/%d run %d pending: %w", issue, step.Task, step.Kind, step.Place, step.Starts, err)
 	}
 	return pending, nil
 }

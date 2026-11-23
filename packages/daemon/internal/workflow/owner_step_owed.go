@@ -27,8 +27,9 @@ type owedStep struct {
 // left the workflow; it stands in no step of the owner's (a worker's or a fresh agent's place, a
 // held issue, one its plan holds, or a run with no plan rows, whose acceptance the reviewer's
 // phase-finished tells as before); the run there has ended, since the owner's report or a move
-// ended it; or an owner-step of the issue is still queued (record.Store.NoticePending), which
-// tells the owner when it publishes, so a second would only repeat it.
+// ended it; or an owner-step of that run is still queued (record.Store.OwnerStepPending), which
+// tells the owner when it publishes, so a second would only repeat it. An owner-step of another
+// run holds back nothing: the executor finishes it undelivered when it runs.
 //
 // The owner's step is the one place of a task that no worker holds and no start re-sends: its
 // one notice told the owner, and a notice that reached no turn — dropped, or delivered to an
@@ -60,7 +61,7 @@ func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if open < 0 {
 		return owedStep{}, false, nil
 	}
-	if pending, err := e.store.NoticePending(ctx, tx, issue.Key, record.OwnerStepNotice); err != nil || pending {
+	if pending, err := e.store.OwnerStepPending(ctx, tx, issue.Key, stepRun(step.place, runs[open].Starts)); err != nil || pending {
 		return owedStep{}, false, err
 	}
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
@@ -91,16 +92,18 @@ func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 // toldThisSession says whether an owner-step of the run owed names already reached the owner of
 // issue as its claim is ready now at launch (record.Store.OwnerStepTold, which the outbox writes
 // as the listener takes the notice): published to this launch, or to the session this launch
-// runs in, a later launch that resumed it, whose transcript holds the notice. A run no owner-step
-// reached, and one whose notice reached a session the claim no longer holds — a fresh session
-// after a loss — was not given to the session ready now, and the catch-up tells it again. A
-// delivered notice row is deleted, so the step's row is the one record of it.
+// runs in, a later launch that resumed it, whose transcript holds the notice. The mark names the
+// session the listener forwarded to, and a launch only where the claim the outbox read ran in that
+// session (the daemon's ownerStepTold). A run no owner-step reached, and one whose notice reached
+// a session the claim no longer holds — a fresh session after a loss — was not given to the
+// session ready now, and the catch-up tells it again. A delivered notice row is deleted, so the
+// step's row is the one record of it.
 func (e *Engine) toldThisSession(ctx context.Context, tx pgx.Tx, issue record.Issue, owed owedStep, launch uint64) (bool, error) {
 	told, err := e.store.OwnerStepTold(ctx, tx, issue.Key, owed.step.place)
-	if err != nil || told.Launch == 0 {
+	if err != nil || told == (record.OwnerTold{}) {
 		return false, err
 	}
-	if told.Launch == launch {
+	if told.Launch != 0 && told.Launch == launch {
 		return true, nil
 	}
 	owner, err := record.OwnerClaim(issue)

@@ -1,9 +1,10 @@
 -- 20261123072537_step_owner_told.up.sql — the launch and the session of the owner's claim that
 -- the owner-step of a step's run reached (record's step_starts.go).
 --
--- step_starts.owner_told_launch and step_starts.owner_told_session are the launch generation and
--- the session id of the owner's claim as the outbox read it when the owner-step of the place's
--- open run was last published (the daemon's deliverNotice, record.Postgres.MarkOwnerStepTold),
+-- step_starts.owner_told_session is the session the listener forwarded the owner-step of the
+-- place's open run to when it was last published, and step_starts.owner_told_launch the launch
+-- generation of the owner's claim where that claim, as the outbox read it before the publish, ran
+-- in that session, 0 where it did not (the daemon's ownerStepTold, record.Postgres.MarkOwnerStepTold),
 -- written only for the run the notice names. A published notice row is deleted, so nothing else
 -- records that a session got it. The owner's catch-up at a launch tells the step again only where
 -- the claim that is ready now is neither that launch nor that session (workflow's claimReady): a

@@ -520,7 +520,14 @@ func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 		return err
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: record.OwnerStepNotice, Role: role, Phase: issue.Phase, Reason: task,
-		OwnerStep: &record.NoticeStep{Task: step.place.Task, Kind: step.place.Kind, Place: step.place.Place, Starts: run.Starts}})
+		OwnerStep: new(stepRun(step.place, run.Starts))})
+}
+
+// stepRun is the run of place begun by its count of starts, as an owner-step notice names it
+// (record.Notice.OwnerStep): what the executor holds the notice to, and what an owner-step still
+// queued is read against (record.Store.OwnerStepPending).
+func stepRun(place record.StepPlace, starts int64) record.NoticeStep {
+	return record.NoticeStep{Task: place.Task, Kind: place.Kind, Place: place.Place, Starts: starts}
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -632,9 +639,10 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // The architect's phase starts nobody, except where the issue stands at a step or a retro the
 // owner does (the role the caller reads there, record.Issue.RoleAt, is the architect): there the
 // retry tells the owner its step again, with the retry's task, as a worker is sent its task again,
-// and starts no run (tellOwner). It tells nothing while an owner-step of the issue still waits in
-// the outbox (record.Store.NoticePending, the check owedOwnersStep reads): that row names the same
-// run, since a retry starts none, and a second would tell the owner its step twice. The operator's
+// and starts no run (tellOwner). It tells nothing while an owner-step of the step's open run still
+// waits in the outbox (record.Store.OwnerStepPending, the check owedOwnersStep reads): a retry
+// starts no run, so a second would tell the owner its step twice; one of another run holds back
+// nothing, since the executor finishes it undelivered. The operator's
 // retry of the owner's claim (`legion claims retry`) reaches it through restartPhase, after the
 // route relaunched the claim through its machine (api's retryStart), and it gives the owner every
 // restart of the step's run again (record.Store.ResetOwnerRestarts), whether or not it tells the
@@ -660,7 +668,11 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		if err != nil {
 			return err
 		}
-		if pending, err := e.store.NoticePending(ctx, tx, issue.Key, record.OwnerStepNotice); err != nil || pending {
+		run, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
+		if err != nil {
+			return err
+		}
+		if pending, err := e.store.OwnerStepPending(ctx, tx, issue.Key, stepRun(step.place, run.Starts)); err != nil || pending {
 			return err
 		}
 		return e.tellOwner(ctx, tx, issue, step, told(at))

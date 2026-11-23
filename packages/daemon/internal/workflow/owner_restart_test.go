@@ -246,8 +246,9 @@ func TestTheOperatorsRetryOfAnOwnerWhoseStepIsStillQueuedTellsNothingMore(t *tes
 // catch-up. Only an owner-step of the open run itself, or one that names no run, is the telling
 // that a second would repeat (record.Store.OwnerStepPending).
 //
-// Before, any owner-step of the issue still queued stopped both (record.Store.NoticePending), so
-// the owner of the open run was told nothing until the stale row ran.
+// Before, any owner-step of the issue still queued stopped both (the store's read of a pending
+// notice of the kind, NoticePending), so the owner of the open run was told nothing until the
+// stale row ran.
 func TestAStaleOwnerStepOfAnotherRunHoldsBackNoTellingOfTheOpenRun(t *testing.T) {
 	stale := record.Notice{Kind: record.OwnerStepNotice, Role: claim.RoleImplementer, Phase: phase.Implementing,
 		Reason: "the earlier run's step", OwnerStep: &record.NoticeStep{Task: "a", Kind: "step", Place: 1, Starts: 0}}
