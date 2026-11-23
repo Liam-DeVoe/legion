@@ -512,6 +512,9 @@ func TestAStartWhileAFailedLaunchWaitsToBeTriedAgainSuspendsNothing(t *testing.T
 				t.Fatalf("the prober after its failed try is %s recording the process %+v after %d tries, want launching, recording none, after one: the case's premise",
 					held.State, held.Locator, len(rt.CallsOf("Resume")))
 			}
+			// The failed try stopped the process its let-go ended (supervise's stopPrevious), a
+			// suspension of the dead process; any later one would stop the retry's agent.
+			stopped := len(rt.CallsOf("Suspend"))
 			if !tc.beforeTry {
 				seedProberVersion(t, pool, records, 2, "implementation", "m-b", p2)
 			}
@@ -541,8 +544,8 @@ func TestAStartWhileAFailedLaunchWaitsToBeTriedAgainSuspendsNothing(t *testing.T
 					spec.Model, composedHolds(t, spec, p2), composedHolds(t, spec, p1), spec.ResumeSessionFile)
 			}
 			comeUp(machine, "after the retry")
-			if held, suspends := machine.Claim(), rt.CallsOf("Suspend"); held.State == supervise.StateSuspended || len(suspends) != 0 {
-				t.Fatalf("the retry's agent is %s after %d suspensions, want it up and not suspended: it runs version 2", held.State, len(suspends))
+			if held, suspends := machine.Claim(), rt.CallsOf("Suspend")[stopped:]; held.State == supervise.StateSuspended || len(suspends) != 0 {
+				t.Fatalf("the retry's agent is %s after %d suspensions since the failed try, want it up and not suspended: it runs version 2", held.State, len(suspends))
 			}
 			if launches := append(rt.CallsOf("Spawn"), rt.CallsOf("Resume")...); len(launches) != 3 {
 				t.Fatalf("the prober was launched %d times (on %q), want three: version 1's, the failed try and its retry", len(launches), modelOf(launches))
