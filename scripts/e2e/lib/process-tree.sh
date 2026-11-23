@@ -554,24 +554,41 @@ proc_walk_complaint() {
   return 1
 }
 
-# ns_init_adopts PID succeeds when PID, a process older than this shell that is the init of a pid
-# namespace other than this shell's (the last pid of its NSpid is 1, and its pid here is not 1), may
-# hold an orphan of the run, and fails when it cannot. The run's orphans reach the init of such a
-# namespace only through a process of the run that entered it (nsenter, a setns), and entering it
-# takes privilege over its owner, which reading its namespace links takes too (`/proc/PID/ns/pid`,
-# which the kernel shows only to a process that may inspect PID: one of its own user's that is
-# dumpable, or one in a user namespace this user owns). So an init whose links this user cannot
-# read is one whose namespace the run could not enter: a rootful container's docker-init, below
-# which only the container runtime (`docker exec`) puts processes, with the environment it gives
-# them, not the run's (Tester4784-3 at fe4ead44bb: another session's not-dumpable perl that
-# docker-init adopted failed every walk with 2). Such an init holds none of the run's orphans, and
-# a process whose first older parent it is cannot carry the mark. It may hold them, and this
-# succeeds, where this user may read its links, and where this kernel shows no namespace links at
-# all. The init of this shell's own namespace is pid 1 here, since procs_naming walks only from a
-# shell in the pid namespace /proc shows, and adopts the run's orphans whoever owns it. Not
-# covered: a privileged tool that enters a namespace this user cannot and keeps the run's
-# environment (`sudo -E nsenter`); no script of this repository does so.
+# proc_nspid PID NAME assigns to NAME the pids of PID's NSpid line in /proc/PID/status, from the pid
+# namespace /proc shows down to PID's own, one space between, or nothing where that file cannot be
+# read (PID has gone) or the kernel writes no such line (Linux before 4.1, gVisor). It reads in this
+# shell, so `proc_nspid self NAME` reads this shell's own.
+proc_nspid() {
+  local -a nspid_words=()
+  local nspid_out='' nspid_word
+  { while read -r -a nspid_words; do [ "${nspid_words[0]-}" != NSpid: ] || break; nspid_words=(); done <"/proc/$1/status"; } 2>/dev/null || :
+  for nspid_word in "${nspid_words[@]:1}"; do nspid_out+="${nspid_out:+ }$nspid_word"; done
+  printf -v "$2" '%s' "$nspid_out"
+}
+
+# ns_init_adopts PID succeeds when PID, a process older than this shell, is the init of a pid
+# namespace below this shell's (its NSpid, proc_nspid, names more than one pid, the last 1) that may
+# hold an orphan of the run, and fails otherwise. procs_naming walks only from a shell in the pid
+# namespace /proc shows, so the init of this shell's own is pid 1 there, which each walk judges
+# itself. The run's orphans reach the init of a namespace below it only through a process of the run
+# that entered it (nsenter, a setns), and entering it takes privilege over its owner, which reading
+# its namespace links takes too (`/proc/PID/ns/pid`): the kernel shows them (ptrace_may_access, in
+# its read mode) only to a process whose fsuid and fsgid equal PID's real, effective and saved uid
+# and gid while PID is dumpable, or to one that holds CAP_SYS_PTRACE in PID's user namespace, as in
+# one this user made. So an init whose links this user cannot read is one whose namespace the run
+# could not enter: a rootful container's docker-init, below which only the container runtime puts
+# processes (`docker exec`), with the environment the runtime gives them, which holds the run's
+# mark only where a caller copied it in by name (`docker exec -e LEGION_E2E_RUN`). Tester4784-3 at
+# fe4ead44bb: another session's not-dumpable perl that docker-init adopted failed every walk with 2.
+# Such an init holds none of the run's orphans, and a process whose first older parent it is cannot
+# carry the mark. It may hold them, and this succeeds, where this user may read its links, and
+# where this kernel shows no namespace links at all. Not covered: a privileged entry into a
+# namespace this user cannot enter that keeps the run's mark (`sudo -E nsenter`, `docker exec -e`
+# with the mark) and leaves a not-dumpable process there; no script of this repository does so.
 ns_init_adopts() {
+  local ns_pids
+  proc_nspid "$1" ns_pids
+  [ "${ns_pids% *}" != "$ns_pids" ] && [ "${ns_pids##* }" = 1 ] || return 1
   [ -e "/proc/$1/ns/pid" ] && return 0
   [ -e /proc/self/ns/pid ] || return 0
   return 1
@@ -600,14 +617,15 @@ ns_init_adopts() {
 # subreaper above its own dead parent. So PID cannot carry the mark when it runs nothing (it has
 # ended or is a zombie), when it started before this shell (a devbox's own ssh-agent, gpg-agent or
 # forward), and when the first of its parents older than this shell is none of the ANCESTORs and
-# no init of a pid namespace that may hold the run's orphans (pid 1 here, or the last pid of its
-# NSpid 1, as ns_init_adopts judges it): a process that ran outside the run before it, below which
-# nothing inherited the run's environment (another session's tool, a login session's process, one
-# that `docker exec` left in a rootful container's namespace). Any other may: a child of the run,
-# one double-forked away from it to a reaper, as an ssh-agent the run started is, and one whose
-# line of parents could not be read to its end (a parent that ended during the read), unless it has
-# ended since. A process of another session that double-forked away during the run (a gpg-agent
-# started for a new homedir), or that the init of this shell's own namespace adopted, reads as one
+# no init of a pid namespace that may hold the run's orphans (pid 1 here, or the init of a namespace
+# below this shell's, as ns_init_adopts judges it): a process that ran outside the run before it,
+# below which nothing inherited the run's environment (another session's tool, a login session's
+# process, one that `docker exec` left in a rootful container's namespace). Any other may: a child
+# of the run, one double-forked away from it to a reaper, as an ssh-agent the run started is, and
+# one whose line of parents could not be read to its end (a parent that ended during the read),
+# unless it has ended since. A process of another session that double-forked away during the run
+# (a gpg-agent started for a new homedir), or that the init of this shell's own namespace adopted,
+# reads as one
 # of the run's: its parent is then a reaper too, and nothing readable tells the two apart, on a
 # devbox often enough to fail a long run's teardown (the tester of aec1fb77ff saw 13 of 60 walks
 # exit 2 on such processes). A shell that is a child subreaper (lib/subreaper.py) is judged by
@@ -617,7 +635,7 @@ ns_init_adopts() {
 # time of a walk of its /proc.
 unread_may_carry() {
   local pid=$1 shell=$2 at parent=$1 start='' stat ancestor i
-  local -a fields ns
+  local -a fields
   shift 2
   for ((i = 0; i < 4096; i++)); do
     stat=
@@ -632,9 +650,7 @@ unread_may_carry() {
     elif [ "$at" -lt "$shell" ]; then
       for ancestor; do [ "$ancestor" != "$parent:$at" ] || return 0; done
       [ "$parent" != 1 ] || return 0
-      ns=()
-      { while read -r -a ns; do [ "${ns[0]-}" != NSpid: ] || break; ns=(); done <"/proc/$parent/status"; } 2>/dev/null || :
-      [ "${#ns[@]}" -lt 2 ] || [ "${ns[${#ns[@]} - 1]}" != 1 ] || ! ns_init_adopts "$parent" || return 0
+      ns_init_adopts "$parent" && return 0
       return 1
     fi
     parent=${fields[1]}
@@ -653,17 +669,17 @@ unread_may_carry() {
 # older than the shell, its sh exited, and that namespace's init adopted the run's not-dumpable
 # orphan). So PID may carry the mark when its line of parents reaches this shell itself (its pid
 # and SHELL_START, the start proc_start reads) before a process older than this shell, or meets
-# first an older process that is the init of a pid namespace other than this shell's (the last pid
-# of its NSpid is 1, and its pid here is not 1) and that may hold the run's orphans
-# (ns_init_adopts), and one whose line could not be read to there (a parent that ended during the
-# read) may, unless it has ended since. PID cannot when it runs nothing (it has ended or is a
-# zombie), when it started before this shell, and when its line meets first another process older
-# than this shell, this namespace's pid 1 among them, and an init whose namespace the run could not
-# enter (a rootful container's docker-init): a process another session left behind during the run,
-# however young. Each process on the way is read once, as unread_may_carry reads it, in this shell.
+# first an older process that is the init of a pid namespace below this shell's and that may hold
+# the run's orphans (ns_init_adopts), and one whose line could not be read to there (a parent that
+# ended during the read) may, unless it has ended since. PID cannot when it runs nothing (it has
+# ended or is a zombie), when it started before this shell, and when its line meets first another
+# process older than this shell, this namespace's pid 1 among them, and an init whose namespace
+# the run could not enter (a rootful container's docker-init): a process another session left
+# behind during the run, however young. Each process on the way is read once, as unread_may_carry
+# reads it, in this shell.
 run_descendant() {
   local pid=$1 shell=$2 at parent=$1 start='' stat i
-  local -a fields ns
+  local -a fields
   for ((i = 0; i < 4096; i++)); do
     stat=
     { IFS= read -r -d '' stat <"/proc/$parent/stat"; } 2>/dev/null || :
@@ -678,9 +694,7 @@ run_descendant() {
       return 0
     elif [ "$at" -lt "$shell" ]; then
       [ "$parent" != 1 ] || return 1
-      ns=()
-      { while read -r -a ns; do [ "${ns[0]-}" != NSpid: ] || break; ns=(); done <"/proc/$parent/status"; } 2>/dev/null || :
-      [ "${#ns[@]}" -lt 3 ] || [ "${ns[${#ns[@]} - 1]}" != 1 ] || ! ns_init_adopts "$parent" || return 0
+      ns_init_adopts "$parent" && return 0
       return 1
     fi
     parent=${fields[1]}
@@ -848,10 +862,10 @@ exit 2'
     echo "procs_naming: no run directory given, so no process was named" >&2
     return 2
   }
-  local -a own_ns=()
-  { while read -r -a own_ns; do [ "${own_ns[0]-}" != NSpid: ] || break; own_ns=(); done </proc/self/status; } 2>/dev/null || :
-  [ "${#own_ns[@]}" -le 2 ] || {
-    echo "procs_naming: this shell is pid $$ in a pid namespace below the one /proc shows (NSpid ${own_ns[*]:1}), so its reads of /proc are of other processes and the processes naming $dir were not read" >&2
+  local own_nspid
+  proc_nspid self own_nspid
+  [ "${own_nspid% *}" = "$own_nspid" ] || {
+    echo "procs_naming: this shell is pid $$ in a pid namespace below the one /proc shows (NSpid $own_nspid), so its reads of /proc are of other processes and the processes naming $dir were not read" >&2
     return 2
   }
   listed=("$proc"/[0-9]*/environ)

@@ -58,10 +58,6 @@ const skip = skipWithout("perl");
 const withoutPython = skipWithout("python3");
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
-// The file's hooks pass a timeout of their own (hookTimeout), as every row does: Bun's 5 s default
-// for a hook is the machine's to decide on a loaded box, and failed this file after every row had
-// passed. temporaryDirectory's hooks pass the fixture's own.
-const hookTimeout = 60_000;
 beforeAll(() => {
   mkdirSync(bin);
   // A readlink that records each call and answers nothing, and a grep that records each call and
@@ -79,7 +75,7 @@ beforeAll(() => {
     { mode: 0o755 }
   );
   writeFileSync(unreadablePy, unreadableScript);
-}, hookTimeout);
+});
 
 // Every process a row starts, with its start time read when it is recorded, killed when the row ends
 // whatever it ended on, and only while its pid is still the process that started then: a sweep has
@@ -113,7 +109,7 @@ afterEach(() => {
       process.kill(pid, "SIGKILL");
     } catch {}
   }
-}, hookTimeout);
+});
 function spawn(argv: string[], options: { cwd: string; env?: Record<string, string> }) {
   const child = Bun.spawn(ownGroup(argv), {
     cwd: options.cwd,
@@ -836,6 +832,18 @@ state() {
 }
 readable() { if { : <"/proc/$1/environ"; } 2>/dev/null; then echo readable; else echo unreadable; fi; }`;
 
+// orphanPy READY is the python3 the namespace rows start inside a pid namespace, under a sh that
+// exits at once so the namespace's init adopts it: it makes itself not dumpable (prctl
+// PR_SET_DUMPABLE 0), writes its pid to READY through a rename, and sleeps. The pid it writes is
+// what /proc/self names, not getpid(): a process in a pid namespace below the one its /proc shows
+// (one a shell entered with nsenter --pid, the /proc left the host's) has from getpid() its pid in
+// its own namespace, and the walk reads it by the pid /proc numbers it with.
+const orphanPy = `import ctypes, os, sys, time
+ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
+open(sys.argv[1] + ".tmp", "w").write(os.readlink("/proc/self") + "\\n")
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(60)`;
+
 // pastStarts waits until the kernel's boot clock, in the clock ticks of a process's start (stat
 // field 22), has passed the start of each of PIDS: the walk tells a process older than the run's
 // shell by its start, on a clock of 10 ms ticks, so one that started in the same tick as the
@@ -1278,37 +1286,48 @@ names_dir() {
   return "$(names_answer "\${!#}" "$(count "nd.\${!#}")")"
 }`;
 
-// boundsShown says whether this kernel shows a process's memory bounds in /proc/<pid>/stat, as the
-// walk's exec_state reads them: this test process runs and is in no exec, so its start_code (field
-// 26) and env_start (field 50) read 0 only where the kernel shows them all as 0, as gVisor (a Legion
-// pod's kernel) does. There the walk takes each read as it comes (bounds_shown, lib/process-tree.sh),
-// and the two scripted rows below, which answer for exec_state, prove nothing: they are skipped, by
-// this name, except on GitHub Actions (GITHUB_ACTIONS, as send-arguments.test.ts reads it), whose
-// runner shows the bounds, so there a kernel that does not fails them by name.
-const boundsShown = (() => {
+// hostGate is a gate on what some rows need of this host: REFUSAL is why this host cannot run the
+// rows WHAT names, or "" where it can. Where it cannot, `skip` skips them, by that name, and a
+// warning says why; except on GitHub Actions (GITHUB_ACTIONS, as send-arguments.test.ts reads it),
+// whose runner can, so there `skip` is false and `need()`, each such row's first statement, fails
+// the row naming REFUSAL and RUNNER, what the runner has that this host lacks. Each gate's probe,
+// warning, skip and failure are this one function's, so they cannot drift apart.
+const onActions = process.env.GITHUB_ACTIONS === "true";
+function hostGate(what: string, refusal: string, runner: string): { skip: boolean; need(): void } {
+  if (refusal !== "" && !onActions) {
+    console.warn(`Skipped ${what} of ${import.meta.path}: ${refusal}.`);
+  }
+  return {
+    skip: refusal !== "" && !onActions,
+    need() {
+      if (refusal !== "") throw new Error(`${refusal}; ${runner}`);
+    },
+  };
+}
+
+// bounds is the gate on whether this kernel shows a process's memory bounds in /proc/<pid>/stat, as
+// the walk's exec_state reads them: this test process runs and is in no exec, so its start_code
+// (field 26) and env_start (field 50) read 0 only where the kernel shows them all as 0, as gVisor (a
+// Legion pod's kernel) does. There the walk takes each read as it comes (bounds_shown,
+// lib/process-tree.sh), and the scripted rows below, which answer for exec_state, prove nothing.
+const bounds = (() => {
   const fields = readFileSync("/proc/self/stat", "utf8")
     .replace(/^[\s\S]*\) /, "")
     .split(" ");
-  return fields[23] !== "0" && fields[47] !== undefined && fields[47] !== "0";
-})();
-const onActions = process.env.GITHUB_ACTIONS === "true";
-if (!boundsShown && !onActions) {
-  console.warn(
-    `Skipped the two scripted exec rows of ${import.meta.path}: this kernel shows no memory bounds in /proc/<pid>/stat (start_code and env_start read 0).`
+  const shown = fields[23] !== "0" && fields[47] !== undefined && fields[47] !== "0";
+  return hostGate(
+    "the scripted exec rows",
+    shown
+      ? ""
+      : "this kernel shows no memory bounds in /proc/<pid>/stat (start_code, field 26, and env_start, field 50, read 0 for a running process), so the walk cannot tell a read inside an exec",
+    "the GitHub Actions runner must show them"
   );
-}
-function needBounds(): void {
-  if (!boundsShown) {
-    throw new Error(
-      "this kernel shows no memory bounds in /proc/<pid>/stat (start_code, field 26, and env_start, field 50, read 0 for a running process), so the walk cannot tell a read inside an exec; the GitHub Actions runner must show them"
-    );
-  }
-}
+})();
 
-test.skipIf(skip || (!boundsShown && !onActions))(
+test.skipIf(skip || bounds.skip)(
   "a read of an environment that an exec cut short is read again, never taken for an unmarked process: the bounds moved between the two reads around it",
   () => {
-    needBounds();
+    bounds.need();
     // A read of /proc/<pid>/environ across an exec comes back cut short at a page, and a mark past
     // it is lost: aec1fb77ff read again only an empty read, so it took a cut one for an environment
     // without the mark and named nothing of a marked process, exit 0. Here the process is a sleep
@@ -1352,10 +1371,10 @@ kill -KILL "$targets"`,
   60_000
 );
 
-test.skipIf(skip || (!boundsShown && !onActions))(
+test.skipIf(skip || bounds.skip)(
   "a process held inside one exec is waited for, whatever the walk's bound: one that started outside the run's shell is named once its exec ends, never passed, and so is the run's own",
   async () => {
-    needBounds();
+    bounds.need();
     // A process a loaded machine holds inside one exec (the exec-window forcing held one 10.8 s)
     // shows its bounds as 0 until the exec ends. A walk that counted those reads against its 10 s
     // bound judged it there by its line of parents and passed one that started outside the run's
@@ -1403,10 +1422,10 @@ kill -KILL "$own"`,
   60_000
 );
 
-test.skipIf(skip || (!boundsShown && !onActions))(
+test.skipIf(skip || bounds.skip)(
   "the sweep's check of a process it is about to stop reads within one exec: one an exec cut short is read again and the process ended, never left running as unmarked",
   () => {
-    needBounds();
+    bounds.need();
     // stop_marked_processes stops each process the walk named only while it still carries the
     // run's mark (freeze_if's check), and the check read the environment once: a read across an
     // exec, cut short before the mark, was taken for an unmarked process, which the sweep passed
@@ -1445,10 +1464,10 @@ echo "stop_marked_processes $st, the sleep $(state "$targets")"`
   60_000
 );
 
-test.skipIf(skip || (!boundsShown && !onActions))(
+test.skipIf(skip || bounds.skip)(
   "the sweep's check that cannot read a process within one exec fails the sweep with 2, names the process and leaves it running, with a grace and without",
   () => {
-    needBounds();
+    bounds.need();
     // A check that could not read the process was refused like a check that found no mark, and the
     // sweep passed over it with 0. Here exec_state answers for a sleep the harness starts as for a
     // process held inside one exec from the check's first read on, and the hold is 0 s
@@ -1640,11 +1659,10 @@ PYTHONPATH=${JSON.stringify(fake)} exec ${JSON.stringify(python)} "\${args[@]}"
   60_000
 );
 
-// namespacesHold says whether this user may make a private user and pid namespace (util-linux
-// unshare, a user namespace that maps this user to itself) and so run the namespace row; a host that
-// refuses unprivileged user namespaces skips it, by this name, except on GitHub Actions, whose test
-// job allows them (its step "Allow unprivileged user namespaces"), so there a refusal fails the row
-// by name.
+// namespaces is the gate on whether this user may make a private user and pid namespace
+// (util-linux unshare, a user namespace that maps this user to itself) and enter one (nsenter), as
+// the pid-namespace rows do; the GitHub Actions test job allows them (its step "Allow unprivileged
+// user namespaces").
 const namespacesHold =
   hostTool("unshare") !== null &&
   hostTool("nsenter") !== null &&
@@ -1652,20 +1670,21 @@ const namespacesHold =
     ["unshare", "--user", "--map-current-user", "--pid", "--fork", "--mount-proc", "true"],
     { stdout: "ignore", stderr: "ignore" }
   ).exitCode === 0;
-if (!namespacesHold && !onActions) {
-  console.warn(
-    `Skipped the pid-namespace row of ${import.meta.path}: it needs unshare and nsenter and an unprivileged user and pid namespace.`
-  );
-}
+const namespaces = hostGate(
+  "the pid-namespace rows",
+  namespacesHold
+    ? ""
+    : "this host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter",
+  'the GitHub Actions test job allows them in its step "Allow unprivileged user namespaces"'
+);
 
-// olderInitAdopts says whether this kernel gives the orphan that a child subreaper's shell leaves in
-// an older pid namespace to that namespace's init, as Linux does (a subreaper adopts within its own
-// namespace only), and so whether the older-namespace row below can run: gVisor gives such an
+// adopted is the gate on whether this kernel gives the orphan that a child subreaper's shell leaves
+// in an older pid namespace to that namespace's init, as Linux does (a subreaper adopts within its
+// own namespace only), and so whether the older-namespace row below can run: gVisor gives such an
 // orphan to the subreaper shell itself (the reviewer's probe: orphan 23779, parent 23776, the
 // shell), where the walk judges it by its parent, the shell, and the row has no init to read. The
-// probe makes a namespace (unshare), then from a shell under lib/subreaper.py starts a python3
-// there (nsenter) whose sh exits at once, and reads the python3's parent. Elsewhere the row is
-// skipped by this name, and on GitHub Actions, whose runner is Linux, it fails by name.
+// probe makes a namespace (unshare), then from a shell under lib/subreaper.py starts orphanPy there
+// (nsenter) under a sh that exits at once, and reads the python3's parent.
 const adopterProbe = `set -u
 unshare --user --map-current-user --pid --fork --kill-child --mount-proc sh -c 'exec sleep 30' </dev/null >/dev/null 2>&1 &
 u=$!
@@ -1688,7 +1707,7 @@ const adopter =
           PATH: process.env.PATH ?? "",
           SUBREAPER: subreaperPy,
           INNER: adopterInner,
-          PY: 'import os, sys, time\nopen(sys.argv[1] + ".tmp", "w").write(os.readlink("/proc/self") + "\\n")\nos.rename(sys.argv[1] + ".tmp", sys.argv[1])\ntime.sleep(30)',
+          PY: orphanPy,
         },
         stdout: "pipe",
         stderr: "ignore",
@@ -1697,21 +1716,18 @@ const adopter =
         .stdout.toString()
         .trim()
     : "";
-const olderInitAdopts = adopter === "init";
-if (namespacesHold && !withoutPython && !olderInitAdopts && !onActions) {
-  console.warn(
-    `Skipped the older-namespace row of ${import.meta.path}: this kernel gave an orphan left in an older pid namespace to ${adopter || "no process the probe could read"}, not to that namespace's init.`
-  );
-}
+const adopted = hostGate(
+  "the older-namespace row",
+  !namespacesHold || withoutPython || adopter === "init"
+    ? ""
+    : `this kernel gave an orphan left in an older pid namespace to ${adopter || "no process the probe could read"}, not to that namespace's init`,
+  "the GitHub Actions runner's Linux kernel must give it to the init"
+);
 
-test.skipIf(skip || withoutPython || (!namespacesHold && !onActions))(
+test.skipIf(skip || withoutPython || namespaces.skip)(
   "a walk from a shell that entered a pid namespace from outside is no answer for an unreadable orphan of the run that the namespace's init adopted",
   async () => {
-    if (!namespacesHold) {
-      throw new Error(
-        'this host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter; the GitHub Actions test job allows them in its step "Allow unprivileged user namespaces"'
-      );
-    }
+    namespaces.need();
     // A shell that `docker exec` or `kubectl exec` starts, or a step of a GitHub Actions
     // `container:` job, sits in a pid namespace whose init is no parent of its own: its parent reads
     // 0 there, and the run's orphans go to that init, older than the shell and none of its parents.
@@ -1783,24 +1799,11 @@ echo "shell's parent $(proc_parent $$), orphan's parent $(proc_parent "$orphan")
   60_000
 );
 
-test.skipIf(
-  skip ||
-    withoutPython ||
-    (!namespacesHold && !onActions) ||
-    (namespacesHold && !olderInitAdopts && !onActions)
-)(
+test.skipIf(skip || withoutPython || namespaces.skip || adopted.skip)(
   "a walk from a subreaper shell is no answer for an unreadable orphan of the run that the init of an older pid namespace adopted",
   async () => {
-    if (!namespacesHold) {
-      throw new Error(
-        'this host refused an unprivileged user and pid namespace (unshare --user --map-current-user --pid --fork --mount-proc true), or has no unshare or nsenter; the GitHub Actions test job allows them in its step "Allow unprivileged user namespaces"'
-      );
-    }
-    if (!olderInitAdopts) {
-      throw new Error(
-        `this kernel gave an orphan left in an older pid namespace to ${adopter || "no process the probe could read"}, not to that namespace's init (olderInitAdopts); the GitHub Actions runner's Linux kernel must give it to the init`
-      );
-    }
+    namespaces.need();
+    adopted.need();
     // A child subreaper adopts the run's orphans in its own pid namespace only: a process the run
     // starts in another one goes to that namespace's init when its parent ends, however far above
     // the subreaper is. A namespace older than the walking shell has an init older than it, so the
@@ -1834,11 +1837,6 @@ test.skipIf(
       readFileSync(`/proc/${ns.pid}/task/${ns.pid}/children`, "utf8").trim().split(" ")[0]
     );
     await pastStarts([init]);
-    const py = `import ctypes, os, sys, time
-ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
-open(sys.argv[1] + ".tmp", "w").write(os.readlink("/proc/self") + "\\n")
-os.rename(sys.argv[1] + ".tmp", sys.argv[1])
-time.sleep(60)`;
     const body = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
 root=${JSON.stringify(root)}
@@ -1855,7 +1853,7 @@ st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?
 echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")]"
 echo "pid $orphan"`;
     const shell = Bun.spawnSync(ownGroup(["python3", "-I", subreaperPy, "bash", "-c", body]), {
-      env: { PATH: process.env.PATH ?? "", WORK: work, PY: py, proc_root: rowRoot() },
+      env: { PATH: process.env.PATH ?? "", WORK: work, PY: orphanPy, proc_root: rowRoot() },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -1876,52 +1874,86 @@ echo "pid $orphan"`;
   60_000
 );
 
-// dockerHolds says whether this host runs Docker for this user (a `docker` CLI whose daemon
-// answers), and so whether the docker-init row below can run. A Legion pod has no Docker: there the
-// row is skipped by this name. The GitHub Actions runner has Docker, so there a host without it
-// fails the row by name. The row's image is the skill scenarios' pinned judge image (ubuntu, which
-// carries perl), a row of .github/ci-images.yaml.
-const dockerHolds =
-  hostTool("docker") !== null &&
-  Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore", timeout: 30_000 })
-    .exitCode === 0;
+// docker is the gate on whether this host runs a rootful Docker daemon on its own kernel for this
+// user, as the docker-init row below needs: a `docker` CLI whose `docker info` answers, with nothing
+// on stderr, no `name=rootless` among its security options and an operating system that is no
+// Docker Desktop. Rootless Docker runs `docker exec -u <uid>` as a subuid, so the row's readable
+// control reads unreadable; Docker Desktop runs its daemon in a VM, whose pids (`.State.Pid`) this
+// /proc does not show; and podman's docker shim writes a notice on stderr and runs catatonit, no
+// docker-init. A Legion pod has no Docker. The GitHub Actions runner has a rootful Docker. The
+// row's image is the skill scenarios' pinned judge image (ubuntu, which carries perl), a row of
+// .github/ci-images.yaml.
 const dockerImage =
   "ghcr.io/cybermonklabs/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55";
-if (!dockerHolds && !onActions) {
-  console.warn(
-    `Skipped the docker-init row of ${import.meta.path}: it needs a docker CLI whose daemon answers.`
-  );
-}
+const docker = hostGate(
+  "the docker-init row",
+  (() => {
+    if (hostTool("docker") === null) return "this host has no docker CLI";
+    const info = Bun.spawnSync(
+      ["docker", "info", "--format", "{{json .SecurityOptions}}|{{.OperatingSystem}}"],
+      { stdout: "pipe", stderr: "pipe", timeout: 30_000 }
+    );
+    const out = info.stdout.toString().trim();
+    const err = info.stderr.toString().trim();
+    if (info.exitCode !== 0) return `docker info exited ${info.exitCode}: ${err.split("\n")[0]}`;
+    if (err !== "")
+      return `docker info wrote on stderr, as podman's docker shim does: ${err.split("\n")[0]}`;
+    if (out.includes("name=rootless"))
+      return "the Docker daemon is rootless (docker info: name=rootless)";
+    if (out.includes("Docker Desktop")) return "the Docker daemon is Docker Desktop's, in a VM";
+    return "";
+  })(),
+  "the GitHub Actions runner has a rootful Docker"
+);
 
-test.skipIf(skip || withoutPython || (!dockerHolds && !onActions))(
-  "a not-dumpable process that `docker exec` left to a rootful container's init, older than the walking shell, cannot carry the run's mark: the walk passes it from a subreaper shell and from a plain one",
-  async () => {
-    if (!dockerHolds) {
-      throw new Error(
-        "this host runs no Docker for this user (no docker CLI, or `docker info` failed); the GitHub Actions runner has Docker"
-      );
-    }
-    // An init older than the walking shell that is the init of another pid namespace counted as an
-    // adopter of the run's orphans, since the run's own orphan in a namespace it entered goes there.
-    // A rootful container's docker-init is such an init, but the run cannot enter its namespace (it
-    // takes privilege over root's), and `docker exec` gives what it starts there the runtime's
-    // environment, not the run's: so another session's not-dumpable process under it failed every
-    // walk with 2 (Tester4784-3 at fe4ead44bb, from a subreaper shell and from a plain one). The row
-    // starts such a container, then each walking shell, which has `docker exec -u <this uid>` start
-    // a perl whose sh exits at once, so docker-init adopts it; the perl makes itself not dumpable
-    // (prctl PR_SET_DUMPABLE 0), or stays dumpable, the control, which the walk reads.
-    const work = join(dir, "docker-init");
-    mkdirSync(work);
-    const name = `legion-e2e-docker-init-${process.pid}-${Date.now()}`;
-    // The image is pulled in a step of its own, quietly, so `docker run` on a host that does not
-    // hold it yet (the GitHub Actions runner) writes nothing on stderr; a pull that failed fails the
-    // row with its own words.
-    const pull = Bun.spawnSync(["docker", "pull", "--quiet", dockerImage], {
+// pulledImage makes sure this host holds IMAGE as the skill-scenario rig's judge-omp does
+// (packages/pi-legion/scripts/skill-scenarios/rig.sh): only where `docker image inspect` does not
+// find it, quietly, three attempts 2 s apart, since the registry answers one request of a batch
+// badly now and then and serves the next. It answers "" once the image is held, else why not, with
+// the last attempt's own words.
+function pulledImage(image: string): string {
+  const held = Bun.spawnSync(["docker", "image", "inspect", image], {
+    stdout: "ignore",
+    stderr: "ignore",
+    timeout: 60_000,
+  });
+  if (held.exitCode === 0) return "";
+  let said = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const pull = Bun.spawnSync(["docker", "pull", "--quiet", image], {
       stdout: "ignore",
       stderr: "pipe",
       timeout: 120_000,
     });
-    expect({ pull: pull.exitCode, err: pull.stderr.toString() }).toEqual({ pull: 0, err: "" });
+    if (pull.exitCode === 0) return "";
+    said = pull.stderr.toString().trim() || `docker pull exited ${pull.exitCode}`;
+    if (attempt < 3) Bun.sleepSync(2000);
+  }
+  return `docker could not pull ${image} in 3 attempts: ${said}`;
+}
+
+test.skipIf(skip || withoutPython || docker.skip)(
+  "a not-dumpable process that `docker exec` left to a rootful container's init, older than the walking shell, cannot carry the run's mark: the walk passes it from a subreaper shell and from a plain one",
+  async () => {
+    docker.need();
+    // An init older than the walking shell that is the init of another pid namespace counted as an
+    // adopter of the run's orphans, since the run's own orphan in a namespace it entered goes there.
+    // A rootful container's docker-init is such an init, but the run cannot enter its namespace (it
+    // takes privilege over root's), and `docker exec` gives what it starts there the environment the
+    // runtime gives it, which holds no mark of the run unless a caller copies it in by name (`-e`):
+    // so another session's not-dumpable process under it failed every walk with 2 (Tester4784-3 at
+    // fe4ead44bb, from a subreaper shell and from a plain one). The row starts such a container,
+    // then each walking shell, which has `docker exec -u <this uid>` start a perl whose sh exits at
+    // once, so docker-init adopts it, links it into the row's proc root (rowRoot, unreadableSh's
+    // `linked`) and walks; the perl makes itself not dumpable (prctl PR_SET_DUMPABLE 0), or stays
+    // dumpable, the control, which the walk reads.
+    const work = join(dir, "docker-init");
+    mkdirSync(work);
+    const name = `legion-e2e-docker-init-${process.pid}-${Date.now()}`;
+    // The image is held before `docker run`, so on a host that does not hold it yet (the GitHub
+    // Actions runner) `docker run` writes nothing on stderr; a pull that failed fails the row with
+    // its own words.
+    expect(pulledImage(dockerImage)).toBe("");
     const run = Bun.spawnSync(
       ["docker", "run", "-d", "--init", "--name", name, dockerImage, "sleep", "120"],
       {
@@ -1943,29 +1975,33 @@ root=${JSON.stringify(root)}
 work=$WORK
 . ${JSON.stringify(rig)}
 export LEGION_E2E_RUN=$work
+${unreadableSh}
 [ "\${LEGION_E2E_SUBREAPER:-}" = "$$ $(proc_start $$)" ] && echo "the shell is the subreaper" || echo "the shell is no subreaper"
 case $(docker exec "$C" uname -m) in x86_64) nr=157 ;; aarch64) nr=167 ;; *) echo "no prctl number for this machine"; exit 3 ;; esac
 pre=
 [ "$KIND" != unread ] || pre="syscall($nr, 4, 0, 0, 0, 0) == 0 or die; "
-docker exec -u "$(id -u)" "$C" sh -c "perl -e '\${pre}sleep 60' </dev/null >/dev/null 2>&1 & exit 0"
+# The perl names itself (\\$0, its command line, which /proc shows to every user) only once its prctl
+# is done, so the row reads it after it has made itself not dumpable, never between its exec and
+# that call.
+docker exec -u "$(id -u)" "$C" sh -c "perl -e '\${pre}\\$0 = q(walk-row-perl); sleep 60' </dev/null >/dev/null 2>&1 & exit 0"
 perl=
 for i in $(seq 1 200); do
   kids=()
   { read -r -a kids <"/proc/$INIT/task/$INIT/children"; } 2>/dev/null || :
   for p in \${kids[@]+"\${kids[@]}"}; do
-    comm=
-    { read -r comm <"/proc/$p/comm"; } 2>/dev/null || :
-    [ "$comm" != perl ] || perl=$p
+    cmd=
+    { IFS= read -r -d '' cmd <"/proc/$p/cmdline"; } 2>/dev/null || :
+    [ "$cmd" != walk-row-perl ] || perl=$p
   done
   [ -z "$perl" ] || break
   sleep 0.05
 done
-echo "pid $perl"
-procs=$(mktemp -d "$work/proc.XXXXXX")
-ln -s "/proc/$perl" "$procs/$perl"
-ln -s "/proc/$$" "$procs/$$"
-echo "perl $([ -r "/proc/$perl/environ" ] && echo readable || echo unreadable), parent $([ "$(proc_parent "$perl")" = "$INIT" ] && echo "the container's init" || echo elsewhere)"
-st=0; proc_root=$procs run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?
+[ -n "$perl" ] || { echo "no perl under the container's init" >&2; exit 3; }
+printf '%s\\n' "$perl" >"$work/perl.$KIND.ready"
+linked "$work/perl.$KIND.ready"
+echo "pid $pid"
+echo "perl $(readable "$pid"), parent $([ "$(proc_parent "$pid")" = "$INIT" ] && echo "the container's init" || echo elsewhere)"
+st=0; run_processes >"$work/rp.out" 2>"$work/rp.err" || st=$?
 echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")], said [$(tr '\\n' ' ' <"$work/rp.err")]"`;
       for (const kind of ["unread", "readable"]) {
         for (const shellKind of ["subreaper", "plain"]) {
@@ -1980,6 +2016,7 @@ echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")], said [$(tr '\\
               C: name,
               INIT: String(init),
               KIND: kind,
+              proc_root: rowRoot(),
             },
             stdout: "pipe",
             stderr: "pipe",
@@ -2014,31 +2051,26 @@ echo "run_processes $st, named [$(tr '\\n' ' ' <"$work/rp.out")], said [$(tr '\\
   180_000
 );
 
-// sudoHolds says whether this host gives this user root with no password (`sudo -n`) and has
-// unshare, nsenter and setpriv, and so whether the root-namespace row below can run. The GitHub
-// Actions runner has them, so there a host without them fails the row by name; elsewhere it is
-// skipped by this name.
-const sudoHolds =
+// rootAccess is the gate on whether this host gives this user root with no password (`sudo -n`) and
+// has unshare, nsenter and setpriv, as the root-namespace row below needs; the GitHub Actions runner
+// has them.
+const rootAccess = hostGate(
+  "the root-namespace row",
   hostTool("sudo") !== null &&
-  hostTool("unshare") !== null &&
-  hostTool("nsenter") !== null &&
-  hostTool("setpriv") !== null &&
-  Bun.spawnSync(["sudo", "-n", "true"], { stdout: "ignore", stderr: "ignore", timeout: 30_000 })
-    .exitCode === 0;
-if (!sudoHolds && !onActions) {
-  console.warn(
-    `Skipped the root-namespace row of ${import.meta.path}: it needs sudo -n, unshare, nsenter and setpriv.`
-  );
-}
+    hostTool("unshare") !== null &&
+    hostTool("nsenter") !== null &&
+    hostTool("setpriv") !== null &&
+    Bun.spawnSync(["sudo", "-n", "true"], { stdout: "ignore", stderr: "ignore", timeout: 30_000 })
+      .exitCode === 0
+    ? ""
+    : "this host gives this user no root without a password (sudo -n), or has no unshare, nsenter or setpriv",
+  "the GitHub Actions runner has them"
+);
 
-test.skipIf(skip || withoutPython || (!sudoHolds && !onActions))(
+test.skipIf(skip || withoutPython || rootAccess.skip)(
   "a walk from a shell in a pid namespace below the one its /proc shows is no answer: it says so and exits 2, never reading another process as itself, beside an unreadable orphan of the run that the namespace's root-owned init adopted",
   () => {
-    if (!sudoHolds) {
-      throw new Error(
-        "this host gives this user no root without a password (sudo -n), or has no unshare, nsenter or setpriv; the GitHub Actions runner has them"
-      );
-    }
+    rootAccess.need();
     // ns_init_adopts takes an init whose links this user cannot read for one whose namespace the run
     // could not enter, and the init of the walking shell's own namespace for pid 1. Both hold only
     // for a shell in the pid namespace /proc shows: a shell that entered a namespace without
@@ -2050,11 +2082,6 @@ test.skipIf(skip || withoutPython || (!sudoHolds && !onActions))(
     // walks.
     const work = join(dir, "root-namespace");
     mkdirSync(work);
-    const py = `import ctypes, os, sys, time
-ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)
-open(sys.argv[1] + ".tmp", "w").write(os.readlink("/proc/self") + "\\n")
-os.rename(sys.argv[1] + ".tmp", sys.argv[1])
-time.sleep(60)`;
     const body = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
 root=${JSON.stringify(root)}
@@ -2093,7 +2120,7 @@ nsenter --target "$init" --pid -- setpriv --reuid="$1" --regid="$2" --init-group
         String(process.getgid?.() ?? 0),
         process.env.PATH ?? "",
         work,
-        py,
+        orphanPy,
         rowRoot(),
         body,
       ],
