@@ -88,7 +88,7 @@ func TestStepsOfOneKeyHaveOneAgent(t *testing.T) {
 // A stored step names its agent by one rule, which the record and the store both read: the name
 // stored with the step, or, on a row a release before the stored names wrote, its role, which
 // named its agent then. A step of the key owner names none whatever it holds: its agent is the
-// tree's architect, whose token names the tree, not the issue.
+// task's owner, the issue's own architect, and no agent the plan names.
 func TestAStoredStepNamesItsAgent(t *testing.T) {
 	for _, tc := range []struct {
 		step   Step
@@ -107,8 +107,8 @@ func TestAStoredStepNamesItsAgent(t *testing.T) {
 	}
 }
 
-// The default steps walk today's line: the five steps' phases in order, then Legion's own retro
-// and merge.
+// The line of the default steps is today's line: the five steps' phases in order, then Legion's
+// own retro and merge.
 func TestLineOfTheDefaultStepsIsTodaysOrder(t *testing.T) {
 	if got := Line(defaultSteps(t)); !reflect.DeepEqual(got, phase.Order) {
 		t.Fatalf("Line(default steps) = %v, want %v", got, phase.Order)

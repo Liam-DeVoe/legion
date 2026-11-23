@@ -44,7 +44,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	}) {
 		t.Fatalf("Validate(prober implementer prober) = %+v", r)
 	}
-	// A role the plan's own role block defines is defined (Supported refuses the role block).
+	// A role the plan's own role block defines is defined, and Supported takes the role block.
 	defined := oneTask("a", "implementer prober")
 	defined.Roles = []PlanRole{{Name: "prober", Type: TypeTesting}}
 	if r := Validate(defined, d); len(r) != 0 {
@@ -356,8 +356,8 @@ func TestSupportedTakesARoleBlock(t *testing.T) {
 
 // A role the plan defines of the type implementation stands at any place, as one of the deployment
 // does: its row records the type it has as the plan's steps name it (RolesOf), and after the
-// implementer its agent does its task's retro (RetroAgent). So does the same role of the type
-// testing.
+// implementer its agent does its task's retro (RetroAgent), the retro of the last step of the type
+// implementation. The same role of the type testing stands at any place too, and does no retro.
 func TestARoleOfAPlanOfTheTypeImplementationStandsAnywhere(t *testing.T) {
 	withCoder := func(steps string, typ Type) Plan {
 		p := oneTask("a", steps)
