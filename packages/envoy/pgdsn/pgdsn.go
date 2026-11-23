@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -19,7 +20,7 @@ import (
 )
 
 // Refusal is why dsn, the value of the setting named setting, is refused before Postgres is asked,
-// or nil. It refuses seven shapes, each of which Postgres or pgx would print with part of its
+// or nil. It refuses these shapes, each of which Postgres or pgx would print with part of its
 // credential, and names setting alone, never the value, and says what to change:
 //   - a postgres:// or postgresql:// URL holding an unencoded "@" after pgx's user part
 //     (atPastUserinfo). Such an "@" is where a password holding an "@" or a "/" leaves part of
@@ -36,28 +37,45 @@ import (
 //     so `postgresql+psycopg2://u:<pw>@h/x?sslmode=…`, `postgress://…`, `pgsql://…`,
 //     `postgres//…`, `postgres;//…`, `jdbc:postgresql://…` and a BOM before `postgres:` print
 //     whole too;
-//   - a keyword DSN with a value other than the password that begins, its quotes trimmed, with a
-//     URL scheme (valueSchemed): `postgres:` or `postgresql:` in any case, or any `<scheme>://`.
-//     pgx expands no URL in a value, and its connect error names the database, the user or the
-//     host, URL and password with it (`dbname=postgress://u:<pw>@h/x`, `user='pgsql://u:<pw>@h'`).
-//     A scheme further into a value (a Cloud SQL socket `/cloudsql/acme-postgres:us-central1:db`)
-//     and a password (`password=Postgres:Admin1`) are kept: no driver prints the one with a
-//     credential, and ConnectError masks the other;
-//   - a keyword DSN whose user holds a ":" (userHoldsColon), where a password written after the
-//     user name stands (`user=app:<pw>`): the connect error names the user;
-//   - a keyword DSN with an "@" or an "=" in its host or hostaddr (hostHoldsCredential), where a
-//     user name and password written before the host stand, or a password= missing the space
-//     before it (`host=127.0.0.1password=<pw>`): no host name holds either, and the connect error
-//     and the dev sign-in fence name the host.
+//   - a value of any key but password and sslpassword holding a URL with a user name or a password,
+//     "://" and then an "@" before the next "/", "?" or "#" (valueHoldsURLCredential), as pgx reads
+//     it from a keyword DSN or, decoded, from a URL's query: the server echoes a runtime parameter's
+//     value it refuses, given as a keyword (`datestyle=https://u:<pw>@h`) or inside options
+//     (`options='-c datestyle=https://u:<pw>@h'`), and the four values below are printed;
+//   - a value other than a password holding "://" anywhere (valueHoldsURL), where the value is
+//     one of the four pgx's connect error or the server prints: the user, the database (dbname or
+//     database), the host or the hostaddr, as pgx reads it from a keyword DSN or, decoded, from a
+//     URL's user info, host list, path or query. It is a URL, whatever stands before its scheme
+//     (`dbname=' pg://u:<pw>@h'`, `dbname=jdbc:postgresql://u:<pw>@h/x`, `?dbname=pg://u:<pw>%40h`);
+//   - a user, so read, holding a ":" (userHoldsColon), where a password written after the user name
+//     stands (`user=app:<pw>`, `?user=app:<pw>`);
+//   - a host or hostaddr, so read, holding an "@" or an "=", or a ":" in an entry of its list that
+//     is no IP address and no socket directory, which begins with "/" (hostHoldsCredential): a
+//     user name and password written before the host, or a password= missing the space before it
+//     (`host=127.0.0.1password=<pw>`, `host=app:<pw>`), which the connect error and the dev
+//     sign-in fence name as the host;
+//   - a database, so read, holding an "@" (databaseHoldsAt), where a user name and password
+//     written before a host stand (`dbname=app:<pw>@db/app`, `dbname=<pw>@db`,
+//     `postgres://h/u:<pw>%40db`).
 //
-// A keyword DSN with none of these (`host=… password=…`) is never refused: its password is a value
-// of its own, which ConnectError masks.
+// A password (password, sslpassword) is held to none of these: pgx never prints sslpassword, and
+// ConnectError masks a password such as `Postgres:Admin1` wherever one prints. Every other key is
+// held to the URL-credential rule alone, so `application_name=https://ci.example/run/1` and
+// `options='-c app.url=https://…'` load. A Cloud SQL socket
+// (`host=/cloudsql/acme-postgres:us-central1:db`), an IPv6 host or hostaddr, a host list, a port
+// given apart from the host (keyword `port=`, a URL's `host:port`) and an IAM user
+// (`sa@project.iam`) are kept. A keyword DSN with none of these (`host=… password=…`) is never
+// refused: its password is a value of its own, which ConnectError masks.
+//
+// One shape stays: a user holding a password and an "@" but no ":" (`user=<pw>@host`) has the
+// shape of a Cloud SQL IAM user name (`sa@project.iam`), and is kept.
 func Refusal(setting, dsn string) error {
 	switch refusalOf(dsn) {
 	case atPast:
 		return fmt.Errorf("%s cannot be read: it holds an \"@\" after its user name and password, where Postgres reads"+
 			" part of its user name, password or database name as its host, port, database or query and prints it;"+
-			" write each \"@\" in a password, user name, database name or query value as %%40, and a \"/\" in a password as %%2F", setting)
+			" write each \"@\" in a password, a user name or a query value other than a database name as %%40, and a \"/\" in a"+
+			" password as %%2F; a database name holds no \"@\"", setting)
 	case schemeMistyped:
 		return fmt.Errorf("%s cannot be read: it names the postgres scheme but does not begin with postgres:// or postgresql://"+
 			" in lower case, with nothing before it, so Postgres would read it as one keyword setting and can print it whole;"+
@@ -67,17 +85,25 @@ func Refusal(setting, dsn string) error {
 			" no keyword or parameter name has (only ASCII letters, digits, \"_\", \".\" and, after the first, \"$\"), so Postgres"+
 			" would send that key to the server as a parameter's name and can print it whole; write the DSN as a postgres:// URL"+
 			" or as keyword=value pairs", setting)
-	case valueSchemed:
-		return fmt.Errorf("%s cannot be read: it is a keyword DSN, and a value of it other than the password begins with a URL"+
-			" scheme (postgres:, postgresql: or <scheme>://), which Postgres does not read as a URL and prints whole, a password"+
-			" in it included; write the DSN as a postgres:// URL, or give the database, the user and the host by name", setting)
+	case valueHoldsURLCredential:
+		return fmt.Errorf("%s cannot be read: a value of it other than a password holds a URL with a user name or a password"+
+			" (\"://\" and then an \"@\" before the next \"/\", \"?\" or \"#\"), which Postgres can print whole, as the server"+
+			" prints a setting's value it refuses; give the setting no credential", setting)
+	case valueHoldsURL:
+		return fmt.Errorf("%s cannot be read: a value of it other than a password, its user, database, host or hostaddr,"+
+			" holds \"://\", a URL, which Postgres does not read as one and prints whole, a password in it included; write the"+
+			" DSN as a postgres:// URL, or give the database, the user and the host by name", setting)
 	case userHoldsColon:
-		return fmt.Errorf("%s cannot be read: it is a keyword DSN whose user holds a \":\", where a password written after the"+
-			" user name stands, and Postgres prints the user; write the password as password= and the user alone", setting)
+		return fmt.Errorf("%s cannot be read: its user holds a \":\", where a password written after the user name stands,"+
+			" and Postgres prints the user; write the password as password= and the user alone", setting)
 	case hostHoldsCredential:
-		return fmt.Errorf("%s cannot be read: it is a keyword DSN whose host holds an \"@\" or an \"=\", where a user name and"+
-			" password written before the host, or a password= with no space before it, stand, and Postgres prints the host;"+
-			" write user= and password= apart from the host", setting)
+		return fmt.Errorf("%s cannot be read: its host or hostaddr holds an \"@\", an \"=\", or a \":\" in an entry that is"+
+			" no IP address or socket directory, where a user name and password written before the host, or a password="+
+			" with no space before it, stand, and Postgres prints the host; write user= and password= apart from the host", setting)
+	case databaseHoldsAt:
+		return fmt.Errorf("%s cannot be read: its database name holds an \"@\", where a user name and password written"+
+			" before a host stand, and Postgres prints the database name; give the database by its name alone, and the"+
+			" user, the password and the host apart", setting)
 	}
 	return nil
 }
@@ -90,23 +116,26 @@ const (
 	atPast
 	schemeMistyped
 	keyMalformed
-	valueSchemed
+	valueHoldsURLCredential
+	valueHoldsURL
 	userHoldsColon
 	hostHoldsCredential
+	databaseHoldsAt
 )
 
 // refusalOf is the shape Refusal refuses dsn for, or kept. A URL is a value that begins, at its
-// first byte, with a lower-case postgres:// or postgresql://, as pgx reads one (parseURLSettings);
-// any other value that begins, after leading space, with "postgres:" or "postgresql:" in any case
-// is a mistyped scheme; and any other value is a keyword DSN, read as pgx reads one
-// (keywordSettings), refused for a key that is no keyword's shape, for a value other than the
-// password that begins with a URL scheme, for a user holding ":", or for a host holding "@" or "=".
+// first byte, with a lower-case postgres:// or postgresql://, as pgx reads one (parseURLSettings),
+// read for an "@" past its user part and then, decoded (urlSettings), for its printed values; any
+// other value that begins, after leading space, with "postgres:" or "postgresql:" in any case is
+// a mistyped scheme; and any other value is a keyword DSN, read as pgx reads one
+// (keywordSettings), refused for a key that is no keyword's shape and then for its printed values.
+// Both forms' printed values are held to the one rule set (printedRefusal).
 func refusalOf(dsn string) refusal {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
 		if atPastUserinfo(dsn) {
 			return atPast
 		}
-		return kept
+		return printedRefusal(urlSettings(dsn))
 	}
 	if trimmed := strings.ToLower(strings.TrimLeftFunc(dsn, unicode.IsSpace)); strings.HasPrefix(trimmed, "postgres:") || strings.HasPrefix(trimmed, "postgresql:") {
 		return schemeMistyped
@@ -117,30 +146,70 @@ func refusalOf(dsn string) refusal {
 			return keyMalformed
 		}
 	}
+	return printedRefusal(settings)
+}
+
+// printedRefusal is the shape settings are refused for by the values pgx's connect error or the
+// server prints, or kept. A password (password, sslpassword) is read by no rule: pgx prints
+// neither, and ConnectError masks a password where one prints. The four values the connect error
+// names and the server echoes are each held to their own rules: the user, the database (dbname or
+// database, which pgx reads alike), the host and the hostaddr. One of them holding "://" anywhere
+// is a URL (valueHoldsURL); a user holding ":" stands a password after the user name
+// (userHoldsColon); a host or hostaddr that is no host list (hostList) stands a credential before
+// or in the host (hostHoldsCredential); a database holding "@" stands a user name and password
+// before a host (databaseHoldsAt). Every other key's value is refused only when it holds a URL with
+// a user name or a password (urlCredential, valueHoldsURLCredential): the server echoes a runtime
+// parameter's value it refuses, as a keyword or inside options, and a URL without one
+// (`application_name=https://ci.example/run/1`) loads.
+func printedRefusal(settings []keywordSetting) refusal {
 	for _, setting := range settings {
+		key, value := setting.key, setting.value
+		switch key {
+		case "password", "sslpassword":
+			continue
+		case "user", "dbname", "database", "host", "hostaddr":
+		default:
+			if urlCredential.MatchString(value) {
+				return valueHoldsURLCredential
+			}
+			continue
+		}
 		switch {
-		case setting.key != "password" && beginsWithScheme(setting.value):
-			return valueSchemed
-		case setting.key == "user" && strings.Contains(setting.value, ":"):
+		case strings.Contains(value, "://"):
+			return valueHoldsURL
+		case key == "user" && strings.Contains(value, ":"):
 			return userHoldsColon
-		case (setting.key == "host" || setting.key == "hostaddr") && strings.ContainsAny(setting.value, "@="):
+		case (key == "host" || key == "hostaddr") && !hostList(value):
 			return hostHoldsCredential
+		case (key == "dbname" || key == "database") && strings.Contains(value, "@"):
+			return databaseHoldsAt
 		}
 	}
 	return kept
 }
 
-// beginsWithScheme reports whether value, its leading quotes and backticks trimmed, begins with a
-// URL scheme: `postgres:` or `postgresql:` in any case, or any `<scheme>://` (RFC 3986's scheme,
-// a letter then letters, digits, "+", "." or "-").
-func beginsWithScheme(value string) bool {
-	value = strings.TrimLeft(value, "'\"`")
-	lower := strings.ToLower(value)
-	return strings.HasPrefix(lower, "postgres:") || strings.HasPrefix(lower, "postgresql:") || urlScheme.MatchString(value)
-}
+// urlCredential is a URL with a user name or a password in a value: "://", then an "@" before the
+// next "/", "?" or "#", which ends a URL's authority.
+var urlCredential = regexp.MustCompile(`://[^/?#]*@`)
 
-// urlScheme is a value that begins with `<scheme>://`.
-var urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
+// hostList says whether value reads as a host list pgx dials and no credential stands in: no "@"
+// or "=" anywhere, and a ":" only in an entry (pgx splits the list at ",") that is a socket
+// directory, which begins with "/" (a Cloud SQL socket, `/cloudsql/acme-postgres:us-central1:db`),
+// or an IP address (an IPv6 one, `::1`, `fe80::1%eth0`).
+func hostList(value string) bool {
+	if strings.ContainsAny(value, "@=") {
+		return false
+	}
+	for _, entry := range strings.Split(value, ",") {
+		if !strings.Contains(entry, ":") || strings.HasPrefix(entry, "/") {
+			continue
+		}
+		if _, err := netip.ParseAddr(entry); err != nil {
+			return false
+		}
+	}
+	return true
+}
 
 // keywordShape is the shape of every libpq keyword and Postgres parameter name: ASCII letters,
 // digits, "_" and ".", and after the first character "$", which Postgres takes in a custom
@@ -199,6 +268,75 @@ func keywordSettings(dsn string) []keywordSetting {
 	return settings
 }
 
+// urlSettings reads the URL dsn's settings as pgx does (parseURLSettings), each percent-decoded:
+// the user and the password of its user info (the text before the first "@" ahead of the first
+// "/", split at its first ":"), its host list (each entry up to a ":", "/", "?" or "," outside
+// brackets, an IPv6 address in brackets, a port after a ":" left out), the database its path names
+// up to a "?", and every key=value pair of its query, split at "&" and then at "=". A part that
+// does not decode is read as written: pgx refuses such a DSN, and ConnectError prints none of it.
+func urlSettings(dsn string) []keywordSetting {
+	rest, ok := strings.CutPrefix(dsn, "postgresql://")
+	if !ok {
+		rest, _ = strings.CutPrefix(dsn, "postgres://")
+	}
+	var settings []keywordSetting
+	if i := strings.IndexAny(rest, "@/"); i >= 0 && rest[i] == '@' {
+		user, password, _ := strings.Cut(rest[:i], ":")
+		settings = append(settings, keywordSetting{"user", urlDecoded(user)}, keywordSetting{"password", urlDecoded(password)})
+		rest = rest[i+1:]
+	}
+	var hosts []string
+	for {
+		if after, bracketed := strings.CutPrefix(rest, "["); bracketed {
+			host, tail, _ := strings.Cut(after, "]")
+			hosts, rest = append(hosts, host), tail
+		} else {
+			end := strings.IndexAny(rest, ":/?,")
+			if end < 0 {
+				end = len(rest)
+			}
+			hosts, rest = append(hosts, rest[:end]), rest[end:]
+		}
+		if strings.HasPrefix(rest, ":") {
+			end := strings.IndexAny(rest, "/?,")
+			if end < 0 {
+				end = len(rest)
+			}
+			rest = rest[end:]
+		}
+		next, more := strings.CutPrefix(rest, ",")
+		if !more {
+			break
+		}
+		rest = next
+	}
+	settings = append(settings, keywordSetting{"host", urlDecoded(strings.Join(hosts, ","))})
+	if path, ok := strings.CutPrefix(rest, "/"); ok {
+		database, query, hasQuery := strings.Cut(path, "?")
+		settings = append(settings, keywordSetting{"database", urlDecoded(database)})
+		rest = ""
+		if hasQuery {
+			rest = "?" + query
+		}
+	}
+	if query, ok := strings.CutPrefix(rest, "?"); ok && query != "" {
+		for _, pair := range strings.Split(query, "&") {
+			key, value, _ := strings.Cut(pair, "=")
+			settings = append(settings, keywordSetting{urlDecoded(key), urlDecoded(value)})
+		}
+	}
+	return settings
+}
+
+// urlDecoded is part, a URL DSN's, percent-decoded as pgx decodes it ("+" is no space), or as
+// written where it does not decode.
+func urlDecoded(part string) string {
+	if decoded, err := url.PathUnescape(part); err == nil {
+		return decoded
+	}
+	return part
+}
+
 // atPastUserinfo reports whether dsn is a postgres:// or postgresql:// URL holding an unencoded "@"
 // after pgx's user part. pgx, like libpq, ends the userinfo at the first "@" before the first "/"
 // (parseURLSettings), and only a "/" stops that search. So a password holding an "@" leaves the
@@ -209,8 +347,10 @@ func keywordSettings(dsn string) []keywordSetting {
 // the query (`postgres://u:4821/<tail>@db/x`). Either way an unencoded "@" stands after pgx's user
 // part, which is what this reads: every "@" after the userinfo pgx cuts, or every "@" when it cuts
 // none. A query value holding an "@" (`?user=sa@project.iam`) and a database name holding one are
-// refused too: the rule cannot tell them from a password's tail, and %40 serves both, since pgx
-// decodes it. A "?" or "#" in a password stands before its "@", which pgx reads as the password's.
+// refused too: the rule cannot tell them from a password's tail. %40 serves a query value, since
+// pgx decodes it; a database name holding an "@", written either way, is refused all the same
+// (databaseHoldsAt). A "?" or "#" in a password stands before its "@", which pgx reads as the
+// password's.
 func atPastUserinfo(dsn string) bool {
 	rest, ok := strings.CutPrefix(dsn, "postgresql://")
 	if !ok {
@@ -246,7 +386,7 @@ func ConnectError(setting, dsn string, err error) error {
 		return &connectError{text: "connect to Postgres: " + setting + " cannot be parsed as a Postgres DSN; the driver's error is not printed, since it quotes the DSN", err: err}
 	}
 	address, password := target(dsn)
-	return &connectError{text: fmt.Sprintf("connect to Postgres at %s: %s", address, redactPassword(err.Error(), password)), err: err}
+	return &connectError{text: fmt.Sprintf("connect to Postgres at %s: %s", address, redactPassword(err.Error(), append(dsnSecrets(dsn), password))), err: err}
 }
 
 // spilledAddress is how ConnectError names the Postgres of a DSN it cannot show without a
@@ -262,35 +402,69 @@ type connectError struct {
 func (e *connectError) Error() string { return e.text }
 func (e *connectError) Unwrap() error { return e.err }
 
-// redactPassword hides a password where a driver would print one. After every password= (in any
-// case, with space around the "=" or not) it masks the value that follows, whatever pgx read as
-// the password, so a keyword DSN missing a space (`user=apppassword=<secret>`, a user name pgx and
-// the server print whole) shows none of it:
-//   - a value in single or double quotes, whole, to its closing quote, a backslash taking the next
-//     character (`password='<secret>'`), or to the end of the text when no quote closes it;
-//   - an unquoted value, to the next space, quote or backtick (`password=<secret>`, as the
-//     server's `role "…password=<secret>"` and pgx's “ `user=…password=<secret>` “ end it);
-//   - and when more of the value follows that run, after a quote or backtick inside it
-//     (`password=zq'<secret>`) or straight after a closing quote (`password='zq'<secret>`),
-//     everything after the run, to the end of the text.
+// redactPassword hides a password where a driver would print one. First it masks each of secrets,
+// the passwords the DSN carries as pgx read them (dsnSecrets, and the password pgx's parse found,
+// which PGPASSWORD may set), wherever one follows a password= (in any case, with space around the
+// "=" or not) or stands between the : and @ of a URL. Only in those positions: a password equal to
+// the user or the database name is the ordinary devbox DSN (user, password and database all
+// `legion`), and blanking every occurrence would hide the fields an operator reads to diagnose a
+// refusal. Then, after every password= left, it masks the value that follows, read by libpq's own
+// rules (passwordSetting), so a keyword DSN missing a space (`user=apppassword=<secret>`, a user
+// name pgx and the server print whole) shows none of it:
+//   - a value in single quotes, whole, to its closing quote, two single quotes in a row and a
+//     backslash each taking the next character (`password='<secret>'`), or to the end of the text
+//     when no quote closes it, and a value in double quotes alike;
+//   - an unquoted value, a backslash taking the next character, to the next space, quote or
+//     backtick (`password=<secret>`, as the server's `role "…password=<secret>"` and pgx's
+//     “ `user=…password=<secret>` “ end it);
+//   - and when more of the value follows that value, after one quote or more or a backtick
+//     (`password=zq'<secret>`, and two quotes in a row before it) or straight after a closing quote
+//     (`password='zq'<secret>`), everything after it, to the end of the text.
 //
-// It also masks the password pgx read, written after password= or between the : and @ of a URL.
-// Only in those positions: a password equal to the user or the database name is the ordinary
-// devbox DSN (user, password and database all `legion`), and blanking every occurrence would hide
-// the fields an operator reads to diagnose a refusal.
-func redactPassword(detail, password string) string {
-	detail = passwordSetting.ReplaceAllString(detail, "${1}xxxxx")
-	if password == "" {
-		return detail
+// A secret pgx read with an escaped space (`user=apppassword=zq\ <secret>`, printed as
+// `apppassword=zq <secret>`) is masked whole by the first step.
+func redactPassword(detail string, secrets []string) string {
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		after := regexp.MustCompile(`(?i)(password\s*=\s*)` + regexp.QuoteMeta(secret))
+		detail = after.ReplaceAllString(detail, "${1}xxxxx")
+		detail = strings.ReplaceAll(detail, ":"+secret+"@", ":xxxxx@")
 	}
-	detail = strings.ReplaceAll(detail, "password="+password, "password=xxxxx")
-	return strings.ReplaceAll(detail, ":"+password+"@", ":xxxxx@")
+	return passwordSetting.ReplaceAllString(detail, "${1}xxxxx")
 }
 
-// passwordSetting is a password= and the value redactPassword masks after it: a single- or
-// double-quoted run or an unquoted run to a space, quote or backtick, and, when more of the value
-// follows the run (a value character, after a quote or backtick or none), the rest of the text.
-var passwordSetting = regexp.MustCompile(`(?i)(password\s*=\s*)(?:'(?:\\.|[^'\\])*'?|"(?:\\.|[^"\\])*"?|[^\s'"` + "`" + `]*)(?:['"` + "`" + `]?[^\s'"` + "`" + `][\s\S]*)?`)
+// passwordSetting is a password= and the value redactPassword masks after it, read by libpq's
+// rules: a single-quoted run (two single quotes in a row or a backslash taking the next
+// character), a double-quoted one alike, or an unquoted run, a backslash taking the next
+// character, to a space, quote or backtick; and, when more of the value follows the run (a value
+// character, after quotes or a backtick or none), the rest of the text.
+var passwordSetting = regexp.MustCompile(`(?i)(password\s*=\s*)(?:'(?:''|\\[\s\S]|[^'\\])*'?|"(?:""|\\[\s\S]|[^"\\])*"?|(?:\\[\s\S]|[^\s'"` + "`" + `\\])*)(?:['"` + "`" + `]*[^\s'"` + "`" + `][\s\S]*)?`)
+
+// dsnSecrets is every password dsn carries, as pgx reads it: its password and sslpassword (a
+// keyword DSN's values, or a URL's user info password and query values, decoded), and the rest of
+// any other value after a password= in it (`user=apppassword=<secret>`, a user missing the space
+// before password=), which pgx and the server print as part of the user or the database.
+func dsnSecrets(dsn string) []string {
+	settings := keywordSettings(dsn)
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		settings = urlSettings(dsn)
+	}
+	var secrets []string
+	for _, setting := range settings {
+		switch at := embeddedPassword.FindStringIndex(setting.value); {
+		case setting.key == "password" || setting.key == "sslpassword":
+			secrets = append(secrets, setting.value)
+		case at != nil:
+			secrets = append(secrets, setting.value[at[1]:])
+		}
+	}
+	return secrets
+}
+
+// embeddedPassword is a password= inside another setting's value, as passwordSetting reads one.
+var embeddedPassword = regexp.MustCompile(`(?i)password\s*=\s*`)
 
 // target reads the address a DSN points at and the password it carries. pgx understands both the
 // URL and the keyword/value forms; url.Parse answers when pgx's parse fails here though the failure

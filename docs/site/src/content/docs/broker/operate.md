@@ -250,8 +250,10 @@ database variable: a password goes in the URL itself, URL-escaped, and on Amazon
 needs none ([Signing in to RDS by IAM token](#signing-in-to-rds-by-iam-token)).
 A URL holding an `@` after its user name and password is refused by the variable's name alone,
 since Postgres would read the rest of a password as the host, the database or a query and print it:
-write each `@` in a password, user name, database name or query value as `%40`, and a `/` in a
-password as `%2F`.
+write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as
+`%2F`.
+A database name holding an `@` is refused however it is written, and so is a host holding a `:`
+that is neither a socket directory nor an IP address (`host=db:5432`; give the port as `port=`).
 
 A secret owned by a service rather than a person needs that service registered.
 `BROKER_SERVICES` lists each service with the Kubernetes service accounts its pods run as,
