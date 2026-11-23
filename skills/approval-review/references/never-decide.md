@@ -2,7 +2,7 @@
 
 Some requests are not yours to answer, whatever your confidence and however clear the answer
 looks. This file names them. It is the whole rule: there is no list of words or phrases behind
-it, and nothing else states it.
+it.
 
 When a document falls under one of these kinds, you decide nothing. You say which kind it falls
 under and you hand it back to the person.
