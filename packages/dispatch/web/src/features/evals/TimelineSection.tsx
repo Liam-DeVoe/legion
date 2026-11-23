@@ -52,12 +52,10 @@ import {
   type TimelineMode,
   type TimelineView,
   timelineQuery,
+  useSettledSearch,
   useTimelineUrlState,
 } from "./timeline-url";
 import type { EvalsScope } from "./useEvalsViews";
-
-/** How long the search waits after the last keystroke before the view is subscribed again. */
-const SEARCH_DEBOUNCE_MS = 250;
 
 /** No Parent agent value chosen: one array, so a render that chooses none hands the colour scale
  *  the same dependency. */
@@ -98,16 +96,6 @@ function rowTime(row: ProjectTimelineRow): string | null {
 function selectionOf(row: ProjectTimelineRow): TimelineSelection {
   if (isMerge(row)) return { kind: "pr", id: row.id };
   return { kind: row.kind === "deploy" ? "deploy" : "failure", id: row.id };
-}
-
-/** `value`, once it has held still for `delayMs`. */
-function useSettled<T>(value: T, delayMs: number): T {
-  const [settled, setSettled] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setSettled(value), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [value, delayMs]);
-  return settled;
 }
 
 /** The table mode's columns: one row per merge, deploy or failed run, each its time, kind, name
@@ -338,7 +326,7 @@ function OpenTimeline({
   const [url, setUrl] = useTimelineUrlState();
   const [selection, setSelection] = useState<TimelineSelection | null>(null);
   const [chartMode, setChartMode] = useState<ChartMode>("graph");
-  const search = useSettled(url.filters.search.trim(), SEARCH_DEBOUNCE_MS);
+  const search = useSettledSearch(url.filters);
   const filterQuery = timelineQuery(url.filters, search);
   const params = useMemo(
     (): ProjectTimelineViewParams => ({ project, query: filterQuery, window: scope.window }),

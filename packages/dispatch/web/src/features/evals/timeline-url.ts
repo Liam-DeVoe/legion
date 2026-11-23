@@ -4,7 +4,7 @@
 // (`FACET_KEYS`), the search `q`, `colorBy`, `lanes=1`, `mode=list` and each `agents` value. The
 // Repository facet's key, `repo`, is the header's repository filter too (`evals-url.ts`), so a
 // pick of it sets the repository every number reads (decision 3).
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
@@ -54,6 +54,33 @@ export function timelineQuery(filters: Filters, search: string): string {
     for (const value of filters[key]) params.append(FACET_PARAMS[key], value);
   }
   return params.toString();
+}
+
+/** The query the evals views take for `filters` and `search` (dispatch://INFRA-2918/artifact/
+ *  plan-md, D7a): `timelineQuery`'s without the Repository facet, which the header's repository
+ *  filter names every view by already. Empty with no other facet and no search. */
+export function narrowingQuery(filters: Filters, search: string): string {
+  return timelineQuery({ ...filters, repo: [] }, search);
+}
+
+/** How long the search waits after the last keystroke before a view is subscribed again. */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/** `value`, once it has held still for `delayMs`. */
+function useSettled<T>(value: T, delayMs: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSettled(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, delayMs]);
+  return settled;
+}
+
+/** The search `filters` holds, trimmed, once it has held still for SEARCH_DEBOUNCE_MS, which the
+ *  views the search narrows are read by, so a view is not subscribed again at each keystroke. A
+ *  search the URL holds when the page opens is read at once. */
+export function useSettledSearch(filters: Filters): string {
+  return useSettled(filters.search.trim(), SEARCH_DEBOUNCE_MS);
 }
 
 /** The timeline's facets, search and view, and their one writer, which replaces the URL's entry

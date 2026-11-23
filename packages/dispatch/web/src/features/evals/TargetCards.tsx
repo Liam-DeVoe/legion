@@ -17,6 +17,7 @@ import {
 import { PerDayBars, PerDaySpread } from "./chart-renderers";
 import { EvalChart } from "./EvalChart";
 import { openWords, readIssueKeys, useIssuesLink } from "./issue-links";
+import { NarrowedChart, narrowingOf } from "./narrowing";
 import type { EvalsViewState } from "./useEvalsViews";
 
 /** One target card: the eval it draws, the view it reads, its chart, and the statistics of the
@@ -147,7 +148,9 @@ const UNOWNED_P0_LABEL = "P0 with no owner";
 
 /** One target card: its eval's primary series as a chart (`EvalChart`), its verdict's badge
  *  beside the title, and its target. A card whose eval the view does not hold, or whose series it
- *  holds no row of, reads "no data", never 0 (spec R5). */
+ *  holds no row of, reads "no data", never 0 (spec R5). While a facet or the search is set, a card
+ *  of an eval they narrow names them, or is marked loading while its values are the unnarrowed
+ *  ones, and any other card reads "window and repository only" (plan D3). */
 function TargetCard({
   days,
   project,
@@ -195,6 +198,7 @@ function TargetCard({
     UNOWNED_P0_LABEL
   );
   const state = view.status;
+  const narrowing = narrowingOf(view.facets, spec.slug, series);
   const badge =
     verdict === null ? null : (
       <TargetBadge met={verdict.met} metLabel={"\u2713 met"} missedLabel={"\u2717 missed"} />
@@ -212,28 +216,30 @@ function TargetCard({
       data-card={spec.slug}
       data-state={state}
     >
-      {model === null ? (
-        <>
-          <div className="flex items-start justify-between gap-2">
-            <span className={`text-xs ${textMutedOnSurface}`}>{spec.title}</span>
-            {badge}
-          </div>
-          <p className={`text-sm ${textMutedOnSurface}`}>
-            {state === "subscribed"
-              ? "loading\u2026"
-              : state === "failed"
-                ? "could not load"
-                : "no data"}
-          </p>
-        </>
-      ) : (
-        <EvalChart
-          beside={badge}
-          model={model}
-          opensPanel={spec.slug}
-          renderer={spec.chart === "spread" ? PerDaySpread : PerDayBars}
-        />
-      )}
+      <NarrowedChart narrowing={narrowing}>
+        {model === null ? (
+          <>
+            <div className="flex items-start justify-between gap-2">
+              <span className={`text-xs ${textMutedOnSurface}`}>{spec.title}</span>
+              {badge}
+            </div>
+            <p className={`text-sm ${textMutedOnSurface}`}>
+              {state === "subscribed"
+                ? "loading\u2026"
+                : state === "failed"
+                  ? "could not load"
+                  : "no data"}
+            </p>
+          </>
+        ) : (
+          <EvalChart
+            beside={badge}
+            model={model}
+            opensPanel={spec.slug}
+            renderer={spec.chart === "spread" ? PerDaySpread : PerDayBars}
+          />
+        )}
+      </NarrowedChart>
       <div className={`text-[11px] ${textMutedOnSurface}`}>
         {target === null ? "no target" : `target ${targetLabel(target)}`}
       </div>

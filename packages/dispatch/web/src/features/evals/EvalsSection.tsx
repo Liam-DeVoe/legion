@@ -3,6 +3,7 @@ import { type ReactNode, useId } from "react";
 import type { EvalKind } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { textMutedOnCanvas, textPrimaryOnCanvas } from "../../theme/classes";
+import { WINDOW_ONLY } from "./narrowing";
 import {
   type EvalsScope,
   type EvalsViewSelect,
@@ -28,7 +29,9 @@ function sectionState(statuses: readonly EvalsViewStatus[]): SectionState {
  * its views itself, keeping of each page what it draws (`select`), so a delta of one view renders
  * only the sections that draw something it moved. While a view has not answered the section says
  * so on a line of its own; a refused view shows its error with Retry. What the section draws of
- * its views is `children`'s (the target cards draw their cards, each as its own view lands).
+ * its views is `children`'s (the target cards draw their cards, each as its own view lands). A
+ * section of evals no facet narrows (`windowOnly`) says "window and repository only" under its
+ * heading while a facet or the search is set (plan D3).
  */
 export function EvalsSection({
   children,
@@ -37,6 +40,7 @@ export function EvalsSection({
   scope,
   select,
   title,
+  windowOnly = false,
 }: {
   /** Draws the section's views, each as it stands. */
   children: (views: readonly EvalsViewState[]) => ReactNode;
@@ -47,6 +51,8 @@ export function EvalsSection({
   /** What the section keeps of each page; all of it where absent. */
   select?: EvalsViewSelect;
   title: string;
+  /** Whether no eval the section draws is narrowed by the facets. */
+  windowOnly?: boolean;
 }): ReactNode {
   const headingId = useId();
   const views = useEvalsViews(scope, kinds, select);
@@ -61,6 +67,11 @@ export function EvalsSection({
       <h2 className={`text-[15px] font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
         {title}
       </h2>
+      {windowOnly && views.some((view) => view.facets?.set === true) ? (
+        <p className={`text-xs ${textMutedOnCanvas}`} data-narrowing="window-only">
+          {WINDOW_ONLY}
+        </p>
+      ) : null}
       {state === "failed" ? (
         <QueryError
           message={`${title}: could not load.`}

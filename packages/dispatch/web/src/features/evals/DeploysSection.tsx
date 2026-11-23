@@ -22,7 +22,8 @@ import {
 } from "./chart-model";
 import { PerDayBars, PerDaySpread } from "./chart-renderers";
 import { EvalChart } from "./EvalChart";
-import type { EvalsViewState } from "./useEvalsViews";
+import { NarrowedChart, narrowingOf } from "./narrowing";
+import type { EvalsViewFacets, EvalsViewState } from "./useEvalsViews";
 
 const MEDIAN: ChartStatistic = { id: "median", label: "Median" };
 const P90: ChartStatistic = { id: "p90", label: "p90" };
@@ -213,15 +214,18 @@ function Method({ project, item }: { project: string; item: EvalListItem }): Rea
 }
 
 /** One delivery eval's chart, in a box naming the eval (`data-eval`), "no data" where the view
- *  holds no row of its series, and its method under it. */
+ *  holds no row of its series, what it says of the facets set (`narrowingOf`), and its method
+ *  under it. */
 function DeployChartBox({
   answer,
   chart,
+  facets,
   item,
   project,
 }: {
   answer: EvalListResponse;
   chart: DeployChart;
+  facets: EvalsViewFacets | undefined;
   item: EvalListItem;
   project: string;
 }): ReactNode {
@@ -236,20 +240,27 @@ function DeployChartBox({
       ),
     [answer, chart, item]
   );
+  const narrowing = narrowingOf(
+    facets,
+    chart.slug,
+    item.series?.find((series) => series.series === chart.series)
+  );
   return (
     <article
       aria-label={chart.title}
       className={`flex min-w-0 flex-col gap-1 rounded border px-2.5 py-2 ${surfaceBg} ${borderDefault}`}
       data-eval={chart.slug}
     >
-      {model === null ? (
-        <>
-          <span className={`text-xs ${textMutedOnSurface}`}>{chart.title}</span>
-          <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
-        </>
-      ) : (
-        <EvalChart model={model} opensPanel={chart.slug} renderer={chart.renderer} />
-      )}
+      <NarrowedChart narrowing={narrowing}>
+        {model === null ? (
+          <>
+            <span className={`text-xs ${textMutedOnSurface}`}>{chart.title}</span>
+            <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
+          </>
+        ) : (
+          <EvalChart model={model} opensPanel={chart.slug} renderer={chart.renderer} />
+        )}
+      </NarrowedChart>
       <Method item={item} project={project} />
     </article>
   );
@@ -259,7 +270,10 @@ function DeployChartBox({
  * Deploys and lead time (dispatch://INFRA-2918/artifact/plan-md, D7, D12; spec R15): the ten
  * delivery charts of the delivery view, the view the target cards read, in order, each an
  * `EvalChart` with the default-repository note beside a figure that counts such rows, and its
- * eval's method under it. An eval the view does not hold draws no chart.
+ * eval's method under it. An eval the view does not hold draws no chart. While a facet or the
+ * search is set, the five pull-request charts draw the narrowed view's values and name the facets
+ * applied, under a loading mark while the values are still the unnarrowed view's, and the deploy,
+ * run and failure charts read "window and repository only" (plan D3).
  */
 export function DeploysSection({
   project,
@@ -283,6 +297,7 @@ export function DeploysSection({
           <DeployChartBox
             answer={answer}
             chart={chart}
+            facets={view.facets}
             item={item}
             key={chart.slug}
             project={project}

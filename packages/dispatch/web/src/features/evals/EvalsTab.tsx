@@ -13,7 +13,8 @@ import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
 import { LegionSection } from "./LegionSection";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
-import { brushDays, useCardsScope, useEvalsScope } from "./useEvalsScope";
+import { narrowingQuery, useSettledSearch, useTimelineUrlState } from "./timeline-url";
+import { brushDays, useTabScopes } from "./useEvalsScope";
 import type { EvalsScope, EvalsViewSelect, EvalsViewState } from "./useEvalsViews";
 
 /** The views each section reads, by kind: the target cards read the delivery and the Legion evals
@@ -29,24 +30,29 @@ const TIMELINE: readonly EvalKind[] = [];
 const EVERY_KIND: readonly EvalKind[] = ["delivery", "legion", "ci", "experiment"];
 const EVERY_KIND_BUT_LEGION: readonly EvalKind[] = ["delivery", "ci", "experiment"];
 
-/** One section of the tab: what it is, its heading, the kinds of eval it reads, and what it keeps
- *  of each page of their views (all of it where absent). */
+/** One section of the tab: what it is, its heading, the kinds of eval it reads, what it keeps
+ *  of each page of their views (all of it where absent), and whether no eval it draws is narrowed
+ *  by the facets (plan D3). */
 interface Section {
   readonly id: "cards" | "legion" | "ci" | "deploys" | "timeline" | "logged";
   readonly title: string;
   readonly kinds: readonly EvalKind[];
   readonly select?: EvalsViewSelect;
+  readonly windowOnly?: boolean;
 }
 
 /** The tab's sections, in the order dispatch://INFRA-2918/spec R2 sets: the target cards, the
  *  Legion measures, CI health, deploys and lead time, the merge timeline, and then every eval the
  *  project's agents and jobs log, of every view the tab reads. The Legion section, the Legion
- *  cards and the Legion view show only where the project has a Legion daemon (spec R5). */
+ *  cards and the Legion view show only where the project has a Legion daemon (spec R5). No facet
+ *  narrows a Legion or a CI eval (plan D7a). */
 function sectionsOf(legion: boolean): Section[] {
   return [
     { id: "cards", title: "Target cards", kinds: legion ? CARDS : CARDS_WITHOUT_LEGION },
-    ...(legion ? [{ id: "legion", title: "Legion measures", kinds: LEGION } as const] : []),
-    { id: "ci", title: "CI health", kinds: CI },
+    ...(legion
+      ? [{ id: "legion", title: "Legion measures", kinds: LEGION, windowOnly: true } as const]
+      : []),
+    { id: "ci", title: "CI health", kinds: CI, windowOnly: true },
     { id: "deploys", title: "Deploys and lead time", kinds: DEPLOYS },
     { id: "timeline", title: "Merge timeline", kinds: TIMELINE },
     {
@@ -143,21 +149,29 @@ function drawSection(
  * decides whether the Legion section and cards show; until that read answers they show, so their
  * view is opened with the others rather than after it. The merge timeline opens no view until the
  * reader opens it (spec R13); its brush sets the target cards' days and its Repository facet the
- * repository every number reads (decision 3). A card's or a chart's title opens the number's
- * panel (plan D12).
+ * repository every number reads (decision 3). Its other facets and its search, which the URL holds
+ * whether it is open or not, narrow the delivery view the cards and the Deploys and lead time
+ * section read (D7a); the first paint is never narrowed, so a tab opened with one set paints from
+ * the unnarrowed delivery view and draws the narrowed one once it lands (`useTabScopes`). A card's
+ * or a chart's title opens the number's panel (plan D12).
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
  */
 export function EvalsTab({ project }: { project: string }): ReactNode {
   const [state, setState] = useEvalsUrlState();
+  const [timeline] = useTimelineUrlState();
+  const search = useSettledSearch(timeline.filters);
   const daemon = useQuery(legionDaemonQuery(project));
   const legion = daemon.data !== null;
   // Whether the project's delivery is on, which draws the delivery cards: every project's until
   // the tab reads the project's delivery settings (plan T24).
   const delivery = true;
-  const scope = useEvalsScope(project, state);
-  const cardsScope = useCardsScope(scope, state);
+  const { cards: cardsScope, scope } = useTabScopes(
+    project,
+    state,
+    narrowingQuery(timeline.filters, search)
+  );
   const days = useMemo(() => brushDays(state.brush), [state.brush]);
   const sections = sectionsOf(legion);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
@@ -182,6 +196,7 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
               scope={section.id === "cards" ? cardsScope : scope}
               select={section.select}
               title={section.title}
+              windowOnly={section.windowOnly}
             >
               {drawSection(section.id, project, scope, delivery, days)}
             </EvalsSection>
