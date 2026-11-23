@@ -1266,6 +1266,48 @@ test("blocksHeld holds while every page holds data", async () => {
   }
 });
 
+// A refresh whose walk meets a cursor the server named already fails, as one whose page fails
+// does (`readTree`), and never answers the pages it read as the whole tree: the outline that
+// holds an answer keeps it, and draws no failed-read line, which is for a read that holds none.
+test("a refresh whose walk meets a cursor named twice keeps the answer the outline holds", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    await waitFor(() => expect(view.result.current.blocksRead).toBe(true));
+    expect(taskWords(view.result.current.root)).toBe(TASK_WORDS);
+
+    // The tree is read again: its first page, the issue and the task, names a second, the
+    // comment, and that page names the second page again.
+    const whole = treeAnswer([comment]);
+    const nodes = whole.nodes ?? [];
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async (_key, query) => ({
+      ...whole,
+      cursor: "page-2",
+      nodes: query?.cursor === undefined ? nodes.slice(0, 2) : nodes.slice(2),
+    }));
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: issueTreeKey(KEY) });
+    });
+    await waitFor(() => expect(view.result.current.blocksRead).toBe(false));
+    expect(api.getIssueTree).toHaveBeenCalledTimes(3);
+    expect(client.getQueryState(issueTreeKey(KEY))?.error?.message).toContain(
+      'the cursor "page-2" twice'
+    );
+    expect(view.result.current.failed).toBe(false);
+    expect(view.result.current.blocksHeld).toBe(true);
+    const rows = nodesInOrder(view.result.current.root);
+    expect(taskWords(view.result.current.root)).toBe(TASK_WORDS);
+    expect(rows.some((node) => node.id === comment.id)).toBe(false);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // A filter's view read is watched and never sent here: whatever `ViewReadProvider` holds for it
 // reaches `presetView` through the tree's root (`root.views`), so the Plan filter draws the
 // view's plan tasks - the one its query took, not the second the tree holds - and the root keeps

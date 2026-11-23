@@ -7,7 +7,9 @@
  *  group, deals the groups to `<legs>` legs and writes the groups of leg `<leg>` to `<test-list>`,
  *  in the form the run's `--test-list` reads: one `[project] › <file>` line per group, the file
  *  named from the config's root directory, which selects every test of that file in that project.
- *  It prints every leg's planned seconds and this leg's groups, for the log.
+ *  It prints every leg's planned seconds and this leg's groups, for the log. Each leg's line
+ *  (`legLine`) has a reader as well: `.github/scripts/dispatch-browser-shard-suite.sh` takes
+ *  this leg's test count from the end of its line, to hold it to the count Playwright runs.
  *
  *  A group is a whole file of one project, so each test belongs to one group and each group to
  *  one leg, and a file's hooks and serial blocks stay on one machine. A group no test of this run
@@ -125,6 +127,17 @@ export function deal(groups: readonly Weighed[], legs: number): Leg[] {
   return dealt;
 }
 
+/** The log's line for leg `number` of `legs`: the seconds it plans, its groups and its tests.
+ *  `.github/scripts/dispatch-browser-shard-suite.sh` reads it: it takes the leg's test count
+ *  from the line's end, `, N tests`, so the line's form is that script's to change as well. */
+export function legLine(leg: Leg, number: number, legs: number): string {
+  const tests = leg.groups.reduce((sum, group) => sum + group.tests, 0);
+  return (
+    `  leg ${number} of ${legs}: ${Math.round(leg.seconds)} s planned, ` +
+    `${leg.groups.length} groups, ${tests} tests`
+  );
+}
+
 /** A list reporter's line for one attempt of one test, wherever it stands in a log line: a
  *  `gh run view --log` line starts with the job, the step and a timestamp. The mark, the
  *  attempt's number, the project, the file with the test's line and column, and the title, which
@@ -236,17 +249,13 @@ if (import.meta.main) {
     const dealt = deal(weighed, legs);
     const mine = [...dealt[leg - 1].groups].sort((one, other) => byName(one.name, other.name));
     writeFileSync(out, mine.map((group) => `${group.line}\n`).join(""));
-    const testsIn = dealt.map((each) => each.groups.reduce((sum, group) => sum + group.tests, 0));
     console.log(
       `shard-deal: ${weighed.length} groups of ${weighed.reduce((sum, group) => sum + group.tests, 0)} ` +
         `tests dealt to ${legs} legs by e2e/shard-times.json, ` +
         `${weighed.filter((group) => !group.recorded).length} of the groups not in it`
     );
     dealt.forEach((each, index) => {
-      console.log(
-        `  leg ${index + 1} of ${legs}: ${Math.round(each.seconds)} s planned, ` +
-          `${each.groups.length} groups, ${testsIn[index]} tests`
-      );
+      console.log(legLine(each, index + 1, legs));
     });
     console.log(`leg ${leg} runs these groups, written to ${out}:`);
     for (const group of mine) {

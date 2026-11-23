@@ -2,7 +2,7 @@ import { primarySpec } from "../../../api/issue-cache";
 import type { Decision, DecisionLink, DisplayTree, IssueDetails } from "../../../api/types";
 import { buildDispatchReference, parseDispatchReference } from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
-import { blockIdOfNode } from "../decision-review";
+import { blockIdOfNode, firstOfEachId } from "../decision-review";
 import type { IssueTreeReads, TreeAsk } from "../issue-tree";
 import { storedReading } from "../stored-reading";
 import { blockNodeId } from "../tree-drafts";
@@ -32,8 +32,9 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-re
  * types: the outline's steps (`tree-read/tree-nodes.ts`) are to read the decisions from here, and
  * `issue-tree.ts` is to build the outline from those steps (that module's own comment), so either
  * import would close a cycle (`biome.json`'s `noImportCycles`). So the rules a node is looked up
- * and addressed by live here, and the outline reads them from here (`nodesById`, `tuplesByFrom`,
- * `nodeReference`, `tieReference`, `askIdOf`, `askOfNode`); the heading is cut by
+ * and addressed by live here, and the outline reads them from here (`tuplesByFrom`,
+ * `nodeReference`, `tieReference`, `askIdOf`, `askOfNode`), beside the first node of each read
+ * id, which both read from `decision-review.ts` (`firstOfEachId`); the heading is cut by
  * `decisionQuote` rather than `issue-tree.ts`'s `lineWords`. What `decisionsOfAnswer` keeps of
  * each answer it has read changes nothing it answers.
  */
@@ -453,10 +454,10 @@ function referenceOf(node: TreeAnswerNode, lookup: Lookup): string | undefined {
   return nodeReference(node, lookup.key, node.supertag === "ask" ? lookup.askOf(node) : undefined);
 }
 
-/** The answer's nodes and tuples, each looked up by the read's own ids (`nodesById`,
- *  `tuplesByFrom`), and the issue's asks by the node each is (`askOfNode`). */
+/** The answer's nodes and tuples, each looked up by the read's own ids (`decision-review.ts`'
+ *  `firstOfEachId`, `tuplesByFrom`), and the issue's asks by the node each is (`askOfNode`). */
 function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
-  const nodes = nodesById(answer);
+  const nodes = firstOfEachId(answer.nodes ?? []);
   const tuples = tuplesByFrom(answer);
   return {
     askOf: askOfNode(reads),
@@ -469,17 +470,6 @@ function lookupOf(answer: TreeAnswer, reads: DecisionReads): Lookup {
       })?.slug ?? "",
     tuplesFrom: (readId) => tuples.get(readId) ?? [],
   };
-}
-
-/** Each node of the answer by its read id, its store id, the first the answer holds where two
- *  share one, so every reader of a node by its read id, the outline and every decision, finds the
- *  same one. */
-export function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
-  const nodes = new Map<string, TreeAnswerNode>();
-  for (const node of answer.nodes ?? []) {
-    if (!nodes.has(node.id)) nodes.set(node.id, node);
-  }
-  return nodes;
 }
 
 /** The answer's tuples by the read id of the node each starts at (`from`), each node's in the

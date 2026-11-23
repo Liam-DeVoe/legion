@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { Ask, Decision, DecisionKeep, DecisionLink, DisplayTree } from "../../../api/types";
+import { firstOfEachId } from "../decision-review";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree } from "../issue-tree";
 import { blockNodeId } from "../tree-drafts";
@@ -12,7 +13,7 @@ import {
   treeTuple as tuple,
 } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
-import { type DecisionNode, type DecisionReads, decisionNodes, nodesById } from "./decision-nodes";
+import { type DecisionNode, type DecisionReads, decisionNodes } from "./decision-nodes";
 
 /**
  * The decisions of a tree read's answer. Each case writes the answer as the route sends it
@@ -468,7 +469,7 @@ test("a decision of another document names that document", () => {
 
 // Two documents of an issue can each hold a block of one id. The read names each node by its
 // store id, which no other node holds, so a tie names the one block it reaches, and a person's
-// decision's `shaped` tie and the outline's chip (`nodesById`) name that same block.
+// decision's `shaped` tie and the outline's chip (`firstOfEachId`) name that same block.
 test("a shaped tie to a block id two documents share names the block it reaches, as the outline does", () => {
   const tree = answer(
     [
@@ -492,7 +493,7 @@ test("a shaped tie to a block id two documents share names the block it reaches,
   };
   const [tie] = tree.tuples ?? [];
 
-  expect(nodesById(tree).get(tie?.to.id ?? "")?.document?.slug).toBe(SPEC.slug);
+  expect(firstOfEachId(tree.nodes ?? []).get(tie?.to.id ?? "")?.document?.slug).toBe(SPEC.slug);
   expect(decisionNodes(tree, reads).map((one) => one.links?.map((link) => link.to.ref))).toEqual([
     [blockRef("spec", "r1")],
   ]);

@@ -25,6 +25,7 @@ import {
   TREE_VIEWS,
   type TreeAnswer,
   type TreeRead,
+  type TreeView,
   useTreeRead,
   viewQuery,
 } from "./tree-read/tree-read";
@@ -155,15 +156,21 @@ export const issueMessagesQuery = (key: string) =>
     queryFn: () => api.listIssueMessages(key),
   });
 
-/** The reads a tree is built from (`IssueTreeReads`), each compared by identity. */
-const TREE_INPUTS = [
-  "asks",
-  "coverage",
-  "issue",
-  "results",
-  "targets",
-  "viewer",
-] as const satisfies readonly (keyof IssueTreeReads)[];
+/** The reads a tree is built from (`IssueTreeReads`) beside the tree read's answer, each compared
+ *  by identity; the answer is not among them, since `builtTrees` holds the trees built from it
+ *  keyed by it. Every other member is named here, so a member added to `IssueTreeReads` does not
+ *  compile until it is named. */
+const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>> = {
+  asks: true,
+  coverage: true,
+  issue: true,
+  results: true,
+  targets: true,
+  viewer: true,
+};
+
+/** The members `TREE_INPUTS` names, which `builtTree` compares. */
+const TREE_INPUT_NAMES = Object.keys(TREE_INPUTS) as (keyof typeof TREE_INPUTS)[];
 
 /** How many trees are kept for one answer of the tree read: the tree before the names answer,
  *  the tree with them, and one more. */
@@ -187,7 +194,9 @@ function builtTree(reads: IssueTreeReads): TreeNode {
   const answer = reads.tree;
   if (answer === undefined) return buildIssueTree(reads);
   const held = builtTrees.get(answer) ?? [];
-  const found = held.find((one) => TREE_INPUTS.every((input) => one.reads[input] === reads[input]));
+  const found = held.find((one) =>
+    TREE_INPUT_NAMES.every((input) => one.reads[input] === reads[input])
+  );
   if (found !== undefined) return found.root;
   const root = buildIssueTree(reads);
   builtTrees.set(answer, [...held.slice(1 - TREES_PER_ANSWER), { reads, root }]);
@@ -209,12 +218,12 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * and the reader's login, which says which open questions wait on the reader
  * (`IssueTreeReads.viewer`).
  *
- * Each filter's view read (`viewQuery`), the decisions view among them,
- * is watched here and never sent: `ViewReadProvider`
- * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds
- * is set on the issue's node (`TreeNode.views`), which `presetView` and `filterSignals` draw a
- * filter from, and the Decisions filter its decisions (`decisions-entries.ts`). The root
- * keeps its identity while neither the tree nor a held view changes.
+ * Each filter's view read (`viewQuery`), the decisions view among them, is watched here and
+ * never sent: `ViewReadProvider` (`tree-read/view-read.tsx`) reads a view the first time its
+ * filter is on, and whatever it holds is set on the issue's node (`TreeNode.views`), which
+ * `presetView` and `filterSignals` draw a filter from, its rows and its count, and the Decisions
+ * filter its decisions (`decisions-entries.ts`). The root keeps its identity while neither the
+ * tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address its chips name and its
  * words cite is read in one batched request (`referenceTargetsQuery`; a tree holding more
@@ -268,14 +277,18 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that sends nothing (`treeRead`) and holds
-  // whatever `ViewReadProvider` read for the load; the answers in `TREE_VIEWS`' order.
-  const [specView, verificationView, planView, decisionsView] = useQueries({
+  // whatever `ViewReadProvider` read for the load. Each answer is read by its view, at that view's
+  // place in the list the reads were made from, so the order of `TREE_VIEWS` hands no view
+  // another's answer.
+  const viewReads = useQueries({
     queries: TREE_VIEWS.map((view) => treeRead(viewQuery(key, view))),
   });
-  const spec = specView?.data;
-  const verification = verificationView?.data;
-  const plan = planView?.data;
-  const decisions = decisionsView?.data;
+  const viewOf = (view: TreeView): TreeAnswer | undefined =>
+    viewReads[TREE_VIEWS.indexOf(view)].data;
+  const spec = viewOf("spec");
+  const verification = viewOf("verification");
+  const plan = viewOf("plan");
+  const decisions = viewOf("decisions");
   const views = useMemo((): TreeViews | undefined => {
     const held: TreeViews = {
       ...(decisions === undefined ? {} : { decisions }),

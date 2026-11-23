@@ -894,7 +894,7 @@ const FALLBACK_LINES = {
 // the outline drawn in the view's place lands on the node's row as the conversation's address
 // does, with the focus on that row. A plan task that serves a statement stands for such a node
 // here: the tree places a comment under what it answers and never under the block it is anchored
-// to (`tree-drafts.ts`'s `addTurns`), so the seed holds no comment under a statement.
+// to (`tree-read/tree-nodes.ts`, by its `parent`), so the seed holds no comment under a statement.
 //
 // Then the Decisions view, with three addresses that name nothing the issue holds, each opened by
 // a load of its own: the gone comment, a `#b-` fragment naming a block no node carries, and that
