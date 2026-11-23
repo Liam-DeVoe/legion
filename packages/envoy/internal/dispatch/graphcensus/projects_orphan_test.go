@@ -59,10 +59,10 @@ func TestTheProjectCensusNamesALiveNodeWhoseRowIsGone(t *testing.T) {
 		t.Fatalf("read the incomplete nodes: %v", err)
 	}
 	want := []string{
-		"artifact ORPH-1/notes-md: orphaned; no in-band cure: a delete outside the builds made it",
-		"ask 33333333-3333-4333-8333-000000000001: orphaned; no in-band cure: a delete outside the builds made it",
-		"issue ORPH-1: orphaned; no in-band cure: a delete outside the builds made it",
-		"message 33333333-3333-4333-8333-000000000002: orphaned; no in-band cure: a delete outside the builds made it",
+		"artifact ORPH-1/notes-md: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
+		"ask 33333333-3333-4333-8333-000000000001: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
+		"issue ORPH-1: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
+		"message 33333333-3333-4333-8333-000000000002: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone",
 	}
 	if !slices.Equal(incomplete, want) {
 		t.Errorf("ProjectComplete answers %v, want %v: the four live nodes no row stands behind, each with no in-band cure, and not the gone one", incomplete, want)
@@ -72,7 +72,7 @@ func TestTheProjectCensusNamesALiveNodeWhoseRowIsGone(t *testing.T) {
 // An orphaned node's line names the node by its address as it stands and ends with its cure, which
 // is none in band. A conversation's file belongs to no project and is addressed by its session's
 // id, which the session names, here one holding a quote and a dollar sign: the line names it
-// whole, `artifact <address>: orphaned; no in-band cure: a delete outside the builds made it`.
+// whole, `artifact <address>: orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`.
 //
 // Its control is the cure taken off the orphaned class's line (orphanedCure): the line then ends
 // at its class.
@@ -92,7 +92,7 @@ func TestAnOrphanedNodesLineNamesItsAddressWhole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the incomplete nodes: %v", err)
 	}
-	if want := []string{"artifact " + ref + ": orphaned; no in-band cure: a delete outside the builds made it"}; !slices.Equal(incomplete, want) {
+	if want := []string{"artifact " + ref + ": orphaned; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone"}; !slices.Equal(incomplete, want) {
 		t.Errorf("ProjectComplete answers %q, want %q", incomplete, want)
 	}
 }
