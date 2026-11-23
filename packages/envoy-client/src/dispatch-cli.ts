@@ -16,6 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { carryTestCommand } from "./dispatch-commands/carry-test";
 import { defined } from "./dispatch-commands/context";
 import { loginCommand } from "./dispatch-commands/login";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -258,6 +259,11 @@ export async function runDispatchCli(
       fetchImpl: io.fetchImpl,
       sleep: io.sleep,
     });
+  }
+  // `dispatch carry-test` reads no host, no session and no envoy.json either: it runs local git
+  // only, in the clone it is run in (`dispatch-commands/carry-test.ts`).
+  if (argv[0] === "carry-test") {
+    return await carryTestCommand(argv.slice(1), { print, cwd: io.cwd, env });
   }
   // A refusal before the call reaches Dispatch goes to the session's ledger too, whenever this
   // call knows its session, so a reader of the ledger (pi-envoy's run-end check, the
