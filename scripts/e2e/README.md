@@ -5543,6 +5543,7 @@ Among its cases: a whole answer passes, an issue rated twice passes, an issue it
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/plan-guidance.sh     # → "plan guidance control e2e: PASS in <n>s", then "plan guidance e2e: PASS in <n>s", exit 0
+LEGION_TEST_PG_DSN=… bash scripts/e2e/plan-guidance.sh --control           # the control alone → "plan guidance control e2e: PASS in <n>s", exit 0
 ```
 
 The live proof that a deployment's plan guidance (`plan_guidance` in `legion.yaml`) reaches the launch of an owner and of no other agent.
@@ -5550,6 +5551,8 @@ It runs where [`handoff-records.sh`](#handoff-recordssh) runs, with the same inp
 `go`, `git`, `jj` 0.38 or later, `awk` and `python3`, and a loopback `LEGION_TEST_PG_DSN` whose role may create and drop Dispatch's database, on a server that offers `pgvector`.
 It makes [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s run twice, each with its own broker:
 first the control, a test binary of `TestPlanGuidanceControlLive`, then the proof, one of `TestPlanGuidanceLive` (both in `internal/daemon/plan_guidance_live_test.go`, `-tags e2e`).
+The control is the script again, run as a shell of its own with `--control`, so that run's exit trap and end mark are its own ([`lib/run-verdict.sh`](#librun-verdictsh)), and a control that fails ends the script with its status before the proof starts.
+Any other argument is refused with exit 2.
 
 The rig is `step-records.sh`'s (`newStepRecordsRigWith`, in `internal/daemon/step_records_rig_test.go`):
 the real Dispatch server on a database of its own, a project of the run's own (`SR<6 hex>`) with one issue a person creates, in progress with the `legion` label, seeded in the daemon's store at `admitted` with its design gate approved, and the whole daemon booted through `run` with `dispatch_url` at that server.

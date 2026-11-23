@@ -18,12 +18,15 @@
 # The control runs first, as a whole run of its own with its own broker: the same run with
 # plan_guidance unset, where owner-has-guidance, settings-serve-the-key and check-config-names-it
 # must fail and worker-has-none must hold (TestPlanGuidanceControlLive, each check printed as
-# `control-<name>`).
+# `control-<name>`). It is this script again, run as its own shell with --control, so its run's
+# EXIT trap and end mark are that shell's (lib/run-verdict.sh). A control that fails ends the
+# script with its status, before the proof's own run starts.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-#     bash scripts/e2e/plan-guidance.sh
+#     bash scripts/e2e/plan-guidance.sh [--control]
+# --control runs the control alone. The script takes no other argument, and refuses one with exit 2.
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on; the
 # driver also creates Dispatch's database on the same server (its role must be allowed to create
 # and drop databases, and the server must offer the pgvector extension, which Dispatch's migrations
@@ -42,11 +45,18 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 # The driver binary runs from its run's work directory, not the package's, so it is told the
 # checkout it builds Dispatch and the legion binary from.
 export LEGION_E2E_REPO_ROOT="$root"
-# The library keeps its own `evidence`, which sourcing it resets, so the run's root is another name.
-evidence_root=${PLAN_GUIDANCE_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-plan-guidance-evidence.XXXXXXXX")}
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
-# The control is a subshell of its own, so its run's EXIT trap stops its broker and prints its
-# verdict before the proof's own run starts.
-(live_daemon_proof 'plan guidance control' plan-guidance-control TestPlanGuidanceControlLive "$evidence_root/control")
-live_daemon_proof 'plan guidance' plan-guidance TestPlanGuidanceLive "$evidence_root/run"
+case "$*" in
+  '' | --control) ;;
+  *) refuse "unknown arguments '$*': the one argument this script takes is --control, which runs the control alone" ;;
+esac
+# The library keeps its own `evidence`, which sourcing it resets, so the run's root is another name.
+evidence_root=${PLAN_GUIDANCE_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-plan-guidance-evidence.XXXXXXXX")}
+# The control is this script again, as a shell of its own (the header says why), and runs first.
+if [ "$*" = --control ]; then
+  live_daemon_proof 'plan guidance control' plan-guidance-control TestPlanGuidanceControlLive "$evidence_root/control"
+else
+  PLAN_GUIDANCE_EVIDENCE_DIR=$evidence_root bash "$0" --control
+  live_daemon_proof 'plan guidance' plan-guidance TestPlanGuidanceLive "$evidence_root/run"
+fi
