@@ -261,8 +261,8 @@ type workflowRuntime struct {
 	launched      map[string]ghbranch.Repository
 	workspaceHeld func(issue string, repo ghrepo.Repository) bool
 	// reviewAppLogin is the review App's bot login from its boot lease, as the engine holds it: a
-	// review it submits decides a round by that login and the reviewer's recorded session
-	// (workflow's DecidesRound), so reviewerCanWrite asks GitHub nothing about it.
+	// review it submits is judged by that login and the reviewer's recorded session (workflow's
+	// DecidesRound), so reviewerCanWrite asks GitHub nothing about it.
 	reviewAppLogin string
 	// permissions holds, by repository and login, until when reviewerCanWrite's read of GitHub
 	// stands as no write access; permissionTTL is how long one stands, zero, in production, being
@@ -1105,15 +1105,15 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 // and the run (generation) it was queued for, so once the issue is in another phase, or on another
 // run, a delivery still queued for that one is finished work and is dropped rather than sent. The
 // phase is compared, not the role that works it: one role runs several phases — the implementer
-// runs implementing and retro, and the role the project's `production_check` named at the open
-// (record.ProductionCheck.Role) runs each look of the check — and a task written for the first is
-// not the work of the third. At the phase step the role is compared too: every role a deployment
-// defines runs as step, so a task written for the step of one role is not the work of the step of
-// another, whose phase reads the same (record.Issue.HoldsQueued). The run is compared because a
-// re-admission can restart the issue in the phase it stood in: an operator suspension keeps a
-// claim's queued task (supervise's settle), so without it the operator's resume would send the run
-// that is over's task into the new run, ahead of the new run's own. A task of no run (generation
-// 0) is held to its phase alone.
+// runs implementing and, where the retro is its own, the retro, and the role the project's
+// `production_check` named at the open (record.ProductionCheck.Role) runs each look of the
+// check — and a task written for the first is not the work of the third. At the phase step the
+// role is compared too: every role a deployment defines runs as step, so a task written for the
+// step of one role is not the work of the step of another, whose phase reads the same
+// (record.Issue.HoldsQueued). The run is compared because a re-admission can restart the issue in
+// the phase it stood in: an operator suspension keeps a claim's queued task (supervise's settle),
+// so without it the operator's resume would send the run that is over's task into the new run,
+// ahead of the new run's own. A task of no run (generation 0) is held to its phase alone.
 //
 // A delivery of no phase holds here. Only the workflow names one, so an operator's delivery made
 // by hand through the API is not dropped for the phase its issue is in: the operator asked for

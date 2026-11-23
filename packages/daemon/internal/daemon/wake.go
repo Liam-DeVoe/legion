@@ -422,10 +422,11 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenRoleOf, which at step is the role of the running
-// step, read with the issue). An architect gets none — nothing of its own is due, and a
-// sub-architect woken for nothing would hold a pod open for the backstop period — and neither does
-// an issue whose phase no role works.
+// worker of the pod's open phase (workflow.OpenRoleOf: at step the role of the running step, read
+// with the issue, and none at a step or a retro the issue's owner does). An architect gets none,
+// at its own step too, where the owner-step notice is what tells it its work; elsewhere nothing of
+// its own is due, and a sub-architect woken for nothing would hold a pod open for the backstop
+// period. Neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
