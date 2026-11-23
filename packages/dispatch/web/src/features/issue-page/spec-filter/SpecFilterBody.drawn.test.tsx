@@ -34,7 +34,6 @@ import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { measureNearWords } from "../clamp-fixtures";
@@ -65,8 +64,8 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../reference-names";
-import { ProvidersSlot } from "../slots/providers";
-import { StageSlot, ViewStage } from "../slots/stage";
+import { ViewStage } from "../slots/stage";
+import { drawStage } from "../slots/stage-fixtures";
 import { nodeRowSelectorOf } from "../tree-focus";
 import { decisionBehind } from "../tree-keys";
 import {
@@ -876,20 +875,6 @@ test("an address naming a statement puts the focus on it", async () => {
   }
 });
 
-/** The page's stage at the address the router holds, as the page's root draws it
- *  (`IssueOutlinePage.tsx`): the route read from the address, under the page's providers, with
- *  the real views and each slot as its part filled it (`VIEW_SLOTS`, `SLOT_FILLED`). */
-function AddressedStage({ issue }: { issue: IssueDetails }): ReactNode {
-  const { pathname, search } = useLocation();
-  const route = parseIssuePath(pathname, search) ?? ({ key: KEY, kind: "issue" } as const);
-  return (
-    <ProvidersSlot issue={issue} route={route}>
-      <IssueScope />
-      <StageSlot issue={issue} route={route} />
-    </ProvidersSlot>
-  );
-}
-
 /** `client` holding every read the page's tree is built from, answered: the issue holds two
  *  threads of comments and nothing else, as the outline's own cases seed them
  *  (`IssueTree.test.tsx`'s `seedBodyReads`). Who is reading is each case's own. */
@@ -905,62 +890,6 @@ function holdTreeReads(client: QueryClient): void {
   client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
   client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
 }
-
-/** The page's stage at the Spec view's address with `after` on its end, such as an item's query
- *  (`AddressedStage`), over `client`'s reads. */
-function drawSpecStage(client: QueryClient, issue: IssueDetails, after = ""): RenderResult {
-  return render(
-    <MemoryRouter initialEntries={[`/issues/${KEY}/spec${after}`]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedStage issue={issue} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-}
-
-// The Spec view's slot is filled (`SLOT_FILLED`), so an address that names an item beside the
-// view's own - `/spec?comment=<id>`, as `documentItemPath` writes the address of an item of the
-// spec - is the view's to draw: the stage draws the Spec view and no outline, and the view lands
-// on the item in its own tree, with the focus on the item's row. The stage is the page's own,
-// with its real views and its slots as filled, so a slot left unfilled draws the outline here.
-test("with the Spec view's slot filled, a spec item's address lands on the item in the Spec view's tree and draws no outline", async () => {
-  const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  holdTreeReads(client);
-  client.setQueryData(["whoami"], { kind: "user", login: READER });
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = drawSpecStage(client, issue, "?comment=reply-b");
-  try {
-    const { container } = view;
-    await waitFor(() => {
-      const row = container.querySelector<HTMLElement>(
-        `[data-spec-tree] ${nodeRowSelectorOf("reply-b")}`
-      );
-      expect(row, "the Spec view's tree drew no row for the item the address names").not.toBeNull();
-      expect(
-        row?.contains(document.activeElement),
-        `the item's address left the focus on ${document.activeElement?.tagName}, not its row`
-      ).toBe(true);
-    });
-    expect(
-      container.querySelector("[data-spec-body]"),
-      "the stage drew no Spec view"
-    ).not.toBeNull();
-    expect(
-      container.querySelector("[data-issue-body]"),
-      "the stage drew the outline in the Spec view's place"
-    ).toBeNull();
-  } finally {
-    view.unmount();
-    names.mockRestore();
-  }
-});
 
 // The names reads are the page's tree's, read last, once no read the tree is built from is still
 // out, and the Spec view draws from them too: the issue's three sentences, and the name of every
@@ -982,7 +911,7 @@ test("a failed names read says so in its own line, after the view's own, and its
   client.removeQueries({ queryKey: issueDecisionsQuery(KEY, true).queryKey });
   const decisions = spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("offline"));
   const names = spyOn(api, "getReferenceTargets").mockRejectedValue(new Error("offline"));
-  const view = drawSpecStage(client, issue);
+  const view = drawStage("", { client, issue, preset: "spec" });
   try {
     const line = await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
     const lines = '[data-spec-body] [data-failed-read] [role="alert"]';
@@ -1028,7 +957,7 @@ test("the Spec view opened more than 30 s after whoami answered asks for it noth
     login: READER,
   });
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = drawSpecStage(client, issue);
+  const view = drawStage("", { client, issue, preset: "spec" });
   try {
     await waitFor(() =>
       expect(
@@ -1059,7 +988,7 @@ test("a names line that stands again in the Spec view for a refusal it counted i
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   names.mockRejectedValueOnce(new Error("offline"));
-  const view = drawSpecStage(client, issue);
+  const view = drawStage("", { client, issue, preset: "spec" });
   try {
     await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
     await act(async () => {

@@ -82,7 +82,7 @@ import {
   contentsEntries,
   contentsLineFaults,
   decidedByCells,
-  expectInViewport,
+  expectOnScreen,
   focusBranchControl,
   ownWords,
   rowAuthor,
@@ -1338,7 +1338,7 @@ test("the Spec view opened at its address with its statements' reads refused put
 // it loads it, lands on the row it names with that row inside the viewport once the page has
 // gone quiet: a statement, a comment the view draws, and a comment the issue holds none of. Each
 // case is a full load of Settings, then a full load of the address, never a press or a move
-// inside the app, so the view draws every row from an empty cache. The seeded spec's thirty
+// inside the app, so the view draws every row from an empty cache. The seeded spec's sixty
 // statements stand well past one screen, so a row drawn after them can stand below it.
 //
 // A `#b-` fragment names the spec's own block, so it is the view's own address and not one
@@ -1347,17 +1347,19 @@ test("the Spec view opened at its address with its statements' reads refused put
 // the first screen.
 //
 // A comment of the issue is an address beside the view that the view draws a row for, after its
-// statements. The spec's blocks read is held until the comment's row is drawn, so the statements
-// are drawn above a row that already stands, as on a large issue whose blocks answer after its
-// comments. While that row is the only one drawn the stage may put the focus on it; the view
-// lands on it again once its reads have settled, which brings it on screen. A view that lands on
-// the comment's row as soon as any row is drawn, before the statements, leaves it below the screen
-// once they are drawn above it, and fails this case's check of the viewport. A page that draws no
-// Spec view fails its first check.
+// statements. The statements come from the coverage read (`tree-drafts.ts`'s `addRequirements`),
+// and from the spec's blocks read where it answers first, so both reads are held until the
+// comment's row is drawn and then let go together: the statements are drawn above a row that
+// already stands, as on a large issue whose coverage answers after its comments. While that row
+// is the only one drawn the stage may put the focus on it; the view lands on it again once its
+// reads have settled, which brings it on screen. A view that lands on the comment's row before
+// the statements are drawn, and does not hold it on screen, leaves it below the screen once they
+// are drawn above it, and fails this case's check of the viewport. A page that draws no Spec view
+// fails its first check.
 //
 // A comment id of the right shape that no comment of the issue has draws the outline's line for
 // it in the view's place, with the focus on that line's heading, which stands in view.
-// SLOW(>=2s): a seeded issue of thirty statements, then three loads of Settings and three of the
+// SLOW(>=2s): a seeded issue of sixty statements, then three loads of Settings and three of the
 // Spec view, each waited on until the page goes quiet.
 test("an address on the Spec view lands on a statement, on a comment it draws and on a comment the issue holds none of, each loaded from another page with the focused row in view", async ({
   browser,
@@ -1395,34 +1397,38 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
       statement,
       "the last statement's fragment leaves the focus off its row of the Spec view"
     ).toBeFocused();
-    await expectInViewport(page, statement, "the last statement's fragment");
+    await expectOnScreen(statement, "the last statement's fragment");
 
-    // A comment of the issue, with the spec's blocks read held until the comment's row is drawn.
+    // A comment of the issue, with the coverage read and the spec's blocks read held until the
+    // comment's row is drawn.
     const comment = body.locator(`[data-node-row][data-node-id="${seeded.commentId}"]`);
-    const blocksRead = (url: URL): boolean =>
-      url.pathname === `/api/v1/artifacts/${seeded.specArtifactId}/blocks`;
+    const heldPaths = new Set([
+      `/api/v1/artifacts/${seeded.specArtifactId}/blocks`,
+      `/api/v1/issues/${seeded.key}/coverage`,
+    ]);
+    const heldRead = (url: URL): boolean => heldPaths.has(url.pathname);
     const held = Promise.withResolvers<void>();
-    await page.route(blocksRead, async (route) => {
+    await page.route(heldRead, async (route) => {
       await held.promise;
       await route.continue();
     });
     const traffic = await fromSettings(`${spec}?comment=${seeded.commentId}`);
     await expect(
       comment,
-      "the comment's address draws no row of the Spec view for it while the spec's blocks read is held"
+      "the comment's address draws no row of the Spec view for it while the coverage and the spec's blocks are held"
     ).toBeVisible();
     held.resolve();
     await expectLoadSettled(traffic);
     await expect(
       statements,
-      "the comment's address does not draw every statement of the spec once its blocks read answers"
+      "the comment's address does not draw every statement of the spec once the coverage and the spec's blocks answer"
     ).toHaveCount(seeded.requirements.length);
     await expect(
       comment,
       "the comment's address leaves the focus off its row of the Spec view once the statements are drawn above it"
     ).toBeFocused();
-    await expectInViewport(page, comment, "the comment's address, its statements drawn above it");
-    await page.unroute(blocksRead);
+    await expectOnScreen(comment, "the comment's address, its statements drawn above it");
+    await page.unroute(heldRead);
 
     // A comment the issue holds none of.
     expect(
@@ -1432,6 +1438,6 @@ test("an address on the Spec view lands on a statement, on a comment it draws an
     const fallback = FALLBACK_LINES.comment(seeded.key);
     await expectLoadSettled(await fromSettings(`${spec}?comment=${GONE_COMMENT}`));
     const heading = await expectFallbackLine(page, fallback, body, "a gone comment under Spec");
-    await expectInViewport(page, heading, "a gone comment under Spec");
+    await expectOnScreen(heading, "a gone comment under Spec");
   });
 });

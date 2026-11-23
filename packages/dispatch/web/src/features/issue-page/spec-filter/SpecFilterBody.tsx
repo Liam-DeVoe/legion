@@ -439,22 +439,29 @@ export function SpecFilterBody({
     tree.current?.querySelector<HTMLElement>(nodeRowSelectorOf(request.id))?.focus();
   }, [request, takeRequest]);
   // An address that names a row puts the focus on it, once per following of the address (R19),
-  // and only after every read the tree's rows come from has settled (`readsSettled`): a row drawn
-  // above it after it took the focus would push it out of view, as the statements are drawn above
-  // a comment's row once the spec's blocks answer. It lands on the row as the outline does
-  // (`IssueTree.tsx`'s `landOnRow`): the focus comes in the next frame and brings the row on
-  // screen, and the hold keeps it there, until the reader acts, while what the page draws after
-  // the reads (the names, the cuts once measured) still grows the rows above it. The row is not on
-  // the page until the reads that hold it have answered, so this looks again on every drawing of
-  // the columns, and the address is taken only once its row is found. The reader's first act
-  // since they followed the address ends the landing (`acts`), as it ends the outline's: a reader
-  // who acted before the reads settled - a key, a turn of the wheel, a press on another control,
-  // while the stage held the focus on the first statement - keeps the focus where they put it and
-  // the page where they had it, and the landing does nothing to the page: no focus, no scroll, no
-  // hold. Watched only from the landing's start, a read that answered late pulled them back to
-  // the address's row. The landing is keyed on the following and the node (`landingKey`), as the
-  // outline's is: a link to the node the reader moved away from, followed again, lands again, and
-  // the columns drawn again at the same following land nowhere again.
+  // as the outline lands on one (`IssueTree.tsx`'s `landOnRow`): the focus comes in the next
+  // frame and brings the row on screen, and the hold keeps it there, until the reader acts, while
+  // the page grows above it - with the statements, which the coverage read draws
+  // (`tree-drafts.ts`'s `addRequirements`), or the spec's blocks where they answer first, and
+  // with what the page draws after the reads (the names, the cuts once measured). The landing
+  // waits for every read the tree's rows come from to settle (`readsSettled`) for one reason the
+  // hold and the reader's acts do not cover: until then the stage may still draw the outline in
+  // the view's place. The view tells the stage whether it draws the node only once those reads
+  // have settled (`onAddressDrawn`, `useTellsAddressDrawn`), and a read the view draws no line of
+  // its own for that stands refused then - the comments', the messages' - makes the stage take
+  // the view off the page and draw the outline, which lands on the node itself. A landing before
+  // that would move the focus and the page to a row the stage then takes away, and the outline's
+  // landing would move them again. The row is not on the page until the reads that hold it have
+  // answered, so this looks again on every drawing of the columns, and the address is taken only
+  // once its row is found. The reader's first act since they followed the address ends the
+  // landing (`acts`), as it ends the outline's: a reader who acted before the reads settled - a
+  // key, a turn of the wheel, a press on another control, while the stage held the focus on the
+  // first statement - keeps the focus where they put it and the page where they had it, and the
+  // landing does nothing to the page: no focus, no scroll, no hold. Watched only from the
+  // landing's start, a read that answered late pulled them back to the address's row. The landing
+  // is keyed on the following and the node (`landingKey`), as the outline's is: a link to the
+  // node the reader moved away from, followed again, lands again, and the columns drawn again at
+  // the same following land nowhere again.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
   // The reader's acts since they followed the address: a controller their first act aborts,
