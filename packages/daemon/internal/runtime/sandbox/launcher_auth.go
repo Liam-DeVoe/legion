@@ -67,10 +67,7 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher pod is not the current controller-owned pod"
 		}
 		kind, err := podKindOf(view.sandbox.Labels)
-		if err != nil {
-			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
-		}
-		if !slices.Contains(r.podSlots(view.sandbox, kind), role) {
+		if err != nil || !slices.Contains(r.podSlots(view.sandbox, kind), role) {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
