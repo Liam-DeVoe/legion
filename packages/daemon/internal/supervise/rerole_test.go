@@ -169,14 +169,17 @@ func TestTheFirstPromptAfterARoleChangeSaysTheEarlierRolesTokensAreVoid(t *testi
 				t.Fatalf("give the suspended claim the %s's role: %v", tc.role, err)
 			}
 			h.restart()
+			before := len(h.prompts())
 			h.must(RequestRuleResume{Claim: testToken, Reason: "its agent's next step is the " + string(tc.role) + "'s"})
 			h.relaunched()
-
-			before := len(h.prompts())
-			h.must(RequestDeliver{Claim: testToken, Task: "test the change"})
+			// The suspension's record of what it ended can reach the agent first, in a delivery of
+			// the daemon's own; a claim that holds none is given the step's task.
+			if h.claim().Pending == nil {
+				h.must(RequestDeliver{Claim: testToken, Task: "test the change"})
+			}
 			sent := h.prompts()[before:]
 			if len(sent) == 0 {
-				t.Fatal("the resumed generation was sent no prompt, want its task")
+				t.Fatal("the resumed generation was sent no prompt")
 			}
 			first := sent[0].Message
 			if got := strings.Contains(first, void) && strings.Contains(first, app); got != tc.says {
