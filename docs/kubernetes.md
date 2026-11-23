@@ -1722,7 +1722,7 @@ A held turn, unfinished or uncertain launch, or Kubernetes error keeps the effec
 Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended` and waits for its pod to disappear, which takes the disk that pod owns.
 Then it deletes the Sandbox, whatever the close was:
 a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
-Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
+Sandbox and the role Secrets it owned` — the Secret of each slot of its pod goes with it by owner reference.
 Where the Sandbox owns a kept volume, the foreground delete deletes that volume too ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
 The parent's Sandbox is another issue's and is never touched.
@@ -1747,7 +1747,7 @@ The orphan sweep still keeps a Sandbox whose home is another tree (`Store.IssueS
 a child whose hand-over is pending, or one carried into a tree of its own that it is in or can still be admitted into), which is how a carried child's Sandbox survives a sweep between its launch and its old tree's cleanup.
 Agent Sandbox v1.0.3 creates each Sandbox's PVC with that Sandbox as its controller owner and `blockOwnerDeletion: true`;
 foreground deletion keeps the owner visible until Kubernetes garbage collection deletes every blocking dependent
-— an issue Sandbox's six role Secrets, and the claim a controller's or a cache's Sandbox owns.
+— an issue Sandbox's slot Secrets, one for each slot of its pod, and the claim a controller's or a cache's Sandbox owns.
 The restricted daemon has no PVC API verb, so a Sandbox's absence after its foreground delete is the API's confirmation that what it owned is gone; it does not read or delete a PVC.
 An issue's ephemeral disk is not among those dependents: it is its pod's own, and it goes when the delete takes the pod.
 A kept volume is among them: its claim is the issue Sandbox's, so the delete waits until the garbage collector deletes it ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
@@ -2618,8 +2618,22 @@ A later version of a plan can give the name a stopped task's agent ran under to 
 This release also writes the key `agent` on each `supervise` start of a step's agent, the agent of that step.
 An earlier release names each column of `claims` it reads and writes, so the column stands unread, but it decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such key, so a start left queued with it fails its decode at every attempt, and so does every read of its role's runs.
 
+**Roll back only once each issue whose plan names a second agent of one role is done or stopped.**
+This release runs a second agent of one role, an agent such as `implementer-2`, in a slot of the issue's pod that has the agent's name, with a claim and a session of its own.
+The release before has no slot rule and no session rule for such an agent: it gives the agent no slot of its own in the pod, and it keeps no record of which agent a claim's session belongs to.
+Each row this read returns is a step of such an agent, in a task that is not done and not stopped; run each such task to done, or stop it, before you stop the daemons:
+
+```sql
+select s.issue, s.generation, s.task, s.position, s.role, s.agent
+from plan_steps s
+join issues i on i.key = s.issue and i.generation = s.generation
+join plan_tasks t on t.issue = s.issue and t.generation = s.generation and t.task = s.task
+where i.phase <> 'done' and t.state not in ('done', 'stopped', 'left')
+  and s.agent <> '' and s.agent <> s.role;
+```
+
 At the rollback, with this release's daemon stopped and before the earlier image is pinned, run the way back in the migration's header (`migrations.WayBack`): it takes the key `agent` off each queued `supervise` row and leaves every other key, drops the column and deletes the migration's version row, so the roll-forward's `Migrate` adds the column again at its default.
-Run it before the way back of any older release, newest first: before [Rolling back the release that keys a phases row by its step](#rolling-back-the-release-that-keys-a-phases-row-by-its-step) and every section it names.
+Run it first of all, and then the way back of each older migration, newest first: before [Rolling back the release that keys a phases row by its step](#rolling-back-the-release-that-keys-a-phases-row-by-its-step) and every section it names.
 What the way back costs is the record of each claim's agent and each stripped start's agent: the earlier release resumes the session a claim holds for whichever step's agent it starts next, and after the roll-forward each claim records no agent, so its next start of a step's agent resumes the session it holds and records that agent.
 So a claim whose session was another agent's at the rollback, a step of a new agent that had not started yet, is resumed for the new agent once.
 Before a rollback, let each issue whose plan a later version changed reach its next step's start, or stop it.
@@ -3867,6 +3881,20 @@ Legion holds no model route.
 `pod` is the operator's: `env`, `volumes` (each a `secret`, `config_map`, `projected`, `persistent_volume_claim` or `nfs` source), `volume_mounts` and `service_account`, added to every pod, the image probe's included, and refused where they name a path or variable of Legion's own or the worker image's.
 A ConfigMap or Secret a volume names must exist in the daemon's namespace, with every key the volume asks of it:
 the image probe refuses the boot at once, naming it, when it does not, for every volume a `volume_mounts` entry mounts (the kubelet attempts no other) ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
+
+A volume of `pod` may not take the name of a volume Legion gives a slot of a role that exists now: `launcher-<role>`, `private-<role>`, `state-<role>`, `gh-<role>` or `agent-secrets-key-<role>`, where `<role>` is one of Legion's six roles, `controller` or a role the deployment defines in `roles`.
+The daemon refuses such a name at boot, and `legion config check` refuses it too: `runtime.kubernetes.pod.volumes[<i>].name gh-implementer is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+A name of the same form with any other name of the agent grammar (`^[a-z][a-z0-9-]{0,31}$`) in place of the role, such as `gh-cache` or `state-implementer-2`, can still collide with a slot's volume.
+An issue's plan can run a second agent of one role, such as `implementer-2`, in a slot of the agent's own name, and that slot's volumes take those names; Kubernetes refuses a pod with two volumes of one name, so that issue's pod cannot start.
+This release takes such a name, because a configuration saved before plans gave agents slots of their own can hold one.
+The daemon logs a warning for each such volume at boot, and `legion config check` prints the same warning after its OK line and still exits 0:
+
+```text
+runtime.kubernetes.pod.volumes[0].name gh-cache has the form gh-<slot> of a volume Legion gives each slot of a pod, and collides with the gh volume of the slot of an agent named cache wherever an issue's plan names one; a later release refuses this name, so rename the volume
+```
+
+A later release refuses such a name at boot, as it refuses a name of a role's slot now.
+Rename each volume that the warning names before that release: give it a name of another form in `volumes`, and in each `volume_mounts` entry whose `volume` names it.
 
 A `secret` or `config_map` volume may set `default_mode`, the mode of every file it projects, in octal digits after a leading `0` or `0o`, from 0 to 0777:
 `secret: {name: <Secret>, items: [{key: <key>, path: key}], default_mode: 0440}`.
@@ -6644,7 +6672,7 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
 - **an update round replaces the pod**, once every role in it has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound (below).
   A live pod whose configuration has merely drifted is never replaced where it is found, because that would end every role's turn in it and delete the disk with everything unpushed on it;
 
-- **the issue is stopped**: its close as `done`, or a move to `backlog`, `icebox` or `triage`, runs the durable suspend effect, which sets the Sandbox `Suspended`, waits its pod out and deletes the Sandbox with the six role Secrets it owns (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed
+- **the issue is stopped**: its close as `done`, or a move to `backlog`, `icebox` or `triage`, runs the durable suspend effect, which sets the Sandbox `Suspended`, waits its pod out and deletes the Sandbox with the Secret it owns of each slot of its pod (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed
   issue's Sandbox and the role Secrets it owned`.
   The pod's disk went with the pod before the Sandbox did;
 
@@ -6862,7 +6890,7 @@ These ends of a pod keep the Sandbox, so the issue's next pod mounts the same cl
 - A launch that replaces the pod, a launch that fails after it set the Sandbox `Running`, and the end of an update round (`ReplacePod`).
 
 - An idle release, and the release of a pod that no claim owns ([Idle release](#idle-release)).
-  Each one sets the Sandbox `Suspended`, waits until its pod is gone, and deletes the seven Secrets that the Sandbox owns: the provisioning Secret and the six role Secrets.
+  Each one sets the Sandbox `Suspended`, waits until its pod is gone, and deletes the Secrets that the Sandbox owns: the provisioning Secret and the Secret of each slot of its pod, every slot its stored template binds, which are each role of the issue and each agent of its plan whose name no role has, such as `implementer-2`.
   The Sandbox stays with the same uid, and the next launch writes each Secret again.
   After every delete succeeds, the release records on the Sandbox that it deleted the Secrets: the annotation `legion.dev/secrets-released`, whose value is the Sandbox's uid.
   A release that stops before that record writes no record, and the next release deletes the Secrets again and then writes the record.
@@ -7042,8 +7070,8 @@ The daemon releases a pod for a second reason: no claim of the issue is live at 
 A claim is live while it is not `failed`, not `retired` and not `suspended`, so an issue whose claims have all stopped holds a pod in which no role can take a turn
 — a root whose architect failed after three launch failures, for example, which holds its 3 CPU and 19 GiB until the issue closes.
 The daemon releases that issue's Sandbox once the issue has had no live claim for the same idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default), measured as the newest write to any claim row of the issue.
-This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the six role Secrets it owns.
-Where the Sandbox owns a kept volume, it deletes the pod and the seven Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+This release runs the third act below and no other: it deletes the pod, the disk that pod owns and the issue's Sandbox with the Secret it owns of each slot of its pod.
+Where the Sandbox owns a kept volume, it deletes the pod and the Secrets that the Sandbox owns, and keeps the Sandbox, `Suspended`, with its volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 It saves no git bundle and it changes no claim, so each claim keeps its state, its phase, its budgets and its pending task.
 The daemon cannot save that work: it reads a workspace only over a role process, and a pod with no live claim runs none.
 A start inside the idle period therefore finds the workspace as the stopped roles left it, in the pod that is still there, and a start after the release provisions the workspace afresh from the issue's pushed branch, except on a kept volume, where it finds the workspace as the stopped roles left it.
@@ -7083,8 +7111,8 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   For a session that neither the listener's registry nor that store holds, Dispatch publishes the message on the session's agent subject itself.
   A copy on the session's agent subject (a person's answer, comment or message that a Dispatch claim routes there, or the targeted message Dispatch published there) stays in the stream: the listener gives up its delivery after its retry window (`ENVOY_UNPLACEABLE_RETRY_WINDOW`, 60 seconds) with the wake, and the woken session reads the copy;
 
-- the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
-  A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes the seven Secrets it owns, the provisioning Secret and the six role Secrets ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+- the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the Secret it owns of each slot of its pod are deleted (`ReleaseIssue`, `internal/runtime/sandbox/issue_suspend.go`), as an issue's stop deletes them ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+  A Sandbox that owns a kept volume is the exception: it stays, `Suspended` and with the same uid, and the release deletes the Secrets it owns, the provisioning Secret and the Secret of each slot of its pod ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.
