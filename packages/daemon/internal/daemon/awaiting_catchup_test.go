@@ -166,11 +166,11 @@ func bootCatchUp(t *testing.T, w *workflowRuntime) error {
 	return w.catchUpAwaiting(context.Background())
 }
 
-// seedCatchUp runs put in a transaction of its own, then gives every record the copy of
-// Dispatch's issues holds no row of the row a reading of Dispatch would have written for it: the
-// parent the record names and the status Dispatch last showed it in. The copy is what every
-// decision reads an issue's place on its chain from (record.ReadChains), so a fixture that
-// records an issue states that place with it.
+// seedCatchUp runs put in a transaction of its own, then writes, for each record the copy of
+// Dispatch's issues holds no row of, the row a reading of Dispatch would have written: the parent
+// the record names and the status Dispatch last showed it in. The copy is what every decision
+// reads an issue's place on its chain from (record.ReadChains), so a fixture that records an
+// issue states that place with it.
 func seedCatchUp(t *testing.T, pool *store.Pool, put func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
 	t.Helper()
 	ctx := context.Background()
@@ -212,15 +212,17 @@ func captureRoot(at phase.Phase, waiting *record.Awaiting) record.Issue {
 		Awaiting: waiting, LastDispatchSeq: catchUpHandout}
 }
 
-// readIssue is key as the record holds it.
+// readIssue is key as the record holds it, read and nothing written.
 func readIssue(t *testing.T, pool *store.Pool, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue
-	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		var err error
-		got, err = records.Issue(ctx, tx, key)
+		got, err = record.NewStore().Issue(context.Background(), tx, key)
 		return err
-	})
+	}); err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
 	return got
 }
 

@@ -199,6 +199,7 @@ func treeRows(t *testing.T, pool *store.Pool, query string, args ...any) map[str
 	if err != nil {
 		t.Fatalf("read %q: %v", query, err)
 	}
+	defer rows.Close()
 	answer := map[string]string{}
 	for rows.Next() {
 		var key, value string
@@ -421,13 +422,12 @@ func TestTheTreeCutoverLive(t *testing.T) {
 	})
 
 	step("every run, claim, session, session-name reservation, slot and production check kept", func() {
-		claims := treeRows(t, pool, `select token, concat_ws(' ', issue, role, session, session_file) from claims order by token`)
+		now := keptOf(t, pool, l)
 		for token, held := range kept.claims {
-			if claims[token] != held {
-				t.Fatalf("the claim %s reads %q after the cut-over, want %q as the release before left it", token, claims[token], held)
+			if now.claims[token] != held {
+				t.Fatalf("the claim %s reads %q after the cut-over, want %q as the release before left it", token, now.claims[token], held)
 			}
 		}
-		now := keptOf(t, pool, l)
 		if !slices.Equal(now.names, kept.names) {
 			t.Fatalf("the session-name reservations read %q after the cut-over, want %q", now.names, kept.names)
 		}
@@ -470,10 +470,15 @@ func TestTheTreeCutoverLive(t *testing.T) {
 	})
 
 	step("the reserved cleanup is the reservation of each issue of its tree", func() {
-		if n := treeCount(t, pool, `select count(*) from issue_lifecycles where issue = $1 and cleanup_started`, l); n != 1 {
-			t.Fatalf("the reserved cleanup of %s's tree is no reservation of %s", l, l)
+		// Step 5 reserves each issue the tree's cleanup covers, L and L3; step 8 reserves L2, whose
+		// hand-over's write never landed, and leaves L1, whose write landed, a root of its own whose
+		// lifecycle is open (record.ReserveIssuesOfTreeCleanups, convertHandOvers).
+		for issue, want := range map[string]int{l: 1, l2: 1, l3: 1, l1: 0} {
+			if n := treeCount(t, pool, `select count(*) from issue_lifecycles where issue = $1 and cleanup_started`, issue); n != want {
+				t.Fatalf("%s's own lifecycle holds %d reserved cleanups after the cut-over, want %d", issue, n, want)
+			}
 		}
-		fmt.Printf("   %s's cleanup is reserved on its own lifecycle\n", l)
+		fmt.Printf("   the cleanups of %s, %s and %s are reserved on their own lifecycles; %s's is not\n", l, l2, l3, l1)
 	})
 
 	step("the operator's hold of a tree is a hold of each issue of it", func() {
@@ -517,10 +522,13 @@ func TestTheTreeCutoverLive(t *testing.T) {
 	step("each issue in Legion's work has one place, and the root under a parent at work is told once", func() {
 		state, body = r.state()
 		for _, issue := range []string{a, a1, a2, b, c, e, l1, l2} {
-			if len(placed(state, issue)) == 0 {
-				t.Fatalf("%s is in Legion's work and in no list of the state\nstate %s", issue, body)
+			// An issue that holds a row and waits in the line stands in active and in waiting at
+			// once (api.Admission.Waiting); held is neither of them.
+			places := placed(state, issue)
+			if len(places) == 0 || (slices.Contains(places, "held") && len(places) > 1) {
+				t.Fatalf("%s is in Legion's work and in %v of the state's lists, want one place\nstate %s", issue, places, body)
 			}
-			fmt.Printf("   %s in %v under tree %s\n", issue, placed(state, issue), state.Issues[issue].Tree)
+			fmt.Printf("   %s in %v under tree %s\n", issue, places, state.Issues[issue].Tree)
 		}
 		for issue, tree := range map[string]string{a1: a, a2: a2, b: b, l1: l1} {
 			if got := state.Issues[issue].Tree; got != tree {

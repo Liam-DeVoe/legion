@@ -42,7 +42,7 @@ func TestIssueSuspensionFencesReadmissionAndWaitsForAllStoredRoles(t *testing.T)
 		{name: "a queued check look start", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (11,'supervise','LEGION-208','{"op":"start","tree":"LEGION-208","role":"implementer","generation":1,"checkLook":1}',0,now(),'')`},
 		{name: "role stop still pending", state: supervise.StateSuspended, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (9,'supervise','LEGION-208','{"op":"suspend","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`, wantWait: "role stop effects"},
 		{name: "issue close still pending", state: supervise.StateRetired, change: `insert into outbox (id,kind,issue,payload,attempts,next_at,last_error) values (9,'supervise','LEGION-208','{"op":"issue_close","tree":"LEGION-208","role":"architect","generation":1}',0,now(),'')`, wantWait: "role stop effects"},
-		{name: "the issue's own cleanup already reserved", state: supervise.StateSuspended, change: `insert into issue_lifecycles (project, issue, epoch, authority, cleanup_started) values ('legion', 'LEGION-208', 1, 'workflow', true)`},
+		{name: "the issue's own cleanup already reserved", state: supervise.StateSuspended, change: `update issue_lifecycles set cleanup_started = true where project = 'legion' and issue = 'LEGION-208'`},
 		// The close deletes the issue's Sandbox in every case, so the state a stop left a claim in
 		// decides nothing beyond whether it may still hold a process: the suspended claim of the
 		// first case, a failed one and a retired one each let the close through, since the Sandbox
@@ -66,11 +66,13 @@ func TestIssueSuspensionFencesReadmissionAndWaitsForAllStoredRoles(t *testing.T)
 			ctx := context.Background()
 			openLingeringTree(t, st)
 			// Every case but the child's closes the root itself, the issue whose claim token the
-			// table's claim carries.
+			// table's claim carries. The closed issue's own lifecycle stands open, as its admission
+			// left it, so a suspension that reserved its cleanup would show there.
 			issue := tc.issue
 			if issue == "" {
 				issue = rootIssue
 			}
+			openIssueLifecycle(t, st, issue)
 			token, err := claim.NewToken("legion", issue, claim.RoleArchitect)
 			if err != nil {
 				t.Fatal(err)
@@ -85,7 +87,7 @@ func TestIssueSuspensionFencesReadmissionAndWaitsForAllStoredRoles(t *testing.T)
 					t.Fatal(err)
 				}
 			}
-			reservedBefore := cleanupStarted(t, st)
+			reservedBefore := cleanupStarted(t, st, issue)
 			act, err := st.IssueSuspension(ctx, "legion", IssueClose{Issue: issue, Generation: 1, Row: 10}, record.OutOfWorkflow)
 			if tc.wantWait != "" {
 				if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), tc.wantWait) || act {
@@ -94,20 +96,20 @@ func TestIssueSuspensionFencesReadmissionAndWaitsForAllStoredRoles(t *testing.T)
 			} else if err != nil || act != tc.wantAct {
 				t.Fatalf("suspension = %t, %v; want act %t", act, err, tc.wantAct)
 			}
-			if !reservedBefore && cleanupStarted(t, st) {
+			if !reservedBefore && cleanupStarted(t, st, issue) {
 				t.Fatal("suspension reserved destructive cleanup")
 			}
 		})
 	}
 }
 
-// cleanupStarted is whether the root issue's own cleanup is reserved, false where it has no
-// lifecycle at all.
-func cleanupStarted(t *testing.T, st *Store) bool {
+// cleanupStarted is whether issue's own cleanup is reserved, false where it has no lifecycle at
+// all.
+func cleanupStarted(t *testing.T, st *Store, issue string) bool {
 	t.Helper()
 	var started bool
 	if err := st.Pool().QueryRow(context.Background(), `select coalesce((select cleanup_started from issue_lifecycles
-		where project = 'legion' and issue = $1), false)`, rootIssue).Scan(&started); err != nil {
+		where project = 'legion' and issue = $1), false)`, issue).Scan(&started); err != nil {
 		t.Fatal(err)
 	}
 	return started

@@ -34,7 +34,9 @@ func copyOf(issues ...Issue) []DispatchIssueRow {
 // chainsOf is the chains a read of copied and records makes (ReadChains), walked in memory as
 // Store.ChainRows walks the copy: from each record's key and each todo row of the copy, up to
 // MaxChainLinks+1 rows from each, a key already on the walk's path ending it; the copy's children
-// of each key the walk started from; and the records themselves.
+// of each key the walk started from; and the records themselves. It starts from every record, a
+// done one too, where Store.ChainRows starts only from records not at done: a test that holds a
+// done record reads a walk from it that the store would not make.
 func chainsOf(records []Issue, copied []DispatchIssueRow) *Chains {
 	byKey := make(map[string]DispatchIssueRow, len(copied))
 	for _, row := range copied {

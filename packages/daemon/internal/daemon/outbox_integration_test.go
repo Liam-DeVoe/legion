@@ -3,8 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -258,15 +256,6 @@ func isolatedOutboxPool(t *testing.T) *store.Pool {
 	outboxTestPools.Store(t.Name(), pool)
 	t.Cleanup(func() { outboxTestPools.CompareAndDelete(t.Name(), pool) })
 	return pool
-}
-
-func outboxSuffix(t *testing.T) string {
-	t.Helper()
-	var bytes [8]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		t.Fatalf("random database suffix: %v", err)
-	}
-	return hex.EncodeToString(bytes[:])
 }
 
 type blockingDispatch struct {
@@ -752,12 +741,10 @@ func TestTheDaemonsReassertIsWrittenAfterDispatchRefusesItsFirstWrite(t *testing
 			if client.at != reread.LastSeq {
 				t.Fatalf("the retry wrote at sequence %d, want the re-read's %d", client.at, reread.LastSeq)
 			}
-			// Nothing of the read reached the engine, so the session's close ended no tree: the
-			// engine taking this issue out of the workflow would linger its tree, whose rows
-			// would be queued here. The record itself is asked in
-			// TestAReassertLeavesItsRecordedIssueInTheWorkflow.
+			// Nothing of the read reached the engine: the engine taking this issue out of the
+			// workflow would stop its claims and delete its pod, whose rows would be queued here.
 			if rows := outboxRowsOf(t, pool, tc.key); rows != 0 {
-				t.Fatalf("%d rows left for %s, want none: a linger would have queued its own", rows, tc.key)
+				t.Fatalf("%d rows left for %s, want none: a stop would have queued its own", rows, tc.key)
 			}
 		})
 	}
@@ -888,24 +875,23 @@ func TestAStatusRowKindWithNoRuleFailsBothPathsWithoutWriting(t *testing.T) {
 			if want := fmt.Sprintf("outbox row %d", row.ID); !strings.Contains(err.Error(), want) {
 				t.Fatalf("the failure is %v, want it to name the row (%s)", err, want)
 			}
-			wrote, handedOver := writesOf(client)
-			if len(wrote) != 0 || len(handedOver) != 0 {
-				t.Fatalf("status writes = %v and hand-overs = %v, want a kind with no rule to reach Dispatch with nothing",
-					wrote, handedOver)
+			if wrote := writesOf(client); len(wrote) != 0 {
+				t.Fatalf("status writes = %v, want a kind with no rule to reach Dispatch with nothing", wrote)
 			}
 		})
 	}
 }
 
-// writesOf is what the probe's Dispatch recorded, whichever of the two fakes it ran against.
-func writesOf(client dispatch.Client) (statuses, handOvers []string) {
+// writesOf is the status writes the probe's Dispatch recorded, whichever of the two fakes it ran
+// against.
+func writesOf(client dispatch.Client) []string {
 	switch fake := client.(type) {
 	case *outboxDispatch:
-		return fake.statuses, fake.handOvers
+		return fake.statuses
 	case *refusedOnceDispatch:
-		return fake.statuses, fake.handOvers
+		return fake.statuses
 	default:
-		return nil, nil
+		return nil
 	}
 }
 

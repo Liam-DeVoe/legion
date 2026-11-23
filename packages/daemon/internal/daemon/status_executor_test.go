@@ -193,18 +193,20 @@ type optionRow struct {
 
 // newOptionRow queues issue's move from in_progress to backlog with include_children, the row the
 // architect's park of an issue with a child at work queues, over a key-rule Dispatch giving
-// script, on a database of the test's own. handlers apply the facts the row makes.
-func newOptionRow(t *testing.T, issue string, handlers []intake.Handler, script ...keyAnswer) *optionRow {
+// script, on a database of the test's own, with no handler to apply the facts the row makes.
+func newOptionRow(t *testing.T, issue string, script ...keyAnswer) *optionRow {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
-	return queueOptionRow(t, pool, issue, handlers, record.StatusWrite{}, script...)
+	return queueOptionRow(t, pool, issue, nil, false, script...)
 }
 
-func queueOptionRow(t *testing.T, pool *store.Pool, issue string, handlers []intake.Handler, extra record.StatusWrite, script ...keyAnswer) *optionRow {
+// queueOptionRow is newOptionRow on pool, its row the controller's where controller is true, and
+// handlers applying the facts the row makes.
+func queueOptionRow(t *testing.T, pool *store.Pool, issue string, handlers []intake.Handler, controller bool, script ...keyAnswer) *optionRow {
 	t.Helper()
 	records := record.NewStore()
 	write := record.OrdinaryStatusWrite("backlog", "in_progress", "")
-	write.IncludeChildren, write.Controller = true, extra.Controller
+	write.IncludeChildren, write.Controller = true, controller
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, write, time.Now()))
 	var id int64
 	if err := pool.QueryRow(context.Background(), "select id from outbox where issue = $1 and kind = 'dispatch_status'", issue).Scan(&id); err != nil {
@@ -264,7 +266,7 @@ func (o *optionRow) wantKeys(reads int, attempts ...int) {
 func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 	badGateway := &dispatch.Error{Status: http.StatusBadGateway, Message: "Bad Gateway"}
 	t.Run("the router's 404 waits, and the attempt goes again once the route answers", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-41", nil, keyAnswer{file: "status_change_no_route.http"}, keyAnswer{file: "status_change_include_children.http"})
+		row := newOptionRow(t, "LEGION-41", keyAnswer{file: "status_change_no_route.http"}, keyAnswer{file: "status_change_include_children.http"})
 		row.run()
 		if !row.queued() {
 			t.Fatal("the row finished on the router's 404, want it waiting for the route")
@@ -282,7 +284,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 	})
 	t.Run("ISSUE_CHANGED on the whole call, then a new attempt under a new key", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-41", nil, keyAnswer{file: "status_change_stale_sequence.http"}, keyAnswer{file: "status_change_include_children.http"})
+		row := newOptionRow(t, "LEGION-41", keyAnswer{file: "status_change_stale_sequence.http"}, keyAnswer{file: "status_change_include_children.http"})
 		row.run()
 		row.wantKeys(2, 1, 2)
 		if sent := row.client.sent; sent[0].ExpectedSequence != 11 || sent[1].ExpectedSequence != 12 {
@@ -294,12 +296,13 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 	})
 	t.Run("a refusal midway applies each committed step by its record, and a new attempt finishes the rest", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
-		// The capture's call over LEGION-2 committed three children's steps, each from sequence 2
-		// to 4. One record stands at the step's previous sequence, and takes it; one stands below
-		// it, so events of its before the step have yet to come, and it is left to them; and the
-		// stream delivered one's event before the answer, so it changes nothing.
+		// The capture's call over LEGION-2 committed four children's steps, each from sequence 2
+		// to 4, three of them over children recorded here. One record stands at the step's
+		// previous sequence, and takes it; one stands below it, so events of its before the step
+		// have yet to come, and it is left to them; and the stream delivered one's event before the
+		// answer, so it changes nothing.
 		seedRecords(t, pool, map[string]int64{"LEGION-3": 2, "LEGION-4": 1, "LEGION-5": 4})
-		row := queueOptionRow(t, pool, "LEGION-2", nil, record.StatusWrite{},
+		row := queueOptionRow(t, pool, "LEGION-2", nil, false,
 			keyAnswer{file: "status_change_midway_refused.http"}, keyAnswer{file: "status_change_include_children.http"})
 		// The named issue's own step committed nothing here, but a call whose named step did
 		// leaves the issue at the row's status: the new attempt is made all the same.
@@ -316,7 +319,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 	})
 	t.Run("a 5xx after committed steps, then the keyed repeat of the same key and body finishes the rest", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-203", nil, keyAnswer{err: badGateway}, keyAnswer{file: "status_change_keyed_repeat.http"})
+		row := newOptionRow(t, "LEGION-203", keyAnswer{err: badGateway}, keyAnswer{file: "status_change_keyed_repeat.http"})
 		row.run()
 		if !row.queued() {
 			t.Fatal("the row finished on a 5xx, want it kept for its keyed repeat")
@@ -328,7 +331,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 	})
 	t.Run("KEY_IN_FLIGHT, then the same key and body after its Retry-After", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-47", nil, keyAnswer{file: "status_change_key_in_flight.http"}, keyAnswer{file: "status_change_include_children.http"})
+		row := newOptionRow(t, "LEGION-47", keyAnswer{file: "status_change_key_in_flight.http"}, keyAnswer{file: "status_change_include_children.http"})
 		before := time.Now()
 		if err := row.runner.RunOnce(context.Background()); err != nil {
 			t.Fatalf("run the row: %v", err)
@@ -347,7 +350,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 	})
 	t.Run("a 401, a 408 and a 429, each then the same key and body", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-41", nil,
+		row := newOptionRow(t, "LEGION-41",
 			keyAnswer{err: &dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED", Message: "token expired"}},
 			keyAnswer{err: &dispatch.Error{Status: http.StatusRequestTimeout, Code: "REQUEST_TIMEOUT", Message: "come back later"}},
 			keyAnswer{err: &dispatch.Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "slow down"}},
@@ -361,7 +364,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 	})
 	t.Run("KEY_COMMITTED reads as landed: a read and a new attempt", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-41", nil, keyAnswer{file: "key_committed.http"}, keyAnswer{file: "status_change_include_children.http"})
+		row := newOptionRow(t, "LEGION-41", keyAnswer{file: "key_committed.http"}, keyAnswer{file: "status_change_include_children.http"})
 		row.run()
 		row.wantKeys(2, 1, 2)
 		if row.queued() {
@@ -369,7 +372,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 	})
 	t.Run("KEY_REUSED is logged, then a read and a new attempt", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-41", nil, keyAnswer{file: "key_reused.http"}, keyAnswer{file: "status_change_include_children.http"})
+		row := newOptionRow(t, "LEGION-41", keyAnswer{file: "key_reused.http"}, keyAnswer{file: "status_change_include_children.http"})
 		row.run()
 		row.wantKeys(2, 1, 2)
 		lines := loggedLines(t, row.logs.String(), "outbox status change sent under a key another body used; the row reads Dispatch and starts a new attempt")
@@ -378,7 +381,7 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 		}
 	})
 	t.Run("a kept 403 sends its next try as a new attempt", func(t *testing.T) {
-		row := newOptionRow(t, "LEGION-41", nil, keyAnswer{err: &dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN", Message: "not allowed"}},
+		row := newOptionRow(t, "LEGION-41", keyAnswer{err: &dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN", Message: "not allowed"}},
 			keyAnswer{file: "status_change_include_children.http"})
 		row.run()
 		if !row.queued() {
@@ -395,10 +398,13 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			// The record counted the write before its echo: it reads backlog while Dispatch
-			// shows in_progress.
+			// shows in_progress. The row carries include_children, as every row of
+			// queueOptionRow does, and the fake answers it with the refusal captured from a call
+			// with no option (status_change_no_option.http): the undo reads the refusal's code and
+			// the issues it names, never the option (outbox's parentRuleRefused).
 			seedRecord(t, pool, record.Issue{Key: "LEGION-33", Status: "backlog", DispatchStatus: "in_progress", SeenSeq: 100})
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
-			row := queueOptionRow(t, pool, "LEGION-33", []intake.Handler{engine}, record.StatusWrite{Controller: controller},
+			row := queueOptionRow(t, pool, "LEGION-33", []intake.Handler{engine}, controller,
 				keyAnswer{file: "status_change_no_option.http"})
 			row.run()
 			row.wantKeys(1, 1)
@@ -426,46 +432,48 @@ func TestAnOptionWriteWaitsForTheStatusChangeRoute(t *testing.T) {
 	// The same rule against the rig's real scratch Dispatch, its parent status rule on: a call a
 	// person's write refuses midway is finished by a new attempt, and a call whose Dispatch
 	// process dies mid-call is finished by the keyed repeat of the same key and body once the dead
-	// run's lease on the key lapses. No writer of this release queues an option row yet (the
-	// architect's and the controller's calls do, once the API queues them), so the row is queued as
-	// such a writer queues one (record.NewFencedRow).
-	r := newStopReturnRig(t)
-	t.Run("on the rig, a refusal midway is finished by a new attempt", func(t *testing.T) {
-		parent, children := r.parentWithChildren("Albatross", 40)
-		row := r.queueOptionRow(parent.Key)
-		seq := r.read.reached(t, "the option row's read")
-		r.read.release()
-		r.awaitParentPast(parent.Key, seq)
-		retitled := r.patch(parent.Key, asPerson, map[string]any{"title": "Albatross retitled by a person mid-call"})
-		r.optionRowFinished(row)
-		r.allAt("backlog", append(children, parent.Key)...)
-		var stepBefore, stepAfter bool
-		for _, event := range r.issueEvents(parent.Key) {
-			switch {
-			case event.Type == "child.status" && event.Seq < retitled.LastSeq:
-				stepBefore = true
-			case event.Seq > retitled.LastSeq:
-				stepAfter = true
+	// run's lease on the key lapses. The row is queued as the architect's and the controller's
+	// status calls queue one (workflow's status call, record.NewFencedRow). Only these two cases
+	// use the rig, so a run of one case above builds none.
+	t.Run("on the rig", func(t *testing.T) {
+		r := newStopReturnRig(t)
+		t.Run("a refusal midway is finished by a new attempt", func(t *testing.T) {
+			parent, children := r.parentWithChildren("Albatross", 40)
+			row := r.queueOptionRow(parent.Key)
+			seq := r.read.reached(t, "the option row's read")
+			r.read.release()
+			r.awaitParentPast(parent.Key, seq)
+			retitled := r.patch(parent.Key, asPerson, map[string]any{"title": "Albatross retitled by a person mid-call"})
+			r.optionRowFinished(row)
+			r.allAt("backlog", append(children, parent.Key)...)
+			var stepBefore, stepAfter bool
+			for _, event := range r.issueEvents(parent.Key) {
+				switch {
+				case event.Type == "child.status" && event.Seq < retitled.LastSeq:
+					stepBefore = true
+				case event.Seq > retitled.LastSeq:
+					stepAfter = true
+				}
 			}
-		}
-		if !stepBefore || !stepAfter {
-			t.Fatalf("the person's write at %d landed outside the call (a step before it %t, a write after it %t): nothing was refused midway", retitled.LastSeq, stepBefore, stepAfter)
-		}
-		shown, err := dispatch.New(r.baseURL, r.dispatch.token).GetIssue(t.Context(), parent.Key)
-		if err != nil || !strings.Contains(shown.Title, "retitled by a person") {
-			t.Fatalf("the parent's title = %q (%v), want the person's write kept", shown.Title, err)
-		}
-	})
-	t.Run("on the rig, a run its Dispatch process died in is finished by the keyed repeat", func(t *testing.T) {
-		parent, children := r.parentWithChildren("Petrel", 40)
-		row := r.queueOptionRow(parent.Key)
-		seq := r.read.reached(t, "the option row's read")
-		r.read.release()
-		r.awaitParentPast(parent.Key, seq)
-		r.dispatch.kill()
-		r.dispatch.start()
-		r.optionRowFinished(row)
-		r.allAt("backlog", append(children, parent.Key)...)
+			if !stepBefore || !stepAfter {
+				t.Fatalf("the person's write at %d landed outside the call (a step before it %t, a write after it %t): nothing was refused midway", retitled.LastSeq, stepBefore, stepAfter)
+			}
+			shown, err := dispatch.New(r.baseURL, r.dispatch.token).GetIssue(t.Context(), parent.Key)
+			if err != nil || !strings.Contains(shown.Title, "retitled by a person") {
+				t.Fatalf("the parent's title = %q (%v), want the person's write kept", shown.Title, err)
+			}
+		})
+		t.Run("a run its Dispatch process died in is finished by the keyed repeat", func(t *testing.T) {
+			parent, children := r.parentWithChildren("Petrel", 40)
+			row := r.queueOptionRow(parent.Key)
+			seq := r.read.reached(t, "the option row's read")
+			r.read.release()
+			r.awaitParentPast(parent.Key, seq)
+			r.dispatch.kill()
+			r.dispatch.start()
+			r.optionRowFinished(row)
+			r.allAt("backlog", append(children, parent.Key)...)
+		})
 	})
 }
 
@@ -482,7 +490,7 @@ func (r *stopReturnRig) parentWithChildren(name string, count int) (scratchIssue
 		r.setStatus(child.Key, "in_progress")
 		children[i] = child.Key
 	}
-	return r.issue(parent.Key), children
+	return parent, children
 }
 
 // queueOptionRow queues key's move to the backlog with include_children, at key's fence, with the
@@ -501,10 +509,8 @@ func (r *stopReturnRig) queueOptionRow(key string) int64 {
 		if err != nil {
 			return err
 		}
-		if err := records.Enqueue(r.t.Context(), tx, row); err != nil {
-			return err
-		}
-		return tx.QueryRow(r.t.Context(), "select max(id) from outbox where issue = $1 and kind = 'dispatch_status'", key).Scan(&id)
+		id, err = records.EnqueueID(r.t.Context(), tx, row)
+		return err
 	}); err != nil {
 		r.t.Fatalf("queue the option row of %s: %v", key, err)
 	}
@@ -563,11 +569,12 @@ func (r *stopReturnRig) allAt(status string, keys ...string) {
 func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 	scope := &dispatch.Error{Status: http.StatusForbidden, Code: statusScopeCode, Message: "this token lacks the legion-status scope"}
 	for _, tc := range []struct {
-		name     string
-		refusals []error
-		notices  int
+		name       string
+		refusals   []error
+		scopeLines int
+		notices    int
 	}{
-		{name: "scope refused twice", refusals: []error{scope, scope}, notices: 1},
+		{name: "scope refused twice", refusals: []error{scope, scope}, scopeLines: 2, notices: 1},
 		{name: "a 401 and a 403 of another code", refusals: []error{
 			&dispatch.Error{Status: http.StatusUnauthorized, Code: "UNAUTHORIZED", Message: "token expired"},
 			&dispatch.Error{Status: http.StatusForbidden, Code: "FORBIDDEN", Message: "not allowed"},
@@ -597,7 +604,7 @@ func TestAStatusScopeRefusalIsRetriedAndTellsTheController(t *testing.T) {
 				t.Fatalf("status rows after the write was taken = %d, want none", rows)
 			}
 			lines := loggedLines(t, logs.String(), "outbox status write refused by Dispatch: the daemon's token lacks the scope Dispatch asks of a Legion issue's status; the write is kept and written again")
-			if len(lines) != tc.notices*len(tc.refusals) {
+			if len(lines) != tc.scopeLines {
 				t.Fatalf("scope refusal lines = %d, want one for each scope refusal", len(lines))
 			}
 			for _, line := range lines {
@@ -739,8 +746,8 @@ func (d *refusingRoleHolders) PutRoleHolders(context.Context, string, []dispatch
 	return refusal
 }
 
-// seedRecords records each issue of seqs under LEGION-2, at work in planning, its record standing
-// at the Dispatch sequence seqs gives it.
+// seedRecords records each issue of seqs, a root at work in planning, its record standing at the
+// Dispatch sequence seqs gives it.
 func seedRecords(t *testing.T, pool *store.Pool, seqs map[string]int64) {
 	t.Helper()
 	for key, seq := range seqs {
@@ -791,6 +798,9 @@ func controllerNoticesOfKind(t *testing.T, pool *store.Pool, issue string, kind 
 			t.Fatalf("decode a %s controller notice of %s: %v", kind, issue, err)
 		}
 		notices = append(notices, notice)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate the %s controller notices of %s: %v", kind, issue, err)
 	}
 	return notices
 }

@@ -119,6 +119,24 @@ func TestTheStatusRepairSkipsEveryIssueItsRulesExclude(t *testing.T) {
 					Labels: record.Carry([]string{})})
 			})
 		}},
+		// The same root, its own status the one its phase gives, and a child under it whose label a
+		// person took off too: no issue on the child's chain carries the label, so its status is
+		// anyone's to write as well (R26).
+		{name: "a child with no label under a root whose legion label a person took off", seed: func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "in_progress"))
+			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+			seedIssue(t, pool, repairIssue("LEGION-209", "LEGION-208", phase.Implementing, "in_progress", "todo"))
+			seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 1})
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				for _, key := range []string{"LEGION-208", "LEGION-209"} {
+					if err := record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 9,
+						Labels: record.Carry([]string{})}); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+		}},
 		{name: "an issue whose status write is already queued", seed: func(t *testing.T, pool *pgxpool.Pool) {
 			seedIssue(t, pool, repairIssue("LEGION-208", "LEGION-208", phase.Implementing, "in_progress", "todo"))
 			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})

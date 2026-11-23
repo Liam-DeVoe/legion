@@ -3,11 +3,11 @@ package sandbox
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -90,7 +90,14 @@ func TestEveryDecisionIsTheSameWithEveryStoredTreeWrong(t *testing.T) {
 					map[string]string{labelProject: testProject, labelTree: testTree, labelIssue: childIssue}),
 			})
 			g.store.close("LEGION-9")
-			relabelTrees(t, g, tree)
+			// The first run keeps every label as the launch wrote it, the orphan's its own closed
+			// tree, so a sweep that read the label would see a closed tree there and a live one in
+			// the second run.
+			if tree == testTree {
+				g.clearActions()
+			} else {
+				relabelTrees(t, g, tree)
+			}
 			g.now.Store(new(g.sandbox(SandboxName(orphan)).CreationTimestamp.Add(3 * time.Minute)))
 			err := g.r.ReconcileOrphans(g.ctx, nil, 2*time.Minute)
 			return fmt.Sprintf("error %v; writes %v; left %v", err, writeNames(g),
@@ -110,10 +117,10 @@ func TestEveryDecisionIsTheSameWithEveryStoredTreeWrong(t *testing.T) {
 }
 
 // relabelTrees sets the tree label of every Sandbox, of each Sandbox's pod template and of every
-// pod g's API holds to tree, where it carries one, and waits until the runtime's own informer
-// holds the Sandboxes as relabelled, so the decision that follows reads them that way. The writes
-// go to the trackers directly, and the requests recorded so far are cleared, so what the decision
-// writes is all the rig records after it.
+// pod g's API holds to tree, where it carries one, and waits until the runtime's own informers
+// hold the Sandboxes and the pods they held as relabelled, so the decision that follows reads them
+// that way. The writes go to the trackers directly, and the requests recorded so far are cleared,
+// so what the decision writes is all the rig records after it.
 func relabelTrees(t *testing.T, g *rig, tree string) {
 	t.Helper()
 	sandboxes, err := g.dyn.Resource(sandboxGVR).Namespace(testNamespace).List(g.ctx, metav1.ListOptions{})
@@ -142,20 +149,30 @@ func relabelTrees(t *testing.T, g *rig, tree string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var podNames []string
 	for i := range pods.Items {
 		pod := pods.Items[i].DeepCopy()
 		if pod.Labels[labelTree] == "" {
 			continue
+		}
+		if _, held, _ := g.r.pods.GetStore().GetByKey(testNamespace + "/" + pod.Name); held {
+			podNames = append(podNames, pod.Name)
 		}
 		pod.Labels[labelTree] = labelValue(tree)
 		if err := g.kube.Tracker().Update(podsGVR, pod, testNamespace); err != nil {
 			t.Fatal(err)
 		}
 	}
-	g.eventually("the runtime's informer to hold every Sandbox relabelled", func() bool {
+	g.eventually("the runtime's informers to hold every Sandbox and pod relabelled", func() bool {
 		for _, name := range names {
 			obj, ok, err := g.r.sandboxes.GetStore().GetByKey(testNamespace + "/" + name)
 			if err != nil || !ok || obj.(*unstructured.Unstructured).GetLabels()[labelTree] != labelValue(tree) {
+				return false
+			}
+		}
+		for _, name := range podNames {
+			obj, ok, err := g.r.pods.GetStore().GetByKey(testNamespace + "/" + name)
+			if err != nil || !ok || obj.(*corev1.Pod).Labels[labelTree] != labelValue(tree) {
 				return false
 			}
 		}
@@ -182,5 +199,5 @@ func standing(g *rig, names ...string) []string {
 			out = append(out, name+"="+s.Spec.OperatingMode)
 		}
 	}
-	return slices.Clip(out)
+	return out
 }

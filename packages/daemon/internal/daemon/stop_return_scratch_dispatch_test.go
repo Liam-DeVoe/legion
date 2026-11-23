@@ -121,10 +121,17 @@ func (g *factGate) reached(t *testing.T, what string) {
 	}
 }
 
+// release lets the held fact go on. A second release does nothing, so a test that arms the gate
+// can leave a release to its cleanup as well: a failure while the consumer is held must not leave
+// it blocked inside its fact's transaction, where the daemon's stop would wait on it.
 func (g *factGate) release() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	close(g.open)
+	select {
+	case <-g.open:
+	default:
+		close(g.open)
+	}
 }
 
 // idHold holds the outbox rows it was told of by id (overrides.holdOutbox) until the test
@@ -220,6 +227,10 @@ func (r *stopReturnRig) implementing(titles ...string) []scratchIssue {
 		issues[i] = r.create(asPerson, title, map[string]any{"labels": []string{"legion"}})
 		r.setStatus(issues[i].Key, "in_progress")
 	}
+	project, err := claim.ProjectToken(r.cfg.Project)
+	if err != nil {
+		r.t.Fatalf("the project token of %s: %v", r.cfg.Project, err)
+	}
 	if err := pgx.BeginFunc(r.t.Context(), r.pool, func(tx pgx.Tx) error {
 		records := record.NewStore()
 		for i, issue := range issues {
@@ -236,10 +247,6 @@ func (r *stopReturnRig) implementing(titles ...string) []scratchIssue {
 			// The issue's own lifecycle stands open under the workflow, as admission's promotion
 			// leaves it, and the tree's beside it, which the release before reads: a claim binds
 			// to the issue's (store's AdmitClaim).
-			project, err := claim.ProjectToken(r.cfg.Project)
-			if err != nil {
-				return err
-			}
 			if _, err := records.OpenIssueLifecycle(r.t.Context(), tx, project, issue.Key, treelifecycle.AuthorityWorkflow); err != nil {
 				return err
 			}
@@ -277,29 +284,10 @@ func (r *stopReturnRig) implementing(titles ...string) []scratchIssue {
 					lines = append(lines, line)
 				}
 			}
-			r.t.Fatalf("the daemon launched no implementer of %s; its lines about it:\n%s\noutbox: %v", issue.Key, strings.Join(lines, "\n"), r.outboxKinds(issue.Key))
+			r.t.Fatalf("the daemon launched no implementer of %s; its lines about it:\n%s\noutbox: %v", issue.Key, strings.Join(lines, "\n"), r.outboxDump(issue.Key))
 		}
 	}
 	return issues
-}
-
-// outboxKinds is each row of key the outbox holds, as its kind, its payload and its last error.
-func (r *stopReturnRig) outboxKinds(key string) []string {
-	r.t.Helper()
-	rows, err := r.pool.Query(r.t.Context(), "select kind, payload::text, coalesce(last_error, '') from outbox where issue = $1 order by id", key)
-	if err != nil {
-		r.t.Fatalf("read the outbox of %s: %v", key, err)
-	}
-	defer rows.Close()
-	var kinds []string
-	for rows.Next() {
-		var kind, payload, last string
-		if err := rows.Scan(&kind, &payload, &last); err != nil {
-			r.t.Fatalf("scan an outbox row of %s: %v", key, err)
-		}
-		kinds = append(kinds, kind+" "+payload+" "+last)
-	}
-	return kinds
 }
 
 // closeRoot is the root architect's close_root of key, with reason, which queues the close.
@@ -443,6 +431,7 @@ func TestAQueuedClosePausedAcrossAStopWritesNothing(t *testing.T) {
 			read, ok := fact.(intake.DispatchIssue)
 			return ok && read.Key == issue.Key && read.Status == "backlog"
 		})
+		t.Cleanup(r.consumer.release)
 		stopped := r.setStatus(issue.Key, "backlog")
 		r.consumer.reached(t, "the stop of "+issue.Key)
 		returned := r.setStatus(issue.Key, "in_progress")
@@ -527,13 +516,9 @@ func TestTheEntryBeforeAStopHasNoLateEffect(t *testing.T) {
 			calls := len(r.rt.Calls())
 			r.held.release(rows...)
 			testwait.Eventually(t, "the late rows of "+root.Key+" to finish", func() bool {
-				for _, id := range rows {
-					var queued bool
-					if err := r.pool.QueryRow(t.Context(), "select exists (select 1 from outbox where id = $1)", id).Scan(&queued); err != nil || queued {
-						return false
-					}
-				}
-				return true
+				var queued bool
+				err := r.pool.QueryRow(t.Context(), "select exists (select 1 from outbox where id = any($1))", rows).Scan(&queued)
+				return err == nil && !queued
 			})
 			want := "in_progress"
 			if secondStop {
@@ -587,11 +572,8 @@ func (r *stopReturnRig) queueHeld(key string, payloads ...record.OutboxPayload) 
 			if err != nil {
 				return err
 			}
-			if err := records.Enqueue(r.t.Context(), tx, row); err != nil {
-				return err
-			}
-			var id int64
-			if err := tx.QueryRow(r.t.Context(), "select max(id) from outbox where issue = $1 and kind = $2", key, string(row.Kind)).Scan(&id); err != nil {
+			id, err := records.EnqueueID(r.t.Context(), tx, row)
+			if err != nil {
 				return err
 			}
 			ids = append(ids, id)
@@ -607,7 +589,7 @@ func (r *stopReturnRig) queueHeld(key string, payloads ...record.OutboxPayload) 
 // The daemon writes no status of any issue but its own: a person's stop of a root, its return and
 // a second stop write nothing of its Dispatch parent, at work and not Legion's, nor of the child a
 // person filed under it (R20 of dispatch://INFRA-3320). Each of the two keeps every status a person
-// gave it, and no status row of either is ever queued.
+// gave it, and the outbox holds no status row of either once the moves have settled.
 func TestTheDaemonWritesNoStatusForAnotherIssue(t *testing.T) {
 	r := newStopReturnRig(t)
 	parent := r.create(asPerson, "Cormorant umbrella", nil)
@@ -635,7 +617,7 @@ func TestTheDaemonWritesNoStatusForAnotherIssue(t *testing.T) {
 			}
 		}
 		if rows := statusRowsOf(t, r.pool, issue.Key); rows != 0 {
-			t.Fatalf("status rows of %s = %d, want none ever queued", issue.Key, rows)
+			t.Fatalf("status rows of %s = %d, want none left queued", issue.Key, rows)
 		}
 	}
 	if shown := r.issue(parent.Key).Status; shown != "in_progress" {

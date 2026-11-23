@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -131,11 +132,14 @@ func TestATodoUnderAParentNotInWorkTakesAParentArgument(t *testing.T) {
 					shown.Status = "backlog"
 					statuses.issues[key] = shown
 				}
-				var recorder = h.request(http.MethodPost, "/legion/v1/children/rerun", RerunChildRequest{GrantID: architect.grant(t), Issue: statusChild, Parent: parent}, nil)
+				var recorder *httptest.ResponseRecorder
 				if op == "set_status" {
 					grant := controllerGrant(t, h)
 					recorder = h.request(http.MethodPost, "/legion/v1/issues/status",
 						IssueStatusRequest{GrantID: grant.GrantID, Issue: statusChild, Status: "todo", Parent: parent}, nil)
+				} else {
+					recorder = h.request(http.MethodPost, "/legion/v1/children/rerun",
+						RerunChildRequest{GrantID: architect.grant(t), Issue: statusChild, Parent: parent}, nil)
 				}
 				if parent == "" {
 					message := refused(t, recorder, http.StatusConflict, "PARENT_ARGUMENT_REQUIRED")

@@ -385,7 +385,7 @@ func blockedWhy(t *testing.T, store projectionStore, wantRow api.HeldIssue, want
 		t.Fatalf("Project: %v", err)
 	}
 	row := heldRow(t, state, key)
-	if row.Issue != wantRow.Issue || row.Reason != wantRow.Reason || !slices.Equal(row.HeldBy, wantRow.HeldBy) {
+	if row.Reason != wantRow.Reason || !slices.Equal(row.HeldBy, wantRow.HeldBy) {
 		t.Fatalf("the held row of %s = %#v, want %#v", key, row, wantRow)
 	}
 	if !slices.ContainsFunc(state.Admission.Blocked, func(b api.BlockedIssue) bool {

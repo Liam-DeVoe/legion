@@ -1790,8 +1790,9 @@ func (r *liveRig) checkIssueSuspendResume() error {
 	}
 	note("operator", "%s runs in pod uid %s on its pod's own disk %s (uid %s), owned by %s", c.name, short(old.Sandbox.PodUID), disk.name, short(disk.uid), disk.owner)
 	// authorize is the store's check of the close against the issue's starts, stops and stored
-	// roles; the harness is the store here, and this close is the one it means to make.
-	if err := r.rt.SuspendIssue(r.ctx, c.issue, c.tree, func(context.Context) (bool, error) { return true, nil }); err != nil {
+	// roles; the harness is the store here, and this close is the one it means to make, queued for
+	// the pod the issue runs in.
+	if err := r.rt.SuspendIssue(r.ctx, c.issue, old.Sandbox.PodUID, func(context.Context) (bool, error) { return true, nil }); err != nil {
 		return fmt.Errorf("SuspendIssue(%s): %w", c.issue, err)
 	}
 	c.loc, c.state = nil, stateSuspended

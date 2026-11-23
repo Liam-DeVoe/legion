@@ -62,9 +62,7 @@ func TestOutboxDropsSupersededStatusWrite(t *testing.T) {
 // only while the issue still shows the status the row answered and still carries the label: a
 // person who parked the root since is let stand silently, as any superseded status write is, and
 // one who took the label off withdrew the handover, which is dropped with one log line (R4 of
-// dispatch://LEGION-755 and the plan's D2). A hand-over row of the workflow
-// (record.HandOverStatusRow) is not held to the label:
-// TestAHandOverWritesTheStatusAndTheLabelTogether's unlabelled cases PATCH it on.
+// dispatch://LEGION-755 and the plan's D2).
 func TestOutboxWritesAPersonsHandoverOnlyWhileItsLabelAndStatusStand(t *testing.T) {
 	const dropped = "outbox: a person's handover is not written; the label is gone"
 	for _, tc := range []struct {
@@ -116,14 +114,12 @@ func TestOutboxFinishesMessageAlreadyPostedBeforeCrash(t *testing.T) {
 
 type outboxDispatch struct {
 	noArtifacts
-	issue        dispatch.Issue
-	statuses     []string
-	handOvers    []string
-	handOverHook func() error
-	bodies       []string
-	messages     []string
-	getErr       error
-	statusErr    error
+	issue     dispatch.Issue
+	statuses  []string
+	bodies    []string
+	messages  []string
+	getErr    error
+	statusErr error
 	// statusApplied makes a SetStatus take the status on the issue the fake's reads answer with,
 	// whatever statusErr then answers: the write Dispatch committed and whose answer was lost.
 	statusApplied  bool
@@ -165,12 +161,11 @@ func (d *outboxDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, 
 func (d *outboxDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
 	return dispatch.StatusChangeResult{}, errors.New("outboxDispatch takes no status change")
 }
-func (d *outboxDispatch) HandOver(_ context.Context, issue dispatch.Issue, status string) error {
-	d.handOvers = append(d.handOvers, fmt.Sprintf("%s %s %v", issue.Key, status, issue.Labels))
-	if d.handOverHook != nil {
-		return d.handOverHook()
-	}
-	return d.statusErr
+
+// HandOver is the hand-over write, which no outbox row makes since the hand-over went (R19 of
+// dispatch://INFRA-3320).
+func (d *outboxDispatch) HandOver(context.Context, dispatch.Issue, string) error {
+	return errors.New("outboxDispatch takes no hand-over")
 }
 func (d *outboxDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *outboxDispatch) PostMessage(_ context.Context, _ string, body string) error {

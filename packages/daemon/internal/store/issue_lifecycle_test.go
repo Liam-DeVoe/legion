@@ -15,12 +15,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// The cases of tree_lifecycle_test.go over the lifecycle each issue has of its own (decision 16 of
-// dispatch://INFRA-4730), the barrier a claim of this release binds and its issue's cleanup
+// The cases of the tree barrier's cleanup over the lifecycle each issue has of its own (decision 16
+// of dispatch://INFRA-4730), the barrier a claim of this release binds and its issue's cleanup
 // reserves.
 
 // inLegionsWork is the workflow's rule a workflow cleanup is given (record.InLegionsWork).
@@ -183,10 +184,23 @@ func TestAnIssueReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 		_, err := store.AdmitClaim(ctx, child)
 		admitted <- err
 	}()
-	select {
-	case err := <-admitted:
-		t.Fatalf("the start did not wait for the reservation's serializer: %v", err)
-	case <-time.After(200 * time.Millisecond):
+	// The start waits on the serializer the reservation holds; an answer before then is a start that
+	// did not wait.
+	var early error
+	answered := false
+	if !testwait.Holds(testwait.Bounded(t, 10*time.Second, time.Second), 10*time.Millisecond, func() bool {
+		select {
+		case early = <-admitted:
+			answered = true
+			return true
+		default:
+		}
+		return waitingOnTheSerializer(t, store)
+	}) {
+		t.Fatal("the start neither answered nor waited on the reservation's serializer")
+	}
+	if answered {
+		t.Fatalf("the start did not wait for the reservation's serializer: %v", early)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
@@ -286,7 +300,7 @@ func TestAReservedIssueCleanupWaitsForEveryClaimOfItsIssueAndTheNextEpochRebinds
 }
 
 // Every lifecycle operation of an issue takes the shared apply_fact serializer before any
-// lifecycle row, as a tree's does (TestCleanupStepsTakeTheSerializerBeforeTheirRows).
+// lifecycle row (holdSerializerThenLock).
 func TestIssueCleanupStepsTakeTheSerializerBeforeTheirRows(t *testing.T) {
 	const lifecycleRow = `select 1 from issue_lifecycles where project = 'legion' and issue = $1 for update`
 	t.Run("reservation", func(t *testing.T) {
@@ -331,7 +345,8 @@ func TestAWorkflowCleanupOfAnIssueNeverOpenedReservesNothing(t *testing.T) {
 
 // IssueLive is whether the issue has a lifecycle of its own whose cleanup has not confirmed: open,
 // or reserved and releasing. An issue whose cleanup confirmed, one never opened and one only
-// another project opened are none, and so is an issue whose tree's root is live (R17).
+// another project opened are none, and so is a child with no lifecycle of its own under a live
+// root, its record's tree and its Dispatch parent both that root (R17).
 func TestIssueLiveIsAnIssueLifecycleWhoseCleanupIsNotConfirmed(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -349,8 +364,17 @@ func TestIssueLiveIsAnIssueLifecycleWhoseCleanupIsNotConfirmed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// The root is live, by its own lifecycle and by the tree lifecycle the release before binds; the
+	// child under it has neither.
+	seedIssue(t, store, childIssue, rootIssue, 1, "implementing", "in_progress")
+	if _, err := store.Pool().Exec(ctx, `insert into dispatch_issues (key, project, status, blockers, dispatch_seq, parent)
+		values ($1, 'LEGION', 'in_progress', '{}', 1, $2)`, childIssue, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	openIssueLifecycle(t, store, rootIssue)
 	openLingeringTree(t, store)
-	for issue, want := range map[string]bool{"LEGION-801": true, "LEGION-802": true, "LEGION-803": false, "LEGION-804": false, "LEGION-805": false, childIssue: false} {
+	for issue, want := range map[string]bool{"LEGION-801": true, "LEGION-802": true, "LEGION-803": false, "LEGION-804": false, "LEGION-805": false,
+		rootIssue: true, childIssue: false} {
 		if live, err := store.IssueLive(ctx, "legion", issue); err != nil || live != want {
 			t.Errorf("IssueLive(%s) = %t, %v; want %t", issue, live, err, want)
 		}

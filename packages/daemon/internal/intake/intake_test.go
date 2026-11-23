@@ -1865,6 +1865,33 @@ func TestAnIssueEventCarriesItsDispatchTime(t *testing.T) {
 	if issue, ok := got.Fact.(DispatchIssue); !ok || !issue.At.Equal(event.CreatedAt) {
 		t.Fatalf("fact = %#v, want it at %s, the time Dispatch recorded the event", got.Fact, event.CreatedAt)
 	}
+
+	// The same envelope with no created_at in its event gives a fact at the zero time: the fact
+	// names no time Dispatch did not record.
+	var payload, whole map[string]any
+	if err := json.Unmarshal([]byte(envelope.Payload), &payload); err != nil {
+		t.Fatalf("decode the captured event as a map: %v", err)
+	}
+	delete(payload, "created_at")
+	stripped, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode the event without created_at: %v", err)
+	}
+	if err := json.Unmarshal(data, &whole); err != nil {
+		t.Fatalf("decode the captured envelope as a map: %v", err)
+	}
+	whole["payload"] = string(stripped)
+	untimed, err := json.Marshal(whole)
+	if err != nil {
+		t.Fatalf("encode the envelope without created_at: %v", err)
+	}
+	got, err = decodeMessage("notifications.dispatch.issue.CAPTURE-3.issue.updated", "CAPTURE", capturedRepositories, untimed)
+	if err != nil {
+		t.Fatalf("decode the event without created_at: %v", err)
+	}
+	if issue, ok := got.Fact.(DispatchIssue); !ok || !issue.At.IsZero() {
+		t.Fatalf("fact = %#v, want it at the zero time: its event names no created_at", got.Fact)
+	}
 }
 
 // GitHub's review id and the review's submission time reach the facts: the workflow orders reviews

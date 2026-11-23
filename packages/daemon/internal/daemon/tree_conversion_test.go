@@ -414,6 +414,7 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var issue string
 		var at time.Time
@@ -430,7 +431,9 @@ func TestACarriedRunGateAndRetentionLiveOnTheIssue(t *testing.T) {
 		}
 		ends[issue] = at.UTC()
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the retention ends: %v", err)
+	}
 	if want := map[string]time.Time{"CAPTURE-20": deadline, "CAPTURE-21": deadline}; !maps.Equal(ends, want) {
 		t.Fatalf("the retention ends are %v, want %v", ends, want)
 	}
@@ -584,6 +587,7 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var issue, lifecycle string
 		if err := rows.Scan(&issue, &lifecycle); err != nil {
@@ -591,7 +595,9 @@ func TestALandedHandOverUnderAReservedCleanupStartsAsARootOfItsOwn(t *testing.T)
 		}
 		lifecycles[issue] = lifecycle
 	}
-	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the issue lifecycles: %v", err)
+	}
 	want := map[string]string{landed: "1 workflow f", cancelled: "1 workflow t", done: "1 workflow t"}
 	if !maps.Equal(lifecycles, want) {
 		t.Fatalf("the issue lifecycles read %v (epoch, authority, cleanup reserved), want %v: the landed hand-over's open, the others' reserved", lifecycles, want)

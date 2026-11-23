@@ -236,10 +236,16 @@ func TestAnIssueOutOfWorkGetsNoWorkers(t *testing.T) {
 			if writes := statusWritesOf(t, pool, "LEGION-208"); len(writes) != 0 {
 				t.Fatalf("status writes of the parent = %v, want none", writes)
 			}
-			startsBefore := len(superviseRequests(t, pool, "start"))
-			apply("worker-done", intake.HandoffComplete{Issue: "LEGION-209", Role: claim.RoleImplementer, Generation: 7, Commit: "head-44", Summary: "done"})
-			if starts := superviseRequests(t, pool, "start"); len(starts) != startsBefore {
-				t.Fatalf("starts after a completion of the stopped child = %v, want none new", starts)
+			// The completion names its handoff record, so the refusal of a stopped issue's worker
+			// is the one thing that keeps it from starting the next phase's worker.
+			startsBefore := len(superviseRowsOf(t, pool, "LEGION-209", "start"))
+			result := apply("worker-done", intake.HandoffComplete{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "implementer", Generation: 7,
+				Commit: "head-44", HandoffRecord: "implement-1", HandoffVersion: 1, Summary: "done"})
+			if want := intake.NotCurrentPhase(claim.RoleImplementer, phase.Implementing, "LEGION-209"); result.Refusal == nil || *result.Refusal != *want {
+				t.Fatalf("a completion of the stopped child = %+v, want the refusal %+v", result.Refusal, want)
+			}
+			if starts := superviseRowsOf(t, pool, "LEGION-209", "start"); len(starts) != startsBefore {
+				t.Fatalf("starts after a completion of the stopped child = %+v, want none new", starts)
 			}
 		})
 	}

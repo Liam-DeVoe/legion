@@ -63,12 +63,15 @@ func pnChildMerged(t *testing.T, pool *pgxpool.Pool, child, parent string, numbe
 	spMirror(t, pool, child, "done", parent, 2)
 }
 
-// pnNoWork fails unless every one of starts, what's starts, is a plain start carrying no task:
-// what a return queues to bring a claim of a waiting parent back in its own session (workflow's
-// reviveClaims, decision 9 of dispatch://INFRA-4730), which hands its worker no work while the
-// parent waits on its children (dispatch://INFRA-3320 R11).
-func pnNoWork(t *testing.T, what string, starts []midPhaseStart) {
+// pnNoWork fails unless starts, what's starts, are one plain start carrying no task for each of
+// claims claims: what a return queues to bring each claim of a waiting parent back in its own
+// session (workflow's reviveClaims, decision 9 of dispatch://INFRA-4730), which hands its worker
+// no work while the parent waits on its children (dispatch://INFRA-3320 R11).
+func pnNoWork(t *testing.T, what string, starts []midPhaseStart, claims int) {
 	t.Helper()
+	if len(starts) != claims {
+		t.Fatalf("the starts of %s = %+v, want %d, one bringing back each claim that ran", what, starts, claims)
+	}
 	for _, start := range starts {
 		if start.task != "" || start.needsSlot {
 			t.Fatalf("the starts of %s = %+v, want plain starts alone, handing no work: it waits on its open child", what, starts)
@@ -1062,7 +1065,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		apply(t, pool, admission, "member-to-todo", intake.DispatchIssue{Key: member, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
 			Status: "todo", Title: member, Parent: root, Rank: "B", HandedOver: true}, admission.engine)
 		revived := startsOf(t, pool, member)
-		pnNoWork(t, member+" back in work", revived)
+		pnNoWork(t, member+" back in work", revived, len(tokens))
 		apply(t, pool, admission, "root-to-todo", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
 			Status: "todo", Title: root, Rank: root, HandedOver: true}, admission.engine)
 		spPass(t, pool, admission)
@@ -1184,7 +1187,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("%s back in todo = %+v; want it in Legion's work in awaiting_children at generation 1, holding %+v", spParent, returned, wait)
 		}
 		revived := startsOf(t, pool, spParent)
-		pnNoWork(t, spParent+" back in todo", revived)
+		pnNoWork(t, spParent+" back in todo", revived, 1)
 		workers := len(pwWorkerStarts(t, pool, spParent))
 		if session := pnSession(t, pool, implementer); session != "ses_worker" {
 			t.Fatalf("the implementer's claim holds session %q, want the session it had, ses_worker", session)

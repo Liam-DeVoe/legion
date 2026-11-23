@@ -31,7 +31,7 @@ const (
 func newToldRig(t *testing.T) *toldRig {
 	t.Helper()
 	r := &toldRig{keptRig: newKeptRig(t)}
-	r.issue(toldRoot, toldRoot)
+	r.issue(toldRoot, "")
 	r.issue(toldChild, toldRoot)
 	token, err := claim.NewToken("legion", toldChild, claim.RoleReviewer)
 	if err != nil {
