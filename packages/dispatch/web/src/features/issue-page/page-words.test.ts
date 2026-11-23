@@ -739,10 +739,10 @@ test("the join adds each file's keys after the table's own, nested as the table 
     },
     {
       title: "a key of the table whose value is undefined stays",
-      name: "RESULT_STANDS_WORDS",
-      main: freeze({ at_basis: "Up to date", unknown: undefined }),
-      files: [partFile("s", { RESULT_STANDS_WORDS: { superseded: "Superseded" } })],
-      table: { at_basis: "Up to date", unknown: undefined, superseded: "Superseded" },
+      name: "NODE_FACT_LABELS",
+      main: freeze({ answer: "answer", unknown: undefined }),
+      files: [partFile("s", { NODE_FACT_LABELS: { superseded: "Superseded" } })],
+      table: { answer: "answer", unknown: undefined, superseded: "Superseded" },
       clashes: [],
     },
     {
@@ -818,6 +818,49 @@ test("the join adds each file's keys after the table's own, nested as the table 
   acceptsPartWords({
     // @ts-expect-error `LENS_WORDS` is not a table of `TABLE_NAMES`.
     add: { LENS_WORDS: { title: "Lens" } },
+    unasked: [],
+    answers: [],
+  });
+
+  // The tables of `CLOSED_TABLE_NAMES` take keys only in page-words.ts, and the type of `add`
+  // refuses them.
+  acceptsPartWords({
+    add: {
+      // @ts-expect-error `PRESET_NAMES` takes keys only in page-words.ts.
+      PRESET_NAMES: { bogus: "Bogus" },
+    },
+    unasked: [],
+    answers: [],
+  });
+  acceptsPartWords({
+    add: {
+      // @ts-expect-error `CHECK_WHEN_WORDS` takes keys only in page-words.ts.
+      CHECK_WHEN_WORDS: { bogus: "Bogus" },
+    },
+    unasked: [],
+    answers: [],
+  });
+  acceptsPartWords({
+    add: {
+      // @ts-expect-error `RESULT_STANDS_WORDS` takes keys only in page-words.ts.
+      RESULT_STANDS_WORDS: { bogus: "Bogus" },
+    },
+    unasked: [],
+    answers: [],
+  });
+  acceptsPartWords({
+    add: {
+      // @ts-expect-error `DELIVERY_STATE_WORDS` takes keys only in page-words.ts.
+      DELIVERY_STATE_WORDS: { bogus: "Bogus" },
+    },
+    unasked: [],
+    answers: [],
+  });
+  acceptsPartWords({
+    add: {
+      // @ts-expect-error `AUTHOR_KIND_WORDS` takes keys only in page-words.ts.
+      AUTHOR_KIND_WORDS: { bogus: "Bogus" },
+    },
     unasked: [],
     answers: [],
   });

@@ -7,8 +7,9 @@
  * the keys that each part's file adds to that table, in the order of `WORD_FILES`. Then it
  * freezes the copy. So two parts that add words change no common line.
  *
- * Where a word goes is the list in the header of `page-words.ts`. A key that two files give is a
- * clash, and `page-words.test.ts` fails on each clash.
+ * Where a word goes is the list in the header of `page-words.ts`. The five tables of
+ * `CLOSED_TABLE_NAMES` take keys only in `page-words.ts`, and the type of `add` refuses them. A
+ * key that two files give is a clash, and `page-words.test.ts` fails on each clash.
  *
  * This module imports nothing from `page-words.ts`, because `page-words.ts` imports it. A part's
  * file imports only the type `PartWords` from here.
@@ -64,11 +65,24 @@ export const TABLE_NAMES = [
 /** One table of `page-words.ts`, by its name. */
 export type TableName = (typeof TABLE_NAMES)[number];
 
+/** The tables that take keys only in `page-words.ts`. A closed type fixes the keys of each one,
+ *  and its `satisfies` reads the literal of `page-words.ts`. So a part's file gives them no key. */
+export const CLOSED_TABLE_NAMES = [
+  "PRESET_NAMES",
+  "CHECK_WHEN_WORDS",
+  "RESULT_STANDS_WORDS",
+  "DELIVERY_STATE_WORDS",
+  "AUTHOR_KIND_WORDS",
+] as const satisfies readonly TableName[];
+
+/** A table that takes keys only in `page-words.ts`. */
+type ClosedTableName = (typeof CLOSED_TABLE_NAMES)[number];
+
 /** The default export of a part's file. */
 export interface PartWords {
   /** The part's new keys for the tables of `page-words.ts`, by the table's name, nested as the
-   *  table is. */
-  readonly add: { readonly [Name in TableName]?: object };
+   *  table is. The tables of `CLOSED_TABLE_NAMES` are not among them. */
+  readonly add: { readonly [Name in Exclude<TableName, ClosedTableName>]?: object };
   /** The part's own tables that the page draws on load. */
   readonly unasked: readonly unknown[];
   /** The part's own tables that the page draws only after an act of the reader. */
@@ -184,7 +198,9 @@ export function joinTables<
   const table: Record<string, unknown> = {};
   merge(table, main, TABLE_FILE, TABLE_FILE, name);
   for (const { file, module } of files) {
-    const words = module.default.add[name];
+    // The type of `add` names no closed table, but the join reads `add` for each table.
+    const add: Readonly<Partial<Record<TableName, object>>> = module.default.add;
+    const words = add[name];
     if (words !== undefined) merge(table, words, file, TABLE_FILE, name);
   }
   return freeze({ table: table as Main & AddedBy<Files, Name>, clashes });

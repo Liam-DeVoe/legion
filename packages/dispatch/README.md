@@ -985,7 +985,10 @@ tables that the part adds, each a named export that it lists in `unasked` or `an
 J, L, M, N, S, T, U, W, X, Y and Z.
 
 A new key for a table that a part's file declares goes in that part's `page-words-<letter>.ts`,
-from any pull request. TypeScript reads the keys of a table where the table is declared.
+from any pull request. TypeScript reads the keys of a table where the table is declared. The tables
+`PRESET_NAMES`, `CHECK_WHEN_WORDS`, `RESULT_STANDS_WORDS`, `DELIVERY_STATE_WORDS` and
+`AUTHOR_KIND_WORDS` take keys only in `page-words.ts`, because a closed type fixes their keys and
+the type of a part's `add` refuses them.
 
 A change to a word is made in place, in the file that holds it: `page-words.ts` or a part's file.
 Every other new word of a pull request that is not an open part goes in `page-words.ts`. The four
