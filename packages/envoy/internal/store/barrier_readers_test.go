@@ -21,7 +21,7 @@ func TestInterestAndRoleReadersDropTheReadBarrier(t *testing.T) {
 	waitFor(t, 30*time.Second, first.roleWatcher.Ready)
 	putInterest := func(sessionID string) {
 		t.Helper()
-		if _, err := first.interests().Put(sessionID, []byte(`{"session_id":"`+sessionID+`","machine_id":"m1"}`)); err != nil {
+		if _, err := first.interests().Put(sessionID, []byte(liveRow(sessionID))); err != nil {
 			t.Fatalf("put interest %s: %v", sessionID, err)
 		}
 	}
