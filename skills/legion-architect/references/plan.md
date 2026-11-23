@@ -37,7 +37,8 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
 | `acceptance` | review | `accepting` | No fresh reading of the whole work: with it, a fresh agent of the role acceptance reads the evidence and ends the step by its own verdict, and you sign nothing off for it. |
 
 Without `acceptance:owner`, a reviewer step, where the task has one, approves only once a pass stands for every `before_merge` check at the head, and retro's first step sends back a check with no pass standing there, except a `ci_check` whose run has not concluded or cannot be read, which moves nothing back (`skill://legion-retro`).
-A `ci_check` that reads `absent` or `no_head` moves nothing back either: the retro sends it to you as a finding.
+A `ci_check` that reads `absent` moves nothing back either: the retro sends it to you as a finding.
+One that reads `no_head`, on an issue with no pull request, can never pass: it holds the retro until you rewrite the check.
 So on a task with no reviewer step and no `acceptance:owner` or `acceptance` step, such a check holds the merge only where it is among the checks the base branch requires.
 
 ## What Legion refuses

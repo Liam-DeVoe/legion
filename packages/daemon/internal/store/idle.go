@@ -483,11 +483,11 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // pod), and which claim it arms it for (BackstopTarget, workflow.BackstopTargetAt), which the store
 // does not restate (nil arms no backstop). BackstopTarget is given the issue's key, its project as
 // its record holds it, its phase, the role of the step its task stands at and the role of the claim
-// that works its place, and answers a role, "" for none, and a token: a token names the one claim
-// meant whatever run it serves (the owner's at its own place), and none names the claim of the
-// role serving the issue's run. At is required of every cancel, since whether the project is
-// paused is read inside the cancel's own transaction; a cancel made while the project runs reads
-// nothing else of it.
+// that works its place. It answers a role, "" for none, and a token. A token names the one claim
+// meant whatever run it serves: the owner's, at a step or a retro of its own other than its
+// acceptance. No token names the claim of the role serving the issue's run. At is required of
+// every cancel, since whether the project is paused is read inside the cancel's own
+// transaction; a cancel made while the project runs reads nothing else of it.
 type ReleaseCancelPause struct {
 	At             time.Time
 	Backstop       time.Duration
@@ -514,11 +514,11 @@ type ReleaseCancelled struct {
 // owes it one (openPodResume); on the first record of its stop, the pod's hold, whatever the
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
-// unpushed work; and, for the claim the backstop is armed for (backstopTargetOf: the owner's at its
-// own place, and elsewhere the worker's of the place serving the issue's generation), its backstop,
-// which the record arms only where the stop owes no launch. A wake taken since is left open: it is
-// the launch the role is owed, and its start row runs at the resume. The caller holds the issue's
-// lock and held's row for share.
+// unpushed work; and, for the claim backstopTargetOf names, its backstop, which the record arms
+// only where the stop owes no launch. That claim is the owner at a step or a retro of its own
+// other than its acceptance. Elsewhere it is the place's worker serving the issue's generation.
+// A wake taken since is left open: it is the launch the role is owed, and its start row runs at
+// the resume. The caller holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()

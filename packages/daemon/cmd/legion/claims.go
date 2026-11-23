@@ -22,11 +22,11 @@ import (
 )
 
 // newClaimsCommand is the operator's hand on the daemon's claims, one command per operator route
-// (internal/api/operator.go). retry relaunches a failed claim: an architect on its session with
-// fresh budgets, and where it is the owner of its issue's task at a place of its own (a step of
-// the key owner or the owner's retro), the daemon then tells it that step again, with one more
-// owner-step where none is still queued; a phase worker through its issue's held phase; with
-// --failed, every failed claim.
+// (internal/api/operator.go). retry relaunches a failed claim. An architect is relaunched on its
+// session with fresh budgets. Where its issue's task stands at a step of the key owner or at the
+// owner's retro, the daemon then tells it that step again. It does so in one more owner-step,
+// where none of the step's open run is still queued. A phase worker is relaunched through its
+// issue's held phase, and --failed retries every failed claim.
 // compact shortens a running claim's session and sends it whatever task it owes again, which is
 // what a claim whose provider keeps refusing its session reaches for before a fresh one. close is
 // the tree's close, through its root claim, for a tree no workflow issue backs: the root, then

@@ -17,7 +17,7 @@ or a repository guide.
 - **What it replaces**, when an instruction the repository carries is wrong: quote it and its path.
 
 Drop a point that cites no file, symbol, quoted text or commit of this pull request (of the task's
-work, where it has none), and a point that only restates what a skill already says.
+work, where it has none). Also drop a point that only restates what a skill already says.
 
 ## Find what already covers the topic
 

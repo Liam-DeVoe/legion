@@ -69,8 +69,8 @@ func TestTheOwnersPaneHoldsTheAppOfItsStep(t *testing.T) {
 // The line a launch logs of the credential it wrote names the role whose App the pane holds, not
 // only the claim's: a spawn of the architect while its owner does the implementer step logs the
 // implementer with the implement App, and the claim's own role, the architect, beside it. A line
-// naming the architect with the implement App would tell an operator the architect works as an App
-// no architect holds.
+// naming the architect with the implement App would read as the architect's own role acting as
+// that App. The pane holds that App only while its owner does a step whose role acts as it.
 func TestTheOwnersLaunchLogsTheRoleItsPaneActsAs(t *testing.T) {
 	var logs strings.Builder
 	f := newFakeServerRuntimeWith(t, staticCredential, slog.New(slog.NewTextHandler(&logs, nil)), func(o *Options) {
