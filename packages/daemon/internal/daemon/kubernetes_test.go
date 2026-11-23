@@ -967,9 +967,10 @@ func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *te
 }
 
 // At its boot the daemon refuses an operator's pod volume named as a volume of the slot of a role
-// that exists now, and takes one that only has the form of a slot's volume, such as gh-cache or
-// state-implementer-2: it logs a warning for each such volume that names the volume and the form,
-// and says that a later release refuses the name.
+// that exists now, and takes one named as the slot volume of an agent an issue's plan can name
+// beside its role's own, such as state-implementer-2: it logs a warning for each such volume that
+// names the volume and the form, and says that a later release refuses the name. A volume no agent
+// of a plan can collide with, such as gh-cache, is taken with no warning.
 func TestTheDaemonWarnsOfAnOperatorVolumeOfASlotsFormAndRefusesOneOfARolesSlot(t *testing.T) {
 	boot := func(t *testing.T, names ...string) (string, error) {
 		t.Helper()
@@ -1006,7 +1007,6 @@ func TestTheDaemonWarnsOfAnOperatorVolumeOfASlotsFormAndRefusesOneOfARolesSlot(t
 			}
 		}
 		want := []string{
-			"runtime.kubernetes.pod.volumes[0].name gh-cache has the form gh-<slot> of a volume Legion gives each slot of a pod, and collides with the gh volume of the slot of an agent named cache wherever an issue's plan names one; a later release refuses this name, so rename the volume",
 			"runtime.kubernetes.pod.volumes[2].name state-implementer-2 has the form state-<slot> of a volume Legion gives each slot of a pod, and collides with the state volume of the slot of an agent named implementer-2 wherever an issue's plan names one; a later release refuses this name, so rename the volume",
 		}
 		if !slices.Equal(warned, want) {

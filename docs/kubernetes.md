@@ -3884,16 +3884,17 @@ the image probe refuses the boot at once, naming it, when it does not, for every
 
 A volume of `pod` may not take the name of a volume Legion gives a slot of a role that exists now: `launcher-<role>`, `private-<role>`, `state-<role>`, `gh-<role>` or `agent-secrets-key-<role>`, where `<role>` is one of Legion's six roles, `controller` or a role the deployment defines in `roles`.
 The daemon refuses such a name at boot, and `legion config check` refuses it too: `runtime.kubernetes.pod.volumes[<i>].name gh-implementer is a volume Legion puts in every pod`, where `<i>` is the volume's place in the list, from 0 (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
-A name of the same form with any other name of the agent grammar (`^[a-z][a-z0-9-]{0,31}$`) in place of the role, such as `gh-cache` or `state-implementer-2`, can still collide with a slot's volume.
-An issue's plan can run a second agent of one role, such as `implementer-2`, in a slot of the agent's own name, and that slot's volumes take those names; Kubernetes refuses a pod with two volumes of one name, so that issue's pod cannot start.
+An issue's plan can run a second agent of one role in a slot of the agent's own name, and that slot's volumes take names of the same form: the agent is named `<role>-<n>`, from `implementer-2` on, the role cut so that the name holds at most 32 bytes.
+A volume of `pod` named so, `launcher-`, `private-`, `state-`, `gh-` or `agent-secrets-key-` and then `<role>-<n>` for a role that exists now, such as `state-implementer-2`, collides with that slot's volume wherever a plan names that agent; Kubernetes refuses a pod with two volumes of one name, so that issue's pod cannot start.
 This release takes such a name, because a configuration saved before plans gave agents slots of their own can hold one.
 The daemon logs a warning for each such volume at boot, and `legion config check` prints the same warning after its OK line and still exits 0:
 
 ```text
-runtime.kubernetes.pod.volumes[0].name gh-cache has the form gh-<slot> of a volume Legion gives each slot of a pod, and collides with the gh volume of the slot of an agent named cache wherever an issue's plan names one; a later release refuses this name, so rename the volume
+runtime.kubernetes.pod.volumes[0].name state-implementer-2 has the form state-<slot> of a volume Legion gives each slot of a pod, and collides with the state volume of the slot of an agent named implementer-2 wherever an issue's plan names one; a later release refuses this name, so rename the volume
 ```
 
 A later release refuses such a name at boot, as it refuses a name of a role's slot now.
+A name no agent can take collides with no slot and gets no warning: `gh-cache` where no role is `cache`, or `state-implementer-1`, since an agent's number starts at 2.
 Rename each volume that the warning names before that release: give it a name of another form in `volumes`, and in each `volume_mounts` entry whose `volume` names it.
 
 A `secret` or `config_map` volume may set `default_mode`, the mode of every file it projects, in octal digits after a leading `0` or `0o`, from 0 to 0777:

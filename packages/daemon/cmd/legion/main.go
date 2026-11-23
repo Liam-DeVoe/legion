@@ -228,8 +228,9 @@ func pluginsLine(cfg config.Config) string {
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused. Then one line per warning boot logs of what the
 // file configures that a later release refuses (daemon.CheckStart): under kubernetes, an operator
-// pod volume whose name has the form of a slot's volume (sandbox.PodVolumeWarnings), which this
-// release takes, so the exit stays 0 there too.
+// pod volume named as the slot volume of an agent an issue's plan can name beside its role's own,
+// such as `state-implementer-2` (sandbox.PodVolumeWarnings), which this release takes, so the
+// exit stays 0 there too.
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads

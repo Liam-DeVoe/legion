@@ -304,21 +304,26 @@ var slotVolumePrefixes = []string{"launcher", "private", stateVolume, ghVolume, 
 
 // isSlotName reports whether name can be the name of a slot of a pod: a role's, the controller's,
 // or an agent's of an issue's plan, so any name of the agent grammar. It is the one rule that reads
-// a slot back out of the name of what Legion gives a slot: a volume (slotVolumeForm) or a Secret
-// (launcherCredentials.forgetSandbox).
+// a slot back out of the name of a Secret Legion gives a slot (launcherCredentials.forgetSandbox).
 func isSlotName(name claim.Role) bool {
 	return claim.IsRole(name) || name == claim.RoleController
 }
 
-// slotVolumeForm is the prefix of slotVolumePrefixes whose form name has, `<prefix>-<slot>` for a
-// slot of any name (isSlotName), and that slot; "" and "" where it has none. A slot is a role's or
-// an agent's of an issue's plan, whose name no check at the daemon's boot can know, so an
-// operator's volume of that form could take the name of a slot's volume at a pod's build
-// (PodVolumeWarnings).
-func slotVolumeForm(name string) (string, claim.Role) {
+// agentSlotVolumeForm is the prefix of slotVolumePrefixes whose form name has, `<prefix>-<agent>`
+// for the name of an agent an issue's plan can name beside its role's own: a numbered agent of one
+// of roles (claim.NumberedAgentRole), such as `implementer-2`, which is no role of roles itself. It
+// answers that agent too, and "" and "" where name has no such form. No check at the daemon's boot
+// can know the plans that come later, so an operator's volume of that form could take the name of
+// that agent's slot volume at a pod's build (PodVolumeWarnings). A name of an agent no plan can
+// name, such as `cache`, which is no role, collides with nothing.
+func agentSlotVolumeForm(name string, roles []claim.Role) (string, claim.Agent) {
 	for _, prefix := range slotVolumePrefixes {
-		if slot, ok := strings.CutPrefix(name, prefix+"-"); ok && isSlotName(claim.Role(slot)) {
-			return prefix, claim.Role(slot)
+		agent, ok := strings.CutPrefix(name, prefix+"-")
+		if !ok || slices.Contains(roles, claim.Role(agent)) {
+			continue
+		}
+		if _, numbered := claim.NumberedAgentRole(agent, roles); numbered {
+			return prefix, claim.Agent(agent)
 		}
 	}
 	return "", ""

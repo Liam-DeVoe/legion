@@ -3,15 +3,10 @@ package record
 import (
 	"maps"
 	"slices"
-	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
-
-// maxAgentName is the longest name of an agent, in bytes: the bound of the agent grammar
-// (claim.AgentToken).
-const maxAgentName = 32
 
 // KeySessions is, by the name of each claim of an issue whose session is the session of a key's
 // agent (supervise.Claim.SessionAgent, `key:<key>`), that key: the names NameAgents keeps for a key
@@ -67,10 +62,10 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
 //     with no key, unless pass 2 or an earlier step of this pass gave that name, or a key holds it.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
-//     step, cut to maxAgentName bytes (RoleName), where no agent of steps has that name and no key
+//     step, cut to 32 bytes (claim.RoleAgentName), where no agent of steps has that name and no key
 //     holds it; and otherwise a name of its own, `<role>-2`, `<role>-3` and so on, the first that
-//     no agent of steps and no key holds (agentNumberName), so two agents never share a name, and
-//     so a claim and a session.
+//     no agent of steps and no key holds (claim.NumberedAgentName), so two agents never share a
+//     name, and so a claim and a session.
 //
 // The steps of one key are one agent (plan.AgentOf), so they share one name in every task.
 func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []PlanStep {
@@ -132,9 +127,9 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		}
 		// The role's own name, or else the first numbered one, where no agent of steps and no key
 		// holds it: an earlier row's agent with no key that the version no longer names frees it.
-		name := RoleName(step.Role)
-		for n := 2; taken[name] || keyHeld(name); n++ {
-			name = agentNumberName(step.Role, n)
+		name := claim.RoleAgentName(claim.Role(step.Role))
+		for n := claim.FirstAgentNumber; taken[name] || keyHeld(name); n++ {
+			name = claim.NumberedAgentName(claim.Role(step.Role), n)
 		}
 		give(agent, name)
 	}
@@ -142,25 +137,6 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		named[i].Agent = names[agentOf(named[i])]
 	}
 	return named
-}
-
-// RoleName is the name an agent takes from the role of its first step (NameAgents' pass 4): the
-// role, cut to maxAgentName bytes.
-func RoleName(role string) claim.Agent {
-	if len(role) > maxAgentName {
-		role = role[:maxAgentName]
-	}
-	return claim.Agent(role)
-}
-
-// agentNumberName is the name of the n-th agent of role (NameAgents' pass 4): the role, cut so that
-// the name holds at most maxAgentName bytes, a dash and n.
-func agentNumberName(role string, n int) claim.Agent {
-	suffix := "-" + strconv.Itoa(n)
-	if len(role)+len(suffix) > maxAgentName {
-		role = role[:maxAgentName-len(suffix)]
-	}
-	return claim.Agent(role + suffix)
 }
 
 // earlierPlaceName is the name of the latest row of earlier at step's task and place, on step's

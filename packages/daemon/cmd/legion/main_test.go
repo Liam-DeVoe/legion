@@ -1551,8 +1551,9 @@ func TestConfigCheckNamesTheRepositoryCache(t *testing.T) {
 }
 
 // `legion config check` prints, right after its OK line, the warning boot logs of an operator pod
-// volume whose name has the form of a slot's volume and is no role's, and exits 0, since this
-// release takes the volume; a volume named as the slot volume of a role is refused, exit 1.
+// volume named as the slot volume of an agent an issue's plan can name beside its role's own, and
+// exits 0, since this release takes the volume; a volume no agent of a plan can collide with is
+// taken with no warning, and a volume named as the slot volume of a role is refused, exit 1.
 func TestConfigCheckWarnsOfAnOperatorVolumeOfASlotsForm(t *testing.T) {
 	legionState(t)
 	secretsGap := "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
@@ -1561,10 +1562,16 @@ func TestConfigCheckWarnsOfAnOperatorVolumeOfASlotsForm(t *testing.T) {
 		return "    pod:\n      volumes:\n        - {name: " + name + ", config_map: {name: legion-operator-cache}}\n"
 	}
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("gh-cache"))}, &out, &errb)
-	warning := "runtime.kubernetes.pod.volumes[0].name gh-cache has the form gh-<slot> of a volume Legion gives each slot of a pod, and collides with the gh volume of the slot of an agent named cache wherever an issue's plan names one; a later release refuses this name, so rename the volume\n"
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("state-implementer-2"))}, &out, &errb)
+	warning := "runtime.kubernetes.pod.volumes[0].name state-implementer-2 has the form state-<slot> of a volume Legion gives each slot of a pod, and collides with the state volume of the slot of an agent named implementer-2 wherever an issue's plan names one; a later release refuses this name, so rename the volume\n"
 	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + warning + demoProjectLines + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
-		t.Fatalf("a volume of a slot's form: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+		t.Fatalf("a volume of an agent's slot: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+	out.Reset()
+	errb.Reset()
+	code = run(context.Background(), []string{"legion", "config", "check", "--config", kubernetesCheckConfig(t, pod("gh-cache"))}, &out, &errb)
+	if want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines + secretsGap + defaultCacheLine + pluginsGap; code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("a volume no agent can collide with: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 	out.Reset()
 	errb.Reset()
