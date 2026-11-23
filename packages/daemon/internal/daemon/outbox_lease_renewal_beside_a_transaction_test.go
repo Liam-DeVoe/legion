@@ -90,25 +90,36 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	testwait.Eventually(t, "the row finished once the lock went", func() bool { return outboxRows(t, pool) == 0 })
 }
 
-// A renewal tick that finds its row gone says so by the row's kind. A left pod's check finishes its
-// own row inside its run, in the transaction that records what it decided (checkLeftPodWorkspace),
-// so an issue_bundle row found finished is logged as that, at Info, and as no lost lease. No other
-// kind finishes itself, so another row found finished, like one found under another lane's lease,
-// is logged as a lost lease at Warn. Each finish here runs as a run's own does: in a transaction
-// that holds the row while the tick's renewal waits on its lock, and commits under it, so the tick
-// reads the row gone only by the statement after its update (record's RenewOutboxLease).
-func TestALeaseRenewalThatFindsItsRowGoneLogsByItsKind(t *testing.T) {
+// A renewal tick that finds its row no longer under its lease says why, from the row it runs. A row
+// another lane leases is a lost lease, at Warn. A left pod's close check (record.IssueWorkspaceCheck
+// with CloseRoles) finishes its own row inside its run (checkLeftPodWorkspace), so that row found
+// finished is logged as that, at Info. The idle release's check is the same kind and never finishes
+// its own row, so that one found gone was finished by another lane after this lease lapsed, at
+// Warn. A status write found gone may also have been dropped by a newer write of its issue
+// (record's DropStatusWrites, which deletes a leased row), at Warn, and the line says so. Each
+// finish or drop here runs as it does in a daemon: in a transaction that holds the row while the
+// tick's renewal waits on its lock, and commits under it, so the tick reads the row gone only by the
+// statement after its update (record's RenewOutboxLease).
+func TestALeaseRenewalThatFindsItsRowGoneSaysWhy(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), now))
-	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-209", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3,
-		TreeGeneration: 7, Role: claim.RolePlanner, CloseRoles: []claim.Role{claim.RolePlanner}}, now))
-	ids := outboxIDs(t, pool)
-	status := record.OutboxRow{ID: ids[0], Kind: record.OutboxKindDispatchStatus, Issue: "LEGION-208", LeaseToken: "this-run"}
-	check := record.OutboxRow{ID: ids[1], Kind: record.OutboxKindIssueBundle, Issue: "LEGION-209", LeaseToken: "this-run"}
+	rows := []record.OutboxRow{
+		mustOutboxRow(t, "LEGION-208", record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), now),
+		mustOutboxRow(t, "LEGION-209", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,
+			Role: claim.RolePlanner, CloseRoles: []claim.Role{claim.RolePlanner}}, now),
+		mustOutboxRow(t, "LEGION-210", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7,
+			Role: claim.RoleImplementer}, now),
+	}
+	for _, row := range rows {
+		enqueueOutbox(t, pool, records, row)
+	}
+	for i, id := range outboxIDs(t, pool) {
+		rows[i].ID, rows[i].LeaseToken = id, "this-run"
+	}
+	status, closeCheck, idleCheck := rows[0], rows[1], rows[2]
 	logs, log := watchedLog()
 	runner := &outbox{pool: pool, records: records, log: log}
 	lease := func(row record.OutboxRow, token string) {
@@ -121,57 +132,65 @@ func TestALeaseRenewalThatFindsItsRowGoneLogsByItsKind(t *testing.T) {
 	tick := func(row record.OutboxRow) {
 		runner.renewOnce(ctx, row, &leaseRenewal{warned: map[int64]bool{}}, now)
 	}
-	// finishedUnderTick finishes row in a transaction of its own and runs one tick while that
+	// goneUnderTick deletes row by remove, in a transaction of its own, and runs one tick while that
 	// transaction holds the row, committing it once the tick's renewal waits on its lock.
-	finishedUnderTick := func(row record.OutboxRow) {
+	goneUnderTick := func(row record.OutboxRow, remove func(tx pgx.Tx) error) {
 		t.Helper()
 		lease(row, row.LeaseToken)
-		finish, err := pool.BeginTx(ctx, pgx.TxOptions{})
+		holding, err := pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
-			t.Fatalf("begin the finish: %v", err)
+			t.Fatalf("begin the transaction that deletes row %d: %v", row.ID, err)
 		}
-		defer func() { _ = finish.Rollback(context.Background()) }()
-		if err := records.FinishLeasedOutbox(ctx, finish, row.ID, row.LeaseToken); err != nil {
-			t.Fatalf("finish row %d: %v", row.ID, err)
+		defer func() { _ = holding.Rollback(context.Background()) }()
+		if err := remove(holding); err != nil {
+			t.Fatalf("delete row %d: %v", row.ID, err)
 		}
 		ticked := make(chan struct{})
 		go func() {
 			tick(row)
 			close(ticked)
 		}()
-		testwait.Eventually(t, "the tick's renewal to wait on the finish's lock", func() bool {
+		testwait.Eventually(t, "the tick's renewal to wait on the delete's lock", func() bool {
 			var waiting int
 			if err := pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").Scan(&waiting); err != nil {
 				t.Fatalf("count the backends waiting on a lock: %v", err)
 			}
 			return waiting == 1
 		})
-		if err := finish.Commit(ctx); err != nil {
-			t.Fatalf("commit the finish of row %d: %v", row.ID, err)
+		if err := holding.Commit(ctx); err != nil {
+			t.Fatalf("commit the delete of row %d: %v", row.ID, err)
 		}
 		select {
 		case <-ticked:
 		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("the tick over row %d did not end once the finish committed", row.ID)
+			t.Fatalf("the tick over row %d did not end once the delete committed", row.ID)
 		}
 	}
-	const lostLine = "outbox row lease lost"
-	const finishedLine = "outbox row finished while its run goes on"
-	want := func(when string, lost, finished int) {
+	finish := func(row record.OutboxRow) func(pgx.Tx) error {
+		return func(tx pgx.Tx) error { return records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken) }
+	}
+	lines := map[string]string{
+		"lost":     "level=WARN msg=\"outbox row lease lost",
+		"finished": "level=INFO msg=\"outbox row finished while its run goes on",
+		"lapsed":   "level=WARN msg=\"outbox row gone while its run goes on: another lane finished it after this lease lapsed",
+		"dropped":  "level=WARN msg=\"outbox row gone while its run goes on: a newer write of its issue may have dropped it",
+	}
+	want := func(when string, counts map[string]int) {
 		t.Helper()
-		if got := count(logs, lostLine); got != lost {
-			t.Errorf("%s: lost-lease lines = %d, want %d: %s", when, got, lost, logs.String())
-		}
-		if got := count(logs, finishedLine); got != finished {
-			t.Errorf("%s: finished-row lines = %d, want %d: %s", when, got, finished, logs.String())
+		for name, line := range lines {
+			if got := count(logs, line); got != counts[name] {
+				t.Errorf("%s: %s lines = %d, want %d: %s", when, name, got, counts[name], logs.String())
+			}
 		}
 	}
 
 	lease(status, "another-lane")
 	tick(status)
-	want("after a tick that found another lane's lease", 1, 0)
-	finishedUnderTick(check)
-	want("after a tick that found the check finished", 1, 1)
-	finishedUnderTick(status)
-	want("after a tick that found the status write finished", 2, 1)
+	want("after a tick that found another lane's lease", map[string]int{"lost": 1})
+	goneUnderTick(closeCheck, finish(closeCheck))
+	want("after a tick that found the close's check finished", map[string]int{"lost": 1, "finished": 1})
+	goneUnderTick(idleCheck, finish(idleCheck))
+	want("after a tick that found the idle release's check finished", map[string]int{"lost": 1, "finished": 1, "lapsed": 1})
+	goneUnderTick(status, func(tx pgx.Tx) error { return records.DropStatusWrites(ctx, tx, status.Issue) })
+	want("after a tick that found the status write dropped", map[string]int{"lost": 1, "finished": 1, "lapsed": 1, "dropped": 1})
 }
