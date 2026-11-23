@@ -171,6 +171,7 @@ func (r *ownerStepsRig) processEnds(c *stepClaimant, method string) {
 // owner gives a plan.md whose one block, default, names no steps and holds "Text three":
 // register_plan answers 200, and B's implementer's task holds "Text three" and the default steps.
 func TestALaterVersionChangesTheTextOfARunningTaskForEveryLaterStart(t *testing.T) {
+	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
 	const one, two, three = "Text one", "Text two", "Text three"
 	plan := r.document("plan.md", textPlan("a", "implementer reviewer", one))

@@ -273,6 +273,7 @@ func plannerTasks(key string) string {
 // versions, which is what a worker compares. A planner's edit of a section then changes a token
 // and that text, so both reads can tell the two writers apart.
 func TestTheOwnersDocumentLeavesThePlannersPlanAsItIs(t *testing.T) {
+	t.Parallel()
 	r := newOwnerStepsRig(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}), 2, config.Project{})
 	const cOne, cTwo, dOne, dTwo = "Owner text one", "Owner text two", "Owner text three", "Owner text four"
 
