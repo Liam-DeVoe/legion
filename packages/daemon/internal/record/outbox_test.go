@@ -65,6 +65,8 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		DesignNewsReconcile{},
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks,
+			WakeDetail: "head1 failed build"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
@@ -463,6 +465,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "a start naming a wake detail and no wake kind", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
+		{name: "a suspend naming a wake detail", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeDetail: "head1 failed build"}, reason: "only a wake's start names one"},
 		{name: "unknown supervise operation", payload: SuperviseRequest{Op: "unknown"}, reason: "unknown supervise operation"},
 		{name: "a stop that is not a tree close", payload: SuperviseRequest{Op: "stop", Tree: "LEGION-208", Role: claim.RoleArchitect}, reason: "unknown supervise operation"},
 		{name: "an issue close naming a linger", payload: SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Linger: 7}, reason: "only a tree close"},
@@ -531,6 +535,36 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			_, err := NewOutboxRow("LEGION-208", tc.payload, now)
 			if err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
+			}
+		})
+	}
+}
+
+// A wake's start carries the wake's detail beside its kind (SuperviseRequest.WakeDetail), so a
+// cancel or a release's record can render its task again. A start that an earlier daemon queued
+// carries no `wakeDetail` key, and the outbox still decodes it, with the detail empty: the
+// decoder refuses an unknown key (DisallowUnknownFields), never a missing one. Both payloads are
+// spelled as the table holds them.
+func TestAWakeStartDecodesWithItsDetailAndWithout(t *testing.T) {
+	for _, tc := range []struct {
+		name, payload string
+		want          SuperviseRequest
+	}{
+		{name: "this daemon's start, with the detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks","wakeDetail":"head1 failed build"}`,
+			want: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake",
+				WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build"}},
+		{name: "an earlier daemon's start, with no detail",
+			payload: `{"op":"start","tree":"LEGION-208","role":"tester","generation":3,"task":"a wake","wakeKind":"checks"}`,
+			want:    SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := DecodeOutboxPayload(OutboxRow{ID: 7, Kind: OutboxKindSupervise, Issue: "LEGION-208", Payload: []byte(tc.payload)})
+			if err != nil {
+				t.Fatalf("DecodeOutboxPayload(%s) = %v, want it decoded", tc.payload, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("DecodeOutboxPayload(%s) = %#v, want %#v", tc.payload, got, tc.want)
 			}
 		})
 	}

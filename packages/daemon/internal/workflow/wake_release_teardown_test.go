@@ -67,7 +67,7 @@ func TestAWakeTakenBeforeTheTeardownLeavesTheRoleInOneTrueState(t *testing.T) {
 		t.Fatalf("the release's teardown decision: %v", err)
 	}
 	if decision.Act == store.ReleaseCancel {
-		resume := func(role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
+		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
 				Role: role, Generation: generation}, time.Now())
 			if err != nil {

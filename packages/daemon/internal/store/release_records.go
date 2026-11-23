@@ -31,9 +31,9 @@ type PodRelease struct {
 	BundleBytes int
 	// WakeTask is the workflow's rule for the task of a wake taken under the release's mark
 	// (workflow.ReleasedWakeTask), which RecordPodRelease uses and no read fills: it answers, from
-	// the kind of the wake's resume and the task its start carries, the task that start carries
-	// from now on. The store does not restate the wake's words. nil rewrites no task.
-	WakeTask func(kind, task string) string
+	// the kind of the wake's resume and the detail and the task its start carries, the task that
+	// start carries from now on. The store does not restate the wake's words. nil rewrites no task.
+	WakeTask func(kind, detail, task string) string
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
@@ -227,14 +227,16 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 // with no first turn and not closed. Their starts are the starts of that role above the mark's
 // last_row that have a wake's own shape (wakeStartRow). A root architect's entry start and a
 // production check's look are no wake's start, and keep their task. retell answers the task a
-// start carries from now on, from the kind of the role's newest such resume and the task the
-// start carries now (PodRelease.WakeTask). A start of a role with no such resume is no such
-// wake's, and keeps its task. With no mark or a nil retell, it writes nothing.
-func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, retell func(kind, task string) string) error {
+// start carries from now on, from the kind of the role's newest such resume and the detail and
+// the task the start carries now (PodRelease.WakeTask). A start of a role with no such resume is
+// no such wake's, and keeps its task, and so does a start an earlier daemon queued with no detail
+// (retellStarts). With no mark or a nil retell, it writes nothing.
+func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, project, issue string, retell func(kind, detail, task string) string) error {
 	if retell == nil {
 		return nil
 	}
-	return retellStarts(ctx, tx, issue, retell, `select outbox.id, coalesce(outbox.payload->>'task', ''), woken.kind
+	return retellStarts(ctx, tx, issue, retell, `select outbox.id, outbox.payload->>'role', coalesce(outbox.payload->>'task', ''),
+		woken.kind, outbox.payload->>'wakeDetail'
 		from issue_releases m join outbox on outbox.issue = m.issue and outbox.id > m.last_row and `+wakeStartRow+`
 			and outbox.payload->>'role' = any(m.suspended)
 		join lateral (select r.kind from pod_resumes r where r.project = m.project and r.issue = m.issue

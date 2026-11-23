@@ -3446,6 +3446,7 @@ The `drop table` and the last `delete` go together.
 The earlier release reads no such table, and the delete takes that migration's version row, so the store reports the highest row neither block deletes: 20261114031356 on a store #3711's release migrated, 20261116165926 on one that cybermonklabs/legion#4228's release migrated, 20261117200337, dispatch://INFRA-4109's `20261117200337_update_ask_marks_at_delivery`, on one that cybermonklabs/legion#4337's release or a later one before cybermonklabs/legion#4464 migrated, cybermonklabs/legion#4220's among them, 20261119003157 on one that #4464's release or a later one before cybermonklabs/legion#4598 migrated, cybermonklabs/legion#4115's among them, 20261120055717, dispatch://INFRA-4729's `20261120055717_dispatch_issue_value_sequences`, on one that #4598's release or a later one before cybermonklabs/legion#4194 migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose own 20261120042902, 20261120012547 and 20261119203047 stand below it, and 20261120210000, dispatch://INFRA-3589's `20261120210000_issue_release_committed`, on one that #4194's release or a later one migrated, once the way back in the header of cybermonklabs/legion#4903's `20261121170714_dispatch_issue_applied_seq.up.sql` has run first: neither of #4194's two migrations has a way back, and both stand above 20261120055717.
 The drop is owed to the roll-forward, which cannot create the table again while it stands.
 `Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
+A rollback past #4194's release also runs its one statement that changes no schema version, which strips the `wakeDetail` key the earlier release refuses from each queued start, after #4194's daemon stops and before the earlier image starts ([Rolling back idle release](#rolling-back-idle-release)).
 The SQL was run on 2026-11-15 at 17:51Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500, leaving 143 versions recorded, and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
 `Migrate` then applied the upgrade, the claim handshake, dispatch://INFRA-3274's 20261114031356_merge_queue_removal and the mark, and left 147 versions recorded, the highest 20261114061900, with the architect's row and claim at entry 1, the row unmarked, and two marks.
 After it the architect's claim was written given entry 2 with a handshake of that entry, queued and confirmed, the architect's row was written at entry 2 carrying a resume's task marked to be sent as written, and one unsent `architect-stalled` wake was written into the outbox.
@@ -3463,6 +3464,7 @@ That is 20261116165926 on a store #4228's release migrated, 20261117200337 on on
 The test runs no way back but the two blocks.
 A rollback of a store that #4903's release or a later one before #4194 migrated runs the way back in the header of `20261121170714_dispatch_issue_applied_seq.up.sql` first, which deletes that version's row, so that store reports 20261120055717 after the two blocks, as one that #4598's release migrated does.
 #4194 merges onto a main that already carries #4903, so a rollback of a store that #4194's release or a later one migrated runs that way back first too, and that store then reports 20261120210000 after the two blocks: neither of #4194's two migrations has a way back, and both stand above 20261120055717.
+#4194's release still adds one statement to such a rollback, which changes no schema version: it strips the `wakeDetail` key from each queued start, which the earlier release refuses, after #4194's daemon stops and before the earlier image starts ([Rolling back idle release](#rolling-back-idle-release)).
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3476,7 +3478,7 @@ The eleven statements, after that block where it runs, leave the store at the ea
 20261117200337, dispatch://INFRA-4109's update ask mark (cybermonklabs/legion#4337), on a store that release or a later one before cybermonklabs/legion#4464 migrated, cybermonklabs/legion#4328's, cybermonklabs/legion#4299's, cybermonklabs/legion#4400's, cybermonklabs/legion#4220's and cybermonklabs/legion#4488's among them: no way back deletes its row, the ways back of #4328's 20261116234034, #4299's 20261117112334 and #4400's 20261117064152 each delete only that migration's own, #4220's 20261116144907 has no way back, and #4488's way back deletes outbox rows alone;
 20261119003157, cybermonklabs/legion#4464's conflict reads and merge forward, on a store that release or a later one before cybermonklabs/legion#4598 migrated, cybermonklabs/legion#4115's among them: #4464's way back deletes outbox rows and clears two columns and deletes no version row, and #4115's three statements delete and rewrite outbox rows alone;
 20261120055717, cybermonklabs/legion#4598's sequence of each value of the copy of Dispatch's issues (dispatch://INFRA-4729), on a store that release or a later one before cybermonklabs/legion#4194 migrated, cybermonklabs/legion#4581's, cybermonklabs/legion#4573's and cybermonklabs/legion#3995's among them, whose 20261120042902, 20261120012547 and design news, 20261119203047, stand below it: #4598's way back writes `dispatch_issue_refills` alone, #4581's deletes outbox rows, drops one column and deletes no version row but its own, 20261120042902, which stands below this one, #4573's statement rewrites outbox rows alone, and #3995's four statements delete no version row either;
-and 20261120210000, #4194's committed release mark (dispatch://INFRA-3589), on a store that release or a later one migrated, once the way back in the header of cybermonklabs/legion#4903's `20261121170714_dispatch_issue_applied_seq.up.sql` has run first, as every release of #4194 carries #4903: neither of #4194's two migrations, 20261120193000 and 20261120210000, has a way back, and both stand above 20261120055717.
+and 20261120210000, #4194's committed release mark (dispatch://INFRA-3589), on a store that release or a later one migrated, once the way back in the header of cybermonklabs/legion#4903's `20261121170714_dispatch_issue_applied_seq.up.sql` has run first, as every release of #4194 carries #4903: neither of #4194's two migrations, 20261120193000 and 20261120210000, has a way back, and both stand above 20261120055717. #4194's release adds one statement that changes no version, the strip of `wakeDetail` from each queued start in [Rolling back idle release](#rolling-back-idle-release), which runs after its daemon stops and before the earlier image starts.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3546,7 +3548,7 @@ The migrations recorded above this one are these.
 20261120012547_set_back_observed_seq, of dispatch://INFRA-3178, changes no table, runs no statement and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
-20261120193000_issue_release_taken_pod and 20261120210000_issue_release_committed, of dispatch://INFRA-3589, add `issue_releases.released_id` at its default, 0, and `issue_releases.committed` at its default, false, and touch none of the six, so the block holds over them and leaves both columns standing, which the earlier release names in no statement; neither has a way back, and the earlier release writes neither column.
+20261120193000_issue_release_taken_pod and 20261120210000_issue_release_committed, of dispatch://INFRA-3589, add `issue_releases.released_id` at its default, 0, and `issue_releases.committed` at its default, false, and touch none of the six, so the block holds over them and leaves both columns standing, which the earlier release names in no statement; neither has a way back, and the earlier release writes neither column. The same release writes a key the earlier release refuses on each wake's start, `wakeDetail`, so a rollback to a release before it runs the one statement of [Rolling back idle release](#rolling-back-idle-release) that strips that key, after its daemon stops and before the earlier image starts.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
@@ -7927,6 +7929,8 @@ A release can still be cancelled after such a wake, for another cause: a bundle 
 The pod then never goes away, so the cancel deletes the wake's resume and its queued start, and the role starts once, in the same pod.
 For a CI settlement or the backstop, that one start carries the wake's text under a preamble that says the release did not finish, because the role learns of either only from that text.
 For a message wake, the start carries no task, since the message itself reaches the session.
+A role whose stop suspended its claim and did not record it on the release's mark is resumed by no cancel, since the mark does not name it: its wake's start stays, and the cancel tells that start in the words of a release that did not finish, so the role starts once, in the same pod.
+A role that an earlier release left `released` keeps its wake's start as it was, since that earlier release did take its pod.
 While the project is paused, the cancel keeps that wake and its start instead: they are the launch that the pause owes the role, and the pause's resume runs that start.
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
 A wake report of the Envoy listener, for a role message or a session message, that names a live claim of a pod whose release has not ended does not cancel the release, whether or not its role processes are stopped yet: that claim is not `released` yet, so the report has nothing to wake.
@@ -7940,6 +7944,53 @@ A listener's wake report that finds the role's start already queued by a cancell
 the daemon logs `wake: the role is coming back on a start already queued; this wake takes nothing`.
 From the wake to the woken role's first turn is 5 minutes or less for 90% of wakes and 10 minutes or less for each one; a resume with no first turn 10 minutes after its wake writes a warning naming the issue, the role and the step it waits on.
 The 10 minutes of that warning run from the resume's stuck clock (`pod_resumes.clock_at`), which starts at the wake and moves to the moment the wake pacing lets the role's launch out, so a launch that waits its turn in a long pacing queue is not warned about for that wait.
+
+A cancel is possible only until the teardown's point of no return.
+The runtime reads the issue's Sandbox under the pod's launch turn and then asks the store once more (`CommitIssueRelease`, `internal/store/issue_release.go`).
+Where that read lets the teardown act, the same transaction marks the release committed (`issue_releases.committed`), and the runtime then takes the pod.
+From then on no cause cancels the release.
+Each later attempt of the teardown row asks the runtime again, until the runtime answers with no error, and then records the release (`issue_releases.released_id`) and finishes its own steps.
+While a committed release has not finished, the whole workflow of its issue waits, not only its wakes:
+
+- every start of a role of the issue waits behind the older `issue_release` row: a phase start, an entry start, a wake's start and a cancel's resume;
+
+- every notice, hook prompt, merge-queue removal message and merge-forward message to a `released` role of the issue waits in its outbox row, and reads the role again every 30 seconds, at debug level;
+
+- the teardown row logs its error at each attempt, in its `outbox row failed` line.
+
+So a Kubernetes step that keeps failing after the commit, such as the delete of a role Secret or of the Sandbox, stops the issue.
+Fix the cluster first.
+When the runtime's step succeeds, the next attempt of the teardown finishes the release, the daemon logs `outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake`, and every row the release held runs.
+
+If the step cannot succeed, end the release by hand.
+This is the last way out: no backstop is armed for the release's roles, and where the mark's `released_id` is 0 the release records hold no row for this release.
+Stop the project's daemon, and read the release's mark:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c "select project, committed, released_id from issue_releases where issue = '<KEY>'"
+```
+
+Continue only where `committed` is `t`.
+Then run, with `<project>` set to the `project` that row names, which is the project as the claims table spells it:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+delete from outbox where kind = 'issue_release' and issue = '<KEY>'
+  and exists (select 1 from issue_releases where project = '<project>' and issue = '<KEY>' and committed);
+delete from issue_releases where project = '<project>' and issue = '<KEY>' and committed;
+commit;
+SQL
+```
+
+It prints `BEGIN`, `DELETE 1`, `DELETE 1` and `COMMIT`.
+The first statement deletes the teardown row, so the starts it held run.
+The second deletes the mark, so the messages that wait for the release go on and a listener's wake report finds the claim `released`.
+Each statement acts only on a committed mark: an uncommitted release can still be cancelled, and its teardown is left to decide that.
+The bundle of unpushed work stays in `workspace_bundles`, and the issue's next pod restores it.
+Start the daemon.
+The issue's claims stay `released`, and the next wake of each role brings it back.
+The open phase's worker has no backstop, so list the released claims (`legion claims list --json`) and resume that worker (`legion claims resume --claim <token>`).
 
 A release of a pod no claim owns suspends no claim, so it leaves no released claim and owes no wake.
 Its pod comes back at the next start of a claim of that issue, and that start builds the Sandbox, the pod and the workspace again.
@@ -8064,6 +8115,23 @@ SQL
 It prints `DELETE <n>`, and `DELETE 0` once every such release has finished.
 The teardown row of a mark this deletes finds no mark and finishes without acting, which costs nothing: that release suspends no claim and saves no bundle, so the pod it would have taken stands, and the earlier release has no rule that releases a pod no claim owns.
 An issue whose pod this rule has already released stands with no Sandbox and no pod, which the earlier release builds again at the next start of a claim of that issue.
+
+The release that lets a wake run while its release stands (cybermonklabs/legion#4194) adds one step too.
+Each wake's start that it queues carries the wake's detail beside its kind (`wakeDetail`, `record.SuperviseRequest.WakeDetail`).
+A release before it decodes an outbox row strictly (`record.DecodeOutboxPayload`) and refuses an unknown key, so a start that still carries `wakeDetail` is a row that release retries for ever.
+Stop this release's daemon, run the statement below, and only then start the earlier image:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+update outbox set payload = payload - 'wakeDetail' where kind = 'supervise' and payload ? 'wakeDetail';
+commit;
+SQL
+```
+
+It prints `UPDATE <n>`, and `UPDATE 0` on a rerun.
+Each start keeps its task, its wake kind and the rest of its payload, which the earlier release reads.
+A later upgrade back needs no step: this release reads a start with no detail too, and keeps that start's task as it is where a cancel or a release's record would tell it again (`retellStarts`, `internal/store/release_cancel.go`).
 
 ### Pausing a project
 
@@ -8239,10 +8307,10 @@ Its took-nothing arm counts nothing while the architect's launch waits in the pa
 The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
 After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
-One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the issue's newest release and the role's last ready (`StoppingPauseTx`, `internal/store/pause_stops.go`).
+One rule says which pause holds a wake, and every wake but the stop's owed launch reads it (`PauseOfWake`, `internal/store/wake_take.go`): the project's open pause, else the pause that held the outbox row the wake is taken for, else the pause whose stop of the role is the role's newest stop and newer than both the issue's newest release and the role's last ready (`StoppingPauseTx`, `internal/store/pause_stops.go`).
 The launch that a stop owes a role is a wake of the pause that made the stop, which the stop transaction takes with that pause (`pods.WakePause`).
 So a wake taken while the project is paused is the open pause's, the wake of a row that a lane took before the pause and ran while it stood among them.
-The resume marks each row that its pause holds with the pause, whatever the row's due time (`outbox.held_by_pause`, `MarkPauseHeldRows`, `internal/record/store.go`), and the wake that a notice, a hook's prompt, a merge-queue removal or a merge forward's message takes for such a row after the resume reads that mark (`Store.TakePodWake`, `internal/store/wake.go`, read by `wakeForDelivery`, `internal/daemon/wake.go`).
+The resume marks each row that its pause holds with the pause, whatever the row's due time (`outbox.held_by_pause`, `MarkPauseHeldRows`, `internal/record/store.go`), and the wake that a notice, a hook's prompt, a merge-queue removal or a merge forward's message takes for such a row after the resume reads that mark (`Store.TakePodWake`, `internal/store/wake_take.go`, read by `wakeForDelivery`, `internal/daemon/wake.go`).
 A listener's wake, a CI settlement's wake and a backstop's wake are taken for no row, so they read the open pause and the pause that stopped the role alone (`wakeReleased`, `internal/workflow/wake.go`).
 A role message takes no wake for its row: after the resume, the outbox publishes a role message that the pause held for a role that a pause stopped, and the listener's report of that publish wakes the role.
 After the resume, the wake of a role that the pause stopped is that pause's whichever path takes it, a delivery written after the resume and the listener's report of a role message that the pause held or of a message that another session sends included, until the role's agent is ready again or a release of its pod is recorded.

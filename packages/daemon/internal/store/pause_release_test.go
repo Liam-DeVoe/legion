@@ -275,7 +275,9 @@ func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.
 	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
 	queueStart(t, st, claim.RoleImplementer, "implementing")
 	queueWakeStart(t, st, claim.RoleArchitect, pods.WakeChecks)
-	retell := func(kind, task string) string { return "the pause's " + kind + " wake: " + task }
+	retell := func(kind, detail, task string) string {
+		return "the pause's " + kind + " wake of " + detail + ": " + task
+	}
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
 		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker, WakeTask: retell})
@@ -301,7 +303,7 @@ func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.
 	}
 	want := []string{
 		"implementer||the wake's task|1",
-		"implementer||the pause's " + pods.WakeChecks + " wake: the wake's task|1",
+		"implementer||the pause's " + pods.WakeChecks + " wake of the wake's detail: the wake's task|1",
 		"implementer|implementing|the phase's task|1",
 		"architect||the wake's task|1",
 	}
@@ -396,7 +398,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 		}
 	}
 	pause, _ := pauseLegion(t, st, pausedAt)
-	resume := func(role claim.Role, generation uint64) (IdleReleaseRow, error) {
+	resume := func(role claim.Role, generation uint64, _ DroppedWake) (IdleReleaseRow, error) {
 		return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
 			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, generation))}, nil
 	}

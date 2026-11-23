@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,20 +133,20 @@ func TestATeardownReadsAnEntryStartOrACheckLookBesideAWakeAsWorkThePodWasGiven(t
 }
 
 // A cancel deletes each wake taken under the mark and the start that wake queued, and hands its
-// builder the kind and the task of that wake (ReleaseWokenRow). The root architect's entry start
-// and a production check's look are no wake's start: they stay as they were queued, and neither
-// task reaches the builder as the wake's.
+// builder the kind, the detail and the task of that wake (DroppedWake). The root architect's entry
+// start and a production check's look are no wake's start: they stay as they were queued, and
+// neither task reaches the builder as the wake's.
 func TestACancelKeepsAnEntryStartAndACheckLookQueuedBesideAWake(t *testing.T) {
 	st := migratedStore(t)
 	wakesBesideWork(t, st, true, true)
 	told := map[claim.Role]string{}
-	woken := func(role claim.Role, generation uint64, kind, task string) (IdleReleaseRow, error) {
-		told[role] = kind + "|" + task
-		return resumeRow(role, generation)
+	woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+		told[role] = wake.Kind + "|" + wake.Detail + "|" + wake.Task
+		return resumeRow(role, generation, wake)
 	}
 
-	cancelled, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, nil, record.OutOfWorkflow,
-		ReleaseCancelPause{At: time.Now()}, woken)
+	cancelled, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
+		ReleaseCancelPause{At: time.Now()})
 	if err != nil || !slices.Equal(cancelled.Resumed, []claim.Role{claim.RoleArchitect, claim.RoleImplementer}) {
 		t.Fatalf("CancelIssueRelease = %+v, %v; want the architect and the implementer resumed", cancelled, err)
 	}
@@ -154,11 +156,11 @@ func TestACancelKeepsAnEntryStartAndACheckLookQueuedBesideAWake(t *testing.T) {
 			got, want)
 	}
 	wantTold := map[claim.Role]string{
-		claim.RoleArchitect:   pods.WakeRoleMessage + "|the wake's task",
-		claim.RoleImplementer: pods.WakeChecks + "|the wake's task",
+		claim.RoleArchitect:   pods.WakeRoleMessage + "|the wake's detail|the wake's task",
+		claim.RoleImplementer: pods.WakeChecks + "|the wake's detail|the wake's task",
 	}
 	if !maps.Equal(told, wantTold) {
-		t.Errorf("the builder was told %v, want %v: the wake's own task of each role", told, wantTold)
+		t.Errorf("the builder was told %v, want %v: the wake's own detail and task of each role", told, wantTold)
 	}
 }
 
@@ -171,14 +173,16 @@ func TestARetellRewritesNoEntryStartAndNoCheckLook(t *testing.T) {
 	t.Run("the release's record", func(t *testing.T) {
 		st := migratedStore(t)
 		wakesBesideWork(t, st, true, true)
-		retell := func(kind, task string) string { return "the release's " + kind + " wake: " + task }
+		retell := func(kind, detail, task string) string {
+			return "the release's " + kind + " wake of " + detail + ": " + task
+		}
 		if _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 			Roles: []string{"architect", "implementer"}, At: time.Now().UTC(), WakeTask: retell}); err != nil {
 			t.Fatalf("record the release: %v", err)
 		}
 		want := []string{
-			"architect||the release's " + pods.WakeRoleMessage + " wake: the wake's task|" + pods.WakeRoleMessage + "||",
-			"implementer||the release's " + pods.WakeChecks + " wake: the wake's task|" + pods.WakeChecks + "||",
+			"architect||the release's " + pods.WakeRoleMessage + " wake of the wake's detail: the wake's task|" + pods.WakeRoleMessage + "||",
+			"implementer||the release's " + pods.WakeChecks + " wake of the wake's detail: the wake's task|" + pods.WakeChecks + "||",
 			entryStart, lookStart,
 		}
 		if got := startsOfTheRoot(t, st); !slices.Equal(got, want) {
@@ -189,15 +193,17 @@ func TestARetellRewritesNoEntryStartAndNoCheckLook(t *testing.T) {
 		st := migratedStore(t)
 		wakesBesideWork(t, st, true, true)
 		pause, _ := pauseLegion(t, st, time.Now().UTC())
-		retell := func(kind, task string) string { return "the pause's " + kind + " wake: " + task }
+		retell := func(kind, detail, task string) string {
+			return "the pause's " + kind + " wake of " + detail + ": " + task
+		}
 		cancelled, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow,
 			ReleaseCancelPause{At: time.Now().UTC(), WakeTask: retell})
 		if err != nil || cancelled.Pause != pause.ID || len(cancelled.Resumed) != 0 {
 			t.Fatalf("cancel the release while paused = %+v, %v; want pause %d and no role resumed", cancelled, err, pause.ID)
 		}
 		want := []string{
-			"architect||the pause's " + pods.WakeRoleMessage + " wake: the wake's task|" + pods.WakeRoleMessage + "||",
-			"implementer||the pause's " + pods.WakeChecks + " wake: the wake's task|" + pods.WakeChecks + "||",
+			"architect||the pause's " + pods.WakeRoleMessage + " wake of the wake's detail: the wake's task|" + pods.WakeRoleMessage + "||",
+			"implementer||the pause's " + pods.WakeChecks + " wake of the wake's detail: the wake's task|" + pods.WakeChecks + "||",
 			entryStart, lookStart,
 		}
 		if got := startsOfTheRoot(t, st); !slices.Equal(got, want) {
@@ -336,14 +342,18 @@ func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testin
 			if paused {
 				pauseLegion(t, st, time.Now().UTC())
 			}
-			retold := func(kind, task string) string { return "the cancelled release's " + kind + " wake: " + task }
-			kept := func(kind, task string) string { return "the pause's " + kind + " wake: " + task }
+			retold := func(kind, detail, task string) string {
+				return "the cancelled release's " + kind + " wake of " + detail + ": " + task
+			}
+			kept := func(kind, detail, task string) string {
+				return "the pause's " + kind + " wake of " + detail + ": " + task
+			}
 
 			if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
 				ReleaseCancelPause{At: time.Now().UTC(), WakeTask: kept, TakenOverWakeTask: retold}); err != nil {
 				t.Fatalf("CancelIssueRelease: %v", err)
 			}
-			want := []string{"implementer||the cancelled release's " + pods.WakeRoleMessage + " wake: the wake's task|" + pods.WakeRoleMessage + "||"}
+			want := []string{"implementer||the cancelled release's " + pods.WakeRoleMessage + " wake of the wake's detail: the wake's task|" + pods.WakeRoleMessage + "||"}
 			if !paused {
 				want = append(want, "architect|||||")
 			}
@@ -565,4 +575,119 @@ func TestADeliveryWakeWaitsForATakeoverOfItsClaimAndTakesNothing(t *testing.T) {
 	if n := pauseCount(t, st, `select count(*)::int from pod_resumes where issue = $1`, rootIssue); n != 0 {
 		t.Fatalf("pod_resumes holds %d resumes, want none: the operator took the claim over", n)
 	}
+}
+
+// earlierDaemonsWakes is a release of the root's pod whose two stops have recorded the implementer
+// and the architect as `released`, and a wake of each taken since, each with its start: the
+// architect's start as this daemon's wake queues it, with the wake's detail (queueWakeStart), and
+// the implementer's as an earlier daemon queued it, before a start carried the detail.
+func earlierDaemonsWakes(t *testing.T, st *Store) {
+	t.Helper()
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+	boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+	at := time.Now().UTC()
+	for _, wake := range []struct {
+		role claim.Role
+		kind string
+	}{{claim.RoleArchitect, pods.WakeRoleMessage}, {claim.RoleImplementer, pods.WakeChecks}} {
+		token, err := claim.NewToken("legion", rootIssue, wake.role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if taken, err := st.TakePodWake(ctx, "legion", rootIssue, token, wake.kind, at, 0); err != nil || !taken {
+			t.Fatalf("take the %s wake of the %s = %t, %v; want it taken", wake.kind, wake.role, taken, err)
+		}
+	}
+	queueWakeStart(t, st, claim.RoleArchitect, pods.WakeRoleMessage)
+	queueStartPayload(t, st, claim.RoleImplementer, fmt.Sprintf(`{"op":"start","tree":%q,"role":"implementer","generation":1,"task":"the wake's task","wakeKind":%q}`,
+		rootIssue, pods.WakeChecks))
+}
+
+// The reviewer's comment 4672066581 on cybermonklabs/legion#4194: a cancel and a release's record
+// tell a wake's start again by rendering WakeTask from the wake's kind and the detail its start
+// carries (record.SuperviseRequest.WakeDetail). A start that an earlier daemon queued carries no
+// detail, so its task cannot be rendered again, and no words are cut out of it either. Each retell
+// leaves its task as it is and logs why: the release's record, a cancel while the project is
+// paused, and a cancel of a role whose claim an operator took over. A cancel while the project
+// runs drops that wake, and hands its builder the zero DroppedWake for that role, so the resume
+// carries no task of it, and logs why. The architect's start, which carries its detail, is told
+// again by each retell, and its dropped wake reaches the builder whole.
+func TestAStartAnEarlierDaemonQueuedWithNoDetailKeepsItsTask(t *testing.T) {
+	const kept = "store: the start of a wake that an earlier daemon queued carries no detail, so its task cannot be told again; its task is kept as it is"
+	retell := func(kind, detail, task string) string {
+		return "told again: " + kind + " wake of " + detail + ": " + task
+	}
+	architectRetold := "architect||told again: " + pods.WakeRoleMessage + " wake of the wake's detail: the wake's task|" + pods.WakeRoleMessage + "||"
+	implementerKept := "implementer||the wake's task|" + pods.WakeChecks + "||"
+	for _, tc := range []struct {
+		name string
+		act  func(t *testing.T, st *Store)
+		want []string
+		logs string
+	}{
+		{name: "the release's record", act: func(t *testing.T, st *Store) {
+			if _, err := st.RecordPodRelease(context.Background(), PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+				Roles: []string{"architect", "implementer"}, At: time.Now().UTC(), WakeTask: retell}); err != nil {
+				t.Fatalf("record the release: %v", err)
+			}
+		}, want: []string{architectRetold, implementerKept}, logs: kept},
+		{name: "a cancel while the project is paused", act: func(t *testing.T, st *Store) {
+			pauseLegion(t, st, time.Now().UTC())
+			if _, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: time.Now().UTC(), WakeTask: retell}); err != nil {
+				t.Fatalf("cancel the release while paused: %v", err)
+			}
+		}, want: []string{architectRetold, implementerKept}, logs: kept},
+		{name: "a cancel of roles an operator took over", act: func(t *testing.T, st *Store) {
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+			rootClaim(t, st, claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByOperator)
+			if _, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: time.Now().UTC(), TakenOverWakeTask: retell}); err != nil {
+				t.Fatalf("cancel the release: %v", err)
+			}
+		}, want: []string{architectRetold, implementerKept}, logs: kept},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			earlierDaemonsWakes(t, st)
+			logged := captureLog(t)
+			tc.act(t, st)
+			if got := startsOfTheRoot(t, st); !slices.Equal(got, tc.want) {
+				t.Errorf("queued starts = %q, want %q: the start with no detail keeps its task, and the start with one is told again", got, tc.want)
+			}
+			if lines := strings.Count(logged.String(), tc.logs); lines != 1 || !strings.Contains(logged.String(), "role=implementer") {
+				t.Errorf("the log holds %d lines %q, want one, of the implementer's start; log:\n%s", lines, tc.logs, logged.String())
+			}
+		})
+	}
+	t.Run("a cancel while the project runs", func(t *testing.T) {
+		st := migratedStore(t)
+		earlierDaemonsWakes(t, st)
+		logged := captureLog(t)
+		told := map[claim.Role]DroppedWake{}
+		woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+			told[role] = wake
+			return resumeRow(role, generation, wake)
+		}
+		if _, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
+			ReleaseCancelPause{At: time.Now().UTC()}); err != nil {
+			t.Fatalf("cancel the release: %v", err)
+		}
+		want := map[claim.Role]DroppedWake{
+			claim.RoleArchitect:   {Kind: pods.WakeRoleMessage, Detail: "the wake's detail", Task: "the wake's task"},
+			claim.RoleImplementer: {},
+		}
+		if !maps.Equal(told, want) {
+			t.Errorf("the builder was told %+v, want %+v: a dropped start with no detail reaches it as no wake", told, want)
+		}
+		const dropped = "store: the start of a wake that an earlier daemon queued carries no detail, so its task cannot be told again; the cancel's resume carries no task of that wake"
+		if lines := strings.Count(logged.String(), dropped); lines != 1 || !strings.Contains(logged.String(), "role=implementer") {
+			t.Errorf("the log holds %d lines %q, want one, of the implementer's start; log:\n%s", lines, dropped, logged.String())
+		}
+	})
 }

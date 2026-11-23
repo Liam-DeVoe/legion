@@ -453,7 +453,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 	// The held wake's start, as the workflow's wake queues it (wakeRow), in the pause's words.
 	const paused = "the pause's words for the settlement"
 	wake, err := record.NewOutboxRow(rootIssue, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
-		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, Pause: pause.ID}, time.Now().UTC())
+		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build", Pause: pause.ID}, time.Now().UTC())
 	if err != nil {
 		t.Fatalf("encode the held wake's start: %v", err)
 	}
@@ -463,7 +463,9 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 	}
 	queueStart(t, store, claim.RoleImplementer, "implementing")
 	queueWakeStart(t, store, claim.RoleReviewer, pods.WakeChecks)
-	retell := func(kind, task string) string { return "the release's " + kind + " wake: " + task }
+	retell := func(kind, detail, task string) string {
+		return "the release's " + kind + " wake of " + detail + ": " + task
+	}
 
 	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
 		Roles: []string{"implementer", "reviewer"}, At: at, WakeTask: retell})
@@ -490,7 +492,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 	}
 	want := []string{
 		"implementer||the wake's task|" + pods.WakeChecks + "|",
-		"implementer||the release's " + pods.WakeChecks + " wake: " + paused + "|" + pods.WakeChecks + "|" + strconv.FormatInt(pause.ID, 10),
+		"implementer||the release's " + pods.WakeChecks + " wake of head1 failed build: " + paused + "|" + pods.WakeChecks + "|" + strconv.FormatInt(pause.ID, 10),
 		"implementer|implementing|the phase's task||",
 		"reviewer||the wake's task|" + pods.WakeChecks + "|",
 	}
@@ -547,7 +549,7 @@ func TestARecordedReleaseAndAResumeOfThePauseAtOnceBothCommit(t *testing.T) {
 	})
 	const paused = "the pause's words for the settlement"
 	start := queueSupervise(t, store, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
-		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, Pause: pause.ID})
+		Generation: 1, Task: paused, WakeKind: pods.WakeChecks, WakeDetail: "head1 failed build", Pause: pause.ID})
 
 	recordIn, resumeIn, resumeMarked := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	var recordOnce, resumeOnce, markedOnce sync.Once
@@ -573,7 +575,7 @@ func TestARecordedReleaseAndAResumeOfThePauseAtOnceBothCommit(t *testing.T) {
 	recorded, resumed := make(chan error, 1), make(chan error, 1)
 	go func() {
 		_, err := store.RecordPodRelease(runCtx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
-			Roles: []string{"implementer"}, At: at, WakeTask: func(kind, task string) string {
+			Roles: []string{"implementer"}, At: at, WakeTask: func(kind, _, task string) string {
 				recordOnce.Do(func() { close(recordIn) })
 				meet(resumeIn, "the resume to hold the pause's row")
 				meet(resumeMarked, "the resume to mark the rows the pause holds")

@@ -233,7 +233,7 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		if err := st.ReleaseSuspendedClaim(ctx, project, "LEGION-208", claim.RoleImplementer, boundary); err != nil {
 			t.Fatalf("record the claim the release suspended: %v", err)
 		}
-		resume := func(role claim.Role, generation uint64) (store.IdleReleaseRow, error) {
+		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
 				Role: role, Generation: generation}, time.Now())
 			if err != nil {
