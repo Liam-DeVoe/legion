@@ -356,15 +356,18 @@ const takeUpsWaiting = new Set<() => void>();
 /**
  * Ends every take-up of what a reload kept still waiting for the kinds of write (`Writes.resume`),
  * since they are in: `kinds.ts` calls this once its imports have defined every kind, whichever
- * load evaluated it, and a writes host calls it again whenever its own load of them answers
- * (`write-hosts.tsx`, `prefetchWriteKinds`), which covers a take-up that began after another load
- * evaluated them. So a take-up whose own ask failed with no reload to follow - the page was
+ * load evaluated it. So a take-up whose own ask failed with no reload to follow - the page was
  * being left, the reader chose to stay at the leave prompt that the writes the reload kept
  * (`WriteStorage.load`) or a write pressed meanwhile open, or the tab's recovery reloads are
- * spent - still ends once another load brings the kinds in, such as the writes host's, and the
- * kept writes go out, every write pressed meanwhile behind them, with no reload by hand. Letting
- * the writes pressed meanwhile into their lines while the take-up waits would not do: a kept
- * write taken up after a newer press on its line would land after it.
+ * spent - still ends once another load brings the kinds in, such as the writes host's
+ * (`write-hosts.tsx`), and the kept writes go out, every write pressed meanwhile behind them,
+ * with no reload by hand. A take-up that begins after the kinds are in ends through its own ask,
+ * answered from what is in. A writes host calls this too whenever its own load of the kinds
+ * answers (`prefetchWriteKinds`), which in the app ends nothing those two have not; it ends a
+ * take-up only where `kinds.ts` was evaluated outside the app's one load of it, as a test's own
+ * import or a later run under `bun test --rerun-each` evaluates it. Letting the writes pressed
+ * meanwhile into their lines while the take-up waits would not do: a kept write taken up after a
+ * newer press on its line would land after it.
  */
 export function kindsRegistered(): void {
   for (const end of takeUpsWaiting) end();
@@ -475,10 +478,11 @@ export class Writes {
   /** What of `login`'s a sign-out would discard here: every write of theirs they can see that
    *  Dispatch has not made - out, waiting its turn, or refused and holding their draft - by its
    *  key and name. That is every such write the store holds, and every one of theirs the reload
-   *  kept that the store has not taken up yet: before the take-up begins (`resume`), while the
-   *  sign-in check the page loaded with is still out, and while the take-up waits for the kinds
-   *  of write. Those are in the tab's storage alone until they are taken up, and a sign-out that
-   *  lands meanwhile discards them with the rest (`signedOut`, `dropLogin`). Not once a drop
+   *  kept that the store has not taken up yet: before the take-up begins (`resume`) - while the
+   *  sign-in check the page loaded with is still out, or on a page that loaded signed out, which
+   *  calls `resume` only once someone signs in (`app.tsx`) - and while the take-up waits for the
+   *  kinds of write. Those are in the tab's storage alone until they are taken up, and a sign-out
+   *  that lands meanwhile discards them with the rest (`signedOut`, `dropLogin`). Not once a drop
    *  meanwhile has taken that person's writes, which the take-up drops in turn
    *  (`TakeUp.dropped`). A quiet write - a read mark - is never shown, and is no change of theirs
    *  to lose. What this tab's sign-out asks the person about, and what this tab answers another
@@ -951,8 +955,10 @@ export class Writes {
    * person's sign-in drops every write of another login (`signedIn`) - and a sweep of every file
    * but one person's, made then, would delete the files of the uploads someone signed in since
    * pressed meanwhile. Before the take-up begins and while it waits, a sign-out asks about the
-   * writes it will take up (`unsent`), and one that lands in another tab drops them unsent
-   * (`dropLogin`); while it waits, leaving the page asks for them (`WriteStorage.load`).
+   * writes it will take up (`unsent`), and one that lands drops them unsent: another tab's, before
+   * it begins as while it waits (`dropLogin`), and this page's own, which only a page whose
+   * take-up has begun can make, while it waits (`signedOut`); while it waits, leaving the page
+   * asks for them (`WriteStorage.load`).
    */
   resume(login: string, loadKinds?: () => Promise<unknown>): void {
     if (this.#resumed) return;

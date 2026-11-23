@@ -16,13 +16,18 @@ import { type ComponentType, type LazyExoticComponent, lazy } from "react";
 // of the hold a row's editor awaits (`features/issue-page/node-caret.ts`), the headless Markdown
 // engine a drawn body awaits and the delivery timeline's charting library were all started bare,
 // and that cost nothing while the shell prefetched no chunk, since the recovery then reloaded,
-// within its budget, for every chunk that failed online. The shell now starts prefetches at a
-// page's first paint - the search bar's and the shortcut sheet's, the Markdown engine's warm and,
-// on an address the landing read takes for the Inbox, the Inbox peek's - and once the page's
-// content has drawn (`content-drawn.ts`) - the Create issue dialog's and the writes host's three
-// (the two lists of writes and the kinds of write, `write-hosts.tsx`) - and Settings starts the
-// new issue page's frame as it draws its switch (`features/issue-page/IssuePagePreference.tsx`),
-// so a bare chunk that failed in that window would reload nothing.
+// within its budget, for every chunk that failed online. The entry now starts the landed page's
+// chunks beside the landing read, before React has drawn anything (`app.tsx`,
+// `preloadRouteChunk`), and the shell starts prefetches at a page's first paint - the search
+// bar's and the shortcut sheet's, the Markdown engine's warm and, on an address the landing read
+// takes for the Inbox, the Inbox peek's - and once the page's content has drawn
+// (`content-drawn.ts`) - the Create issue dialog's and the pending-writes host's three (the two
+// lists of writes and the kinds of write, `write-hosts.tsx`); the sign-in page starts the kinds
+// of write as it draws and again as the reader comes back to it (`KeptWritesHost`); Settings
+// starts the new issue page's frame as it draws its switch
+// (`features/issue-page/IssuePagePreference.tsx`); and an open of a key's surface that the reader
+// called off leaves its download out as a prefetch (`asked-surface.tsx`). A bare chunk that
+// failed in any of those windows would reload nothing.
 //
 // So: a chunk a render waits on goes through `renderChunk`, a chunk nothing waits on through
 // `prefetchChunk`, and nothing imports a chunk through neither. A component a `Suspense` waits

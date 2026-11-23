@@ -127,8 +127,9 @@ export function InboxHost(props: InboxProps): ReactNode {
  * page a digit writes the issue's priority. The drawer drops them as it lands rather than taking
  * them as `typed`: its focus lands on its Close, and its letters and digits are shortcuts that
  * walk and act on its rows (`Inbox.tsx`), not words for its search box, so a key replayed then
- * would act on a row the reader has not seen. Escape, or a press elsewhere, calls the peek off,
- * and a chunk that lands after that opens nothing.
+ * would act on a row the reader has not seen. Escape, a press or a Tab that takes the focus out of
+ * the box, or a move to another address calls the peek off, and a chunk that lands after that
+ * opens nothing.
  *
  * The host keeps the drawer mounted once it has been opened, as the shell always did: the drawer
  * holds the filters, the sort and the search text of this peek, and a reader who closes it and

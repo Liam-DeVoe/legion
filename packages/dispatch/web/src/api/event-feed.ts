@@ -203,15 +203,16 @@ export function useEventFeed({
     //
     // A download that fails is not kept (`keptUntilRejected`), and the next event starts the
     // import again. The failure does not always reload the tab: nothing reloads while the browser
-    // is offline, once the tab's recovery reloads are spent, or while the page is being left, and
-    // the reader can stay at the leave prompt a write not yet confirmed opens
-    // (`features/shell/DeploymentResilience.tsx`, `reloadForChunkFailure`). A feed that kept the
-    // one failed promise would read every later event against it, refreshing nothing for as long
-    // as the tab stays open. The events waiting on the failed download refresh everything
-    // instead, below, as an event this page cannot map does; a later event asks for the chunk
-    // again, which a browser that keeps a failed module fetch (WebKit) answers with the same
-    // failure from its module map (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that
-    // event too then refreshes everything, under that refresh's own throttle, rather than nothing.
+    // is offline, once the tab's recovery reloads are spent, once the page has asked for its one
+    // reload already, or while the page is being left, and the reader can stay at the leave prompt
+    // a write not yet confirmed opens (`features/shell/DeploymentResilience.tsx`,
+    // `reloadForChunkFailure`). A feed that kept the one failed promise would read every later
+    // event against it, refreshing nothing for as long as the tab stays open. The events waiting
+    // on the failed download refresh everything instead, below, as an event this page cannot map
+    // does; a later event asks for the chunk again, which a browser that keeps a failed module
+    // fetch (WebKit) answers with the same failure from its module map
+    // (`features/shell/chunk-loads.ts`, `importWhenOnline`), and that event too then refreshes
+    // everything, under that refresh's own throttle, rather than nothing.
     const awaitRefreshMap = keptUntilRejected(() => whenContentDrawn().then(loadEventRefresh));
     void awaitRefreshMap();
 

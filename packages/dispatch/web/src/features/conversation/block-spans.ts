@@ -261,10 +261,12 @@ export function carriedBlocks(
  *  The one place they are worked out, so a send kept across a reload carries exactly what its
  *  first attempt did (`held-sends.ts`) and Dispatch reads one body under that send's key.
  *  It is here and not in `send-request.ts`, whose type it answers, because that module is in the
- *  entry chunk every page parses (the write store sends kept writes through it, `held-sends.ts`)
- *  and the comment editor (`MentionComposer`), which loads with the pages that draw it, is the
- *  only caller: imported from there, this whole module rode in the entry of a page that edits no
- *  comment (dispatch://INFRA-1109, R13). */
+ *  entry chunk every page parses - `held-sends.ts` imports it, and the shell's draft stores
+ *  (`unsent-drafts.ts`) and the margin's context (`features/margin/margin-context.tsx`), both
+ *  imported by `app.tsx`, import `held-sends.ts` - and the comment editor (`MentionComposer`),
+ *  which loads with the pages that draw it, is its one caller in the app (`held-sends.test.ts`
+ *  calls it too): imported from there, this whole module would ride in the entry of a page that
+ *  edits no comment (dispatch://INFRA-1109, R13). */
 export function carriedIdsOf(
   followed: FollowedBlocks | undefined,
   body: string

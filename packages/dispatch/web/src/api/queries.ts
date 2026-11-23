@@ -201,10 +201,13 @@ export const issueCollaboratorsQuery = (key: string | undefined) =>
   });
 
 /** The issue's decisions view (`GET /api/v1/issues/{key}/decisions`): its open questions and
- *  its decisions, each with the spec blocks it links. The Decisions tab
- *  (`features/issue/DecisionsPanel.tsx`), the spec's stale-block marks
- *  (`features/doc/spec-marks.ts`) and the margin's decision cards
- *  (`features/margin/useMarginItems.ts`) read this one entry; the last two hold it with their
+ *  its decisions, each with the spec blocks it links. Every reader of an issue's decisions reads
+ *  this one entry: the Decisions tab (`features/issue/DecisionsPanel.tsx`) and the spec's
+ *  stale-block marks (`features/doc/spec-marks.ts`) of today's issue page, the margin's decision
+ *  cards (`features/margin/useMarginItems.ts`), and the new issue page's outline
+ *  (`useIssueTree.ts`, `outline-reads.ts`), properties row (`IssuePropertiesRow.tsx`), decision
+ *  actions (`DecisionActions.tsx`) and Decisions view (`decisions-filter/decisions-entries.ts`),
+ *  under `features/issue-page/`. The stale-block marks and the margin's cards hold it with their
  *  own `enabled` until they show what it answers. */
 export const issueDecisionsQuery = (key: string) =>
   queryOptions({
