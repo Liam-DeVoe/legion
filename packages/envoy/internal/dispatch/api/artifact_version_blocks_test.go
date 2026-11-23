@@ -109,18 +109,16 @@ func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 	}
 }
 
-// A plan task names the role of its sub-owner in owner and the task it is a part of in part_of,
-// and Dispatch keeps each as the block writes it: a version read gives part_of whole, the
-// reference of a task's block as the plan writes it, and a word that names no block too, since
-// the daemon resolves each reference itself and refuses one that names no task of its plan.
-func TestAVersionReadCarriesOwnerAndPartOfWhole(t *testing.T) {
+// A plan task names the role of its sub-owner in owner, and Dispatch keeps it as the block writes
+// it: a version read gives owner whole on the task that writes it and on no other. Dispatch
+// declares no part_of attribute on a plan task, so a write of one carrying it is refused as an
+// attribute the block does not declare.
+func TestAVersionReadCarriesOwnerWhole(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
-	const reference = "dispatch://I-1/artifact/plan-md#b-f"
 	plan := createIssueDocument(t, handler, issue.Key, "plan.md",
-		":::plan_task{#f owner=\"architect\"}\nThe whole task.\n:::\n\n"+
-			":::plan_task{#f1 part_of=\""+reference+"\" steps=\"implementer\"}\nOne part of it.\n:::\n\n"+
-			":::plan_task{#f2 part_of=\"no-such-task\" steps=\"implementer\"}\nAnother part.\n:::\n")
+		":::plan_task{#f steps=\"implementer\" owner=\"architect\"}\nThe whole task.\n:::\n\n"+
+			":::plan_task{#g steps=\"implementer\"}\nThe next task.\n:::\n")
 	answer := readVersionBlocks(t, handler, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true")
 	attributes := map[string]map[string]string{}
 	for _, block := range *answer.Blocks {
@@ -129,23 +127,24 @@ func TestAVersionReadCarriesOwnerAndPartOfWhole(t *testing.T) {
 			attributes[block.ID][attribute.Name] = attribute.Value
 		}
 	}
-	for id, want := range map[string]map[string]string{
-		"f":  {"owner": "architect"},
-		"f1": {"part_of": reference, "steps": "implementer"},
-		"f2": {"part_of": "no-such-task", "steps": "implementer"},
-	} {
-		got, listed := attributes[id]
-		if !listed {
+	for _, id := range []string{"f", "g"} {
+		if _, listed := attributes[id]; !listed {
 			t.Fatalf("version 1 lists no block %s among %+v", id, *answer.Blocks)
 		}
-		for name, value := range want {
-			if got[name] != value {
-				t.Fatalf("block %s carries %s = %q, want %q whole (its attributes: %+v)", id, name, got[name], value, got)
-			}
-		}
 	}
-	if _, named := attributes["f"]["part_of"]; named {
-		t.Fatalf("block f carries part_of %q, which its block does not write", attributes["f"]["part_of"])
+	if got := attributes["f"]["owner"]; got != "architect" {
+		t.Fatalf("block f carries owner = %q, want %q whole (its attributes: %+v)", got, "architect", attributes["f"])
+	}
+	if got, named := attributes["g"]["owner"]; named {
+		t.Fatalf("block g carries owner %q, which its block does not write", got)
+	}
+
+	const part = ":::plan_task{#f1 steps=\"implementer\" part_of=\"dispatch://I-1/artifact/plan-md#b-f\"}\nOne part of it.\n:::\n"
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "part.md", "content": part,
+	}, "alice")
+	if created.Code != http.StatusBadRequest || !strings.Contains(created.Body.String(), `does not declare attribute \"part_of\"`) {
+		t.Fatalf("create a plan task carrying part_of: status=%d body=%s; want 400 naming the undeclared attribute part_of", created.Code, created.Body.String())
 	}
 }
 
