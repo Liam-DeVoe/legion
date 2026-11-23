@@ -638,6 +638,17 @@ func rowTurnStart(t *testing.T, rig *idleRig, kind, op string) (time.Time, bool)
 // they were queued. It answers the rig and the planner's turn start.
 func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Time)) (*idleRig, time.Time) {
 	t.Helper()
+	rig, turnAt := leftPodCloseChecked(t, reading)
+	if rig.declined(t) {
+		t.Fatal("the clean read recorded a decline")
+	}
+	return rig, turnAt
+}
+
+// leftPodCloseChecked is checkedLeftPodClose without its last word on the decline, for a check
+// whose reading hook scripts work for the read to find.
+func leftPodCloseChecked(t *testing.T, reading func(rig *idleRig, readAt time.Time)) (*idleRig, time.Time) {
+	t.Helper()
 	rig := newLeftPodRig(t, false)
 	parkChild(t, rig)
 	rig.drain(t)
@@ -661,9 +672,6 @@ func checkedLeftPodClose(t *testing.T, reading func(rig *idleRig, readAt time.Ti
 	rig.drain(t)
 	if read, _ := rig.rt.reads(); !slices.Equal(read, []claim.Role{claim.RolePlanner}) {
 		t.Fatalf("the workspace was read through %v, want one read through the planner", read)
-	}
-	if rig.declined(t) {
-		t.Fatal("the clean read recorded a decline")
 	}
 	return rig, turnAt
 }
@@ -708,6 +716,44 @@ func TestALeftPodCloseHoldsOnATurnThatEndedDuringItsRead(t *testing.T) {
 			t.Fatalf("rows after the check = %v, want the close's stop and its Sandbox suspension queued after a clean read with no turn since the pass", rows)
 		}
 	})
+}
+
+// The same turn beside a read that found work (INFRA-341's reviewer's point 2 on R6 of
+// dispatch://INFRA-3271): the read can have missed the push that turn made, so the check records no
+// decline from it, which would hold the pod as holding work until another turn, and a pod whose
+// claims then stop holds it for good (pods.IdleDecline.HoldsUnpushedWork). The check finishes
+// without acting and the next pass reads the workspace again. The control is the same read with
+// no turn since the pass, which records the decline.
+func TestALeftPodCloseRecordsNoDeclineFromAReadATurnRanBeside(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		turned bool
+	}{
+		{"a_turn_that_ended_during_the_read", true},
+		{"control:_no_turn_since_the_pass", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, _ := leftPodCloseChecked(t, func(rig *idleRig, readAt time.Time) {
+				rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+				if !tc.turned {
+					return
+				}
+				if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = $2 where issue = $1`,
+					rig.issue.Key, readAt.Add(-time.Second)); err != nil {
+					t.Errorf("record the turn: %v", err)
+				}
+			})
+			if declined := rig.declined(t); declined == tc.turned {
+				t.Fatalf("a decline stands = %t, want %t: a read a turn ran beside is no word of the disk", declined, !tc.turned)
+			}
+			for _, left := range rig.rows(t) {
+				if left == "issue_suspend" || left == "supervise:suspend" {
+					t.Fatalf("rows after the check = %v, want no stop and no Sandbox suspension: the read found work", rig.rows(t))
+				}
+			}
+		})
+	}
 }
 
 // The check's transaction queues the close's stops and commits, and the lane runs them after it, so

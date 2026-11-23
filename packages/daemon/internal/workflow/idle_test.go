@@ -629,16 +629,20 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			sandbox: true, want: IdleHoldUnownedUnpushedWork,
 		},
 		{
-			// No role runs a turn in a pod no claim owns, and a turn start a stopped claim kept
-			// changes nothing on the disk now.
-			name: "a turn start after the decline does not end it here",
+			// A claim of the issue ran a turn after the decline's last check, before it stopped:
+			// the turn can have pushed the work or made more, so the decline no longer speaks for
+			// the disk, and the release reads it again before it deletes anything (Read, below;
+			// INFRA-341's reviewer's point 2 on R6 of dispatch://INFRA-3271).
+			name: "a turn start after the decline's check ends it",
 			view: func() pods.IdleView {
 				v := unownedIssue()
 				v.Claims[2].LastTurnStart = idleNow.Add(-20 * time.Minute)
-				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork}
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), CheckedAt: idleNow.Add(-30 * time.Minute),
+					Reason: pods.DeclineUnpushedWork, PodUID: "pod-a"}
+				v.PodUID = "pod-a"
 				return v
 			}(),
-			sandbox: true, want: IdleHoldUnownedUnpushedWork,
+			sandbox: true, want: IdleHoldNone,
 		},
 		{
 			// The decline's hold comes before the pause's, as the quiet conjunct does: the pod is
@@ -654,14 +658,26 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 		},
 		{
 			// A role was started again after the decline in the very pod the decline's check read,
-			// and stopped since: a start in the same pod keeps the disk, and the work on it, so the
-			// decline still speaks for that disk.
-			name: "a start row after the decline in the same pod keeps it",
+			// and stopped since: its process can have pushed the work, so the decline no longer
+			// speaks for the disk, and the release reads it again first (reviewer's point 2).
+			name: "a start row after the decline in the same pod ends it",
 			view: func() pods.IdleView {
 				v := unownedIssue()
 				v.PodUID = "pod-a"
 				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork, StartedRow: 5, PodUID: "pod-a"}
 				v.Claims[2].LastStartRow = 6
+				return v
+			}(),
+			sandbox: true, want: IdleHoldNone,
+		},
+		{
+			// The decline's own pass: no start and no turn since its check, in the pod it read.
+			name: "a decline in the same pod with no start and no turn since keeps it",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.PodUID = "pod-a"
+				v.Claims[2].LastStartRow, v.Claims[2].LastTurnStart = 5, idleNow.Add(-40*time.Minute)
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), Reason: pods.DeclineUnpushedWork, StartedRow: 5, PodUID: "pod-a"}
 				return v
 			}(),
 			sandbox: true, want: IdleHoldUnownedUnpushedWork,
@@ -867,6 +883,30 @@ func TestTheCloseOfALeftPodReadsTheWorkspaceOfALiveRoleFirst(t *testing.T) {
 				return v
 			}(),
 			want: IdleHoldUnownedUnpushedWork,
+		},
+		{
+			// A role came back into the pod after that check and failed again: its process can
+			// have pushed the work, so the close reads the disk again (INFRA-341's reviewer's point
+			// 2 on R6).
+			name: "no live claim, a decline that says the disk holds work, and a start since its check",
+			view: func() pods.IdleView {
+				v := failedImplementer()
+				v.Claims[0].LastStartRow = 7
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), CheckedAt: idleNow.Add(-30 * time.Minute),
+					Reason: pods.DeclineUnpushedWork, StartedRow: 6, PodUID: "pod-a", Work: true}
+				return v
+			}(),
+		},
+		{
+			// The same for a turn since the check, of a claim that records no process now.
+			name: "no live claim, a decline that says the disk holds work, and a turn since its check",
+			view: func() pods.IdleView {
+				v := failedImplementer()
+				v.Claims[0].LastTurnStart = idleNow.Add(-20 * time.Minute)
+				v.Declined = pods.IdleDecline{At: idleNow.Add(-30 * time.Minute), CheckedAt: idleNow.Add(-30 * time.Minute),
+					Reason: pods.DeclineUnpushedWork, PodUID: "pod-a", Work: true}
+				return v
+			}(),
 		},
 		{
 			// R6: the pod's launcher could not read the disk, and that decline stands.

@@ -365,3 +365,42 @@ func TestALauncherReadNamesAndTakesOnlyThePodItRead(t *testing.T) {
 		}
 	})
 }
+
+// A pod kept for the work its launcher found is read again once a claim of the issue was started
+// after that read, or ran a turn after it (INFRA-341's reviewer's point 2 on R6): the role's
+// process can have pushed the work. Here the planner comes back into the same pod, pushes, and
+// fails again; the next pass has the launcher read the disk again, the read finds it clean, and
+// the release takes the pod. Before, a start into the pod the decline named did not end its hold,
+// and no turn did, so the pod was kept for good.
+func TestAKeptPodIsReadAgainAfterARoleOfItRanAgain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		ran  string
+	}{
+		{"a_start_since_the_read", `update claims set last_start_row = last_start_row + 100 where token = $1`},
+		{"a_turn_since_the_read", `update claims set last_turn_start = now() where token = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, publisher := noRoleRig(t, false)
+			rig.rt.ScriptIssuePod(rig.issue.Key, "pod-a")
+			rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+			pass := func() { rig.w.releaseUnownedPods(ctx) }
+			keptOverPasses(t, rig, publisher, pass, workflow.IdleHoldUnownedUnpushedWork.String(), idleRigUnpushed.Commits[0])
+			if _, err := rig.pool.Exec(ctx, tc.ran, string(rig.token)); err != nil {
+				t.Fatalf("the planner runs again: %v", err)
+			}
+			quietPod(t, rig)
+			rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+			pass()
+			rig.drain(t)
+			if reads := launcherReads(rig); reads != 2 {
+				t.Fatalf("the launcher read the workspace %d times, want twice: once for the decline and once after the planner ran again", reads)
+			}
+			if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
+				t.Fatalf("teardowns asked = %v, want the release after the clean read", asked)
+			}
+		})
+	}
+}
