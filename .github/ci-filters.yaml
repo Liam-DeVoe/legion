@@ -968,6 +968,17 @@ ci_ok_retries_test: &ci_ok_retries_test
   - '.github/scripts/ci-ok-retries.sh'
   - '.github/scripts/go-test.jq'
   - '.github/scripts/testdata/ci-ok-retries/*'
+unnamed_files_test: &unnamed_files_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/unnamed-files.test.sh'
+  - '.github/scripts/unnamed-files.sh'
+  - '.github/scripts/gh-read.sh'
+  - '.github/scripts/workflow_paths.py'
+  - '.github/ci-areas.yaml'
+  - '.github/scripts/testdata/unnamed-files/*'
 
 # why: .github/ci-notes/ci.md#test-the-test-job-the-claude-code-plugin-build-the-changelog
 test:
@@ -1029,6 +1040,7 @@ test:
   - *go_test_test
   - *go_test_split_test
   - *ci_ok_retries_test
+  - *unnamed_files_test
   # why: .github/ci-notes/ci.md#test-each-harness-steps-own-gate-named-here-so-the-job-runs
   - *guide_layout_files
   - 'scripts/third-party-notices.test.ts'

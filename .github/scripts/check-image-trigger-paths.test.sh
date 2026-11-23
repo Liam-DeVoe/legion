@@ -243,13 +243,13 @@ jobs:
       - uses: dorny/paths-filter@v3
         id: filter
         with:
-          filters: .github/ci-filters.yaml
+          filters: .github/ci-areas.yaml
   image:
     needs: changes
     if: needs.changes.outputs.image == 'true' || needs.changes.outputs.other == 'true'
     uses: ./.github/workflows/image.yaml
 YAML
-  cat > "$root/.github/ci-filters.yaml" <<YAML
+  cat > "$root/.github/ci-areas.yaml" <<YAML
 image:
 $gate
 other:
@@ -608,9 +608,9 @@ changes = (
     "      - uses: dorny/paths-filter@v3\n"
     "        id: filter\n"
     "        with:\n"
-    "          filters: .github/ci-filters.yaml\n"
+    "          filters: .github/ci-areas.yaml\n"
 )
-open(f"{root}/.github/ci-filters.yaml", "w").write(f"gated:\n{patterns}\n")
+open(f"{root}/.github/ci-areas.yaml", "w").write(f"gated:\n{patterns}\n")
 tail = tail.replace(
     "  docker:\n    runs-on: ubuntu-24.04\n",
     "  docker:\n    needs: changes\n    if: needs.changes.outputs.gated == 'true'\n"
@@ -758,9 +758,9 @@ changes = (
     "      - uses: dorny/paths-filter@v3\n"
     "        id: filter\n"
     "        with:\n"
-    "          filters: .github/ci-filters.yaml\n"
+    "          filters: .github/ci-areas.yaml\n"
 )
-open(f"{root}/.github/ci-filters.yaml", "w").write(
+open(f"{root}/.github/ci-areas.yaml", "w").write(
     "img:\n"
     "  - 'package.json'\n"
     "  - 'packages/app/**'\n"
@@ -2617,13 +2617,13 @@ jobs:
         id: filter
         with:
           predicate-quantifier: $quantifier
-          filters: .github/ci-filters.yaml
+          filters: .github/ci-areas.yaml
   worker-image:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.worker_image == 'true'
     uses: ./.github/workflows/image.yaml
 YAML
-  cat > "$root/.github/ci-filters.yaml" <<YAML
+  cat > "$root/.github/ci-areas.yaml" <<YAML
 worker_image:
 $gate
 YAML
@@ -2715,7 +2715,7 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "  names the gate, a file and how many more" "$(contains "$out" 'image.yaml on.pull_request + jobs.docker.if (jobs.changes filter gated) matches packages/[a-z/.]* and 1 more, which no image build reads')"
 sed -i "s|^  - 'packages/\*\*'|  - 'packages/app/package.json'\n  - 'packages/app/src/**'|" \
-  "$root/.github/ci-filters.yaml"
+  "$root/.github/ci-areas.yaml"
 run_check "$root"
 check "passes once the filter is narrowed" "$(is "$status" 0)"
 check "  and says so" "$(contains "$out" 'jobs.docker.if (jobs.changes filter gated): matches only files its image builds read')"
@@ -2846,15 +2846,36 @@ check "a ! pattern under some is refused" "$(is "$status" 1)"
 check "  and says what some makes of it" "$(contains "$out" "has !\*\*/dist/\*\*, a \`!\` pattern under predicate-quantifier: some, where it matches every file outside")"
 check "  and names the remedy" "$(contains "$out" 'give the step predicate-quantifier: some-with-excludes')"
 
-# The filters themselves live in .github/ci-filters.yaml, which the gating filter must select -
-# a change there can change what the filter selects - and which no image build reads, so the
-# reverse check passes over it as it passes over the workflow whose trigger it is.
+# The filters themselves live in the file the paths-filter step names, .github/ci-areas.yaml,
+# which the gating filter must select - a change there can change what the filter selects - and
+# which no image build reads, so the reverse check passes over it as it passes over the workflow
+# whose trigger it is.
 root=$(fixture excludes-filters-file)
 ci_router "$root" "$excluding_inputs
-  - '.github/ci-filters.yaml'" some-with-excludes
+  - '.github/ci-areas.yaml'" some-with-excludes
 run_check "$root"
 check "a filter naming the file it lives in passes" "$(is "$status" 0)"
 check "  and the filter is still held to the build's files" "$(contains "$out" 'jobs.changes filter worker_image): matches only files its image builds read')"
+
+# Whichever file the step names: the old layout's .github/ci-filters.yaml is passed over the same
+# way while a step still names it.
+root=$(fixture excludes-filters-file-named-by-step)
+ci_router "$root" "$excluding_inputs
+  - '.github/ci-filters.yaml'" some-with-excludes
+mv "$root/.github/ci-areas.yaml" "$root/.github/ci-filters.yaml"
+sed -i 's|filters: .github/ci-areas.yaml|filters: .github/ci-filters.yaml|' "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "a filter naming the other file its step names passes" "$(is "$status" 0)"
+
+# A filters file no paths-filter step names is a file like any other, which no build reads.
+root=$(fixture excludes-unread-filters-file)
+ci_router "$root" "$excluding_inputs
+  - '.github/ci-filters.yaml'" some-with-excludes
+printf 'worker_image:\n  - docs/**\n' >"$root/.github/ci-filters.yaml"
+run_check "$root"
+check "a filter naming a filters file no step names is refused" "$(is "$status" 1)"
+check "  and names it as a file no build reads" \
+  "$(contains "$out" 'jobs.changes filter worker_image) matches .github/ci-filters.yaml, which no image build reads')"
 
 root=$(fixture excludes-other-file)
 ci_router "$root" "$excluding_inputs
@@ -2868,32 +2889,32 @@ check "  and named" "$(contains "$out" 'jobs.changes filter worker_image) matche
 # filter.
 root=$(fixture filters-file-absent)
 ci_router "$root" "$excluding_inputs" some-with-excludes
-rm "$root/.github/ci-filters.yaml"
+rm "$root/.github/ci-areas.yaml"
 run_check "$root"
 check "a filters file that is absent is refused" "$(is "$status" 1)"
 check "  and named as absent" \
-  "$(contains "$out" '::error file=.github/ci-filters.yaml::.github/ci-filters.yaml is absent, and a dorny/paths-filter step reads its filters from it')"
+  "$(contains "$out" '::error file=.github/ci-areas.yaml::.github/ci-areas.yaml is absent, and a dorny/paths-filter step reads its filters from it')"
 
 root=$(fixture filters-file-refused)
 ci_router "$root" "$excluding_inputs" some-with-excludes
-rm "$root/.github/ci-filters.yaml"
-mkdir "$root/.github/ci-filters.yaml"
+rm "$root/.github/ci-areas.yaml"
+mkdir "$root/.github/ci-areas.yaml"
 run_check "$root"
 check "a filters file that refuses the open is refused" "$(is "$status" 1)"
 check "  and named as there and refusing it" \
-  "$(contains "$out" '::error file=.github/ci-filters.yaml::.github/ci-filters.yaml is there and refuses the open (IsADirectoryError: Is a directory)')"
+  "$(contains "$out" '::error file=.github/ci-areas.yaml::.github/ci-areas.yaml is there and refuses the open (IsADirectoryError: Is a directory)')"
 
 # js-yaml, which the action reads the file with, refuses a mapping holding one key twice, so a
 # filters file repeating a filter name is refused naming the file, the key and both lines, never
 # read as its last copy.
 root=$(fixture filters-file-repeated)
 ci_router "$root" "$excluding_inputs" some-with-excludes
-second=$(($(wc -l <"$root/.github/ci-filters.yaml") + 1))
-printf "worker_image:\n  - 'docs/**'\n" >> "$root/.github/ci-filters.yaml"
+second=$(($(wc -l <"$root/.github/ci-areas.yaml") + 1))
+printf "worker_image:\n  - 'docs/**'\n" >> "$root/.github/ci-areas.yaml"
 run_check "$root"
 check "a filters file that holds one filter name twice is refused" "$(is "$status" 1)"
 check "  and named, with the key and the line of each copy" \
-  "$(contains "$out" "::error file=.github/ci-filters.yaml::.github/ci-filters.yaml is not valid YAML: the mapping key 'worker_image' of line $second is the key of line 1 again: ")"
+  "$(contains "$out" "::error file=.github/ci-areas.yaml::.github/ci-areas.yaml is not valid YAML: the mapping key 'worker_image' of line $second is the key of line 1 again: ")"
 
 for shape in 'alternation:{docker/**,.dockerignore}' 'closer:docker/}'; do
   pattern=${shape#*:}

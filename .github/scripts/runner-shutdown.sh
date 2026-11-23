@@ -47,9 +47,10 @@
 # Which check runs are this run's. The commit carries every workflow's, so the run id is what
 # narrows them: a job's check run has `details_url` `<server>/<repo>/actions/runs/<run id>/job/
 # <job id>`, and this script keeps those whose `details_url` holds `/actions/runs/{GITHUB_RUN_ID}
-# /job/`. Within them a job is every check run whose name is the job's id in ci.yaml or starts
-# with `<job> / `, which is how ci-ok-report.sh's read of the jobs route takes a called
-# workflow's jobs too.
+# /job/`. Within them a job's check runs are those ci-ok.jq's runs_of gives it: a name
+# CHECK_RUN_JOBS maps to the job, for a leg whose `name:` is an expression, or else a name that is
+# the job's id in ci.yaml or starts with `<job> / ` or `<job> (`, which is how ci-ok-report.sh's
+# read of the jobs route takes a called workflow's jobs and a matrix's legs too.
 #
 # A job with no check run of this run on that commit — a job GitHub has not started, a name no
 # check run carries — is read as no kill at all, and so is a job whose check runs carry no
@@ -86,6 +87,9 @@
 #                      github.sha, the expression both callers' steps already pass.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, as Actions sets them: the run whose check runs are read.
 #   GH_RETRY_SECONDS   optional: gh-read.sh's knob, the tests' way to retry without waiting.
+#   CHECK_RUN_JOBS     optional: ci.yaml's CI_OK_CHECK_RUN_JOBS, each leg's and carrier's check-run
+#                      name to its job id; with none, only the names GitHub gives after a job id
+#                      are that job's.
 #
 # runner_shutdown_kills <job>...: prints those of the named jobs this run's data shows a runner
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
@@ -100,8 +104,9 @@
 # the job log holds it as gh-read.sh's own attempts are held, so a caller may read the job
 # names off this function's stdout.
 
+_runner_shutdown_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/gh-read.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
+source "$_runner_shutdown_dir/gh-read.sh"
 
 # This run's check runs, read on the first question and kept for the rest of the shell that
 # asks: a caller's `$(…)` is a subshell of its own, so what it keeps dies with that call.
@@ -140,7 +145,7 @@ _runner_shutdown_other_exit_code() {
 }
 
 runner_shutdown_kills() {
-  local input job urls url annotations shutdown
+  local input job urls url annotations shutdown names=${CHECK_RUN_JOBS:-}
   local kills=()
   [ "$#" -gt 0 ] || return 0
   for input in GH_TOKEN HEAD_SHA GITHUB_REPOSITORY GITHUB_RUN_ID; do
@@ -159,10 +164,14 @@ runner_shutdown_kills() {
     _runner_shutdown_check_runs=$(jq -s --arg run "/actions/runs/$GITHUB_RUN_ID/job/" \
       'map(select((.details_url // "") | contains($run)))' <<<"$_runner_shutdown_check_runs")
   fi
+  [ -n "$names" ] || names='{}'
+  if ! jq -e 'type == "object" and all(.[]; type == "string")' <<<"$names" >/dev/null 2>&1; then
+    echo "::warning::CHECK_RUN_JOBS is not a JSON object of check-run name to job id, so no check run of this run is read by the name it gives; every failure stands as a failure" >&2
+    return 1
+  fi
   for job in "$@"; do
-    urls=$(jq -r --arg job "$job" \
-      '.[] | select(.name == $job or (.name | startswith($job + " / "))) | .url' \
-      <<<"$_runner_shutdown_check_runs")
+    urls=$(jq -r -L "$_runner_shutdown_dir" --arg job "$job" --argjson names "$names" \
+      'include "ci-ok"; runs_of($job; $names)[] | .url' <<<"$_runner_shutdown_check_runs")
     [ -n "$urls" ] || continue
     shutdown=false
     while read -r url; do

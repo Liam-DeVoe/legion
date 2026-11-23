@@ -17,6 +17,14 @@ on:
           a run on another branch that names none compares with the branch's merge base with main.
         type: string
         required: false
+      # The layout's changes job leaves kind and agent-harness out of a dispatched run unless this
+      # is true (main-bypass-check.yaml sets it), since every other dispatched run would add their
+      # job-minutes.
+      kind-and-agent-harness:
+        description: Run kind and agent-harness too, which a dispatched run leaves out otherwise.
+        type: boolean
+        required: false
+        default: false
 
 # why: .github/ci-notes/ci.md#what-a-newer-push-cancels-and-what-is-never-cancelled
 concurrency:
@@ -94,6 +102,11 @@ env:
       "ci-ok",
       "pr-title"
     ]
+  # Each leg's and carrier's check-run name to its job id. A leg whose name: is an expression
+  # carries the name it evaluates to and no job id, so ci-ok.sh, ci-ok-report.sh and
+  # runner-shutdown.sh find its check run here (ci-ok.jq, runs_of); every other check run is named
+  # after its job's id.
+  CI_OK_CHECK_RUN_JOBS: '{}'
 
 jobs:
   # why: .github/ci-notes/ci.md#what-the-changes-job-selects-and-the-two-terms-every-job-carries
@@ -172,6 +185,7 @@ jobs:
       go_test_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_test }}
       go_test_split_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_split_test }}
       ci_ok_retries_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_retries_test }}
+      unnamed_files_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.unnamed_files_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -386,6 +400,7 @@ jobs:
       go_test_test: ${{ needs.changes.outputs.go_test_test }}
       go_test_split_test: ${{ needs.changes.outputs.go_test_split_test }}
       ci_ok_retries_test: ${{ needs.changes.outputs.ci_ok_retries_test }}
+      unnamed_files_test: ${{ needs.changes.outputs.unnamed_files_test }}
 
   # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-is-a-job-of-its-own
   daemon-go:
@@ -1062,6 +1077,7 @@ jobs:
           SELECTED_BY: ${{ env.CI_OK_SELECTED_BY }}
           PULL_REQUEST_ONLY: ${{ env.CI_OK_PULL_REQUEST_ONLY }}
           ALWAYS_RUN: ${{ env.CI_OK_ALWAYS_RUN }}
+          CHECK_RUN_JOBS: ${{ env.CI_OK_CHECK_RUN_JOBS }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: .github/scripts/ci-ok.sh

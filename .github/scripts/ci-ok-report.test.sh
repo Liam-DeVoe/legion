@@ -10,8 +10,11 @@
 # Each case writes the run's jobs as the jobs route lists them and the `changes` and `job.status`
 # the reporting job saw, and runs the real scripts with a stand-in `gh` first on PATH: it answers
 # the jobs read and records each check run posted. The map is ci-ok.test.sh's four jobs and the
-# always-run list ci.yaml's own two, in a
-# ci.yaml of the case's own (CI_OK_WORKFLOW); one case reads the real ci.yaml.
+# always-run list ci.yaml's own two, in a ci.yaml of the case's own (CI_OK_WORKFLOW) whose
+# CI_OK_CHECK_RUN_JOBS gives two legs named by an expression to envoy-client; one case reads the
+# real ci.yaml. A job's check runs are read under each name GitHub gives them: the job's id, a
+# called workflow's job, a called workflow's matrix leg, a matrix leg with no name of its own, and
+# a leg named by an expression, which only that map ties to its job.
 #
 # Run from anywhere: .github/scripts/ci-ok-report.test.sh
 # CI runs it in ci.yaml's test job.
@@ -70,25 +73,32 @@ env:
     {"typecheck": "typecheck", "envoy-client": "envoy_client", "worker-image": "worker_image", "docs": "docs"}
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
   CI_OK_ALWAYS_RUN: '["changes", "lint"]'
+  CI_OK_CHECK_RUN_JOBS: |
+    {"broker-client / broker-client": "envoy-client", "docs (envoy-client)": "envoy-client"}
 YAML
 
 # What `changes` gave the reporting job on a merge group: typecheck and envoy-client selected,
 # worker-image held back by its pull_request-only `if:`.
 selects='{"result": "success", "outputs": {"typecheck": "true", "envoy_client": "true", "worker_image": "false", "docs": "false"}}'
 
-# jobs <name>=<status>[/<conclusion>]...: the run's jobs as the jobs route lists them, one JSON
-# object per line, as `gh api --jq '.jobs[] | …'` prints them, and the check run each of them
-# has on the head, as the commit's check-runs route lists them. The run's first case writes
+# jobs <name>=<status>[/<conclusion>][@<runner>]...: the run's jobs as the jobs route lists them,
+# one JSON object per line, as `gh api --jq '.jobs[] | …'` prints them, and the check run each of
+# them has on the head, as the commit's check-runs route lists them. The run's first case writes
 # none, which is both routes refusing the read. A job written here carries no annotation, so its
-# failure is read as a failure until a case writes the runner's with `annotations`.
+# failure is read as a failure until a case writes the runner's with `annotations`; one written
+# with a runner runs on it, which the reporting leg's RUNNER_NAME names.
 jobs() {
-  local pair n=0
+  local pair n=0 name state runner
   rm -f "$work"/posted.*.json "$work/post-fails" "$work/jobs" "$work/check-runs" "$work"/annotations.*
   for pair in "$@"; do
-    jq -nc --arg name "${pair%%=*}" --arg status "${pair#*=}" \
-      '{name: $name, status: ($status | split("/")[0]), conclusion: ($status | split("/")[1])}' \
-      >> "$work/jobs"
-    jq -nc --arg name "${pair%%=*}" --arg url "https://api.github.com/repos/o/r/check-runs/$n" \
+    name=${pair%%=*}
+    state=${pair#*=}
+    runner=
+    case $state in *@*) runner=${state#*@} state=${state%%@*} ;; esac
+    jq -nc --arg name "$name" --arg status "$state" --arg runner "$runner" \
+      '{name: $name, status: ($status | split("/")[0]), conclusion: ($status | split("/")[1]),
+        runner_name: (if $runner == "" then null else $runner end)}' >> "$work/jobs"
+    jq -nc --arg name "$name" --arg url "https://api.github.com/repos/o/r/check-runs/$n" \
       --arg details "https://github.com/o/r/actions/runs/41/job/$n" \
       '{name: $name, url: $url, details_url: $details}' >> "$work/check-runs"
     n=$((n + 1))
@@ -104,12 +114,14 @@ annotations() {
   printf '%s\n' "$@" | jq -R '{annotation_level: "failure", message: .}' > "$work/annotations.$id"
 }
 
-# run_report <changes> <event> <job status> [<workflow>]: sets out and status.
+# run_report <changes> <event> <job status> [<workflow>]: sets out and status. The reporting step
+# runs on the runner $runner names, runner-0 unless a case sets it.
+runner='runner-0'
 run_report() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GITHUB_SERVER_URL=https://github.com GH_RETRY_SECONDS=0 JOB=typecheck CHANGES=$1 \
-    EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 CI_OK_WORKFLOW=${4:-$work/ci.yaml} \
+    EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 CI_OK_WORKFLOW=${4:-$work/ci.yaml} RUNNER_NAME=$runner \
     "$script_dir/ci-ok-report.sh" 2>&1)
   status=$?
   set -e
@@ -278,6 +290,67 @@ jobs typecheck=in_progress
 run_report '{"result": "success", "outputs": {}}' merge_group failure "$script_dir/../workflows/ci.yaml"
 check "reads it and posts" "$(is "$(posted)" 1)"
 check "failing on the job that decided the run" "$(is "$(field .conclusion)" failure)"
+
+echo "case: a failed check run of envoy-client under each name it can carry"
+# GitHub names a job's check run by its id, a called workflow's job `<job> / <its job>` and that
+# job's matrix leg `<job> / <its job> (<leg>)`, a matrix leg written in ci.yaml with no name of its
+# own `<job> (<leg>)`, and a leg whose name: is an expression by what the expression gives, an old
+# check-run name that only CI_OK_CHECK_RUN_JOBS ties to its job. Read any other way, the failed
+# leg is no job's, its job reads as unlisted rather than failed, and the post leaves it unnamed.
+for form in 'envoy-client' 'envoy-client / inner' 'envoy-client / inner (2)' 'envoy-client (2)' \
+  'broker-client / broker-client' 'docs (envoy-client)'; do
+  jobs typecheck=in_progress lint=in_progress "$form=completed/failure"
+  run_report "$selects" merge_group failure
+  check "$form: read as envoy-client's check run, which failed" \
+    "$(contains "$(field .output.summary)" '^envoy-client: failure (selected')"
+done
+check "a name the map gives to envoy-client is no check run of docs, whose prefix it carries" \
+  "$(contains "$(field .output.summary)" '^docs: unlisted (not selected')"
+sed 's/^  CI_OK_CHECK_RUN_JOBS: |$/  CI_OK_CHECK_RUN_JOBS: "{}"/; /"broker-client \/ broker-client"/d' \
+  "$work/ci.yaml" >"$work/ci-no-map.yaml"
+jobs typecheck=in_progress lint=in_progress 'broker-client / broker-client=completed/failure'
+run_report "$selects" merge_group failure "$work/ci-no-map.yaml"
+check "with no map, the leg named by an expression is no job's, and envoy-client reads unlisted" \
+  "$(contains "$(field .output.summary)" '^envoy-client: unlisted (selected')"
+
+echo "case: CI_OK_CHECK_RUN_JOBS is not an object of name to job id"
+sed 's/^  CI_OK_CHECK_RUN_JOBS: |$/  CI_OK_CHECK_RUN_JOBS: "[]"/; /"broker-client \/ broker-client"/d' \
+  "$work/ci.yaml" >"$work/ci-bad-map.yaml"
+jobs typecheck=in_progress
+run_report "$selects" merge_group failure "$work/ci-bad-map.yaml"
+check "fails" "$(is "$status" 1)"
+check "posts nothing" "$(is "$(posted)" 0)"
+check "names the map" "$(contains "$out" 'CI_OK_CHECK_RUN_JOBS object of check-run name to job id')"
+
+echo "case: a leg of a matrix job decides the run, and the post names that leg"
+# The jobs route shows each running leg of the reporting job in_progress; the one on this step's
+# runner is the leg whose report step this is.
+jobs 'typecheck (a)=in_progress@runner-1' 'typecheck (b)=in_progress@runner-2' lint=in_progress envoy-client=queued
+runner='runner-2'
+run_report "$selects" merge_group failure
+check "posts one check run" "$(is "$(posted)" 1)"
+check "titles it with the leg that decided the run" \
+  "$(contains "$(field .output.title)" '^typecheck (b) decided this merge-group run: ')"
+check "names the leg in the summary" \
+  "$(contains "$(field .output.summary)" "^Decided by typecheck's check run typecheck (b), whose failure decides this merge-group run")"
+check "and judges its job at the leg's own job.status" \
+  "$(contains "$(field .output.summary)" '^typecheck: failure (selected')"
+runner='runner-9'
+jobs 'typecheck (a)=in_progress@runner-1' 'typecheck (b)=in_progress@runner-2' lint=in_progress envoy-client=queued
+run_report "$selects" merge_group failure
+check "a runner no leg runs on leaves the job's id in the title" \
+  "$(contains "$(field .output.title)" '^typecheck decided this merge-group run: ')"
+runner='runner-0'
+
+echo "case: the post names a failed job the filters do not select for the merge group's files"
+jobs typecheck=in_progress lint=in_progress envoy-client=completed/success
+run_report "$(jq -nc '{result: "success", outputs: {typecheck: "true", envoy_client: "true", worker_image: "false",
+  docs: "false", unnamed_files: "false",
+  filter_verdicts: ({typecheck: "false", envoy_client: "true", worker_image: "true", docs: "false"} | tojson)}}')" \
+  merge_group failure
+check "posts one check run" "$(is "$(posted)" 1)"
+check "naming the job no pull request of those files runs" \
+  "$(contains "$(field .output.summary)" "^typecheck failed, and no pull request that changes this merge group's files runs it")"
 
 echo "case: post-check-run.sh called with no marker"
 # The marker's prefix is what tells a posted check run from a job's own check run of the same

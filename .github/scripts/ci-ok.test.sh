@@ -16,7 +16,11 @@
 # triggers. docs also stands for one of the slow suites, whose output a pull request
 # without the label `full-ci` holds false whatever the paths filter answered: three cases hand
 # the run the filter's own verdicts beside the outputs (with_verdicts below) and hold the report
-# to telling that skip from a filter miss.
+# to telling that skip from a filter miss. Four cases run a merge group whose verdicts and
+# unnamed-file verdict say which failed job no pull request of the group's files ran, and hold
+# the line that names it, its step summary, and its absence where a changed file matched no filter.
+# CHECK_RUN_JOBS is ci.yaml's map from a leg's check-run name to its job id, empty but where a
+# case reads a leg named by an expression.
 #
 # A job that ends `failure` is asked about: ci-ok.sh reads the check runs on this run's head to
 # tell a job the platform killed from one the change broke (runner-shutdown.sh), so each case
@@ -118,6 +122,8 @@ needs() {
 selects='{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}'
 # The same with docs selected too.
 selects_docs='{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "true"}'
+# The same with envoy-client selected in docs' place.
+selects_envoy='{"typecheck": "true", "envoy_client": "true", "worker_image": "true", "docs": "false"}'
 # The same outputs read on another event, docs unselected: ci-ok.sh takes EVENT as given.
 push_selects='{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}'
 
@@ -136,14 +142,18 @@ unmatched_selects=$(with_verdicts "$selects" \
   '{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}')
 
 # run_ci_ok <needs> [<event>] [<always run>]: sets out and status. The event defaults to
-# pull_request and the always-run list to ci.yaml's own two jobs. The GitHub half of the
-# environment is the ci-ok job's own, pointed at the stand-in above: the head its check runs are
-# on, the run they must belong to, and gh-read.sh's retry delay turned off.
+# pull_request and the always-run list to ci.yaml's own two jobs; CHECK_RUN_JOBS is
+# $check_run_jobs. The GitHub half of the environment is the ci-ok job's own, pointed at the
+# stand-in above: the head its check runs are on, the run they must belong to, and gh-read.sh's
+# retry delay turned off. The step summary is $work/summary.md, emptied first.
+check_run_jobs='{}'
 run_ci_ok() {
+  : >"$work/summary.md"
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GH_RETRY_SECONDS=0 HEAD_SHA=abc123 NEEDS=$1 EVENT=${2:-pull_request} SELECTED_BY=$selected_by \
-    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} "$script_dir/ci-ok.sh" 2>&1)
+    PULL_REQUEST_ONLY=$pull_request_only ALWAYS_RUN=${3:-$always_run} CHECK_RUN_JOBS=$check_run_jobs \
+    GITHUB_STEP_SUMMARY="$work/summary.md" "$script_dir/ci-ok.sh" 2>&1)
   status=$?
   set -e
 }
@@ -447,5 +457,83 @@ check "keeps it a failure" \
   "$(contains "$out" '^typecheck: failure (selected: needs.changes.outputs.typecheck is true)$')"
 check "warns that it could not tell a shutdown from a failure" \
   "$(contains "$out" '::warning::GitHub refused the check runs on abc123 three times')"
+
+echo "case: a leg named by an expression whose runner was shut down, read through CHECK_RUN_JOBS"
+# A leg of a matrix job written in ci.yaml whose name: is an expression carries the old check-run
+# name it evaluates to, here broker-client / broker-client for a leg of envoy-client, and no job
+# id: only ci.yaml's map ties its check run to its job, so only through it is the shutdown read.
+check_runs changes lint typecheck 'broker-client / broker-client' worker-image docs
+annotations 'broker-client / broker-client' \
+  'The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.' \
+  'Process completed with exit code 143.'
+check_run_jobs='{"broker-client / broker-client": "envoy-client"}'
+run_ci_ok "$(needs success "$selects_envoy" success typecheck=success envoy-client=failure worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "reads the leg's job as cancelled" \
+  "$(contains "$out" '^envoy-client: cancelled (selected: needs.changes.outputs.envoy_client is true)$')"
+check "names the shutdown" "$(contains "$out" 'a runner shutdown cut this one off')"
+check_run_jobs='{}'
+run_ci_ok "$(needs success "$selects_envoy" success typecheck=success envoy-client=failure worker-image=success docs=skipped)"
+check "without the map the leg's check run is no job's, and the failure stands" \
+  "$(contains "$out" '^envoy-client: failure (selected: needs.changes.outputs.envoy_client is true)$')"
+
+echo "case: CHECK_RUN_JOBS is not a JSON object of name to job id"
+check_run_jobs='["envoy-client"]'
+run_ci_ok "$(needs success "$selects" success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "names the input" "$(contains "$out" '^::error::CHECK_RUN_JOBS is not a JSON object of check-run name to job id')"
+check_run_jobs='{}'
+
+check_runs changes lint typecheck envoy-client worker-image docs
+
+echo "case: a job the unnamed-file step alone selected, which a wrong if: skipped"
+# The changes job's output for envoy-client is true because the pull request changes a file no
+# filter names, while envoy-client's own filter matched nothing: the job is selected all the same,
+# so its skip is a disagreement between its if: and changes.
+run_ci_ok "$(needs success "$(jq -nc --argjson o "$selects_envoy" '$o + {unnamed_files: "true",
+  filter_verdicts: ({typecheck: "true", envoy_client: "false", worker_image: "true", docs: "false"} | tojson)}')" \
+  success typecheck=success envoy-client=skipped worker-image=success docs=skipped)"
+check "fails" "$(is "$status" 1)"
+check "names the job and that changes selected it" \
+  "$(contains "$out" '^::error::envoy-client ended skipped, but changes selected it (needs.changes.outputs.envoy_client is true)')"
+
+# A merge group selects every job, and changes publishes the filters' own verdicts for the group's
+# changed files and the unnamed-file step's: envoy-client's filter matched none of them.
+group_outputs() { # group_outputs <envoy_client's verdict> <unnamed_files>
+  jq -nc --arg verdict "$1" --arg unnamed "$2" '{typecheck: "true", envoy_client: "true", worker_image: "true",
+    docs: "true", unnamed_files: $unnamed,
+    filter_verdicts: ({typecheck: "true", envoy_client: $verdict, worker_image: "true", docs: "true"} | tojson)}'
+}
+
+echo "case: a job that failed in a merge group, which the filters do not select for the group's files"
+run_ci_ok "$(needs success "$(group_outputs false false)" success typecheck=success envoy-client=failure \
+  worker-image=skipped docs=success)" merge_group
+check "fails, as any selected job's failure does" "$(is "$status" 1)"
+check "names the job as one no pull request of these files runs" \
+  "$(contains "$out" "^envoy-client failed, and no pull request that changes this merge group's files runs it: the filters, given those files, do not select it (filter_verdicts gives envoy_client false")"
+check "sends its reader to the filter and the test" \
+  "$(contains "$out" 'read its filter for a file its tests read that the filter misses, and its test for a flake$')"
+check "writes it to the step summary" \
+  "$(contains "$(cat "$work/summary.md")" "^- envoy-client failed, and no pull request that changes this merge group's files runs it")"
+check "names no other job so" "$(is "$(grep -c 'no pull request that changes' <<<"$out")" 1)"
+
+echo "case: the same failure in a merge group that changes a file no filter names"
+# That file selects every job on a pull request too, so the pull request ran envoy-client.
+run_ci_ok "$(needs success "$(group_outputs false true)" success typecheck=success envoy-client=failure \
+  worker-image=skipped docs=success)" merge_group
+check "fails" "$(is "$status" 1)"
+check "names no job as one the pull request did not run" "$(is "$(contains "$out" 'no pull request that changes')" false)"
+check "writes nothing to the step summary" "$(is "$(cat "$work/summary.md")" '')"
+
+echo "case: the same failure in a merge group whose files the job's filter matches"
+run_ci_ok "$(needs success "$(group_outputs true false)" success typecheck=success envoy-client=failure \
+  worker-image=skipped docs=success)" merge_group
+check "names no job as one the pull request did not run" "$(is "$(contains "$out" 'no pull request that changes')" false)"
+
+echo "case: the same verdicts on a pull request"
+run_ci_ok "$(needs success "$(group_outputs false false)" success typecheck=success envoy-client=failure \
+  worker-image=success docs=success)"
+check "names no job as one the pull request did not run: this run is the pull request's" \
+  "$(is "$(contains "$out" 'no pull request that changes')" false)"
 
 summary "ci-ok.sh fails unless every job changes selected succeeded"

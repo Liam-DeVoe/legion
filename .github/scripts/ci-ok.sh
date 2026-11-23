@@ -56,6 +56,13 @@
 #                      of those outputs, `filter_verdicts`, is the paths filter's own answer for
 #                      every filter rather than a gate on a job: it is how a job the `full-ci`
 #                      label held back is told from one its paths never selected (ci-ok.jq).
+#                      Another, `unnamed_files`, is the unnamed-file step's verdict: 'true' when a
+#                      changed file matches no filter, which selects every job. On a merge group,
+#                      where every job runs, the two together say which failed job no pull request
+#                      that changes the group's files would have run (ci-ok.jq, missed_by_filters):
+#                      such a job is named, on a line of its own and in the job's step summary,
+#                      so its reader checks its filter for a read it misses and its test for a
+#                      flake. The line decides nothing of the verdict.
 #   EVENT              `github.event_name`.
 #   SELECTED_BY        a JSON object mapping every job but those ALWAYS_RUN names to the
 #                      `changes` output its `if:` tests; the job is selected when that output is
@@ -72,6 +79,10 @@
 #                      CI_OK_ALWAYS_RUN, and check-ci-filters.sh holds every job of that file to
 #                      exactly one of the three classes this list, SELECTED_BY and CI_OK_EXEMPT
 #                      make.
+#   CHECK_RUN_JOBS     a JSON object from each leg's and carrier's check-run name to its job id,
+#                      ci.yaml's CI_OK_CHECK_RUN_JOBS: a leg whose `name:` is an expression carries
+#                      the name it evaluates to and no job id, so runner-shutdown.sh reads a job's
+#                      check runs through it (ci-ok.jq, runs_of).
 #   GH_TOKEN           the job's github.token, with `checks: write` (or `checks: read`): a job
 #                      that ends `failure` is asked about on the commit's check runs, where the
 #                      runner's shutdown annotation tells a platform kill from a fault of the
@@ -86,8 +97,8 @@
 # naming the job, its result and why.
 #
 # Run from anywhere:
-#   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... GH_TOKEN=... \
-#     HEAD_SHA=... .github/scripts/ci-ok.sh
+#   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... CHECK_RUN_JOBS=... \
+#     GH_TOKEN=... HEAD_SHA=... .github/scripts/ci-ok.sh
 # ci.yaml's ci-ok job runs it over every job's result, and ci-ok-report.sh over the results it
 # reads for the failing ci-ok it posts at once on a decided merge-group run; its tests are in
 # ci-ok.test.sh, which ci.yaml's test job runs.
@@ -97,7 +108,7 @@ shopt -s inherit_errexit
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/runner-shutdown.sh
 source "$script_dir/runner-shutdown.sh"
-for input in NEEDS EVENT SELECTED_BY PULL_REQUEST_ONLY ALWAYS_RUN GH_TOKEN HEAD_SHA \
+for input in NEEDS EVENT SELECTED_BY PULL_REQUEST_ONLY ALWAYS_RUN CHECK_RUN_JOBS GH_TOKEN HEAD_SHA \
   GITHUB_REPOSITORY GITHUB_RUN_ID; do
   if [ -z "${!input:-}" ]; then
     echo "::error::ci-ok.sh needs $input in its environment"
@@ -122,26 +133,32 @@ if ! jq -e 'type == "array" and all(.[]; type == "string") and any(. == "changes
   echo "::error::ALWAYS_RUN is not a JSON array of job names naming changes, whose outputs every other job is judged by: $ALWAYS_RUN"
   exit 1
 fi
+if ! jq -e 'type == "object" and all(.[]; type == "string")' <<<"$CHECK_RUN_JOBS" >/dev/null 2>&1; then
+  echo "::error::CHECK_RUN_JOBS is not a JSON object of check-run name to job id: $CHECK_RUN_JOBS"
+  exit 1
+fi
 
 # Which of this run's failures were a runner shutdown rather than a fault of the change: the
 # platform takes the machine away under a running job, GitHub reports that job `failure`, and
 # its check run carries the runner's shutdown annotation beside exit code 143.
-# runner_shutdown_kills reads the pair off this run's check runs (runner-shutdown.sh says which
-# fields of which endpoint, and why a job it cannot read that way is no kill), and the program
-# below reads each job it names as cancelled. A read GitHub refused leaves the list empty, with
-# that script's warning in the log, so every failure stands as a failure.
+# runner_shutdown_kills reads the pair off this run's check runs, each job's by CHECK_RUN_JOBS
+# (runner-shutdown.sh says which fields of which endpoint, and why a job it cannot read that way is
+# no kill), and the program below reads each job it names as cancelled. A read GitHub refused
+# leaves the list empty, with that script's warning in the log, so every failure stands as a
+# failure.
 mapfile -t failed < <(jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS")
 shutdown='[]'
-if [ "${#failed[@]}" -gt 0 ] && kills=$(runner_shutdown_kills "${failed[@]}"); then
-  shutdown=$(jq -R -s 'split("\n") | map(select(. != ""))' <<<"$kills")
+if [ "${#failed[@]}" -gt 0 ] && killed_jobs=$(runner_shutdown_kills "${failed[@]}"); then
+  shutdown=$(jq -R -s 'split("\n") | map(select(. != ""))' <<<"$killed_jobs")
 fi
 
-# One row per line, tab-separated: `info` and the line to print, or `error` and the ::error:: text.
-# Every job is printed in NEEDS order, after each ALWAYS_RUN job NEEDS lacks and before each
-# SELECTED_BY job it lacks. A job $shutdown names ended `failure` only because its runner was
-# shut down, so `result` reads it as cancelled. `cut_off` is why a selected job that did not
-# succeed failed: the causes those results carry are not one fault, and only the skip is the
-# filter's.
+# One row per line, tab-separated: `info` and the line to print, `note` and a line that is also
+# the step summary's, or `error` and the ::error:: text. Every job is printed in NEEDS order, after
+# each ALWAYS_RUN job NEEDS lacks and before each SELECTED_BY job it lacks. A job $shutdown names
+# ended `failure` only because its runner was shut down, so `result` reads it as cancelled.
+# `cut_off` is why a selected job that did not succeed failed: the causes those results carry are
+# not one fault, and only the skip is the filter's. A `note` names a job that failed in a merge
+# group although no pull request that changes the group's files runs it (missed_by_filters).
 read -r -d '' program <<'JQ' || true
 include "ci-ok";
 (.changes.outputs // {}) as $out
@@ -176,6 +193,8 @@ include "ci-ok";
     elif ($map | has($job)) then
       selection($job) as $s
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
+        (select($result == "failure" and missed_by_filters($job; $map; $out; $event))
+         | ["note", "\($job) failed, and no pull request that changes this merge group's files runs it: the filters, given those files, do not select it (filter_verdicts gives \($map[$job]) false, and no changed file is one no filter names); read its filter for a file its tests read that the filter misses, and its test for a flake"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
@@ -198,12 +217,27 @@ rows=$(jq -L "$script_dir" -r --arg event "$EVENT" --argjson map "$SELECTED_BY" 
   "$program" <<<"$NEEDS")
 
 errors=()
+notes=()
 while IFS=$'\t' read -r level text; do
   case $level in
     info) echo "$text" ;;
+    note)
+      echo "$text"
+      notes+=("$text")
+      ;;
     error) errors+=("$text") ;;
   esac
 done <<<"$rows"
+
+if [ "${#notes[@]}" -gt 0 ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  {
+    echo "### Failed jobs the pull request did not run"
+    echo
+    for note in "${notes[@]}"; do
+      echo "- $note"
+    done
+  } >>"$GITHUB_STEP_SUMMARY"
+fi
 
 if [ "${#errors[@]}" -gt 0 ]; then
   for error in "${errors[@]}"; do

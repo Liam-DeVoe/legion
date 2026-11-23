@@ -3433,6 +3433,14 @@ SCRIPT_TEST_GATES = [
         (GO_TEST_JQ, "ci-ok-retries.sh reads each jsonfile with its no_test_failures"),
         (f"{SCRIPTS}/testdata/ci-ok-retries/*", "the captured jsonfiles and rerun reports each case reads"),
     ]),
+    harness("unnamed_files_test", "Test the selection of every job for a changed file no filter names",
+            f"{SCRIPTS}/unnamed-files.test.sh", [
+        (f"{SCRIPTS}/unnamed-files.sh", "the script under test"),
+        (f"{SCRIPTS}/gh-read.sh", "unnamed-files.sh sources it for its bounded gh read"),
+        (f"{SCRIPTS}/workflow_paths.py", "unnamed-files.sh matches each changed file with its glob_regex"),
+        (".github/ci-areas.yaml", "the filters the cases match #4397's files and the 3,000-file list against"),
+        (f"{SCRIPTS}/testdata/unnamed-files/*", "#4397's captured file list, which the 3,000-file list is made from"),
+    ]),
 ]
 
 # What every harness step above reads, for the test job's own gate: the job runs each of them, so

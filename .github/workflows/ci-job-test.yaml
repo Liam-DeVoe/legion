@@ -268,6 +268,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.ci_ok_retries_test: ci-ok-retries.test.sh and what it tests."
         type: string
         required: true
+      unnamed_files_test:
+        description: "ci.yaml's needs.changes.outputs.unnamed_files_test: unnamed-files.test.sh and what it tests."
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -651,6 +655,12 @@ jobs:
       - name: Test ci-ok's naming of the Go tests that passed on their retry
         if: inputs.changes-result != 'success' || inputs.ci_ok_retries_test == 'true'
         run: .github/scripts/ci-ok-retries.test.sh
+
+      # The changes job's unnamed-file step, over #4397's own captured file list and a 3,000-file
+      # list made from it, against .github/ci-areas.yaml and filters of its own.
+      - name: Test the selection of every job for a changed file no filter names
+        if: inputs.changes-result != 'success' || inputs.unnamed_files_test == 'true'
+        run: .github/scripts/unnamed-files.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

@@ -112,9 +112,13 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
           [ "$decided" -eq 0 ] || exit "$decided"
 
+          # kind-and-agent-harness: this run is the only full run of a commit that reached main
+          # past the queue, so it runs kind and agent-harness too, which a dispatched run of ci.yaml
+          # leaves out otherwise.
           while read -r act sha; do
             case $act in dispatch) ;; *) continue ;; esac
-            gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f migration-base="$BASE_SHA"
+            gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f migration-base="$BASE_SHA" \
+              -f kind-and-agent-harness=true
             echo "::notice::$sha reached $GITHUB_REF_NAME with no passing merge-group ci-ok, so ci.yaml was started on $GITHUB_REF_NAME, whose tip contains it"
             {
               echo

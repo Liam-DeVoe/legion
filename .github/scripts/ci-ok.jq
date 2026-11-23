@@ -1,5 +1,5 @@
-# ci-ok's one reading of whether `changes` selected a job, so no reading of it disagrees with
-# another.
+# ci-ok's one reading of whether `changes` selected a job, and of which check runs are a job's, so
+# no reading of either disagrees with another.
 #
 # `selection` is read by ci-ok.sh, the verdict ci.yaml's ci-ok job reaches over every job's result
 # and ci-ok-report.sh posts at once on a merge-group run one job's failure has decided. $map is
@@ -33,3 +33,29 @@ def selection($job; $map; $out; $pr; $event):
     else {selected: true,
           why: "needs.changes.outputs.\($output) is true\(if $pr_only then " on a \($event)" else "" end)"}
     end;
+
+# The check runs of one job of ci.yaml among a run's check runs, or among the jobs route's entries
+# (each an object with a `name`). $names is CI_OK_CHECK_RUN_JOBS from ci.yaml's env: each leg's and
+# carrier's check-run name to its job id, for a leg whose `name:` is an expression, whose check run
+# carries the name it evaluates to (an old check-run name such as `envoy-go-checks / envoy-go-checks`)
+# and no job id. A name the map holds belongs to the job it gives and to no other; any other name
+# belongs to the job GitHub names it after: the job itself (`job`), a job of the workflow it calls
+# (`job / inner`, `job / inner (leg)`), or a leg of its matrix with no name of its own (`job (leg)`).
+# ci-ok-report.sh reads a job's result this way, and runner-shutdown.sh the check runs of a job
+# whose runner may have been shut down.
+def runs_of($job; $names):
+  map(select(($names[.name] // null) as $mapped
+    | if $mapped != null then $mapped == $job
+      else .name == $job or (.name | startswith($job + " / ") or startswith($job + " (")) end));
+
+# Whether a job of a merge-group run is one no pull request that changes the group's files would
+# have run: the paths filter's own verdict for its output, given the group's changed files, is
+# false (`filter_verdicts`, which the changes job publishes on a merge group too), and the
+# unnamed-file step found no changed file that matches no filter (`unnamed_files`), which would
+# have selected every job. ci-ok.sh names such a job when it fails, so its reader checks the filter
+# for a read it misses and the test for a flake. A run whose verdicts are missing, or that names
+# no verdict for the output, names nothing.
+def missed_by_filters($job; $map; $out; $event):
+  (($out.filter_verdicts | try (fromjson | objects) catch empty) // {}) as $verdicts
+  | $event == "merge_group" and ($map | has($job)) and ($out.unnamed_files // "") != "true"
+    and $verdicts[$map[$job]] == "false";

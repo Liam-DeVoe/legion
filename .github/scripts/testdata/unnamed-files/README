@@ -1,0 +1,15 @@
+pull-4397-files.jsonl is GitHub's list of the files cybermonklabs/legion#4397 changes, every page
+of it, as gh prints it for the read .github/scripts/unnamed-files.sh makes: one
+`{filename, previous_filename}` per changed file. It was captured on 2026-11-23 at 01:01Z, at the
+pull request's head 94786288db41c37c62c060b59a5a46994bea28b6, with
+
+  gh api --paginate 'repos/cybermonklabs/legion/pulls/4397/files?per_page=100' \
+    --jq '.[] | {filename, previous_filename}' > pull-4397-files.jsonl
+
+which read seven pages: 686 files, the pull request's `changed_files` at that head
+(`gh api repos/cybermonklabs/legion/pulls/4397 --jq .changed_files` answered 686), two of them
+renamed. The same command with no --jq prints each file's patch as well, 6.2 MB of it; the
+script's own --jq keeps the two fields it reads, so this file is what gh hands the script.
+
+unnamed-files.test.sh reads it as the list of a real pull request with more than one page, and
+builds its 3,000-file list, GitHub's limit, from the files of it under packages/.

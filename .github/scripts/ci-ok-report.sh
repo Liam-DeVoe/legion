@@ -45,12 +45,18 @@
 #
 # A decided run is read once before the post, so the check's summary names every job's result: the
 # run's jobs route (the latest attempt's, as GitHub lists them), where a job GitHub shows
-# completed stands at its conclusion, a called workflow's jobs (`<job> / <its job>`) together, one
-# still queued or running at that status (`queued`, `in_progress`), and one the route does not
-# list at all as `unlisted`. The reporting job is the one exception: the route shows it
-# `in_progress`, because this step is still running, so its own JOB_STATUS stands for it. Nothing
-# but a success is a success there, so ci-ok.sh's verdict is failure, which is right: a selected
-# job that did not succeed fails ci-ok, and the group this run tests cannot merge.
+# completed stands at its conclusion, every check run of it together, one still queued or running
+# at that status (`queued`, `in_progress`), and one the route does not list at all as `unlisted`.
+# A job's check runs are those ci-ok.jq's runs_of gives it: each name CI_OK_CHECK_RUN_JOBS maps to
+# it, which is how a leg whose `name:` is an expression is found, and each name GitHub gives after
+# the job's id, a called workflow's jobs (`<job> / <its job>`, `<job> / <its job> (<leg>)`) and a
+# matrix leg with no name of its own (`<job> (<leg>)`). The reporting job is the one exception:
+# the route shows it `in_progress`, because this step is still running, so its own JOB_STATUS
+# stands for it. Nothing but a success is a success there, so ci-ok.sh's verdict is failure, which
+# is right: a selected job that did not succeed fails ci-ok, and the group this run tests cannot
+# merge. Where the reporting job is a leg, the check run whose runner is this step's (RUNNER_NAME,
+# beside each running job's `runner_name` in the route) is that leg, and the title and summary
+# name it by its check-run name.
 #
 # A jobs read GitHub refuses three times records every job as `unread`, which is no success
 # either, and the verdict goes up all the same: it is failing whatever those jobs go on to do, and
@@ -77,10 +83,12 @@
 #   HEAD_SHA           the commit ci-ok is for (post-check-run.sh), and the commit whose check
 #                      runs runner-shutdown.sh reads.
 #   GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_SERVER_URL, as Actions sets them.
+#   RUNNER_NAME        as Actions sets it: the runner of this step, which names the reporting leg.
 #   CI_OK_WORKFLOW     optional: the router's file, .github/workflows/ci.yaml beside this script
 #                      by default (the copy of the commit the run checked out). CI_OK_SELECTED_BY,
-#                      CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN are read from it and handed
-#                      to ci-ok.sh, which judges a job by the class its name is in.
+#                      CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and CI_OK_CHECK_RUN_JOBS are read
+#                      from it and handed to ci-ok.sh, which judges a job by the class its name is
+#                      in, and CI_OK_CHECK_RUN_JOBS to runner-shutdown.sh.
 #
 # Run from anywhere: JOB=... JOB_STATUS=... CHANGES=... EVENT=... HEAD_SHA=... \
 #   .github/scripts/ci-ok-report.sh
@@ -117,9 +125,12 @@ fi
 # job in runner-shutdown.sh's header was — so the case that reaches it is `changes`, whose
 # result the reporting job is handed; both are read the same way all the same.
 shutdown_killed() { # shutdown_killed <job>: true when that job's failure was a runner shutdown
-  local kills
+  local kills names
+  # The job's check runs are read by the workflow's name map; a file yq cannot read leaves the
+  # names GitHub gives after a job id, and the map is held to its shape below on a decided run.
+  names=$(yq -r '.env.CI_OK_CHECK_RUN_JOBS // ""' "$workflow" 2>/dev/null) || names=
   # A refused read is not a kill: runner_shutdown_kills has warned, and the failure stands.
-  kills=$(runner_shutdown_kills "$1") || return 1
+  kills=$(CHECK_RUN_JOBS=$names runner_shutdown_kills "$1") || return 1
   [ -n "$kills" ]
 }
 decided_job=$JOB
@@ -165,15 +176,18 @@ fi
 selected_by=$(yq -r '.env.CI_OK_SELECTED_BY // ""' "$workflow")
 pull_request_only=$(yq -r '.env.CI_OK_PULL_REQUEST_ONLY // ""' "$workflow")
 always_run=$(yq -r '.env.CI_OK_ALWAYS_RUN // ""' "$workflow")
+check_run_jobs=$(yq -r '.env.CI_OK_CHECK_RUN_JOBS // ""' "$workflow")
 if ! jq -e 'type == "object"' <<<"$selected_by" >/dev/null 2>&1 \
   || ! jq -e 'type == "array"' <<<"$pull_request_only" >/dev/null 2>&1 \
-  || ! jq -e 'type == "array"' <<<"$always_run" >/dev/null 2>&1; then
-  echo "::error::$workflow's env holds no JSON CI_OK_SELECTED_BY object and CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays"
+  || ! jq -e 'type == "array"' <<<"$always_run" >/dev/null 2>&1 \
+  || ! jq -e 'type == "object" and all(.[]; type == "string")' <<<"$check_run_jobs" >/dev/null 2>&1; then
+  echo "::error::$workflow's env holds no JSON CI_OK_SELECTED_BY object, CI_OK_PULL_REQUEST_ONLY and CI_OK_ALWAYS_RUN arrays and CI_OK_CHECK_RUN_JOBS object of check-run name to job id"
   exit 1
 fi
 
 read -r -d '' program <<'JQ' || true
-def mine($job): [$jobs[] | select(.name == $job or (.name | startswith($job + " / ")))];
+include "ci-ok";
+def mine($job): $jobs | runs_of($job; $names);
 def ended($job):
   mine($job) as $mine
   | if ($mine | length) > 0 and all($mine[]; .status == "completed") then
@@ -185,14 +199,25 @@ def ended($job):
     else null end;
 def live($job): [mine($job)[] | select(.status != "completed") | .status] | first // "unlisted";
 {changes: $changes}
-+ ([$always[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
-+ ([$map | keys_unsorted[] | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
+  + ([$always[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
+  + ([$map | keys_unsorted[] | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 JQ
+# The check run of this job that this step runs in, by its runner: a leg's own check-run name,
+# which the title and summary give rather than the job's id. A job of one check run, or a read
+# that finds none, leaves the job's id.
+decided_name=$decided_job
 if jobs=$(gh_read gh api --paginate \
   "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-  --jq '.jobs[] | {name, status, conclusion}'); then
-  needs=$(jq -n --argjson jobs "$(jq -s . <<<"$jobs")" --argjson changes "$CHANGES" \
-    --argjson map "$selected_by" --argjson always "$always_run" "$program")
+  --jq '.jobs[] | {name, status, conclusion, runner_name}'); then
+  jobs=$(jq -s . <<<"$jobs")
+  needs=$(jq -n -L "$script_dir" --argjson jobs "$jobs" --argjson changes "$CHANGES" \
+    --argjson map "$selected_by" --argjson always "$always_run" --argjson names "$check_run_jobs" "$program")
+  if [ "$decided_job" = "$JOB" ] && [ -n "${RUNNER_NAME:-}" ]; then
+    leg=$(jq -r -L "$script_dir" --arg job "$JOB" --arg runner "$RUNNER_NAME" --argjson names "$check_run_jobs" \
+      'include "ci-ok"; [runs_of($job; $names)[] | select(.status != "completed" and .runner_name == $runner) | .name]
+       | first // ""' <<<"$jobs")
+    decided_name=${leg:-$JOB}
+  fi
 else
   echo "::warning::GitHub refused this run's job list three times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
   needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
@@ -207,7 +232,7 @@ summary=$(mktemp)
 trap 'rm -f "$summary"' EXIT
 status=0
 verdict=$(NEEDS=$needs EVENT=$EVENT SELECTED_BY=$selected_by ALWAYS_RUN=$always_run \
-  PULL_REQUEST_ONLY=$pull_request_only "$script_dir/ci-ok.sh" 2>&1) || status=$?
+  PULL_REQUEST_ONLY=$pull_request_only CHECK_RUN_JOBS=$check_run_jobs "$script_dir/ci-ok.sh" 2>&1) || status=$?
 echo "$verdict"
 if [ "$status" -eq 0 ]; then
   conclusion=success
@@ -217,12 +242,18 @@ else
   title=$(grep -m1 '^::error::' <<<"$verdict" | sed 's/^::error:://' | cut -c1-200 || true)
   title=${title:-ci-ok.sh failed}
 fi
-# The title names the job whose result decided the run, which is the one thing a person reading
-# the check beside the merge box needs and the summary below says at length: on such a run most
-# jobs never ran, so the verdict alone reads as if ci-ok judged a whole run.
-title=$(cut -c1-200 <<<"$decided_job decided this merge-group run: $title")
+# The title names the job whose result decided the run, or its leg by the leg's check-run name,
+# which is the one thing a person reading the check beside the merge box needs and the summary
+# below says at length: on such a run most jobs never ran, so the verdict alone reads as if ci-ok
+# judged a whole run.
+title=$(cut -c1-200 <<<"$decided_name decided this merge-group run: $title")
+if [ "$decided_name" = "$decided_job" ]; then
+  by=$JOB
+else
+  by="$JOB's check run $decided_name"
+fi
 {
-  echo "Decided by $JOB, $decided_by ([run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID))."
+  echo "Decided by $by, $decided_by ([run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID))."
   echo
   echo '```text'
   echo "$verdict"

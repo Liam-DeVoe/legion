@@ -1,0 +1,83 @@
+# The changes job of ci.yaml's layout by package area: its outputs and steps, read with the filters
+# of .github/ci-areas.yaml. It replaces the changes job's outputs and steps in ci.yaml once the jobs
+# that test these outputs are written there, and this file goes then; until then ci.yaml's changes
+# job reads .github/ci-filters.yaml for the jobs of the old layout.
+#
+# One output per filter, named as the filter, each read by the job of that id: kind-image reads
+# kind's, claude-envoy-names pi's, and tool-fallback's two legs one, so CI_OK_SELECTED_BY maps
+# kind-image to kind and claude-envoy-names to pi, as it maps envoy-go-docs-finalizers to
+# envoy_go_race_docs today; ci-ok.jq reads a filter's own verdict under its output's name.
+#   * pull_request: the job's filter matches, or the unnamed-file step found a changed file no
+#     filter names. go-envoy-held, airlock-arm and agent-harness also need the full-ci label, the
+#     unnamed-file step inside that term; kind runs on no pull request.
+#   * merge_group: every job.
+#   * workflow_dispatch: every job but kind and agent-harness, which the kind-and-agent-harness
+#     input selects. dorny/paths-filter and the unnamed-file step are skipped there.
+# kind's last term reads its filter, which no pull request reaches and a dispatched run leaves
+# empty, so check-image-trigger-paths.sh reads kind-image's gate as its narrowed shape (a build
+# that publishes nothing) and holds the kind filter to the image's inputs; worker-image's and
+# browser-image's outputs are its "filtered or unnamed" shape.
+changes:
+  outputs:
+    # No job's if: but its own gate tests these; lint (with the R3 search) tests none.
+    worker-image: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.worker-image == 'true' || steps.unnamed.outputs.found == 'true' }}
+    kind: ${{ github.event_name == 'merge_group' && 'true' || github.event_name == 'workflow_dispatch' && inputs.kind-and-agent-harness && 'true' || github.event_name != 'pull_request' && steps.filter.outputs.kind || 'false' }}
+    go-daemon: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.go-daemon == 'true' || steps.unnamed.outputs.found == 'true' }}
+    plugin-pack: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.plugin-pack == 'true' || steps.unnamed.outputs.found == 'true' }}
+    daemon-live: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.daemon-live == 'true' || steps.unnamed.outputs.found == 'true' }}
+    agent-harness: ${{ github.event_name == 'merge_group' && 'true' || github.event_name == 'workflow_dispatch' && inputs.kind-and-agent-harness && 'true' || github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci') && (steps.filter.outputs.agent-harness == 'true' || steps.unnamed.outputs.found == 'true') || 'false' }}
+    airlock-arm: ${{ github.event_name != 'pull_request' && 'true' || contains(github.event.pull_request.labels.*.name, 'full-ci') && (steps.filter.outputs.airlock-arm == 'true' || steps.unnamed.outputs.found == 'true') || 'false' }}
+    go-envoy-held: ${{ github.event_name != 'pull_request' && 'true' || contains(github.event.pull_request.labels.*.name, 'full-ci') && (steps.filter.outputs.go-envoy-held == 'true' || steps.unnamed.outputs.found == 'true') || 'false' }}
+    ts: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.ts == 'true' || steps.unnamed.outputs.found == 'true' }}
+    pi: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.pi == 'true' || steps.unnamed.outputs.found == 'true' }}
+    dispatch-browser: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.dispatch-browser == 'true' || steps.unnamed.outputs.found == 'true' }}
+    docs: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.docs == 'true' || steps.unnamed.outputs.found == 'true' }}
+    browser-image: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.browser-image == 'true' || steps.unnamed.outputs.found == 'true' }}
+    ci-images: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.ci-images == 'true' || steps.unnamed.outputs.found == 'true' }}
+    tool-fallback: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.tool-fallback == 'true' || steps.unnamed.outputs.found == 'true' }}
+    notices: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.notices == 'true' || steps.unnamed.outputs.found == 'true' }}
+    scripts: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.scripts == 'true' || steps.unnamed.outputs.found == 'true' }}
+    go-envoy: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.go-envoy == 'true' || steps.unnamed.outputs.found == 'true' }}
+    text-checks: ${{ github.event_name != 'pull_request' && 'true' || steps.filter.outputs.text-checks == 'true' || steps.unnamed.outputs.found == 'true' }}
+    # The filters' own verdicts, before any hold, on a pull request and on a merge group, which
+    # ci-ok reads to tell a held job from an unselected one, and a failed job of a merge group no
+    # pull request of its files ran (ci-ok.jq).
+    filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || toJSON(steps.filter.outputs) }}
+    # Whether a changed file matches no filter, which selected every job; ci-ok reads it beside
+    # filter_verdicts on a merge group.
+    unnamed_files: ${{ steps.unnamed.outputs.found }}
+    ref_is_main: ${{ steps.ref.outputs.is_main }}
+  steps:
+    - if: github.event_name != 'pull_request'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+    # On a pull request the two steps below read the file list from the API: the filters and what
+    # the unnamed-file step runs are the whole checkout they need.
+    - if: github.event_name == 'pull_request'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        sparse-checkout: |
+          .github/ci-areas.yaml
+          .github/scripts/unnamed-files.sh
+          .github/scripts/gh-read.sh
+          .github/scripts/workflow_paths.py
+        sparse-checkout-cone-mode: false
+        persist-credentials: false
+    - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+      id: filter
+      if: github.event_name != 'workflow_dispatch'
+      with:
+        predicate-quantifier: some-with-excludes
+        filters: .github/ci-areas.yaml
+    - name: Select every job when a changed file matches no filter
+      id: unnamed
+      if: github.event_name != 'workflow_dispatch'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        BASE_SHA: ${{ github.event.merge_group.base_sha }}
+      run: .github/scripts/unnamed-files.sh .github/ci-areas.yaml
+    - name: Read whether this run's ref is exactly refs/heads/main
+      id: ref
+      run: if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"

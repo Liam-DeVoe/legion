@@ -68,9 +68,10 @@
 #     matches when a pattern without `!` does and no `!` pattern does, so a `!` pattern
 #     excludes. Any other quantifier (`every` among them), and a pattern holding a brace, which
 #     picomatch expands, are refused. The filters are read where the action reads them: from
-#     the file a step's `filters` input names, which is .github/ci-filters.yaml for ci.yaml's
-#     changes job, once however many gates it decides, and a file that is absent, refuses the
-#     open, is not valid YAML or holds no mapping is refused, naming the file. One more term is
+#     the file a step's `filters` input names, .github/ci-areas.yaml for the changes job of
+#     ci.yaml's layout by package area (.github/ci-filters.yaml while that job still names it),
+#     once however many gates it decides, and a file that is absent, refuses the open, is not
+#     valid YAML or holds no mapping is refused, naming the file. One more term is
 #     admitted beside the filters, in a job's `if:` only: a
 #     CALL MODE, `inputs.<name> == ''`, exactly the empty literal, on a <name> the workflow's
 #     own `on.workflow_call.inputs` declares `type: string` with no `default` or `default:
@@ -172,10 +173,10 @@
 #      test — and the
 #      job's gates admit a pull request event. There the event's paths AND the filters must
 #      match only files the builds read, the workflows involved (the building one and the
-#      caller), or .github/ci-filters.yaml, the file a filter lives in, which decides whether
-#      the job runs and reaches no build input. A `push` or `merge_group` trigger, a filter
-#      that also decides a job doing more, and a workflow with other jobs are left alone: what
-#      they start reads more than an image.
+#      caller), or the file a filter lives in, the one its paths-filter step names, which
+#      decides whether the job runs and reaches no build input. A `push` or `merge_group`
+#      trigger, a filter that also decides a job doing more, and a workflow with other jobs are
+#      left alone: what they start reads more than an image.
 #      One test for a job wherever its steps are: ci.yaml's jobs each hold theirs in a called
 #      workflow of their own, so a job that builds an image and then runs a suite against it is
 #      a job doing more whether its steps are in ci.yaml or in the file ci.yaml calls.
@@ -205,9 +206,8 @@ from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_r
                             unread_patterns, walk)
 
 WORKFLOWS = Path(".github/workflows")
-# Where ci.yaml's changes job keeps the filters it gates its jobs by: its one dorny/paths-filter
-# step hands the action this path rather than a filters string of its own.
-FILTERS_FILE = ".github/ci-filters.yaml"
+# The filters files the paths-filter steps name are read once each (FILTER_FILES, below); the
+# reverse check passes over each, the file a gating filter lives in, which no build reads.
 PATH_EVENTS = ("push", "pull_request", "pull_request_target", "merge_group")
 NEEDS_OUTPUT = re.compile(r"needs\.([\w-]+)\.outputs\.([\w-]+)")
 STEP_OUTPUT = re.compile(r"steps\.([\w-]+)\.outputs\.([\w-]+)")
@@ -1303,11 +1303,12 @@ FILTER_FILES: dict[str, dict | None] = {}
 def step_filters(step: dict) -> dict | None:
     """A paths-filter step's filters, by name, read as dorny/paths-filter v4.0.3 reads its
     `filters` input (src/main.ts, isPathInput): the path of a file when the text holds no newline
-    and no colon, and inline YAML otherwise. ci.yaml's changes job hands it .github/ci-filters.yaml
-    that way. Empty when inline filters are not a mapping. None when inline filters are not valid
-    YAML, a repeated key included, or when the file a step names is absent, refuses the open, is
-    not valid YAML or holds no mapping, each refused here naming the file and which, so the gate it
-    decides is refused rather than read as one with no filter."""
+    and no colon, and inline YAML otherwise. ci.yaml's changes job hands it its filters file
+    (.github/ci-areas.yaml) that way. Empty when inline filters are not a mapping. None when
+    inline filters are not valid YAML, a repeated key included, or when the file a step names
+    is absent, refuses the open, is not valid YAML or holds no mapping, each refused here naming
+    the file and which, so the gate it decides is refused rather than read as one with no
+    filter."""
     given = str((step.get("with") or {}).get("filters", "")).strip()
     if not given or "\n" in given or ":" in given:
         try:
@@ -2054,16 +2055,17 @@ for label, (filters, origin, selectors, read) in started.items():
     if not selectors and not only_builds(origin):
         continue
     # Two files a gating filter names that no build reads are passed over: the workflow whose
-    # trigger it is, and .github/ci-filters.yaml, the file the filter itself lives in now. That
-    # file decides whether the job runs, as a workflow's own `if:` does, and reaches no build
-    # input; any other file no build reads is still refused.
+    # trigger it is, and the file the filter itself lives in, which its paths-filter step names
+    # (.github/ci-areas.yaml for ci.yaml). That file decides whether the job runs, as a
+    # workflow's own `if:` does, and reaches no build input; any other file no build reads is
+    # still refused.
     extra = [
         path
         for path in FILES
         if all(f.covers(path) for f in filters)
         and path not in read
         and path != str(origin)
-        and path != FILTERS_FILE
+        and path not in FILTER_FILES
     ]
     if not extra:
         print(f"{label}: matches only files its image builds read")

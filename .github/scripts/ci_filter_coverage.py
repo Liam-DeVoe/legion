@@ -1246,9 +1246,10 @@ def reduce_line(line: str) -> tuple:
 # never which version: the module files this check already reads decide that, and go.sum holds
 # each module's hash whichever source serves it. This check's own go commands run with
 # GOPROXY=off over an empty module cache (Go.env below), so a workflow's value never reaches
-# them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
-# ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
-# to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
+# them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN, CI_OK_CHECK_RUN_JOBS
+# and CI_OK_EXEMPT are ci.yaml's ci-ok classes and its map of check-run names to job ids:
+# ci-ok-report.sh reads the first four out of that file and hands them to ci-ok.sh, and
+# CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
 # time by the test it governs, so go compiles the same files with them set as without. So are
 # the variables that turn on a test's own input or bound: the corpus directories the pmdoc and
@@ -1264,7 +1265,8 @@ def reduce_line(line: str) -> tuple:
 # command reads.
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
-    "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
+    "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_CHECK_RUN_JOBS", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY",
+    "CI_OK_SELECTED_BY",
     "DATABASE_URL", "DIFFERENTIAL_BASE",
     "DISPATCH_BENCH_DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
