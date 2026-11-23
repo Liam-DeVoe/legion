@@ -996,7 +996,7 @@ test("the skills say how the owner's retro and review read an issue, and when a 
       /the step ends by its verdict, not by a review on GitHub\./,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /not a retry loop: complete again once its cause is fixed, or as its code below says\./,
+      /not a retry loop: complete again once its cause is fixed, or as its code says\./,
     ]),
   ]).toEqual([]);
 });
@@ -1016,6 +1016,12 @@ test("the plan guide names which ci_check holds the merge on a task with no revi
     ...lacks("legion-architect/references/plan.md", [
       /a `ci_check` whose run has not concluded holds the merge only where the base branch requires it\./,
     ]),
+  ]).toEqual([]);
+});
+
+test("the worker skill says a TASK_STOPPED report is never sent again", () => {
+  expect([
+    ...lacks("legion-worker/SKILL.md", [/`TASK_STOPPED`: your handoff counts as used; never send it again\./]),
   ]).toEqual([]);
 });
 
