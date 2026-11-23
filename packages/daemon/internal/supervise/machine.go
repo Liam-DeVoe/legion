@@ -171,14 +171,17 @@ type Claim struct {
 	// names it by (plan.Agent.ID, StartWork.Agent): the agent of a key, or of a step with no key.
 	// One name can go to two agents of an issue in turn — a later version of a plan can give the
 	// name a stopped task's agent ran under to a new agent — and this is the one record of which of
-	// them the session is. It is written in the decision that brings the claim back for a step's
-	// agent (revive), the decision that begins or takes the session for that agent: a spawn for it,
-	// a resume or a retry of the session the claim holds for it, and a start for another agent,
-	// which leaves the session behind first. No other code writes it,
-	// and a forget for any other cause keeps it: the claim then relaunches in a new session the same
-	// agent's work it holds. "" is a claim no start for a step's agent has brought back yet — the
-	// claim of an issue with no plan rows, of a role no step names, or one the release before last
-	// ran — whose session the next such start takes. The store keeps it in claims.session_agent.
+	// them the session is. It has two writers. One is the admission of the decision that brings the
+	// claim back for a step's agent (revive), the decision that begins or takes the session for
+	// that agent: a spawn for it, a resume or a retry of the session the claim holds for it, and a
+	// start for another agent, which leaves the session behind first. The other is a start that
+	// reaches a claim that still runs a process and records no agent (TakeSessionFor): the start's
+	// task goes to that process, so the session is that start's agent's from then. No other code
+	// writes it, and a forget for any other cause keeps it: the claim then relaunches in a new
+	// session the same agent's work it holds. "" is a claim no start for a step's agent has reached
+	// yet — the claim of an issue with no plan rows, of a role no step names, or one the release
+	// before last ran — whose session the next such start takes. The store keeps it in
+	// claims.session_agent.
 	SessionAgent string
 	// Abandoned is the session this claim stopped resuming when it last forgot one
 	// (forgetSession), and why. The session itself stays in its store — nothing of it is deleted

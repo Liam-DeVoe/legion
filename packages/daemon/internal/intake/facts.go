@@ -1192,10 +1192,10 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a plan of a run the issue has left
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
-// has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans; or
-// AgentUnnamed for a version in which a fresh agent would need the name of its role that another
-// agent of the plan holds from an earlier version, refused before anything is written),
+// has not started, and applies the rules of a later version. A version in which a fresh agent
+// would need the name of its role that another agent of the plan holds is not refused: that agent
+// takes a numbered name of its own (record.NameAgents). It answers PLAN_REFUSED
+// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the

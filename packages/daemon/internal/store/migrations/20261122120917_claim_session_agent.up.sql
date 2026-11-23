@@ -5,9 +5,11 @@
 -- `step:<place>:<task>` for the agent of a step with no key. One name can go to two agents of an
 -- issue in turn — a later version of a plan can give the name a stopped task's agent ran under to
 -- a new agent — so the claim records which of them its session is. Each start of a step names its
--- step's agent (record.SuperviseRequest.Agent), and the decision that brings the claim back leaves
--- the session behind where the two differ, so the new agent starts in a session of its own, and
--- records the start's agent once the claim is admitted. Nothing else writes it.
+-- step's agent (record.SuperviseRequest.Agent). The decision that brings the claim back leaves the
+-- session behind where the two differ, so the new agent starts in a session of its own, and
+-- records the start's agent once the claim is admitted. A start that gives its task to the process
+-- a claim still runs records that start's agent where the claim records none. Nothing else writes
+-- it.
 --
 -- Every row the table already holds takes the default, the empty string, which records no agent:
 -- the next start of a step's agent that reaches such a claim takes the session it holds, as the
