@@ -189,8 +189,9 @@ func restoredLog(t *testing.T, logs *capturedLogs) string {
 // keeper periods the setting program's keeper puts the three copies and the byte limit back and
 // logs both, and the stream keeps its id, on every run.
 func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
+	logs := captureLogs()
 	const id = "deployed-id"
 	deployed := *streamCfg
 	deployed.Subjects = slices.Clone(streamCarriedSubjects[:len(streamCarriedSubjects)-1])
@@ -203,12 +204,12 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 	defaults := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	var setting *Client
 	defaultStart := &interleavedJetStream{JetStreamContext: js, beforeUpdate: func() {
-		setting = startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
+		setting = startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 		if info, err := js.StreamInfo(Stream); err != nil || !keptAtSettings(id)(info) {
 			t.Fatalf("the setting program's start left the stream at %+v (%v), want three copies, the byte limit and the id", info, err)
 		}
 	}}
-	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), logs.logger, defaultStart, &defaults, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("the default program's start: %v", err)
 	}
 	if n := defaultStart.updates.Load(); n != 1 {
@@ -395,9 +396,10 @@ func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
 // over the passes after. The removed subject comes back at the end of the list, and the foreign
 // subject stays: the keeper only adds subjects.
 func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
-	keeper := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
+	logs := captureLogs()
+	keeper := startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 	info := testnats.AwaitSettledStream(t, js, Stream)
 	const removed = "notifications.legion.>"
 
@@ -448,9 +450,10 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 // nothing, and a start with that setting writes nothing. Once an operator lowers the limit below
 // the setting, the keeper raises it back to the setting and logs it.
 func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
-	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval)}
+	logs := captureLogs()
+	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval), WithLogger(logs.logger)}
 	first := startOnCluster(t, cluster, settings...)
 	info := testnats.AwaitSettledStream(t, js, Stream)
 
@@ -468,7 +471,7 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 
 	counting := &countingJetStream{JetStreamContext: js}
 	cfg := parseConnectOptions(settings).streamConfig()
-	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), counting, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), logs.logger, counting, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("start with the old limit: %v", err)
 	}
 	if writes := counting.written(); len(writes) != 0 {
@@ -495,8 +498,9 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 // for a feature it has not configured, is skipped: the keeper creates nothing, updates nothing and
 // logs nothing about it.
 func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
-	logs := captureLogs(t)
+	logs := captureLogs()
 	const listed, unlisted, missing = "envoy_keeper_listed", "envoy_keeper_unlisted", "envoy_keeper_missing"
 
 	watcher := testnats.Connect(t, cluster.URL())
@@ -511,7 +515,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 		t.Fatalf("flush the watch: %v", err)
 	}
 
-	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(listed, missing), WithKeepInterval(testKeepInterval))
+	client := startOnCluster(t, cluster, WithReplicas(3), WithKeptBuckets(listed, missing), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 	before := map[string]nats.StreamConfig{}
 	for _, bucket := range []string{listed, unlisted} {
 		if _, err := EnsureKeyValue(t.Context(), client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3, History: 5, TTL: time.Hour}); err != nil {
@@ -620,6 +624,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 // so the update fails as a pass in flight at a shutdown does, and the keeper logs no failure for
 // it. Once the client stops, its keeper has ended, so nothing raises the stream from its one copy.
 func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
+	t.Parallel()
 	for _, stop := range []struct {
 		name string
 		stop func(*Client)
@@ -628,9 +633,10 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 		{name: "drain", stop: func(client *Client) { _ = client.Drain(5 * time.Second) }},
 	} {
 		t.Run(stop.name, func(t *testing.T) {
+			t.Parallel()
 			cluster, js := startClusterJetStream(t)
-			logs := captureLogs(t)
-			client := startOnCluster(t, cluster, WithReplicas(3), WithKeepInterval(testKeepInterval))
+			logs := captureLogs()
+			client := startOnCluster(t, cluster, WithReplicas(3), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 			info := testnats.AwaitSettledStream(t, js, Stream)
 
 			entered := make(chan struct{})
@@ -693,6 +699,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 // races it on most runs; with the gate the replaced subject is still gone after a hundred passes,
 // and no keeper pass fails on a stream not reconciled yet.
 func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testing.T) {
+	t.Parallel()
 	const replaced, replacing = "notifications.github.*", "notifications.github.>"
 	srv, uri := testnats.Start(t)
 	deploy := testnats.Connect(t, uri)
@@ -710,8 +717,8 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 	deploy.Close()
 	srv.Stop(t)
 
-	logs := captureLogs(t)
-	client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(time.Millisecond))
+	logs := captureLogs()
+	client, err := ConnectOwningStream([]string{uri}, WithConnectInBackground(), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(time.Millisecond), WithLogger(logs.logger))
 	if err != nil {
 		t.Fatalf("connect owning the stream while the server is down: %v", err)
 	}

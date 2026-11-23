@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"strings"
 	"testing"
@@ -26,16 +25,16 @@ import (
 // connection's drain (kvwatch.Watcher.End), so a delete nats.go's drain reports belongs to a
 // watcher nothing ended, and an ordered consumer nats.go failed to recreate wraps the error.
 func TestAConsumerNotActiveReportIsAWarning(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureLogs()
 
-	report := options(slog.Default(), "async-error-test", nil, nil, nil, nil, nil, nil).AsyncErrorCB
+	report := options(logs.logger, "async-error-test", nil, nil, nil, nil, nil, nil).AsyncErrorCB
 	report(nil, &nats.Subscription{Subject: "_INBOX.watcher"}, nats.ErrConsumerNotActive)
 	report(nil, &nats.Subscription{Subject: "_INBOX.other"}, nats.ErrSlowConsumer)
 	report(nil, &nats.Subscription{Subject: "_INBOX.recreate"}, fmt.Errorf("%w: recreating ordered consumer", nats.ErrConsumerNotFound))
 	report(nil, &nats.Subscription{Subject: "_INBOX.drained"}, nats.ErrConsumerNotFound)
 
-	// Only this client's records: a client an earlier test closed can still log through the same
-	// default.
+	// Only records that name the client count, so each report must carry its client's name.
 	var levels []string
 	for _, record := range logs.records(t) {
 		if record["name"] == "async-error-test" {
@@ -56,7 +55,8 @@ func TestAConsumerNotActiveReportIsAWarning(t *testing.T) {
 // the client's real reconnect loop reports exactly that EOF. Every other async error stays an
 // ERROR: the same EOF reported for a connected connection, and a slow consumer.
 func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureLogs()
 	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -89,7 +89,7 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 	}()
 
 	url := "nats://" + listener.Addr().String()
-	opts := options(slog.Default(), "handshake-eof-test", []string{url}, nil, nil, nil, nil, nil)
+	opts := options(logs.logger, "handshake-eof-test", []string{url}, nil, nil, nil, nil, nil)
 	opts.ReconnectWait = 50 * time.Millisecond
 	nc, err := opts.Connect()
 	if err != nil {
@@ -125,8 +125,8 @@ func TestAHandshakeTheServerClosedIsAFailedReconnectAttempt(t *testing.T) {
 	}
 
 	// The same EOF for a connection that is connected, and a slow consumer, stay ERRORs.
-	other := captureLogs(t)
-	report := options(slog.Default(), "other-async-error-test", nil, nil, nil, nil, nil, nil).AsyncErrorCB
+	other := captureLogs()
+	report := options(other.logger, "other-async-error-test", nil, nil, nil, nil, nil, nil).AsyncErrorCB
 	report(&nats.Conn{}, nil, io.EOF)
 	report(nil, &nats.Subscription{Subject: "_INBOX.slow"}, nats.ErrSlowConsumer)
 	var levels []string

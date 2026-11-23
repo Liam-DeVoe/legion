@@ -694,13 +694,15 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 	}
 }
 
-// capturedLogs collects the default slog logger's JSON records for one test. Its writes and reads
-// share a lock because a bus client an earlier test closed can still be logging: nats.go v1.55.0
-// queues the disconnected and closed callbacks on its async dispatcher and returns without waiting
-// for them. The bus's closed callback logs through the default logger, and every test of the
-// package shares one binary.
+// capturedLogs collects the JSON records one test's own logger writes (captureLogs). Its writes and
+// reads share a lock because the components the test gives the logger write from goroutines of
+// their own while the test reads: nats.go v1.55.0 queues the disconnected and closed callbacks on
+// its async dispatcher and returns without waiting for them.
 type capturedLogs struct {
 	logtest.Buffer
+	// logger writes its records into the buffer. The test gives it to each component whose lines
+	// it reads: a client (WithLogger), and a helper that takes a logger.
+	logger *slog.Logger
 }
 
 // records decodes every JSON record logged so far.
@@ -732,12 +734,12 @@ func (l *capturedLogs) recordsWithMsg(t *testing.T, message string) []map[string
 	return records
 }
 
-// captureLogs points the default slog logger at a JSON handler writing into the returned logs
-// until the test ends. A test that calls it must not run in parallel: the default is the process's.
-func captureLogs(t *testing.T) *capturedLogs {
-	t.Helper()
+// captureLogs is a logger of the test's own, writing JSON records into the returned logs. Only the
+// components the test gives logs.logger write there, so the test reads their lines alone and can
+// run in parallel with the package's other tests.
+func captureLogs() *capturedLogs {
 	logs := &capturedLogs{}
-	logtest.SetDefault(t, slog.NewJSONHandler(logs, nil))
+	logs.logger = slog.New(slog.NewJSONHandler(logs, nil))
 	return logs
 }
 
@@ -769,13 +771,14 @@ func TestEnsureStreamWithConfigDropsEveryRoleLaneSubject(t *testing.T) {
 
 // A deployed subject split into several of the binary's own names every one it was replaced by.
 func TestEnsureStreamWithConfigNamesEverySubjectThatReplacedAnOverlappingOne(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureLogs()
 	deployed := *streamCfg
 	deployed.Subjects = []string{"notifications.agent.>", "notifications.legion.>"}
 	own := *streamCfg
 	own.Subjects = []string{"notifications.agent.>", "notifications.legion.*", "notifications.legion.*.*"}
 	js := &streamInfoJetStream{config: deployed}
-	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &own, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), logs.logger, js, &own, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("ensure stream: %v", err)
 	}
 	records := logs.recordsWithMsg(t, "envoy nats stream subject replaced by an overlapping one")
@@ -794,12 +797,13 @@ func TestEnsureStreamWithConfigNamesEverySubjectThatReplacedAnOverlappingOne(t *
 // A start that keeps deployed subjects it does not compile names them, so the retire step can find
 // them; it names them on every start that keeps them, whether or not the stream changed.
 func TestEnsureStreamWithConfigNamesTheDeployedSubjectsItKeepsWithoutCompilingThem(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureLogs()
 	deployed := *streamCfg
 	deployed.Subjects = append(slices.Clone(streamCfg.Subjects), "notifications.retired.>")
 	js := &streamInfoJetStream{config: deployed}
 	for _, start := range []string{"the stream is already reconciled", "a second start"} {
-		if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, streamCfg, capsAnUnsetStream, atStart); err != nil {
+		if _, err := ensureStreamWithConfig(t.Context(), logs.logger, js, streamCfg, capsAnUnsetStream, atStart); err != nil {
 			t.Fatalf("%s: ensure stream: %v", start, err)
 		}
 	}
@@ -816,13 +820,14 @@ func TestEnsureStreamWithConfigNamesTheDeployedSubjectsItKeepsWithoutCompilingTh
 
 // Nothing is reported as replaced or kept when the update that would install it fails.
 func TestEnsureStreamWithConfigLogsNoReconciliationWhenTheUpdateFails(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureLogs()
 	deployed := *streamCfg
 	deployed.Subjects = []string{"notifications.retired.>", "notifications.legion.>"}
 	own := *streamCfg
 	own.Subjects = []string{"notifications.legion.*"}
 	js := &streamInfoJetStream{config: deployed, updateErr: errors.New("update refused")}
-	if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &own, capsAnUnsetStream, atStart); err == nil {
+	if _, err := ensureStreamWithConfig(t.Context(), logs.logger, js, &own, capsAnUnsetStream, atStart); err == nil {
 		t.Fatal("ensure stream succeeded, want the update's error")
 	}
 	for _, message := range []string{
