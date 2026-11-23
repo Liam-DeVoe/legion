@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 # Tests for `harness-pool.sh`: harnesses started by one step run beside each other, never more at
-# once than the slots, each in its own session with the starting step's environment and working
-# directory; a harness started with --minutes sees its deadline and is stopped at its bound; and
-# the wait is the verdict on every one of them, a failure, a harness that signals its own process
-# group, a recorder that was killed and a wait stopped by a TERM included, and on none started.
+# once than the slots and in the order queued, each in its own session with the starting step's
+# environment and working directory and SIGINT at its default; starts at the same moment take
+# entries of their own; a harness's CPU seconds are its own; a harness started with --minutes sees
+# its deadline and is stopped at its bound; and the wait is the verdict on every one of them, a
+# failure, a harness that signals its own process group, a recorder that was killed (before or
+# after its harness started, or replaced by another process of its pid), and a wait stopped by an
+# INT or a TERM included, and on none started.
 #
 # Every case drives the script CI runs, in a pool directory of its own. The harnesses are small
-# bash commands that wait on marker files the case writes, so no case decides anything by a
-# clock: each wait for a file gives up after 20 s and fails its case by name rather than hanging.
-# The two exceptions are bounded both ways: the deadline case holds the exported value between
-# the clock read before the start and the one after the wait, and the bound case shortens a
-# minute to one second through HARNESS_POOL_SECONDS_PER_MINUTE and requires only that a harness
-# which would sleep 300 s is stopped.
+# bash commands that wait on marker files the case writes, and each wait for a file gives up after
+# 20 s and fails its case by name rather than hanging. Three checks lean on a clock, each in the
+# direction where a slow machine can only let a broken pool pass, never fail a working one: the
+# slot case gives a pool that ignored the slot 1 s to start a harness it must not; the bound case
+# shortens a minute to one second through HARNESS_POOL_SECONDS_PER_MINUTE and requires that a
+# harness which would sleep 300 s is stopped; and the CPU case requires a loop of a million
+# iterations to cost more than 0.3 s of CPU and a sleep to cost less.
 #
 # Run from anywhere: .github/scripts/harness-pool.test.sh
 # CI runs it in ci.yaml's test job.
@@ -25,9 +29,34 @@ source "$script_dir/test-lib.sh"
 
 pool="$script_dir/harness-pool.sh"
 work=$(mktemp -d)
-# Every harness a case starts has its case's directory in its command line, so ending each process
-# that names $work ends what a failed case left running, and nothing of any other run.
-trap 'pkill -KILL -f -- "$work/" || true; rm -rf "$work"' EXIT
+# What a failed case left running: each harness's session, by the id its recorder wrote, and each
+# recorder, whose command line names its entry under $work.
+cleanup() {
+  local session
+  for session in "$work"/*/pool/*.session; do
+    if [[ -e $session ]]; then
+      pkill -KILL -s "$(< "$session")" 2> /dev/null || true
+    fi
+  done
+  pkill -KILL -f -- "$work/" 2> /dev/null || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+# session_gone <session id>: true once no process is left in that session, false if one still is
+# after 20 s.
+session_gone() {
+  local tries=0
+  while pgrep -s "$1" > /dev/null; do
+    tries=$((tries + 1))
+    if ((tries > 400)); then
+      echo false
+      return
+    fi
+    sleep 0.05
+  done
+  echo true
+}
 
 # appears <file>: true once the file exists, false if it does not within 20 s.
 appears() {
@@ -113,6 +142,36 @@ check "it passes" "$(is "$status" 0)"
 check "it read the step's env" "$(contains "$out" '^value=from-the-step ')"
 check "in the step's directory" "$(contains "$out" "dir=$m/workdir\$")"
 
+echo "case: a harness's CPU seconds are its own: a loop's are many, a sleep's next to none"
+fresh cpu
+export HARNESS_POOL_SLOTS=1
+# shellcheck disable=SC2016 # the harness, not this shell, expands the loop
+"$pool" start busy bash -c 'i=0; while ((i < 1000000)); do i=$((i + 1)); done'
+# Queued behind the busy one, so its recorder polls for a slot all the while: none of that is its CPU.
+"$pool" start idle bash -c 'sleep 2'
+run_wait
+check "both pass" "$(is "$status" 0)"
+busy_cpu=$(sed -n 's/^::group::busy: exit 0, [0-9.]* s, \([0-9.]*\) s of CPU, .*/\1/p' <<< "$out")
+idle_cpu=$(sed -n 's/^::group::idle: exit 0, [0-9.]* s, \([0-9.]*\) s of CPU, .*/\1/p' <<< "$out")
+check "the loop used more than 0.3 s of CPU" "$(is "$(awk -v c="${busy_cpu:-0}" 'BEGIN { print (c > 0.3) ? "yes" : "no: " c }')" yes)"
+check "the sleep, queued behind it, less than 0.3 s" "$(is "$(awk -v c="${idle_cpu:-9}" 'BEGIN { print (c < 0.3) ? "yes" : "no: " c }')" yes)"
+export HARNESS_POOL_SLOTS=2
+
+echo "case: starts at the same moment each take an entry of their own"
+fresh concurrent
+export HARNESS_POOL_SLOTS=8
+for i in 1 2 3 4 5 6 7 8; do
+  "$pool" start "same-$i" bash -c "echo said by $i" > /dev/null &
+done
+wait
+run_wait
+check "the wait passes" "$(is "$status" 0)"
+check "and judges eight harnesses" "$(contains "$out" '^harness-pool: 8 harnesses, 0 failed$')"
+for i in 1 2 3 4 5 6 7 8; do
+  check "harness $i has its own entry and log" "$(contains "$out" "^said by $i\$")"
+done
+export HARNESS_POOL_SLOTS=2
+
 echo "case: a harness starts with SIGINT and SIGQUIT at their defaults, as a step's shell does"
 fresh signals
 # The step's shell queues it with `&` and no job control, which starts a command with both
@@ -163,14 +222,46 @@ run_wait
 check "the wait fails" "$(is "$status" 1)"
 check "with the status the signal gave the harness, not with none" "$(contains "$out" '^::group::group-kill: exit 143, ')"
 
-echo "case: a recorder killed before the harness ended is a failure, and the wait does not hang"
+echo "case: a recorder killed before the harness ended is a failure, the wait does not hang, and it ends the harness"
 fresh killed
-"$pool" start orphan bash -c "touch '$m/orphan-started'; sleep 30"
+"$pool" start orphan bash -c "touch '$m/orphan-started'; sleep 300"
 check "the harness started" "$(appears "$m/orphan-started")"
-kill -KILL "$(< "$HARNESS_POOL_DIR/000.pid")"
+check "its recorder wrote the harness's session" "$(appears "$HARNESS_POOL_DIR/000.session")"
+read -r recorder _ < "$HARNESS_POOL_DIR/000.pid"
+kill -KILL "$recorder"
 run_wait
 check "the wait fails rather than waiting out the harness" "$(is "$status" 1)"
-check "and says the harness left no status" "$(contains "$out" '^::error title=orphan::exited none: its process ended without writing one after ? s')"
+check "and says the harness left no status" "$(contains "$out" '^::error title=orphan::exited none: its recorder ended without writing one after ? s')"
+check "and the harness's session, left running by its recorder, is ended" "$(session_gone "$(< "$HARNESS_POOL_DIR/000.session")")"
+
+echo "case: a recorder killed while its harness waits for a slot frees the queue"
+fresh killed-queued
+export HARNESS_POOL_SLOTS=1
+"$pool" start holder bash -c "touch '$m/holder-started'; until [[ -e '$m/release' ]]; do sleep 0.05; done"
+check "the first holds the one slot" "$(appears "$m/holder-started")"
+"$pool" start doomed bash -c "touch '$m/doomed-started'"
+"$pool" start after bash -c "touch '$m/after-started'"
+read -r recorder _ < "$HARNESS_POOL_DIR/001.pid"
+kill -KILL "$recorder"
+touch "$m/release"
+check "the harness queued after the killed one still runs" "$(appears "$m/after-started")"
+run_wait
+check "the wait fails" "$(is "$status" 1)"
+check "naming the killed one" "$(contains "$out" '^::error title=doomed::exited none: its recorder ended ')"
+check "which never ran" "$(is "$([[ -e $m/doomed-started ]] && echo ran || echo never)" never)"
+export HARNESS_POOL_SLOTS=2
+
+echo "case: an entry's pid that names another process is not its recorder"
+fresh reused
+"$pool" start ended-early bash -c 'exit 0'
+check "the harness ended" "$(appears "$HARNESS_POOL_DIR/000.exit")"
+# A recorder that died without its status, and whose pid a process alive now holds: this test's
+# own pid, with a start time that is not the recorder's.
+rm "$HARNESS_POOL_DIR/000.exit"
+echo "$$ 1" > "$HARNESS_POOL_DIR/000.pid"
+run_wait
+check "the wait does not wait on the process that holds the pid now" "$(is "$status" 1)"
+check "and judges the entry a failure" "$(contains "$out" '^::error title=ended-early::exited none: its recorder ended ')"
 
 echo "case: a wait over no harness judges nothing, and says so"
 fresh empty
@@ -189,21 +280,25 @@ check "having started nothing" "$(is "$([[ -e $HARNESS_POOL_DIR ]] && echo start
 echo "case: a harness started with --minutes sees its deadline, its start plus the bound less 30 s"
 fresh deadline
 unset HARNESS_POOL_DEADLINE_MS
-before=$(date +%s)
+before=$(date +%s%3N)
 # shellcheck disable=SC2016 # the harness, not this shell, expands the variable
 "$pool" start --minutes 2 bounded bash -c 'echo "deadline=${HARNESS_POOL_DEADLINE_MS:-unset}"'
 # shellcheck disable=SC2016
 "$pool" start unbounded bash -c 'echo "unbounded deadline=${HARNESS_POOL_DEADLINE_MS:-unset}"'
 run_wait
-after=$(date +%s)
+after=$(date +%s%3N)
 check "both pass" "$(is "$status" 0)"
 deadline=$(sed -n 's/^deadline=//p' <<< "$out")
-check "the value is epoch milliseconds" "$(is "$([[ $deadline =~ ^[0-9]+000$ ]] && echo milliseconds || echo "'$deadline'")" milliseconds)"
+check "the value is a number" "$(is "$([[ $deadline =~ ^[0-9]+$ ]] && echo number || echo "'$deadline'")" number)"
+started=$(< "$HARNESS_POOL_DIR/000.started")
+frac=${started#*.}
+start_ms=$((${started%.*} * 1000 + 10#${frac:0:3}))
+check "it is the harness's own start, in epoch milliseconds, plus 120 s less 30 s" "$(is "$deadline" "$((start_ms + 90000))")"
 in_range=false
-if [[ $deadline =~ ^[0-9]+$ ]] && ((deadline >= (before + 90) * 1000 && deadline <= (after + 90) * 1000)); then
+if [[ $deadline =~ ^[0-9]+$ ]] && ((deadline >= before + 90000 && deadline <= after + 90000)); then
   in_range=true
 fi
-check "it is 120 s less 30 s past the start, between the clock before the start and after the wait" "$in_range"
+check "and that start lies between the clock before the start and after the wait" "$in_range"
 check "a harness started without --minutes sees none" "$(contains "$out" '^unbounded deadline=unset$')"
 
 echo "case: a harness past its --minutes bound is stopped, and the wait names the bound"
@@ -253,20 +348,34 @@ HARNESS_POOL_SLOTS=1 "$pool" start behind bash -c "touch '$m/behind-started'"
 # In a process group of its own, so the signals below reach the wait's group: the poll's sleep and
 # every process the report starts take them too. A background job of this script is no group
 # leader, so setsid runs the wait in its own pid, which is the group's id.
-setsid "$pool" wait > "$m/wait.out" 2>&1 &
-waiter=$!
-# The wait says it is waiting once its trap is set; a signal before that would end it unheard.
-waiting=false
-for _ in $(seq 400); do
-  if grep -q '^harness-pool: waiting for ' "$m/wait.out"; then
-    waiting=true
-    break
-  fi
-  sleep 0.05
-done
-check "the wait says it is waiting" "$waiting"
-# A cancel's INT, then TERMs, as the runner sends one 7.5 s after the INT, here one every 10 ms
+# This script, like the step's shell, has no job control, so a command it starts with `&` would
+# start with SIGINT ignored, which a step's own process does not: env puts it back.
+# start_waiter <file>: starts a wait into that file, sets `waiter`, and checks that it says it is
+# waiting, which it does once its trap is set; a signal before that would end it unheard.
+start_waiter() {
+  env --default-signal=INT setsid "$pool" wait > "$1" 2>&1 &
+  waiter=$!
+  local waiting=false
+  for _ in $(seq 400); do
+    if grep -q '^harness-pool: waiting for ' "$1"; then
+      waiting=true
+      break
+    fi
+    sleep 0.05
+  done
+  check "the wait says it is waiting" "$waiting"
+}
+# A cancel's INT alone first.
+start_waiter "$m/int.out"
+kill -INT -- "-$waiter"
+status=0
+wait "$waiter" || status=$?
+out=$(cat "$m/int.out")
+check "an INT alone stops the wait, which fails" "$(is "$status" 1)"
+check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
+# Then an INT followed by TERMs, as the runner sends one 7.5 s after the INT, here one every 10 ms
 # until the wait has ended, so some land while it writes its report.
+start_waiter "$m/wait.out"
 kill -INT -- "-$waiter"
 while kill -0 "$waiter" 2> /dev/null; do
   kill -TERM -- "-$waiter" 2> /dev/null || true
@@ -275,7 +384,13 @@ done
 status=0
 wait "$waiter" || status=$?
 out=$(cat "$m/wait.out")
+# A job cancelled before its wait step began: --now judges at once.
+status_now=0
+out_now=$(timeout 60 "$pool" wait --now 2>&1) || status_now=$?
 touch "$m/release-hung"
+check "--now fails at once" "$(is "$status_now" 1)"
+check "and says the job was cancelled" "$(contains "$out_now" '^harness-pool: the job was cancelled; judging the 3 harnesses queued as they are now$')"
+check "naming the harness still running" "$(contains "$out_now" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
 check "the stopped wait fails" "$(is "$status" 1)"
 check "it names the harness still running, with its seconds" "$(contains "$out" '^::group::hung: still running after [0-9.]* s when the wait was stopped; its log so far$')"
 check "and prints its log so far" "$(contains "$out" '^before the hang$')"

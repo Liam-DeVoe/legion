@@ -341,12 +341,22 @@ jobs:
       # The verdict on the script harnesses the steps after the cache restore queued: it waits for
       # the last of them, prints each one's log in a group of its own with its wall and CPU
       # seconds, and fails naming each harness that failed (.github/scripts/harness-pool.sh). It
-      # runs after a failed step too, so a harness queued before that failure is still judged and
-      # its log shown, but not in a cancelled run. `exec`, so a cancel's signal reaches the wait
-      # itself, which then names each harness still running.
+      # runs whatever the job's state: after a failed step, so a harness queued before the failure
+      # is still judged and its log shown; and in a cancelled job, where --now judges each harness
+      # as it is, with its log so far, rather than wait for it. A job that passed every step to
+      # here queued all of its harnesses, so a wait that finds none fails it; one that failed or
+      # was cancelled before the harness steps has nothing to judge, and --allow-none keeps that
+      # from adding a second error to the first. `exec`, so a cancel's signal during the wait
+      # reaches the wait itself, which then does as --now does.
       - name: Wait for the script harnesses and judge them
-        if: ${{ !cancelled() }}
-        run: exec .github/scripts/harness-pool.sh wait
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          args=()
+          if [[ $JOB_STATUS != success ]]; then args+=(--allow-none); fi
+          if [[ $JOB_STATUS == cancelled ]]; then args+=(--now); fi
+          exec .github/scripts/harness-pool.sh wait "${args[@]}"
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

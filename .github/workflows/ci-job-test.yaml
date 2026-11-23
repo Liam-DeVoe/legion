@@ -659,12 +659,6 @@ jobs:
           token: ''
           cache: false
 
-      # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
-      # nats-image.test.ts is left out: lint's "Check every NATS server a script starts or installs
-      # is one the floor takes" runs that file on every run, and lint runs whenever this job does.
-      - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
-
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
@@ -685,17 +679,31 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
 
+      # After setup-go, since held-port.test.ts builds the real envoy-listener and hands it a held
+      # socket; and after the three harnesses above are queued, so they run beside it rather than
+      # after it (check-ci-filters.test.sh alone took 100 s in run 45107561644's test job).
+      # nats-image.test.ts is left out: lint's "Check every NATS server a script starts or installs
+      # is one the floor takes" runs that file on every run, and lint runs whenever this job does.
+      - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
+        run: bun test scripts/e2e/lib --path-ignore-patterns=scripts/e2e/lib/nats-image.test.ts
+
       # The verdict on the script harnesses the steps above queued: it waits for the last of them,
       # prints each one's log in a group of its own with its wall and CPU seconds, and fails naming
       # each harness that failed (.github/scripts/harness-pool.sh). Every harness step has a gate
       # of its own, so a change that reaches none of them queues none, and --allow-none passes
-      # that run; a run that queued any is judged on all of them. It runs after a failed step too,
-      # so a harness queued before that failure is still judged and its log shown, but not in a
-      # cancelled run. `exec`, so a cancel's signal reaches the wait itself, which then names each
-      # harness still running.
+      # that run; a run that queued any is judged on all of them. It runs whatever the job's state:
+      # after a failed step, so a harness queued before the failure is still judged and its log
+      # shown; and in a cancelled job, where --now judges each harness as it is, with its log so
+      # far, rather than wait for it. `exec`, so a cancel's signal during the wait reaches the wait
+      # itself, which then does the same.
       - name: Wait for the script harnesses and judge them
-        if: ${{ !cancelled() }}
-        run: exec .github/scripts/harness-pool.sh wait --allow-none
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          args=(--allow-none)
+          if [[ $JOB_STATUS == cancelled ]]; then args+=(--now); fi
+          exec .github/scripts/harness-pool.sh wait "${args[@]}"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

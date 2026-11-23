@@ -21,19 +21,21 @@
 #     TERM and took the KILL 30 s later; the wait names either as the bound), and sees
 #     HARNESS_POOL_DEADLINE_MS, its start plus the bound less 30 s in epoch milliseconds, for a
 #     harness whose waits give up at a deadline and name what they waited for.
-#   harness-pool.sh wait [--allow-none]
+#   harness-pool.sh wait [--allow-none] [--now]
 #     Waits until every harness queued has ended. Prints each one's log in a group of its own,
 #     in the order they were queued, headed by its name, its exit status, its wall and CPU
-#     seconds and the seconds it waited for a slot; prints an ::error:: line naming each that failed; writes one table row per harness
-#     to GITHUB_STEP_SUMMARY when that is set. Exits 1 when any harness exited other than 0 or
+#     seconds and the seconds it waited for a slot; prints an ::error:: line naming each that
+#     failed; writes one table row per harness to GITHUB_STEP_SUMMARY when that is set. Exits 1 when any harness exited other than 0 or
 #     left no exit status. Exits 2 when no harness was queued, since a wait that judged nothing
 #     must not read as a pass; --allow-none makes that 0, for a job whose every harness step has
 #     an `if:` of its own, where a run whose change reached none of them rightly starts none.
-#     A TERM or INT stops the wait (the runner signals a step it cancels, as at the job's
-#     timeout-minutes): it then prints the log so far of each harness still running, names each
-#     as unfinished with its seconds, names each still waiting for a slot, and exits 1, so a harness that hung is named in the job's
-#     log rather than lost with the step. The step runs the wait with `exec`, so the signal
-#     reaches it and not only the step's shell.
+#     A TERM or INT stops the wait (the runner signals a step it cancels): it then prints the log
+#     so far of each harness still running, names each as unfinished with its seconds, names each
+#     still waiting for a slot, and exits 1, so a harness that hung is named in the job's log
+#     rather than lost with the step. --now does the same at once, for a job cancelled before its
+#     wait step began: the step runs `if: always()` and passes --now when job.status is
+#     cancelled. The step runs the wait with `exec`, so a signal reaches it and not only the
+#     step's shell.
 #
 # Each harness inherits the starting step's environment, `env:` included, and its working
 # directory, but for the runner's per-step files: the step that queued it has ended by the time
@@ -71,12 +73,28 @@ fi
 # How often a harness waiting for a slot, and the wait, look again. Not part of any verdict.
 poll=${HARNESS_POOL_POLL:-0.5}
 
+# proc_start <pid>: sets `pstart` to the process's start time (field 22 of /proc/<pid>/stat), or
+# fails when there is no such process. Forks nothing. A pid with its start time names one process:
+# a pid alone could, once its process ended, name a later one.
+proc_start() {
+  local stat fields
+  pstart=""
+  read -r stat 2> /dev/null < "/proc/$1/stat" || return 1
+  # The fields after the command's name, which is in parentheses and may hold spaces; field 22
+  # is the 20th of them.
+  read -ra fields <<< "${stat##*) }"
+  pstart=${fields[19]:-}
+  [[ -n $pstart ]]
+}
+
 # alive <base>: whether the harness of that entry has not ended. It has ended once it wrote its
-# exit status, or once its process is gone without writing one (killed), which the wait judges a
-# failure; without the second test a killed harness would hold the wait until the job's timeout.
+# exit status, or once its recorder is gone without writing one (killed), which the wait judges a
+# failure and whose harness's session it then ends; without the second test a killed recorder
+# would hold the wait until the job's timeout.
+# The recorder is the pid the entry holds with the start time it had when it was queued.
 alive() {
-  local pid
-  [[ ! -e $1.exit ]] && read -r pid < "$1.pid" && kill -0 "$pid" 2> /dev/null
+  local pid want
+  [[ ! -e $1.exit ]] && read -r pid want < "$1.pid" && proc_start "$pid" && [[ $pstart == "$want" ]]
 }
 
 # count [<base>]: sets `running` to the number of harnesses that hold a slot (started and not
@@ -129,6 +147,12 @@ start() {
   local name=$1
   shift
   mkdir -p "$dir"
+  # One start at a time takes an entry: the lock is held from the count of entries to the name
+  # that makes the entry count, so two starts at once never take the same number. The recorder
+  # does not inherit it.
+  local lock
+  exec {lock}> "$dir/.lock"
+  flock "$lock"
   local entries=("$dir"/*.name) id
   if [[ -e ${entries[0]} ]]; then
     id=$(printf '%03d' "${#entries[@]}")
@@ -141,10 +165,13 @@ start() {
   # --wait keeps setsid's own pid, the one recorded below, alive until the recorder ends, whether
   # or not setsid had to fork. Every descriptor goes to a file: a background process holding the
   # step's output open would keep the step from ending.
-  setsid --wait "${BASH_SOURCE[0]}" run "$base" "$minutes" "$@" > /dev/null 2>&1 < /dev/null &
-  # The pid before the name: an entry is counted from its name, and read for its pid.
-  echo "$!" > "$base.pid"
+  setsid --wait "${BASH_SOURCE[0]}" run "$base" "$minutes" "$@" > /dev/null 2>&1 < /dev/null {lock}>&- &
+  # The pid and its start time before the name: an entry is counted from its name, and read for
+  # its pid. A recorder already gone has no start time, and its entry is judged by its status.
+  proc_start "$!" || pstart=gone
+  echo "$! $pstart" > "$base.pid"
   printf '%s\n' "$name" > "$base.name"
+  exec {lock}>&-
   echo "harness-pool: queued $name ($id)"
 }
 
@@ -160,48 +187,72 @@ start() {
 # (POSIX), and a non-interactive bash cannot trap a signal it was started with ignored: a harness
 # that interrupts what it tests with an INT would find the trap it tests doing nothing.
 # `env --default-signal` puts them back for the command and all it starts.
+#
+# The command runs in the background of this recorder only so that its pid, which setsid makes the
+# id of the command's session, can be written down: the wait ends that session when the recorder
+# was killed and the command left behind.
 run() {
-  local base=$1 minutes=$2 queued started ended status=0 cpu bound
+  local base=$1 minutes=$2 queued started frac start_ms ended status=0 cpu_before cpu bound command
   shift 2
   queued=$(date +%s.%N)
   export GITHUB_STEP_SUMMARY="$base.step-summary" GITHUB_OUTPUT="$base.github-output" \
     GITHUB_ENV="$base.github-env" GITHUB_PATH="$base.github-path" GITHUB_STATE="$base.github-state"
   admit "$base"
+  # The CPU this recorder's children used so far, its waits for a slot, so that the harness's
+  # CPU below is the harness's alone.
+  times > "$base.times"
+  cpu_before=$(children_cpu "$base.times")
   started=$(date +%s.%N)
   echo "$started" > "$base.started"
   if [[ -n $minutes ]]; then
     bound=$((minutes * seconds_per_minute))
     # The minutes as given, for the wait's message, and the bound in seconds, for its judgement.
     echo "$minutes $bound" > "$base.bound"
+    frac=${started#*.}
+    start_ms=$((${started%.*} * 1000 + 10#${frac:0:3}))
     # timeout runs in the harness's session, so its signal at the bound reaches the harness and
     # every process it started; the kill 30 s later reaches one that ignored it.
-    HARNESS_POOL_DEADLINE_MS=$(( (${started%.*} + bound - 30) * 1000 )) \
-      env --default-signal=INT,QUIT setsid --wait timeout --kill-after=30 "$bound" "$@" > "$base.log" 2>&1 < /dev/null || status=$?
+    HARNESS_POOL_DEADLINE_MS=$((start_ms + (bound - 30) * 1000)) \
+      env --default-signal=INT,QUIT setsid --wait timeout --kill-after=30 "$bound" "$@" > "$base.log" 2>&1 < /dev/null &
   else
-    env --default-signal=INT,QUIT setsid --wait "$@" > "$base.log" 2>&1 < /dev/null || status=$?
+    env --default-signal=INT,QUIT setsid --wait "$@" > "$base.log" 2>&1 < /dev/null &
   fi
+  command=$!
+  echo "$command" > "$base.session"
+  wait "$command" || status=$?
   ended=$(date +%s.%N)
   # The CPU the harness and everything it started used, user plus system: the second line of
   # `times` is this shell's children. Beside the wall seconds it says how much of the harness was
   # waiting rather than computing. `times` runs here and not in a pipeline, whose subshell has
   # no children of its own.
   times > "$base.times"
-  cpu=$(awk 'NR == 2 { split($1, u, /[ms]/); split($2, s, /[ms]/); printf "%.1f", u[1] * 60 + u[2] + s[1] * 60 + s[2] }' "$base.times")
-  awk -v q="$queued" -v a="$started" -v b="$ended" -v c="$cpu" 'BEGIN { printf "%.1f %s %.1f\n", b - a, c, a - q }' > "$base.seconds"
+  cpu=$(children_cpu "$base.times")
+  awk -v q="$queued" -v a="$started" -v b="$ended" -v c="$cpu" -v c0="$cpu_before" \
+    'BEGIN { printf "%.1f %.1f %.1f\n", b - a, c - c0, a - q }' > "$base.seconds"
   echo "$status" > "$base.exit.tmp"
   mv "$base.exit.tmp" "$base.exit"
 }
 
+# children_cpu <file of `times` output>: the user plus system seconds of its second line, the
+# shell's children.
+children_cpu() {
+  awk 'NR == 2 { split($1, u, /[ms]/); split($2, s, /[ms]/); printf "%.3f", u[1] * 60 + u[2] + s[1] * 60 + s[2] }' "$1"
+}
+
 wait_all() {
-  local allow_none=""
-  if [[ ${1:-} == --allow-none ]]; then
-    allow_none=1
+  local allow_none="" stopped=""
+  while (($# > 0)); do
+    case $1 in
+      --allow-none) allow_none=1 ;;
+      # The job was cancelled: judge the harnesses as they are now, without waiting for any.
+      --now) stopped=1 ;;
+      *)
+        echo "::error::harness-pool: wait takes only --allow-none and --now, not '$1'" >&2
+        exit 2
+        ;;
+    esac
     shift
-  fi
-  if (($# > 0)); then
-    echo "::error::harness-pool: wait takes only --allow-none, not '$*'" >&2
-    exit 2
-  fi
+  done
   local entries=("$dir"/*.name)
   if [[ ! -e ${entries[0]} ]]; then
     if [[ -n $allow_none ]]; then
@@ -211,11 +262,14 @@ wait_all() {
     echo "::error::harness-pool: no harness was queued under $dir, so there is nothing to judge" >&2
     exit 2
   fi
-  local stopped=""
   trap 'stopped=1' INT TERM
   # Said once the trap is set, so a reader of the log, and the test, know the wait now answers a
   # TERM with its report.
-  echo "harness-pool: waiting for the harnesses still running of ${#entries[@]} queued"
+  if [[ -n $stopped ]]; then
+    echo "harness-pool: the job was cancelled; judging the ${#entries[@]} harnesses queued as they are now"
+  else
+    echo "harness-pool: waiting for the harnesses still running of ${#entries[@]} queued"
+  fi
   while [[ -z $stopped ]] && count && ((running + waiting > 0)); do
     # A TERM to the wait's group ends this sleep too, with 143; errexit must not take that for
     # the wait's own failure before the trap's report.
@@ -253,7 +307,12 @@ wait_all() {
       fi
       continue
     fi
-    status=$(cat "$base.exit" 2> /dev/null || echo 'none: its process ended without writing one')
+    status=$(cat "$base.exit" 2> /dev/null || echo 'none: its recorder ended without writing one')
+    # A recorder killed before its command ended leaves the command running in its own session,
+    # holding a core no slot counts: end that session, the command and all it started.
+    if [[ ! -e $base.exit && -e $base.session ]]; then
+      pkill -KILL -s "$(< "$base.session")" 2> /dev/null || true
+    fi
     read -r wall cpu waited 2> /dev/null < "$base.seconds" || { wall='?'; cpu='?'; waited='?'; }
     echo "::group::$name: exit $status, $wall s, $cpu s of CPU, after $waited s waiting for a slot"
     cat "$base.log" 2> /dev/null || echo "harness-pool: $name left no log"
@@ -309,7 +368,7 @@ case ${1:-} in
     run "$@"
     ;;
   *)
-    echo "::error::harness-pool: usage: harness-pool.sh start [--minutes <n>] <name> <command> [<argument>...] | harness-pool.sh wait [--allow-none]" >&2
+    echo "::error::harness-pool: usage: harness-pool.sh start [--minutes <n>] <name> <command> [<argument>...] | harness-pool.sh wait [--allow-none] [--now]" >&2
     exit 2
     ;;
 esac
