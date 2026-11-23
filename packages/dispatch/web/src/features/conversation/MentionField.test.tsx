@@ -86,6 +86,10 @@ function renderField(writing = dispatchWritingBox("conversation-composer", "comm
   };
 }
 
+/** The planner session's row: the session's name is drawn in its role's row too, as the role's
+ *  holder, so the row is found by its accessible name, which leads with the session's. */
+const PLANNER_ROW = { name: /^Planner\b/ } as const;
+
 // The keys an open picker owns never reach the host, whatever the host binds them to: the
 // Inbox's hotkeys are on the window, an ask option's Enter is on the box itself.
 test("an open picker takes the arrows, Enter, Tab and Escape ahead of the host", async () => {
@@ -96,7 +100,7 @@ test("an open picker takes the arrows, Enter, Tab and Escape ahead of the host",
     const field = screen.getByRole("textbox", { name: "Comment" });
     await user.click(field);
     await user.paste("@");
-    await screen.findByText("Planner");
+    await screen.findByRole("option", PLANNER_ROW);
     keys.fromField.length = 0;
     keys.fromWindow.length = 0;
     await user.keyboard("{ArrowDown}");
@@ -120,7 +124,7 @@ test("an open picker leaves a composition's Enter and Escape to the host", async
     const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(field);
     await user.paste("@");
-    await screen.findByText("Planner");
+    await screen.findByRole("option", PLANNER_ROW);
     keys.fromField.length = 0;
     keys.fromWindow.length = 0;
     // user-event has no form for this: it cannot mark a key as an IME composition.
@@ -128,7 +132,7 @@ test("an open picker leaves a composition's Enter and Escape to the host", async
     fireEvent.keyDown(field, { isComposing: true, key: "Escape" });
     fireEvent.keyDown(field, { isComposing: false, key: "Enter", keyCode: 229 });
     expect(field.value).toBe("@");
-    expect(screen.getByText("Planner")).toBeInTheDocument();
+    expect(screen.getByRole("option", PLANNER_ROW)).toBeInTheDocument();
     expect(keys.fromField).toEqual(["Enter", "Escape", "Enter"]);
     expect(keys.fromWindow).toEqual(["Enter", "Escape", "Enter"]);
   } finally {
@@ -164,7 +168,7 @@ test("Enter takes the highlighted row into the draft at the caret", async () => 
     const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(field);
     await user.paste("ask @");
-    await screen.findByText("Planner");
+    await screen.findByRole("option", PLANNER_ROW);
     await user.keyboard("{ArrowDown}{Enter}");
     await waitFor(() =>
       expect(field.value).toBe("ask [@Planner](dispatch://agent/planner-session)")
@@ -185,7 +189,7 @@ test("a pick replaces the trigger and leaves the text after the caret", async ()
     await user.paste("tail");
     field.setSelectionRange(0, 0);
     await user.paste("@");
-    await screen.findByText("Planner");
+    await screen.findByRole("option", PLANNER_ROW);
     await user.keyboard("{ArrowDown}{Enter}");
     await waitFor(() =>
       expect(field.value).toBe("[@Planner](dispatch://agent/planner-session)tail")
@@ -231,7 +235,7 @@ test("a door opens in a link's address, and a party picked there is its bare add
     const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(field);
     await user.paste("[the plan](@");
-    await screen.findByText("Planner");
+    await screen.findByRole("option", PLANNER_ROW);
     await user.keyboard("{ArrowDown}{Enter}");
     await waitFor(() => expect(field.value).toBe("[the plan](dispatch://agent/planner-session"));
   } finally {

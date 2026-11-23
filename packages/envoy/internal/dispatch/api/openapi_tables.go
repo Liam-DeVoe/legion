@@ -82,13 +82,16 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(graphEdgeRead{}):           "GraphEdgeWithTrees",
 	// The ones whose published name is the model's own rather than a `WithTrees` of it: the
 	// shaping is the whole body each route answers, so a client that reads an architecture tree,
-	// a node's references or a handoff with its body reads one of these and never the model
-	// behind it. An architecture tree's components and Not architectural rows are published under
-	// their Go names (ArchitectureComponentRead, ArchitectureTreeNoneRead) beside the model's own,
-	// which the tree still embeds (architectureTreeRead).
+	// a node's references, an issue's references or a handoff with its body reads one of these
+	// and never the model behind it. An architecture tree's components and Not architectural rows
+	// are published under their Go names (ArchitectureComponentRead, ArchitectureTreeNoneRead)
+	// beside the model's own, which the tree still embeds (architectureTreeRead). An issue's
+	// references row is published as the model's ReferenceLink, which no other shape names.
 	reflect.TypeOf(architectureTreeRead{}): "ArchitectureTree",
 	reflect.TypeOf(graphReferencesRead{}):  "GraphReferences",
 	reflect.TypeOf(handoffRead{}):          "Handoff",
+	reflect.TypeOf(issueReferencesRead{}):  "IssueReferences",
+	reflect.TypeOf(referenceLinkRead{}):    "ReferenceLink",
 
 	// The members of the collaborators answer, whose Go names say which handler built them and
 	// whose names here are the ones main's TypeScript exported and a consumer imports
@@ -198,9 +201,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseIssuePriority (issue_create.go), read by create and update alike.
 	{reflect.TypeOf(createIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
-	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name".
-	{reflect.TypeOf(createIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
-	{reflect.TypeOf(updateIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
+	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name". The
+	// project's default repository is read by the same rule; its handler refuses a body without
+	// the field, which the field's own `required:"true"` says.
+	{reflect.TypeOf(createIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(projectDefaultRepositoryInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
 	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
 	// primary is fixed at issue creation. The field is described so a client reading the document
 	// knows what the bytes would have to be, never because one may send them.

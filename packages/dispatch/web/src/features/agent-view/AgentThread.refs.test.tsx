@@ -396,6 +396,24 @@ test("an agent's row opens its conversation's documents, and a pick is the docum
   );
 });
 
+// A session's row carries the session's full id as its tooltip and accessible description, as in
+// every other box, since a session's name can be a short form two sessions share; a role's row
+// is named by its role, and carries none.
+test("a session's row has its full id as its title and description, and a role's row has none", async () => {
+  const user = userEvent.setup();
+  const input = renderThread();
+
+  await type(user, input, "@plan");
+  await waitFor(() => expect(drawnRows()).toEqual(["Agents: Planner", "Roles: planner"]));
+  const list = screen.getByRole("listbox", { name: "References" });
+  const session = within(list).getByRole("option", { name: /^Planner/ });
+  expect(session).toHaveAccessibleDescription("planner-session");
+  expect(session.title).toBe("planner-session");
+  const role = within(list).getByRole("option", { name: /^planner/ });
+  expect(role).not.toHaveAccessibleDescription();
+  expect(role.hasAttribute("title")).toBe(false);
+});
+
 // ArrowLeft closes what ArrowRight opened, as it does in every other box: the key is the list's
 // while a row's parts are open, so the caret stays where the reader left it.
 test("ArrowLeft closes the parts ArrowRight opened, and leaves the caret where it was", async () => {

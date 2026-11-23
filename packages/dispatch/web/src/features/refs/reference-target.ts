@@ -46,6 +46,7 @@ import {
   buildDispatchReference,
   type DispatchReferenceRoute,
   type IssueRoute,
+  issueOrDocumentTitle,
   type ReferencedArtifact,
   referencedArtifact,
   referenceHref,
@@ -993,10 +994,8 @@ export function useReferenceTarget(
   } else {
     const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
     const named = route === undefined ? undefined : referencedArtifact(route);
-    // A reference that names a document is titled by that document alone: one its issue does not
-    // hold has no title, never its issue's, which would name a node the reference does not name.
     shown = {
-      title: named === undefined ? issue?.title : artifact?.name,
+      title: issueOrDocumentTitle(route, issue, artifact),
       description: text ?? (artifact === undefined ? issue?.status : undefined),
       descriptionTree: text === undefined ? undefined : markdownTree,
       picture: named === undefined ? undefined : picturePath(named, artifact),

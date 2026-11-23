@@ -36,7 +36,7 @@ import {
   sendOnEnter,
 } from "../conversation/MentionComposer";
 import { MentionField } from "../conversation/MentionField";
-import { saveCommentEdit } from "../conversation/send-request";
+import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
 import { answerAskInput } from "../inbox/answer-ask";
 import { useAnswerDraft } from "../inbox/answer-drafts";
 import { DeclineControl } from "../inbox/DeclineControl";
@@ -421,7 +421,7 @@ function WriteLine({
       targets === undefined
         ? undefined
         : {
-            drawn: (kept) => targets.statements.get(kept.artifact)?.has(kept.quote) === true,
+            drawn: (kept) => targets.statements.some((one) => sameStatement(one, kept)),
             gone: ANSWER_LINES.kept_statement_gone,
             goneWaits: ANSWER_LINES.kept_statement_gone_waits,
           },
@@ -459,22 +459,20 @@ function WriteLine({
 
 /** What the outline's tree draws that a draft the write line keeps can go back to: the id of each
  *  entry a row's Reply answers (`replyItemOf`) - a comment, a message, a question - and each
- *  statement's whole words as a Reply on its row aims the line (`statementTargetOf`), by its
- *  document: the two are what make two statements the same (`sameStatement`), and not the row. A
- *  row the tree draws under two parents counts once. */
+ *  statement as a Reply on its row aims the line (`statementTargetOf`). The line's `drawn` holds
+ *  a kept draft's statement to each by `sameStatement`, the one rule for two statements being the
+ *  same: the document and the whole words, and not the row. An entry the tree draws under two
+ *  parents counts once. */
 function drawnTargets(root: TreeNode): {
   readonly entries: ReadonlySet<string>;
-  readonly statements: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly statements: readonly StatementAnchor[];
 } {
   const entries = new Set<string>();
-  const statements = new Map<string, Set<string>>();
+  const statements: StatementAnchor[] = [];
   for (const node of nodesInOrder(root)) {
     const item = replyItemOf(node);
     if (item?.kind === "statement") {
-      const { artifact, quote } = statementTargetOf(item);
-      const words = statements.get(artifact) ?? new Set<string>();
-      words.add(quote);
-      statements.set(artifact, words);
+      statements.push(statementTargetOf(item));
     } else if (item !== undefined) {
       entries.add(item.id);
     }

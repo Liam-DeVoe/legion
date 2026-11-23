@@ -1,3 +1,4 @@
+import type { DisplayTree } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -15,10 +16,10 @@ import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { PublishedReferenceNames, type PublishedReferences } from "../refs/reference-names";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
-import { useWrites } from "../writes/write-store";
 import { pointMarks } from "./current-point";
 import { ChangeDraftsProvider } from "./DecisionActions";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
@@ -31,6 +32,7 @@ import { type FailedRead, NO_FAILED_READS } from "./outline-reads";
 import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
+import { drawnWords, editWords, NoteOwnAct, sameOwnFields } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
@@ -121,8 +123,8 @@ export function IssueTree({
    *  focus and the page stay where the reader put them. Left out, the landing reads the reader's
    *  acts from the moment its row is drawn. */
   addressActs?: RefObject<AbortController | undefined>;
-  /** Which following of the address `reveal` comes from: the location's own key
-   *  (`useLocation().key`), a new one at each link followed - one followed again to the address
+  /** Which following of the address `reveal` comes from (`useFollowing`, the location's key with
+   *  its address), a new one at each link followed - one followed again to the address
    *  the reader is at among them - the entry's own one again at Back and Forward, and the same
    *  one at every render of it. The tree lands on the address's node once per key it has not
    *  landed on last (`slots/body.tsx`; left out, once per node): Back to an entry past a link
@@ -250,7 +252,7 @@ export function IssueTree({
   const navigate = useNavigate();
   const takeRequest = useTakeOutlineRequest();
   // The reader, whose own new words a write from the line takes them to.
-  const reader = useQuery(whoAmIQuery()).data?.login;
+  const reader = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const body = useRef<HTMLDivElement | null>(null);
   const crumbLine = useRef<HTMLParagraphElement | null>(null);
   // The failed reads' lines over the tree, and the one whose Retry the page opens on where no
@@ -274,10 +276,49 @@ export function IssueTree({
         : { line, ...(row === undefined ? {} : { row }) }
     );
   }, []);
+  // The node the reader last acted on themselves, by its id, with the tree drawn as it was noted:
+  // a read that drops that node's row is theirs (`heldRow`, below). A Keep of a decision notes
+  // the node as that tree draws it. An edit in a row's editor notes the words it left in the row's
+  // block, and the row it was made in. The note ends at the first tree that draws the node with the
+  // words the edit left, or at the first tree drawn after the editing of its row ends, whichever
+  // comes first. The row is how the tree tells that end (`editing.row`), and `ended` says it has
+  // been seen.
+  const ownAct = useRef<
+    | {
+        readonly id: string;
+        readonly kind: "keep";
+        readonly node: TreeNode;
+        readonly root: TreeNode;
+      }
+    | {
+        readonly ended?: boolean;
+        readonly id: string;
+        readonly kind: "edit";
+        readonly root: TreeNode;
+        readonly row: string;
+        readonly words: string;
+      }
+    | undefined
+  >(undefined);
+  const drawnRoot = useRef(root);
+  drawnRoot.current = root;
+  // A Keep names its decision's node by its address (`own-act.ts`), and an edit names the row it
+  // was made in, with the row's block as the edit left it (`useNodeEditing.ts`).
+  const noteWrite = useCallback((reference: string) => {
+    const tree = drawnRoot.current;
+    const node = nodesInOrder(tree).find((drawn) => drawn.reference === reference);
+    if (node !== undefined) ownAct.current = { id: node.id, kind: "keep", node, root: tree };
+  }, []);
+  const noteEdit = useCallback((row: string, block: DisplayTree) => {
+    const id = body.current?.querySelector<HTMLElement>(rowSelectorOf(row))?.dataset.nodeId;
+    if (id === undefined) return;
+    ownAct.current = { id, kind: "edit", root: drawnRoot.current, row, words: editWords(block) };
+  }, []);
   const { edit, editing, stopEditing } = useNodeEditing({
     artifacts,
     container: body,
     onEditing,
+    onOwnEdit: noteEdit,
     onReport: reportHere,
   });
 
@@ -1040,14 +1081,42 @@ export function IssueTree({
   // a new location key (`locationKey`): a row either takes out is theirs. A key or a press alone
   // tells nothing: one that draws nothing - Shift, PageDown, a press on the row's own words, a
   // touch that scrolls - leaves a read after it another session's. A read's loss is the reader's
-  // where a write of theirs landed since that render (`landings`): Keep on a decision only the
-  // frontier unfolded folds its branch shut once its answer is drawn. Another session's change
-  // comes as a read an event asks for, never as a write of this page's. The loss is theirs too
-  // where a write of theirs from the line at the foot put the focus on the row with its landing,
-  // with no key or press of theirs since (`landedOn`, `READER_PRESSES`): the write's read is sent
-  // once the write lands (`held-sends.ts`'s `refreshAfter`), so the render that drops the row
-  // comes after the landing's, and other reads may draw the tree between them - their edit of a
-  // comment that the filter by words no longer matches. The opening's focus is handed on too
+  // too where it drops the row of the node they last acted on themselves (`ownAct`). Two acts are
+  // noted, each with the node it acts on and the tree drawn as it is noted. Keep notes its
+  // decision's node as its write lands, before its answer is drawn (`own-act.ts`): Keep on a
+  // decision only the frontier unfolded folds its branch shut once that answer is drawn. Its note
+  // lasts until the first render whose tree draws that node otherwise. A tree that draws the node
+  // as it was noted keeps the note, so another read that lands first - a comment, a read mark -
+  // leaves it for the Keep's own read. The node is compared by its own fields, its children and
+  // their count left out, so a reply someone else adds under it changes nothing. The row's editor
+  // notes the edited row's node at each edit of the reader's that changes the document, a
+  // heading's as a paragraph's (`useNodeEditing.ts`'s `onOwnEdit`), with the words the edit left
+  // in the row's block (`editWords`): the edit comes back as the document's blocks read again,
+  // never as a write, and one that takes a filter's words out of the row drops it then. Its note
+  // ends at the first tree drawn after the editing of its row ends, or at the first tree drawn
+  // after the edit that draws the node with the words the edit left (`drawnWords`, by the rule
+  // the edit's own are read by), whichever comes first (decision 409). Each render reads the
+  // note for a drop before it ends the note, so the tree that ends it can still count a drop
+  // as the reader's. While the reader edits the row, a tree that draws the node with other
+  // words keeps the note: a save lands between two of the reader's keys, so the read that draws
+  // an earlier edit comes before the one that drops the row. The tree that draws the edit's
+  // words is the edit's own read, so a drop in a later tree - a version a collaborator wrote,
+  // another session's change - is not the reader's. The edit's words may never be drawn: a
+  // collaborator's change to the block, saved before the read of the reader's words, is drawn
+  // merged with them. So the editing's end bounds the note, or it would last until the row left
+  // the tree and count any later drop of the row as the reader's. The tree drawn after the reader
+  // leaves the row still reads the note, as the read of their last edit may come just after they
+  // leave. That errs in one narrow case, which decision 409 accepts: a collaborator's change
+  // that drops the row in that one tree counts as the reader's, and the focus moves on to the
+  // nearest row rather than to the page's body, which loses the reader nothing. A tree that
+  // draws the node nowhere ends either note, and a drop of the node's row uses it up. A write's
+  // landing alone tells nothing of this tree: the page's store of writes is the app's one store
+  // (`write-store.ts`), and a pin or a write on another issue lands there too. The loss is theirs
+  // too where a write of theirs from the line at the foot put the focus on the row with its
+  // landing, with no key or press of theirs since (`landedOn`, `READER_PRESSES`): the write's read
+  // is sent once the write lands (`held-sends.ts`'s `refreshAfter`), so the render that drops the
+  // row comes after the landing's, and other reads may draw the tree between them - their edit of
+  // a comment that the filter by words no longer matches. The opening's focus is handed on too
   // where the render ends the opening by drawing its node nowhere (`lost`): the page is still
   // placing its first focus, and the reader has no place in the tree yet to lose. Handed on, the
   // nearest row still drawn takes the focus where nothing holds it (`focusIsLoose`), as a key's
@@ -1057,7 +1126,7 @@ export function IssueTree({
   // opening, which gives a row it focused back where a read drew that row again (`opening`), and
   // an address's landing still waiting for its frame (`landingAsked`). The row is noted at every
   // render, by its key, its node and its place among the rows the focus can take, with the tree
-  // and the address it was drawn from and the count of the reader's writes landed, as the focus
+  // and the address it was drawn from, as the focus
   // stands once that render is drawn: the render that drops the row no longer draws it, so where
   // it stood is the render before's to tell. Its key is that of the row the focus is in, not
   // `focused`, which names the row a press took the focus from until the press is over
@@ -1085,20 +1154,6 @@ export function IssueTree({
     }
     return () => listening.abort();
   }, []);
-  // Each write of the reader's this page makes that lands, a Keep, a send from the line at the
-  // foot or a pick of a field among them (`write-store.ts`'s `onOutcome`). A read mark is none:
-  // the page sends it on its own (`quiet`).
-  const writes = useWrites();
-  const landings = useRef(0);
-  useEffect(
-    () =>
-      writes.onOutcome((outcome) => {
-        if (outcome.kind === "landed" && outcome.write.presentation !== "quiet") {
-          landings.current += 1;
-        }
-      }),
-    [writes]
-  );
   const locationKey = useLocation().key;
   const landedOn = useRef<{ readonly node: string; readonly presses: number } | undefined>(
     undefined
@@ -1107,7 +1162,6 @@ export function IssueTree({
     | {
         readonly index: number;
         readonly key: string;
-        readonly landings: number;
         readonly locationKey: string;
         readonly node: string | undefined;
         readonly root: TreeNode;
@@ -1131,9 +1185,12 @@ export function IssueTree({
     ) {
       const landed = landedOn.current;
       const read = root !== held.root && locationKey === held.locationKey;
+      const own = ownAct.current;
+      const acted = own !== undefined && own.id === held.node;
+      if (acted) ownAct.current = undefined;
       const caused =
         !read ||
-        landings.current !== held.landings ||
+        acted ||
         (landed !== undefined && landed.node === held.node && landed.presses === presses.current);
       if (caused || openingLost) {
         // The nearest row is the one now at the dropped row's place, or the last where none is.
@@ -1146,6 +1203,25 @@ export function IssueTree({
         setFocusedNode(undefined);
       }
     }
+    // A Keep's note lasts while each tree drawn draws its node as it was noted (`sameOwnFields`).
+    // An edit's lasts while each tree drawn after the edit draws its node with other words than
+    // the edit left (`drawnWords`), up to the first tree drawn after the editing of its row ended
+    // (`ended`). Either is held to the last such tree, so a render of it compares nothing
+    // (above).
+    const noted = ownAct.current;
+    if (noted !== undefined && noted.root !== root) {
+      const now = noted.kind === "edit" && noted.ended ? undefined : pathTo(root, noted.id)?.at(-1);
+      const lasts =
+        now !== undefined &&
+        (noted.kind === "keep" ? sameOwnFields(noted.node, now) : drawnWords(now) !== noted.words);
+      ownAct.current = lasts ? { ...noted, root } : undefined;
+    }
+    // A render that finds the editing of an edit's row over marks the note ended, held to the
+    // tree drawn now: the next tree's drop check is the last to read it (above).
+    const edited = ownAct.current;
+    if (edited?.kind === "edit" && !edited.ended && edited.row !== editingRow) {
+      ownAct.current = { ...edited, ended: true };
+    }
     const holder = focusedRowIn(tree);
     const focusedKey = holder?.dataset.rowKey;
     heldRow.current =
@@ -1154,7 +1230,6 @@ export function IssueTree({
         : {
             index: order.indexOf(focusedKey),
             key: focusedKey,
-            landings: landings.current,
             locationKey,
             node: holder?.dataset.nodeId,
             root,
@@ -1381,7 +1456,11 @@ export function IssueTree({
       ) : null}
     </div>
   );
-  return <PublishedReferenceNames published={published}>{outline}</PublishedReferenceNames>;
+  return (
+    <PublishedReferenceNames published={published}>
+      <NoteOwnAct.Provider value={noteWrite}>{outline}</NoteOwnAct.Provider>
+    </PublishedReferenceNames>
+  );
 }
 
 /** How long a write's landing waits for the read that draws it before it takes the reader to

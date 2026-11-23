@@ -10,6 +10,7 @@ import { DWELL_MS } from "../web/src/features/shell/useDwell";
 import {
   createAsk,
   createIssue,
+  createIssueArtifact,
   createProject,
   getArtifactBlocks,
   getIssueEvents,
@@ -1182,6 +1183,58 @@ test("the answer line's field keeps room to type beside options that almost fill
       width,
       `the answer's field is ${width.toFixed(1)} px wide beside the options ${at}`
     ).toBeGreaterThanOrEqual(240);
+  });
+});
+
+// The tester's red row (round 13), the root spec's R18 and R19: no part of the page scrolls in
+// two dimensions from 320 px to 1440 px, and nothing a reader could read before is lost. A row
+// of the box's picker draws its detail on one line (`RefPickerList`'s `TruncatedText`), a
+// document's address runs past a phone's width, and the page draws no tooltip to give back an
+// ellipsis's cut. So when such a row is listed, the list stays inside the box, the page stays one
+// screen wide, and the row draws its whole detail.
+test("the box's picker keeps the page one screen wide when a row's detail is long @phone", async ({
+  browser,
+}) => {
+  await phase(browser, seedReplyNesting, async (page, seeded) => {
+    const name =
+      "the-tester-notes-on-a-document-address-that-runs-past-the-width-of-a-phone-screen";
+    await createIssueArtifact(seeded.key, {
+      content: "# Notes\n\nA zebrafish paragraph the picker's search finds.\n",
+      name: `${name}.md`,
+    });
+    // The row's detail: the document's address in its short form, as today's composers give it
+    // whole in the row's tooltip.
+    const detail = `${seeded.key} ${name}-md`;
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await composerField(page).click();
+    await page.keyboard.type("#zebrafish");
+    const list = composer(page).getByRole("listbox", { name: "References" });
+    const row = list.getByRole("option", { name: new RegExp(name) }).first();
+    await expect(row, "the picker lists no row for the long document").toBeVisible();
+    await expect(
+      row.getByText(detail, { exact: true }),
+      `the row does not draw its detail, "${detail}"`
+    ).toBeVisible();
+    const right = await list.evaluate((element) => element.getBoundingClientRect().right);
+    expect(
+      right,
+      `the picker's list ends ${right.toFixed(0)} px from the left of a ${PHONE.width} px screen`
+    ).toBeLessThanOrEqual(PHONE.width);
+    const width = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(
+      width,
+      `the page is ${width} px wide at ${PHONE.width} px, so it scrolls sideways`
+    ).toBeLessThanOrEqual(PHONE.width);
+    const cut = await row.evaluate(
+      (option, words) =>
+        [...option.querySelectorAll("*")].filter(
+          (part) => part.textContent === words && part.scrollWidth > part.clientWidth + 1
+        ).length,
+      detail
+    );
+    expect(cut, `the row cuts its detail, "${detail}", and no tooltip gives it back`).toBe(0);
   });
 });
 

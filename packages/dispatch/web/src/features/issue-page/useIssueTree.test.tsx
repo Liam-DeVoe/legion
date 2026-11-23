@@ -18,11 +18,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import {
-  type ReferenceNameReading,
-  ReferenceNamesProvider,
-  useKnownReferences,
-} from "../refs/reference-names";
+import { ReferenceNamesProvider, useKnownReferences } from "../refs/reference-names";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
@@ -1156,11 +1152,58 @@ test("A plan with no role that the issue names by its id has its blocks read and
     expect(api.getArtifactBlocks).toHaveBeenCalledWith(roleless.id);
     // A comment citing the whole plan carries a chip that names it as the plan.
     const chips = nodesInOrder(view.result.current).find((node) => node.id === comment.id)?.chips;
-    const words = (reading: ReferenceNameReading | undefined) =>
-      reading !== undefined && "words" in reading ? reading.words : undefined;
-    expect(chips?.map((chip) => ({ name: words(chip.reading), ref: chip.ref }))).toEqual([
+    expect(chips?.map((chip) => ({ name: chip.reading?.chipWord, ref: chip.ref }))).toEqual([
       { name: PRESET_NAMES.plan, ref: cites },
     ]);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A link titles another issue's whole spec by that issue's title (`issueOrDocumentTitle`), which
+// the batched read answers only under the issue's own address. So where a comment cites such a
+// spec alone, the page asks the one read for the issue beside it, and publishes the spec by the
+// issue's title for every plain line it feeds, with the page's word for a document beside it for
+// a chip to draw (`targetNaming`).
+test("another issue's spec a comment cites alone is read with its issue and published by the issue's title", async () => {
+  const other = "dispatch://CORE-9";
+  const cited = `${other}/spec`;
+  const title = "Other issue title";
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      // The spec by its file name and the issue by its title, each where it is asked for.
+      return {
+        targets: namedTargets(refs).targets.map((target): ReferenceTarget => {
+          if (target.ref === cited) return { ...target, kind: "artifact", name: "spec.md" };
+          return target.ref === other ? { ...target, kind: "issue", name: title } : target;
+        }),
+      };
+    },
+    { comments: [{ ...comment, body: `Wait for ${cited} to be approved.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        const known = useKnownReferences();
+        return { line: known.lines.get(cited), name: known.names.get(cited) };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.name).toBeDefined());
+    expect(asked, "the names were read more than once").toHaveLength(1);
+    expect(asked[0]).toContain(cited);
+    expect(asked[0], "the names read was not asked for the spec's issue").toContain(other);
+    expect(view.result.current).toEqual({ line: NODE_TYPE_NAMES.document, name: title });
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();

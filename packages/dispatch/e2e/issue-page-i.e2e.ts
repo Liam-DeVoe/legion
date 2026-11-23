@@ -1841,7 +1841,8 @@ test("a row's editor on a phone does not scroll sideways, and its words wrap @ph
 // whose title is what widened the box at f5d49c35, while the table already scrolled inside itself.
 // SLOW(>=2s): a seeded issue, an issue of another project and a spec citing it, a load waited on
 // until the focus lands, then End and Enter, waited on until the editor draws the cited issue's
-// name, and a scroll of the table waited on until its last column shows.
+// name, a scroll of the editor's box waited on until it stops with the table's middle on screen,
+// and a scroll of the table waited on until its last column shows.
 test("a table a row's editor holds scrolls sideways inside itself, and the box around it does not @phone @phone-only", async ({
   browser,
 }) => {
@@ -1914,22 +1915,54 @@ test("a table a row's editor holds scrolls sideways inside itself, and the box a
     ).toBeGreaterThan(before.table.client);
     expect(before.lastShown, "the table shows its last column before it is scrolled").toBe(false);
     // A reader's sideways scroll over the table, as a trackpad makes it, with the table in the
-    // middle of the screen: the box to write in stands over the screen's last lines, and a wheel
-    // over it is the box's, not the table's.
-    await table.evaluate((drawn) => drawn.scrollIntoView({ block: "center" }));
-    const at = await table.boundingBox();
-    expect(at, "the table has no box on the page").not.toBeNull();
-    const point = {
-      x: (at?.x ?? 0) + (at?.width ?? 0) / 2,
-      y: (at?.y ?? 0) + (at?.height ?? 0) / 2,
+    // middle of the editor's box: the box to write in stands over the screen's last lines, and a
+    // wheel over it is the box's, not the table's. The reader brings the table there with the
+    // wheel too, over the editor's box, which scrolls inside itself. A script's scroll does not do
+    // it: once the editor's drawing settles, the row puts the node's block at the box's top again
+    // (`refocusWhenSettled`, 200 ms after the cited issue's name is drawn), which a reader's wheel
+    // stops and a script's scroll does not. On a slow machine that second placing undid the
+    // script's scroll before the sideways wheel reached the table (CI at db240615).
+    const held = await box.boundingBox();
+    const placed = await table.boundingBox();
+    expect(held, "the row's editor has no box on the page").not.toBeNull();
+    expect(placed, "the table has no box on the page").not.toBeNull();
+    const boxMiddle = {
+      x: (held?.x ?? 0) + (held?.width ?? 0) / 2,
+      y: (held?.y ?? 0) + (held?.height ?? 0) / 2,
     };
     expect(
       await page.evaluate(
-        ({ x, y }) => document.elementFromPoint(x, y)?.closest("table") != null,
-        point
+        ({ x, y }) => document.elementFromPoint(x, y)?.closest("[data-editor-box]") != null,
+        boxMiddle
       ),
-      "the middle of the table is under something else the page draws"
+      "the middle of the row's editor box is under something else the page draws"
     ).toBe(true);
+    await page.mouse.move(boxMiddle.x, boxMiddle.y);
+    await page.mouse.wheel(0, (placed?.y ?? 0) + (placed?.height ?? 0) / 2 - boxMiddle.y);
+    /** The middle of the table where the page draws it, and whether the table is what the page
+     *  draws there. */
+    const tableMiddle = () =>
+      table.evaluate((drawn) => {
+        const at = drawn.getBoundingClientRect();
+        const x = at.left + at.width / 2;
+        const y = at.top + at.height / 2;
+        return { onTop: document.elementFromPoint(x, y)?.closest("table") === drawn, x, y };
+      });
+    // The box scrolls smoothly, so the table's middle is read until two reads find it in the
+    // same place, with the table drawn there.
+    let last: { readonly x: number; readonly y: number } | undefined;
+    await expect
+      .poll(
+        async () => {
+          const now = await tableMiddle();
+          const still = last !== undefined && now.x === last.x && now.y === last.y;
+          last = now;
+          return still && now.onTop;
+        },
+        { message: "the middle of the table is under something else the page draws" }
+      )
+      .toBe(true);
+    const point = await tableMiddle();
     await page.mouse.move(point.x, point.y);
     await page.mouse.wheel(before.table.scroll, 0);
     await expect

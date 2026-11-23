@@ -366,17 +366,19 @@ func TestAReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
 		}
 	}
 
-	names := func(shape reflect.Type) []string {
-		var fields []string
-		for index := range shape.NumField() {
-			name, _, _ := strings.Cut(shape.Field(index).Tag.Get("json"), ",")
-			fields = append(fields, name)
-		}
-		return fields
-	}
-	if got, want := names(reflect.TypeOf(graphEdgeRead{})), names(reflect.TypeOf(model.GraphEdge{})); !slices.Equal(got, want) {
+	if got, want := jsonFieldNames(reflect.TypeOf(graphEdgeRead{})), jsonFieldNames(reflect.TypeOf(model.GraphEdge{})); !slices.Equal(got, want) {
 		t.Errorf("graphEdgeRead declares %v, want model.GraphEdge's own fields in its order, %v", got, want)
 	}
+}
+
+// jsonFieldNames is the JSON name of each field shape declares, in its order.
+func jsonFieldNames(shape reflect.Type) []string {
+	var fields []string
+	for index := range shape.NumField() {
+		name, _, _ := strings.Cut(shape.Field(index).Tag.Get("json"), ",")
+		fields = append(fields, name)
+	}
+	return fields
 }
 
 func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
@@ -926,6 +928,167 @@ func TestIssueReferencesLinksListEachNodeOnce(t *testing.T) {
 		if before, after := referenceLinkLines(field.before, labels), referenceLinkLines(field.after, labels); !slices.Equal(before, after) {
 			t.Errorf("%s after the comment's edit holds\n\t%s\nwant the rows, kinds and vias it held before\n\t%s", field.name, shownLines(after), shownLines(before))
 		}
+	}
+}
+
+// issueReferencesNameRows is the one row of each list an issue's references read gives for
+// issueReferencesNameFixture.
+type issueReferencesNameRows struct {
+	link, linkedFrom model.ReferenceLink
+}
+
+// issueReferencesNameFixture makes an issue whose references read lists one row in each list, a
+// comment whose body holds a bare issue address: in links, a comment of another issue that the
+// issue's own comment links to, and in linked_from, a comment of that other issue that links to
+// the issue. It answers the handler, the issue's key and the two rows as the read lists them,
+// each named by its comment's whole body, which the read's cut keeps whole at this length.
+// Each issue is in a project of its own: the issues route refuses a second issue of one title in
+// one project as a possible duplicate.
+func issueReferencesNameFixture(t *testing.T) (http.Handler, string, issueReferencesNameRows) {
+	t.Helper()
+	handler := newTestHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	createReferenceAPIProject(t, handler, "OPS")
+	createReferenceAPIProject(t, handler, "SRE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	named := createReferenceAPIIssue(t, handler, "OPS")
+	other := createReferenceAPIIssue(t, handler, "SRE")
+	linkedBody := "Decided in dispatch://" + named.Key + " on **Friday**."
+	linked := createReferenceAPIComment(t, handler, other.Key, linkedBody)
+	own := createReferenceAPIComment(t, handler, issue.Key, "See dispatch://"+other.Key+"/comment/"+linked.ID+" here.")
+	citingBody := "dispatch://" + named.Key + " waits on dispatch://" + issue.Key + "."
+	citing := createReferenceAPIComment(t, handler, other.Key, citingBody)
+	return handler, issue.Key, issueReferencesNameRows{
+		link: model.ReferenceLink{
+			Node: model.GraphNode{Kind: "comment", ID: linked.ID}, Name: linkedBody,
+			Kinds: []string{"mentions"}, Via: model.ReferenceVia{Kind: "comment", ID: own.ID},
+		},
+		linkedFrom: model.ReferenceLink{
+			Node: model.GraphNode{Kind: "comment", ID: citing.ID}, Name: citingBody,
+			Kinds: []string{"mentions"}, Via: model.ReferenceVia{Kind: "issue", ID: issue.Key},
+		},
+	}
+}
+
+// Under `Dispatch-Trees: 1` each row of an issue's references read carries name_tree, the tree
+// pmdoc.DisplayJSON makes of exactly that row's name, in links and in linked_from alike, and the
+// document the route table emits declares that tree where the answer carries it. Each name here
+// is a comment's body holding a bare issue address, which the tree reads as a reference: the
+// Artifacts tab draws the row's name from it, the address read as its target's name.
+func TestIssueReferencesRowsCarryTheTreeOfTheirNamesUnderTheHeader(t *testing.T) {
+	handler, issueKey, want := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	response := treesRequest(t, handler, target, true)
+	var answer struct {
+		Links      []referenceLinkRead `json:"links"`
+		LinkedFrom []referenceLinkRead `json:"linked_from"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode GET %s with the header: %v", target, err)
+	}
+	for _, list := range []struct {
+		name string
+		rows []referenceLinkRead
+		want model.ReferenceLink
+	}{{"links", answer.Links, want.link}, {"linked_from", answer.LinkedFrom, want.linkedFrom}} {
+		if len(list.rows) != 1 {
+			t.Fatalf("%s holds %d rows, want the one comment of the fixture: %s", list.name, len(list.rows), response.Body.String())
+		}
+		row := list.rows[0]
+		if row.Node.Kind != list.want.Node.Kind || row.Node.ID != list.want.Node.ID || row.Name != list.want.Name ||
+			!slices.Equal(row.Kinds, list.want.Kinds) || row.Via != list.want.Via {
+			t.Fatalf("%s holds %s %s named %q [%s] via %s %s, want %s %s named %q [%s] via %s %s", list.name,
+				row.Node.Kind, row.Node.ID, row.Name, strings.Join(row.Kinds, ","), row.Via.Kind, row.Via.ID,
+				list.want.Node.Kind, list.want.Node.ID, list.want.Name, strings.Join(list.want.Kinds, ","), list.want.Via.Kind, list.want.Via.ID)
+		}
+		if row.NameTree == nil {
+			t.Fatalf("under the header, the %s row named %q carries no name_tree: %s", list.name, row.Name, response.Body.String())
+		}
+		got := sameShape(t, json.RawMessage(row.NameTree))
+		wantTree := sameShape(t, pmdoc.DisplayJSON(row.Name, pmdoc.DisplayLatest))
+		if !bytes.Equal(got, wantTree) {
+			t.Errorf("the %s row's name_tree is\n\t%s\nwant the tree of its name %q\n\t%s", list.name, got, row.Name, wantTree)
+		}
+	}
+	node, _ := readOpenAPITree(t)
+	document, _ := node.(map[string]any)
+	for _, treePath := range []string{"links.0.name_tree", "linked_from.0.name_tree"} {
+		requireTreeInAnswerSchema(t, document, "/api/v1/issues/{key}/references", treePath)
+	}
+}
+
+// An issue's references answer to a caller that sends no Dispatch-Trees header is the bytes the
+// route wrote before a row carried its name's tree: no row carries name_tree, and the body is
+// what model.IssueReferences writes of itself. The read shapes declare the model's fields
+// themselves (issueReferencesRead, referenceLinkRead), so they are also held to declare the
+// model's own fields in its order, a row's tree after them, which is what a field added to the
+// model and not to a shape would break.
+func TestIssueReferencesAnswerWithoutTheTreesHeaderIsTheBytesBefore(t *testing.T) {
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	response := treesRequest(t, handler, target, false)
+	var rows struct {
+		Links      []map[string]json.RawMessage `json:"links"`
+		LinkedFrom []map[string]json.RawMessage `json:"linked_from"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode GET %s without the header: %v", target, err)
+	}
+	if len(rows.Links) != 1 || len(rows.LinkedFrom) != 1 {
+		t.Fatalf("GET %s without the header holds %d links and %d linked_from, want one of each: %s",
+			target, len(rows.Links), len(rows.LinkedFrom), response.Body.String())
+	}
+	for _, row := range slices.Concat(rows.Links, rows.LinkedFrom) {
+		if tree, carried := row["name_tree"]; carried {
+			t.Errorf("without the header, the row named %s carries name_tree %s", row["name"], tree)
+		}
+	}
+	var want bytes.Buffer
+	if err := json.NewEncoder(&want).Encode(decodeBody[model.IssueReferences](t, response)); err != nil {
+		t.Fatalf("encode the answer as model.IssueReferences writes it: %v", err)
+	}
+	if !bytes.Equal(response.Body.Bytes(), want.Bytes()) {
+		t.Errorf("GET %s without the trees header =\n\t%s\nwant the bytes model.IssueReferences writes\n\t%s", target, response.Body.String(), want.String())
+	}
+	if got, want := jsonFieldNames(reflect.TypeOf(issueReferencesRead{})), jsonFieldNames(reflect.TypeOf(model.IssueReferences{})); !slices.Equal(got, want) {
+		t.Errorf("issueReferencesRead declares %v, want model.IssueReferences' own fields in its order, %v", got, want)
+	}
+	if got, want := jsonFieldNames(reflect.TypeOf(referenceLinkRead{})), append(jsonFieldNames(reflect.TypeOf(model.ReferenceLink{})), "name_tree"); !slices.Equal(got, want) {
+		t.Errorf("referenceLinkRead declares %v, want model.ReferenceLink's own fields in its order, then name_tree: %v", got, want)
+	}
+}
+
+// A caller that asks for the rows' name trees and one that sends no header never share a
+// validator of an issue's references: the reading is hashed into the ETag (referencesETag), so
+// neither can be answered 304 against the other's.
+func TestIssueReferencesTreesRequestAndOneWithoutNeverShareAnETag(t *testing.T) {
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	with := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target+" with trees")
+	without := listETagOf(t, listRead(t, handler, target, listReadOptions{}), "GET "+target+" without trees")
+	if with == without {
+		t.Fatalf("GET %s answers one ETag %s for both readings", target, with)
+	}
+	crossed := listRead(t, handler, target, listReadOptions{etag: with})
+	if crossed.Code != http.StatusOK {
+		t.Errorf("GET %s without trees, holding the trees reading's ETag: status=%d, want 200", target, crossed.Code)
+	}
+}
+
+// A deploy that reads markdown differently moves an issue's references validator, however the
+// answer itself comes out: the display parser version is hashed into it, so no ETag the build
+// before it gave is matched by this one.
+func TestADeployOfANewDisplayParserVersionChangesTheIssueReferencesETag(t *testing.T) {
+	handler, issueKey, _ := issueReferencesNameFixture(t)
+	target := "/api/v1/issues/" + issueKey + "/references"
+	before := listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), "GET "+target)
+
+	restore := pmdoc.SetDisplayTreeVersionForTest(pmdoc.DisplayTreeVersion + 1)
+	defer restore()
+	answered := listRead(t, handler, target, listReadOptions{trees: true, etag: before})
+	what := fmt.Sprintf("GET %s at display parser version %d", target, pmdoc.DisplayTreeVersionNow())
+	if got := listETagOf(t, answered, what); got == before {
+		t.Errorf("%s answers the ETag %s the version before it gave", what, before)
 	}
 }
 

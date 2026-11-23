@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -658,7 +657,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			Via:      closureMember.Via,
 		})
 	}
-	etag, err := referencesETag(issue.LastSeq, members, closure.Links, closure.LinkedFrom, latestOnly)
+	trees := wantsDisplayTrees(r)
+	etag, err := s.referencesETag(issue.LastSeq, members, closure.Links, closure.LinkedFrom, latestOnly, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -668,12 +668,15 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	WriteJSON(w, http.StatusOK, model.IssueReferences{
+	// Each row's name reaches a caller that sent Dispatch-Trees: 1 with its tree, read where it
+	// stands (newIssueReferencesRead). The ETag above names that reading and the parser that read
+	// the trees (referencesETag), so a validator given for one reading never answers the other.
+	WriteJSON(w, http.StatusOK, newIssueReferencesRead(model.IssueReferences{
 		Members:    members,
 		Truncated:  false,
 		Links:      closure.Links,
 		LinkedFrom: closure.LinkedFrom,
-	})
+	}, trees))
 }
 
 // referencesClosureBound is the budget every statement of one GET of an issue's references shares
@@ -816,8 +819,10 @@ const referencesAnswerForm = "form=members,truncated,links,linked_from"
 // parent, and another node's new link to the issue adds a row: none of that moves the issue's own
 // last_seq, so the rows are hashed whole for such a change to give a new ETag. The trimmed answer
 // (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
-// issue never share an ETag; the full answer hashes no such line.
-func referencesETag(lastSeq int, members []model.ReferenceMember, links, linkedFrom []model.ReferenceLink, latestOnly bool) (string, error) {
+// issue never share an ETag; the full answer hashes no such line. The hash is closed as the
+// lists' are (listETag), with whether the caller asked for the rows' name trees, the display
+// parser version and the build commit, for the reasons listETag gives.
+func (s *server) referencesETag(lastSeq int, members []model.ReferenceMember, links, linkedFrom []model.ReferenceLink, latestOnly, trees bool) (string, error) {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%d\n%s\n", lastSeq, referencesAnswerForm)
 	if latestOnly {
@@ -840,7 +845,7 @@ func referencesETag(lastSeq int, members []model.ReferenceMember, links, linkedF
 			}
 		}
 	}
-	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`, nil
+	return s.listETag(hash, trees), nil
 }
 
 // loadArtifactsByRefKey reads the documents refKeys name, each with every version in number

@@ -8,7 +8,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { searchResponse } from "../../__tests__/search-fixture";
+import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
@@ -64,7 +64,7 @@ import {
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import type { OutlineWriter } from "./outline-writer";
-import { ANSWER_LINES, CONTROL_LABELS, REPLY_WORD, WRITE_ON_ISSUE_WORDS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -338,13 +338,13 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
 });
 
-// The kept lines name the way back by a control's words, declared once in `page-words.ts` as
-// `REPLY_WORD` and `WRITE_ON_ISSUE_WORDS`, while `CONTROL_LABELS` keeps its own words for the two
-// controls as `main` wrote them. Each pair stays equal, so a kept line never names a control the
-// page draws under other words.
+// The kept lines name the way back by a control's words: the box's control that writes on the
+// issue for what was written there, and a statement's Reply, pressed on that statement, for what
+// was written on one. Each line holds the words that control draws (`CONTROL_LABELS`), so a kept
+// line never names a control the page draws under other words.
 test("the kept lines name the Reply and the write-on-issue control by the words those controls draw", () => {
-  expect(CONTROL_LABELS.reply).toBe(REPLY_WORD);
-  expect(CONTROL_LABELS.write_on_issue).toBe(WRITE_ON_ISSUE_WORDS);
+  expect(ANSWER_LINES.kept_on_issue).toContain(CONTROL_LABELS.write_on_issue);
+  expect(ANSWER_LINES.kept_on_statement).toContain(`press ${CONTROL_LABELS.reply} `);
 });
 
 // The reviewer's finding 4593511272: a Reply is a move of the page's, which carries nothing, so
@@ -1186,7 +1186,9 @@ test("an edit saves the comment's words", async () => {
 
 // R7: with the look, the hint under the field and the list of mention targets are off screen and
 // still read out - the hint as the field's description, the list by its name - and a row of the
-// reference picker carries no `title`, the page drawing no tooltips (`NoTooltips`).
+// reference picker carries no `title`, the page drawing no tooltips (`NoTooltips`). A session's
+// row, whose name two sessions can share, draws the session's full id on screen instead, in a
+// line of the row that is its description and no part of its name.
 test("the look keeps the hint and the targets off screen, and a picker row has no title", async () => {
   const user = userEvent.setup();
   const hit: SearchResult = {
@@ -1226,6 +1228,54 @@ test("the look keeps the hint and the targets off screen, and a picker row has n
   // The row draws its detail line, and nothing in the list carries a title for it.
   expect(within(row).getByText(shortForm(route))).toBeInTheDocument();
   expect(list.querySelectorAll("[title]")).toHaveLength(0);
+
+  // The space closes the `#` door, and an `@` query lists the planner's session row.
+  await user.keyboard(" @Plan");
+  const parties = await within(composerBox()).findByRole("listbox", { name: "References" });
+  const session = await within(parties).findByRole("option", { name: /^Planner/ });
+  expect(parties.querySelectorAll("[title]")).toHaveLength(0);
+  expect(session).toHaveAccessibleDescription(PLANNER.id);
+  expect(session).not.toHaveAccessibleName(new RegExp(PLANNER.id));
+  const line = within(session).getByText(PLANNER.id);
+  expect(line).not.toHaveClass("sr-only");
+  expect(line).toHaveAttribute("aria-hidden", "true");
+});
+
+// R7, and the root spec's R6 (no tooltip on the page) and R19 (nothing lost): today's composers
+// show a session's full id as its picker row's tooltip, and the box draws none, so a sighted
+// reader tells two sessions apart only by what the row draws on screen. Two live sessions the
+// registry lists under one title and one directory, seen at the same moment, are two rows of the
+// box's picker, and an off-screen line is no part of what a sighted reader reads (the tester's
+// red test, round 12).
+test("two sessions that share a title draw words on screen in the box's picker that tell them apart", async () => {
+  const user = userEvent.setup();
+  const seen = Date.now();
+  const at = { last_activity: new Date(seen).toISOString(), last_seen: seen };
+  const twins = [plannerAgent(at), plannerAgent({ ...at, session_id: "planner-session-2" })];
+  // The case's reads answer the agent list with the planner alone (`answerBoxReads`).
+  (api.listAgents as unknown as Mock<typeof api.listAgents>).mockResolvedValue(twins);
+  const { client } = renderPage();
+  act(() => client.setQueryData(["agents"], twins));
+  await user.click(writeField());
+  await user.keyboard("@Plan");
+  const parties = await within(composerBox()).findByRole("listbox", { name: "References" });
+  const rows = await within(parties).findAllByRole("option", { name: /^Planner/ });
+  expect(rows).toHaveLength(2);
+  // What the row draws on screen, and a line that describes it where that line is drawn too.
+  const drawnWords = (element: Element): string => {
+    const drawn = element.cloneNode(true) as Element;
+    for (const hidden of drawn.querySelectorAll(".sr-only")) hidden.remove();
+    return (drawn.textContent ?? "").replace(/\s+/g, " ").trim();
+  };
+  const onScreen = rows.map((row) => {
+    const line = document.getElementById(row.getAttribute("aria-describedby") ?? "");
+    const described = line === null || line.classList.contains("sr-only") ? "" : drawnWords(line);
+    return `${drawnWords(row)} ${described}`.trim();
+  });
+  expect(
+    onScreen[0],
+    "the two sessions' rows draw the same words on screen, so a sighted reader cannot tell which session each is"
+  ).not.toBe(onScreen[1]);
 });
 
 // The Design's "focused row": the box publishes how far up from the screen's foot it reaches

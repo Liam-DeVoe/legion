@@ -23,14 +23,11 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import {
-  type PublishedReferences,
-  ReferenceNamesProvider,
-  usePublishReferenceNames,
-} from "../refs/reference-names";
+import { ReferenceNamesProvider } from "../refs/reference-names";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 
 /**
  * The two controls a decision's node draws (R7). The tree is one tab stop,
@@ -618,21 +615,6 @@ test("a decision whose answer carried no reading quotes its first paragraph's ma
   expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
 });
 
-/** What the page's batched read publishes for the Change quote's row: the issue `CORE-7`, named. */
-const QUOTE_NAMES: PublishedReferences = {
-  ambiguous: new Set(),
-  asked: new Set(["dispatch://CORE-7"]),
-  gone: new Set(),
-  readings: new Map([["dispatch://CORE-7", { words: "Draw the rows" }]]),
-  unnamed: new Set(),
-};
-
-/** Publishes `QUOTE_NAMES` while it is drawn, as the page publishes its batched read. */
-function Named({ children }: { children: ReactNode }): ReactNode {
-  usePublishReferenceNames(QUOTE_NAMES);
-  return children;
-}
-
 // R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
 // anchored to as the reader reads the decision - the plain-text projection of its first block,
 // a reference in it read as its target's name - while the change it sends is still anchored to
@@ -642,6 +624,8 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
   const text = `## One tree, five presets\n\n${written}`;
   const cited: Decision = { ...decision, text, text_tree: displayTree(text) };
   const answer = { ...read, decisions: [cited] };
+  // What the page's batched read publishes for the quote's row: the issue `CORE-7`, named.
+  const names = publishedNames(new Map([["dispatch://CORE-7", "Draw the rows"]]));
   const createComment = spyOn(api, "createComment").mockImplementation(
     () => new Promise<never>(() => {})
   );
@@ -653,9 +637,8 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
   const view = render(
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
-        <Named>
-          <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
-        </Named>
+        <Publisher published={names} />
+        <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
       </ReferenceNamesProvider>
     </QueryClientProvider>
   );
