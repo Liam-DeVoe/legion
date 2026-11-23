@@ -71,7 +71,8 @@ func newBodyLimitRig(t *testing.T) *bodyLimitRig {
 		GitHub:     &webhook.GitHubWebhook{Secret: webhookSecret, MentionTrigger: "@legion"},
 		Slack:      &webhook.SlackWebhook{Secret: webhookSecret},
 		GhostWispr: &webhook.GhostWisprWebhook{Secret: webhookSecret},
-	})
+		BodyBudget: webhook.DefaultBodyBudget,
+	}, nil)
 	gate := newStartingGate("webhook", logging.New("test"))
 	openWebhooks(gate, hooks, client, ciStore)
 	var webhookPaths []string

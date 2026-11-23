@@ -67,6 +67,7 @@ const idleRigSender = "idle-rig-sender"
 // direct message is sent to its session while that stop is held; the release wave waits for it
 // with the rest. Each subtest then drives its own pods' wakes.
 func TestIdleReleaseAndWake(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
 	// The rig is given every plan that sets a field a role process reads as it starts (idleRigPlan):
 	// the topic the subscribed pod's session takes, as `envoy_subscribe` does, and how each
 	// just-released pod's process ends. The held-stop pod's session stops as a session whose

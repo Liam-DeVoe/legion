@@ -430,7 +430,7 @@ func writeGrantGuardRefusal(w http.ResponseWriter, role, holder string, err erro
 // storeAnswered reports whether err, from the store work of a /v1 route that writes, done within
 // ctx, is the store's own answer: a key NATS refuses (bus.ErrRefused), no key (nats.ErrKeyNotFound),
 // a record this build cannot decode (store.ErrMalformedInterest, store.ErrMalformedRoleClaim), or a
-// conditional write or delete another writer's change beat (nats.ErrKeyExists). Every other error
+// conditional write or delete another writer's change beat (bus.IsCASConflict). Every other error
 // did not answer, whatever it names, and so does any error once ctx has ended. An errors.Join of
 // failures (store.Registry.SetRoleWithPrevious joins a lost claim with its holder read and its
 // rollback) answered only when every part of it did.
@@ -458,7 +458,7 @@ func storeAnswer(err error) bool {
 			return true
 		}
 	}
-	return errors.Is(err, bus.ErrRefused) || errors.Is(err, nats.ErrKeyNotFound) || errors.Is(err, nats.ErrKeyExists) ||
+	return errors.Is(err, bus.ErrRefused) || errors.Is(err, nats.ErrKeyNotFound) || bus.IsCASConflict(err) ||
 		errors.Is(err, store.ErrMalformedInterest) || errors.Is(err, store.ErrMalformedRoleClaim)
 }
 
@@ -3355,8 +3355,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		}
 		// One budget, taken here, bounds this registration's store work and every one of its
 		// consumer calls: each pass's create or update and the repair after the entry
-		// (sendRequestBudget, which says why it is shorter than the client's attempt).
-		budgetEnds := d.clk().Now().Add(sendRequestBudget)
+		// (sendRequestBudget, which says why it is shorter than the client's attempt, or a test's
+		// registrationBudget).
+		budgetEnds := d.clk().Now().Add(d.registrationBudgetOr())
 		ctx, cancel := d.clk().WithDeadline(r.Context(), budgetEnds)
 		defer cancel()
 		// At the edge each topic the registration names is held to the token's projects, and a

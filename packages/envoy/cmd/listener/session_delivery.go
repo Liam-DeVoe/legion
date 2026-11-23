@@ -216,6 +216,14 @@ type sessionDelivery struct {
 	// corrects it (fenceFilterWrite). It runs for every such read, so a test that moves the row
 	// once moves it under the first write alone.
 	afterStoredRowRead func()
+	// registrationCallBudget bounds a registration's own consumer call (consumerFor), timed from
+	// before it waits for the session's lock, inside the registration's budget
+	// (listenerDeps.registrationBudget), which alone bounds the repair its confirm makes
+	// (confirmRegistered). Zero is sessionConsumerCallTimeout, which every listener main builds
+	// runs with. It is a seam for a test whose own work runs inside that bound, as a session's
+	// consumer lock it holds while it writes: such a test gives the call what is left of the test
+	// binary's deadline here, so the bound does not count the test's work.
+	registrationCallBudget time.Duration
 	// locks keeps the consumer calls made for one session one at a time: a registration's create or
 	// filter update, an unsubscribe's filter update, the relay's restart at the ack floor, which
 	// deletes the consumer and creates it again when a message awaits an ack, and the one delete
@@ -364,15 +372,24 @@ func (m *sessionDelivery) clk() clock.Clock {
 // changes is the filter.
 //
 // ctx bounds the repair: it carries the registration's deadline and not its client's cancel
-// (registerPass), so the repair ends inside the registration's budget (sendRequestBudget), but for
-// that budget's two gaps (subscribeHandler): each read of the connection's state made once ctx has
-// ended can add up to 100 ms (bus.ConnLockWait), and a send or subscribe that meets a handshake
+// (registerPass), so the repair ends inside the registration's budget (registrationBudgetOr), but
+// for that budget's two gaps (subscribeHandler): each read of the connection's state made once ctx
+// has ended can add up to 100 ms (bus.ConnLockWait), and a send or subscribe that meets a handshake
 // begun just after its read waits for that attempt. The registration's answer waits for the repair.
 func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) {
 	if m == nil || m.consumers == nil {
 		return
 	}
 	m.repairRegistered(ctx, d, sessionID, ackFloor, repairAfterRegistration)
+}
+
+// registrationCallBudgetOr is the bound on a registration's own consumer call
+// (registrationCallBudget): sessionConsumerCallTimeout unless a test set one.
+func (m *sessionDelivery) registrationCallBudgetOr() time.Duration {
+	if m.registrationCallBudget == 0 {
+		return sessionConsumerCallTimeout
+	}
+	return m.registrationCallBudget
 }
 
 // repairAfterRegistration and repairAfterDelete name what a repair of a session's consumer
@@ -803,7 +820,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.Sub
 	if m.grantRefused() {
 		return sessionDeliveryOutcome{}, noGrantRefusal(body.SessionID), noUnlock
 	}
-	ctx, cancel := m.clk().WithTimeout(ctx, sessionConsumerCallTimeout)
+	ctx, cancel := m.clk().WithTimeout(ctx, m.registrationCallBudgetOr())
 	defer cancel()
 	streamID, err := m.consumers.StreamID(ctx)
 	if err != nil {
