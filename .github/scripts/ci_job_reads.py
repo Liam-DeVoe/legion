@@ -856,7 +856,7 @@ RULES = {
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/testdata/dev-only-run-jobs.json", "internal/dispatch/api/delivery_test.go:714")),
     f"{ENVOY}/internal/dispatch/api/live_events_test.go": reads(
-        (f"{FIX}/live/event.json", "internal/dispatch/api/live_events_test.go:983")),
+        (f"{FIX}/live/event.json", "internal/dispatch/api/live_events_test.go:753")),
     f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
          "internal/dispatch/api/openapi_test.go:199-200 (the path built runtime-relative ../../../../.., then "

@@ -161,7 +161,7 @@ func lockProjectIssueDependencies(ctx context.Context, tx pgx.Tx, project string
 // each target's), so even with two builds serving only a ring through a project this write does
 // not name could close. And the test gates use them: a caller that holds a project's dependency
 // lock fences that project's dependency writes
-// (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependencies_test.go).
+// (TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks, issue_dependency_locks_test.go).
 //
 // The key is its own name rather than lockProjectIssueDependencies' namespace with a literal
 // second key, so a project whose key happens to hash to that literal cannot collide with it; the
