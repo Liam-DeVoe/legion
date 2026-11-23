@@ -120,14 +120,16 @@ def auth_conf:
 # name>[,<issuer name>…]] entries, each issuer name as BROKER_K8S_OIDC_ISSUER names one (lowercase
 # letters, digits and hyphens, at most 64), each entry answered with its kind and the name the auth
 # service's answer gives its user, <kind>/<machine id>, or <kind>/<account> for an entry of no
-# machine id, the account without its issuer names (config.NATSService Name). An entry of any other
-# shape is an error, {error: {entry}}, since its kind could be a publisher's.
+# machine id, the account without its issuer names and without the google: tag a Google account
+# is written with, as config.NATSService Name gives it: its account is the Address ParseAccount
+# answers, with that tag removed. An entry of any other shape is an error, {error: {entry}}, since
+# its kind could be a publisher's.
 def nats_services:
   [splits("\\s+") | select(length > 0)] as $entries
   | "^(?<kind>[a-z][a-z-]*)/(?<machine>[^/=\\s]+)/(?<scope>[^/=\\s]+)=(?<account>[^=\\s]+)(?:=[a-z0-9-]{1,64}(?:,[a-z0-9-]{1,64})*)?$" as $form
   | ([$entries[] | select(test($form) | not)] | first) as $bad
   | if $bad != null then {error: {entry: $bad}}
-    else {entries: [$entries[] | capture($form) | {kind, identity: "\(.kind)/\(if .machine == "-" then .account else .machine end)"}]} end;
+    else {entries: [$entries[] | capture($form) | {kind, identity: "\(.kind)/\(if .machine == "-" then (.account | ltrimstr("google:")) else .machine end)"}]} end;
 
 # listener_verdict($lines; $key) is what the census of listener pins printed for $key, its lines as
 # daemon-release-gate.sh --listeners prints them: shut on a `GATE SHUT: <key> ` line, unknown on an

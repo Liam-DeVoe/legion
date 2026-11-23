@@ -2373,7 +2373,9 @@ func TestTheK8sIssuerSettingTakesNamedIssuers(t *testing.T) {
 // naming no project names its issuers the same way, <service account>==<person>==<issuer names>.
 // Each setting refuses, naming itself and the entry, a name the list does not hold, one name
 // twice, an entry ending in "=" with no name, a name on a google: entry, and any name while the
-// list is one bare URL. BROKER_EXCHANGE_ACCOUNTS refuses as well, naming
+// list is one bare URL. BROKER_API_ACCOUNTS, and BROKER_NATS_SERVICES beside a NATS auth service
+// whose one audience is Google's, refuse, naming the setting and the entry, any name while
+// BROKER_K8S_OIDC_ISSUER is unset. BROKER_EXCHANGE_ACCOUNTS refuses as well, naming
 // BROKER_EXCHANGE_K8S_ISSUER, a name that setting does not name, an entry naming none while that
 // setting leaves out the list's first issuer, and, saying where the issuer field goes, a fixed
 // session holding "=" written with no issuer field; and, naming the session it would read, an
@@ -2418,6 +2420,19 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		e := validVMEnv()
 		e["BROKER_K8S_OIDC_ISSUER"] = namedIssuersEnv()["BROKER_K8S_OIDC_ISSUER"]
 		e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+		return e
+	}
+
+	// natsGoogleOnly is validEnv, which sets no BROKER_K8S_OIDC_ISSUER, running the NATS auth
+	// service with BROKER_NATS_GOOGLE_AUDIENCE as its one audience.
+	natsUser, natsAccount, natsCurve, _ := natsSeeds(t)
+	natsGoogleOnly := func() map[string]string {
+		e := validEnv()
+		e["BROKER_NATS_URLS"] = "nats://hub-a:4222"
+		e["BROKER_NATS_SEED_FILE"] = natsUser
+		e["BROKER_NATS_ISSUER_SEED_FILE"] = natsAccount
+		e["BROKER_NATS_XKEY_SEED_FILE"] = natsCurve
+		e["BROKER_NATS_GOOGLE_AUDIENCE"] = "envoy-nats-google"
 		return e
 	}
 
@@ -2567,6 +2582,8 @@ func TestAnAccountEntryNamesItsIssuers(t *testing.T) {
 		{"BROKER_API_ACCOUNTS: an issuer name on a google: entry", googleWithIssuers, "BROKER_API_ACCOUNTS", "listener=google:" + exampleListenerAccount + "=first", []string{"Google"}},
 		{"BROKER_API_ACCOUNTS: an issuer name beside one bare URL", withK8sIssuer, "BROKER_API_ACCOUNTS", "dispatch=" + dispatchSubject + "=first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
 		{"BROKER_SERVICE_LOGINS: an issuer name beside one bare URL", withK8sIssuer, "BROKER_SERVICE_LOGINS", "legion-daemon=" + daemonSubject + "=first", []string{"BROKER_K8S_OIDC_ISSUER", "bare"}},
+		{"BROKER_API_ACCOUNTS: an issuer name while BROKER_K8S_OIDC_ISSUER is unset", validEnv, "BROKER_API_ACCOUNTS", "dispatch=" + dispatchSubject + "=first", []string{"BROKER_K8S_OIDC_ISSUER", "unset"}},
+		{"BROKER_NATS_SERVICES: an issuer name while BROKER_K8S_OIDC_ISSUER is unset", natsGoogleOnly, "BROKER_NATS_SERVICES", "listener/host-a/*=system:serviceaccount:envoy:host-a=cluster-a", []string{"BROKER_K8S_OIDC_ISSUER", "unset"}},
 		{"BROKER_SERVICES: an entry names no issuer", namedIssuersEnv, "BROKER_SERVICES", "legion-daemon=system:serviceaccount:legion:legion-worker=first", nil},
 		{"BROKER_EXCHANGE_ACCOUNTS: an issuer the list does not hold", exchangeTaking("first,second"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==third", []string{`"third"`, exchangeSetting}},
 		{"BROKER_EXCHANGE_ACCOUNTS: an issuer BROKER_EXCHANGE_K8S_ISSUER does not name", exchangeTaking("first"), "BROKER_EXCHANGE_ACCOUNTS", workerSubject + "=ACME=ada@example.com==second", []string{`"second"`, exchangeSetting}},

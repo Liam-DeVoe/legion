@@ -92,8 +92,8 @@ const (
 // once each; an account ParseAccount refuses (a namespace's default account, a Google default or
 // service-agent account); an entry ending in "=" with no issuer name after it, and the issuer
 // names AccountIssuers refuses (one the list does not hold, one named twice, one on a google:
-// entry, and any while the list is one bare URL); and an account given twice, since one account
-// connects as one service.
+// entry, and any while the list is one bare URL or empty); and an account given twice, since one
+// account connects as one service.
 func ParseNATSServices(raw string, issuers []oidc.NamedIssuer) ([]NATSService, error) {
 	var services []NATSService
 	seen := map[string]string{}

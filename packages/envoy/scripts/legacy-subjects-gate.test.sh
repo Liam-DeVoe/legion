@@ -1790,6 +1790,15 @@ got=$(jq -nc -L "$here/lib" --arg s "listener/host-a/*=system:serviceaccount:env
   fail "nats_services read the entries as $got"
 done_case
 
+# A Google account's entry writes its account google:<address>, and config.NATSService Name of one
+# of no machine id is <kind>/<address>, the tag removed, as ParseAccount reads the account.
+new_case "(a3) an auth service's Google entry of no machine id is read by its address without its google: tag"
+got=$(jq -nc -L "$here/lib" --arg s "measure/-/*=google:measure@example-project.iam.gserviceaccount.com" \
+  'include "legacy-subjects-gate-publishers"; $s | nats_services')
+[ "$got" = '{"entries":[{"kind":"measure","identity":"measure/measure@example-project.iam.gserviceaccount.com"}]}' ] ||
+  fail "nats_services read the entry as $got"
+done_case
+
 new_case "(a3) behind an auth callout with no --broker named is UNKNOWN"
 hub_configmap "$FAKE" --callout "${clean_users[@]}"
 facts=(--deployment example/deploy --new-form-commit "$new_form" --hub-statefulset envoy-nats

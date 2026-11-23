@@ -148,15 +148,15 @@ type Config struct {
 	// issuer of that list alone, so an entry written for one cluster keeps its meaning while that
 	// cluster stays first in the list; a listed account's token from another issuer is 403
 	// ACCOUNT_NOT_LISTED, as an account no entry lists is. An entry naming an issuer the list does
-	// not hold or naming one twice, any issuer name while BROKER_K8S_OIDC_ISSUER is one bare URL,
-	// and an issuer name on a google: entry refuse the boot. A Google caller presents its machine's
-	// own Google identity token, for BROKER_GOOGLE_OIDC_AUDIENCE — the audience every machine of
-	// the deployment already holds one for — verified against BROKER_GOOGLE_OIDC_ISSUER, and is
-	// looked up by the token's email; so a Google entry needs BROKER_GOOGLE_OIDC_AUDIENCE. Either
-	// token is refused if it lives longer than an hour from its issue, as a service's login token
-	// is. A project's default Google accounts and Google-managed service agents are refused here as
-	// they are in BROKER_VM_SERVICES, since a token from one proves nothing about which machine is
-	// asking.
+	// not hold or naming one twice, any issuer name while BROKER_K8S_OIDC_ISSUER is one bare URL
+	// or unset, and an issuer name on a google: entry refuse the boot. A Google caller presents its
+	// machine's own Google identity token, for BROKER_GOOGLE_OIDC_AUDIENCE — the audience every
+	// machine of the deployment already holds one for — verified against BROKER_GOOGLE_OIDC_ISSUER,
+	// and is looked up by the token's email; so a Google entry needs BROKER_GOOGLE_OIDC_AUDIENCE.
+	// Either token is refused if it lives longer than an hour from its issue, as a service's login
+	// token is. A project's default Google accounts and Google-managed service agents are refused
+	// here as they are in BROKER_VM_SERVICES, since a token from one proves nothing about which
+	// machine is asking.
 	//
 	// The caller's name decides what the account may do, and the broker
 	// knows three: dispatch reaches every one of those routes, the ten Dispatch's server relays
@@ -587,8 +587,8 @@ type Config struct {
 	// ACCOUNT_NOT_LISTED), and a credential an account's login issued stops authenticating once its
 	// entry is gone or no longer names the issuer of the token that made it. An entry naming an
 	// issuer the list does not hold or naming one twice, and any issuer name while
-	// BROKER_K8S_OIDC_ISSUER is one bare URL, refuse the boot. Needs BROKER_K8S_OIDC_ISSUER, whose
-	// tokens it trusts. Unset, no service logs in with a token.
+	// BROKER_K8S_OIDC_ISSUER is one bare URL or unset, refuse the boot. Needs
+	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
 	//
 	// A login of an account that BROKER_POD_OPERATORS maps to a person acts for that person, when
 	// the login token is bound to a pod of the account. No other login of this setting acts for a
@@ -950,7 +950,7 @@ type Config struct {
 	// alone, as a BROKER_API_ACCOUNTS entry does (AccountIssuers); a listed account's token from
 	// another issuer is refused as an account no entry lists. The start is refused, naming the
 	// entry, for an issuer name the list does not hold, one named twice, one on a google: entry,
-	// and any while BROKER_K8S_OIDC_ISSUER is one bare URL. An edge listener's entry,
+	// and any while BROKER_K8S_OIDC_ISSUER is one bare URL or unset. An edge listener's entry,
 	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>[=<issuer name>[,<issuer name>…]], lists
 	// in place of * or - the projects its grant is built for and GET /v1/project-repositories
 	// answers that account about, and names its issuers as every other entry does, whether or not
@@ -1346,16 +1346,19 @@ func CutIssuerNames(text string) (head string, names []string, ok bool) {
 // AccountIssuers answers the names of the issuers an account entry's token is taken from: names,
 // the entry's own, or, where it names none, the first of issuers alone, so an entry written for a
 // broker of one cluster keeps its meaning when the list names a second, while that cluster stays
-// first in it. A Google entry (google) has none. It refuses, naming setting and the entry's text:
-// an issuer name on a Google entry, whose token Google issues; any name while issuers is one bare
-// URL, which has no name to give; a name given twice in the entry; and a name issuers does not
-// hold. With no issuers it answers none, and Load refuses the entry for the issuer it needs.
+// first in it. A Google entry (google) has none, and so has an entry naming none while issuers is
+// empty. It refuses, naming setting and the entry's text: an issuer name on a Google entry, whose
+// token Google issues; any name while issuers is empty, BROKER_K8S_OIDC_ISSUER unset, so that no
+// issuer has it; any name while issuers is one bare URL, which has no name to give; a name given
+// twice in the entry; and a name issuers does not hold.
 func AccountIssuers(setting, text string, names []string, google bool, issuers []oidc.NamedIssuer) ([]string, error) {
 	switch {
 	case google && names != nil:
 		return nil, fmt.Errorf("%s names an issuer on a Google account, got %q: Google issues that account's token, not an issuer of BROKER_K8S_OIDC_ISSUER, so name none", setting, text)
-	case google || len(issuers) == 0:
+	case google || len(issuers) == 0 && names == nil:
 		return nil, nil
+	case len(issuers) == 0:
+		return nil, fmt.Errorf("%s names an issuer, got %q, but BROKER_K8S_OIDC_ISSUER is unset, so no issuer has that name: set it as <name>=<issuer URL> entries, or name none here", setting, text)
 	case names == nil:
 		return []string{issuers[0].Name}, nil
 	case issuers[0].Name == "":

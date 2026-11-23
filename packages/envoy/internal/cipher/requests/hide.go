@@ -305,8 +305,8 @@ func (m *Machine) hideGrantFromSession(ctx context.Context, grantID, enrollmentI
 // atDecision's bound together.
 func (m *Machine) hideFromSession(ctx context.Context, enrollmentID string, facts rowFacts) error {
 	var caller enrollmentRow
-	if err := m.Store.Pool.QueryRow(ctx, `select kind, operator, subject, issuer, coalesce(projects, '{}') from enrollments where id=$1`, enrollmentID).
-		Scan(&caller.Kind, &caller.Operator, &caller.Subject, &caller.Issuer, &caller.Projects); err != nil {
+	if err := m.Store.Pool.QueryRow(ctx, `select `+credentialColumns+` from enrollments enr where enr.id=$1`, enrollmentID).
+		Scan(caller.credentialDest()...); err != nil {
 		return err
 	}
 	person, named := m.credentialProjects(caller)

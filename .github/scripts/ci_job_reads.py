@@ -3558,7 +3558,7 @@ GATES = [
     ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-go", INFRA_DARWIN_VET, INFRA)),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
-    # directory, the Dispatch API's source guards by name, and the supervise table's two pure
+    # directory, the Dispatch API's source guards by name, and internal/supervise's four pure
     # pins by name. Two workspaces meet here - the root go.work binds packages/daemon and
     # packages/envoy, packages/envoy/infra's own binds itself and packages/envoy - so each Run's
     # workspace names the module files it reads. No Bun and no database: nothing here starts
