@@ -1,10 +1,20 @@
-/** The committed row map is the one a fresh generation writes.
+/** This test generates the row map itself on each run. It reads no map from a file.
  *
- *  `e2e/row-map.md` is what dispatch://INFRA-1407's k2 is read from and what the pull request
- *  links, and it is generated rather than written (`e2e/tools/row-map.ts`). A map that drifts
- *  from the suite is worse than none: it reads as a current account of what moved and what did
- *  not, so a row added, moved or tagged since would be covered by a sentence nobody wrote about
- *  it. This fails on exactly that, and the fix is one command.
+ *  `e2e/tools/row-map.ts` generates the map, and the test reads the map from the tool's output.
+ *  Git does not keep `e2e/row-map.md`. A map that drifts from the suite is worse than none: it
+ *  reads as a current account of what moved and what did not, so a row added, moved or tagged
+ *  since would be covered by a sentence nobody wrote about it. A map generated on each run does
+ *  not drift.
+ *
+ *  The test fails on each refusal of the tool. Among the refusals are:
+ *
+ *  - A note for a row that does not exist.
+ *  - A recording that no row owns.
+ *  - A real-stack file with no reason.
+ *  - A reason for a file with no real-stack row.
+ *
+ *  One row holds the header rule: a real-stack file that the list does not name gives its reason
+ *  in its own header, as a stub file does.
  */
 
 import { expect, test } from "bun:test";
