@@ -110,7 +110,8 @@
       "apt": [],
       "bun": true,
       "evidence_variable": "OWNER_STEPS_EVIDENCE_DIR",
-      "timeout_minutes": 25,
+      "timeout_minutes": 90,
+      "run_timeout_minutes": 43,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/owner-steps.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
       "jj": true
     },
@@ -120,7 +121,8 @@
       "apt": [],
       "bun": true,
       "evidence_variable": "OWNER_STEPS_CLIENT_EVIDENCE_DIR",
-      "timeout_minutes": 30,
+      "timeout_minutes": 95,
+      "run_timeout_minutes": 48,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk, python3 and tar, as LEGION_TEST_PG_DSN=... bash scripts/e2e/owner-steps-client.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it builds the plugin of the release before from main, which it fetches from origin in a shallow checkout, with a bun install of its own; it reaches no other outside service, and one run on a loaded devbox took fifteen minutes, five of them building that plugin",
       "jj": true
     },

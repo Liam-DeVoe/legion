@@ -2640,7 +2640,8 @@ SCRIPT_TEST_GATES = [
     harness("select_e2e_proofs_test", "Test the e2e proof selector", f"{SCRIPTS}/select-e2e-proofs.test.sh", [
         (f"{SCRIPTS}/select-e2e-proofs.sh", "the script under test"),
         (".github/e2e-scripts.json", "its last case runs the selector over this repository's own list"),
-        ("scripts/e2e/*.sh", "that same case: the selector names one row per scripts/e2e/*.sh (select-e2e-proofs.sh:175 globs them)"),
+        ("scripts/e2e/*.sh", "that same case: the selector names one row per scripts/e2e/*.sh "
+                             "(select-e2e-proofs.sh globs them, `pathlib.Path(PROOF_DIR).glob(\"*.sh\")`)"),
     ]),
     harness("go_tagged_tests_test", "Test the build-tag test lister", f"{SCRIPTS}/go-tagged-tests.test.sh", [
         (f"{SCRIPTS}/go-tagged-tests.sh", "the script under test"),
@@ -2720,10 +2721,10 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-run-reads.sh", "the script under test"),
         *ci_retry(
-            "dispatch-browser-run-reads.sh:86 sources it, and the harness drives its retry with a "
-            "stand-in gh that refuses a case's first calls"),
-        (f"{SCRIPTS}/gh-read.sh", "dispatch-browser-run-reads.sh:88 sources it, and the RATE_LIMITED cases "
-                                  "drive its wait for a spent budget"),
+            "dispatch-browser-run-reads.sh sources it from its own directory, and the harness drives "
+            "its retry with a stand-in gh that refuses a case's first calls"),
+        (f"{SCRIPTS}/gh-read.sh", "dispatch-browser-run-reads.sh sources it from its own directory, and "
+                                  "the RATE_LIMITED cases drive its wait for a spent budget"),
     ]),
     harness("gh_read_test", "Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)",
             f"{SCRIPTS}/gh-read.test.sh", [
@@ -3446,8 +3447,8 @@ GATES = [
          "upstream result that is neither success nor skipped and on a failed row in the "
          "merged report"),
         *ci_retry(
-            "dispatch-browser-run-reads.sh:83 sources it, so the merge job's read of its own attempt's "
-            "jobs retries, and the blobs-refused mode makes no request"),
+            "dispatch-browser-run-reads.sh sources it from its own directory, so the merge job's read "
+            "of its own attempt's jobs retries, and the blobs-refused mode makes no request"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.

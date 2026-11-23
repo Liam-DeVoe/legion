@@ -1677,9 +1677,8 @@ WRAPPER_OPTIONS = {
     "env": {"-i": 0, "-u": 1},
     "nice": {"-n": 1},
     # `-u <user>` since this branch's merge of main's #4267, whose
-    # .github/workflows/dispatch-unit-repeat.yaml:238 (the `Start PostgreSQL for the harness rows
-    # that need a database` step) runs `sudo -u postgres psql …` at :242, which the gate refused
-    # by name.
+    # .github/workflows/dispatch-unit-repeat.yaml's `Start PostgreSQL for the harness rows that
+    # need a database` step runs `sudo -u postgres psql …`, which the gate refused by name.
     "sudo": {"-E": 0, "-u": 1},
     # `--stderr <file>`, where gh_wait_reset writes the stderr of the run it ended on: the form
     # release-push.sh's release view and check-daemon-api-contract.sh's reads write
