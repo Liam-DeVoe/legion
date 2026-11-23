@@ -780,28 +780,27 @@ func personSessionAnyoneRows(t *testing.T) approverRows {
 // failure before Dispatch's whole answer arrived (a connection it hangs up, an answer cut short, a
 // name server that does not answer in time), a 408 or a 429 whatever its body names (a proxy that
 // did not take the read in time, Dispatch asking the broker to come back later), a 502, 503 or 504
-// that names no code of Dispatch's, a
-// gateway's page in front of it, or one of the codes Dispatch answers for its own outage
-// (DATABASE_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE), and a 500 that names no code or Dispatch's
-// INTERNAL, which is how Dispatch answers a read its database failed. The grant's named approver's
-// revoke then ends the grant, and writes one RevokeUncheckedMessage line naming them. Every other
-// failure is an answer that lasts until somebody fixes it, and refuses the revoke as it refuses
-// every other read of a person's member kind: Dispatch answering a member kind this broker does not
-// know, refusing the broker's own account, answering 400, a 500 naming any other code of
-// Dispatch's (IDENTITY_ERROR), a 404 that is no member kind, a 502, 503 or 504 naming any other
-// code of Dispatch's (MEMBER_KIND_UNKNOWN, FEATURE_OFF, GITHUB_APP_UNCONFIGURED), or an answer that
-// does not decode; a certificate that does not verify; and a name that does not resolve. The
-// grant's named approver is then refused *projectaccess.MemberKindUncheckable naming them, in words
-// that end by saying Dispatch answered what the broker cannot read, the grant stays live, and no
-// line is written. So is a revoke whose caller hung up while it read: that says nothing of
-// Dispatch. A revoke through a group or as anyone does not go ahead while Dispatch's person route
-// does not answer, whether the grant's session acts for a person, who ends it as its operator
-// asking nothing, or for nobody, a service's pod: a full member's and a restricted member's alike
-// are refused, in words that say the broker could not ask Dispatch. Once Dispatch answers, a full
-// member ends a service pod's grant through its group or as anyone, as before. A failure an
-// earlier read kept is no answer for the revoke either: it asks Dispatch itself, so a restricted
-// member whose grant list failed to read their kind a moment before is refused once Dispatch
-// answers.
+// that names no code of Dispatch's, a gateway's page in front of it, or one of the codes Dispatch
+// answers for its own outage (DATABASE_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE), and a 500 that names
+// no code or Dispatch's INTERNAL, which is how Dispatch answers a read its database failed. The
+// grant's named approver's revoke then ends the grant, and writes one RevokeUncheckedMessage line
+// naming them. Every other failure is an answer that lasts until somebody fixes it, and refuses the
+// revoke as it refuses every other read of a person's member kind: Dispatch answering a member kind
+// this broker does not know, refusing the broker's own account, answering 400, a 500 naming any
+// other code of Dispatch's (IDENTITY_ERROR), a 404 that is no member kind, a 502, 503 or 504 naming
+// any other code of Dispatch's (MEMBER_KIND_UNKNOWN, FEATURE_OFF, GITHUB_APP_UNCONFIGURED), or an
+// answer that does not decode; a certificate that does not verify; and a name that does not
+// resolve. The grant's named approver is then refused *projectaccess.MemberKindUncheckable naming
+// them, in words that end by saying Dispatch answered what the broker cannot read, the grant stays
+// live, and no line is written. So is a revoke whose caller hung up while it read: that says
+// nothing of Dispatch. A revoke through a group or as anyone does not go ahead while Dispatch's
+// person route does not answer, whether the grant's session acts for a person, who ends it as its
+// operator asking nothing, or for nobody, a service's pod: a full member's and a restricted
+// member's alike are refused, in words that say the broker could not ask Dispatch. Once Dispatch
+// answers, a full member ends a service pod's grant through its group or as anyone, as before. A
+// failure an earlier read kept is no answer for the revoke either: it asks Dispatch itself, so a
+// restricted member whose grant list failed to read their kind a moment before is refused once
+// Dispatch answers.
 func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) {
 	answers := func(status int, body string) func(*testing.T, approverRows) {
 		return func(_ *testing.T, r approverRows) { r.dispatch.SetAnswer(status, body); r.asks() }

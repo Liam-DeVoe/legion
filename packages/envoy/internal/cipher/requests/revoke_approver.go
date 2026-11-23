@@ -452,20 +452,19 @@ func mayRevoke(login string, approver, operator *string, groups record.Groups, a
 // deadline passing, a transport failure, a 408 or a 429, a gateway's 502, 503 or 504, one of
 // Dispatch's own codes for its outage, or a 500 naming no code or INTERNAL, which Dispatch answers
 // while its database fails), unlike every other read of a person's member kind, and only for the
-// person the grant names as its approver. It then approves and logs it (RevokeUncheckedMessage).
-// A revoke only takes access away and releases nothing, and a revoke refused through an outage
-// would delay the person ending a grant that leaks; what it costs is that a person Dispatch calls a
-// restricted
-// member could end a grant that names them as its approver while Dispatch does not answer. So it
-// asks Dispatch itself (projectaccess.AskedNow), never answered by a failure an earlier read kept.
-// Every other failure is an answer that lasts until somebody fixes it (Dispatch refusing the
-// broker's own account, a kind this broker does not know, a status, a code or a body it cannot
-// read, a certificate or a name that does not resolve), or a caller that went away, which says
-// nothing of Dispatch; and a grant that admits login only through record.AnyoneApprover or a group
-// is refused while Dispatch does not answer, whatever session holds it. One on a person's session
-// can still be ended by that person, its operator, asking Dispatch nothing (namedOnGrant); one on a
-// session that acts for no person (a service's pod, a person's pod BROKER_POD_OPERATORS no longer
-// maps, or a machine's own session: operatorOf) is ended through the broker by nobody until
+// person the grant names as its approver. It then approves and logs it (RevokeUncheckedMessage). A
+// revoke only takes access away and releases nothing, and a revoke refused through an outage would
+// delay the person ending a grant that leaks; what it costs is that a person Dispatch calls a
+// restricted member could end a grant that names them as its approver while Dispatch does not
+// answer. So it asks Dispatch itself (projectaccess.AskedNow), never answered by a failure an
+// earlier read kept. Every other failure is an answer that lasts until somebody fixes it (Dispatch
+// refusing the broker's own account, a kind this broker does not know, a status, a code or a body
+// it cannot read, a certificate or a name that does not resolve), or a caller that went away, which
+// says nothing of Dispatch; and a grant that admits login only through record.AnyoneApprover or a
+// group is refused while Dispatch does not answer, whatever session holds it. One on a person's
+// session can still be ended by that person, its operator, asking Dispatch nothing (namedOnGrant);
+// one on a session that acts for no person (a service's pod, a person's pod BROKER_POD_OPERATORS no
+// longer maps, or a machine's own session: operatorOf) is ended through the broker by nobody until
 // Dispatch answers, and the way out meanwhile is cluster access (delete the pod). Each is the
 // *projectaccess.MemberKindUncheckable it returns.
 func (m *Machine) revokeApproves(ctx context.Context, login string, judged grantJudged) (approverStanding, error) {

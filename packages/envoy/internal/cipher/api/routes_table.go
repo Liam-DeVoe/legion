@@ -454,34 +454,33 @@ func routes() []apiRoute {
 		// say what kind of member the person is, the list holds no grant of a session that does not
 		// act for them either. The person is the one the caller names.
 		{http.MethodGet, "/v1/grants", accountAuth(relaysDecisions, (*server).listGrantsForApprover)},
-		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's
-		// pod acts for no one), whatever project it touches and whether or not Dispatch answers for it,
-		// or, for a grant the model judge approved in anyone's stead, as anyone the grant's private
-		// project, if it has one, lets see it. The operator's
-		// revoke also withholds the secrets the grant's request got automatically from that session,
-		// even when the grant had already ended: its other grants that got them automatically end
-		// too, and it asks before it gets them again. To anyone else, a grant id no grant has and a
-		// grant a private project hides from the person are one 404 NOT_FOUND, a grant Dispatch
-		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant they may see that names
-		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
-		// moved to another box each time the revoke read it, three times in a row, is 409
-		// GRANT_MOVING. A person Dispatch calls a restricted member ends a grant only as the person
-		// its enrollment acts for, and one the grant admits only as an approver is 403
-		// NOT_APPROVER, saying why. Each of these revokes nothing. While Dispatch does not answer
-		// what kind of member the person is (a timeout, a failed connection, a gateway's 502, 503
-		// or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or a 500 naming
-		// no code or INTERNAL, which Dispatch answers while its database fails), only the person
-		// the grant names as its approver ends it as an approver. Every revoke through a group or
+		// End a grant as its approver or as the person its enrollment acts for (an unmapped person's pod
+		// acts for no one), whatever project it touches and whether or not Dispatch answers for it, or,
+		// for a grant the model judge approved in anyone's stead, as anyone the grant's private project,
+		// if it has one, lets see it. The operator's revoke also withholds the secrets the grant's
+		// request got automatically from that session, even when the grant had already ended: its other
+		// grants that got them automatically end too, and it asks before it gets them again. To anyone
+		// else, a grant id no grant has and a grant a private project hides from the person are one 404
+		// NOT_FOUND, a grant Dispatch cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant
+		// they may see that names them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A
+		// grant an adoption moved to another box each time the revoke read it, three times in a row, is
+		// 409 GRANT_MOVING. A person Dispatch calls a restricted member ends a grant only as the person
+		// its enrollment acts for, and one the grant admits only as an approver is 403 NOT_APPROVER,
+		// saying why. Each of these revokes nothing. While Dispatch does not answer what kind of member
+		// the person is (a timeout, a failed connection, a 408 or a 429 whatever its body names, a
+		// gateway's 502, 503 or 504, Dispatch's own DATABASE_UNAVAILABLE or OIDC_ISSUER_UNAVAILABLE, or
+		// a 500 naming no code or INTERNAL, which Dispatch answers while its database fails), only the
+		// person the grant names as its approver ends it as an approver. Every revoke through a group or
 		// as anyone then, whatever session holds the grant, and every revoke while Dispatch answers
-		// anything else the broker cannot read (a refused account, a kind this broker does not
-		// know, another code, a certificate or a name that does not resolve), is 503
-		// MEMBER_KIND_UNCHECKABLE, revoking nothing. A grant on a person's session can still be
-		// ended then by that person, its operator, who asks Dispatch nothing; a grant on a session
-		// that acts for no person (a service's pod, a person's pod the broker no longer maps, or a
-		// machine's own session) is ended through the broker by nobody but its named approver
-		// until Dispatch answers. A revoke whose caller hung up after the member-kind read is 503
-		// REQUEST_ENDED. The revoking person is the login the request names, which the broker
-		// still takes on the caller's word: a revoke only takes power away.
+		// anything else the broker cannot read (a refused account, a kind this broker does not know,
+		// another code, a certificate or a name that does not resolve), is 503 MEMBER_KIND_UNCHECKABLE,
+		// revoking nothing. A grant on a person's session can still be ended then by that person, its
+		// operator, who asks Dispatch nothing; a grant on a session that acts for no person (a service's
+		// pod, a person's pod the broker no longer maps, or a machine's own session) is ended through
+		// the broker by nobody but its named approver until Dispatch answers. A revoke whose caller hung
+		// up after the member-kind read is 503 REQUEST_ENDED. The revoking person is the login the
+		// request names, which the broker still takes on the caller's word: a revoke only takes power
+		// away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
 		// List the sign-ins the named person made on their machines with `agent-secrets login`,
 		// by machine: one row per box key they signed in with and have not revoked, each naming
