@@ -2553,19 +2553,19 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// No transition stops a worker: the claim whose phase this ends keeps its process, its role and
 	// its session until its issue closes (leave), or until its agent's next step is of another
 	// role, which the start of that step waits for its turn to end to give it (the outbox's
-	// reroleForStep), and its phase entry ends here, not its process. The workspace passes to the
-	// next role at the completion this move records, which the worker reports once its handoff is
-	// committed and pushed, so the next role's start may run while that worker's turn is still
-	// finishing (the issue's lifecycle lane runs its supervise rows one at a time, oldest due
-	// first, and the start of a claim on the role it holds waits for no turn to end). From then on
-	// the finished role answers questions read-only: a completion it reports is refused, since it no
-	// longer works the issue's phase (handoff), and a task queued for a phase the issue has left is
-	// dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one role -
-	// retro back to implementing on the implementer's own backward move - hands the running worker
-	// the new phase's task once its turn is over, as any start of a working claim does. A move no
-	// completion records - the review App's decision on a round the reviewer had not completed -
-	// starts the next role the same way: that role keeps its turn, its jobs, its process and its
-	// session, and the start waits for none of them.
+	// prepareClaimForStep), and its phase entry ends here, not its process. The workspace passes
+	// to the next role at the completion this move records, which the worker reports once its
+	// handoff is committed and pushed, so the next role's start may run while that worker's turn
+	// is still finishing (the issue's lifecycle lane runs its supervise rows one at a time, oldest
+	// due first, and the start of a claim on the role it holds waits for no turn to end). From then
+	// on the finished role answers questions read-only: a completion it reports is refused, since it
+	// no longer works the issue's phase (handoff), and a task queued for a phase the issue has left
+	// is dropped rather than sent (supervise.Deps's PhaseHolds). A move between two phases of one
+	// role - retro back to implementing on the implementer's own backward move - hands the running
+	// worker the new phase's task once its turn is over, as any start of a working claim does. A
+	// move no completion records - the review App's decision on a round the reviewer had not
+	// completed - starts the next role the same way: that role keeps its turn, its jobs, its process
+	// and its session, and the start waits for none of them.
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
 	// closeMergedTelling's rather than a second transition's because a merged issue's close waits

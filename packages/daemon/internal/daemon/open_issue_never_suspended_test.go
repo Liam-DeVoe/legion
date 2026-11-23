@@ -35,8 +35,9 @@ import (
 // `issue_release` row and `supervise` rows whose op is `release`, and a `supervise` row whose op
 // is `step_stop`, against the `issue_suspend` row and the `suspend` op of a stop that ends a
 // claim's phase. The one other suspension of an open issue's claim, the start of a step of
-// another role than its claim holds (the outbox's reroleForStep), writes no row of its own and is
-// never asked here: every claim of this tree is named for its role and runs its role's steps.
+// another role or another agent than its claim holds (the outbox's prepareClaimForStep), writes no
+// row of its own and is never asked here: every claim of this tree is named for its role and runs
+// its role's steps.
 func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 	const (
 		root     = "LEGION-800"
@@ -268,9 +269,10 @@ func TestAnOpenIssueThatIsWorkingHasNoClaimStopped(t *testing.T) {
 // stop of a task and the release leave the issue in the workflow: the release brings its pod back
 // at the next wake for one of its claims, and the stopped task's issue stays held until a later
 // version of its plan starts the task again. Each is told from the others by the kind and op it
-// writes. The start of a step of another role than its claim holds suspends that claim too, at
-// its turn's end, and resumes it on its session in the step's role (the outbox's reroleForStep):
-// it writes no row of its own, so no kind or op tells it, and its tests are the re-role's.
+// writes. The start of a step of another role or another agent than its claim holds suspends that
+// claim too, at its turn's end, and starts it again in the step's role or the step's agent (the
+// outbox's prepareClaimForStep): it writes no row of its own, so no kind or op tells it, and its
+// tests are the re-role's and the new agent's.
 // TestTheStoreRecordsWhoSuspendedAClaim covers the operator's real
 // POST /legion/v1/operator/claims/{token}/suspend route, and
 // TestAnOpenIssueThatIsWorkingHasNoClaimStopped that an open issue whose pod is working takes

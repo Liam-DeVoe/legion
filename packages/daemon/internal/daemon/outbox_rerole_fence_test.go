@@ -134,13 +134,14 @@ func TestAStartsReroleForAStepTheIssueLeftIsNotMade(t *testing.T) {
 }
 
 // The start of the tester's entry finds key a's claim in a turn as the implementer, so the
-// suspension it asks is judged on the step then and held for the turn's end (reroleForStep). A
-// move back to implementing that commits before the turn ends raises the implementer's entry on
-// the same claim, and the held suspension lands at the turn's end on the judgment it passed when it
-// was asked. What that costs is one suspension and one resume of the claim on its own session, and
-// nothing else: the tester's start finishes without acting on its next attempt (the issue left
-// testing), the claim keeps the implementer's role, and the move back's own start resumes it as the
-// implementer on the session it recorded and hands it the implementer's task.
+// suspension it asks is judged on the step then and held for the turn's end
+// (prepareClaimForStep). A move back to implementing that commits before the turn ends raises the
+// implementer's entry on the same claim, and the held suspension lands at the turn's end on the
+// judgment it passed when it was asked. What that costs is one suspension and one resume of the
+// claim on its own session, and nothing else: the tester's start finishes without acting on its
+// next attempt (the issue left testing), the claim keeps the implementer's role, and the move
+// back's own start resumes it as the implementer on the session it recorded and hands it the
+// implementer's task.
 func TestAHeldSuspensionAMoveBackOvertakesCostsOneSuspendAndResume(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
