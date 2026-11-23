@@ -290,11 +290,18 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 		defer mu.Unlock()
 		asked++
 		w.Header().Set("Content-Type", "application/json")
-		if !routed || req.Method != http.MethodPut || req.URL.Path != route {
+		if !routed || req.Method != http.MethodPut || (req.URL.Path != route && req.URL.Path != route+"/commits") {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]string{
 				"code": "NOT_FOUND", "error": "no route for " + req.Method + " " + req.URL.Path, "hint": "GET /api/v1 lists every route",
 			})
+			return
+		}
+		// The record names its commits, which the record's commits route takes after the record
+		// (TestAnOlderDispatchKeepsTheRowWaiting holds that route's own wait); a Dispatch that
+		// serves the step route here serves that one too.
+		if req.URL.Path == route+"/commits" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": stepRecordID})
 			return
 		}
 		var write dispatch.StepWrite
