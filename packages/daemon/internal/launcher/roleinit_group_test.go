@@ -221,6 +221,12 @@ func runRoleGroupStage(plan roleGroupPlan) error {
 	if err := privateMounts(); err != nil {
 		return err
 	}
+	// The stage is the init of a PID namespace of its own (roleGroupReport), so it mounts that
+	// namespace's /proc: /proc/self, which starts role-init and the stand-in, names this process
+	// only there.
+	if err := mountProc("/proc"); err != nil {
+		return fmt.Errorf("mount the stage's own /proc: %w", err)
+	}
 	if err := mountTmpfs(plan.Dir, "size=16m"); err != nil {
 		return err
 	}
