@@ -21,7 +21,7 @@ import (
 // The merge of a child's pull request while it awaits the merge closes the child and opens its
 // production check, under a project whose `production_check` names the tester, in the tester's
 // live session: the child is done on the record and on Dispatch, the architect above it is told
-// child-closed, five of its six claims are closed — the implementer's with the rest — and the
+// child-closed, every claim of it but the tester's is closed — the implementer's with the rest — and the
 // tester's is handed the check's first look, a start with no phase, fenced on the check's
 // look 1, whose task opens with the line a resumed session tells the check by, with no
 // IssueSuspend at the close, since the check's close writes the release and the issue's pod
@@ -326,8 +326,8 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 // A root's merge while a child runs records the merge and waits: the root stays in merging
 // with nothing written to Dispatch, no linger deadline and no member suspended, and its architect
 // is told once, by name, which issue the close waits for. The merged root holds no slot while it
-// waits, since merging stands past its review (record.KeepsSlot), and the merge takes none from
-// the running child.
+// waits, since merging keeps none (record.KeepsSlot), and the merge takes none from the running
+// child.
 func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	assertPhase(t, rig.pool, phase.Merging)

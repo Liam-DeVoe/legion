@@ -164,7 +164,7 @@ func (r *idleWakeRig) awaitUnownedReleasedThenStarted(issue idleRigIssue, role c
 }
 
 // A pod built before a role of the deployment is kept until main's rule for a pod with no live
-// claim or the pod's update round ends it (ruling 18 point 5): the start of the role waits on its
+// claim or the pod's update round ends it: the start of the role waits on its
 // row and makes no claim, so no launch replaces the pod with the issue's disk under it.
 //
 //  1. A stopped role's work stays while the start waits: for three of the rig's ticks the pod

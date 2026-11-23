@@ -335,9 +335,10 @@ func LongestPost(body string) string {
 type NoticeKind string
 
 // Notice is a role-facing workflow observation. A phase-finished notice carries the finishing
-// worker's own summary and, beside it, the verdict it gave (the tester's pass or fail). A
-// review-stuck notice's summary names the fact that wrote it, and its topic is the topic of the
-// claim of the worker on the reviewer's step, which the architect asks for the decision.
+// worker's own summary and, beside it, the verdict it gave (the pass or fail of the tester or of
+// a role of the deployment). A review-stuck notice's summary names the fact that wrote it, and its
+// topic is the topic of the claim of the worker on the reviewer's step, which the architect asks
+// for the decision.
 type Notice struct {
 	Kind NoticeKind `json:"kind"`
 	Role claim.Role `json:"role,omitempty"`
@@ -1197,7 +1198,7 @@ type SuperviseRequest struct {
 	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
 	// entry and its task on the role's phases row, the notices — is written in the transition's
 	// own transaction and waits for nothing. A start into accepting, retro or merging carries no
-	// mark, since an issue past its review holds no row for such a start to wait for, and it is
+	// mark, since an issue in those phases holds no row for such a start to wait for, and it is
 	// claimable the moment it commits. workflow.StartOrOwe is the
 	// one writer of the mark, which it reads from the start's own phase, so no caller decides
 	// it. The hold is on this row's claimability alone (store.go's outboxInOrder): a row that is
@@ -1321,8 +1322,9 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // claim's process, so the save has to happen while that process is there.
 //
 // It stops nothing, so a release cancelled here costs only the save, and it sits before the
-// release's boundary (the first `release` row), so a delivery queued while it runs still cancels
-// the whole release and takes the stored bundle with it (outbox.cancelRelease).
+// release's boundary (the first `release` row), so a delivery queued while it runs, save a start
+// that waits for its pod, still cancels the whole release and takes the stored bundle with it
+// (outbox.cancelRelease).
 type IssueBundle struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
@@ -1814,12 +1816,13 @@ const (
 	// MergeForwardAsk asks the implementer to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
-	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
+	// tester, the reviewer, the merger or, at step, the role of the running step, to stop writing
+	// the workspace while the merge runs.
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
 	// MergeForwardReview asks the reviewer to read the merge that landed on an issue standing
-	// past its review whose task has a reviewer step, and to approve the new head or request
+	// in accepting, retro or merging whose task has a reviewer step, and to approve the new head or request
 	// changes.
 	MergeForwardReview MergeForwardStep = "review"
 )
@@ -1836,10 +1839,10 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 }
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
-// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload). The hold and the
-// landed also go to a role the deployment defines, the worker of a step that runs as step, which
-// reads the head as the tester and the reviewer do.
+// one list the workflow addresses the hold and the landed by (workflow's mergeForwardWorker, which
+// mergeForward and mergeForwardLanded read) and a row is validated against
+// (validateOutboxPayload). The hold and the landed also go to a role the deployment defines, the
+// worker of a step that runs as step, which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
 		return true
@@ -1854,7 +1857,7 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
 // worker of the phase the issue stays in to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
-// the reviewer of an issue past its review whose task has a reviewer step to read the merge
+// the reviewer of an issue in accepting, retro or merging whose task has a reviewer step to read the merge
 // (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
@@ -2539,7 +2542,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer, the merger or a role of the deployment, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if err := namedClaim(value.Claim); err != nil {
 			return err
@@ -2638,7 +2641,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
 //
-// `retro-held` is a parent whose plan has no acceptance step, held before its retro because it
+// `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
 // passed its last step while issues beneath it are still in the workflow (workflow's
 // beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
 // retro starts when the last one leaves (workflow's releaseHeldParents).

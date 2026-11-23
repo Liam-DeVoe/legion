@@ -342,12 +342,13 @@ func TestAConflictIsActedOnOnlyAfterASecondRead(t *testing.T) {
 
 // A confirmed conflict that needs a merge keeps the issue in its phase (dispatch://INFRA-4374 R1):
 // the implementer is asked to merge the base forward on the topic of the claim that works its step
-// (here its own), the worker of the phase - the tester, the reviewer or the merger - is told to
-// hold while the merge runs, and the
+// (here its own), the worker of the phase - the tester, the reviewer, the merger or, at step, the
+// role of the running step - is told to hold while the merge runs, and the
 // architect gets one checks-red notice naming the phase the issue stays in. No worker starts, no
 // status is written and no phase ends. In testing and reviewing the need is a check the base
-// requires that is not green; past the review it is the merge that comes next. The same read again
-// asks nothing a second time.
+// requires that is not green; in accepting, retro and merging it is the merge
+// (record.ConflictMergeNext), which in the default steps is what comes next there. The same read
+// again asks nothing a second time.
 func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	for _, tc := range []struct {
@@ -373,18 +374,19 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	}
 }
 
-// A confirmed conflict is acted on only when the issue's next step needs a head that merges
-// (dispatch://INFRA-4374 R0). Where every check the base requires is green on the head and no rule
-// of the base requires the head to be current, the conflict is recorded and nothing is sent: the
-// tester and the reviewer go on at that head. The tester's next completion moves the issue as
-// before, and the reviewer's, with no approval, is recorded while its round waits on a decision,
-// as before. The reviewer's approval of that head ends its round whatever GitHub's merge state, and
-// the issue's move into accepting, where the merge is next, asks for the merge forward once. Any
-// required check not green, a strict ruleset, and rules the daemon could not read each act at once.
-// GitHub's refusal of rulesets to a plan that has none is no failed read: it reads as no rules, and
-// so records only. A classic protection rule is read as not strict, so its contexts decide; and a
-// required context is green by a success status the record keeps for the head as well as by a
-// check run.
+// A confirmed conflict is acted on only when R0's decision says the head must be merged forward
+// now (classify.ConflictNeedsMerge, dispatch://INFRA-4374 R0). Where every check the base
+// requires is green on the head and no rule of the base requires the head to be current, the
+// conflict is recorded and nothing is sent: the tester and the reviewer go on at that head. The
+// tester's next completion moves the issue as before, and the reviewer's, with no approval, is
+// recorded while its round waits on a decision, as before. The reviewer's approval of that head
+// ends its round whatever GitHub's merge state, and the issue's move into accepting, its next
+// step in the default steps this issue walks, asks for the merge forward once, as a move into
+// accepting, retro or merging does. Any required check not green, a strict ruleset, and rules the
+// daemon could not read each act at once. GitHub's refusal of rulesets to a plan that has none is
+// no failed read: it reads as no rules, and so records only. A classic protection rule is read as
+// not strict, so its contexts decide; and a required context is green by a success status the
+// record keeps for the head as well as by a check run.
 func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 	greenStatus := settledGreen("lint")
 	greenStatus.Statuses = []record.CommitStatus{{Context: "ci", State: record.CommitStatusSuccess,
@@ -704,9 +706,10 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 }
 
 // The merge forward's completion fence is of the phase the issue stands in (dispatch://INFRA-4374
-// R1). The reviewer's approval moves the issue on to accepting before the reviewer completes, and
-// a conflict there asks for the merge forward, which lands; the review the landing then asks of
-// the reviewer is made with no completion (record.MergeForwardReview). The reviewer's completion
+// R1). The reviewer's approval moves the issue on to its task's next step, accepting in the
+// default steps this issue walks, before the reviewer completes, and a conflict there asks for
+// the merge forward, which lands; the review the landing then asks of the reviewer is made with
+// no completion (record.MergeForwardReview). The reviewer's completion
 // of reviewing that arrives after it, at the head the merge replaced, is the report of the review
 // it made of that head, which the next phase reads: it is recorded on the reviewer's own row and
 // moves nothing (engine's leftItsPhase), and the issue stays in accepting.
@@ -736,14 +739,14 @@ func TestAConflictKeepsPhaseAndRecordsALateCompletionOfALeftPhase(t *testing.T) 
 	}
 }
 
-// Once a merge forward lands on an issue past its review, the approval the issue stands on is of
-// the head the merge replaced, so the reviewer is asked to read the merge and approve the new head
-// or request changes (dispatch://INFRA-4374 R1), one review message naming both heads, and the
-// record keeps that the review was asked for. The merger, the worker of merging, is told the merge
-// landed; the architect in accepting and the implementer in retro are told nothing, since the
-// one asked for the merge and the other made it. A merger that enters merging while that review
-// stands for the head is told to merge the head only once the reviewer's approval of it is on the
-// pull request.
+// Once a merge forward lands on an issue in accepting, retro or merging (record.PastReview), the
+// approval the issue stands on, in the default steps, is of the head the merge replaced, so the
+// reviewer is asked to read the merge and approve the new head or request changes
+// (dispatch://INFRA-4374 R1), one review message naming both heads, and the record keeps that the
+// review was asked for. The merger, the worker of merging, is told the merge landed; the
+// architect in accepting and the implementer in retro are told nothing, since the one asked for
+// the merge and the other made it. A merger that enters merging while that review stands for the
+// head is told to merge the head only once the reviewer's approval of it is on the pull request.
 func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 	requiresCI := &record.BaseRules{Required: []string{"ci"}}
 	landing := func(role claim.Role, step record.MergeForwardStep, at phase.Phase) record.MergeForwardMessage {
@@ -806,9 +809,10 @@ func TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge(t *testing.T) {
 
 // A push onto the base can make a head conflict with it, and GitHub sends no event of the pull
 // request while it computes that (dispatch://INFRA-4374 R0, R4). So a base push reads the merge
-// state of each open pull request on the base whose issue stands in testing through merging, an
-// issue past its review among them, where the merge is next; an issue in implementing is read
-// for at its next head push instead, and a base push reads nothing for it.
+// state of each open pull request on the base whose issue stands in testing, reviewing,
+// accepting, retro or merging, where in the default steps the merge is next in the last three; an
+// issue in implementing is read for at its next head push instead, and a base push reads nothing
+// for it.
 func TestAConflictKeepsPhaseWhenABasePushReadsAnIssuePastReview(t *testing.T) {
 	for _, tc := range []struct {
 		at     phase.Phase

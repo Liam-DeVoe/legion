@@ -289,7 +289,8 @@ func quotedOrNone(value string) string {
 // roots: the claim of the agent the step names, a keyed agent on a step of another role included,
 // or the role's own where no step names one, created where none is stored.
 // --prompt-file is an optional operator override; omitted, the daemon composes the role's shared
-// and Go-specific parts. --task is its first delivery, sent once the agent is ready.
+// and Go-specific parts, or, for a role of the deployment, its prompt_file with the headless part
+// and worker-common.md. --task is its first delivery, sent once the agent is ready.
 func claimsSpawn(c *claimsCall) action {
 	tree := c.flags.String("tree", "", "issue key of the tree's root (required)")
 	issue := c.flags.String("issue", "", "issue key the claim is on (required)")

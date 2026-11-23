@@ -9,16 +9,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A confirmed conflict is acted on only when the issue's next step needs a head that merges, and
-// the first of R0's reasons that holds is the one the act records (dispatch://INFRA-4374 R0): the
-// merge is next past the review, rules the daemon could not read tell it nothing, a base that
-// requires a current head holds this one whatever its checks say, and a check the base requires
-// that has not passed on the head never will while GitHub runs no checks on it. A required context
-// is green by a check run on the head that succeeded, or by a success status the record keeps for
-// the head once a settlement stands for it; a failed run, a run or a status of another head, and a
-// status kept while no settlement stands for the head are not green. Each reason the decision
-// answers is one a merge forward's ask can be queued with, so no act can name a reason its message
-// cannot state.
+// A confirmed conflict is acted on only when R0's decision says the head must be merged forward
+// now, and the first of R0's reasons that holds is the one the act records (dispatch://INFRA-4374
+// R0): the issue stands in accepting, retro or merging, or is held from one of them
+// (record.PastReview), where in the default steps the merge comes next; rules the daemon could
+// not read tell it nothing; a base that requires a current head holds this one whatever its
+// checks say; and a check the base requires that has not passed on the head never will while
+// GitHub runs no checks on it. A required context is green by a check run on the head that
+// succeeded, or by a success status the record keeps for the head once a settlement stands for
+// it; a failed run, a run or a status of another head, and a status kept while no settlement
+// stands for the head are not green. Each reason the decision answers is one a merge forward's
+// ask can be queued with, so no act can name a reason its message cannot state.
 func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 	const head, other = "h2", "h1"
 	issueIn := func(at phase.Phase) record.Issue { return record.Issue{Key: "LEGION-208", Phase: at} }

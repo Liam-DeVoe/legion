@@ -539,9 +539,10 @@ func TestArchitectRoutesRefuseWrongRoleAndForeignTree(t *testing.T) {
 }
 
 // sign_off and retry_or_escalate are the owning architect's: its own issue or one under it. A
-// sub-architect holds a grant for the whole tree and can name any issue of it, but signing off the
-// root ends the tree, and a sibling is another architect's; both are refused, and nothing applies.
-// The root's architect owns every issue of its tree, and a sub-architect its own.
+// sub-architect holds a grant for the whole tree and can name any issue of it, but the root is
+// the root architect's and a sibling is another architect's (record.ArchitectAbove); both are
+// refused, and nothing applies. The root's architect owns every issue of its tree, and a
+// sub-architect its own.
 func TestSignOffAndRetryAreTheOwningArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209", "LEGION-210")
@@ -832,7 +833,7 @@ func TestWaveReleaseOfAChildNamedTwiceWritesItOnce(t *testing.T) {
 	}
 }
 
-// An architect parks a child of its tree and runs a parked or signed-off child again by the same
+// An architect parks a child of its tree and runs a parked or closed child again by the same
 // Dispatch status a human would move it by: backlog, then todo. Each route applies its own write in
 // the request, as the write's event, at the sequence Dispatch answered it with and with the daemon's
 // own actor, so it takes the human move's path through the workflow, which parks the child (leave)
@@ -928,7 +929,7 @@ func setIssue(t *testing.T, h *harness, key string, change func(*record.Issue)) 
 	}
 }
 
-// The design gate is the only human checkpoint before planning, so it opens only on the tree
+// The design gate is the only human checkpoint before the tree's first step, so it opens only on the tree
 // root's own document. A document another issue carries is refused naming both, as the shipped
 // daemon refuses it (routes/issues.ts seedGateFromDispatch), and so is a gate on a child, whose
 // gate would advance the whole tree; neither reaches the workflow.

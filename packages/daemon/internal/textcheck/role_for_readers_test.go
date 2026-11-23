@@ -55,15 +55,16 @@ type roleForReader struct {
 // (phase.Of, and the completion route's answerCompletion, which reads the phase LeftBy answers
 // where the role does not work the issue's), or reads only the places of a plan's steps, which
 // admitted never is (reportsBefore, Walk.RoleAt, and Engine.restartTask, which reads its task's
-// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported takes
-// the acceptance only after an implementer), or reads the retro's own phase (retroHeldNotice and
-// Engine.startHeldRetro, which run only for a parent held before its retro for the issues beneath
-// it), or answers RoleFor's role for every phase but step to the readers this list holds
-// (record.Issue.RoleAt), or reads the phase a held issue's retry restores only past the refusal of
-// a plan's own hold, which is the one hold an issue at admitted takes (Engine.retryOrEscalate, for
-// the retry of a named claim), or never reads admitted at all because a check before it refuses
-// that phase, which is what each named test holds it to. The owner walk reads no role: where it
-// starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// first step: a planner's, an implementer's or a role of the deployment's, as plan.Supported
+// holds every task to an implementer step with each tester, reviewer and acceptance step after
+// it), or reads the retro's own phase (retroHeldNotice and Engine.startHeldRetro, which run only
+// for a parent held before its retro for the issues beneath it), or answers RoleFor's role for
+// every phase but step to the readers this list holds (record.Issue.RoleAt), or reads the phase a
+// held issue's retry restores only past the refusal of a plan's own hold, which is the one hold an
+// issue at admitted takes (Engine.retryOrEscalate, for the retry of a named claim), or never reads
+// admitted at all because a check before it refuses that phase, which is what each named test
+// holds it to. The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -118,10 +119,14 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// issue with none.
 	{file: "internal/workflow/line.go", fn: "Walk.endingRole"}: {calls: 2, tests: []string{
 		"TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForward"}: {calls: 1, tests: []string{
-		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
-	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardLanded"}: {calls: 1, tests: []string{
-		"TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge", "TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole"}},
+	// The worker of the step an issue stands at that a merge forward's hold and landed reach, which
+	// Engine.mergeForward and Engine.mergeForwardLanded both read. At admitted it answers the
+	// architect, whom record.MergeForwardReaches reaches with neither message, so the architect is
+	// told nothing there, as at accepting. A merge forward is never asked at admitted in any case
+	// (record.MergeForwardPhases).
+	{file: "internal/workflow/merge_forward.go", fn: "Engine.mergeForwardWorker"}: {calls: 1, tests: []string{
+		"TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward", "TestAConflictKeepsPhaseAndAsksTheReviewerToReadTheMerge",
+		"TestAMergeForwardAtAStepOfADeploymentRoleTellsThatRole", "TestAMergeForwardTellsNoRoleTheDeploymentLost"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.restartTask"}: {calls: 1, tests: []string{
 		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole"}},
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 1, tests: []string{

@@ -1,12 +1,13 @@
 package workflow
 
-// A merge forward that lands on an issue past its review asks the reviewer to read the merge only
-// where the issue's task has a reviewer step (mergeForwardLanded). A task whose plan has none
-// stands on no review of the old head, and no reviewer step runs for it, so nobody would ever
-// approve the new head: the reviewer is asked nothing, and the merger goes on at the new head,
-// told no wait for an approval, both by the landed message that reaches it in merging and by the
-// task it is started with when it enters merging after the landing. The control is the same issue
-// on a plan with a reviewer step, where the review is asked and both tell the merger to wait.
+// A merge forward that lands on an issue in accepting, retro or merging (record.PastReview) asks
+// the reviewer to read the merge only where the issue's task has a reviewer step
+// (mergeForwardLanded). A task whose plan has none stands on no review of the old head, and no
+// reviewer step runs for it, so nobody would ever approve the new head: the reviewer is asked
+// nothing, and the merger goes on at the new head, told no wait for an approval, both by the
+// landed message that reaches it in merging and by the task it is started with when it enters
+// merging after the landing. The control is the same issue on a plan with a reviewer step, where
+// the review is asked and both tell the merger to wait.
 
 import (
 	"reflect"

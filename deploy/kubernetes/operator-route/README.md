@@ -1,6 +1,6 @@
 # The operator's model route
 
-Legion carries no model, provider or route knowledge. Everything a Legion pod needs to reach a model
+Legion carries no provider or route knowledge, and no model but the `model` a role of `roles` names. Everything a Legion pod needs to reach a model
 is the operator's, delivered through `runtime.kubernetes.pod` and `provider_keys`
 (`docs/kubernetes.md`, "Operator configuration"). This directory is an example of it:
 [`pod.yml`](pod.yml) is the pieces an operator supplies, in the shape the daemon loads, and
@@ -65,9 +65,10 @@ the same `apply.sh` command; nothing in this repository changes. Pods started af
 new file. A running pod keeps the files it started with until it restarts, because `pod.yml` mounts
 both by `subPath`, which the kubelet never refreshes.
 
-`modelRoles.default` is the model every role's session runs on, a resumed session included: each
-launch names `--model @default`, Oh My Pi's own name for that role, so a role takes the model this
-file gives it now rather than the one its session saved when it started.
+`modelRoles.default` is the model of each role whose settings name no model, a resumed session
+included: each such launch names `--model @default`, Oh My Pi's own name for that role, so a role
+takes the model this file gives it now rather than the one its session saved when it started.
+A role of `roles` that names a `model` is launched with `--model` and that model instead.
 A settings set without that key is not refused anywhere: Oh My Pi reads `@default` as its own
 built-in chat role and the session starts, silently, on a model that is no model of this
 directory's and reachable from no pod.

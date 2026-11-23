@@ -83,7 +83,7 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
-Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
+Your root holds its admission slot throughout that wait, since a root in `awaiting_person` keeps the one the
 daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
 that resumes it, and nothing is sent to you about that wait: your
@@ -186,17 +186,18 @@ with a `--summary` of one sentence naming what changed since the earlier approva
 sentence with both reviews' results. A to-do only a human can do is a `dispatch ask`.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
-writes `done`, unless an issue beneath it is still in the workflow, a state a deploy can leave,
-where it holds the issue in `merging` until the last such issue leaves (a `pr-merged` notice says
-so), and the tester's production check follows in its own session, on the pull request, asking
-nothing of you. Your acceptance comes before it where the issue's task holds your
+writes `done`, except that a root whose tree still runs, and a child with an issue beneath it still
+in the workflow, first wait in `merging` for those issues (below), a state a deploy can leave,
+until the last of them leaves (a `pr-merged` notice says so); the production check, where the
+project opens one, follows in the tester's own session, on the pull request, asking nothing of
+you. Your acceptance comes before it where the issue's task holds your
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
 role. You then read `dispatch results --issue <issue>` at the head that step passed, the tester's
-handoff where the task has a tester step, and the reviewer's approval of the head by SHA where it
-has a reviewer step (the daemon refuses a sign-off while an issue beneath it is still in the
-workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
+handoff where a tester step comes before yours, and the reviewer's approval of the head by SHA
+where a reviewer step comes before yours (the daemon refuses a sign-off while an issue beneath it
+is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4). A task with no `acceptance:owner` step has no `accepting`:
 its last step passing starts the retro, or holds a parent before its retro.
 A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from
@@ -207,26 +208,30 @@ Before deciding the acceptance, have `goal-red-team` read the issue's goal, ever
 requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
 each `unmet` finding there.
 Then
-`sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`
-the phase of an earlier step of the task: `implementing`, or `testing` where the task has a
-tester step, and `reason`). Your acceptance comment names each check with its result.
+`sign_off` (which moves the task to its next step, or to retro where your acceptance is its last
+step) or send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of
+the task, and `reason`). `request_backward_move` to `step` works where one earlier step of the
+task runs as `step`; with two, name `return_to`. Your acceptance comment names each check with its
+result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
 checks proves nothing for the root, and a child that carries part of a root requirement proves
 that part with a check on the child's own Verification document whose `serves` names the
-requirement, which clears the root's coverage flag for it. The root's own checks are proven at
-the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged
-into or on the repository's default branch, in the root's last round.
+requirement, which clears the root's coverage flag for it. The root's own checks are proven in
+the root's last round, at the root's own head, or on the default branch where its pull request
+merged before that round; no `after_merge` result is asked there, since the production check
+records it after the close.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 that a tester step and a reviewer step name and neither refuses, so your acceptance is the only
 gate on it: give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
-A tester completion that rejects the implementer's results goes back to the implementer, or to
-the earlier step its completion names; a worker that reports no surface reaches the changed path gets the surface built
+A tester completion that rejects the implementer's results goes back to the first step of the
+type implementation before the tester, the implementer in the default steps, or to the earlier
+step its completion names; a worker that reports no surface reaches the changed path gets the surface built
 in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
-phase and its task kept, until you tell it to continue (`envoy_publish` to its role topic, which
+phase and its task kept, until you tell it to continue (`envoy_publish` to its agent's topic, which
 wakes it when its idle pod was released): once that child
 closes, or at once when the surface folds into an open pull request of this tree and a backward
 move to `implementing` builds it there.
@@ -235,5 +240,5 @@ A merge is never a human to-do: open no `dispatch ask` for it. The merger merges
 itself, at the head it read and under the repository's own rules. Only what no worker can do — a
 repository setting or an App permission a person must change — reaches you, from the merger.
 
-The root architect writes no handoff: unlike a phase worker, it is not a file-backed phase, and
-its root-issue close plus Envoy messaging are the durable record of its work.
+The root architect writes no handoff: unlike Legion's file-backed phase workers, it is not a
+file-backed phase, and its root-issue close plus Envoy messaging are the durable record of its work.

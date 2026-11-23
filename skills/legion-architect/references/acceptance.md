@@ -11,16 +11,16 @@ answer it on its role topic from the deployment instructions, or open a `dispatc
 
 ## Accepting
 
-Only a task whose `Steps:` line names `acceptance:owner` enters `accepting`.
+Only a task whose steps name `acceptance:owner` enters `accepting`.
 Read, against the goal, every check and every requirement:
 
-1. where the task has a tester step, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+1. where a tester step comes before your acceptance, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
 
-2. `dispatch results --issue <issue>`: whether a pass stands for each check at the last step's head;
+2. `dispatch results --issue <issue>`: whether a pass stands for each check at the head the step before your acceptance passed;
 
-3. where the task has a reviewer step, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
+3. where a reviewer step comes before your acceptance, the reviewer's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`);
 
-4. where the task has a reviewer step, each claim of the reviewer's prose, against the code at that head;
+4. where a reviewer step comes before your acceptance, each claim of the reviewer's prose, against the code at that head;
 
 5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
 
@@ -51,9 +51,9 @@ Until those children close, leave the issue in `accepting`; that wait is no reas
 Before you park a child, move its criterion to the parent's own pull request or a released, open child; never downgrade it.
 Then, in one turn:
 
-1. Where the task has a tester step, `envoy_publish` to its tester's role topic:
+1. Where a tester step comes before your acceptance, `envoy_publish` to its tester's role topic:
    "The next round of <KEY> is its last round: a full test round of every check of the issue with no `ci_check`."
-   With no tester step, the implementer's evidence for those checks at the merge head is the full round.
+   With no tester step before your acceptance, the implementer's evidence for those checks at the merge head is the full round.
 
 2. `request_backward_move` to `implementing`, with the reason "Last round:
    merge the default branch your addressing line names into the branch, push, end your forward-merge comment with `parent's last round: full test round`, and complete."
@@ -69,8 +69,8 @@ If the pull request merged before its last round, move nothing back. Once the ch
 
 ## After your sign-off
 
-Retro runs, then the merger merges the last step's head under the repository's own rules; you start none of it.
-A person's request after your sign-off is a requirement of this issue: the role that holds the phase makes the `request_backward_move`.
+The steps after your acceptance in the task run, then retro, then the merger merges the last step's head under the repository's rules; you start none of it.
+A person's later request is a requirement only in a spec version they approve; then the role holding the phase makes the `request_backward_move`.
 When the merger reports:
 
 - a failed verification: tell it to move the issue back with `request_backward_move`, naming what failed;
@@ -90,11 +90,11 @@ When the merger reports:
 A head that conflicts with its base keeps the issue in its phase.
 The daemon asks the implementer to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
 A conflict it does not act on yet is recorded:
-the task's steps go on at that head, a reviewer step's approval of it ends its review round, and the daemon acts on entry to `accepting`, or `retro` without `acceptance:owner`.
+the task's steps go on at that head, a reviewer step's approval of it ends its review round, and the daemon acts once the issue moves into `accepting`, `retro` or `merging`.
 When it asks outside `implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; in `implementing` no notice comes.
 You start nothing for the merge.
 
-Past review, where the task has a reviewer step, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes.
+In `accepting`, `retro` or `merging`, where the task has a reviewer step, the daemon asks the reviewer to read the merge and approve the new head by its SHA, or request changes.
 In `accepting`, wait for that approval before `sign_off`, and send the issue back with `request_backward_move` when the reviewer requests changes.
 A task with no reviewer step has no review to await.
 

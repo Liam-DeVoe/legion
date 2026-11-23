@@ -34,6 +34,8 @@ import { staleGitLockNote } from "./git-lock";
  * goes; the daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, and
  * `HANDOFF_HEAD_MERGED_FORWARD` when it is of testing or reviewing once a merge forward of the
  * issue's pull request has landed, since a completion naming no commit says nothing about a head.
+ * A role of the deployment writes no record and always reports `@-` (`completedPhase`), which the
+ * daemon refuses `HANDOFF_HEAD_MERGED_FORWARD` when it is a head a merge forward replaced.
  *
  * While the issue stands in implementing, the phase the implementer works, its round is the
  * commit its workspace stands on, `@-`, so its record and its branch are held to that commit:

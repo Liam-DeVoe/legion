@@ -19,7 +19,7 @@ import (
 
 // idleWaitingKinds are the outbox kinds that reach a role's own session, which is what "a task, a
 // notice, a message or a start waits for a role of the pod" means: a supervise row (a start, the
-// task it carries, a stop), an architect's notice, the words a hook fired on a move back puts in
+// task it carries, a stop; a start that waits for its pod excepted, below), an architect's notice, the words a hook fired on a move back puts in
 // front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
 // (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
 // (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer and

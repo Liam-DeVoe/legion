@@ -70,7 +70,8 @@ type Inputs struct {
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
 // role whose phase entry and given entry each issue's view carries is the role that works its
-// current phase (phase.RoleFor), and the two handshake times beside them are that role's claim's,
+// current phase (record.Issue.RoleAt: phase.RoleFor, or at step the role of the running step),
+// and the two handshake times beside them are that role's claim's,
 // but for a tree's own root, whose times are its architect's claim's in every phase
 // (supervise.Claim.Handshake).
 func Project(ctx context.Context, in Inputs) (api.State, error) {
@@ -274,8 +275,8 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			}
 			// The architect is the issue's architect and no worker of its `workers` map, so no
 			// phase view is built for it. Its row is read all the same: the entry below is
-			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
-			// is the architect for a root at admitted.
+			// read off `phases` by the role that works the issue's phase (record.Issue.RoleAt),
+			// which is the architect for a root at admitted.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue
@@ -541,11 +542,11 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// It reads the held list above for the sentence of most issues it answers, and it is not
 	// that list: the list says where every issue the daemon holds in the workflow stands and why
 	// nothing of it runs, and this answers why an issue is not working now. The two part at an
-	// issue whose work runs past its review, which the list names and this answers for not at
+	// issue whose work runs in accepting, retro or merging, which the list names and this answers for not at
 	// all; where they part and why is written once, with the arm that parts them
 	// (atWorkPastReview).
 	//
-	// The running roots are the term that says an issue past its review is at work: it holds no
+	// The running roots are the term that says an issue in accepting, retro or merging is at work: it holds no
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
 	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
 	// records and the facts this pass already holds, so the reading costs no query, and they
@@ -555,11 +556,12 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
-	// tree's, so every issue of one tree carries the same two values — a child past its own
-	// review, which holds no slot, and a done child recorded under the tree among them, since
-	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
-	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
-	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	// tree's, so every issue of one tree carries the same two values — a child in accepting,
+	// retro or merging, which holds no slot, and a done child recorded under the tree among
+	// them, since what has stopped is the tree and not the issue a reader happens to hold. A
+	// tree that is no longer live is measured for nobody: its root is in no `admission.trees`
+	// entry, there is nothing of the deployment's left to wait on, and each of its issues carries
+	// neither key.
 	//
 	// The measure is read once for the whole state (quietTrees), from the records and the claims
 	// this pass already holds, and a live root is always one of its trees whatever its own

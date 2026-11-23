@@ -38,7 +38,7 @@ legion config check --config legion.yaml
 | `worker_backends runs a role on claude, and boot is missing …` | Under tmux, give the daemon's environment what the message names: `LEGION_CLAUDE_PATH` and `LEGION_BUN_PATH` (or `claude` and `bun` on `PATH`), and `LEGION_CLAUDE_PLUGIN_DIR`, the absolute path of a built `packages/claude-envoy`. A Kubernetes daemon needs none of them: the worker image carries the plugin and Claude Code's pin, and each Claude role's pod installs the pinned Claude Code at launch, so `worker_backends` is accepted there with nothing else set. A launch whose install fails or does not verify fails, printing a `legion claude-code: …` line, so such a pod must reach the npm registry. |
 | `role_config_files.<role> entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | Under Kubernetes a role's overlay must be a file the operator's mounts carry: mount the ConfigMap holding it, or add the item. |
 | `role_config_files.<role> names <file>, which the <role>'s Oh My Pi could not read: …` | Under tmux the file must exist on the host and be readable by the daemon's user, as every pane is. |
-| `role_config_files.<role> …` (another refusal) | The message names the entry: a role that is not Legion's, an empty list, a relative path, a path named twice or already every role's, the controller without `controller: daemon`, or a role on `claude`. |
+| `role_config_files.<role> …` (another refusal) | The message names the entry: a role that is neither Legion's nor one of `roles`, an empty list, a relative path, a path named twice or already every role's, the controller without `controller: daemon`, or a role on `claude`. |
 | `worker_stall_backstop_hours.<role> (<bound>) is below the whole stall ladder the <role>'s own plugin runs (<longest call> + <grace> + 2 × <step> = <ladder>, where the first number is …): …` | Raise that role's bound to the ladder the message names, or set `0` to switch the backstop off for that role. The daemon's backstop is there for a worker whose own stall watch is itself broken, and the daemon cannot see that watch running, so a bound below the ladder would end a turn the plugin it backs up is still recovering. The ladder is the longest one call of that worker can legitimately run, plus the grace over a deadline a call declared for itself (`LEGION_STALL_CALL_GRACE_MS`, 5 minutes), plus the two gaps between the recovery steps (`LEGION_STALL_STEP_MS`, 2 minutes each). The longest call is the larger of two numbers, and the message says which one it took: the bound a tool call no deadline judges gets (`LEGION_STALL_CALL_BOUND_MS`, by default 4 hours for an implementer and a reviewer and 1 hour for every other role and the controller, and that default again where the deployment sets `0`, which switches the worker's watch off rather than bounding its calls at zero), and the hour the host clamps a deadline a call declares for itself to ([legion.yaml](/legion/legion/running-legion/#legionyaml)). |
 | `projects.<KEY>.memory.mode must be off, on, or random (got "…")` | The mode is one of three words: `off` (the default, and what a project with no `memory` block gets), `on`, or `random`. |
 | `projects.<KEY>.memory is <mode> and names no config_files: …` | A mode other than `off` draws new trees into the memory group, and those trees read their overlays from that key: name at least one, or set `mode: off`. |
@@ -445,7 +445,7 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start, not its merge.
+earlier version does not count: the spec changed since. The gate holds the tree's start and its merge: no merger starts while it is closed.
 Where `gates.design` lists more than one step, `gatedSteps` carries one entry per step, each with
 its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`,
 `approved` or `changes_requested`): the tree waits until every entry reads `approved`, and
@@ -976,7 +976,7 @@ legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue
   stands at. The daemon drops every notice it could
   not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
   among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
-  architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
+  architect's acceptance; no worker holds that phase, and nothing else would wake the architect for it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -1192,7 +1192,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue can keep its pod where it holds no slot — past its review, or while it waits on another
+  issue can keep its pod where it holds no slot — in `accepting`, `retro` or `merging`, or while it waits on another
   issue — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
@@ -1436,9 +1436,11 @@ These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
   implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
-  phase raises the count, and a move made while the head conflicts with its base is a conflict
-  round, which the cap leaves out and the message's second number names. The daemon posts it and
+  ([what counts a round](/legion/legion/concepts/#review-signalling)): a review's request for
+  changes raises the count, and so does the fail of a step of the type review whose agent is not
+  the owner, while a tester's fail, the fail of a step of another type and a move back raise none;
+  a round counted while the head conflicts with its base is a conflict round, which the cap leaves
+  out and the message's second number names. The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes
   on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
@@ -1546,16 +1548,16 @@ These arrive as messages on the Dispatch issue:
   parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
-  branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
+  branch, `legion/<KEY>`: the issue moves to its task's next step only on an open pull request, or one the
   daemon recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
   waiting) is recorded there and the issue moves on. A pull request merged while the issue was in
   `implementing` already told the architect (`pr-merged`), and the completion is applied and moves
-  the issue to testing. With none, the completion is refused and nothing is recorded: `no open pull
+  the issue to its task's next step. With none, the completion is refused and nothing is recorded: `no open pull
   request on <owner>/<repo> legion/<KEY>; nothing was recorded. Open the pull request and complete
   again.` The implementer opens it and completes again at the same commit. When the record holds
   the issue's pull request closed without merging, the refusal adds `pull request #<n> is closed;
   your architect was told and decides this issue's phase.`: the close already told the architect,
-  and a pull request closed without merging never moves an issue to testing. When
+  and a pull request closed without merging never moves an issue on. When
   GitHub cannot be read (the token mint or the read fails), the completion is applied unread and
   the daemon logs a warning, `api: read the open pull request on a completing implementer's
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
@@ -1570,7 +1572,7 @@ These arrive as messages on the Dispatch issue:
   role's phases row is on, and then what decided it, which is one of four readings: the
   completion is at another commit than the head the record holds, or the record holds no pull
   request for the issue; it names no commit at all, so it says nothing about any head; the phase
-  ends with no handoff record this role writes — retro and merging — so nothing the completion
+  ends with no handoff record this role writes — retro, merging, and `step`, the phase of a role of the deployment — so nothing the completion
   names says which entry's work it is, and no head it reports on answers for it; or the move
   that handed the phase out again moved the issue back, which asks for this phase's work to be
   done again whatever head the completion names. When the task of that entry already waits on
@@ -1597,11 +1599,11 @@ These arrive as messages on the Dispatch issue:
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
   none.
 
-An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
+An issue that stays in `testing`, `reviewing`, `step`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon
 reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
-both reads report, and only when the next step needs a mergeable head: the issue stands past its
-review, a check the base requires has no green result on the head, the base requires a current
+both reads report, and only when the next step needs a mergeable head: the issue stands in
+`accepting`, `retro` or `merging`, a check the base requires has no green result on the head, the base requires a current
 branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
@@ -1613,12 +1615,34 @@ so an answer that waited behind a newer one never releases a first read or clear
 forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
 and no completion, the phase's worker is told to stop writing the workspace and not to complete
 its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
-names both heads. A completion of the phase the issue stands in that names a head a merge
+names both heads.
+At `step`, a role the deployment no longer defines is told neither, since its task stays stopped until the role is defined again.
+A hold or a landed queued for such a role before the restart that dropped it is not sent either: the
+restarted daemon logs `outbox merge-forward message finished undelivered: the workflow no longer
+delivers it` with `why` naming `the deployment no longer defines the role <role>`, and the role's
+released claim is not woken.
+A completion of `testing`, `reviewing`, `step` or `retro`, the phase the issue stands in, that names a head a merge
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review, where the task has a reviewer step, the reviewer is asked to read the merge
+before. In `accepting`, `retro` or `merging`, where the task has a reviewer step, the reviewer is asked to read the merge
 and approve the new head. A red check sends nothing back from anywhere.
+
+That refusal compares heads by name, so one completion at `step` escapes it. A role the deployment
+defines reports the commit its workspace stands on, `@-`. When that role made a commit of its own on
+top of the head a merge forward replaced, its completion names that commit, which is neither the
+replaced head nor the new one, and the daemon takes it: it keeps the heads each merge forward
+replaced and left, not a commit graph, and a commit the role did not push is on no remote. To find
+such a pass, read the commit the role reported:
+
+```sh
+legion state --config legion.yaml --json | jq -r '.issues["<KEY>"].workers["<role>"].handoffCommit'
+```
+
+In the issue's workspace, `git log -1 --format=%P <commit>` prints that commit's parents. When one
+of them is the `head` a `workflow: the merge forward landed` line names, the step judged the code
+before the merge. The role that works the issue's phase now sends the task back to that step with
+`request_backward_move`, its `returnTo` naming the step's place.
 
 The pull request's state as the daemon sees it:
 
@@ -1750,7 +1774,7 @@ the pull request was closed without merging since. A pull request merged since t
 `pr-merged` instead, and the implementer's completion moves the issue on it. The issue stays in
 `implementing` until a pull request
 is open on the branch: the implementer opens it, and the daemon records it from its webhook or
-from its next read of the issue, and moves the issue to `testing`. When the work should not
+from its next read of the issue, and moves the issue to its task's next step. When the work should not
 go on, the architect decides the issue's phase as for a pull request closed without merging. The
 notice comes once per handoff commit, from whichever read finds it first.
 

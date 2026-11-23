@@ -10,11 +10,15 @@ The architect's acceptance precedes it only where the task names `acceptance:own
 `<issue>` is your `LEGION_ISSUE`.
 Run every step, even on a mechanical change.
 
-Retro commits nothing and pushes nothing: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
-No Legion check compares the head that merges with a review's head, so whether a push after a review needs a new review is the repository's own rule.
+Retro commits nothing and pushes nothing of its own: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
+A merge forward that the daemon's merge-forward message asks of you is no part of retro (`skill://legion-worker/references/conflicts-and-rewrites.md`, *The daemon's ask*).
+No Legion check compares the head that merges with a review's head.
+Where the task has a reviewer step, Legion asks the reviewer to read a merge forward it asked for.
+Whether another push after a review needs a new review is the repository's own rule.
 Never rebase the branch or make another branch or bookmark.
 Retro writes no handoff.
-In the workspace it changes nothing; outside it, it writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.
+In the workspace retro itself changes nothing.
+Outside it, retro writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and, with no reviewer step, the review-thread replies and resolutions of step 1.
 It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon.
 What the work taught is a `dispatch comment` for the skill librarian; no role writes to `docs/solutions/`.
 
@@ -30,6 +34,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the implementer's handoff.
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
+   A step of a role of the deployment writes no handoff: `dispatch steps --issue <issue>` shows how each of its runs ended.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
@@ -80,12 +85,13 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    EOF
    ```
 
-   A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+   A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+   Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
    In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
    send both `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from step 1's evidence, or neither where your `legion` tool's `handoff_complete` takes neither field.
-   The daemon refuses a completion without them (`PLAN_RATING_REQUIRED`), with one alone, a rating off that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and with both on any other completion (`PLAN_RATING_UNEXPECTED`).
+   The daemon refuses a completion without them where your tool takes them (`PLAN_RATING_REQUIRED`), with one alone, a rating off that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and with both on any other completion (`PLAN_RATING_UNEXPECTED`).
    A refusal records nothing: complete again.
 
 ## Before you complete
@@ -94,6 +100,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 - Each body line you added or changed that says work was done names work this pull request did.
 
-- The comment and the message are posted, and the pull request's head is the head you found.
+- The message is posted, and so is step 3's comment where a point qualified.
+  The pull request's head is the head you found.
 
 - Your `handoff_complete` carries `plan_rating` and `plan_reason`, or neither where your `legion` tool's `handoff_complete` takes neither.

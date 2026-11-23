@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -127,6 +128,14 @@ type outbox struct {
 	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
 	mergeStateWait        func() time.Duration
 	queueMergeStateFollow func(issue, head string)
+	// deployment is the roles a step can name under the settings this daemon booted with
+	// (config.Config.Deployment), the deployment its workflow engine reads, set by attach after
+	// newOutbox. A merge forward's message reads it (mergeForwardMessage, workflow.MergeForwardAt):
+	// a row queued for a role of the deployment by a daemon before a restart whose settings no
+	// longer define that role ends undelivered. A test that builds the outbox by hand and leaves
+	// it zero defines no role of the deployment, and such a row to a role of the deployment ends
+	// undelivered there; a row to one of Legion's own roles is judged the same either way.
+	deployment stepplan.Deployment
 	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
 	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
 	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three
@@ -2551,11 +2560,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A start whose claim's slot or step's role the issue's live pod was built before waits on
 		// this row, before it creates, retrees or hands anything to a claim: a launch into that pod
-		// would replace it with the issue's disk, and only the pod's update round or its release may
-		// (ruling 18). The claim runs in the slot of its agent (claim.Token.Slot), which is the role's
-		// own for a claim named by its role, and the slot of a keyed agent's first step for a step of
-		// another role, whose own resources the launch needs too. A token that names no slot runs in
-		// no pod, and the start is refused.
+		// would replace it with the issue's disk, and only the pod's update round or its release may.
+		// The claim runs in the slot of its agent (claim.Token.Slot), which is the role's own for a
+		// claim named by its role, and the slot of a keyed agent's first step for a step of another
+		// role, whose own resources the launch needs too. A token that names no slot runs in no pod,
+		// and the start is refused.
 		slot, ok := token.Slot()
 		if !ok {
 			return fmt.Errorf("start %s of %s: its claim token %s names no slot of a pod", payload.Role, issue.Key, token)
@@ -4045,9 +4054,8 @@ func podRecorded(claims []supervise.Claim, issue, pod string) bool {
 }
 
 // podWaitWithNoReleaseWords is what the controller is told of a start of role that waits for the
-// pod of issue under a deployment with no idle release (ruling 19): the pod, the waiting role, what
-// the pod was made before (before: that the deployment defined what the pod lacks, in
-// runtime.PodLacks's
+// pod of issue under a deployment with no idle release: the pod, the waiting role, what the pod
+// was made before (before: that the deployment defined what the pod lacks, in runtime.PodLacks's
 // words, or that its launchers waited for a new role's credential), what is true now, and that the
 // pod's disk can hold work a role did not push. It tells nobody to take the pod away.
 func podWaitWithNoReleaseWords(issue, pod string, role claim.Role, before string) string {
