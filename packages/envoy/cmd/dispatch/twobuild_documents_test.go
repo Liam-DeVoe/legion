@@ -675,12 +675,13 @@ func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string)
 	}
 }
 
-// referenceTables is a build's two reference tables of text/testdata: the bodies of its text table
-// and the links of its href table.
+// referenceTables is a build's two reference tables of text/testdata: the bodies of its text table,
+// each with the references that build reads it as, and the links of its href table.
 type referenceTables struct {
 	texts []struct {
-		Body   string `json:"body"`
-		Origin string `json:"origin"`
+		Body   string   `json:"body"`
+		Origin string   `json:"origin"`
+		Refs   []string `json:"refs"`
 	}
 	hrefs []hrefRow
 }
@@ -811,6 +812,29 @@ func hrefsReadApart(t *testing.T, writer, reader documentSide) map[string]hrefRe
 	return apart
 }
 
+// referenceRows is every refs row (`kind id`) a build's text/testdata reads one of its forms as:
+// the reference of each link of its href table and each reference of each body of its text table,
+// read by text.ParseRef as hrefsReadApart reads them. A reference text.ParseRef does not read
+// names no row this list could be compared with, and is skipped.
+func referenceRows(t *testing.T, fixtures string) map[string]bool {
+	t.Helper()
+	tables := readReferenceTables(t, fixtures)
+	var refs []string
+	for _, row := range tables.hrefs {
+		refs = append(refs, row.Ref)
+	}
+	for _, row := range tables.texts {
+		refs = append(refs, row.Refs...)
+	}
+	rows := map[string]bool{}
+	for _, value := range refs {
+		if ref, ok := text.ParseRef(value, ""); ok {
+			rows[ref.Kind+" "+text.TargetID(ref)] = true
+		}
+	}
+	return rows
+}
+
 // opensTypedBlock reports whether a line of body starts with the `:::` of a typed block's fence.
 func opensTypedBlock(body string) bool {
 	for line := range strings.Lines(body) {
@@ -910,6 +934,15 @@ const referencesSettle = 4 * time.Second
 //     the rows of those forms on its rewrite. When Y's tables hold every form of X's, as the
 //     current build's hold the previous build's, that body is empty and skipped.
 //
+// A row of a reference Y's href table reads an href of the body as, where X's reads that href as
+// another target (hrefsReadApart) and no reference of X's text/testdata names the row, is left out
+// of the rows X wrote: X's grammar never writes it, so it is Y's own index of X's document, which
+// reached the refs rows before they were read. Which build indexed the body last decides whether
+// the row is there, so requireRefsKept owes it to nobody: on CI run 45279483024 the previous
+// build's index had added it before the read, and after the settle the current build's index,
+// owed the previous build's version by the block identity pass (graphcensus.blockIdentitiesPass),
+// took it away.
+//
 // Then, where Y is the previous build and reads no tab address while X does, it shows each trigger
 // that owes X a document Y re-indexed needed on its own (requireEachTriggerOwesTheDocument).
 //
@@ -922,12 +955,20 @@ const referencesSettle = 4 * time.Second
 // read here while both builds' loops run, with no hook a real deploy lacks.
 func requireReferencesKeptAcrossBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	shared, writerOnly := referencesMarkdown(t, writer.fixtures, reader.fixtures)
+	apart, named := hrefsReadApart(t, writer, reader), referenceRows(t, writer.fixtures)
 	key, artifactID := createDocument(t, writer.process, project, "Every reference form", shared)
-	written := documentRefs(t, builds, artifactID)
+	var written []string
+	for _, row := range documentRefs(t, builds, artifactID) {
+		if href, ok := apart[row]; ok && !named[row] {
+			t.Logf("left %s out of the rows the %s wrote: the %s's href table maps %s to %s, the %s's to %s, and no reference of the %s's text/testdata names it, so the %s's own index of the document wrote it before they were read",
+				row, writer.name, reader.name, href.href, href.readerRef, writer.name, href.writerRef, writer.name, reader.name)
+			continue
+		}
+		written = append(written, row)
+	}
 	if len(written) == 0 {
 		t.Fatalf("the %s wrote no refs rows for the body holding every reference form of its text/testdata", writer.name)
 	}
-	apart := hrefsReadApart(t, writer, reader)
 	appendParagraph(t, reader.process, artifactID, "Rewritten on the "+reader.name+".")
 	requireRefsKept(t, documentRefs(t, builds, artifactID), written, apart, "after the "+reader.name+" rewrote the body", writer.name, reader)
 	time.Sleep(referencesSettle)
@@ -1185,7 +1226,9 @@ func refRowsMoved(got, written []string) (lost, added []string) {
 // graph. A row it adds of a kind the writer wrote means the two builds read one reference form as
 // different targets, unless the reader's own href table maps an href of the body to that row and
 // the writer's maps it elsewhere (apart, hrefsReadApart): that row is D10's grammar change, which
-// is logged. It returns the edges the reader dropped.
+// is logged. written holds such a row only where a reference of the writer's text/testdata names
+// it too (requireReferencesKeptAcrossBuilds), and only then does the reader owe it. It returns the
+// edges the reader dropped.
 func requireRefsKept(t *testing.T, got, written []string, apart map[string]hrefReadApart, when, writer string, reader documentSide) []string {
 	t.Helper()
 	keepsUnknownKinds := len(reader.manifest.Nodes) > 0
