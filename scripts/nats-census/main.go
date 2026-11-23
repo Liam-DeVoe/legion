@@ -1,15 +1,17 @@
 // census lists every call in the non-test code of the packages it loads to a function or method of
-// nats.go (github.com/nats-io/nats.go and its jetstream package), with file:line, the callee and
-// whether that callee sends a request and waits for its reply.
+// nats.go (github.com/nats-io/nats.go and its jetstream package), with file:line and the callee, and
+// every method of those packages passed as a value. A method call is a REQ line when the callee
+// sends a request and waits for its reply, and a LOCAL line otherwise (see local). A call to a
+// package-level function, an option, a constructor or Connect, is a FUNC line, which the census
+// does not classify. A method passed as a value is a VALUE line.
 //
-// Version 9 leaves out of that list every package of the module whose non-test imports reach the
-// standard library's testing package through packages of the module: one that imports testing in a
-// non-test file, and every package that imports such a package in a non-test file, transitively. It
-// computes that set from the import graph it loads, with no list, and prints each package in it as a
-// SKIP line; every other package is scanned as before. A product package that imports testing is
-// left out with every package above it, up to the binaries that build it; the check's run line
-// fails when a binary under cmd/ is left out. When it loads no package, or no non-test file, it
-// prints UNKNOWN and exits 2.
+// It leaves out of that list every package of the module whose non-test imports reach the standard
+// library's testing package through packages of the module: one that imports testing in a non-test
+// file, and every package that imports such a package in a non-test file, transitively. It computes
+// that set from the import graph it loads, with no list, and prints each package in it as a SKIP
+// line. A product package that imports testing is left out with every package above it, up to the
+// binaries that build it; the check's run line fails when a binary under cmd/ is left out. When it
+// loads no package, or no non-test file, it prints UNKNOWN and exits 2.
 package main
 
 import (
@@ -30,8 +32,13 @@ const (
 	jsPkg   = "github.com/nats-io/nats.go/jetstream"
 )
 
-// local lists the callees that send nothing to the server, or send without waiting for an
-// answer: they are counted, not listed as requests.
+// local lists the methods that send nothing to the server, send without waiting for an answer, or
+// wait only for the server's PONG to one PING, which carries no subject and no payload, under a
+// bound nats.go keeps: Flush, FlushTimeout, FlushWithContext and RTT. At nats.go v1.55.0, Flush and
+// RTT call FlushTimeout with 10 s (nats.go:6146-6164); FlushTimeout refuses a timeout <= 0 and ends
+// at its timer (nats.go:6105-6143); FlushWithContext refuses a context with no deadline and ends at
+// it (context.go:177-218); the PING is "PING\r\n" (nats.go:2108, 6071-6076). A listed ack that
+// passes an AckOpt is a request all the same (passesAckOpt). Every method not listed is a request.
 var local = map[string]bool{
 	// *nats.Conn
 	"Conn.NewInbox": true, "Conn.IsConnected": true, "Conn.IsClosed": true, "Conn.IsReconnecting": true,
@@ -56,8 +63,9 @@ var local = map[string]bool{
 	// *nats.Msg
 	"Msg.Respond": true, "Msg.RespondMsg": true, "Msg.Ack": true, "Msg.Nak": true, "Msg.NakWithDelay": true,
 	"Msg.Term": true, "Msg.InProgress": true, "Msg.Metadata": true, "Msg.Equal": true, "Msg.Size": true,
-	// jetstream.Msg
-	"Msg.Data": true, "Msg.Headers": true, "Msg.Subject": true, "Msg.Reply": true, "Msg.DoubleAck": true,
+	// jetstream.Msg. DoubleAck is not listed: it sends the ack as a request and waits for the reply
+	// (jetstream/message.go:372-374, 441-442 at v1.55.0).
+	"Msg.Data": true, "Msg.Headers": true, "Msg.Subject": true, "Msg.Reply": true,
 	"Msg.TermWithReason": true,
 	// KV values and handles
 	"KeyValueEntry.Value": true, "KeyValueEntry.Revision": true, "KeyValueEntry.Key": true,
@@ -98,7 +106,7 @@ func main() {
 	}
 	skipped := testOnly(pkgs)
 	type row struct{ pos, callee string }
-	var requests, others []row
+	var requests, others, funcs []row
 	files := 0
 	for _, pkg := range pkgs {
 		if skipped[pkg.PkgPath] {
@@ -158,8 +166,9 @@ func main() {
 				if !ok || f.Pkg() == nil || (f.Pkg().Path() != natsPkg && f.Pkg().Path() != jsPkg) {
 					return true
 				}
+				sig, _ := f.Type().(*types.Signature)
 				recv := ""
-				if sig, ok := f.Type().(*types.Signature); ok && sig.Recv() != nil {
+				if sig != nil && sig.Recv() != nil {
 					t := sig.Recv().Type()
 					if p, ok := t.(*types.Pointer); ok {
 						t = p.Elem()
@@ -168,23 +177,20 @@ func main() {
 						recv = named.Obj().Name()
 					}
 				}
-				key := f.Name()
-				if recv != "" {
-					key = recv + "." + f.Name()
-				}
-				if recv == "" {
-					// Package functions: option constructors and the like send nothing, except
-					// the connects and the jetstream constructors, which are counted as local.
-					return true
-				}
 				rel, _ := filepath.Rel(dir, name)
 				pos := fmt.Sprintf("%s:%d", rel, pkg.Fset.Position(call.Pos()).Line)
 				pkgName := "nats"
 				if f.Pkg().Path() == jsPkg {
 					pkgName = "jetstream"
 				}
+				if recv == "" {
+					// A package-level function: an option, a constructor or Connect.
+					funcs = append(funcs, row{pos: pos, callee: pkgName + "." + f.Name()})
+					return true
+				}
+				key := recv + "." + f.Name()
 				r := row{pos: pos, callee: pkgName + "." + key}
-				if local[key] {
+				if local[key] && !passesAckOpt(sig, call) {
 					others = append(others, r)
 				} else {
 					requests = append(requests, r)
@@ -205,6 +211,10 @@ func main() {
 	for _, r := range others {
 		fmt.Printf("LOCAL\t%s\t%s\n", r.pos, r.callee)
 	}
+	sort.Slice(funcs, func(i, j int) bool { return funcs[i].pos < funcs[j].pos })
+	for _, r := range funcs {
+		fmt.Printf("FUNC\t%s\t%s\n", r.pos, r.callee)
+	}
 	var skips []string
 	for path := range skipped {
 		skips = append(skips, path)
@@ -213,8 +223,29 @@ func main() {
 	for _, path := range skips {
 		fmt.Printf("SKIP\t%s\n", path)
 	}
-	fmt.Fprintf(os.Stderr, "packages %d, left out %d, non-test files %d, request calls %d, local calls %d\n", len(pkgs), len(skips), files, len(requests), len(others))
+	fmt.Fprintf(os.Stderr, "packages %d, left out %d, non-test files %d, request calls %d, local calls %d, function calls %d\n", len(pkgs), len(skips), files, len(requests), len(others), len(funcs))
 	_ = token.NoPos
+}
+
+// passesAckOpt reports whether call passes an argument to sig's variadic nats.AckOpt parameter. A
+// nats.go ack (Ack, Nak, NakWithDelay, Term, InProgress) sends the ack as a request and waits for the
+// reply when it is given a ContextOpt or a positive AckWait, and publishes it otherwise (js.go:3777-3811
+// at v1.55.0). Those two are the AckOpt types a caller can pass (js.go:1288, 1318; the third, nakDelay,
+// is unexported), so the census counts an ack given any AckOpt as a request.
+func passesAckOpt(sig *types.Signature, call *ast.CallExpr) bool {
+	if sig == nil || !sig.Variadic() {
+		return false
+	}
+	params := sig.Params()
+	slice, ok := params.At(params.Len() - 1).Type().(*types.Slice)
+	if !ok {
+		return false
+	}
+	named, ok := slice.Elem().(*types.Named)
+	if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != natsPkg || named.Obj().Name() != "AckOpt" {
+		return false
+	}
+	return len(call.Args) >= params.Len()
 }
 
 // testOnly is the set of the loaded packages left out of the scan, by package path: every package
