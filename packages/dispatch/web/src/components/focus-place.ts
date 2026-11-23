@@ -84,10 +84,11 @@ export function focusOnMount(element: HTMLElement | null): void {
 
 /** Where a hand-off sends the focus a control took away with it, nearest first: the control now
  *  at `index` in `controls` where it stands at the lost control's place (`atPlace`), then each
- *  control before that place, walking back. However many controls went together, the focus lands
- *  where they were, and by the same walk in every engine whether the loss was counted while they
- *  were still in the page (Chromium's `focusout`) or after they went (the removal Firefox and
- *  WebKit report alone). */
+ *  control before that place, walking back. `index` is the lost control's place among `controls`
+ *  as they stand now: how many of them come before the point it left. The page's rescue counts the
+ *  place of a control taken away while it holds the focus off the spot it went from, in every
+ *  engine, Chromium's `focusout` included (`Loss`'s `index`), so however many controls went
+ *  together, its walk starts where they were. */
 function placesFrom(
   controls: readonly HTMLElement[],
   index: number,
@@ -1158,7 +1159,12 @@ interface Loss {
   readonly arrived: Set<Node> | null;
   readonly caused: boolean;
   readonly element: HTMLElement;
-  readonly index: number;
+  /** The element's place among the controls its region draws: how many of them come before the
+   *  point it left. A control taken away while it holds the focus is counted off the spot it went
+   *  from, once it has gone (`placeOfRemoval`): off the removal Firefox and WebKit report alone,
+   *  and in Chromium, whose `focusout` comes while the control still stands in the page, again
+   *  once the commit that took it has run (`record`). */
+  index: number;
   /** The item the element was in (`itemOf`), read as the loss is noted where the element is still
    *  in it, as its row places are, else the one it was in as it took the focus; null where it was
    *  in none and where nothing reads it (`UNPLACED`): what tells another item shown where the
@@ -1687,8 +1693,10 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * run, and nothing answers it, even when a commit after that takes the control away - the issue
  * title's editor, whose save draws the heading in its place. A control a commit takes away fires
  * Chromium's `focusout` during the removal itself, while it is still in the page, so by that
- * microtask it has gone, and its loss is answered. A new loss cancels whatever is still out for
- * the one before it.
+ * microtask it has gone, and its loss is answered. Its place is counted again in that microtask,
+ * off the spot it went from, as the place of a control taken away with no `focusout` is: counted
+ * at the `focusout`, it took in every control before it that went with it. A new loss cancels
+ * whatever is still out for the one before it.
  *
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: whatever moves the focus
@@ -2019,10 +2027,20 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>, writes?: Wri
       // `blur()`, their click on the page's text - is no loss: the control still stands in the
       // page, enabled and drawn, once the event that moved the focus has run, and is marked left
       // then. A control a commit takes away fires Chromium's `focusout` during the removal
-      // itself, so by this microtask it has gone, and its loss stays one to answer.
+      // itself, so by this microtask it has gone, and its loss stays one to answer. Its place was
+      // counted while it still stood in the page, with every control before it that went with
+      // it, as an Inbox card's subscriber chip takes its name link away with its Unsubscribe. That
+      // count lies past the place they left, so the walk back would start at the control after
+      // them. Once the element has gone, its place is counted again off the spot it went from, as
+      // the removal Firefox and WebKit report alone is counted. A loss the reader did not cause
+      // holds no spots, so it keeps no place.
       if (!loss.taken) {
         queueMicrotask(() => {
           loss.left = element.isConnected && stands(element);
+          const spot = element.isConnected
+            ? undefined
+            : loss.spots.find((each) => goneFrom(each, region));
+          if (spot !== undefined) loss.index = placeOfRemoval(region, spot, main.current);
         });
       }
     };

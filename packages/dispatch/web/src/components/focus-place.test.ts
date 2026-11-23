@@ -4206,3 +4206,55 @@ test("a caused landing partly in sight is shown at its nearest edge and no furth
   }
   expect(moved).toEqual(belongs);
 });
+
+// (cz) The place of a control a commit takes away is counted off the spot it went from, in
+// Chromium as in Firefox and WebKit. An Inbox card's subscriber chip draws the subscriber's name
+// link before its Unsubscribe, and the chip's list goes with both once the write lands. Chromium
+// fires the Unsubscribe's `focusout` while the link still stands before it: counted there, the
+// place lies one past the place the list left, and the walk back starts at the next question's
+// Select checkbox, which now stands after that place (measured at 390x664 in Chromium alone).
+// Counted off the spot the list went from, the control now at the place is that checkbox, of
+// another row, so the walk goes back to the card's Unfollow (`atPlaceOf`). With Chromium's
+// `focusout` and without.
+test("a control taken away with a control before it in its chip lands on the card's control before the place, not on the next row's control", async () => {
+  const landed: Record<string, string | null> = {};
+  for (const withFocusout of [true, false]) {
+    await withRescue(async () => {
+      const { main } = mainOf("Before");
+      const list = document.createElement("ul");
+      main.append(list);
+      const row = document.createElement("li");
+      const card = document.createElement("article");
+      row.append(card);
+      list.append(row);
+      // A list of one chip: the session's name link, then its remove button.
+      const chipList = (name: string, label: string) => {
+        const chips = document.createElement("ul");
+        card.append(chips);
+        const chip = document.createElement("li");
+        chips.append(chip);
+        const link = document.createElement("a");
+        link.href = `/agents/${name}`;
+        link.textContent = name;
+        chip.append(link);
+        return { chips, remove: buttonIn(chip, label) };
+      };
+      chipList("Replier", "Unfollow");
+      const subscribers = chipList("Watcher", "Unsubscribe");
+      const next = document.createElement("li");
+      list.append(next);
+      const mark = document.createElement("input");
+      mark.type = "checkbox";
+      mark.setAttribute("aria-label", "Select CORE-3");
+      next.append(mark);
+      subscribers.remove.focus();
+      enterPress(subscribers.remove);
+      // The write lands, and the subscribers' list goes with the name link and the Unsubscribe.
+      if (withFocusout) lose(subscribers.remove, () => subscribers.chips.remove());
+      else subscribers.chips.remove();
+      await settled();
+      landed[withFocusout ? "with Chromium's focusout" : "without"] = focusedName();
+    });
+  }
+  expect(landed).toEqual({ "with Chromium's focusout": "Unfollow", without: "Unfollow" });
+});
