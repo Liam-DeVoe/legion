@@ -2798,7 +2798,8 @@ The trimmer itself needs no statement either — `runtime.kubernetes.volume_trim
 #### Rolling back below the release whose owner does a step
 
 The release that lets the owner of an issue's task do a step of its own adds one architect notice kind, `owner-step`: a step or a retro whose agent is the owner, told to the issue's own architect with the step's task (`Engine.start` in `workflow/effects.go`).
-It adds one supervise op too, `slot_credential`: the end of a step the owner ran writes the owner's slot back to the owner's own App (`endStep` in `workflow/steps.go`).
+It adds one supervise op too, `slot_credential`, which the end of a step an architect ran for the owner queues (`endStep` in `workflow/steps.go`).
+It brings the owner's slot back to its own App, unless another step of the owner's began since, whose App the slot then holds.
 Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry of the route `POST /legion/v1/steps/complete`.
 A daemon of any release before it knows neither, and it decodes an outbox payload strictly (`validNoticeKinds` and `validSuperviseOp` in `record/outbox.go`), so an `owner-step` or `slot_credential` row still queued when that image is pinned can never be decoded.
 An `owner-step` row fails `GET /legion/v1/state` for the whole project on every attempt, by the chain the `volume-near-full` row above sets out (`WaitingNotices` in `record/store.go`, `pacedCatchUps` in `daemon/daemon.go`), and a `slot_credential` row fails every read of its role's runs (`RoleRuns` in `record/store.go`), each admission pass of its issue among them.
@@ -2807,7 +2808,8 @@ An `owner-step` row fails `GET /legion/v1/state` for the whole project on every 
 This release takes five shapes of a task that the earlier release refuses when an owner gives its plan (`Supported` and `stepReasons` in that release's `plan/validate.go`).
 They are a step of the key `owner` on a role but `acceptance`, such as `implementer:owner`; `acceptance` with no key, which this release runs as a fresh agent of the role `acceptance`, or with a key but `owner`; a task with no step `implementer`, which opens no pull request and is done when its retro ends; a step of `tester`, `reviewer` or `acceptance` with no step `implementer` before it; and a step whose role is of the type `implementation` after the step `implementer`.
 The earlier release checks a plan only as an owner gives it (`registerPlan` in `api/plan.go`), and it walks a plan its rows already hold as the rows say, so it runs such a task wrongly.
-This release writes the owner's architect claim on the phases row of a step of the key `owner` (`enter` in `workflow/effects.go`).
+This release writes an architect's claim on the phases row of a step of the key `owner` (`enter` in `workflow/effects.go`).
+It is the issue's own architect's, or, while that claim does not run, the claim of the architect above it that does the step (`ownerAgent` in `workflow/steps.go`).
 The earlier release acts on the claim a role's phases row names for each row of that role on the issue that names no claim of its own, a start among them (`WorkerClaim` in `record/record.go`, `workerToken` in `daemon/outbox.go`), and its own entry into such a step takes the claim of the tree's architect (`stepToken` in `workflow/steps.go`), so it starts that step's role on an architect's claim.
 The retro of a task with no step `implementer` is the owner's here and a fresh implementer's there (`RoleFor` in `phase/phase.go`), and there a retro moves on to `merging` alone, which only the merge of a pull request ends (`stepRows` and `TableOf` in `workflow/table.go`), so the task waits in `merging` for a pull request nobody opens.
 The earlier loader holds each project's `default_steps` to the same checks and refuses `legion.yaml` with `projects.<KEY>.default_steps:` and each reason (`checkDefaultSteps` in `config/roles.go`), so where the file gives steps of these shapes, change them to steps the earlier release takes before you pin its image.
@@ -3970,7 +3972,11 @@ Oh My Pi's own model configuration (a profile overlay such as `deploy/kubernetes
 a fresh role's, a resumed one's and a replaced pod's alike, since a relaunch may come up in a new pod, whose filesystem outside its volumes is new.
 It is one command for every role; a shell command is `[/bin/sh, -c, '<command>']`.
 It runs as the role's user (uid 1000), in the container's working directory (the issue's workspace, or the controller's `/legion`), with the environment Oh My Pi gets:
-the role's gh files and the git credential entries ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), so a `git clone` of a repository the role's App is installed on is answered with the role's own token when the pod's gh holds a directory for the repository's owner, which in an issue pod is an owner both role Apps are installed on.
+the role's gh files and the git credential entries ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+So git answers a clone from GitHub with the token of the App those files hold.
+That is the role's own App, but while the architect does a step of the key `owner` it is the App of that step's role.
+A clone gets that token where the App is installed on the repository and the pod's gh holds a directory for the repository's owner.
+In an issue pod, that is an owner both role Apps are installed on.
 It runs after the install a stale-plugin relaunch makes ([Contract discipline](#contract-discipline)), with stdin from `/dev/null` and its stdout on stderr, so neither touches the RPC stream the shim and Oh My Pi share.
 Its output is in the `roles` container's log on lines prefixed `<slot>: `, the name of the claim's agent (`kubectl logs <pod> -c roles | grep '^<slot>: '`), and in the controller's pod in the `controller` container's log.
 Oh My Pi starts only once it exits 0.
@@ -3979,7 +3985,7 @@ the daemon reads the role as gone, charges a launch failure, and retries until t
 Its run counts against the launch's registration deadline (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 360 s by default) and adds to every start's time.
 The container's filesystem keeps what an earlier start in the same pod wrote, so a command that installs something should succeed when it is already there.
 
-**A role's `setup` may install an Oh My Pi plugin marketplace from GitHub, with the role's own App token.**
+**A role's `setup` may install an Oh My Pi plugin marketplace from GitHub, with the token of the App its gh files hold.**
 `omp plugin marketplace add` clones into a temporary directory and renames it into place.
 On the role's home overlay, gVisor marks a renamed directory opaque by writing the extended attribute `trusted.overlay.opaque`.
 A task in the role's nested user namespace may not write that attribute, and gVisor panicked when that write was refused, which ended the pod's whole sandbox:
@@ -7417,7 +7423,8 @@ It writes the claim and the stop's record, and with them:
   A record of the issue that another project's daemon keeps on the same database is no record of this daemon's, because its project is another: every read of an issue record by its key goes through the daemon's project-scoped records (`projectRecords.Issue`, `internal/daemon/daemon.go`), so the pause, its stop, a wake, the resume, a launch's ready and each failure after it read no such record.
   The daemon also queues no outbox row keyed by another project's issue, since only that project's daemon runs such a row, against its own claims: every write of an outbox row by its key takes one rule (`claim.KeyOfProject`, `internal/claim/token.go`), so neither the stop of such a spawn nor its agent's ready queues a row of that issue or changes one;
 
-- for a role that is owed none and is the worker of its issue's open phase, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop.
+- for a role that is owed none, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop, where the role is one a release arms it for.
+  That is the worker of its issue's open phase, or the issue's own architect at a step or a retro of its own other than its acceptance ([Idle release](#idle-release)).
 
 Every other stopped role stays stopped until its next wake, as the role of an idle-released pod does.
 
