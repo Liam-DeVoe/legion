@@ -500,13 +500,14 @@ func waitingOnThePauseLock(t *testing.T, pool *store.Pool, issue string) bool {
 }
 
 // waitingOnARowLock is whether a backend of this database waits for a lock another transaction
-// holds, as a resume does on the pause's row a stop transaction holds for share.
+// holds, as a resume does on the pause's row a stop transaction holds for share: whether pg_locks
+// holds an ungranted request of its pid, which stays true for the whole wait (backendWaitingOnALock).
 func waitingOnARowLock(t *testing.T, pool *store.Pool) bool {
 	t.Helper()
 	var waiting bool
 	if err := pool.QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock')`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		where datname = current_database() and pid in (select pid from pg_locks where not granted))`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting
 }

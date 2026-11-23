@@ -155,9 +155,9 @@ func awaitMigrationLockWait(t *testing.T, store *Store) {
 		var waiting int
 		if err := store.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+			where datname = current_database() and pid in (select pid from pg_locks where not granted) and pid <> pg_backend_pid()
 		`).Scan(&waiting); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
+			t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 		}
 		if waiting > 0 {
 			return

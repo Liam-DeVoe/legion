@@ -727,7 +727,7 @@ func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, b
 		var waiting int
 		if err := s.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			where datname = current_database() and pid in (select pid from pg_locks where not granted)
 			  and query like '%= any($1::%order by%for %'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}

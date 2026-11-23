@@ -150,7 +150,7 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 	var running string
 	if err := holder.QueryRow(context.Background(), `
 		select query from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+		where datname = current_database() and pid in (select pid from pg_locks where not granted) and pid <> pg_backend_pid()
 		order by query_start limit 1
 	`).Scan(&running); err != nil {
 		t.Fatalf("read the statement a waiting pass is running: %v", err)

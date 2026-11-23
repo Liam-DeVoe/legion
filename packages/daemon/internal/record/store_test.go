@@ -1781,7 +1781,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 		}
 		var waiting int
 		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+			where datname = current_database() and pid in (select pid from pg_locks where not granted)`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	must(t, txA.Commit(ctx))
@@ -1871,7 +1871,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 		}
 		var waiting int
 		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+			where datname = current_database() and pid in (select pid from pg_locks where not granted)`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	if !returned {
@@ -1956,7 +1956,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 		}
 		var waiting int
 		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting)
+			where datname = current_database() and pid in (select pid from pg_locks where not granted and locktype = 'advisory')`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	must(t, txLane.Commit(ctx))
@@ -2032,7 +2032,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	testwait.Eventually(t, "the finish to wait on the decisions the adoption locked", func() bool {
 		var waiting int
 		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+			where datname = current_database() and pid in (select pid from pg_locks where not granted)`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	select {
@@ -2128,7 +2128,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		}
 		var waiting int
 		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting)
+			where datname = current_database() and pid in (select pid from pg_locks where not granted and locktype = 'advisory')`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	must(t, txDrop.Commit(ctx))

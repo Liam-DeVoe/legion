@@ -1842,7 +1842,7 @@ func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
 	}()
 	testwait.Eventually(t, "the second fact to wait for the first", func() bool {
 		var waiting int
-		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting); err != nil {
+		if err := pool.QueryRow(ctx, `select count(*) from pg_stat_activity where datname = current_database() and pid in (select pid from pg_locks where not granted and locktype = 'advisory')`).Scan(&waiting); err != nil {
 			return false
 		}
 		return waiting == 1

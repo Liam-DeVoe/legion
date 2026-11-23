@@ -382,7 +382,7 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			where datname = current_database() and pid in (select pid from pg_locks where not granted)
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read the lock waiters: %v", err)
 		}
