@@ -11,8 +11,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -171,6 +173,84 @@ func TestAnAzureThrottleRetriesTheWholeBatchAndNeverDeadLetters(t *testing.T) {
 
 // throttledGroupMessage is handleGroupFailure's line for a group the model service throttled.
 const throttledGroupMessage = "dispatch embedqueue: the model service throttled a group; it is retried whole, counted against no row"
+
+// recordHook hands each record to onRecord, then to the handler it wraps.
+type recordHook struct {
+	slog.Handler
+	onRecord func(slog.Record)
+}
+
+func (h recordHook) Handle(ctx context.Context, record slog.Record) error {
+	h.onRecord(record)
+	return h.Handler.Handle(ctx, record)
+}
+
+// A throttled group's WARN is written once its retry is: at the moment the line is written the row
+// already holds the attempt the line names and falls due the line's retryIn after the write. A
+// retry write that fails writes no WARN, since no retry was scheduled; the failed write's ERROR
+// says so instead. Written before the write, the line named a retry the first cycle never
+// scheduled, and the row still held its old attempt count when the second cycle's line was written.
+func TestAThrottledGroupsWarningComesOnceItsRetryIsWritten(t *testing.T) {
+	database := storetest.Open(t)
+	seedIssue(t, database, "THWR", "THWR-1", "Title of THWR-1")
+	deps := Deps{Store: database, Embedder: &fakeEmbedder{err: embedtest.FakeThrottleError{Code: "ThrottlingException"}}}
+	type stored struct {
+		attempts int
+		due      time.Time
+	}
+	var atWarning []stored
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, recordHook{Handler: records, onRecord: func(record slog.Record) {
+		if record.Message != throttledGroupMessage {
+			return
+		}
+		var row stored
+		if err := database.Pool.QueryRow(context.Background(),
+			`select attempt_count, next_attempt_at from embeddings where kind = 'issue' and id = 'THWR-1'`,
+		).Scan(&row.attempts, &row.due); err != nil {
+			t.Errorf("read THWR-1 as its WARN is written: %v", err)
+		}
+		atWarning = append(atWarning, row)
+	}})
+
+	mustExec(t, database.Pool, `create function refuse_retry() returns trigger language plpgsql as $$
+		begin raise exception 'the test refuses every retry write'; end $$`)
+	mustExec(t, database.Pool, `create trigger refuse_retry before update of attempt_count on embeddings
+		for each row execute function refuse_retry()`)
+	_, failed, blocked, throttled, err := ProcessBatch(context.Background(), deps)
+	if err != nil || !blocked || !throttled || failed != 1 {
+		t.Fatalf("ProcessBatch with the retry write refused = %d failed, %v, %v, %v; want 1, blocked, throttled", failed, blocked, throttled, err)
+	}
+	if scheduleErrors := passRecords(records, slog.LevelError, "dispatch embedqueue: schedule retry"); len(scheduleErrors) != 1 {
+		t.Fatalf("%d schedule-retry ERROR lines, want 1: the refused write is the case under test", len(scheduleErrors))
+	}
+	if lines := passRecords(records, slog.LevelWarn, throttledGroupMessage); len(lines) != 0 {
+		t.Errorf("a refused retry write left %d throttled-group WARN lines (%v), want none: no retry was scheduled", len(lines), attrsOf(lines[0]))
+	}
+
+	mustExec(t, database.Pool, `drop trigger refuse_retry on embeddings`)
+	forceEligible(t, database, "issue", "THWR-1")
+	before := time.Now()
+	if _, _, blocked, throttled, err := ProcessBatch(context.Background(), deps); err != nil || blocked || !throttled {
+		t.Fatalf("ProcessBatch with the retry write allowed = %v, %v, %v; want not blocked, throttled", blocked, throttled, err)
+	}
+	after := time.Now()
+	lines := passRecords(records, slog.LevelWarn, throttledGroupMessage)
+	if len(lines) == 0 || len(atWarning) != len(lines) {
+		t.Fatalf("%d throttled-group WARN lines, %d rows read as they were written; want the second cycle's line, read once", len(lines), len(atWarning))
+	}
+	line, row := attrsOf(lines[len(lines)-1]), atWarning[len(atWarning)-1]
+	attempt, retryIn := line["attempt"].Int64(), line["retryIn"].Duration()
+	if attempt != 1 || retryIn != retry.Delay(1) {
+		t.Errorf("the WARN names attempt %d, retryIn %v; want 1 and %v", attempt, retryIn, retry.Delay(1))
+	}
+	if row.attempts != int(attempt) {
+		t.Errorf("as the WARN naming attempt %d was written THWR-1 held attempt %d: the line came before its retry was written", attempt, row.attempts)
+	}
+	if row.due.Before(before.Add(retryIn)) || row.due.After(after.Add(retryIn)) {
+		t.Errorf("as the WARN naming retryIn %v was written THWR-1 fell due at %v, want between %v and %v", retryIn, row.due, before.Add(retryIn), after.Add(retryIn))
+	}
+}
 
 // azureClientFor is a real AzureClient that calls server.
 func azureClientFor(t *testing.T, server *httptest.Server) *embed.AzureClient {

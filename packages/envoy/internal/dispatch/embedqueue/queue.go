@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -368,7 +369,13 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 		blocked = retryRows(ctx, deps, result.permanent, true)
 	}
 	if len(result.retry) > 0 {
-		blocked = retryRows(ctx, deps, result.retry, false) || blocked
+		unwritten := retryRows(ctx, deps, result.retry, false)
+		if !unwritten {
+			for _, group := range result.throttledGroups {
+				warnThrottledGroup(group)
+			}
+		}
+		blocked = unwritten || blocked
 	}
 	return settled + result.succeeded, len(rows) - result.succeeded, blocked, result.throttled, nil
 }
@@ -379,14 +386,24 @@ func ProcessBatch(ctx context.Context, deps Deps) (succeeded, failed int, blocke
 // it - proof the service was working at that exact moment, so the failure is this row's own
 // content), or retry (not confirmed - a throttle, a cancellation, a multi-row group not yet split
 // down to one, or a solo failure whose own canary probe also failed, which is never evidence
-// about this row and means the whole subtree backs off instead). err is a genuine infrastructure
-// failure (commitEmbeddings' own), never a reason to call any row permanent.
+// about this row and means the whole subtree backs off instead). throttledGroups are the groups of
+// retry the model service throttled, each with its error, whose WARN ProcessBatch writes once
+// their retry is written (warnThrottledGroup). err is a genuine infrastructure failure
+// (commitEmbeddings' own), never a reason to call any row permanent.
 type bisectResult struct {
-	succeeded int
-	permanent []pendingRow
-	retry     []pendingRow
-	throttled bool
-	err       error
+	succeeded       int
+	permanent       []pendingRow
+	retry           []pendingRow
+	throttled       bool
+	throttledGroups []throttledGroup
+	err             error
+}
+
+// throttledGroup is a group of rows whose one Embed call the model service throttled, with the
+// throttle's error (handleGroupFailure).
+type throttledGroup struct {
+	rows []pendingRow
+	err  error
 }
 
 // embedRows embeds and commits rows group by group (chunkForBudget splits rows so no single
@@ -424,6 +441,7 @@ func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claim
 			result.permanent = append(result.permanent, groupResult.permanent...)
 			result.retry = append(result.retry, groupResult.retry...)
 			result.throttled = result.throttled || groupResult.throttled
+			result.throttledGroups = append(result.throttledGroups, groupResult.throttledGroups...)
 			continue
 		}
 		committed, permanent, cErr := commitEmbeddings(ctx, deps, group.rows, vectors)
@@ -444,17 +462,11 @@ func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claim
 // evidence about any row's content, and isolating "which row triggered it" would be meaningless
 // (and would cost far more calls against a provider that has already said to slow down). A single
 // row goes to confirmSoloFailure. More than one row splits via bisectSplit, which re-embeds only
-// the two halves, never the group that already failed. A throttled group writes one WARN naming
-// how many rows it holds, its first row, the attempt it reaches and when it is tried again, never
-// a text: the group is handled once per ProcessBatch, and each one advances its rows' attempt
-// counts, so the line comes once per group and attempt count.
+// the two halves, never the group that already failed. A throttled group is reported in
+// throttledGroups too, so ProcessBatch can name it in a WARN once its retry is written.
 func handleGroupFailure(ctx context.Context, deps Deps, group []pendingRow, err error, renewal *claimRenewal) bisectResult {
 	if embed.IsThrottled(err) {
-		attempt := group[0].attempts + 1
-		slog.Warn("dispatch embedqueue: the model service throttled a group; it is retried whole, counted against no row",
-			"rows", len(group), "kind", group[0].kind, "id", group[0].id, "attempt", attempt,
-			"retryIn", retry.Delay(attempt), "error", err)
-		return bisectResult{retry: group, throttled: true}
+		return bisectResult{retry: group, throttled: true, throttledGroups: []throttledGroup{{rows: group, err: err}}}
 	}
 	if ctx.Err() != nil {
 		return bisectResult{retry: group}
@@ -463,6 +475,19 @@ func handleGroupFailure(ctx context.Context, deps Deps, group []pendingRow, err 
 		return confirmSoloFailure(ctx, deps, group, err, renewal)
 	}
 	return bisectSplit(ctx, deps, group, renewal)
+}
+
+// warnThrottledGroup writes the WARN for a group the model service throttled, which ProcessBatch
+// calls once the group's retry is written, so a retry write that failed names no retry: how many
+// rows the group holds, its first row, the attempt that row's retry reaches and how long after the
+// write it falls due (nextAttempt, as retryRows wrote them), never a text. A group is handled once
+// per ProcessBatch, and each one advances its rows' attempt counts, so the line comes once per
+// group and attempt count.
+func warnThrottledGroup(group throttledGroup) {
+	first := group.rows[0]
+	attempt, delay := nextAttempt(first)
+	slog.Warn("dispatch embedqueue: the model service throttled a group; it is retried whole, counted against no row",
+		"rows", len(group.rows), "kind", first.kind, "id", first.id, "attempt", attempt, "retryIn", delay, "error", group.err)
 }
 
 // bisectSplit isolates which row(s) in rows actually broke a non-throttled embed failure
@@ -510,10 +535,11 @@ func mergeRows(a, b []pendingRow) []pendingRow {
 
 func mergeBisectResults(left, right bisectResult) bisectResult {
 	return bisectResult{
-		succeeded: left.succeeded + right.succeeded,
-		permanent: mergeRows(left.permanent, right.permanent),
-		retry:     mergeRows(left.retry, right.retry),
-		throttled: left.throttled || right.throttled,
+		succeeded:       left.succeeded + right.succeeded,
+		permanent:       mergeRows(left.permanent, right.permanent),
+		retry:           mergeRows(left.retry, right.retry),
+		throttled:       left.throttled || right.throttled,
+		throttledGroups: slices.Concat(left.throttledGroups, right.throttledGroups),
 	}
 }
 
@@ -907,7 +933,7 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 	nextAttempts := make([]time.Time, len(rows))
 	deads := make([]bool, len(rows))
 	for i, row := range rows {
-		n := row.attempts + 1
+		n, delay := nextAttempt(row)
 		confirmed := row.confirmedFailures
 		if permanent {
 			confirmed++
@@ -919,7 +945,7 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 		kinds[i], ids[i], hashes[i] = row.kind, row.id, row.contentHash
 		attempts[i] = int32(n)
 		confirmedFailures[i] = int32(confirmed)
-		nextAttempts[i] = time.Now().Add(retry.Delay(n))
+		nextAttempts[i] = time.Now().Add(delay)
 		deads[i] = dead
 	}
 	_, err := deps.Store.Pool.Exec(ctx, `
@@ -936,4 +962,12 @@ func retryRows(ctx context.Context, deps Deps, rows []pendingRow, permanent bool
 		return true
 	}
 	return false
+}
+
+// nextAttempt is the attempt count a retry of row records and how long after the retry is written
+// it falls due (retry.Delay): retryRows schedules each row's retry by it, and warnThrottledGroup
+// names it.
+func nextAttempt(row pendingRow) (attempt int, delay time.Duration) {
+	attempt = row.attempts + 1
+	return attempt, retry.Delay(attempt)
 }
