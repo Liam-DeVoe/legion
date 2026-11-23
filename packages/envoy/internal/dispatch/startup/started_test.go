@@ -269,13 +269,14 @@ func TestTheFleetsBuildIsAnnouncedOnceEachTimeItChanges(t *testing.T) {
 
 // An Announcer writes AnnouncerPassed at Debug for each pass, numbered from 1 in its life, with
 // what the pass found and the fleet's commit as the pass left it, so a test that runs the real
-// binary counts a process's passes from its log: the first pass announces c1 and publishes it, and
-// the second finds nothing unpublished.
+// binary counts a process's passes from its log: the announcer serves c1, the build of the one
+// live process, so its first pass announces c1 and publishes it, and the second finds nothing
+// unpublished.
 func TestAnAnnouncerLogsEachPassAtDebug(t *testing.T) {
 	var logged logtest.Buffer
 	logtest.SetDefault(t, slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	database := storetest.Open(t)
-	announcer := New(Deps{Pool: database.Pool, Publisher: &recordingPublisher{}})
+	announcer := New(serving(database.Pool, &recordingPublisher{}, c1))
 	register(t, database, c1)
 	announcer.pass(context.Background())
 	announcer.pass(context.Background())
