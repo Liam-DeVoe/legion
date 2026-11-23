@@ -292,12 +292,19 @@ func TestEachReadingOfATextKeepsTheAnswerOfItsCharge(t *testing.T) {
 
 // refusalTexts is the documents whose judgments TestEachRefusedReadingRefusesTheWayOutThatAskedIt
 // refuses reading by reading: between them, a way out of their findings is judged through each call
-// of the judge that hands on a charge.Answer. They hold a stop with no space after it in a sentence
-// whose verb stands again after it, and beside two verbs of one group; a name that a sentence after
-// it holds in code font (holding); one finding in two sentences (two places of one way out); one
-// sentence written twice with an open sentence between (changedRuns); a text that ste-lint reads as
-// two lines (read whole); a long piece that runs on into the sentence of a finding; a footnote; two
-// instructions of a procedure; and a person's address in two sentences.
+// of the judge that hands on a charge.Answer, and past each read of an answer that the judge keeps
+// for later (wholeText.refused). They hold a stop with no space after it in a sentence whose verb
+// stands again after it, and beside two verbs of one group; a name that a sentence after it holds in
+// code font (holding); one finding in two sentences (two places of one way out); one sentence
+// written twice with an open sentence between (changedRuns); a text that ste-lint reads as two lines
+// (read whole); a long piece that runs on into the sentence of a finding; a footnote; a sentence of
+// two instructions of a procedure, alone and after an instruction that holds a stop with no space
+// after it (two such instructions), whose words with a space in them holding does not look for, so
+// that after a refused reading for the stop's way out only load's kept answer refuses theirs; and a
+// person's address in two sentences, and in a link, where the address is the finding's one place and
+// a remote path in a sentence holds its words: with holding's own reading refused, it finds no
+// sentence for the whole text to write, so load reads nothing, and only holding's kept answer
+// refuses the way out.
 var refusalTexts = []string{
 	":::check{#c}\nDispatch checks a1.B now. It checks the log.\n:::\n",
 	":::check{#c}\nDispatch checks a1.B now. It verifies the log.\n:::\n",
@@ -308,7 +315,10 @@ var refusalTexts = []string{
 	":::check{#c}\nIt runs in the U.S. and it said \"wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp.\" It keeps a1.B now. It ends.\n:::\n",
 	":::check{#c}\nDispatch keeps it[^1].\n:::\n\n[^1]: It checks Foo1.Validate at boot.\n",
 	":::check{#v run=\"Run the test and read the log.\"}\nDispatch keeps each record.\n:::\n",
+	":::check{#v run=\"Run a1.B now. Run the test and read the log.\"}\nDispatch keeps each record.\n:::\n",
+	":::check{#v run=\"Open the file a1.B now. Run the test and read the log.\"}\nDispatch keeps each record.\n:::\n",
 	":::check{#c}\nIt sends the log to ada@example.com now. Then it mails ada@example.com the report.\n:::\n",
+	":::check{#c}\nIt mails [the report](mailto:ada@example.com) each night. It copies the log to ada@example.com:. now.\n:::\n",
 }
 
 // Each refused reading of a judgment ends in the refusal of a way out, which says so
