@@ -535,7 +535,7 @@ func TestAFreedSlotGoesPastTheStoppedIssueToTheNextInLine(t *testing.T) {
 // writes wake no outbox lane of the daemon's (projectRecords is what wakes them), so the passes
 // the daemon's own ticks make while those rows wait are passes over the state the fact left. The
 // event id is the test's, so it is never one of the daemon's.
-func applyFact(t *testing.T, pool intake.Pool, source, eventID string, fact intake.Fact, handlers ...intake.Handler) {
+func applyFact(t *testing.T, pool store.TxPool, source, eventID string, fact intake.Fact, handlers ...intake.Handler) {
 	t.Helper()
 	result, err := intake.ApplyFact(context.Background(), pool, source, eventID, fact, handlers...)
 	if err != nil || result.Refusal != nil {
@@ -550,7 +550,7 @@ func applyFact(t *testing.T, pool intake.Pool, source, eventID string, fact inta
 // its sentence (applyTerminal): the cause of a process that died until its deaths ran out, those
 // counters, and the limits they ran out against. What the retry then writes is each caller's own
 // read: the phase it put the issue back in, the start rows it wrote, or the launch they reach.
-func heldAndRetried(t *testing.T, pool intake.Pool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
+func heldAndRetried(t *testing.T, pool store.TxPool, d *daemon, engine *workflow.Engine, issue string, role claim.Role) {
 	t.Helper()
 	applyFact(t, pool, "api", "worker-died:"+issue, intake.ClaimFailed{Issue: issue, Role: role,
 		Reason: "the operator stopped it", Cause: supervise.CauseDied, Budgets: supervise.Budgets{LaunchFailures: 2, Deaths: 3},
