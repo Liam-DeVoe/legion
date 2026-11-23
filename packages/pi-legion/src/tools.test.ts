@@ -2293,8 +2293,9 @@ test("read_state's summary lists the claim of a role of the deployment under its
 });
 
 // Contract 222: two claims of one issue can hold one role, and `workers` shows one of them, so the
-// summary lists each of the issue's `otherClaims` after the workers, with its role, its state and
-// both turn times, and marks it as another claim of that role.
+// summary lists each of the issue's `otherClaims` after the workers, with its role, its state,
+// both turn times and its token, marks it as another claim of that role, and names the token
+// because fresh_session and compact reach that claim only by it (their `claim`).
 test("read_state's summary lists another claim of a role after the workers of its issue", async () => {
   const state = stateOf92Issues(1);
   const running = state.issues["INFRA-100"];
@@ -2302,7 +2303,8 @@ test("read_state's summary lists another claim of a role after the workers of it
   if (running === undefined || tester === undefined) {
     throw new Error("INFRA-100 lacks its tester");
   }
-  running.otherClaims = [{ role: "tester", claim: { ...tester, state: "suspended" } }];
+  const token = "legion-acme-infra-100-tester";
+  running.otherClaims = [{ role: "tester", claim: { ...tester, token, state: "suspended" } }];
   const { daemon } = recordingDaemon({ state });
   const summary = await controllerTool(daemon, []).execute(
     "",
@@ -2314,7 +2316,7 @@ test("read_state's summary lists another claim of a role after the workers of it
   const text = summary.content[0]?.type === "text" ? summary.content[0].text : "";
   const under = text.split("\n").filter((line) => line.startsWith("  "));
   expect(under.at(-1)).toBe(
-    `  tester (another claim) suspended ${tester.lastTurnStart ?? "-"} ${tester.lastTurnEnd ?? "-"}`
+    `  tester (another claim) suspended ${tester.lastTurnStart ?? "-"} ${tester.lastTurnEnd ?? "-"} claim ${token}`
   );
 });
 
