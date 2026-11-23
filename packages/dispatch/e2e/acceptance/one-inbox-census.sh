@@ -81,10 +81,22 @@ fail() {
 # does not).
 psql_db() { env -u PGHOSTADDR -u PGSERVICE -u PGSERVICEFILE psql "$database_url" "$@"; }
 
-# empty_database: empties the run's database by dropping its public schema and making it again.
+# empty_database: empties the run's database of every object its login owns, and keeps what
+# another role installed there.
 # The database is this check's own, and the release before writes its half into one that holds
 # nothing yet: a schema an earlier run, or another build, left migrated would have that release
 # serve an older schema over a newer one, and this build refuse a migration another tree recorded.
+# It drops what the login owns (DROP OWNED) and not the schema public, because public holds the
+# `vector` extension: where the login is no superuser, as on a pod's test Postgres, the database
+# took `vector` from its template, and migration 0072's `create extension if not exists vector`
+# could not install it again. DROP OWNED keeps an extension another role owns and drops one the
+# login owns. It would drop a public the login owns with everything in it, `vector` among them, so
+# a public the login made itself (as a drop of public and `create schema public` leave it) goes
+# first to pg_database_owner, the owner CREATE DATABASE gives it; a database left with no public
+# gets one again.
+# The one login DROP OWNED refuses is the bootstrap superuser, which owns the system catalogs, such
+# as the `postgres` of the pgvector image CI's Postgres service runs: that login drops public and
+# makes it again, and its migration 0072 installs `vector` again.
 # It refuses first, as the run's start does, a DATABASE_URL that names no single loopback host
 # (lib.sh's loopback_database_url), so it drops nothing but a test database on this machine.
 empty_database() {
@@ -92,7 +104,21 @@ empty_database() {
     printf 'one-inbox-census.sh: DATABASE_URL names no single loopback host; the run empties it, so it runs only against a test database on this machine\n' >&2
     exit 2
   }
-  psql_db -q -v ON_ERROR_STOP=1 -c "drop schema public cascade" -c "create schema public" >"$work/empty.log" 2>&1 || {
+  psql_db -q -v ON_ERROR_STOP=1 >"$work/empty.log" 2>&1 <<'SQL' || {
+do $empty$
+begin
+  if (select pg_get_userbyid(nspowner) from pg_namespace where nspname = 'pg_catalog') = current_user then
+    drop schema if exists public cascade;
+  else
+    if (select pg_get_userbyid(nspowner) from pg_namespace where nspname = 'public') = current_user then
+      alter schema public owner to pg_database_owner;
+    end if;
+    drop owned by current_user cascade;
+  end if;
+  create schema if not exists public;
+end
+$empty$;
+SQL
     printf 'one-inbox-census.sh: could not empty DATABASE_URL: %s\n' "$(<"$work/empty.log")" >&2
     exit 2
   }
