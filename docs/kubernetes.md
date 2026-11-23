@@ -1370,7 +1370,7 @@ under `cloudsql-iam` the probe's pod mounts no session key and is told no pointe
 
 A resumed Oh My Pi session runs the model its launch names, not the one it last used.
 Every launch of a pod's Oh My Pi names one with `--model`: the `model` of a role of `roles`, or `@default` (`agentArgv`, `internal/runtime/sandbox/manifest.go`).
-The Oh My Pi `.omp-pin` names restores a session's saved model only for a launch that names none (read in its `sdk.ts`, not run).
+The Oh My Pi `.omp-pin` names restores a session's saved model only for a launch that names none (`TestAResumeNamingItsModelOutlivesADroppedSavedModel`, `internal/runtime/sandbox/model_omp_test.go`, measures both on that build).
 Only such a launch is refused, in `--mode rpc`, when the profile no longer has that model (`Could not restore model <provider>/<model>`, exit 1).
 So a change to the pods' model route (`runtime.kubernetes.pod`, `provider_keys`) that drops a model a session last used fails none of its resumes.
 
