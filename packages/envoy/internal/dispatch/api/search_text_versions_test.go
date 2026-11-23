@@ -270,7 +270,7 @@ func TestTheKeywordFillWritesWhileTheServerAnswers(t *testing.T) {
 	last := backlog[len(backlog)-1].ID
 
 	fill := startKeywordFill(t, filled)
-	fill.AwaitLine(t, keywordBatchLine, time.Minute)
+	fill.AwaitLine(t, keywordBatchLine)
 	if cursor := textversionstest.Cursor(t, filled.database); cursor >= last {
 		t.Fatalf("the fill's first batch took the cursor to %d, the backlog's last event %d: nothing is left to catch up beside the requests", cursor, last)
 	}

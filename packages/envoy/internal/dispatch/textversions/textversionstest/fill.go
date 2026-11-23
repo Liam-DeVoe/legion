@@ -2,6 +2,7 @@ package textversionstest
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -87,11 +88,11 @@ func (f *Fill) Logged(t testing.TB, prefix string) bool {
 	return len(f.Lines(t, prefix)) > 0
 }
 
-// AwaitLine waits until the fill logs a line whose message starts with prefix, and fails the test
-// once within has passed, with the fill's log as it stands then.
-func (f *Fill) AwaitLine(t testing.TB, prefix string, within time.Duration) {
+// AwaitLine waits, through the shared wait, until the fill logs a line whose message starts with
+// prefix. Its failure carries the fill's log as it stood at the last read.
+func (f *Fill) AwaitLine(t *testing.T, prefix string) {
 	t.Helper()
-	if !testwait.Holds(within, 20*time.Millisecond, func() bool { return f.Logged(t, prefix) }) {
-		t.Fatalf("the keyword fill logged no %q line within %v:\n%s", prefix, within, f.Log())
-	}
+	testwait.Until(t, fmt.Sprintf("the keyword fill to log a %q line", prefix), func() (string, bool) {
+		return f.Log(), f.Logged(t, prefix)
+	})
 }
