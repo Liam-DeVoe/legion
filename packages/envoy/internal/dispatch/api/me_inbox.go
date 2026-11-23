@@ -1553,12 +1553,13 @@ func meInboxPageRows(shape meInboxShape) string {
 // meInboxDismissedCut cuts one arm of the Dismissed view to the page before the walk meets it, as
 // GET /api/v1/me/replies cuts its own (myRepliesDismissedCut, myAgentDismissedPageCut): the arm's
 // rows past the cursor, in the order of the state's own index - the dismissal's moment, then the
-// root's id (user_threads_dismissed, user_agent_thread_dismissed_login_dismissed_at; meInboxOrder)
-// - and of those the first offset + limit + 1, the one past the page saying whether another page
-// follows (remaining, next_cursor). kind, id and moment name the arm's node kind, its root's uuid
-// and its dismissal. So the walk, the grouping, the count and the sort meet at most twice that
-// many rows, where they met the whole pile: at the dismissed scale test's seed a page of 200 read a p50 of
-// 3,610 ms at 110,000 dismissed threads against 46 ms at 200, and cut it reads 86 ms at either.
+// root's id (user_threads_dismissed_replied, user_agent_thread_dismissed_login_dismissed_at;
+// meInboxOrder) - and of those the first offset + limit + 1, the one past the page saying whether
+// another page follows (remaining, next_cursor). kind, id and moment name the arm's node kind, its
+// root's uuid and its dismissal. So the walk, the grouping, the count and the sort meet at most
+// twice that many rows, where they met the whole pile: at the dismissed scale test's seed a page
+// of 200 read a p50 of 3,610 ms at 110,000 dismissed threads against 46 ms at 200, and cut it
+// reads 86 ms at either.
 //
 // Three things make the cut the page the read answers. The cursor is one row comparison over
 // coalesced arguments rather than `(cursor is null or ...)`, so it is the index's own condition in

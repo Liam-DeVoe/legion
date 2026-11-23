@@ -2862,7 +2862,10 @@ no rewrite, no row read, and `ACCESS EXCLUSIVE` for that write alone.
 `20261105093501` replaces `user_threads_record` with the same function plus one assignment, so the statement that moves the other participants' `replied_at` on a write by somebody else clears their `dismissed_at` when that write is newer than it;
 `create or replace function` locks the function's own catalogue row and no table at all.
 `20261105093502` and `20261105093503` create `user_threads_inbox` on `(login, replied_at desc, thread_id desc) where replied_at is not null and dismissed_at is null`, the Inbox list's read, and `user_threads_dismissed` on `(login, dismissed_at desc, thread_id desc) where dismissed_at is not null`, the Dismissed view's read and the cursor it resumes from.
-Each column order is its read's own, the login it narrows to and then the order it answers in, so one index scan answers a page with no sort, and each predicate is its read's own filter, so neither state scans the table.
+Each column order is its read's own, the login it narrows to and then the order it answers in, so one index scan answers a page with no sort.
+`user_threads_inbox`'s predicate is the Inbox list's own filter, so that state reads no row it leaves out.
+`user_threads_dismissed`'s predicate is no longer the Dismissed state's filter, which also requires `replied_at is not null`: a person's own reply dismisses its thread for them where nobody else wrote, so the index holds rows the state leaves out, and a read through it reads the table row of each such row it meets before its page.
+`20261123085248` below builds the state's own index.
 Building either takes `SHARE` on `user_threads`, so the writes its triggers make wait for the build while its readers do not, and a plain `create index` scans the table and sorts every row the predicate keeps, read rows included.
 The window is one scan and sort of `user_threads` — a row per person per thread they have written in — with no row rewritten and none refused.
 These unmarked migrations run in a transaction, so `create index concurrently` cannot run inside them, as for `0148`.
@@ -2878,6 +2881,13 @@ With it, "dismissed" is what it is on the other half
 — a mark exists — so no read compares two times, and the Inbox's own reads leave a dismissed root out without reading its thread, which was 66 ms of the Inbox read's 69 at 10,000 dismissed Agent threads.
 `create function` takes no table lock and `create trigger ... after insert on messages` takes `SHARE ROW EXCLUSIVE` on `messages` for the one catalogue write, blocking that table's writers and no reader; neither reads or rewrites a row.
 Every census in the run answers `0`, and each up-file names the lock it takes and the row count its window was judged against.
+
+Migration `20261123085248_user_threads_dismissed_replied` builds `user_threads_dismissed_replied` on `user_threads (login, dismissed_at desc, thread_id desc) where dismissed_at is not null and replied_at is not null`, the Dismissed state's own filter (`api/replies.go`, `myRepliesDismissed`).
+A person's own answer or reply dismisses its thread for them in the write's own transaction (`inboxwrite`'s `queueKeepRow`), and sets `dismissed_at` on their row even where nobody else wrote, so the row keeps a null `replied_at` and is no row of the state.
+`user_threads_dismissed` holds such a row too, so a page read through it walked each one newer than the page and read its table row to drop it.
+The new index holds none of them, so the list route's page, the one read's Dismissed arm and the restore's match read only the rows the state lists.
+`user_threads_dismissed` stays: the release before this one reads the state with `dismissed_at is not null` alone, which the new predicate does not serve, and a later release drops it.
+The build is `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), and holds off no read or write of `user_threads` while it scans the table, whatever its size; its census answers `0`, and it carries a `.down.sql` an operator runs by hand to drop the index.
 
 Migration `20261105014808_comments_answers` gives `comments` a nullable `answers`, the comment a reply answers, and re-states `graph_edges` with one more arm, `answers` from the reply to that comment ("Reference graph" below).
 A comment write climbs the reply chain to the head of the thread before it stores, which is what every thread read selects on, so `reply_to` holds the head and the comment the writer answered was lost;

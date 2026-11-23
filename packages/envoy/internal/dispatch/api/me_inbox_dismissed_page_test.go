@@ -49,19 +49,19 @@ const (
 // execution of the one read runs (meInboxGenericPlan): the statement GET
 // /api/v1/me/inbox?state=dismissed&limit=200 runs - built as the handler builds it (meInboxStatement),
 // prepared, and its execute explained with ANALYZE under the read's own settings (meInboxSettings:
-// JIT off and the generic plan) - takes no more of either arm's index (user_threads_dismissed,
-// user_agent_thread_dismissed_login_dismissed_at) than the page and the one row past it, and its
-// scan nodes read no more rows with 1,000 dismissed threads than with 250, but for
-// dismissedPageMargin. That holds for the first page, for the first page of one issue, which reads
-// the Reply arm alone, and for the page after a cursor. Where an owner's test the request does not
-// name was bound to an argument on every shape, the generic plan took the Reply arm to keep one
-// row, read the whole arm through a bitmap and sorted it (meInboxPageRows).
+// JIT off and the generic plan) - takes no more of either arm's index
+// (user_threads_dismissed_replied, user_agent_thread_dismissed_login_dismissed_at) than the page
+// and the one row past it, and its scan nodes read no more rows with 1,000 dismissed threads than
+// with 250, but for dismissedPageMargin. That holds for the first page, for the first page of one
+// issue, which reads the Reply arm alone, and for the page after a cursor. Where an owner's test
+// the request does not name was bound to an argument on every shape, the generic plan took the
+// Reply arm to keep one row, read the whole arm through a bitmap and sorted it (meInboxPageRows).
 func TestTheDismissedPageReadsOnePageUnderTheGenericPlan(t *testing.T) {
 	piles := []*dismissedScaleShape{seedDismissedPagePile(t, dismissedPageFewer), seedDismissedPagePile(t, dismissedPageMore)}
 	page := func() url.Values {
 		return url.Values{"state": {myRepliesStateDismissed}, "limit": {fmt.Sprint(dismissedScalePage)}}
 	}
-	both := []string{"user_threads_dismissed", "user_agent_thread_dismissed_login_dismissed_at"}
+	both := []string{"user_threads_dismissed_replied", "user_agent_thread_dismissed_login_dismissed_at"}
 	for _, read := range []struct {
 		name string
 		// query is the request on shape, and indexes the arms' indexes its statement reads.

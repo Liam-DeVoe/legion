@@ -819,13 +819,14 @@ func TestTheOneReadsDismissedViewPagesFromItsCursor(t *testing.T) {
 
 // A page of the one read's Dismissed view (GET /api/v1/me/inbox?state=dismissed) holds the page it
 // asks for though threads that state leaves out lie among its rows. A thread only the person wrote
-// in, which their own reply dismissed, carries a dismissal mark and a null replied_at, so
-// user_threads_dismissed holds it beside the threads the state lists, and it is no row of the
-// state (myRepliesDismissed). The state's whole test runs above the cut (meInboxDismissedCut), so
-// the cut takes a page's rows from the listed threads alone; run after it, the cut would spend the
-// page on rows the state then drops, and the page would come back short. Four such threads lie
-// among seven listed ones, two newer than the first page's last row and two older, so pages of
-// three answer three, three and one, each listed thread once and no left-out one.
+// in, which their own reply dismissed, carries a dismissal mark and a null replied_at, so it is no
+// row of the state (myRepliesDismissed). The state's own index, user_threads_dismissed_replied,
+// does not hold it, but user_threads_dismissed, which the release before reads, does. The state's
+// whole test runs above the cut (meInboxDismissedCut), so the cut takes a page's rows from the
+// listed threads alone, whichever index the plan reads; run after it, the cut would spend the page
+// on rows the state then drops, and the page would come back short. Four such threads lie among
+// seven listed ones, two newer than the first page's last row and two older, so pages of three
+// answer three, three and one, each listed thread once and no left-out one.
 func TestADismissedPageStaysFullWhenItsLeftOutThreadsLieAmongItsRows(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A Dismissed page with rows left out", "A spec")
