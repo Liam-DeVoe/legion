@@ -15,25 +15,38 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { NO_MODEL_WORDS } from "../going/run-states";
+import { endWords } from "../going/run-states";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AnswerBlock } from "./blocks/AnswerBlock";
 import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
 const noteClassName = `text-xs ${textMutedOnSurface}`;
 
-/** A failed run in the reader's words, by the code its `error` frame carries. */
+/** The run's failure (`run-states.ts`) that each failure of the short answer is, by the code its
+ *  `error` frame carries: the model's time ran out, the model failed or refused, or the Dispatch
+ *  has no answering model. */
+const RUN_FAILURES: Readonly<Record<string, string>> = {
+  [GOING_ERROR_ANSWER_DID_NOT_ARRIVE]: "MODEL_CALL_TIME",
+  [GOING_ERROR_ANSWER_FAILED]: "MODEL_FAILED",
+  [GOING_ERROR_NO_MODEL_CONFIGURED]: "NO_MODEL",
+};
+
+/** The one next step a failed short answer offers: the run of the words, which the line Ask
+ *  starts. */
+const FULL_ANSWER_STEP = "Ask for the full answer.";
+
+/**
+ * A failed short answer in the reader's words (design v3, rules 1 and 7), by the code its `error`
+ * frame carries: why, in the sentence a run's same failure says (`endWords`), then its one next
+ * step, the full answer. A code this page does not know, one a later Dispatch added, is said in
+ * words too, never as the code. A Dispatch with no answering model says the one sentence of
+ * state 13 and offers no step, as a run does.
+ */
 function errorText(code: string): string {
-  switch (code) {
-    case GOING_ERROR_NO_MODEL_CONFIGURED:
-      return NO_MODEL_WORDS;
-    case GOING_ERROR_ANSWER_DID_NOT_ARRIVE:
-      return "No answer: the answer did not arrive in time.";
-    case GOING_ERROR_ANSWER_FAILED:
-      return "No answer: the answering model failed.";
-    default:
-      return `No answer: the run failed (${code}).`;
-  }
+  const run = RUN_FAILURES[code];
+  const words = run === undefined ? undefined : endWords("failed", run, "", "");
+  if (words?.noModel === true) return words.text;
+  return `${words?.text ?? "Dispatch could not write a short answer."} ${FULL_ANSWER_STEP}`;
 }
 
 /** What the server did to the answer, in the reader's words: `dropped` pieces of it - a link, an
@@ -54,7 +67,8 @@ function changedText(dropped: number): string {
  * `item` frames, listed beneath it, and nothing else. The block, where the answer draws one,
  * follows the text, as its frame follows the text's. Each line below says what the stream said
  * about the answer: that it was cut, that the server changed it, that the model wrote none, that
- * it rests on no source, how fresh the roster it read was, or that it failed.
+ * it rests on no source, how fresh the roster it read was, or that it failed. A failure says why
+ * and its own next step (`errorText`), so the foot does not say the full answer again.
  *
  * An answer to words the person has typed past (`stale`) is drawn as it stood when they typed
  * on, its links, block and lines with it, inside a dashed outline with its text muted, under a
@@ -88,7 +102,7 @@ export function AnswerPanel({
       data-testid="going-answer"
     >
       <AnswerBody answer={answer} stale={stale} />
-      {fullAnswer && !stale ? (
+      {fullAnswer && !stale && answer.error === undefined ? (
         <p className={`mt-2 ${noteClassName}`} data-testid="going-answer-full">
           ↵ for the full answer
         </p>

@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { onFakeClock, tick } from "../../../__tests__/fake-clock";
+import { dangerText, textMutedOnSurface } from "../../../theme/classes";
 import type { RunStep } from "../run-frames";
 import { elapsedTimeWords, foldWords, StepSection, workedWords } from "./StepSection";
 
@@ -26,6 +27,7 @@ function step(id: number, fields: Partial<RunStep> = {}): RunStep {
     label: `Read DEMO-${id + 1}`,
     refused: false,
     running: false,
+    slip: false,
     step: id + 2,
     tool: "read",
     ...fields,
@@ -254,4 +256,58 @@ test("once the answer came, every step folds into Worked for… with what they w
     "Read DEMO-5",
   ]);
   expect(screen.queryByTestId("going-step-timer")).toBeNull();
+});
+
+// A slip - a step the model guessed that Dispatch does not have, which it mends itself - is no
+// failure of the person's: its line is grey with what the model tried, and no fold counts it,
+// neither as failed nor as its kind. "1 step failed" counts only what the person can act on.
+const SLIP = "Tried a step Dispatch does not have";
+
+test("a slip counts in no fold, and a failure the person can act on still counts as failed", () => {
+  const slip = (id: number) => step(id, { items: [], label: SLIP, slip: true, tool: "x" });
+  expect(foldWords([step(0), slip(1)])).toBe("read 1 item");
+  expect(foldWords([step(0), slip(1), step(2, { refused: true })])).toBe(
+    "read 1 item, 1 step failed"
+  );
+  expect(workedWords([step(0), slip(1)], 108_000)).toBe("Worked for 1 min 48 s · read 1 item");
+  // Steps that were all slips say only how long the run worked, or that they are steps.
+  expect(foldWords([slip(0), slip(1)])).toBe("");
+  expect(workedWords([slip(0)], 12_000)).toBe("Worked for 12 s");
+  expect(workedWords([slip(0)], undefined)).toBe("Steps");
+});
+
+test("a slip's line is grey with what the model tried, and a failure's line is red", async () => {
+  const user = userEvent.setup();
+  const steps = [
+    step(0),
+    step(1, { items: [], label: SLIP, slip: true, tool: "x" }),
+    step(2, {
+      items: ["DEMO-12"],
+      label: "Could not read DEMO-12: you have no access",
+      refused: true,
+    }),
+  ];
+  const view = render(
+    <StepSection
+      folded={false}
+      live={false}
+      since={Date.now()}
+      steps={steps}
+      workedMs={undefined}
+    />
+  );
+  expect(labels()).toEqual(["Read DEMO-1", SLIP, "Could not read DEMO-12: you have no access"]);
+  const [, slipLine, failedLine] = screen.getAllByTestId("going-step");
+  expect(slipLine?.className).toContain(textMutedOnSurface);
+  expect(slipLine?.className).not.toContain(dangerText);
+  expect(failedLine?.className).toContain(dangerText);
+
+  // Folded once the answer came, the slip is a line under the fold, and the fold names it not.
+  view.rerender(
+    <StepSection folded live={false} since={Date.now()} steps={steps} workedMs={108_000} />
+  );
+  const fold = screen.getByTestId("going-steps-fold");
+  expect(fold.textContent).toBe("Worked for 1 min 48 s · read 1 item, 1 step failed›");
+  await user.click(fold);
+  expect(labels()).toEqual(["Read DEMO-1", SLIP, "Could not read DEMO-12: you have no access"]);
 });

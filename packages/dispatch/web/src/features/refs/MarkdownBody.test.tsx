@@ -2072,3 +2072,69 @@ test("a body drawn with chips draws each link to an issue as its chip, and any o
     getIssueSummary.mockRestore();
   }
 });
+
+// A long question titles its link cut on a word, and the sentence the link ends draws one stop:
+// the link's "…", never "…." with the full stop the answer's own sentence adds after it.
+test("a link whose title is cut ends on a word, and the full stop after it is not drawn twice", async () => {
+  await warmMarkdownRenderer();
+  const question =
+    "Does a reply in the side panel start a new turn, or is it the same turn as the last one?";
+  const asked = Promise.withResolvers<AskRead>();
+  const getAsk = spyOn(api, "getAsk").mockReturnValue(asked.promise);
+  const view = render(
+    <MarkdownBody
+      chips
+      markdown="Asked in [the question](dispatch://CORE-1/ask/ask-1). Pick one."
+      referenceText=""
+      softBreaks="line"
+    />
+  );
+  try {
+    const link = await view.findByRole("link", { name: "the question" });
+    // Until the question is read, the link's words end in no "…", and the stop stays.
+    expect(view.container.textContent).toBe("Asked in the question. Pick one.");
+    asked.resolve({
+      answers: [],
+      ask: {
+        anchor: null,
+        answer: null,
+        artifact_id: null,
+        asked_of: null,
+        asked_of_at: null,
+        asked_of_by: null,
+        author: { id: "alice", kind: "user" },
+        block_id: null,
+        created_at: "2026-09-09T00:00:00Z",
+        edited_at: null,
+        id: "ask-1",
+        issue_key: "CORE-1",
+        kind: "question",
+        multiple: false,
+        opened_event_id: 1,
+        options: [],
+        question,
+        question_tree: displayTree(question),
+        state: "open",
+        urgency: "med",
+      },
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+    });
+    // Cut on the word "it", not inside "the".
+    await waitFor(() =>
+      expect(link.textContent).toBe("Does a reply in the side panel start a new turn, or is it…")
+    );
+    expect(view.container.textContent).toBe(
+      "Asked in Does a reply in the side panel start a new turn, or is it… Pick one."
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});

@@ -16,6 +16,7 @@ import type { ParsedBody, ParseRequest } from "./markdown-parse.worker";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
 import { referenceSpans } from "./reference-spans";
 import { parseDispatchReference, shortForm } from "./routes";
+import { textHead } from "./tree-fragment";
 import { rememberUpTo, type WorkerJob, WorkerQueue } from "./worker-queue";
 
 /** What a single newline inside a paragraph becomes, chosen per parse: `"space"` (the document
@@ -565,8 +566,10 @@ export interface MarkdownHeadline {
  * there) and no syntax stays: `**Blocking:** the deploy` reads `Blocking: the deploy`, a code
  * span keeps its words, a `dispatch://` reference reads as its short form, and the cut happens
  * on the projected text, so it never splits a mark (nor a character outside the Basic
- * Multilingual Plane). Blocks and hard breaks become single spaces. `cut` says whether the
- * text was cut, which an ellipsis the author typed cannot fake.
+ * Multilingual Plane). The cut falls on a word, as `textHead` cuts a text: at the last space
+ * within the `max` characters, where one falls in their second half, so no word is cut in two;
+ * one long run with no such space is cut at `max`. Blocks and hard breaks become single spaces.
+ * `cut` says whether the text was cut, which an ellipsis the author typed cannot fake.
  *
  * `markdown` is for a text that carries no tree to take the words from. That is the three texts
  * Dispatch does not store — a refused broadcast send's row names its own text on hover
@@ -592,11 +595,13 @@ export function useMarkdownHeadline(
         setHeadline(undefined);
         return;
       }
-      const characters = Array.from(plainWords(document).replace(/\s+/g, " ").trim());
+      const words = plainWords(document).replace(/\s+/g, " ").trim();
+      const characters = Array.from(words);
       const cut = characters.length > max;
       setHeadline({
         cut,
-        text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
+        // `textHead` counts UTF-16 units: its budget is the units of the first `max` characters.
+        text: cut ? `${textHead(words, characters.slice(0, max).join("").length)}…` : words,
       });
     };
     if (tree !== undefined) {

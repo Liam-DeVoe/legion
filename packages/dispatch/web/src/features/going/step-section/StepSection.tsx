@@ -103,13 +103,16 @@ const NAMED_KINDS: ReadonlySet<string> = new Set(KIND_WORDS.map(([kind]) => kind
 
 /**
  * What `steps` were made of, in words joined with ", ": "read 14 items, searched twice, drew a
- * chart". It is Happy's `sectionKinds`, which counts each kind of step, with three changes: each
- * kind has its own words; the kinds come in one fixed order, not the most frequent first; and a
+ * chart". It is Happy's `sectionKinds`, which counts each kind of step, with four changes: each
+ * kind has its own words; the kinds come in one fixed order, not the most frequent first; a
  * failed step counts as "1 step failed", not with its kind, since it did not do what its kind
- * says. A step of a kind this page does not know counts among "other steps".
+ * says; and a slip counts nowhere, since it did nothing and its person has nothing to do about
+ * it. A step of a kind this page does not know counts among "other steps". Steps that were all
+ * slips are said in no words at all: "".
  */
 export function foldWords(steps: readonly RunStep[]): string {
-  const done = steps.filter((step) => !step.refused);
+  const counts = steps.filter((step) => !step.slip);
+  const done = counts.filter((step) => !step.refused);
   const parts: string[] = [];
   for (const [kind, words] of KIND_WORDS) {
     const ofKind = done.filter((step) => step.kind === kind);
@@ -117,7 +120,7 @@ export function foldWords(steps: readonly RunStep[]): string {
   }
   const other = done.filter((step) => !NAMED_KINDS.has(step.kind)).length;
   if (other > 0) parts.push(counted(other, "other step"));
-  const failed = steps.length - done.length;
+  const failed = counts.length - done.length;
   if (failed > 0) parts.push(`${counted(failed, "step")} failed`);
   return parts.join(", ");
 }
@@ -127,14 +130,16 @@ export function foldWords(steps: readonly RunStep[]): string {
  * plan came (design v2, state 4), it is every step's, with how long the run worked: "Worked for
  * 1 min 48 s · read 14 items, searched twice". As in Happy, a run that worked for less than a
  * second says no time at all, and so does one whose time the page does not know, or older steps
- * folded while the run works (state 3): "Read 6 items, searched twice".
+ * folded while the run works (state 3): "Read 6 items, searched twice". Steps that were all
+ * slips say only the time, "Worked for 12 s", or with no time to say, "Steps".
  */
 export function workedWords(steps: readonly RunStep[], workedMs: number | undefined): string {
   const words = foldWords(steps);
   if (workedMs === undefined || workedMs < 1_000) {
-    return words.charAt(0).toUpperCase() + words.slice(1);
+    return words === "" ? "Steps" : words.charAt(0).toUpperCase() + words.slice(1);
   }
-  return `Worked for ${elapsedTimeWords(workedMs)} · ${words}`;
+  const worked = `Worked for ${elapsedTimeWords(workedMs)}`;
+  return words === "" ? worked : `${worked} · ${words}`;
 }
 
 /** Which steps draw as lines while the run works (design v2, state 3). */
@@ -227,8 +232,9 @@ function LabelWords({
 }
 
 /** One step's line: its words in the present tense with a shimmer while it runs, in the past
- *  tense with its result once it ended, or the sentence of a call that failed; and the run's timer
- *  on the right where it is the newest line of a run that works. */
+ *  tense with its result once it ended, or the sentence of a call that failed, in red; a slip's
+ *  line is grey, as any ended call's, with what the model tried. The newest line of a run that
+ *  works carries the run's timer on the right. */
 function StepLine({
   step,
   timer,

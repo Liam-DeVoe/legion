@@ -49,6 +49,7 @@ test("each call runs with its reply's present words, and ends with its frame's p
     label: "Could not read the messages of DEMO-7: you have no access",
     refused: true,
     running: false,
+    slip: false,
     step: 3,
     tool: "call_tool",
   });
@@ -110,6 +111,7 @@ test("a row an approved plan's runner made, which no reply named, is a write ste
       label: "Commented on DEMO-7",
       refused: false,
       running: false,
+      slip: false,
       step: 6,
       tool: "dispatch_comment",
     },
@@ -347,4 +349,43 @@ test("the end of a new-issue run names the issue it filed, and any other end nam
   expect(filed.end).toEqual({ issue: "DEMO-46", offers: ["undo"], reason: "", state: "done" });
   const answered = withRunFrame(STARTED_RUN, "end", { offers: [], reason: "", state: "done" });
   expect(answered.end?.issue).toBe("");
+});
+
+// A slip - a step the model guessed that Dispatch does not have, which it mends itself - is no
+// failure: its tool frame says so, and the step keeps it beside its words, never refused.
+test("a tool frame of a slip keeps the slip on its step, which is not refused", () => {
+  const run = framed([
+    ["call", { kind: "read", label: "Trying a step Dispatch does not have", step: 2, tool: "x" }],
+    [
+      "tool",
+      {
+        error: false,
+        items: [],
+        kind: "read",
+        label: "Tried a step Dispatch does not have",
+        note: "x {}: no such tool",
+        slip: true,
+        step: 2,
+        tool: "x",
+      },
+    ],
+    [
+      "tool",
+      {
+        error: true,
+        items: ["DEMO-12"],
+        kind: "read",
+        label: "Could not read DEMO-12: you have no access",
+        step: 3,
+        tool: "read",
+      },
+    ],
+  ]);
+  expect(run.steps.map((step) => [step.label, step.slip, step.refused, step.running])).toEqual([
+    ["Tried a step Dispatch does not have", true, false, false],
+    ["Could not read DEMO-12: you have no access", false, true, false],
+  ]);
+  // A step that still runs, and one of a frame from before frames said slips, is no slip.
+  expect(framed([call(2)]).steps[0]?.slip).toBe(false);
+  expect(framed([ended(2)]).steps[0]?.slip).toBe(false);
 });

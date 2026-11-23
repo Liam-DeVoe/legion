@@ -11,7 +11,8 @@ import { type RunEvent, type RunState, runEnded, runNext } from "./run-states";
 
 /** A tool call of a run: its place among the run's steps (`id`, which never changes), its tool,
  *  the words the bar shows for it, the kind of step its frame says it is, the prose that heads it,
- *  how many results it answered, the items it named and answered, and whether it was refused. */
+ *  how many results it answered, the items it named and answered, whether it was refused, and
+ *  whether it was a slip. */
 export interface RunStep {
   readonly id: number;
   readonly tool: string;
@@ -36,8 +37,15 @@ export interface RunStep {
   readonly count: number;
   /** The keys and references of the items the call named and answered. */
   readonly items: readonly string[];
+  /** Whether the call failed in a way its person can act on, such as no access, as its tool
+   *  frame says; its label is then the one sentence that says why. */
   readonly refused: boolean;
   readonly running: boolean;
+  /** Whether the call was a slip, as its tool frame says: a guess of the model's that failed - a
+   *  step Dispatch does not have, arguments its tool refuses, a change outside a plan - which the
+   *  model mends itself and its person cannot act on. A slip is never refused, and its label says
+   *  what the model tried ("Tried a step Dispatch does not have"). */
+  readonly slip: boolean;
 }
 
 /** How a run's turn ended, as its `end` frame says it: its state, why, what it offers next, and
@@ -147,6 +155,7 @@ function withReplySteps(
       label: labels[index] ?? "",
       refused: false,
       running: true,
+      slip: false,
       step: undefined,
       tool,
     });
@@ -213,6 +222,7 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         label: textOf(fields.label),
         refused: false,
         running: true,
+        slip: false,
         step,
         tool: textOf(fields.tool),
       };
@@ -270,6 +280,7 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         label: textOf(fields.label),
         refused: fields.error === true,
         running: false,
+        slip: fields.slip === true,
         step,
         tool,
       };

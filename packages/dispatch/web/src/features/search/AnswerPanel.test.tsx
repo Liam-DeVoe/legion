@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { GOING_ERROR_ANSWER_FAILED } from "@legion/contracts";
+import {
+  GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+  GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_NO_MODEL_CONFIGURED,
+} from "@legion/contracts";
 import { focusManager } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -634,6 +638,45 @@ test("the short answer shows at most 3 lines, with ↵ for the full answer while
 
     await user.keyboard("{ArrowDown}");
     expect(within(panel).queryByTestId("going-answer-full")).toBeNull();
+  } finally {
+    bar.unmount();
+  }
+});
+
+// A failed short answer says why in one sentence, in the words a run's same failure says, and
+// its one next step, the full answer; never its code (design v3, rules 1 and 7). A Dispatch with
+// no answering model says the one sentence of state 13, and offers no step.
+test("a failed short answer says why in words with its next step, and never its code", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  const failures: readonly (readonly [string, string])[] = [
+    [GOING_ERROR_ANSWER_FAILED, "Dispatch could not reach the model. Ask for the full answer."],
+    [
+      GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+      "The model took too long to answer. Ask for the full answer.",
+    ],
+    [
+      GOING_ERROR_NO_MODEL_CONFIGURED,
+      "Answers are off on this Dispatch: it has no answering model.",
+    ],
+    ["A_LATER_CODE", "Dispatch could not write a short answer. Ask for the full answer."],
+  ];
+  try {
+    await type(user, "astrolabe");
+    for (const [index, [code, words]] of failures.entries()) {
+      if (index > 0) await user.keyboard("s");
+      await tick(index === 0 ? pauseRest : MEANING_PAUSE_MS);
+      await waitFor(() => expect(streams).toHaveLength(index + 1));
+      send(streams[index], { data: { code }, event: "error" });
+      await waitFor(() => expect(screen.getByTestId("going-answer-error").textContent).toBe(words));
+      expect(screen.getByTestId("going-answer").textContent).not.toContain(code);
+      // The line Ask is highlighted, and the failure says the step: the foot does not again.
+      expect(screen.getByRole("combobox", { name: "Search" })).toHaveAttribute(
+        "aria-activedescendant",
+        "search-option-line"
+      );
+      expect(screen.queryByTestId("going-answer-full")).toBeNull();
+    }
   } finally {
     bar.unmount();
   }

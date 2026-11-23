@@ -44,7 +44,10 @@ export interface ReferenceLinking {
  * the browser cannot draw (a pinned version the server does not serve) is dropped, leaving the
  * title alone, so a stale or hand-written reference never shows a broken-image glyph. When the
  * element it renders into is a link, its href follows `useReferencePath`, which a pinned block of
- * a spec resolves only once its issue's summary is read. */
+ * a spec resolves only once its issue's summary is read. Where its words end in "…" - a title
+ * cut to fit, as a long question's is - and the text right after it starts with a full stop, the
+ * sentence draws one stop, the "…": the "." is taken out of that text while the words end so,
+ * and put back once they no longer do. */
 export function RefLink({
   anchor,
   route,
@@ -63,6 +66,16 @@ export function RefLink({
       anchor.setAttribute("href", path);
     }
   }, [anchor, path]);
+  const endsInEllipsis = (title ?? text).endsWith("…");
+  useLayoutEffect(() => {
+    const after = anchor?.nextSibling;
+    // One full stop, not the "..." of an ellipsis the author typed after the link.
+    if (!endsInEllipsis || !(after instanceof Text) || !/^\.(?!\.)/u.test(after.data)) {
+      return;
+    }
+    after.deleteData(0, 1);
+    return () => after.insertData(0, ".");
+  }, [anchor, endsInEllipsis]);
   // The address that failed, not a flag: a plain reference names the latest version, so a version
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
