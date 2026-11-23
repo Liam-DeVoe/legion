@@ -1,19 +1,12 @@
 import type { MeInboxResponse } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
-import { createIssue, createProject, dismissInbox } from "./api";
+import { createIssue, createProject, dismissInbox, getMeInbox } from "./api";
 import { countDismissedThreads, seedDismissedThreads } from "./dismissed-seed";
 import { drawer } from "./inbox-drawer";
 import { inboxList } from "./inbox-pane";
 import { replyRowId, THREAD_SESSION } from "./inbox-threads";
 import { expandedState } from "./settled";
-import {
-  type BrowserContext,
-  expect,
-  type Locator,
-  type Page,
-  type Response,
-  test,
-} from "./test";
+import { type BrowserContext, expect, type Locator, type Page, type Response, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -112,15 +105,22 @@ async function openDismissed(page: Page): Promise<Opening> {
   };
 }
 
-/** A page of `context` at the measured size that notes each document's first row, with the
- *  build's code already in its cache: it opens the Inbox once first. */
+/** A page of `context` at the measured size that notes each document's first row. It loads the
+ *  Dismissed view once and discards that load, so the build's code is in the page's cache before
+ *  the first timing. */
 async function timedPage(context: BrowserContext): Promise<Page> {
   const page = await context.newPage();
   await page.setViewportSize(WIDE);
   await noteFirstRow(page);
-  await page.goto("/");
-  await inboxList(page).waitFor();
+  await openDismissed(page);
   return page;
+}
+
+/** Fails, naming `login`, unless that person has nothing in the Inbox: the one read's `inbox`
+ *  state answers `total` 0. */
+async function expectEmptyInbox(login: string): Promise<void> {
+  const { total } = await getMeInbox({ state: "inbox" }, { login });
+  if (total !== 0) throw new Error(`${login} has ${total} entries in the Inbox before the timing`);
 }
 
 /** The middle of `values`, or the mean of the two middle ones. */
@@ -262,20 +262,27 @@ test("the Dismissed view draws a window of its rows over thousands dismissed", a
   await createProject({ key: "CORE", name: "Core" });
   const pile = await createIssue({ project: "CORE", title: "Mirror retries" });
   const short = await createIssue({ project: "CORE", title: "Lease handover" });
+  // Each thread's other writer is a session (`seedBulkReplyThreads`), so neither person is tied to
+  // the other's threads, and each has dismissed every thread of theirs.
   await seedDismissedThreads({ count: 5_000, issueKey: pile.key, prefix: "Mirror" });
   await seedDismissedThreads({ count: 250, issueKey: short.key, login: "bob", prefix: "Lease" });
   expect.soft(await countDismissedThreads("alice"), "alice's dismissed threads").toBe(5_000);
   expect.soft(await countDismissedThreads("bob"), "bob's dismissed threads").toBe(250);
+  await expectEmptyInbox("alice");
+  await expectEmptyInbox("bob");
 
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
   try {
     const page = await timedPage(alice);
-    const many: Opening[] = [];
-    for (let reading = 0; reading < READINGS; reading += 1) many.push(await openDismissed(page));
     const bobPage = await timedPage(bob);
+    // One load at a time, alternating the two people, until each has five.
+    const many: Opening[] = [];
     const few: Opening[] = [];
-    for (let reading = 0; reading < READINGS; reading += 1) few.push(await openDismissed(bobPage));
+    for (let reading = 0; reading < READINGS; reading += 1) {
+      many.push(await openDismissed(page));
+      few.push(await openDismissed(bobPage));
+    }
     await bobPage.close();
 
     const manyMedian = median(many.map(({ ms }) => ms));
@@ -356,11 +363,7 @@ test("the Dismissed view draws a window of its rows over thousands dismissed", a
     await page.keyboard.press("Enter");
     await fourth;
     await expect.poll(async () => (await readWindow(box)).loaded).toBe(800);
-    expect(nextPages).toEqual([
-      opened.cursor,
-      secondAnswer.next_cursor,
-      thirdAnswer.next_cursor,
-    ]);
+    expect(nextPages).toEqual([opened.cursor, secondAnswer.next_cursor, thirdAnswer.next_cursor]);
 
     // `j` from the first row to the 30th: the row in hand is drawn and in view at each step.
     await box.evaluate((scroller) => {

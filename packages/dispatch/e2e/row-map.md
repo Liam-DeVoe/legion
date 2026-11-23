@@ -267,6 +267,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-compose.e2e.ts` | each send is a write the server delivers through the fake listener, and the outcomes it draws are the server's own deliveries, its broadcast's exclusions and its recorder's queued envelope, which only a live server makes |
 | `e2e/inbox-decline.e2e.ts` | every decline is a write the server takes and the surfaces re-read; the kind it refuses to decline is the server's; the note's bound is the route's |
 | `e2e/inbox-dismiss.e2e.ts` | dismiss and restore writes, bulk requests, refusals and reloads |
+| `e2e/inbox-dismissed-window.e2e.ts` | times the first page the server answers over thousands of dismissed threads the server's own dismiss wrote, follows the cursor it answers to the next pages, and restores rows through that route, from another tab while the page is open; a recording holds neither the pages nor the live update |
 | `e2e/inbox-drawer.e2e.ts` | answers an ask in the drawer |
 | `e2e/inbox-mark-all.e2e.ts` | mark-all is a server write, including its refusal |
 | `e2e/inbox-pane-scroll.e2e.ts` | every row draws the document in its live room; another session's edit, a reply and an event committed elsewhere must reach the open page, and a resumed socket's gap must refresh the reads it holds; an approval row reads the version the server names latest against the approval it is marked against |

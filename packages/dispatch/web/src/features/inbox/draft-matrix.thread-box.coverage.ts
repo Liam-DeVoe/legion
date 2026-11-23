@@ -23,6 +23,7 @@ const REASONS = {
   11: "11. A box answers its thread's root; a read that no longer holds the root draws no box, since there is no message left to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
   12: "12. The Inbox draws a thread's box in the reading column above the column's width and in the row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name.",
   13: "13. Below the reading column's width, a phone's included, the Inbox draws no column: each thread row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed. What ends a card's box is (12)'s: leaving the page, closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list beside the column, and move no box; the app shell's forms are the sign-in file's.",
+  14: "14. The Dismissed view (`showDismissed`) draws its rows as a window (`DismissedWindow`): the rows near sight, out of every row it has loaded. Each card is keyed by its row's id, so the window moves no box from one row to another. A card scrolled out of the window unmounts its box, and a card scrolled back draws the box again at the same thread's send name, as the move to another row and back does. The window draws nothing for an index past the loaded rows (`row === undefined`), and its count rules that out. A switch between the Inbox and the Dismissed view is the row leaving the list, as in (13). Which scroller the window reads (`box`: the list column, the drawer's box or the page) follows (12)'s width and drawer, and where the list starts in it (`margin`) moves no box.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -294,6 +295,27 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("InboxBody | ThreadCardRow | address prop | thread={row.thread}", {
     reason: REASONS[13],
   }),
+  ...answers("InboxBody | ThreadCardRow | conditional | (showDismissed) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("InboxBody | ThreadCardRow | conditional | !(showDismissed) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedWindow | ThreadCardRow | conditional | (props.box === undefined) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedWindow | ThreadCardRow | conditional | !(props.box === undefined) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | ThreadCardRow | conditional | drawn by items.map(…)", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | ThreadCardRow | early return | if (row === undefined) return …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | ThreadCardRow | key | <WindowSlotContext key={rowId(row)}>", {
+    reason: REASONS[14],
+  }),
   ...answers(
     'ThreadPane | AskThreadPane | early return | if (row.kind === "agent") return …',
     cells(`${HOST} · the column moves to another row, then back`)
@@ -414,6 +436,13 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers("usePaneSelection | - | form | if (selectedId !== filter.item)", {
     reason: REASONS[13],
+  }),
+  ...answers("DismissedWindow | ThreadCardRow | form | (props.box === undefined) ? …", {
+    reason: REASONS[14],
+  }),
+  ...answers("DismissedRows | - | form | (scroller === null) ? …", { reason: REASONS[14] }),
+  ...answers("DismissedRows | - | form | if (Math.abs(start - margin) >= 1)", {
+    reason: REASONS[14],
   }),
   ...answers(
     "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | lifetime | <MentionComposer mutationKey={sendKey}>",

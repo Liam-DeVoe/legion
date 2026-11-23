@@ -245,8 +245,9 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
     await mark(page, drawn[1] ?? "").click();
     await expectCount(page, 1);
     await mark(page, drawn[4] ?? "").click({ modifiers: ["Shift"] });
+    // The selection's ids come before the count, so a wrong run fails printing both lists.
+    await expect.poll(() => markedIds(page)).toEqual(run);
     await expectCount(page, run.length);
-    expect(await markedIds(page)).toEqual(run);
 
     // One press of Dismiss is one request naming exactly the run, and the run leaves the list.
     const named = await namedByPress(page, () =>
