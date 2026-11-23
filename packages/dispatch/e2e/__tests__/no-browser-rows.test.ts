@@ -185,6 +185,29 @@ test("a planted row that drives no browser is named, and one that drives a brows
   ]);
 });
 
+// A row that launches a browser of its own takes no `page`, `browser` or `context`: it takes
+// `playwright` and `browserName` and launches `playwright[browserName]`, as each row of
+// e2e/visual.e2e.ts does through `withAliceInOwnBrowser`. That pair is a browser, and
+// `playwright` alone is not, since beside the launchers it holds `request`, which opens no page.
+test("a row that takes playwright and browserName drives a browser, and one that takes playwright alone does not", () => {
+  const launchesItsOwn: SuiteRow = {
+    file: "a-spec-that-launches.e2e.ts",
+    line: 1,
+    title: '"a row that launches a browser of its own"',
+    fixtures: ["browserName", "launchOptions", "playwright"],
+  };
+  const takesPlaywrightAlone: SuiteRow = {
+    file: "a-spec-that-launches.e2e.ts",
+    line: 2,
+    title: '"a row that takes playwright for its request"',
+    fixtures: ["playwright"],
+  };
+
+  expect(unexplainedRows([launchesItsOwn, takesPlaywrightAlone], exemptions)).toEqual([
+    takesPlaywrightAlone,
+  ]);
+});
+
 test("a planted row with a computed title, and one with a callback by name, are both named", () => {
   // Both rows are read: the first by its inline callback, whatever its title is, the second by
   // the function its second argument names, which takes no parameter and so binds nothing.

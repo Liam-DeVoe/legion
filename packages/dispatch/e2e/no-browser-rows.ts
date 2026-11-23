@@ -8,13 +8,13 @@
  * and `e2e/__tests__/no-browser-rows.test.ts` is what runs it over the real suite.
  *
  * A row is read from its source rather than from `playwright test --list` because the listing
- * names no fixtures: it reports a file and a title, and whether the callback destructures `page`
- * is the whole of what the rule asks. The test still reads the listings, to prove this walk sees
- * the suite Playwright runs, and what it compares against them is the FILE SET, never a row
- * count: a row generated in a loop is one `test(` call in this module's reading and as many rows
- * in the listing as the loop has turns, and one `test(` call is as many listed rows again as
- * there are projects that run the file. The set of files is the one thing the two agree on
- * exactly.
+ * names no fixtures: it reports a file and a title, and the fixtures the callback destructures
+ * (`browserFixtures`) are the whole of what the rule asks. The test still reads the listings, to
+ * prove this walk sees the suite Playwright runs, and what it compares against them is the FILE
+ * SET, never a row count: a row generated in a loop is one `test(` call in this module's reading
+ * and as many rows in the listing as the loop has turns, and one `test(` call is as many listed
+ * rows again as there are projects that run the file. The set of files is the one thing the two
+ * agree on exactly.
  *
  * Which calls are rows is TypeScript's answer too, and it is read off a type rather than off
  * the text of the callee. A callee whose type is @playwright/test's `TestType` declares a row;
@@ -114,9 +114,20 @@ export type StaleExemption = {
  */
 export const exemptions: readonly Exemption[] = [];
 
-/** The fixtures that are a browser. Playwright's `request` is not one of them: it is
- *  Playwright's HTTP client, which opens no page. */
-const browserFixtures = new Set(["browser", "context", "page"]);
+/** The fixtures that are a browser, each entry one set of them a row holds a browser by: the
+ *  worker's `browser`, a `context` or a `page` alone, or `playwright` and `browserName`
+ *  together, which a row launches a browser of its own from as `playwright[browserName]` — the
+ *  launcher the worker's `browser` fixture launches from too, and what `withAliceInOwnBrowser`
+ *  (e2e/visual.e2e.ts) launches each visual row's browser with. Playwright's `request` is not
+ *  one of them: it is Playwright's HTTP client, which opens no page. Nor is `playwright` alone,
+ *  which holds that `request` beside the launchers: a row that takes no `browserName` names no
+ *  engine of its project to launch. */
+const browserFixtures: readonly (readonly string[])[] = [
+  ["browser"],
+  ["context"],
+  ["page"],
+  ["playwright", "browserName"],
+];
 
 /** What a callee of a call declares, by the forms @playwright/test 1.64.1 (`types/test.d.ts`)
  *  gives `TestType`. */
@@ -473,9 +484,11 @@ export function specFiles(directory: string): string[] {
   });
 }
 
-/** Whether the row opens a browser: it takes `page`, `browser` or `context`. */
+/** Whether the row opens a browser: it takes every fixture of one entry of `browserFixtures`. */
 function drivesBrowser(row: SuiteRow): boolean {
-  return row.fixtures.some((fixture) => browserFixtures.has(fixture));
+  return browserFixtures.some((browser) =>
+    browser.every((fixture) => row.fixtures.includes(fixture))
+  );
 }
 
 /** What an exemption and a row are matched on. */
