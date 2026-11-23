@@ -46,7 +46,6 @@ import type {
   IssueAskThreadRow,
   IssueReferencesAnswer,
   NewIssueSettings,
-  ProjectDeployRun,
   TargetCandidate,
   UserIssueState,
 } from "./types";
@@ -1750,12 +1749,12 @@ export class DispatchApiClient {
    *  (`failures`), for the drill-down. `repo` is the repository the run is in, which the project
    *  timeline's deploy and failed_run rows name; a run that counts for no project with this key
    *  is `404 NOT_FOUND`. */
-  getProjectDeployRun(project: string, id: number, repo: string): Promise<ProjectDeployRun> {
+  getProjectDeployRun(project: string, id: number, repo: string) {
     return this.read(
       "/api/v1/projects/{key}/deploy-runs/{id}",
       { key: project, id: String(id) },
       { repo }
-    ) as Promise<ProjectDeployRun>;
+    );
   }
 
   /** One eval's versions, newest first, `{items, total, limit, offset}` with `doc_text`, the method

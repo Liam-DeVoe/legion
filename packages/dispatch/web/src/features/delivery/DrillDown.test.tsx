@@ -10,7 +10,7 @@ import type {
   Agent,
   DeliveryPR,
   ProductionEvent,
-  ProjectDeployRun,
+  ProjectDeployRunView,
   ProjectTimelineRunRow,
 } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -225,7 +225,7 @@ interface RecordServer {
 }
 
 /** The deploy-runs read's answer over what `server` holds now. */
-function runAnswer(server: RecordServer): ProjectDeployRun {
+function runAnswer(server: RecordServer): ProjectDeployRunView {
   return {
     deploy: server.deploy,
     failures: [...server.failures],
@@ -399,7 +399,7 @@ const controlRows: [string, () => Promise<void>][] = [
     "pending | write answered 201 or 200 | re-reading: the run detail read again; then idle with the new failure row (signal person, the pull requests, the note, the person)",
     async () => {
       const { form, group, read, server, written } = await flagPending();
-      const reread = Promise.withResolvers<ProjectDeployRun>();
+      const reread = Promise.withResolvers<ProjectDeployRunView>();
       read.mockImplementation(() => reread.promise);
       const flag = failure("failure-bob", {
         actor: BOB,
