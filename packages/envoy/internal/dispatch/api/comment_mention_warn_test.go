@@ -192,6 +192,7 @@ func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
 // is held in flight until the test has read that it is the only one: a second goroutine on the lane
 // would be in flight beside it, and one goroutine more serving a lane.
 func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries, active, most atomic.Int32
 	var mu sync.Mutex
@@ -272,6 +273,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 // handed to the test, which runs it once no goroutine serves any lane, so the next park's start
 // reads the serve loop's own order and not how fast a goroutine left a lane it no longer serves.
 func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries atomic.Int32
 	sender := newMentionSender(lifetime, time.Hour, nil,

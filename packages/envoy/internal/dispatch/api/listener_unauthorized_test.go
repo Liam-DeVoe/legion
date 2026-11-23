@@ -21,6 +21,7 @@ import (
 // (envoy.Client.do): one try, two requests. The server runs on a fake clock this test never moves,
 // so a send that waited out any part of a take-over would never answer at all.
 func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	handler, database := newTargetedMessageHandlerOn(t, listener.server.URL, clocktest.New(time.Now()))
 

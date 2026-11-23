@@ -21,8 +21,7 @@ import (
 // which holds one table at a time, cannot see across tables.
 func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 55)
+	store := openMigratedTestStore(t, 55)
 	holder, err := store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin holder: %v", err)

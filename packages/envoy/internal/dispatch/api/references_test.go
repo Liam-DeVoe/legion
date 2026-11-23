@@ -102,6 +102,7 @@ func issueReferencesQueryRequest(t *testing.T, handler http.Handler, issueKey, q
 // matches and a new version of the member changes. Diagram PNG, which only that member links to,
 // is two hops from the issue and no member, since the read reads one hop.
 func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -164,6 +165,7 @@ func TestIssueReferencesClosureDepthViaAndETag(t *testing.T) {
 }
 
 func TestIssueReferencesExcludeOwnArtifactsAndDanglingTargets(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -184,6 +186,7 @@ func TestIssueReferencesExcludeOwnArtifactsAndDanglingTargets(t *testing.T) {
 // is never cut. The test keeps the name it had when the read walked eight hops and marked a ninth
 // truncated, the name plan.md's and verification.md's lists of checks give it.
 func TestIssueReferencesTruncateBeyondDepthEight(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -221,6 +224,7 @@ func TestIssueReferencesTruncateBeyondDepthEight(t *testing.T) {
 // ?versions=all is the full answer, byte for byte and under the same ETag, as no parameter is;
 // any value but all and latest is refused, and so is a versions given more than once.
 func TestIssueReferencesVersionsAllIsTheFullAnswerAndOtherValuesAreRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -254,6 +258,7 @@ func TestIssueReferencesVersionsAllIsTheFullAnswerAndOtherValuesAreRefused(t *te
 }
 
 func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -276,6 +281,7 @@ func TestArtifactReferencesListOutgoingAndReferencedBy(t *testing.T) {
 }
 
 func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// Authentication comes before the versions parameter: a value the route refuses still
 	// answers 401 to a caller with no identity.
@@ -309,6 +315,7 @@ func TestIssueReferencesRejectUnauthenticatedRequest(t *testing.T) {
 // once the lock is held, so the count is 1 while the request waits and 0 once the bound has ended
 // the walk. A backend's state can lag the answer by a moment, so the freed state is waited for.
 func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
+	t.Parallel()
 	statements := &statementCounter{}
 	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.New(time.Now()), tracer: statements})
 	createReferenceAPIProject(t, handler, "CORE")
@@ -363,6 +370,7 @@ func TestIssueReferencesRefuseAtTheClosureBound(t *testing.T) {
 // lock's own among them. The control is the first read, before the locks: the same request
 // answers 200.
 func TestIssueReferencesRefuseWhenALaterStatementReachesTheBound(t *testing.T) {
+	t.Parallel()
 	statements := &statementCounter{}
 	clock := clocktest.New(time.Now())
 	// No document settles during the test, so no write of the server's own waits on events with a
@@ -496,6 +504,7 @@ func (r *recordingTx) QueryRow(ctx context.Context, sql string, args ...any) pgx
 // the timeout off, and sets the timeout to 1ms at 1 ms left. The transaction starts with a
 // statement_timeout of its own, 1234ms, which the refusal must leave as it is.
 func TestReferencesBudgetRefusesUnderOneMillisecond(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	// The read of the setting runs under the 1ms it set, so a backend kept off the CPU that long
 	// cancels it (SQLSTATE 57014). Such an attempt shows nothing of the setting, and the case runs
@@ -656,6 +665,7 @@ func insertRemovedBlockLink(t *testing.T, database *store.Store, kind, id, toKin
 // later and when the comment X's checks link to is edited, and neither moves X's last_seq or the
 // kinds and via of any row.
 func TestIssueReferencesLinksListEachNodeOnce(t *testing.T) {
+	t.Parallel()
 	// No document settles during the test, so no version but the test's own moves the ETag.
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
@@ -932,6 +942,7 @@ func graphEdges(t *testing.T, handler http.Handler, query url.Values) model.Grap
 // the message.created write. Read from the message, the same edge points out at the ask. Filters
 // narrow it and malformed input is 400.
 func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
+	t.Parallel()
 	// The server's clock is a fake the test never moves, so its since read waits out a held-back
 	// horizon rather than answering short at referencesSinceWait (awaitSinceRead).
 	handler, database, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
@@ -1133,6 +1144,7 @@ func showEdges(read model.GraphReferences) string { return fmt.Sprintf("%#v", re
 // (awaitSinceRead). A read again would let a read that stops at the horizon proven so far pass
 // on its second try.
 func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{clock: clocktest.Held()})
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -1162,6 +1174,7 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 // Once a commits it answers both. Each edit indexes its comment's body as a comment write does
 // (planFoundReferences and the replacement it plans, then refs.Stamp with the edit's event).
 func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	broker := deps.Events
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1262,6 +1275,7 @@ func TestReferencesSinceWithholdsEveryMentionAboveAnOpenLowerEvent(t *testing.T)
 // the same mention points out at the issue; read from the issue's spec the structural edge points
 // out at it.
 func TestReferencesIncludeStructuralEdgesAndDocumentBlockExcerpts(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -1342,6 +1356,7 @@ func insertUnknownKindEdges(t *testing.T, database *store.Store, edges [][4]stri
 // the graph read skips it in both directions instead of answering 500, and the issue header's
 // count is the number of edges its panel lists, not one more.
 func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
@@ -1396,6 +1411,7 @@ func TestReferencesAnswerAroundAnEdgeOfAKindThisBuildCannotAddress(t *testing.T)
 // sides: its referenced-by list is the comment that cites it, and its outgoing list is what its
 // text cites, the known issue and the missing document both unresolved as before.
 func TestArtifactReferencesSkipANodeKindThisBuildCannotAddress(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")
@@ -1428,6 +1444,7 @@ func TestArtifactReferencesSkipANodeKindThisBuildCannotAddress(t *testing.T) {
 // that owns it: the issue node writes no mention, and each target's backlink names the spec's
 // block holding it.
 func TestSeededSpecCitationsInMarkdownDelimitersAreDocumentMentions(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "LEGION")
 	createReferenceAPIProject(t, handler, "ACME")
@@ -1474,6 +1491,7 @@ func TestSeededSpecCitationsInMarkdownDelimitersAreDocumentMentions(t *testing.T
 // seeded spec and the author's edit answered 500, and a rebuild stopped at the first stored body
 // that held one.
 func TestCitationsOfAnIDDecodingToNULDoNotFailTheWrite(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
@@ -1534,6 +1552,7 @@ func readRefRows(t *testing.T, database *store.Store) []refRow {
 // keeping the provenance of every edge it did not have to recreate, and a second rebuild is a
 // no-op.
 func TestRebuildRefsConvergesOnTheLiveIndex(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")

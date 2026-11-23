@@ -34,6 +34,7 @@ import (
 // and waits for the person while that transaction waits for the session, and Postgres breaks
 // the cycle.
 func TestACommentInAnAskThreadTakesItsAuthorsNodesInAscendingOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	listener := newQueueingListener(t, map[string]fakeSession{
 		brokerTestSession: {title: "alice's agent", capabilities: queuedModes},

@@ -35,6 +35,7 @@ func startOfPeriodAfterNext(interval time.Duration) time.Time {
 // inside a period already served makes no statement of its own. Both runners tick on one fake
 // clock, which the test moves a period at a time.
 func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	recorders := make([]*storetest.StatementRecorder, 0, 2)

@@ -68,6 +68,7 @@ func assertRefusedOnClosedIssue(t *testing.T, name string, response *httptest.Re
 }
 
 func TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed conversation", "before")
 	closeIssue(t, handler, issue.Key)
@@ -108,6 +109,7 @@ func TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents(t *testing.T) {
 }
 
 func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.T) {
+	t.Parallel()
 	listener, sends := closedIssueListener(t)
 	// A clock whose timers never fire: the comment's lookup of s1 is answered as the listener
 	// answers it and is never left unanswered by its bound (mentionLookupTimeout), so the comment
@@ -162,6 +164,7 @@ func TestClosedIssueDeliversACommentMentionItsRetryAndTheAgentsReply(t *testing.
 }
 
 func TestClosedIssueDeliversAMessageItsRetryAndTheAgentsReply(t *testing.T) {
+	t.Parallel()
 	listener, sends := closedIssueListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed message", "before")
@@ -201,6 +204,7 @@ func TestClosedIssueDeliversAMessageItsRetryAndTheAgentsReply(t *testing.T) {
 }
 
 func TestClosedIssueTakesAnAnchoredCommentAndItsThread(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed anchors", "before the close")
 	earlier := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
@@ -247,6 +251,7 @@ func TestClosedIssueTakesAnAnchoredCommentAndItsThread(t *testing.T) {
 }
 
 func TestClosedIssueStillRefusesEveryOtherWriteUntilReopened(t *testing.T) {
+	t.Parallel()
 	listener, _ := closedIssueListener(t)
 	handler, _ := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Closed for other writes", "before")

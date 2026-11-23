@@ -72,6 +72,7 @@ func stopOnCleanup(t *testing.T, kind string, running liveSubscription) (stop fu
 // on live on the subscription it made instead. The subscription here waits for room as a socket's
 // does while its page reads nothing, so it drains nothing of what the relay publishes into it.
 func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -124,6 +125,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 // events in silence, and the page's resubscribe from the last id it applied is served what
 // commits next.
 func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))
@@ -193,6 +195,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 // retry on the server's clock first, so a read that keeps failing is asked again at that pace
 // rather than as fast as the page can resubscribe.
 func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
+	t.Parallel()
 	fake := clocktest.New(time.Now())
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})
 	testwait.Returns(t, "every connection of the server's pool to come back, so the pool closes", database.Pool.Close)
@@ -223,6 +226,7 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 // frame, which is after it subscribed to the relay and read the head and before its catch-up, so
 // the commit lands exactly in that window.
 func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	ctx, err := store.ForConcurrentRead(store.WithTransactionTracking(t.Context()))

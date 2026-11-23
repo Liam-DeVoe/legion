@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -1521,7 +1522,7 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m.Run))
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m.Run) }))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {

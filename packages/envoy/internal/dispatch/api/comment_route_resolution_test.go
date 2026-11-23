@@ -34,6 +34,7 @@ import (
 // (mentionLookupTimeout, 250 ms): a write slower than that was cancelled, and one that started
 // later than that raced the comment's locked read.
 func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	var lookupsMu sync.Mutex
 	var lookups []string

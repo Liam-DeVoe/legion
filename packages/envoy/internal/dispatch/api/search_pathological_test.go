@@ -394,6 +394,7 @@ func requireShortVectorRuns(t *testing.T, database *store.Store, what, stored st
 // first rung's count, even when the rung between fills the growth it may take: a final rung held
 // to the rung before it would pass work that grows with the square of the input.
 func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
+	t.Parallel()
 	command := exec.Command(os.Args[0], "-test.run=^TestGrowsLinearlyRejectsQuadraticFinalRungHelper$")
 	command.Env = append(os.Environ(), "GROWS_LINEARLY_HELPER=true")
 	output, err := command.CombinedOutput()
@@ -410,6 +411,7 @@ func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
 const quadraticFinalRung = 64
 
 func TestGrowsLinearlyRejectsQuadraticFinalRungHelper(t *testing.T) {
+	t.Parallel()
 	if _, helper := os.LookupEnv("GROWS_LINEARLY_HELPER"); !helper {
 		t.Skip("subprocess helper")
 	}
@@ -475,6 +477,7 @@ func sizeText(size int) string {
 // with its answer and a message are each found by a word they hold, with the same snippet marks,
 // and a word joined to others by underscores is still found by itself.
 func TestSearchFindsOrdinaryAndUnderscoredTextAfterSearchText(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	corpus := seedSearchCorpus(t, handler)
 	for _, test := range []struct{ query, kind, id string }{
@@ -519,6 +522,7 @@ func TestSearchFindsOrdinaryAndUnderscoredTextAfterSearchText(t *testing.T) {
 // italic spans, held a gigabyte while it was saved (LEGION-481) - is refused as too large to store,
 // naming the limit, on a new document (SeedText) and on a replacement (ReplaceText), never a 500.
 func TestUploadRefusesADocumentTooLargeToStore(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	body := strings.Repeat(")_", (1<<20)/2)
@@ -549,6 +553,7 @@ func TestUploadRefusesADocumentTooLargeToStore(t *testing.T) {
 // CAP_EXCEEDED naming the limit, and writes nothing: a spec at issue creation, an issue's and a
 // project's document upload as JSON, and an edit's insert and replace.
 func TestEveryMarkdownWriteRefusesMarkdownPastTheElementLimit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Element limit", "Before.\n")
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DOCS", "name": "Docs"}, "alice"); response.Code != http.StatusCreated {

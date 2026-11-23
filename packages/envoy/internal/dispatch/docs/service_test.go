@@ -6135,19 +6135,21 @@ func deleteRun(text string) func(*pmdoc.Node) *pmdoc.Node {
 // failure; the completed eviction of a room that was live is the same observation.
 func waitForRoomFailure(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	testwait.Eventually(t, "the document's room to fail, or its failed room's eviction to finish", func() bool {
+	testwait.Until(t, "the document's room to fail, or its failed room's eviction to finish", func() (string, bool) {
 		if service.roomFailure(artifactID) != nil {
-			return true
+			return "failed", true
 		}
 		_, resident := service.rooms.Load(artifactID)
-		return !resident && service.srv.GetDoc(artifactID) == nil
+		live := service.srv.GetDoc(artifactID) != nil
+		return fmt.Sprintf("not failed, resident %t, live document %t", resident, live), !resident && !live
 	})
 }
 
 func waitForNoLiveDocument(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	testwait.Eventually(t, "the document's room to close", func() bool {
-		return service.srv.GetDoc(artifactID) == nil
+	testwait.Until(t, "the document's room to close", func() (string, bool) {
+		live := service.srv.GetDoc(artifactID) != nil
+		return fmt.Sprintf("live document %t", live), !live
 	})
 }
 

@@ -96,6 +96,7 @@ func readRelatedCheckRows(t *testing.T, database *store.Store, where string, arg
 // for the rare words, so it lists that one item and none of the thirty that share only the common
 // word. The old query ORed every word of the text and listed common-word matches beside it.
 func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RARE")
 	var common []string
@@ -130,6 +131,7 @@ func TestRelatedCheckListsTheRareWordMatchNotTheCommonWordMatches(t *testing.T) 
 // listed the repeater first. The meaning stage answers here with no item near the text's
 // meaning, so its order is its keyword arms'.
 func TestRelatedCheckRanksMoreChosenWordsAboveOneRepeated(t *testing.T) {
+	t.Parallel()
 	for _, stage := range []struct {
 		name    string
 		options testServerOptions
@@ -202,6 +204,7 @@ func (e *contextEmbedder) Embed(ctx context.Context, texts []string, inputType e
 // An item whose meaning matches and which holds none of the text's words is found by the meaning
 // search, and the result says it searched by meaning and keywords.
 func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	const text = "Archive snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
@@ -235,6 +238,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 // The keyword-only run first is what says the page really is crowded: every item it lists is one
 // of the ten, so the meaning-only item is reached by the meaning leg and by nothing else.
 func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testing.T) {
+	t.Parallel()
 	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
 	// One word per crowding item, each held by that item alone, so the picker chooses all ten: it
 	// drops a word no item of the project holds and a word more than a tenth of the project holds
@@ -288,6 +292,7 @@ func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testi
 // by meaning and keywords. Left out after the page instead, the ten take every place in it and
 // the keeper, eleventh by vector, is never seen (INFRA-1160).
 func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
+	t.Parallel()
 	const text = "Archive snapshots finish late"
 	const keeperTitle = "Our own nightly backup cousin"
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
@@ -320,6 +325,7 @@ func TestRelatedCheckMeaningLeavesExcludedIssuesOutOfItsWindow(t *testing.T) {
 
 // A failing embedder leaves the check its keyword search, and the result says so and why.
 func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{err: errors.New("model service throttled")}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MFAIL")
@@ -343,6 +349,7 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // The embedding's own bound (searchEmbedTimeout, embedQuery) is on that clock too, armed for the
 // same moment, since both are three seconds from the check's start; no real time ends it first.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{delay: time.Hour}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")
@@ -392,13 +399,17 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	}
 }
 
-// awaitLockWait waits until a statement waits for the lock a case holds on table.
+// awaitLockWait waits until a statement of this test's own database waits for the lock a case
+// holds on table: pg_locks lists every database of the instance, and a test running beside this
+// one may wait on a lock of its own on a table that has the same oid in its database.
 func awaitLockWait(t *testing.T, database *store.Store, table string) {
 	t.Helper()
 	testwait.Eventually(t, "a statement to wait on the lock held on "+table, func() bool {
 		var waiting int
-		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from pg_locks where relation = $1::regclass and not granted`, table).Scan(&waiting); err != nil {
+		if err := database.Pool.QueryRow(context.Background(), `
+			select count(*) from pg_locks where relation = $1::regclass and not granted
+			  and database = (select oid from pg_database where datname = current_database())
+		`, table).Scan(&waiting); err != nil {
 			t.Fatalf("read the lock waits on %s: %v", table, err)
 		}
 		return waiting > 0
@@ -435,6 +446,7 @@ func checkOnTheSide(srv *server, ctx context.Context, input relatedInput) <-chan
 // TestSearchMeaningLegsUseTheHNSWIndexNotASequentialScan), and without JIT, which the disabled
 // plans' inflated costs would otherwise spend seconds compiling.
 func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t *testing.T) {
+	t.Parallel()
 	const text = "Find what this is about"
 	const nearer = 60
 	arc := func(angle float64) []float32 { return angledVector(math.Cos(angle), 1) }
@@ -481,6 +493,7 @@ func TestRelatedCheckMeaningFindsAProjectsItemBeyondOtherProjectsNearerVectors(t
 // for the allowance armed there and moves the clock to just short of it while the lock is still
 // held, so a stage with a shorter bound of its own, on either clock, would answer first.
 func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "SLOW")
 	key := createSearchIssue(t, handler, "SLOW", "Quarterly zymurgy ledger drifts", "")
@@ -515,6 +528,7 @@ func TestRelatedCheckBoundsCompletesBehindAOneSecondLock(t *testing.T) {
 // A keyword stage held past the allowance answers that the check was not made, for time, and the
 // check is recorded so.
 func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "STUCK")
 	createSearchIssue(t, handler, "STUCK", "Quarterly zymurgy ledger drifts", "")
@@ -572,6 +586,7 @@ func TestRelatedCheckBoundsPastTheAllowanceIsNotMadeAndRecorded(t *testing.T) {
 // ends, is not made because the request ended, and is recorded as cancelled: it did not run out of
 // time, so the records route must not count it as skipped for time.
 func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "GONE")
 	createSearchIssue(t, handler, "GONE", "Quarterly zymurgy ledger drifts", "")
@@ -627,6 +642,7 @@ func TestRelatedCheckBoundsARequestThatEndsFirstIsRecordedCancelled(t *testing.T
 // left off, each block's check would read its context's end as the request that ran it going away
 // and record cancelled, which the records route does not count as skipped for time.
 func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "DBTO")
 	createSearchIssue(t, handler, "DBTO", "Quarterly zymurgy ledger drifts", "")
@@ -707,6 +723,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 // When the record's second runs out, pgx cancels its statement, so the row is lost unless it is
 // tried again: it is written once the lock is released.
 func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "MIGR")
 	createSearchIssue(t, handler, "MIGR", "Quarterly zymurgy ledger drifts", "")
@@ -790,6 +807,7 @@ func relatedInsertWaiting(t *testing.T, database *store.Store, before time.Time)
 // wait open. The retry is counted with that work: the wait neither returns while the retry still
 // holds its row nor panics, and the row is written once the lock holding it up is released.
 func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.T) {
+	t.Parallel()
 	clock := clocktest.New(checkStart)
 	handler, database, _, srv := newRegisteredTestServer(t, testServerOptions{clock: clock})
 	createSuggestionProject(t, handler, "SHUT")
@@ -853,6 +871,7 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 // A text with no word to search for, blank or stopwords alone, answers that no check was made
 // and why, never nothing.
 func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "BLANK")
 	createSearchIssue(t, handler, "BLANK", "Is it to be or not to be", "")
@@ -876,6 +895,7 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // bound here is every test server's (gateBoundPastEveryRead), so the title matches are the gate's
 // verdict and not the machine's having answered inside production's 500 ms.
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "FORCE")
 	const title = "Archive search drops rows past offset fifty"
@@ -903,6 +923,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 
 // An issue create whose write-advice read fails still answers its check, on advice of its own.
 func TestCreateIssueKeepsTheCheckWhenWriteAdviceFails(t *testing.T) {
+	t.Parallel()
 	handler, _ := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "ADVISSUE")
 	spec := ""
@@ -993,6 +1014,7 @@ func checkThroughJSON(t *testing.T, srv *server, input relatedInput) testSuggest
 // chosen, on the item the ask route's check lists. Only the person who gave the current answer
 // may change it, so both answers are alice's; the time, the option and the text tell them apart.
 func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "LATEST")
 	first := fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}, "text": "Keep the brass one."})
 	latest := fixture.answer(t, "twice", "alice", map[string]any{
@@ -1020,6 +1042,7 @@ func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
 
 // An answer that chose no option says so with an empty list, never null.
 func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "NOOPT")
 	fixture.answer(t, "no-option", "alice", map[string]any{"selected": []string{}, "text": "Neither; use enamel."})
 
@@ -1045,6 +1068,7 @@ func TestRelatedCheckShowsAnAnswerWithNoOptionChosen(t *testing.T) {
 
 // An ask closed with no answer carries its resolution and no answer.
 func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "CLOSED")
 	if response := dispatchRequest(t, fixture.handler, http.MethodPost, "/api/v1/asks/"+fixture.asks["closed"]+"/resolve", map[string]any{
 		"kind": "resolved", "reason": "The roster settles it.",
@@ -1062,6 +1086,7 @@ func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
 
 // An open ask says it is open.
 func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "OPENASK")
 	suggestions := checkThroughJSON(t, fixture.srv, relatedInput{project: "OPENASK", text: "Should the balloon cross the fjord?"})
 	item := relatedAsk(t, suggestions, fixture.asks["open"])
@@ -1075,6 +1100,7 @@ func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
 // events locked past the read's deadline, keeping the states already read would show that ask as
 // closed with no answer.
 func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
+	t.Parallel()
 	fixture := newAskStateFixture(t, "PARTIAL")
 	fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}})
 	retractedAnswer := fixture.answer(t, "closed", "alice", map[string]any{"selected": []string{"Steel"}, "text": "Steel pilots."})
@@ -1196,6 +1222,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 // An issue matched through its title and through its spec fills one place, so the other places go
 // to other owners.
 func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "OWNER")
 	key := createSearchIssue(t, handler, "OWNER", "Zymurgy ledger drifts", "The zymurgy ledger drifts every quarter.")
@@ -1208,6 +1235,7 @@ func TestRelatedCheckListsOneItemPerOwner(t *testing.T) {
 
 // Every issue and ask check is recorded with how it went: a found, a none and a not-made one.
 func TestRelatedCheckRecordsEachCheck(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REC")
 	existing := createSearchIssue(t, handler, "REC", "Zymurgy ledger drifts", "")
@@ -1270,6 +1298,7 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 // A create naming a GitHub issue Dispatch already holds creates nothing, so it makes no check, and
 // says so; the check is recorded as not made.
 func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createSuggestionProject(t, handler, "EXT")
 	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12", "project": "EXT"}, "alice")
@@ -1301,6 +1330,7 @@ func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 // Keyword-only, because the ordering between an issue and its document is the keyword legs'
 // and needs no model: the embedder is configured only because the check's server takes one.
 func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
+	t.Parallel()
 	const title = "Astrolabe drift spoils the mooring calibration"
 	const spec = "The astrolabe drifts during the quadrant sweep and the mooring calibration is spoiled."
 	const text = "Astrolabe drift during mooring"
@@ -1349,6 +1379,7 @@ func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
 // Keyword-only, as the document test is: the ordering under test is the keyword leg's and needs
 // no model; the embedder is configured only because the check's server takes one.
 func TestRelatedCheckKeepsAnOpenAskOverTheIssueThatOwnsIt(t *testing.T) {
+	t.Parallel()
 	const title = "Sextant backlash on the tender"
 	const spec = "The sextant backlash grows while the tender rides at anchor."
 	const question = "Should the sextant backlash be measured before the harbour survey?"
@@ -1422,6 +1453,7 @@ func openRelatedAsk(t *testing.T, handler http.Handler, issue, question string) 
 // Keyword-only, as the two tests above are: the ordering under test is the keyword leg's and
 // needs no model; the embedder is configured only because the check's server takes one.
 func TestRelatedCheckKeepsAnOpenAskWhoseDocumentRowArrivesFirst(t *testing.T) {
+	t.Parallel()
 	const title = "Theodolite gimbal on the tender"
 	const spec = "The theodolite gimbal slips while the capstan is wound."
 	const question = "Should the theodolite gimbal be freed before the capstan is wound?"
@@ -1518,6 +1550,7 @@ func addRelatedDocument(t *testing.T, handler http.Handler, issue, name, content
 // tests are: the ordering under test is the keyword leg's and needs no model; the embedder is
 // configured only because the check's server takes one.
 func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
+	t.Parallel()
 	const title = "Tender upkeep on the slipway"
 	const widerDocument = "The binnacle verdigris reaches the chronometer escapement in the damp."
 	const narrowerDocument = "The binnacle verdigris is wiped from the brass at each change of watch."
@@ -1584,6 +1617,7 @@ func TestRelatedCheckKeepsTheBetterRankedOfAnIssuesTwoDocuments(t *testing.T) {
 // reads its ask states from the pool first, and an id that no ask row carries leaves Ask nil,
 // which is all these cases need.
 func TestRelatedCheckKeepsOneRowPerOwnerInEveryArrivalOrder(t *testing.T) {
+	t.Parallel()
 	_, _, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
 	for _, test := range []struct {

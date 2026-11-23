@@ -51,6 +51,7 @@ func holdTestHookLock(t *testing.T, database *store.Store) (*pgx.Conn, int32) {
 // that has not yet waited on anyone, which answers that this process's listener did not take its
 // lock.
 func TestATestHookNamesTheProcessThatNeverAcknowledged(t *testing.T) {
+	t.Parallel()
 	fake := clocktest.New(time.Now())
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true, clock: fake})
 	_, silent := holdTestHookLock(t, database)
@@ -130,6 +131,7 @@ type hookCallWait struct {
 // waiting on it. A call that passed over a live process answers from the first poll instead,
 // which the wait for each arm fails on at once.
 func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
+	t.Parallel()
 	fake := clocktest.New(time.Now())
 	started := fake.Now()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true, clock: fake})
@@ -224,6 +226,7 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 // process byte for byte, multi-byte characters included, whatever notification boundary they fall
 // on.
 func TestAFrameLargerThanOneNotificationReachesAViewerOnTheOtherProcessWhole(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{testHooks: true, agentStream: agentstream.NewMemory()})
 	other := secondHookProcess(t, database)
 
@@ -255,6 +258,7 @@ func TestAFrameLargerThanOneNotificationReachesAViewerOnTheOtherProcessWhole(t *
 // part. The cap still admits the largest call a request can make: a frame of maxJSONRequestBytes
 // made wholly of a byte json.Marshal escapes widest, to a session id in its longest form.
 func TestAHookNotificationNamingMorePartsThanAnyCallIsDropped(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(testHookCall{
 		Hook: hookPublishFrame, Session: "urn:uuid:" + plannerSessionID, As: "replay",
 		Frame: strings.Repeat("\x01", int(maxJSONRequestBytes)),

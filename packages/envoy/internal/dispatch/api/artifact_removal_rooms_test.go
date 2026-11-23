@@ -43,6 +43,7 @@ import (
 // The close carries no content: the removal is refused for anything but an untouched document,
 // which the test reads as the document's one empty version before it removes anything.
 func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// Each of the first two processes settles on a fake clock of its own, which nothing moves
 	// before both rooms have closed: the wait after the removal then moves each through every

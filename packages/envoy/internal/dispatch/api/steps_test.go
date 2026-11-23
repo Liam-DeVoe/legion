@@ -119,6 +119,7 @@ func stepOf(t *testing.T, handler http.Handler, issue, id string) model.StepReco
 // one record holding the start's fields and the end's, and its attempt. The end's answer is the
 // record as the read lists it.
 func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
@@ -159,6 +160,7 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 // write's answers and the read carry that pair, the report in its canonical spelling and
 // generation 2, beside its attempt 1 and the place it returned to.
 func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id, report := uuid.NewString(), uuid.NewString()
@@ -198,6 +200,7 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 // A second run of one step answers attempt 2, on its start and on its end, and the end's answer is
 // the record as the read lists it; the first run still reads attempt 1.
 func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -228,6 +231,7 @@ func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
 // The read answers each task once, in the order of its first step, with its steps in the order
 // they ran.
 func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -259,6 +263,7 @@ func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 // Only the session of the issue's project's daemon writes a record: a person, the daemon of
 // another project and an agent's session are each refused, and that daemon's write lands.
 func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	path := "/api/v1/issues/" + issue + "/steps/"
@@ -283,6 +288,7 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 // A closed issue takes the record of the merge that closed it, where a handoff, which a running
 // role writes, is refused there.
 func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
@@ -305,6 +311,7 @@ func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 // daemon tells from the 404 of a Dispatch that does not serve the route: that answer carries no
 // such code.
 func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createTestIssue(t, handler, "LEG", "A run of steps")
 
@@ -322,6 +329,7 @@ func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 // handler's, not the router's "no route" of a Dispatch older than the route. An issue Dispatch
 // holds that no step ran on still reads 200 and no task.
 func TestAnUnknownIssueReadsAsTheIssueRead(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "An issue Legion never ran")
 
@@ -345,6 +353,7 @@ func TestAnUnknownIssueReadsAsTheIssueRead(t *testing.T) {
 
 // A step write appends no event to its issue, whose activity a handoff moves.
 func TestAStepWriteAppendsNoEvent(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	before := issueEventTypes(t, handler, issue)
@@ -367,6 +376,7 @@ func TestAStepWriteAppendsNoEvent(t *testing.T) {
 // Each value outside its form is refused 400 with its field named, and a body Dispatch cannot
 // decode is the package's own 400; none is a 500, and none writes a record.
 func TestAStepWriteRefusesItsBadValues(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -438,6 +448,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 
 // Normalizing an offset must keep a moment readable at either end of the JSON timestamp range.
 func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	for _, row := range []struct{ input, want string }{
@@ -458,6 +469,7 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 // The start and the end of one new run, sent at once, both land, and the record holds the fields
 // of each: the second write waits for the first and reads what it wrote.
 func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSessionOf("LEG")
@@ -516,6 +528,7 @@ func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 
 // A second end of one run lands and changes nothing: the run keeps its first end.
 func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
@@ -534,6 +547,7 @@ func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 // A backward move to the retro returns to place 0, not to no place. Both delivery orders and a
 // later end keep that first return destination in the write's answer and in the issue's read.
 func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	for _, endFirst := range []bool{false, true} {
@@ -571,6 +585,7 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 
 // An id the record of one issue holds is refused to a write that names another issue.
 func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issues := []string{
 		createTestIssue(t, handler, "LEG", "A run of steps"),
@@ -592,6 +607,7 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 // A credential scoped to one project writes the records of that project's issues and no other's,
 // though it proves the session of that project's daemon.
 func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-daemon-token-of-one-project"

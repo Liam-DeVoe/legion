@@ -157,6 +157,7 @@ type dismissedScaleShape struct {
 // machine; outside it the readings are still printed, and the counts, the plans and the negative
 // control still hold.
 func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to run the dismissed-scale measurement", dismissedScaleEnv)
 	}

@@ -40,10 +40,7 @@ func seedSearchDocument(t *testing.T, ctx context.Context, store *Store) string 
 // shape, while a loaded machine's linear one passes however long it takes.
 func TestSearchIndexesAPathologicalBodyInBoundedTime(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	artifactID := seedSearchDocument(t, ctx, store)
 	bounded := testwait.Context(t)
 	for number, shape := range []string{"a_", "1_", "a-b_", "1.2_", "a_1_"} {
@@ -81,10 +78,7 @@ func TestSearchIndexesAPathologicalBodyInBoundedTime(t *testing.T) {
 // changed its vector when the function was chosen.
 func TestSearchTextKeepsEveryLexeme(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	same := func(name, body string) {
 		t.Helper()
 		var equal bool

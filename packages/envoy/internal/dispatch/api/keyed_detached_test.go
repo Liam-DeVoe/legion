@@ -33,7 +33,7 @@ func keyedPost(ctx context.Context, server *httptest.Server, path, body, key str
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")
 	request.Header.Set(contracts.IdempotencyKeyHeader, key)
-	response, err := http.DefaultClient.Do(request)
+	response, err := (&http.Client{}).Do(request)
 	if err != nil {
 		return 0, "", nil, err
 	}
@@ -48,6 +48,7 @@ func keyedPost(ctx context.Context, server *httptest.Server, path, body, key str
 // answer. A handler bound to its client's cancellation rolled back at the client's deadline, and
 // every repeat started again from nothing, so such a write could never land.
 func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
+	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
 	rig := newWritingRig(t, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
@@ -155,6 +156,7 @@ func requestKeyLeased(t *testing.T, database *store.Store, login, key string) bo
 // The lease is judged in the database against its now(), so the test ages a lease rather than
 // waiting one out; the renewals run on the server's clock, which the test moves.
 func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -209,6 +211,7 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 // not reach it, and the server's own bound, keyedHandlerLimit, does: the run arms that bound on the
 // server's clock as it starts.
 func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
+	t.Parallel()
 	running, proceed := make(chan struct{}), make(chan struct{})
 	saw := make(chan error, 1)
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -251,6 +254,7 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 // the count of running work is zero (TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits), so the
 // count, read while the handler is held, is what would let it return.
 func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -283,6 +287,7 @@ func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
 // and an hour on the bubble's clock after it (testwait.IdleAnHour) says it holds past any bound of
 // its own.
 func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		var work backgroundWork
 		work.wait()
@@ -314,6 +319,7 @@ func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 // handler's own context and the server's clock, and is mounted only under test hooks. A run whose
 // context ends during the delay never reaches its handler.
 func TestTheSlowWriteHookDelaysEveryKeyedRunOfItsPath(t *testing.T) {
+	t.Parallel()
 	fake := clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true, clock: fake})
 	issue := createTestIssue(t, handler, "SLOW", "Slow writes")
@@ -459,6 +465,7 @@ func TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody(t *testing.T) {
 // for a lease. Here the claim waits behind another transaction's hold on the key, the client gives
 // up meanwhile, and once the hold goes the request is claimed, run once and answered under its key.
 func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	ctx := context.Background()
 	hold, err := rig.database.Pool.Begin(ctx)
@@ -513,6 +520,7 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 // answered as one whose holder died, here taking over a key the run made nothing under, rather than
 // told KEY_IN_FLIGHT for as long as the handler ignores its context.
 func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running, bounded := make(chan struct{}), make(chan struct{})
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
@@ -639,6 +647,7 @@ func TestALeaseRenewalThatWaitsLeavesTheNextAtItsFixedRate(t *testing.T) {
 // cancellation, so a close held on the issue's owner lock kept its background-work slot, and the
 // shutdown's wait for it, as long as that lock stayed held.
 func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{clock: fake})
@@ -721,6 +730,7 @@ func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context,
 // waited for as long as another writer held the lock, past the bound, holding the keyed run's
 // background-work slot all the while.
 func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{clock: fake})

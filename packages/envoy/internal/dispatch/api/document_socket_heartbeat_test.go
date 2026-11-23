@@ -167,6 +167,7 @@ func driveHeartbeats(t *testing.T, fake *clocktest.Fake, first time.Time, n int,
 // it. The heartbeats are on the server's clock, a fake the row moves one heartbeat at a time, and
 // the close is awaited with the clock standing at the heartbeat after the sign-out.
 func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name   string
@@ -218,6 +219,7 @@ func TestADocumentSocketClosesOnceItsCookieEndsThoughALiveTokenRidesBesideIt(t *
 // broker does not hold live at all, which the heartbeat never reads and the broker is never asked
 // about.
 func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, beside := range []struct {
 		name    string
@@ -252,6 +254,7 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // fake clock the row moves. The socket's read deadline runs on a fake no one moves
 // (newDocumentSocketTokenRig), so no pong the runner holds back ends the socket first.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
+	t.Parallel()
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()

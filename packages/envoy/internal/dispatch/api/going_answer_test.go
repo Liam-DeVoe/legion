@@ -200,6 +200,7 @@ func goingFrameNames(frames []liveGoingFrame) []string {
 // rest to write. A recorder would buffer the whole response and say nothing about what reached a
 // reader before the run ended.
 func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing.T) {
+	t.Parallel()
 	const project = "GOA"
 	// The project's first issue, as seedGoingProject creates it: the reply the fake model is built
 	// with has to name the href before the row exists, and the seeded key is checked against it
@@ -322,6 +323,7 @@ func TestGoingAnswersFromWhatDispatchHoldsWhileTheModelIsStillWriting(t *testing
 // keep, and the frames of the answer are read from a GET of their own, so the key keeps no part of
 // what the model wrote and the repeat is not ANSWER_NOT_KEPT.
 func TestGoingRequestUnderOneKeyRecordsOneRun(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{frames: []going.Event{
 		going.Text("Once, "), going.Text("and only once."), going.End(4, 0),
 	}}

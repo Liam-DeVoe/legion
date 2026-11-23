@@ -137,6 +137,7 @@ func (w *takeOverTries) answer(t *testing.T, request func() *httptest.ResponseRe
 // server runs on a fake clock, moved through the backoff between the two lookups and never
 // through a lookup's bound (takeOverTries).
 func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) {
+	t.Parallel()
 	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Routed take-over", "before")
 	if patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
@@ -207,6 +208,7 @@ func TestACommentDuringAListenerTakeOverReachesTheRouteHolderOnce(t *testing.T) 
 // would otherwise fire after the comment committed and make its retry post the comment a second
 // time.
 func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t *testing.T) {
+	t.Parallel()
 	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer calls.took()()
@@ -295,6 +297,7 @@ func TestACommentMentioningSeveralEndedSessionsAnswersWithinOneTakeOverWindow(t 
 // which suppresses the route and leaves the mention to a sender that resolves it afresh - what a
 // real clock let a loaded machine do.
 func TestAResumedMentionOfARoutedCommentReachesTheRouteHolderOnce(t *testing.T) {
+	t.Parallel()
 	listener, tries, handler, database, deps := takeOverServer(t)
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Routed resume", "before")
@@ -446,6 +449,7 @@ func receivedDuringTakeOver(
 // comment.created payload, so the claimant route cannot leave s1's copy to it: the comment must
 // resolve its mentions through the take-over before it commits, as a routed issue's comment does.
 func TestACommentDuringAListenerTakeOverReachesTheClaimantOnce(t *testing.T) {
+	t.Parallel()
 	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Claimed take-over", "before")
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -469,6 +473,7 @@ func TestACommentDuringAListenerTakeOverReachesTheClaimantOnce(t *testing.T) {
 // an agent even with no route, no reply_to, no anchor and no document: it must resolve its mentions
 // through the take-over before it commits too.
 func TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce(t *testing.T) {
+	t.Parallel()
 	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Ask thread take-over", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -495,6 +500,7 @@ func TestAnAskReplyDuringAListenerTakeOverReachesTheFollowerOnce(t *testing.T) {
 // comment on the issue's conversation is on no document itself, so it must resolve its mentions
 // through the take-over before it commits once the issue's primary document credits a session.
 func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *testing.T) {
+	t.Parallel()
 	listener, tries, handler, database, _ := takeOverServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Spec author take-over", "before")
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -521,6 +527,7 @@ func TestACommentDuringAListenerTakeOverReachesThePrimaryDocumentAuthorOnce(t *t
 // mention-failed-follower) waits that long for the row, and the outbox publishes the session's
 // own copy once it is failed.
 func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow(t *testing.T) {
+	t.Parallel()
 	var calls listenerCalls
 	var mu sync.Mutex
 	var sends []string
@@ -596,6 +603,7 @@ func TestAMentionWhoseSendsTheListenerRefusesSettlesFailedAfterTheTakeOverWindow
 // on a fake clock, which the test moves past it for the wait and then through the take-over's
 // backoff (stepListenerWaits).
 func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		wait time.Duration

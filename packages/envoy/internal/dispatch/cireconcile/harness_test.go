@@ -280,7 +280,7 @@ func (h *harness) startListener() {
 	cistore.StartSummaryLoop(loop, listener, h.bus, listenerDebounce, listenerTick,
 		metrics.New().NewGauge("held", ""), logging.NewWithWriter("loop", h.loopLogs))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 }
 
 // driveLoop moves the CI store's clock to the earliest moment armed on it when that moment is no

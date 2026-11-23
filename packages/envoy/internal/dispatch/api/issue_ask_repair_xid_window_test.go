@@ -23,6 +23,7 @@ import (
 // withdrawal closed while it held a decision block's ask and a plain ask: the repair withdraws
 // both in its latest closer's name and gives the spec the close's final sweep.
 func TestXidWindowIssueAskRepairWithdrawal(t *testing.T) {
+	t.Parallel()
 	tracer := storetest.NewXidTracer()
 	f := newRepairFixtureOn(t, 20*time.Millisecond, tracer)
 	spec, _ := xidSpec(1)
@@ -48,6 +49,7 @@ func TestXidWindowIssueAskRepairWithdrawal(t *testing.T) {
 // of the room does not end an armed settlement (docs' settlement.take), which would load the room
 // again after the reopen closed it.
 func TestXidWindowIssueAskRepairRestoration(t *testing.T) {
+	t.Parallel()
 	tracer := storetest.NewXidTracer()
 	f := newRepairFixtureOn(t, 20*time.Millisecond, tracer)
 	spec, _ := xidSpec(1)

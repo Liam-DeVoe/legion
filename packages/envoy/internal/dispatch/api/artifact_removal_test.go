@@ -761,6 +761,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 // row to naming the document no more: only the cursor, which censusExempt says is a position in
 // the fill, may keep the removed id.
 func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, pass := range []struct {
 		state string

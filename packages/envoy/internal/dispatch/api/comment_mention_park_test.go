@@ -213,6 +213,8 @@ func shortWaits(tries []time.Time) (waits []time.Duration, short []string) {
 // waiting for a goroutine, and the parked sends' claims are written again as every queued send's
 // are. Once the earlier event is sent, the lane sends its two in order.
 func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
+	// Not parallel: serveStacks reads every goroutine of the process (runtime.Stack, all), so a
+	// lane loop of another test's sender counts as this lane's (envoy-go-race-api job 137408608768).
 	rig := newParkRig(t, 2)
 	first := rig.enqueue("parked-first", "session:parked")
 	second := rig.enqueue("parked-second", "session:parked")
@@ -370,6 +372,7 @@ func triesWithin(elapsed time.Duration) int {
 // have parked no goroutine serves any. A park that held its goroutine (slept its wait out on it)
 // would keep one on every lane it serves, and the count would never reach 0.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
+	t.Parallel()
 	const lanes = 200
 	const window = 8 * time.Second
 	rig := newParkRig(t, maxQueuedMentionSends)

@@ -303,6 +303,7 @@ func answerWhileCallsAreHeld(
 // window of the call the late answer holds, so every try a case's take-over takes happens with
 // no wall clock spent on it.
 func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
+	t.Parallel()
 	listener := startTakeOverListener(t)
 	clock := clocktest.New(time.Now())
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.server.URL, clock: clock})
@@ -405,6 +406,7 @@ func TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce(t *testing.T) {
 // one try. The server runs the production window on a fake clock the test never moves, so a send
 // that waited out any part of a take-over would never answer at all.
 func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{clock: clocktest.New(time.Now())})
 	sent := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -430,6 +432,7 @@ func TestASendWithNoListenerConfiguredSettlesAtOnce(t *testing.T) {
 // deployment runs, on a fake clock: each try's backoff passes when the test moves that clock, so
 // the tries cost no wall clock and no window is shortened to fit them.
 func TestASenderWaitingOutAListenerTakeOverRenewsItsClaimBeforeEachTry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, table, column, receipt, path string
 		body                               map[string]any

@@ -24,6 +24,7 @@ import (
 // so the attempt is recorded failed only when every try of that window missed; this listener
 // misses every one until the comment's own request has answered.
 func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(t *testing.T) {
+	t.Parallel()
 	var calls listenerCalls
 	var listenerState struct {
 		sync.Mutex
@@ -124,6 +125,7 @@ func TestCommentMentionThatLandedThenMissedTheReceiptIsNotDeliveredTwiceOnRetry(
 // carries that promise. deliveryErrorText is shared between the two, which is why this is its
 // own test rather than a line in the one above.
 func TestResolutionTimeoutDoesNotClaimTheMessageMayHaveLanded(t *testing.T) {
+	t.Parallel()
 	held := make(chan struct{})
 	var calls listenerCalls
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

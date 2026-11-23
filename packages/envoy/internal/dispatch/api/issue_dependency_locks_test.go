@@ -17,6 +17,7 @@ import (
 // neighbour, which sorts first. A status write on that neighbour waits for the move and finishes
 // once the gate opens; a dependency write naming the neighbour finishes while the move still waits.
 func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 6)
 	anchor, parent, moving, neighbor, dependent := keys[1], keys[2], keys[3], keys[4], keys[5]
@@ -65,6 +66,7 @@ func TestBoardMoveStatusAndDependencyWriteDoNotDeadlock(t *testing.T) {
 }
 
 func TestDependencyWaitDoesNotHoldIssueRankOrNumberLocks(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	keys := createListedIssues(t, handler, "CORE", 3)
 	other := createListedIssues(t, handler, "SIDE", 2)

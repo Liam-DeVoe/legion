@@ -22,6 +22,7 @@ import (
 )
 
 func TestPriorityHistory(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	// The server stamps each act with its own moment (stampedNow), on a fake here that the test
 	// moves a second before each write, so each act must carry the moment of the write it states.

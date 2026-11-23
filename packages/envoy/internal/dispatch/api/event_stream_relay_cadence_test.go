@@ -24,6 +24,7 @@ import (
 // still and drops the eager read until it moves; an immediate re-read is never asked twice
 // without the horizon moving between; and no gap schedules nothing.
 func TestEventGapRereadCadence(t *testing.T) {
+	t.Parallel()
 	var gaps eventGapReread
 	defer gaps.stop()
 	for step, want := range []struct {
@@ -70,6 +71,7 @@ const cadenceXid = uint64(1) << 40
 // the fake never reaches. Before the event and once it is published the relay is at rest: it has
 // no read due (requireCadenceRelayAtRest).
 func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
+	t.Parallel()
 	const coalesce = time.Millisecond
 	_, database, deps := newTestServer(t, testServerOptions{})
 	relay, fake, horizon, reads := newCadenceRelay(t, deps, database, coalesce)
@@ -103,6 +105,7 @@ func TestEventStreamRelayProvesItsOwnObservationAtOnce(t *testing.T) {
 // scripted proof applies only to an observation taken once the lower id is committed, so the
 // script never claims the write ended before it did.
 func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing.T) {
+	t.Parallel()
 	const coalesce = 2 * time.Second
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")

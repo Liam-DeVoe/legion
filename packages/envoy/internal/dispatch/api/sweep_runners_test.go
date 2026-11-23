@@ -106,6 +106,7 @@ func runSweep(t *testing.T, run func(ctx context.Context)) {
 // empty: one judging pass across the two, and both make progress rather than one giving its pass
 // up to the other's.
 func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
@@ -168,6 +169,7 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 // the report is a rest, and the loop holds no timer on its clock, its own record that nothing it
 // holds can start another pass.
 func TestALoneSuggestionSweepRunnerPassesOnEveryWake(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	tracer := &sweepPassTracer{}
 	pool := storetest.Traced(t, database.Pool, tracer, nil)

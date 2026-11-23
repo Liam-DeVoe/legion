@@ -64,6 +64,7 @@ func seedLongIssueHistory(t *testing.T, seededEvents int) (http.Handler, *server
 // bound stood on the savepoint the count runs on. The write's wall-clock time depends on the
 // machine and is the timing lane's (TestWriteAdviceOnALongIssueHistoryAnswersUnderTwoSeconds).
 func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
+	t.Parallel()
 	const seededEvents = 5000
 	handler, served, issueKey := seedLongIssueHistory(t, seededEvents)
 	bound := make(chan string, 1)

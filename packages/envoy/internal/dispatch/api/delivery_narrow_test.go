@@ -164,6 +164,7 @@ func assertSameTree(t *testing.T, what string, got, want map[string]any) {
 // new start joins the waiting line until it ships, one of another repository does not, and the
 // titles and counts keep only what the remaining rows name. Same for /measures.
 func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	settings := seedNarrowingFixture(t, database)
 	s := directServer(deps)
@@ -244,6 +245,7 @@ func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 // `at` and narrowed to the next UTC midnight, and to just past the earliest timed result's 24-hour
 // edge, computes what GET answers for that `at` (except computed_at).
 func TestANarrowedPipelinePopulationComputesWhatAFreshReadReturns(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	settings := pipelineSettings()
 	seedPipelineFixture(t, database, settings)
@@ -287,6 +289,7 @@ func TestANarrowedPipelinePopulationComputesWhatAFreshReadReturns(t *testing.T) 
 // expiry is the first instant whose truncated window start (presetWindow) lies past the oldest pull
 // request's merge: the end of the microsecond of its merge plus the window's length.
 func TestNextExpiryIsTheOldestMergeLeaving(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	n := 7 * 24 * time.Hour
 	oldest := now.Add(-n + time.Hour)
@@ -324,6 +327,7 @@ func TestNextExpiryArmsTheLeavingOfARowReadInsideItsLastMicrosecond(t *testing.T
 // TestNextExpiryIsMidnightWhenNothingLeavesSooner: with every row well inside the window, the next
 // expiry is the first instant past the next UTC midnight, when the daily series has moved.
 func TestNextExpiryIsMidnightWhenNothingLeavesSooner(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	n := 7 * 24 * time.Hour
 	recent := now.Add(-time.Hour)
@@ -347,6 +351,7 @@ func TestNextExpiryIsMidnightWhenNothingLeavesSooner(t *testing.T) {
 // earliest timed PR-checks result's completion plus FailingWindow when that comes before the next
 // UTC midnight, and the midnight otherwise.
 func TestPipelineNextExpiryIsTheFailingWindowEdge(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 	completed := now.Add(-20 * time.Hour)
 	pop := pipelinePopulation{checks: delivery.RunsWithJobs{Runs: []delivery.DeliveryRun{

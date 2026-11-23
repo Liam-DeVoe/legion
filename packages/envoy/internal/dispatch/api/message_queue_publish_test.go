@@ -130,6 +130,7 @@ func sendFindsNoSessionListener(t *testing.T) (*httptest.Server, func() []listen
 // message on the session's own subject once, and records the attempt queued with that envelope,
 // in its row and in the receipt the conversation renders.
 func TestATargetedMessageToASessionNoStoreHoldsIsQueuedByDispatch(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.url})
 
@@ -232,6 +233,7 @@ func TestAMessageToASessionNoStoreHoldsIsQueuedOneTakeOverWindowAfterItsFirstTry
 // than a second copy. A publish that fails queues nothing: the attempt fails with the publish's
 // own error after the listener's, so the person can retry it.
 func TestATargetedMessageWhoseSendFindsNoLiveSessionIsQueuedByDispatch(t *testing.T) {
+	t.Parallel()
 	t.Run("queued as the envelope the send would have stored", func(t *testing.T) {
 		listener, sends := sendFindsNoSessionListener(t)
 		handler, _, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
@@ -298,6 +300,7 @@ func TestATargetedMessageWhoseSendFindsNoLiveSessionIsQueuedByDispatch(t *testin
 // message to a session no store of the listener's holds failed, as it did before Dispatch queued
 // any, from the registry's 404 and from the send's alike.
 func TestATargetedMessageWithNoPublisherFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		listener func(t *testing.T) *httptest.Server
@@ -334,6 +337,7 @@ func TestATargetedMessageWithNoPublisherFails(t *testing.T) {
 // the record reads gone or the send to it then finds none; queued, the message would go onto that
 // other session's subject. So it is not queued, and the attempt settles failed with the answer.
 func TestATargetedMessageWhoseAttemptNamesAnotherSessionIsNotQueued(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		registry string
@@ -380,6 +384,7 @@ func TestATargetedMessageWhoseAttemptNamesAnotherSessionIsNotQueued(t *testing.T
 // longer its own: it publishes nothing, since the session already has the message, and the
 // attempt reads as the session's answer made it.
 func TestATargetedMessageAnsweredBetweenItsTriesIsNotQueued(t *testing.T) {
+	t.Parallel()
 	var handler http.Handler
 	var database *store.Store
 	var mu sync.Mutex
@@ -438,6 +443,7 @@ func TestATargetedMessageAnsweredBetweenItsTriesIsNotQueued(t *testing.T) {
 // holds when the role read refuses for a holder that is gone, and when it named a holder whose
 // send then found no live session.
 func TestAMessageToARoleWhoseHolderIsGoneStillFails(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		role func(w http.ResponseWriter)
@@ -485,6 +491,7 @@ func TestAMessageToARoleWhoseHolderIsGoneStillFails(t *testing.T) {
 // stored for a session that is not running: one no store of the listener's holds keeps its
 // failure, and Dispatch publishes nothing for it.
 func TestASwitchToASessionNoStoreHoldsIsNotQueued(t *testing.T) {
+	t.Parallel()
 	listener := stoppedAndLive(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.url})
 
@@ -510,6 +517,7 @@ func TestASwitchToASessionNoStoreHoldsIsNotQueued(t *testing.T) {
 // publishes to the bus holds none to list and says so, and one without test hooks serves no such
 // route.
 func TestTheQueuedTestHookListsWhatThisProcessQueued(t *testing.T) {
+	t.Parallel()
 	live := false
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)

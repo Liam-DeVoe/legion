@@ -28,6 +28,7 @@ import (
 // clock, a fake no one moves here (liveSocketClock), so such a socket stays in the set until its
 // page lets it go, and the set read before then finds it there however late it comes.
 func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{liveSocketClock: clocktest.Held()}, nil)
 
 	const pages = 16

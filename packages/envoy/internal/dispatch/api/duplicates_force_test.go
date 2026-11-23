@@ -125,6 +125,7 @@ func rawCreatedPayload(t *testing.T, handler http.Handler, key string) map[strin
 }
 
 func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "FORCED", 1)
 
@@ -141,6 +142,7 @@ func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
 }
 
 func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "FORCED")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -167,6 +169,7 @@ func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
 }
 
 func TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "FORCED")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -204,6 +207,7 @@ func TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList(t *testing.T) {
 // count would report it as an override; `near_copy_check` has always been absent on this path,
 // and the two records must agree.
 func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -237,6 +241,7 @@ func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
 // that no near-copy check was made. Refusing it would turn one slow read into a project nobody
 // can write to.
 func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "NUDGE")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -275,6 +280,7 @@ func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
 }
 
 func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	// Midway between the two bars, so the case holds for any pair with
 	// 0 < duplicateNudgeScore < duplicateRefuseScore < 1.
@@ -307,6 +313,7 @@ func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
 }
 
 func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	// Half the nudge bar: the candidate holds too little of the new text to be named.
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", duplicateNudgeScore/2)
@@ -327,6 +334,7 @@ func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
 }
 
 func TestCreateIssueNudgesNobodyOnACreateItRefuses(t *testing.T) {
+	t.Parallel()
 	handler, _ := newDuplicateTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", 1)
 
@@ -357,6 +365,7 @@ func TestCreateIssueNudgesNobodyOnACreateItRefuses(t *testing.T) {
 
 // The gate's bars are a fraction of one and ordered, and three terms is the least it judges on.
 func TestDuplicateGateBarsAreOrderedFractions(t *testing.T) {
+	t.Parallel()
 	if !(0 < duplicateNudgeScore && duplicateNudgeScore < duplicateRefuseScore && duplicateRefuseScore <= 1) {
 		t.Fatalf("bars out of order: nudge %v, refuse %v", duplicateNudgeScore, duplicateRefuseScore)
 	}
