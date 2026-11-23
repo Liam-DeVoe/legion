@@ -37,6 +37,28 @@ func formerHeadsInstall(t *testing.T) int {
 	return 0
 }
 
+// closesDatedSince is the version of the migration that has Dispatch store when a row of
+// pull_request_heads first reads closed (pull_request_heads.closed_at): a row closed before it
+// holds no such time.
+func closesDatedSince(t *testing.T) int {
+	t.Helper()
+	entries, err := fs.ReadDir(migrationFiles, "migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if digits, name, _ := strings.Cut(entry.Name(), "_"); name == "pull_request_heads_closed_at.up.sql" {
+			version, err := strconv.Atoi(digits)
+			if err != nil {
+				t.Fatalf("%s: %v", entry.Name(), err)
+			}
+			return version
+		}
+	}
+	t.Fatal("no migration has Dispatch store when a pull request's row first reads closed")
+	return 0
+}
+
 // TestTheFormerHeadsInstallSeedsTheHeadsAResultWasRecordedAt: before the install, CORE-1's open
 // pull request #70 of acme/widgets left 1111… and 2222… and is at 3333…; a tester recorded a result
 // of CORE-1 at 1111… and at 3333…, and a CI job one at 2222…. CORE-2's open #71 is at 5555…, and
@@ -139,9 +161,15 @@ const (
 // answers each document's id by its issue, and leaves no mark owed.
 func installFixture(t *testing.T, store *Store) map[string]string {
 	t.Helper()
+	return installFixtureThrough(t, store, formerHeadsInstall(t)-1)
+}
+
+// installFixtureThrough is installFixture with store migrated through version alone.
+func installFixtureThrough(t *testing.T, store *Store, version int) map[string]string {
+	t.Helper()
 	ctx := context.Background()
-	if err := store.migrate(ctx, migrationsThrough(t, formerHeadsInstall(t)-1)); err != nil {
-		t.Fatalf("migrate through the version before the install: %v", err)
+	if err := store.migrate(ctx, migrationsThrough(t, version)); err != nil {
+		t.Fatalf("migrate through %d: %v", version, err)
 	}
 	rows, err := store.Pool.Query(ctx, `
 		with project as (
