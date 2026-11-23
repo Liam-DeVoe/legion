@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>"
+const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--reap-orphans] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>"
 
 // workerShimGrace is how long the shim gives a SIGTERMed agent before it kills it:
 // shim.DefaultGrace, half the daemon's default worker_stop_timeout_seconds. It is a variable so
@@ -81,6 +81,7 @@ func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 	podSafety := flags.Bool("pod-safety", false, "start OMP on a pod's baseline (internal/podsafety)")
 	flags.DurationVar(&given.stopGrace, "stop-grace", 0, "how long the runtime gives this shim to exit after its stop signal before killing it (a pod's terminationGracePeriodSeconds, which the launcher passes); the wait for an in-flight CodeGraph warm-up stays inside it and is never under 3s, so the daemon refuses a worker_stop_timeout_seconds under 9 for pods; unset is the daemon's default worker_stop_timeout_seconds")
 	flags.BoolVar(&given.warmCodegraph, "warm-codegraph", false, "once Oh My Pi has started, build the CodeGraph index of the workspace LEGION_WORKSPACE names, in the background (a role's shim in an issue pod; never a tmux pane's or the controller's)")
+	flags.BoolVar(&given.reapOrphans, "reap-orphans", false, "become the child subreaper of everything this shim starts and reap their orphans (Linux; the controller pod's launcher passes it when no role-init is above the shim, internal/shim's Config.ReapOrphans)")
 	flags.StringVar(&given.keyDir, "agent-secrets-key-dir", "", "the pod's tmpfs directory for its agent-secrets key and enrollment id")
 	flags.StringVar(&given.tokenFile, "pod-token-file", "", "the projected service-account token for the secrets broker's audience")
 	flags.StringVar(&given.agentSecretsBin, "agent-secrets-bin", "", "the agent-secrets binary that generates the key and renews the lease")
@@ -156,7 +157,7 @@ func podSafeEnvironment(environ []string) ([]string, error) {
 // runWorkerShim applies to the environment once the configuration holds.
 type workerShimFlags struct {
 	connect, bootTokenFile, providerEnvDir, keyDir, tokenFile, agentSecretsBin string
-	warmCodegraph                                                              bool
+	warmCodegraph, reapOrphans                                                 bool
 	stopGrace                                                                  time.Duration
 }
 
@@ -212,6 +213,7 @@ func workerShimConfig(set map[string]bool, given workerShimFlags, argv []string)
 		AgentSecrets: agentSecrets,
 		Grace:        programbound.Of(&workerShimGrace),
 		StopGrace:    given.stopGrace,
+		ReapOrphans:  given.reapOrphans,
 	}
 	if given.warmCodegraph {
 		cfg.WarmCodegraph = workspace.WarmCodegraphIndex

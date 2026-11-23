@@ -532,12 +532,32 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 // roleNamespaceDrain for the role's processes to go before the SIGKILL below ends the namespace.
 // Without it a git or a jj the role left running would be killed outright and leave its lock in
 // the issue's shared clone, which stops every jj command of every role of the pod.
+//
+// The shim runs in role-init's own process group, not one of its own. Oh My Pi and every process
+// it starts without a group of its own are in the shim's group, and an orphan they leave (a `cmd
+// &` whose shell exits) comes to role-init, which reaps it. The cluster's gVisor keeps a count,
+// per process group, of the members whose parent is in another group of the session: it takes one
+// from that count when such a member is reaped, and adds none when a member is reparented
+// (gVisor's pkg/sentry/kernel: the count is `ancestors` in sessions.go, taken from on a reap in
+// task_exit.go, and left as it is by reparentLocked there). With the shim in a group of its own,
+// each orphan role-init reaped took the count of the shim's group one lower, until it read 0
+// while the shim still ran; gVisor then treated the group as orphaned, and a member stopped at
+// that moment brought SIGHUP and SIGCONT to the whole group, which ended the shim and Oh My Pi.
+// In role-init's group every such orphan is reaped by a parent in its own group, which takes
+// nothing from the count, and the group's one member with a parent outside it is role-init
+// itself, whose parent is the launcher: the group cannot read as orphaned while role-init lives.
+// Nothing here signals the shim's group: role-init, as its namespace's PID 1, signals every
+// process of the role with kill(-1) (signalGeneration), and the launcher signals role-init alone
+// (signalChild). A role process that signals its own group (kill 0) now reaches role-init as
+// well: a SIGTERM or a SIGINT starts role-init's stop as the launcher's stop does, SIGTERM to the
+// whole role and no drain after the shim's exit. That signal reached the shim before too, and
+// the shim ended the role on it; Oh My Pi sends none in its normal run (its embedded shell
+// refuses kill 0).
 func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signal) error {
 	cmd := exec.Command(cfg.Argv[0], cfg.Argv[1:]...)
 	cmd.Env = os.Environ()
 	cmd.Stdout, cmd.Stderr = cfg.Stdout, cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid:                    true,
 		Cloneflags:                 syscall.CLONE_NEWUSER,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: roleUID, HostID: 0, Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: roleUID, HostID: 0, Size: 1}},

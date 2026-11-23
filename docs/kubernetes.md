@@ -1502,7 +1502,8 @@ A refused connection costs no dial and no credential work, and its line holds no
 No other process of the role passes the check:
 
 - A command that Oh My Pi runs is a descendant of Oh My Pi, so it is never a direct child of the shim.
-  No process of the shim makes itself a subreaper, so an orphan goes to role-init, the init of the role's PID namespace.
+  A shim under role-init never makes itself a subreaper, so an orphan goes to role-init, the init of the role's PID namespace.
+  Only the controller pod's single-role shim reaps orphans itself (`--reap-orphans`, [Daemon-launched controller](#daemon-launched-controller)), and that form runs no session peer check.
 
 - An orphan that runs `legion worker-shim` is younger than the real shim, and the check takes the oldest.
 
@@ -5153,6 +5154,12 @@ a link an earlier generation of the role left there (a `~/.cache` linked elsewhe
 a link, which role-init does not follow on the way to a mount point: replaced it with the mount
 point's place`, and anything else in the way that is neither a link nor a directory fails the generation.
 role-init then starts the shim's argv unchanged as its child, cloned into a nested user namespace that maps uid and gid 1000 with no capabilities, and stays the PID namespace's init, so when a generation ends every process it started ends with it and a role's `kill -9 -1` reaches none of its siblings'.
+The shim runs in role-init's own process group, so every orphan the role leaves in the shim's group (a `cmd &` whose shell exits) is reaped by role-init inside that group (`runRoleShim`, `roleinit_linux.go`).
+With the shim in a group of its own, the cluster's gVisor ended roles: it keeps, per process group, a count of the members whose parent is in another group of the session, takes one from it when such a member is reaped, and adds none when a member is reparented (`ancestors` in gVisor's `pkg/sentry/kernel/sessions.go`, and `task_exit.go` beside it).
+Each orphan role-init reaped from outside the shim's group lowered that count, until the group read as orphaned while the shim still ran, and a stopped member then brought SIGHUP and SIGCONT to the whole group, the shim and Oh My Pi among them.
+In role-init's group the one member with a parent outside it is role-init, whose parent is the launcher, so the group never reads as orphaned while the role runs.
+A role process that signals its own group (`kill 0`) now reaches role-init as well, which takes a SIGTERM or a SIGINT as the launcher's stop: SIGTERM to the whole role, and no drain after the shim exits.
+That signal reached the shim before, which ended the role on it then too; Oh My Pi sends none in its normal run, since its embedded shell refuses `kill 0`.
 The isolation rests on ownership and private mounts, not on a read-only root, which a nested user namespace could undo (`docs/solutions/legion/namespace-isolation-under-gvisor-holds-on-locked-mounts-and-ownership-not-a-read-only-root-INFRA-208.md`).
 An operator mount (`runtime.kubernetes.pod.volume_mounts`) at or above `/tmp`, `/var/tmp`, `/run/lock`, `/var/lock` or `/dev/shm`, or at or above the image's other spellings of them (`/var/run/lock`, `/run/shm`, `/var/run/shm`), is refused:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> is at or above <dir>, which every role's namespace in an issue pod covers with its own: mount under it instead`.
@@ -9294,6 +9301,9 @@ Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the
 Its one container, `controller`, runs `legion launcher --role controller`:
 it authenticates to the worker stream with its own launcher token and starts and stops the controller's `legion worker-shim` and Oh My Pi, on the pod baseline (`--pod-safety`:
 the two session-placing variables, [Settings order](#operator-configuration), and Oh My Pi's profile directory made under its state home, `/legion/scratch/state/controller`), on the daemon's command, as an issue pod's launcher does each role's, so a relaunch in a healthy pod is a new generation of that child rather than a new pod.
+The launcher adds `--reap-orphans` to that shim's command (`reapingShim`, `internal/launcher/launcher.go`), and to no shim under role-init.
+With it the shim makes itself the child subreaper of everything it starts and reaps the orphans its process group leaves, rather than the launcher, the container's PID 1, reaping them from a group of its own, which under the cluster's gVisor could make the shim's group read as orphaned and hang it up ([Each role in namespaces of its own](#anatomy-of-a-sandbox-pod) says how).
+Every child the shim waits for itself (Oh My Pi, the secrets keygen and renewer) starts through one guard that this reaper passes over (`internal/subreaper`), so no such child's exit is taken from its own wait.
 Its role Secret, `legion-<project>-controller-controller-boot`, holds the launcher's token and its gh bundle (each owner's `github-hosts-<owner>` and `github-config-<owner>`, the review App's read-only `hosts.yml` and `config.yml` for every owner that App is installed on and for an owner a configured rename moved a repository away from, each token reaching every repository that owner's installation holds, `github-renames`, the bundle's configured renames, and `github-default`, the first owner), refreshed every minute as every role's are, and is the only Secret its launch writes:
 there is no provisioning `-boot` Secret.
 Its Sandbox owns a volume of its own, where an issue's owns none (`issue-legion-<project>-controller`, from its one `issue` claim template, of `runtime.kubernetes.issue_volume` and `storage_class`), mounted at `/legion`, which is the working root the controller runs in, so what one of its pods leaves there the next one finds;
@@ -9336,7 +9346,7 @@ The container mounts the writer token at `/var/run/legion/roles/session-writer`,
 It mounts nothing at the fixed paths of the single-role form: `/var/run/legion/launcher`, `/var/run/legion/private`, `/var/run/legion/state`, `/var/run/legion/gh` and `/var/run/legion/agent-secrets`.
 role-init starts the controller's generation in namespaces of its own and binds the controller's own gh, private, state and agent-secrets key directories back at those paths, but not its launcher token.
 So the controller's agent finds each directory where it always has, and it reads neither the writer token nor the launcher token.
-The roles-dir form changes five things for the controller:
+The roles-dir form changes six things for the controller:
 
 - The memory guard is off once the daemon has answered the launcher's first hello: `launcherHelloAck` sends the controller's pod no `MemoryGuard`, and an answer without it turns the guard off.
   Before that answer the guard runs at its defaults, as in an issue pod.
@@ -9349,6 +9359,9 @@ The roles-dir form changes five things for the controller:
 
 - A process that the controller's generation leaves running after its shim exits gets role-init's drain: SIGTERM over the role's namespace, two seconds (`roleNamespaceDrain`), then SIGKILL (`runRoleShim`, `internal/launcher/roleinit_linux.go`).
   In the single-role form, the launcher as PID 1 gives such a process up to `--stop-grace` (`cleanExitedGeneration`).
+
+- The orphans the controller's shim and Oh My Pi leave are reaped by role-init, inside the process group the shim shares with role-init, and the shim is not given `--reap-orphans` (`runRoleShim`).
+  In the single-role form the shim reaps them itself.
 
 - The controller's home overlay, its `/tmp` and `/var/tmp` and its own config home are on the role homes volume, a disk `emptyDir` that counts against the controller pod's ephemeral storage ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
 

@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -244,7 +245,7 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 			if err != nil {
 				return workspace.Workspace{}, err
 			}
-			workspace.WarmCodegraphIndexInBackground(provisioned.Dir)
+			workspace.WarmCodegraphIndexInBackground(procgroup.NoReaper, provisioned.Dir)
 			return provisioned, nil
 		},
 		remove: func(ctx context.Context, working workspace.Workspace, store sync.Locker) error {
