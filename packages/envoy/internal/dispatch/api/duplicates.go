@@ -173,6 +173,15 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // $5 the lowest score to return, $6 the headline options, $7 the new title, $8 the creator's
 // viewer, whose project clause holds every issue of a project it does not see out of both arms:
 // such a project's gate finds nothing, as a project no row holds finds nothing.
+//
+// The clause tests $1 rather than each row's project_key: every row of both arms is of $1, so the
+// two say the same, and over the parameter alone the clause holds no column, so Postgres decides
+// it once per execution (a One-Time Filter) and counts it in no estimate. Over the row's column it
+// is a filter of every issue whose share a generic plan - the plan a pooled connection runs from
+// its sixth execution of the statement - has to guess, the viewer being a parameter it cannot
+// read; that guess halved the open issues each arm expects and moved the document arm to another
+// join order than the same statement without a viewer gets
+// (TestTheNearCopyGateDecidesItsViewerOncePerStatement).
 var duplicateScoreQuery = `
 with term_weights as (
   select quote_literal(w.lexeme)::tsquery as tq, w.lexeme, w.idf
@@ -183,14 +192,14 @@ hits as (
   select i.key, w.lexeme, w.idf
     from term_weights w
     join issues i on i.search @@ w.tq
-   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("i.project_key", "$8") + `
+   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("$1", "$8") + `
   union
   select i.key, w.lexeme, w.idf
     from term_weights w
     join document_search d on d.search @@ w.tq
     join artifacts a on a.id = d.artifact_id and a.kind = 'doc' and a.is_primary
     join issues i on i.key = a.issue_key
-   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("i.project_key", "$8") + `
+   where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("$1", "$8") + `
 ),
 scored as (
   select h.key, sum(h.idf) / nullif((select weight from picked), 0) as score,
@@ -241,7 +250,8 @@ select s.key, i.title, i.status, s.shared, s.score,
 //
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new
 // issue's ancestors, $5 the headline options, $6 the creator's viewer, whose project clause holds
-// every issue of a project it does not see out, as duplicateScoreQuery's does.
+// every issue of a project it does not see out, tested once per execution over $1 as
+// duplicateScoreQuery's is.
 var duplicateEqualLexemesQuery = `
 with new_text as (
   select title_lexemes($2) as title_lex,
@@ -252,7 +262,7 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
          to_tsquery('simple', (select string_agg(quote_literal(x), ' | ') from unnest(n.title_lex) x)), $5) as headline
   from new_text n
   join issues i
-    on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("i.project_key", "$6") + `
+    on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[]) and ` + access.ProjectClause("$1", "$6") + `
    and i.title_lexemes = n.title_lex
   left join artifacts a on a.issue_key = i.key and a.kind = 'doc' and a.is_primary
   left join document_search d on d.artifact_id = a.id
