@@ -8,13 +8,13 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agentwire"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -47,17 +47,33 @@ const goingRunColumns = `r.id::text, coalesce(r.conversation_id, r.id)::text, r.
 	r.created_at, r.finished_at, ` + goingRunUndoColumns
 
 // goingRunUndoColumns reads what Undo makes of the run r, off its landings as the undo route reads
-// them (goingLandedWrites, goingUndoLanded): each call of the run that landed a request (phase do)
-// and whose undo has not landed (no landing of its key, phase undo), as a JSON list of
-// goingOpenCall - the tool of the row of the run's plan it ran, joined as goingLandedWrites joins
-// it, and the method and path of the last request of it that landed - which goingTakesBack
-// decides; and when the run's Undo landed, its newest landing of phase undo, null for none. Both
-// are read in the statement that reads the run, by the primary key of going_landings, so a page
-// of History makes no read of its own for each run.
-const goingRunUndoColumns = `(
-		select coalesce(jsonb_agg(jsonb_build_object('tool', c.tool, 'method', c.method, 'path', c.path)), '[]'::jsonb)
+// them (goingLandedWrites, goingUndoLanded): the run's person; each call of the run that landed a
+// request (phase do) and whose undo has not landed (no landing of its key, phase undo), as a JSON
+// list of goingOpenCall - its key, the row of the run's plan it ran, joined as goingLandedWrites
+// joins it, and the last request of it that landed with what its route recorded beside it - which
+// goingTakesBack decides; and when the run's Undo landed, its newest landing of phase undo, null
+// for none. All of it is read in the statement that reads the run, by the primary key of
+// going_landings, so a page of History makes no read of its own for each run. The answer of an
+// issue's update, create or claim carries the whole issue - a page of 50 runs of three issue
+// updates read some 220 to 250 KB that way, against 24 KB before the read took answers - so of
+// those three it reads only the members goingUndoer.plan reads: the item's key or id
+// (goingMadeID), what an update found (previous) and each field previous names as it left it, the
+// place it ranked the issue at and the advances revision (goingIssueUpdated), a create's title and
+// status (issueCreated), and a claim's claim_changed, claim and previous_claim (claimed). Every
+// other answer is small, and is read whole.
+const goingRunUndoColumns = `r.author_login, (
+		select coalesce(jsonb_agg(jsonb_build_object('step', c.step, 'call', c.call, 'tool', c.tool, 'arguments', c.arguments,
+		  'approval', c.approval, 'method', c.method, 'path', c.path, 'status', c.status, 'body', c.body, 'recovery', c.recovery)), '[]'::jsonb)
 		from (
-			select distinct on (l.step, l.call) coalesce(p.change->>'tool', '') as tool, l.method, l.path
+			select distinct on (l.step, l.call) l.step, l.call, coalesce(p.change->>'tool', '') as tool, p.change->'arguments' as arguments,
+			  p.approval, l.method, l.path, coalesce((l.answer->>'status')::int, 0) as status,
+			  case when coalesce(p.change->>'tool', '') in ('dispatch_issue_update', 'dispatch_issue', 'dispatch_claim')
+			         and jsonb_typeof(l.answer->'body') = 'object' then (
+			    select coalesce(jsonb_object_agg(e.key, e.value), '{}'::jsonb) from jsonb_each(l.answer->'body') e
+			    where e.key in ('id', 'key', 'title', 'status', 'previous', 'rank_place', 'advances_revision', 'claim_changed', 'claim', 'previous_claim')
+			      or l.answer->'body'->'previous' ? e.key)
+			  else l.answer->'body' end as body,
+			  l.recovery
 			from going_landings l
 			left join going_plan_rows p on p.run_id = l.run_id
 			  and ((p.result->>'step')::int = l.step and (p.result->>'call')::int = l.call
@@ -139,9 +155,10 @@ type goingRunUsed struct {
 // do or file; null for a run not started from the line), its state and why it stopped (null where
 // nothing stopped it), every issue key a landed request of it touched, what it spent, when it
 // started, when it ended (null while it is queued, works or waits), whether Undo can still take
-// back a change of it (goingTakesBack; false for a run that changed nothing), and when its Undo
-// landed (null for a run never undone), so History offers Undo only while it can take something
-// back, and an undone run says when after a reload.
+// back a change of it (goingTakesBack: a call of it whose undo has not landed and whose record the
+// undo would go on to put back; false for a run that changed nothing), and when its Undo landed
+// (null for a run never undone), so History offers Undo only while it can take something back, and
+// an undone run says when after a reload.
 type goingRun struct {
 	ID           string        `json:"id"`
 	Conversation string        `json:"conversation"`
@@ -162,41 +179,59 @@ type goingRun struct {
 }
 
 // goingOpenCall is a call of a run that landed a request and whose undo has not landed, as the
-// run's read finds it (goingRunUndoColumns): the tool of the row of the run's plan it ran, "" for
-// none, and the method and path of the last request of it that landed.
+// run's read finds it (goingRunUndoColumns): its key, the row of the run's plan it ran - its tool,
+// "" for none, its arguments and its approval - and the last request of it that landed, with the
+// status and body its route recorded beside it and the delivery recovery point it committed.
 type goingOpenCall struct {
-	Tool   string `json:"tool"`
-	Method string `json:"method"`
-	Path   string `json:"path"`
+	Step      int             `json:"step"`
+	Call      int             `json:"call"`
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+	Approval  json.RawMessage `json:"approval"`
+	Method    string          `json:"method"`
+	Path      string          `json:"path"`
+	Status    int             `json:"status"`
+	Body      json.RawMessage `json:"body"`
+	Recovery  json.RawMessage `json:"recovery"`
 }
 
-// goingTakesBack reports whether Undo can still take back call, as goingUndoer.undo decides it:
-// its row's tool is a write tool whose undo is not goingUndoNotUndone, and the last request of it
-// that landed is its own, sent through a row of the tool (goingOwnLanded), not one the call sends
-// before its own, such as a close's reason, which Undo names sent, not undone. The tool's rows are
-// the ones its catalogue entry holds - those its entry names, or the routes its spec binds
-// (goingToolRows) - read off the tool and its spec, since a run is read where no catalogue is.
-func goingTakesBack(call goingOpenCall) bool {
-	tool, held := goingWriteTools[call.Tool]
-	if !held || tool.Undo == goingUndoNotUndone {
+// goingTakesBack reports whether Undo can still take back call, a call of the run run whose undo
+// has not landed, pressed by the run's person, login: whether the undo's own decision from the
+// call's record (goingUndoer.plan) goes on to put something back, rather than settling the call -
+// a write tool whose undo is not_undone, a last request that is not the call's own (a close's
+// reason sent before it), a claim or a create its route answered changed nothing, or a record the
+// undo cannot read. The two are one function, so History offers Undo exactly where Undo would
+// try. The plan reads nothing, so it runs here, where no server is, over catalogue.
+func goingTakesBack(catalogue GoingCatalogue, run, login string, call goingOpenCall) bool {
+	approval := call.Approval
+	if string(approval) == "null" {
+		approval = nil
+	}
+	write, err := goingLandedWriteOf(goingCallKey{run: run, step: call.Step, call: call.Call}, nil, nil, call.Tool, call.Arguments, approval)
+	if err != nil {
+		// The undo route cannot read this call either (goingLandedWrites).
 		return false
 	}
-	own := func(method, pattern string) bool {
-		if method != call.Method {
-			return false
-		}
-		_, fills := goingPathValues(pattern, call.Path)
-		return fills
-	}
-	if slices.ContainsFunc(tool.Routes, func(row goingToolRoute) bool { return own(row.Method, row.Pattern) }) {
-		return true
-	}
-	for _, spec := range contracts.DispatchTools {
-		if spec.Name == call.Tool {
-			return slices.ContainsFunc(spec.Routes, func(bound contracts.ToolRoute) bool { return own(bound.Method, bound.Pattern) })
-		}
-	}
-	return false
+	write.requests = []goingLandedRequest{{method: call.Method, path: call.Path, status: call.Status, body: call.Body, recovery: call.Recovery}}
+	return goingUndoer{catalogue: catalogue, login: login}.plan(context.Background(), write).next != nil
+}
+
+// goingRunCatalogue is the catalogue of the server's own route table (BuildGoingCatalogue), built
+// on the first read of a run that holds a call Undo has not taken back, which goingTakesBack
+// decides over: a run is read where no server is (readGoingRun). It is built in a function, not a
+// package variable's initializer, so the catalogue's tools never wait on this file to initialize.
+func goingRunCatalogue() (GoingCatalogue, error) {
+	goingRunCatalogueBuilt.once.Do(func() {
+		goingRunCatalogueBuilt.catalogue, goingRunCatalogueBuilt.err = BuildGoingCatalogue()
+	})
+	return goingRunCatalogueBuilt.catalogue, goingRunCatalogueBuilt.err
+}
+
+// goingRunCatalogueBuilt holds what goingRunCatalogue built.
+var goingRunCatalogueBuilt struct {
+	once      sync.Once
+	catalogue GoingCatalogue
+	err       error
 }
 
 // goingConversation is one conversation as History lists it: its id, when its newest run started,
@@ -362,8 +397,9 @@ func (s *server) listMyGoingRuns(w http.ResponseWriter, r *http.Request) {
 func scanGoingRun(row pgx.Row, lead ...any) (goingRun, error) {
 	var run goingRun
 	var chip, used, open []byte
+	var author string
 	targets := append(lead, &run.ID, &run.Conversation, &run.Continues, &run.Words, &chip, &run.Level, &run.Mode,
-		&run.Line, &run.State, &run.StopReason, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt, &open, &run.UndoneAt)
+		&run.Line, &run.State, &run.StopReason, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt, &author, &open, &run.UndoneAt)
 	if err := row.Scan(targets...); err != nil {
 		return goingRun{}, err
 	}
@@ -383,7 +419,13 @@ func scanGoingRun(row pgx.Row, lead ...any) (goingRun, error) {
 	if err := json.Unmarshal(open, &calls); err != nil {
 		return goingRun{}, fmt.Errorf("decode the going run's calls Undo has not taken back: %w", err)
 	}
-	run.Undoable = slices.ContainsFunc(calls, goingTakesBack)
+	if len(calls) > 0 {
+		catalogue, err := goingRunCatalogue()
+		if err != nil {
+			return goingRun{}, fmt.Errorf("build the going catalogue a run's undo is decided over: %w", err)
+		}
+		run.Undoable = slices.ContainsFunc(calls, func(call goingOpenCall) bool { return goingTakesBack(catalogue, run.ID, author, call) })
+	}
 	return run, nil
 }
 

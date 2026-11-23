@@ -1643,8 +1643,9 @@ func TestTheInboxNamesTheVersionOfEachWaitingPlan(t *testing.T) {
 // already holds, and refuses every other field beside it. A person on the issue page reopens the
 // issue first, then changes its fields. So the plan call refuses such a row before any of the plan
 // is kept, telling the model to propose the reopen alone and the other fields as a second change
-// that needs it; a reopen of its status alone, and the same row on an open issue, are kept. The
-// two changes, approved, both land: the issue is open again with its new priority.
+// that needs it; a reopen of its status alone, the same row on an open issue, and a reopen beside
+// the links the closed issue holds are kept, and a reopen beside a link it lacks is refused as the
+// priority is. The two changes, approved, both land: the issue is open again with its new priority.
 func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -1694,6 +1695,23 @@ func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
 		open := rig.issue(t, "Open all along")
 		if refused := propose(t, map[string]any{"issue": open, "status": "todo", "priority": 0}); refused != nil {
 			t.Fatalf("the plan call answered %+v, want the plan kept", refused)
+		}
+	})
+
+	t.Run("a reopen beside a link the closed issue lacks is refused, and beside the links it holds is kept", func(t *testing.T) {
+		const held, added = "https://example.com/pull/held", "https://example.com/pull/added"
+		linked := rig.issue(t, "Closed with its link")
+		rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+linked, map[string]any{"external_links": []map[string]string{{"url": held}}})
+		rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+linked, map[string]any{"status": "done"})
+		refused := propose(t, map[string]any{"issue": linked, "status": "todo", "external_links": []any{held, added}})
+		want := fmt.Sprintf(`change 0 (dispatch_issue_update): %s is closed, and Dispatch reopens an issue only by a change of its status alone: `+
+			`propose the reopen, dispatch_issue_update with {"issue":%q,"status":"todo"}, as one change, then the change of external_links as a second change whose needs name the first`,
+			linked, linked)
+		if refused == nil || refused.Code != agentwire.CodeCallRefused || refused.Message != want {
+			t.Fatalf("the plan call answered %+v, want %s: %s", refused, agentwire.CodeCallRefused, want)
+		}
+		if refused := propose(t, map[string]any{"issue": linked, "status": "todo", "external_links": []any{held}}); refused != nil {
+			t.Fatalf("the plan call of a reopen beside the link the issue holds answered %+v, want the plan kept", refused)
 		}
 	})
 

@@ -427,7 +427,11 @@ func TestUndoOfOneRun(t *testing.T) {
 // when after a reload. A run whose write landed is undoable and was never undone; once its Undo
 // lands it is not undoable, and it says the moment that undo landed. A run that wrote nothing, a
 // run whose one write is a message, which Undo names sent, not undone, and a reasoned close of
-// which only the reason landed are not undoable, before Undo and after it, and never undone.
+// which only the reason landed are not undoable, before Undo and after it, and never undone. So,
+// decided as Undo decides it from the call's record, are a claim its route answered changed
+// nothing, a create its route answered 200 for an issue Dispatch already held, and a write whose
+// record cannot be read: Undo sends nothing for any of them, and History offered it on every
+// reload.
 func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 	t.Parallel()
 	rig := newGoingPlanRig(t)
@@ -497,6 +501,50 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		neverUndoable(t, run, "after Undo")
 	})
 
+	t.Run("a claim its route answered changed nothing is not undoable", func(t *testing.T) {
+		issue := rig.issue(t, "Claimed by alice already")
+		rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/claim", map[string]any{})
+		rig.landsBeside(t, http.MethodPost, "/api/v1/issues/"+issue+"/claim")
+		run := rig.ran(t, "claim Claimed by alice already", goingChange("dispatch_claim", map[string]any{"issue": issue}))
+		if changed := rig.textOf(t, `select answer->'body'->>'claim_changed' from going_landings where run_id = $1::uuid and phase = 'do'`, run); changed != "false" {
+			t.Fatalf("the claim's landing records claim_changed %s, want false", changed)
+		}
+		neverUndoable(t, run, "before Undo")
+		if line := rig.undone(t, run, "dispatch_claim")[0]; !line.Outcome.OK || !strings.Contains(line.Outcome.Message, "changed nothing") {
+			t.Fatalf("Undo answered %+v, want nothing to undo", line)
+		}
+		neverUndoable(t, run, "after Undo")
+	})
+
+	t.Run("a create its route answered for an issue Dispatch already held is not undoable", func(t *testing.T) {
+		held := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "DEMO", "title": "Tracked upstream as acme/held#9", "external": "acme/held#9", "force": true,
+		})).Key
+		rig.landsBeside(t, http.MethodPost, "/api/v1/issues")
+		run := rig.ran(t, "file Held upstream again", goingChange("dispatch_issue", map[string]any{
+			"project": "DEMO", "title": "Held upstream again", "external": "acme/held#9", "force": true,
+		}))
+		if landed := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'do' and answer->>'status' = '200'`, run); landed != 1 {
+			t.Fatalf("the create recorded %d landings answered 200, want 1", landed)
+		}
+		neverUndoable(t, run, "before Undo")
+		if line := rig.undone(t, run, "dispatch_issue")[0]; !line.Outcome.OK || !strings.Contains(line.Outcome.Message, held) || rig.issueRead(t, held).Status == "done" {
+			t.Fatalf("Undo answered %+v and left %s %s, want nothing closed, naming %s", line, held, rig.issueRead(t, held).Status, held)
+		}
+		neverUndoable(t, run, "after Undo")
+	})
+
+	t.Run("a write whose record cannot be read is not undoable", func(t *testing.T) {
+		issue := rig.issue(t, "Renamed with no record")
+		run := rig.ran(t, "rename Renamed with no record", goingChange("dispatch_issue_update", retitle(issue, "Renamed")))
+		rig.exec(t, `update going_landings set answer = answer - 'body' where run_id = $1::uuid and phase = 'do'`, run)
+		neverUndoable(t, run, "before Undo")
+		if line := rig.undone(t, run, "dispatch_issue_update")[0]; line.Outcome.Code != codeGoingUndoAfterUnread || rig.title(t, issue) != "Renamed" {
+			t.Fatalf("Undo answered %+v and the title is %q, want nothing put back, %s", line, rig.title(t, issue), codeGoingUndoAfterUnread)
+		}
+		neverUndoable(t, run, "after Undo")
+	})
+
 	// Last: partlyLandedWaiting stops the rig's agent loop.
 	t.Run("a reasoned close of which only the reason landed is not undoable", func(t *testing.T) {
 		run, issue, _ := rig.partlyLandedWaiting(t, "Only its reason landed")
@@ -504,6 +552,125 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		neverUndoable(t, run, "before Undo")
 		goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
 		neverUndoable(t, run, "after Undo")
+	})
+}
+
+// landsBeside makes the request method path of a run record its landing even where its route
+// commits nothing, as a route that committed beside its answer would: after the route answers,
+// the request commits a write of its own, whose commit step records the landing with what the
+// route answered (TestAChangeNamesTheIssueAnEarlierCreateMakes).
+func (rig goingPlanRig) landsBeside(t *testing.T, method, path string) {
+	t.Helper()
+	rig.hooks.set(t, method, path, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+		inner.ServeHTTP(w, r)
+		tx, err := rig.database.Pool.Begin(r.Context())
+		if err != nil {
+			t.Errorf("begin a write of the request: %v", err)
+			return
+		}
+		defer func() { _ = tx.Rollback(r.Context()) }()
+		for _, statement := range []string{`create temp table beside_scratch (n int) on commit drop`, `insert into beside_scratch values (1)`} {
+			if _, err := tx.Exec(r.Context(), statement); err != nil {
+				t.Errorf("%s: %v", statement, err)
+				return
+			}
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			t.Errorf("commit a write of the request: %v", err)
+		}
+	})
+}
+
+// TestAKeptValueNamesWhoChangedIt: a value Undo keeps because another writer changed it after the
+// run names who changed that value after the call landed - the writer of that field's change, of
+// that part of the ask, of that version of the document, of that move of the issue - and nobody
+// where no event after the landing names one. Before, it named whoever wrote the item's newest
+// event of any kind, read when Undo was pressed, so a comment, a change of another field or a
+// review made since named the wrong person, and the bar said they changed it after this run.
+func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	bob := goingHolder{Kind: "user", ID: "bob"}
+	// kept is the field of line named field, failing t unless Undo kept it.
+	kept := func(t *testing.T, line goingUndoLine, field string) goingUndoField {
+		t.Helper()
+		for _, each := range line.Fields {
+			if each.Field == field {
+				if each.OK || line.Outcome.Code != codeGoingUndoChanged {
+					t.Fatalf("Undo answered %+v, want %s kept", line, field)
+				}
+				return each
+			}
+		}
+		t.Fatalf("Undo answered %+v, which names no field %s", line, field)
+		return goingUndoField{}
+	}
+	// comment posts a comment on issue as carol, the item's newest event.
+	comment := func(t *testing.T, issue string) {
+		t.Helper()
+		rig.fixture(t, "carol", http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": "Looks right to me."})
+	}
+
+	t.Run("an issue's field names who changed it, not who changed another field or commented since", func(t *testing.T) {
+		issue := rig.issue(t, "Retitled, then commented on")
+		run := rig.ran(t, "retitle Retitled, then commented on", goingChange("dispatch_issue_update", retitle(issue, "Ours")))
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": "Bob's"})
+		rig.fixture(t, "carol", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"priority": 1})
+		comment(t, issue)
+		field := kept(t, rig.undone(t, run, "dispatch_issue_update")[0], "title")
+		if field.By == nil || *field.By != bob || !strings.Contains(field.Message, "user bob") || strings.Contains(field.Message, "carol") {
+			t.Fatalf("the kept title answered by %+v, %q, want bob, who retitled it, and never carol", field.By, field.Message)
+		}
+	})
+
+	t.Run("an issue's field no event after the run names is kept naming nobody", func(t *testing.T) {
+		issue := rig.issue(t, "Retitled, then changed in the store")
+		run := rig.ran(t, "retitle Retitled, then changed in the store", goingChange("dispatch_issue_update", retitle(issue, "Ours")))
+		rig.exec(t, `update issues set title = 'Changed in the store' where key = $1`, issue)
+		comment(t, issue)
+		field := kept(t, rig.undone(t, run, "dispatch_issue_update")[0], "title")
+		if field.By != nil || !strings.Contains(field.Message, "another writer") || strings.Contains(field.Message, "carol") {
+			t.Fatalf("the kept title answered by %+v, %q, want no writer named", field.By, field.Message)
+		}
+	})
+
+	t.Run("an ask's part names who changed it, not who changed another part since", func(t *testing.T) {
+		ask := rig.ask(t, rig.issue(t, "Holds an ask reworded twice"), "Ship it on Friday?")
+		run := rig.ran(t, "move the ask to Monday", goingChange("dispatch_edit_ask", map[string]any{"ask": ask, "question": "Ship it on Monday?"}))
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/asks/"+ask, map[string]any{"question": "Ship it on Tuesday?"})
+		rig.fixture(t, "carol", http.MethodPatch, "/api/v1/asks/"+ask, map[string]any{"urgency": "high"})
+		field := kept(t, rig.undone(t, run, "dispatch_edit_ask")[0], "question")
+		if field.By == nil || *field.By != bob || !strings.Contains(field.Message, "user bob") || strings.Contains(field.Message, "carol") {
+			t.Fatalf("the kept question answered by %+v, %q, want bob, who reworded it, and never carol", field.By, field.Message)
+		}
+	})
+
+	t.Run("an issue the run created and another moved names who moved it", func(t *testing.T) {
+		run := rig.ran(t, "file Moved after the run", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Moved after the run", "force": true}))
+		created := rig.textOf(t, `select key from issues where title = 'Moved after the run'`)
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+created, map[string]any{"status": "in_progress"})
+		comment(t, created)
+		line := rig.undone(t, run, "dispatch_issue")[0]
+		if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "user bob moved it") || strings.Contains(line.Outcome.Message, "carol") {
+			t.Fatalf("Undo of the create answered %+v, want it kept, naming bob, who moved it, and never carol", line)
+		}
+	})
+
+	t.Run("a document's version names who wrote it, not who reviewed it since", func(t *testing.T) {
+		issue := rig.issue(t, "Holds notes edited, then reviewed")
+		owner := "/api/v1/issues/" + issue
+		notes := uploadDocument(t, rig.mux, owner, "notes.md", "# Notes\n\nThe first line.\n")
+		run := rig.ran(t, "edit the notes before their review", goingChange("dispatch_doc_edit", map[string]any{
+			"issue": issue, "artifact": notes.Artifact.Slug, "ops": replaceText("first line", "opening line"),
+		}))
+		rig.fixture(t, "bob", http.MethodPost, owner+"/artifacts/"+notes.Artifact.Slug+"/edits", map[string]any{
+			"ops": replaceText("opening line", "line bob wrote"),
+		})
+		rig.fixture(t, "carol", http.MethodPost, "/api/v1/artifacts/"+notes.Artifact.ID+"/reviews", map[string]any{"state": "approved"})
+		line := rig.undone(t, run, "dispatch_doc_edit")[0]
+		if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "which user bob wrote") || strings.Contains(line.Outcome.Message, "carol") {
+			t.Fatalf("Undo of the edit answered %+v, want it kept, naming bob, who wrote its version, and never carol", line)
+		}
 	})
 }
 
@@ -586,11 +753,18 @@ func (rig goingPlanRig) textOf(t *testing.T, query string, arguments ...any) str
 }
 
 // undoneOnce runs change as alice's approved plan, presses Undo on it and answers its one line,
-// failing t unless the line says the change was undone.
+// failing t unless the run's read offered Undo before the press (undoable, decided from the part
+// of each answer the read takes, goingRunUndoColumns) and the line says the change was undone: so
+// every stated undo the cases run holds the run's read to the undo's own decision.
 func (rig goingPlanRig) undoneOnce(t *testing.T, words string, change map[string]any) goingUndoLine {
 	t.Helper()
 	tool, _ := change["tool"].(string)
-	line := rig.undone(t, rig.ran(t, words, change), tool)[0]
+	run := rig.ran(t, words, change)
+	response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice")
+	if response.Code != http.StatusOK || !decodeBody[goingRun](t, response).Undoable {
+		t.Fatalf("before Undo the run of %s answered %d %s, want it undoable", tool, response.Code, response.Body.String())
+	}
+	line := rig.undone(t, run, tool)[0]
 	if !line.Outcome.OK {
 		t.Fatalf("Undo of %s answered %+v, want it undone", tool, line)
 	}

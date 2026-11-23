@@ -2,9 +2,14 @@ kind: Added
 body: |-
   A command-bar run's record (`GET /api/v1/going/runs/{id}`, and each run of
   `GET /api/v1/me/going-runs`) says whether Undo can still take it back and when it was undone.
-  `undoable` is true while a call of the run landed a change whose undo has not landed, whose
-  tool's undo is not `not_undone`, and whose last landed request is its own, not a close's reason
-  sent before it; it is false for a run that changed nothing. `undone_at` is when the run's Undo
-  landed, its newest undo landing, and null for a run never undone. Both are read in the
-  statement that reads the run, so History makes no extra read for each run it lists. History
-  offered Undo on a run already undone, and an undone run could not say when after a reload.
+  `undoable` is true while a call of the run landed a change Undo would still try to take back,
+  decided from the call's record by the same function the undo itself decides with: its undo has
+  not landed, its tool's undo is not `not_undone`, its last landed request is its own, not a
+  close's reason sent before it, and its record says what it found and left and that it changed
+  something, so a claim its route answered `claim_changed` false, a create answered 200 for an
+  issue Dispatch already held and a call whose record cannot be read are not undoable; it is false
+  for a run that changed nothing. `undone_at` is when the run's Undo landed, its newest undo
+  landing, and null for a run never undone. Both are read in the statement that reads the run, so
+  History makes no extra read for each run it lists; of an issue's update, create or claim, whose
+  answer carries the whole issue, it reads only the members that decision reads. History offered
+  Undo on a run already undone, and an undone run could not say when after a reload.
