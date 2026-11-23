@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -63,7 +64,7 @@ func (r *outbox) mergeHoldsChanged(ctx context.Context, row record.OutboxRow, pa
 func (r *outbox) mergingNow(ctx context.Context, key string) (record.Issue, string, error) {
 	var issue *record.Issue
 	var left string
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, left, err = workflow.MergingNow(ctx, r.records, tx, key)
 		return err

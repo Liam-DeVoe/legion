@@ -620,6 +620,7 @@ func (r *olderLauncherRig) publishedOn(topic string) []outboxPublish {
 // since that launcher read no row to say it was not; the claim's next launch, a resume of the
 // recorded file, says nothing of it (state-table rows 1 and 2).
 func TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence(t *testing.T) {
+	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
 
 	byAgent := r.startByAgentLookup()
@@ -667,6 +668,7 @@ func TestAnOlderLauncherResumesTheSessionByItsIDWithTheRecreatedSentence(t *test
 // next try forgets the session, charged nothing either, so a claim one launch failure below its
 // limit does not fail (state-table rows 3 to 7).
 func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t *testing.T) {
+	t.Parallel()
 	// seeded is the launch failures the claim carries: one below the rig's limit of two, so a
 	// charge of the end or of the forget would fail the claim.
 	const seeded = 1
@@ -714,6 +716,7 @@ func TestAnOlderLauncherStartThatDoesNotRegisterForgetsTheSessionAtTheNextTry(t 
 // was lost or that no store holds it: the session was not looked up, and a store may hold it
 // still (state-table row 7). The controller is published nothing of it (#4065).
 func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) {
+	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
 	r.startByAgentLookup()
 	from := len(r.rt.Calls())
@@ -784,6 +787,7 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 // and the architect in one session-forgotten notice: the fact's event id names the session
 // forgotten, so the second forget's fact is the first's (workflowRuntime's sessionLost).
 func TestAForgetADaemonStopCutShortIsToldOnce(t *testing.T) {
+	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
 	r.startByAgentLookup()
 

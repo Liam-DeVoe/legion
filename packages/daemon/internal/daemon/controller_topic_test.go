@@ -41,6 +41,7 @@ import (
 // failing, and every try carries the one key the controller's subscriber dedupes on. The
 // controller reads the notice the architect is sent, without the row's routing.
 func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResendTheArchitects(t *testing.T) {
+	t.Parallel()
 	listener := newNoticeListener()
 	server := httptest.NewServer(listener)
 	t.Cleanup(server.Close)
@@ -81,7 +82,7 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 	// shared database, so each tree takes the next free one.
 	runningTree := func(issue string, authority treelifecycle.Authority) {
 		t.Helper()
-		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			records := record.NewStore()
 			if err := records.PutIssue(context.Background(), tx, record.Issue{
 				Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: cfg.Project, Title: "held", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U",
