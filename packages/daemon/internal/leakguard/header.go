@@ -221,14 +221,14 @@ var signatureStarts = []string{
 }
 
 // unsigned is text without the bytes of its signature. The signature is what git reads as one:
-// from the last line that starts one (signatureStarts) to the end of text. Up to the last line of
-// it that starts "-----END ", that first line, each line that starts "-----END " and each line of
+// from the last line that starts one (signatureStarts) to the end of text. From that line to the
+// first line after it that starts "-----END ", that first line, the END line and each line of
 // base64 alone, a blank one included, are left out; any other line there (an armour header such
 // as "Comment: …", or text a hand-made object put there) is kept and read. Every line after that
-// last "-----END " line is read whole, whatever its characters: git counts it in the signature,
-// but `git show` prints it, and no signature's base64 stands after its end. Everything before the
-// signature is read too, an earlier block of the same shape included. Text with no signature
-// comes back as it was, uncopied.
+// END line is read whole, whatever its characters, a second END line among them: git counts it in
+// the signature, but `git show` prints it, and no signature's base64 stands after its end.
+// Everything before the signature is read too, an earlier block of the same shape included. Text
+// with no signature comes back as it was, uncopied.
 func unsigned(text string) string {
 	start := -1
 	for at := 0; at < len(text); {
@@ -249,6 +249,7 @@ func unsigned(text string) string {
 	for k, line := range lines {
 		if strings.HasPrefix(line, "-----END ") {
 			end = k
+			break
 		}
 	}
 	var kept strings.Builder

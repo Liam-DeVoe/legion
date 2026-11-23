@@ -99,20 +99,21 @@ func compile() (built *rules, err error) {
 // source: the detector accumulates the findings of a source, and a scan of several records
 // through it would report the first record's finding against every record after it.
 //
-// A record whose text is not UTF-8 is scanned a second time read as Windows-1252 (windows1252):
-// a commit in an encoding git cannot convert, or a file of a single-byte encoding, holds a
-// separator the rules know (a no-break space, an en or em dash) as one byte, which read as UTF-8
-// is no character at all, so a name joined by it would pass. Its findings join the record's own,
-// one line per class as ever.
+// A record whose text or label is not UTF-8 is scanned a second time read as Windows-1252
+// (windows1252), its text and its path both: a commit in an encoding git cannot convert, or a file
+// of a single-byte encoding, holds a separator the rules know (a no-break space, an en or em dash)
+// as one byte, which read as UTF-8 is no character at all, so a name joined by it would pass. Its
+// findings join the record's own, one line per class as ever, and the label is masked as read so
+// (mask).
 func (r *rules) scan(ctx context.Context, record Record, rep *report) error {
 	var of []string
 	seen := map[string]bool{}
-	texts := []string{record.Text}
-	if !utf8.ValidString(record.Text) {
-		texts = append(texts, windows1252(record.Text))
+	fragments := []detect.Fragment{{Raw: record.Text, FilePath: record.Label}}
+	if !utf8.ValidString(record.Text) || !utf8.ValidString(record.Label) {
+		fragments = append(fragments, detect.Fragment{Raw: windows1252(record.Text), FilePath: windows1252(record.Label)})
 	}
-	for _, text := range texts {
-		for _, finding := range r.detector.DetectContext(ctx, detect.Fragment{Raw: text, FilePath: record.Label}) {
+	for _, fragment := range fragments {
+		for _, finding := range r.detector.DetectContext(ctx, fragment) {
 			line := r.mask(record.Label) + ": " + finding.Description
 			if !seen[line] {
 				seen[line] = true
@@ -233,13 +234,18 @@ func (r *report) all() []string {
 
 // mask is label with each slash-separated component the repository or company rules match
 // replaced by "<name>", the masking .github/scripts/check-private-names.sh does (its named_parts
-// function, which its mask applies). A label that names no file has no component to mask and comes
-// back as it was.
+// function, which its mask applies). A component that is not UTF-8 is tested as the scan reads it
+// too, as Windows-1252 (windows1252), so a component the rescan refuses is masked. A label that
+// names no file has no component to mask and comes back as it was.
 func (r *rules) mask(label string) string {
 	parts := strings.Split(label, "/")
 	for i, part := range parts {
+		read := []string{part}
+		if !utf8.ValidString(part) {
+			read = append(read, windows1252(part))
+		}
 		for _, name := range r.names {
-			if name.MatchString(part) {
+			if slices.ContainsFunc(read, name.MatchString) {
 				parts[i] = "<name>"
 				break
 			}

@@ -189,6 +189,15 @@ func TestAPushedAnnotatedTagIsRead(t *testing.T) {
 			},
 		},
 		{
+			// A second END line after the signature's own leaves the lines between the two read:
+			// the signature ends at the first. Built out of two pieces for the reason theHost is.
+			name: "a line before a second END line after the signature names the repository",
+			build: func(t *testing.T) (Update, []string) {
+				sha := madeTag(t, "second-end", "a message of no interest\n"+signature("Rk9vYmFy")+"notes/agen"+"tc/today\n-----END X\n")
+				return newRef("refs/tags/second-end", sha), []string{"tag " + short(sha) + " message: " + repositoryClass}
+			},
+		},
+		{
 			// The destination holds the tag at that ref already, so the push moves nothing.
 			name: "a tag the destination holds at that ref",
 			build: func(t *testing.T) (Update, []string) {

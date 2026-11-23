@@ -544,6 +544,30 @@ func TestARenamedPathIsReadAsItsNewPath(t *testing.T) {
 	}
 }
 
+// A path whose name is joined by a separator the rules know, written as one byte of a single-byte
+// encoding (a Windows-1252 en dash, a Latin-1 no-break space), is refused, and the report masks
+// that component as the rules read it: the scan reads a path that is not UTF-8 as Windows-1252,
+// and so does the mask, or the refusal would print the name. Built out of two pieces for the
+// reason theHost is.
+func TestAPathInASingleByteEncodingIsRefusedAndMasked(t *testing.T) {
+	for _, tc := range []struct{ name, path string }{
+		{"a Windows-1252 en dash", "notes/agen" + "t\x96c/x.md"},
+		{"a Latin-1 no-break space", "notes/agen" + "t\xa0c/x.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			push := aPushOf(t, map[string]string{tc.path: "a line of nothing in particular\n"})
+			got := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
+			// The path's own record, by the content rule and the path rule, then the file's one
+			// added line, at that path, by the path rule.
+			inPath := "notes/<name>/x.md: " + repositoryClass + " in its path"
+			want := []string{"notes/<name>/x.md: " + repositoryClass, inPath, inPath}
+			if !slices.Equal(got, want) {
+				t.Fatalf("the report is %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // A path that holds a space is reported as itself. git ends the "+++" line that names such a path
 // with a tab, which is no part of the path; where the path also holds a byte git quotes, a tab of
 // its own here, git writes it C-quoted with its b/ prefix inside the quotes, and the report names
