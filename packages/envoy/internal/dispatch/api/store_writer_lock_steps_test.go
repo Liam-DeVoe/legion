@@ -256,8 +256,9 @@ const (
 	goingEventInsertStatement   = "insert into going_events ("
 	runRowReadStatement         = "select id::text, author, project, words, created_at, ends_at from going_requests"
 	// goingRunDeleteStatement is the sweep's delete of a run's going_requests row an hour after it
-	// was asked (goRunGone), whose foreign key cascades inside it to the run's going_events rows.
-	goingRunDeleteStatement = "delete from going_requests where id = $1::uuid"
+	// was asked (goRunGone), whose foreign key cascades inside it to the run's going_events rows; the
+	// id it names is read as no row where it is no uuid (store.CanonicalUUID), which follows it.
+	goingRunDeleteStatement = "delete from going_requests where id = "
 	// patchRowStatement is a PATCH's one update of the issue's row (patchIssue), askWordsStatement
 	// an edit's update of the ask's row (editAsk), and commentWordsStatement an edit's update of
 	// the comment's row (editComment).
