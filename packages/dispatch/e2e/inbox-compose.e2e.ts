@@ -441,6 +441,11 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
     await expect(stateOf(page, stalled.session_id)).toContainText(
       "It has not ended: messages sent to it are stored until it answers"
     );
+    // An unresponsive session has not ended, so its line never says that it is stopped or not
+    // running: those are the words of a queued attempt and of the registry's own state mark.
+    const stalledLine = (await stateOf(page, stalled.session_id).textContent()) ?? "";
+    expect(stalledLine, "the unresponsive recipient's line").not.toContain("stopped");
+    expect(stalledLine, "the unresponsive recipient's line").not.toContain("Not running");
     // Three recipients: the broadcast composer's fields, and no Issue picker.
     await expect(listTrigger(dialog, "Delivery mode")).toBeVisible();
     const broadcastBox = dialog.getByRole("textbox", { name: "Broadcast message" });
