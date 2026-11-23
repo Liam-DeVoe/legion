@@ -46,6 +46,7 @@ func (s *settingState) read(ctx context.Context, tx pgx.Tx) error {
 // sets it for its transaction and the pool carries the idle bound instead. The observed view is
 // read under the same bound, and leaves the connection as the whole state does.
 func TestTheStateRoutesStatementBoundEndsWithItsTransaction(t *testing.T) {
+	t.Parallel()
 	const bound = 2 * time.Second
 	watcher := isolatedOutboxPool(t)
 	application := "legion-daemon-" + strings.ToLower(randomSuffix(t))
