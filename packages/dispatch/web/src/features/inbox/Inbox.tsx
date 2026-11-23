@@ -327,7 +327,9 @@ function MarkCheckbox({
       onChange={(event) =>
         onMark(id, event.nativeEvent instanceof MouseEvent && event.nativeEvent.shiftKey)
       }
-      // A shift-press would select the page's text from the last click to this one. Its default
+      // A guard: an engine that extends a text selection on a shift-press of a control would
+      // select the page's text from the last click to this one. The three engines the browser
+      // suite runs do not extend one there, measured with this line taken out. Its default
       // action also focuses the checkbox, so with it prevented the checkbox takes the focus here.
       onPointerDown={(event) => {
         if (!event.shiftKey) return;
