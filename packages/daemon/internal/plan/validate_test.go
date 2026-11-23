@@ -104,7 +104,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			{Task: "a", Reason: "step 2 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet},
 		}},
 		{name: "a second agent that starts with the role of another", plan: oneTask("a", "implementer reviewer reviewer"),
-			want: []Refusal{{Task: "a", Reason: "step 3 of task a needs an agent of its own beside the agent of step 2, and both agents start with the role reviewer, and this release runs one agent of each role for an issue." + yet}}},
+			want: []Refusal{{Task: "a", Reason: "step 3 of task a needs an agent of its own beside the agent of step 2, and both agents start with the role reviewer, and this release runs one agent that starts with each role for an issue." + yet}}},
 		{name: "acceptance with no key", plan: oneTask("a", "implementer acceptance"),
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names acceptance with no key, which asks for a fresh agent of the role acceptance." + yet}}},
 		{name: "the key owner on a role but acceptance", plan: oneTask("a", "implementer:owner"),
@@ -120,7 +120,7 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 		{name: "part_of", plan: withTask(Task{ID: "f1", PartOf: "f", Steps: implementer}),
 			want: []Refusal{{Task: "f1", Reason: "task f1 names part_of." + yet}}},
 		{name: "two causes in one task", plan: oneTask("a", "reviewer implementer reviewer"), want: []Refusal{
-			{Task: "a", Reason: "step 3 of task a needs an agent of its own beside the agent of step 1, and both agents start with the role reviewer, and this release runs one agent of each role for an issue." + yet},
+			{Task: "a", Reason: "step 3 of task a needs an agent of its own beside the agent of step 1, and both agents start with the role reviewer, and this release runs one agent that starts with each role for an issue." + yet},
 			{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads; a role of this deployment that reports pass or fail needs none." + yet},
 		}},
 	} {
@@ -168,11 +168,13 @@ func TestAKeyOtherThanOwnerIsTaken(t *testing.T) {
 }
 
 // A role can stand at two steps of a task: the steps of one key are one agent, which takes the role
-// of each step it does, so `implementer:a reviewer implementer:a` is taken. A second agent that
-// starts with the role of another is not taken yet: each agent is named by the role it starts with,
-// and this release runs one agent of each role for an issue, so `implementer reviewer implementer`
-// is refused at the first step of its second implementer, naming the first step of the first. The
-// owner has no name, and a key that starts with another role is an agent of that role's name.
+// of each step it does, so `implementer:a reviewer implementer:a` is taken, and so is
+// `implementer:a reviewer:b implementer:b`, where two agents work the implementer's steps. A second
+// agent that starts with the role of another is not taken yet: each agent is named by the role it
+// starts with, and this release runs one agent that starts with each role for an issue, so
+// `implementer reviewer implementer` is refused at the first step of its second implementer, naming
+// the first step of the first. The owner has no name, and a key that starts with another role is an
+// agent of that role's name.
 func TestARoleCanStandAtTwoSteps(t *testing.T) {
 	for _, steps := range []string{"implementer:a reviewer implementer:a", "implementer:a reviewer:b implementer:b",
 		"implementer:a tester:a reviewer implementer:a tester:a", "implementer acceptance:owner reviewer acceptance:owner"} {
@@ -182,9 +184,9 @@ func TestARoleCanStandAtTwoSteps(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ steps, reason string }{
-		{"implementer reviewer implementer", "step 3 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent of each role for an issue."},
-		{"implementer:a implementer:b", "step 2 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent of each role for an issue."},
-		{"implementer reviewer:a tester:a reviewer", "step 4 of task t needs an agent of its own beside the agent of step 2, and both agents start with the role reviewer, and this release runs one agent of each role for an issue."},
+		{"implementer reviewer implementer", "step 3 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue."},
+		{"implementer:a implementer:b", "step 2 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue."},
+		{"implementer reviewer:a tester:a reviewer", "step 4 of task t needs an agent of its own beside the agent of step 2, and both agents start with the role reviewer, and this release runs one agent that starts with each role for an issue."},
 	} {
 		want := []Refusal{{Task: "t", Reason: tc.reason + yet}}
 		if r := Supported(oneTask("t", tc.steps), builtin); !reflect.DeepEqual(r, want) {
@@ -193,8 +195,8 @@ func TestARoleCanStandAtTwoSteps(t *testing.T) {
 	}
 	// Each agent beyond the first of a role is one reason, naming the first agent's first step.
 	want := []Refusal{
-		{Task: "t", Reason: "step 3 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent of each role for an issue." + yet},
-		{Task: "t", Reason: "step 4 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent of each role for an issue." + yet},
+		{Task: "t", Reason: "step 3 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue." + yet},
+		{Task: "t", Reason: "step 4 of task t needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue." + yet},
 	}
 	if r := Supported(oneTask("t", "implementer reviewer implementer implementer"), builtin); !reflect.DeepEqual(r, want) {
 		t.Fatalf("Supported(implementer reviewer implementer implementer) =\n%+v\nwant\n%+v", r, want)
@@ -214,7 +216,7 @@ func TestSupportedTakesStepsInAnyOrder(t *testing.T) {
 			t.Fatalf("%s refused: %+v", steps, r)
 		}
 	}
-	want := Refusal{Task: "a", Reason: "step 4 of task a needs an agent of its own beside the agent of step 2, and both agents start with the role tester, and this release runs one agent of each role for an issue. This release of Legion does not carry it out yet."}
+	want := Refusal{Task: "a", Reason: "step 4 of task a needs an agent of its own beside the agent of step 2, and both agents start with the role tester, and this release runs one agent that starts with each role for an issue. This release of Legion does not carry it out yet."}
 	if r := Supported(oneTask("a", "implementer tester reviewer tester"), builtin); len(r) != 1 || r[0] != want {
 		t.Fatalf("got %+v", r)
 	}
@@ -306,7 +308,7 @@ func TestAStepThatReadsAPullRequestNamesARoleOfTheDeploymentThatNeedsNone(t *tes
 func TestARoleOfTheDeploymentAtTwoStepsIsOneAgents(t *testing.T) {
 	d := withRole("checker", TypeTesting)
 	d.Roles["linter"] = RoleDef{Name: "linter", Type: TypeTesting}
-	want := []Refusal{{Task: "a", Reason: "step 4 of task a needs an agent of its own beside the agent of step 2, and both agents start with the role checker, and this release runs one agent of each role for an issue." + yet}}
+	want := []Refusal{{Task: "a", Reason: "step 4 of task a needs an agent of its own beside the agent of step 2, and both agents start with the role checker, and this release runs one agent that starts with each role for an issue." + yet}}
 	if r := Supported(oneTask("a", "implementer checker linter checker"), d); !reflect.DeepEqual(r, want) {
 		t.Fatalf("Supported(implementer checker linter checker) =\n%+v\nwant\n%+v", r, want)
 	}

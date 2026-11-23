@@ -470,7 +470,7 @@ var (
 )
 
 // roleTwiceReason is the one reason register_plan gives roleTwiceUnkeyedPlan.
-const roleTwiceReason = "step 3 of task a needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent of each role for an issue. This release of Legion does not carry it out yet."
+const roleTwiceReason = "step 3 of task a needs an agent of its own beside the agent of step 1, and both agents start with the role implementer, and this release runs one agent that starts with each role for an issue. This release of Legion does not carry it out yet."
 
 // stepRun is one run of a step: the step's place and the run's attempt, as its record names them.
 type stepRun struct{ step, attempt int }
