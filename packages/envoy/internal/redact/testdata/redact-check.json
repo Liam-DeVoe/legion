@@ -3946,8 +3946,8 @@
       "capture": "brokerclient.trade-echo/run",
       "mutation": {
         "file": "packages/envoy/internal/redact/remotetext.go",
-        "preimage": "text = Tokens(text, -1, *carried...)\n\t}\n\treturn Field(text)",
-        "replacement": "_ = Tokens(text, -1, *carried...)\n\t}\n\treturn Field(text)"
+        "preimage": "text = Tokens(text, -1, carried()...)\n\t}\n\treturn Field(text)",
+        "replacement": "_ = Tokens(text, -1, carried()...)\n\t}\n\treturn Field(text)"
       }
     },
     {
@@ -3960,8 +3960,8 @@
       "capture": "brokerclient.trade-echo/answer",
       "mutation": {
         "file": "packages/envoy/internal/redact/remotetext.go",
-        "preimage": "text = Tokens(text, -1, *carried...)\n\t}\n\treturn ruled(text)",
-        "replacement": "_ = Tokens(text, -1, *carried...)\n\t}\n\treturn ruled(text)"
+        "preimage": "text = Tokens(text, -1, carried()...)\n\t}\n\treturn ruled(text)",
+        "replacement": "_ = Tokens(text, -1, carried()...)\n\t}\n\treturn ruled(text)"
       }
     },
     {
