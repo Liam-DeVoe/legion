@@ -4687,7 +4687,7 @@ The kernel can also stop a process that the classifier protects ("The score", ab
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
 
 ```text
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
+launcher: memory guard: ended pid=<pid> role=<slot> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
 ```
 
 The guest watch fills it from what it read:
@@ -4732,7 +4732,7 @@ For a process of a role, the watch also gives a report to that role's part of th
   On any other connection the launcher drops each report with this line, since an earlier daemon may close the connection on a frame it does not know, or tell the role of the kernel's stop in the guard's words:
 
   ```text
-  <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
+  <slot>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
   ```
 
 A process of no role has its `ended` line and no report, whether the classifier protects it or not.
@@ -4747,7 +4747,7 @@ The pod's kernel stopped one of your processes because the pod ran out of memory
 For `cause: kernel-protected` the note is `kernelProtectedKillNote`'s, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause`:
 
 ```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of your role. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of yours. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of an agent's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
 ```
 
 That note does not say that the session goes on.
@@ -4926,7 +4926,7 @@ capabilities.decided.<name>: "<reason>"` on a deployment row and `capability <na
 configLine?, source?}`, `status` one of `present`, `unchecked`, `withheld`, `decided` or `open` (daemon API contract 16 added the list, contract 21 dropped `live` from it and contract 25 dropped `installed`, which nothing has emitted since LEGION-629;
 the image rows are `present` once the probe passed and `unchecked` before it or under tmux), `source` (`configuration` or `boot`, contract
 25) on a deployment row alone — what legion.yaml alone decides or what boot measured
-— never on a live row, and under each claim's `capabilities` (`issues.<KEY>.architect` and `issues.<KEY>.workers.<role>.claim`) that claim's latest report
+— never on a live row, and under each claim's `capabilities` (`issues.<KEY>.architect`, `issues.<KEY>.workers.<role>.claim` and, for a claim neither shows, such as a second agent of one role, `issues.<KEY>.otherClaims[].claim`) that claim's latest report
 — `measuredAt`, `incarnation`, `ok` (the names its checks passed) and `open[{name, detail}]` — whatever process sent it;
 compare its `incarnation` with the claim's `locator.incarnation` to tell the running process's report from a predecessor's.
 The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/SKILL.md`).
@@ -5397,7 +5397,7 @@ Nothing waits on it: not the launch, not the role's registration, not a prompt.
 The shims of every slot of a pod share one workspace, so the warm-up holds a lease at `.codegraph/legion-warm.lock` for its run
 — an exclusive create whose holder refreshes its mtime every 10 s, taken over once it is 60 s stale, the takeover itself under a second exclusive create beside it so two shims that both read one stale lease never both build
 — and a shim that finds the lease held leaves the build to its holder.
-When a build finishes, the shim's warm-up logs one line in the `roles` container's log, prefixed `<role>: `, `codegraph warm-up for <workspace> built the index: codegraph init took
+When a build finishes, the shim's warm-up logs one line in the `roles` container's log, prefixed `<slot>: `, `codegraph warm-up for <workspace> built the index: codegraph init took
 <duration>, done <duration> after launch` — the build's own duration and the time since the role's launch (`codegraph index` in place of `init` for a repair)
 — which stage 4b's `repository-tools` checkpoint reads (`kubectl logs <pod> --all-containers`).
 A stop mid-build — the launcher's one SIGTERM to the role's process group
@@ -6563,9 +6563,9 @@ launcher: memory guard: started act_percent=<n> floor_percent=<n> wait=<d> inter
 launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> interval=<d>
 launcher: memory guard: off: the daemon's acknowledgement carries no settings
 launcher: memory guard: settings refused: <why>; nothing changes
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
+launcher: memory guard: ended pid=<pid> role=<slot> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
 launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
-launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_executable="<name>"
+launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<slot> largest_size=<bytes> largest_executable="<name>"
 launcher: memory guard: off reason=<why>
 launcher: memory guard: unread pid=<pid> reason=<why>
 launcher: memory guard: kill failed pid=<pid> reason=<why>
@@ -6589,12 +6589,12 @@ The guard measures that largest process again, in a goroutine of its own that de
 `unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
 
-The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
+The launcher writes three lines of its own about the reports below, each behind the slot's `<slot>: ` prefix (a slot is named for its agent, so `role=` and `largest_role=` above name a slot too):
 
 ```text
-<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
-<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report
-<role>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
+<slot>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
+<slot>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report
+<slot>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
 ```
 
 **The report and the note.**

@@ -116,9 +116,9 @@ func TestAKernelKillOfARolesOwnProcessTellsItsRoleItsSessionWasStopped(t *testin
 	want := "The pod's kernel stopped one of your processes because the pod ran out of memory: " +
 		"`omp` (pid 4242) held 812.40 MiB when the pod's memory read 3.26 GiB of its 4.00 GiB limit. " +
 		"It was one of the processes that run your session, not a command you ran. " +
-		"If it was your agent, your turn ended with it, and so did every other process of your role. " +
+		"If it was your agent, your turn ended with it, and so did every other process of yours. " +
 		"The daemon then starts the same session again and sends again any task that the turn was running. " +
-		"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. " +
+		"It counts each such exit of an agent's process as a failed launch, and at the limit of failed launches it fails your claim instead. " +
 		"Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: " +
 		"read skill://legion-worker/references/tools.md before you run it again."
 	assertRoleMessages(t, pool, "LEGION-209", []record.RoleMessage{{Role: string(token), Body: want}})
