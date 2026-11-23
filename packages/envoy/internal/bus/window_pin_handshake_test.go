@@ -262,7 +262,6 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 // answer ErrUnavailable, which costs the outbox the publisher hold for a connection that never
 // dropped.
 func TestAWindowDoesNotTakeAHeldWriteForALostConnection(t *testing.T) {
-	t.Parallel()
 	client, hold := heldHandshakeClient(t)
 	w := client.WindowUntil(nil).(*window)
 	if err := w.pinToSend(); err != nil {

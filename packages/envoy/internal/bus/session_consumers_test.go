@@ -767,7 +767,6 @@ func TestRestartsAtOnceReportEachGap(t *testing.T) {
 // it expired, and an idle heartbeat keeps a pull that waits longer than two heartbeats alive, so it
 // delivers every message in stream order however many requests that takes.
 func TestAPullRequestsAgainAfterABatchAndAnExpiry(t *testing.T) {
-	t.Parallel()
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
 	const session = "ses_pull_requests"
