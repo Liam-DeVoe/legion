@@ -25,16 +25,16 @@ import (
 //     "test" (clitest, testbin, capabilitiestest): tests of any package call it.
 //
 // Such a place is a call of os.WriteFile or os.OpenFile whose mode has an execute bit. It is also
-// a call of os.WriteFile, os.OpenFile or os.Create whose file the same top-level function gives an
-// execute bit with a Chmod: os.Chmod of the path the call names, spelled the same way, or the
-// Chmod method of the variable that os.Create or os.OpenFile assigned the file to. A mode the
-// check cannot evaluate as a constant is named too, since it cannot tell that the mode holds no
-// execute bit. So is a use of os.WriteFile, os.OpenFile, os.Create or os.Chmod as a function
-// value, whose file and mode it cannot follow, and a dot import of os, whose calls it cannot tell
-// from the file's own functions. This package's own WriteFile is the one place left out. A
-// directory below root that holds a go.mod of its own is another module, which that module's
-// check reads, and node_modules, vendor, testdata and dot directories are not Go source of the
-// module.
+// a call of os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file the same top-level
+// function gives an execute bit with a Chmod: os.Chmod of the path the call names, spelled the
+// same way, or the Chmod method of the variable that os.Create, os.CreateTemp or os.OpenFile
+// assigned the file to, or os.Chmod of that variable's Name(). A mode the check cannot evaluate as
+// a constant is named too, since it cannot tell that the mode holds no execute bit. So is a use of
+// os.WriteFile, os.OpenFile, os.Create, os.CreateTemp or os.Chmod as a function value, whose file
+// and mode it cannot follow, and a dot import of os, whose calls it cannot tell from the file's own
+// functions. This package's own WriteFile is the one place left out. A directory below root that
+// holds a go.mod of its own is another module, which that module's check reads, and node_modules,
+// vendor, testdata and dot directories are not Go source of the module.
 //
 // Unguarded fails, naming root, when root holds no go.mod, as the parent of a module's directory
 // or one of its subdirectories does, and when it read no test file under root: a root that holds
@@ -44,9 +44,11 @@ import (
 // The check reads each file's syntax alone, with no types, so it cannot see:
 //
 //   - a Chmod in another function than the open, or of the same path spelled another way, as a
-//     variable that holds the filepath.Join the open spelled out;
-//   - a file opened by any function but os's three (io/ioutil.WriteFile, syscall.Open, a helper of
-//     a package that is neither of the two kinds above) or written by a command such as cp;
+//     variable that holds the filepath.Join the open spelled out, or the file's Name() kept in a
+//     variable;
+//   - a file written by another function of package os (os.CopyFS), by a function of another
+//     package (io/ioutil.WriteFile, syscall.Open, a helper of a package that is neither of the two
+//     kinds above) or by a command such as cp;
 //   - a test-support package whose name does not begin or end with "test": it is read as any other
 //     package is, its test files when they call Parallel and no other file.
 func Unguarded(root string) ([]string, error) {
@@ -151,7 +153,7 @@ func callsParallel(file *ast.File) bool {
 // osWriters are the functions of package os that open a file for writing, and os.Chmod, which can
 // give a written file an execute bit. A use of one as a value is named, since the check cannot
 // follow the file or the mode it is then called with.
-var osWriters = map[string]bool{"WriteFile": true, "OpenFile": true, "Create": true, "Chmod": true}
+var osWriters = map[string]bool{"WriteFile": true, "OpenFile": true, "Create": true, "CreateTemp": true, "Chmod": true}
 
 // executableWrites are the lines of file that open a file for writing by package os, by whatever
 // name the file imports it, and give it an execute bit or a mode that is no constant (Unguarded
@@ -209,8 +211,10 @@ func executableOpens(declaration ast.Decl, osFunc func(ast.Expr) string, called 
 		call, isCall := value.(*ast.CallExpr)
 		name, isName := target.(*ast.Ident)
 		if isCall && isName && name.Name != "_" {
-			if function := osFunc(call.Fun); function == "Create" || function == "OpenFile" {
+			if function := osFunc(call.Fun); function == "Create" || function == "CreateTemp" || function == "OpenFile" {
 				byHandle[name.Name] = append(byHandle[name.Name], call)
+				// os.Chmod(f.Name(), mode) names the file by the variable it was given.
+				byPath[name.Name+".Name()"] = append(byPath[name.Name+".Name()"], call)
 			}
 		}
 	}

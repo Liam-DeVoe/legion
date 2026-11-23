@@ -67,12 +67,12 @@ func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 // Unguarded names a write of a file with an execute bit by os.WriteFile or os.OpenFile in a test
 // file of a package whose tests call Parallel, and in any file of a test-support package, by
 // whatever name the file imports os and however the mode is spelled, and a mode it cannot
-// evaluate. It names an open by os.WriteFile, os.OpenFile or os.Create whose file the same
-// function gives an execute bit by os.Chmod or by the file's Chmod method, in a closure too, a use
-// of one of those functions as a value, and a dot import of os. It leaves out a mode with no
-// execute bit, a Chmod with none or of a path no open of the function names, a package whose tests
-// do not run beside each other, a write by WriteFile, another module below root, and this
-// package's own WriteFile.
+// evaluate. It names an open by os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file
+// the same function gives an execute bit by os.Chmod of its path or of its file's Name(), or by
+// the file's Chmod method, in a closure too, a use of one of those functions as a value, and a dot
+// import of os. It leaves out a mode with no execute bit, a Chmod with none or of a path no open of
+// the function names, a package whose tests do not run beside each other, a write by WriteFile,
+// another module below root, and this package's own WriteFile.
 func TestUnguardedNamesEveryExecutableWriteATestMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -195,6 +195,24 @@ import (
 
 func dotted(t *testing.T) { _ = WriteFile("u", nil, 0o755) }
 `)
+	write("beside/createtemp_test.go", `package beside
+
+import (
+	"os"
+	"testing"
+)
+
+func temporaries(t *testing.T) {
+	f, _ := os.CreateTemp(t.TempDir(), "fake-")
+	_ = f.Chmod(0o700)
+	g, _ := os.CreateTemp(t.TempDir(), "fake-")
+	_ = os.Chmod(g.Name(), 0o755)
+	h, _ := os.CreateTemp(t.TempDir(), "log-")
+	_ = h.Chmod(0o600)
+	create := os.CreateTemp
+	_, _ = create("", "")
+}
+`)
 	got, err := Unguarded(root)
 	if err != nil {
 		t.Fatal(err)
@@ -204,6 +222,7 @@ func dotted(t *testing.T) { _ = WriteFile("u", nil, 0o755) }
 		"beside/a_test.go:17", "beside/a_test.go:20", "beside/b_test.go:11",
 		"beside/chmod_test.go:11", "beside/chmod_test.go:13", "beside/chmod_test.go:15",
 		"beside/chmod_test.go:22", "beside/chmod_test.go:27", "beside/chmod_test.go:9",
+		"beside/createtemp_test.go:11", "beside/createtemp_test.go:15", "beside/createtemp_test.go:9",
 		"beside/dot_test.go:4", "fakestest/fakestest.go:5",
 	}
 	if !slices.Equal(got, want) {
