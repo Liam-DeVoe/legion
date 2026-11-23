@@ -15,7 +15,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -577,34 +576,6 @@ func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
 	}
 	return projected, true
 }
-
-// podTokenSets are the sets a pod of kind holds a bundle of, one per role (appauth.SetFor): every
-// workflow role's for an issue pod, and the controller's alone for the project controller's. It
-// is what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
-// appauth.LeftOut). A role SetFor keeps no set for fails it with SetFor's refusal
-// (appauth.ErrNoTokenSet), naming that role: no pod of that kind is built (prepare), since one
-// built without that role's credential would start the role with none.
-func podTokenSets(kind podKind) ([]appauth.TokenSet, error) {
-	roles := kind.roles()
-	sets := make([]appauth.TokenSet, 0, len(roles))
-	for _, role := range roles {
-		set, err := appauth.SetFor(role)
-		if err != nil {
-			return nil, err
-		}
-		sets = append(sets, set)
-	}
-	return sets, nil
-}
-
-// PodTokenSets is podTokenSets of the pod role runs in (podKindFor): every workflow role's set
-// for a workflow role, whose issue pod projects the directories every role's bundle holds and no
-// more (gitHubBundles, volumes), and the controller's alone for the project controller. A role's
-// container holds only the directories of that projection, so a caller that says which owners a
-// role's token reaches in a pod of this runtime reads them for these sets together
-// (internal/daemon's plan.appOwners), as the drift check does (movedGhDirs). It fails as
-// podTokenSets does, for a pod that is never built.
-func PodTokenSets(role claim.Role) ([]appauth.TokenSet, error) { return podTokenSets(podKindFor(role)) }
 
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
 // holding no slash, where a repository's directory a pod launched before INFRA-2543 projects is
