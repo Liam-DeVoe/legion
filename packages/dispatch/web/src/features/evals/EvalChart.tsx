@@ -32,12 +32,19 @@ const TONE: Readonly<Record<ValueState, string>> = {
   plain: "",
 };
 
-/** What the chart shows: its graph, or its table. */
-type Mode = "graph" | "table";
+/** What a chart shows: its graph, or its table. */
+export type ChartMode = "graph" | "table";
 
-/** The Graph | Table segmented toggle, as the Delivery page's Timeline | List toggle draws. */
-function ModeToggle({ mode, onChange }: { mode: Mode; onChange: (mode: Mode) => void }): ReactNode {
-  const item = (value: Mode, label: string) => (
+/** The Graph | Table segmented toggle every chart of the tab draws, the merge timeline's too, as
+ *  the Delivery page's Timeline | List toggle draws. */
+export function ChartModeToggle({
+  mode,
+  onChange,
+}: {
+  mode: ChartMode;
+  onChange: (mode: ChartMode) => void;
+}): ReactNode {
+  const item = (value: ChartMode, label: string) => (
     <button
       aria-pressed={mode === value}
       className={`h-6 px-2 text-xs font-medium first:rounded-l-md last:rounded-r-md ${
@@ -262,7 +269,7 @@ export function EvalChart({
   rowLink?: RowLink;
 }): ReactNode {
   const titleId = useId();
-  const [mode, setMode] = useState<Mode>("graph");
+  const [mode, setMode] = useState<ChartMode>("graph");
   // The reader's choice, kept apart from whether the header names a compare range: turned off
   // here, the compare stays off across Graph and Table and across a new answer.
   const [hidden, setHidden] = useState(false);
@@ -287,7 +294,7 @@ export function EvalChart({
           {model.title}
         </figcaption>
         {beside}
-        <ModeToggle mode={mode} onChange={setMode} />
+        <ChartModeToggle mode={mode} onChange={setMode} />
         {model.comparable ? (
           <label className={`flex items-center gap-1 text-xs ${textSecondaryOnCanvas}`}>
             <input

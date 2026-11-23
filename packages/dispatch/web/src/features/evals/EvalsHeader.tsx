@@ -199,7 +199,8 @@ export function EvalsHeader({
               ? `${state.window.from}|${state.window.to}`
               : state.window.preset
           }
-          onChange={(next) => onChange({ ...state, window: next })}
+          // A brush is a span of the window it was drawn on, so a new window clears it.
+          onChange={(next) => onChange({ ...state, window: next, brush: null })}
           value={state.window}
         />
         <CompareControl

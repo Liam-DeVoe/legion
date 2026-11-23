@@ -4,6 +4,7 @@ import type { EvalKind } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { borderDefault, linkText, surfaceBg, textMutedOnSurface } from "../../theme/classes";
 import { targetLabel } from "../delivery/lib/target";
+import { lastUtcDate, utcDate } from "../delivery/lib/window";
 import { TargetBadge } from "../delivery/TargetBadge";
 import {
   type ChartModel,
@@ -148,10 +149,12 @@ const UNOWNED_P0_LABEL = "P0 with no owner";
  *  beside the title, and its target. A card whose eval the view does not hold, or whose series it
  *  holds no row of, reads "no data", never 0 (spec R5). */
 function TargetCard({
+  days,
   project,
   spec,
   view,
 }: {
+  days: { from: string; to: string } | null;
   project: string;
   spec: CardSpec;
   view: EvalsViewState;
@@ -233,6 +236,11 @@ function TargetCard({
       <div className={`text-[11px] ${textMutedOnSurface}`}>
         {target === null ? "no target" : `target ${targetLabel(target)}`}
       </div>
+      {days === null ? null : (
+        <div className={`text-[11px] ${textMutedOnSurface}`} data-card-days>
+          {`brushed days ${utcDate(days.from)} to ${lastUtcDate(days.to)}`}
+        </div>
+      )}
       {unowned === null || unowned === 0 ? null : (
         <div className="text-xs">
           {link.state.kind === "failed" ? (
@@ -262,16 +270,20 @@ function TargetCard({
  * The target cards (dispatch://INFRA-2918/artifact/plan-md, D7): the ten cards, each its eval's
  * primary series from the delivery or the Legion view, judged by its target (`lib/target.ts`),
  * with its change against the compare range, "no data", "no data before <day>" and the default-
- * repository note (`EvalChart`), and the P0 card's link to the issues it counts. Each card paints
+ * repository note (`EvalChart`), and the P0 link to the issues it counts. Each card paints
  * as its own view lands. A card of a view the tab does not read (no Legion daemon) is not drawn,
  * and a delivery card is not drawn while `delivery` is off, though its eval is in the view (spec
- * R5).
+ * R5). While the merge timeline's brush is set, the views are of the days it touches, which each
+ * card names (`days`, decision 3).
  */
 export function TargetCards({
+  days = null,
   delivery,
   project,
   views,
 }: {
+  /** The brushed days the views read; null with no brush. */
+  days?: { from: string; to: string } | null;
   delivery: boolean;
   project: string;
   views: readonly EvalsViewState[];
@@ -282,7 +294,9 @@ export function TargetCards({
         {TARGET_CARDS.map((spec) => {
           const view = views.find((candidate) => candidate.kind === spec.kind);
           if (view === undefined || (spec.kind === "delivery" && !delivery)) return null;
-          return <TargetCard key={spec.slug} project={project} spec={spec} view={view} />;
+          return (
+            <TargetCard days={days} key={spec.slug} project={project} spec={spec} view={view} />
+          );
         })}
       </div>
     </div>

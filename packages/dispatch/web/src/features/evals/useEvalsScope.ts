@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { compareRange, DAY_MS, liveWindow } from "../delivery/lib/window";
+import {
+  compareRange,
+  DAY_MS,
+  liveWindow,
+  MAX_WINDOW_DAYS,
+  type WindowChoice,
+  windowDays,
+} from "../delivery/lib/window";
 import type { EvalsUrlState } from "./evals-url";
 import type { EvalsScope } from "./useEvalsViews";
 
@@ -32,13 +39,44 @@ function useUtcDayClock(): number {
  *  again. */
 export function useEvalsScope(project: string, state: EvalsUrlState): EvalsScope {
   const now = useUtcDayClock();
+  // The brush is the target cards' alone (`useCardsScope`), so it moves no other view's scope.
+  const { compare, repos, window: choice } = state;
   return useMemo(
     () => ({
       project,
-      window: liveWindow(state.window),
-      compare: compareRange(state.compare, state.window, now),
-      repos: state.repos,
+      window: liveWindow(choice),
+      compare: compareRange(compare, choice, now),
+      repos,
     }),
-    [project, state, now]
+    [project, choice, compare, repos, now]
   );
+}
+
+/** The days the target cards read while the merge timeline's brush is set (decision 3): the whole
+ *  UTC days the brushed span touches, at most the MAX_WINDOW_DAYS that end with its last, as a
+ *  custom window; null with no brush. */
+export function brushDays(brush: EvalsUrlState["brush"]): { from: string; to: string } | null {
+  if (brush === null) return null;
+  const days = windowDays({ kind: "custom", from: brush.start, to: brush.end }, Date.now());
+  const to = Date.parse(days.to);
+  const from = Math.max(Date.parse(days.from), to - MAX_WINDOW_DAYS * DAY_MS);
+  return { from: new Date(from).toISOString(), to: days.to };
+}
+
+/** What the target cards' views share (decision 3): the tab's scope, or, while the merge
+ *  timeline's brush is set, the same over the brushed days (`brushDays`), compared as the header
+ *  compares a window of those days. The cards alone follow the brush; every other section keeps
+ *  the header's window. */
+export function useCardsScope(scope: EvalsScope, state: EvalsUrlState): EvalsScope {
+  const { brush, compare } = state;
+  return useMemo(() => {
+    const days = brushDays(brush);
+    if (days === null) return scope;
+    const choice: WindowChoice = { kind: "custom", ...days };
+    return {
+      ...scope,
+      compare: compareRange(compare, choice, Date.now()),
+      window: liveWindow(choice),
+    };
+  }, [scope, brush, compare]);
 }

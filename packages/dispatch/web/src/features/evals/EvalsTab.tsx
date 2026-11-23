@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 
 import { type EvalKind, evalsViewQuery, legionDaemonQuery } from "../../api/queries";
 import type { EvalListResponse } from "../../api/types";
@@ -10,12 +10,13 @@ import { EvalsSection } from "./EvalsSection";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
 import { LegionSection } from "./LegionSection";
 import { TargetCards } from "./TargetCards";
-import { useEvalsScope } from "./useEvalsScope";
+import { TimelineSection } from "./TimelineSection";
+import { brushDays, useCardsScope, useEvalsScope } from "./useEvalsScope";
 import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
 /** The views each section reads, by kind: the target cards read the delivery and the Legion evals
  *  (plan D3), the Deploys and lead time section the same delivery view as the cards, and the
- *  merge timeline none, since it is closed on the first paint (spec R13). */
+ *  merge timeline none, since it reads a view of its own once it is opened (spec R13). */
 const CARDS: readonly EvalKind[] = ["delivery", "legion"];
 const CARDS_WITHOUT_LEGION: readonly EvalKind[] = ["delivery"];
 const LEGION: readonly EvalKind[] = ["legion"];
@@ -75,16 +76,20 @@ function LiveHeader({
 }
 
 /** What a section draws of its views: its own charts and lists, or, for a section that has none
- *  of its own, `EvalsSection`'s list of its evals. */
+ *  of its own, `EvalsSection`'s list of its evals. The target cards name the brushed days they
+ *  read, while the merge timeline's brush is set (`days`). */
 function drawSection(
   id: string,
   project: string,
   scope: EvalsScope,
-  delivery: boolean
+  delivery: boolean,
+  days: { from: string; to: string } | null
 ): ((views: readonly EvalsViewState[]) => ReactNode) | undefined {
   switch (id) {
     case "cards":
-      return (views) => <TargetCards delivery={delivery} project={project} views={views} />;
+      return (views) => (
+        <TargetCards days={days} delivery={delivery} project={project} views={views} />
+      );
     case "legion":
       return (views) => <LegionSection project={project} repos={scope.repos} views={views} />;
     case "ci":
@@ -102,7 +107,9 @@ function drawSection(
  * evals view per kind it shows, all at once, and each section paints from its own as it lands,
  * never waiting for another's (plan D3). In parallel it reads the project's Legion daemon, which
  * decides whether the Legion section and cards show; until that read answers they show, so their
- * view is opened with the others rather than after it.
+ * view is opened with the others rather than after it. The merge timeline opens no view until the
+ * reader opens it (spec R13); its brush sets the target cards' days and its Repository facet the
+ * repository every number reads (decision 3).
  *
  * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
  * with the window the server moves (`useEvalsScope`).
@@ -115,22 +122,34 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
   // the tab reads the project's delivery settings (plan T24).
   const delivery = true;
   const scope = useEvalsScope(project, state);
+  const cardsScope = useCardsScope(scope, state);
+  const days = useMemo(() => brushDays(state.brush), [state.brush]);
   const sections = sectionsOf(legion);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
   return (
     <div className="flex flex-col gap-6">
       <LiveHeader kinds={kinds} onChange={setState} scope={scope} state={state} />
-      {sections.map((section) => (
-        <EvalsSection
-          id={section.id}
-          key={section.id}
-          kinds={section.kinds}
-          scope={scope}
-          title={section.title}
-        >
-          {drawSection(section.id, project, scope, delivery)}
-        </EvalsSection>
-      ))}
+      {sections.map((section) =>
+        section.id === "timeline" ? (
+          <TimelineSection
+            brush={state.brush}
+            key={section.id}
+            onBrush={(brush) => setState({ ...state, brush })}
+            project={project}
+            scope={scope}
+          />
+        ) : (
+          <EvalsSection
+            id={section.id}
+            key={section.id}
+            kinds={section.kinds}
+            scope={section.id === "cards" ? cardsScope : scope}
+            title={section.title}
+          >
+            {drawSection(section.id, project, scope, delivery, days)}
+          </EvalsSection>
+        )
+      )}
     </div>
   );
 }

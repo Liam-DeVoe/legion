@@ -4,6 +4,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import {
   errorFrame,
   type FakeLiveSocket,
@@ -11,6 +12,13 @@ import {
   installFakeLiveSockets,
   snapshotFrame,
 } from "../../__tests__/live-socket-harness";
+import {
+  limitOf,
+  timelineAnswer,
+  timelineGrowth,
+  timelineRows,
+  timelineSnapshot,
+} from "../../__tests__/timeline-fixture";
 import { api } from "../../api/client";
 import type { EvalKind } from "../../api/queries";
 import type {
@@ -21,6 +29,8 @@ import type {
   LiveServerFrame,
   LiveSubscribe,
 } from "../../api/types";
+import { applyRevs } from "../delivery/lib/applyDelta";
+import * as timeline from "../delivery/Timeline";
 import * as sections from "./EvalsSection";
 import { EvalsTab } from "./EvalsTab";
 
@@ -220,6 +230,48 @@ function listed(name: string): string[] {
   );
 }
 
+/** A brush dragged over part of three UTC days, and the whole days it touches. */
+const BRUSH = { end: "2026-11-04T12:00:00.000Z", start: "2026-11-02T06:00:00.000Z" };
+const BRUSHED_DAYS = { from: "2026-11-02T00:00:00.000Z", to: "2026-11-05T00:00:00.000Z" };
+
+/** Draws the merge timeline's chart as a stand-in, since the chart draws on a canvas the unit DOM
+ *  cannot: it counts the rows it is handed and sets the brush on a press. */
+function standInChart(): { drawn: () => number } {
+  let drawn = 0;
+  const chart = spyOn(timeline, "Timeline").mockImplementation((props) => {
+    drawn = props.prs.length + props.runs.length;
+    return (
+      <button onClick={() => props.onBrush(BRUSH)} type="button">
+        Brush
+      </button>
+    );
+  });
+  spies.push(chart);
+  return { drawn: () => drawn };
+}
+
+/** Opens the merge timeline, and the project-timeline view it subscribes once it has. */
+async function openTimeline(socket: FakeLiveSocket): Promise<LiveSubscribe> {
+  await userEvent.setup().click(screen.getByRole("button", { name: "Show the merge timeline" }));
+  return waitFor(() => socket.subscribed("project-timeline"));
+}
+
+/** The newest project-timeline subscribe frame, once it asks for `limit` rows. */
+function grownTo(socket: FakeLiveSocket, limit: number): Promise<LiveSubscribe> {
+  return waitFor(() => {
+    const frame = socket.subscribed("project-timeline");
+    expect(limitOf(frame)).toBe(limit);
+    return frame;
+  });
+}
+
+/** The end of the rows the timeline holds: the line under them. */
+function rowsEnd(): Element {
+  const end = document.querySelector("[data-timeline-end]");
+  if (end === null) throw new Error("the timeline draws no end of its rows");
+  return end;
+}
+
 const stateRows: [string, () => Promise<void>][] = [
   [
     "subscribed | own snapshot | painted: the section's numbers",
@@ -417,6 +469,142 @@ const stateRows: [string, () => Promise<void>][] = [
       expect(region("Deploys and lead time")).toHaveAttribute("data-state", "subscribed");
     },
   ],
+  [
+    "closed (timeline) | open | subscribed with limit=200",
+    async () => {
+      standInChart();
+      renderTab();
+      const socket = await openSocket();
+      const section = region("Merge timeline");
+      expect(section).toHaveAttribute("data-state", "closed");
+      expect(socket.subscribes().filter((frame) => frame.view.kind === "project-timeline")).toEqual(
+        []
+      );
+
+      const opened = await openTimeline(socket);
+      expect(opened.view).toEqual({
+        kind: "project-timeline",
+        project: "ACME",
+        query: "limit=200",
+        window: { preset: 28 },
+      });
+      expect(opened.resume).toBeUndefined();
+      expect(section).toHaveAttribute("data-state", "subscribed");
+      serve(socket, timelineSnapshot(opened.sub, timelineAnswer(timelineRows(0, 200), 1300)));
+      expect(section).toHaveAttribute("data-state", "painted");
+    },
+  ],
+  [
+    "painted (timeline) | scrolled to the end | growing: same sub, limit + 200, a resume with the held revisions; rows kept on screen; only the lacking rows arrive, past 500 as below it",
+    async () => {
+      const chart = standInChart();
+      const observers = installIntersectionObserver();
+      spies.push({ mockRestore: observers.restore });
+      renderTab();
+      const socket = await openSocket();
+      const opened = await openTimeline(socket);
+      const snapshot = timelineSnapshot(opened.sub, timelineAnswer(timelineRows(0, 200), 1300));
+      serve(socket, snapshot);
+      const section = region("Merge timeline");
+      expect(section).toHaveAttribute("data-state", "painted");
+
+      act(() => observers.show(rowsEnd()));
+      let held = snapshot.revs;
+      let seq = snapshot.seq;
+      // A window of 1,300 rows grows past 500 on the one view as it grew below it.
+      for (const limit of [400, 600]) {
+        const grown = await grownTo(socket, limit);
+        expect(grown.sub).toBe(opened.sub);
+        expect(grown.resume).toEqual({ revs: held, seq });
+        expect(section).toHaveAttribute("data-state", "growing");
+        expect(chart.drawn()).toBe(limit - 200);
+        // Dispatch answers the rows the page lacked, and those alone.
+        const growth = timelineGrowth(
+          opened.sub,
+          timelineRows(limit - 200, limit),
+          limit,
+          String(Number(seq) + 1)
+        );
+        serve(socket, growth);
+        expect(chart.drawn()).toBe(limit);
+        held = applyRevs(held, growth.revs);
+        seq = growth.seq;
+      }
+      expect(socket.unsubscribes()).toEqual([]);
+    },
+  ],
+  [
+    "painted (timeline) | limit reaches total | painted: no further growth",
+    async () => {
+      const chart = standInChart();
+      const observers = installIntersectionObserver();
+      spies.push({ mockRestore: observers.restore });
+      renderTab();
+      const socket = await openSocket();
+      const opened = await openTimeline(socket);
+      serve(socket, timelineSnapshot(opened.sub, timelineAnswer(timelineRows(0, 200), 450)));
+      act(() => observers.show(rowsEnd()));
+      await grownTo(socket, 400);
+      serve(socket, timelineGrowth(opened.sub, timelineRows(200, 400), 400, "2"));
+      await grownTo(socket, 450);
+      serve(socket, timelineGrowth(opened.sub, timelineRows(400, 450), 450, "3"));
+      const section = region("Merge timeline");
+      expect(section).toHaveAttribute("data-state", "painted");
+      expect(chart.drawn()).toBe(450);
+
+      act(() => observers.hide(rowsEnd()));
+      act(() => observers.show(rowsEnd()));
+      expect(section).toHaveAttribute("data-state", "painted");
+      expect(
+        socket
+          .subscribes()
+          .filter((frame) => frame.view.kind === "project-timeline")
+          .map(limitOf)
+      ).toEqual([200, 400, 450]);
+    },
+  ],
+  [
+    "painted | the brush set on the timeline | subscribed: the cards' views over the brushed days; the cards name the days",
+    async () => {
+      const user = userEvent.setup();
+      standInChart();
+      renderTab();
+      const socket = await openSocket();
+      for (const kind of ["delivery", "legion", "ci", "experiment"] as const) {
+        await answerView(socket, kind);
+      }
+      expect(region("Target cards")).toHaveAttribute("data-state", "painted");
+      const opened = await openTimeline(socket);
+      serve(socket, timelineSnapshot(opened.sub, timelineAnswer(timelineRows(0, 20), 20)));
+
+      await user.click(within(region("Merge timeline")).getByRole("button", { name: "Brush" }));
+      const brushed = await waitFor(() => {
+        const frames = heldViews(socket).filter(
+          (frame) => frame.view.kind === "evals" && "from" in frame.view.window
+        );
+        expect(frames.map((frame) => queryOf(frame).get("kind")).sort()).toEqual([
+          "delivery",
+          "legion",
+        ]);
+        return frames;
+      });
+      for (const frame of brushed) expect(frame.view).toMatchObject({ window: BRUSHED_DAYS });
+      expect(region("Target cards")).toHaveAttribute("data-state", "subscribed");
+      // The other sections keep the header's window and what they drew.
+      expect(region("Deploys and lead time")).toHaveAttribute("data-state", "painted");
+      for (const card of region("Target cards").querySelectorAll("[data-card]")) {
+        expect(card.querySelector("[data-card-days]")?.textContent).toBe(
+          "brushed days 2026-11-02 to 2026-11-04"
+        );
+      }
+
+      for (const frame of brushed) {
+        const kind = queryOf(frame).get("kind") as EvalKind;
+        serve(socket, snapshotFrame(frame.sub, ANSWERS[kind]));
+      }
+      expect(region("Target cards")).toHaveAttribute("data-state", "painted");
+    },
+  ],
 ];
 
 bunTest.each(stateRows)("%s", async (_row, run) => {
@@ -433,10 +621,6 @@ const laterRows: [string, string][] = [
   [
     "painted | a facet or the search set (header or timeline) | subscribed: the delivery view again with the facets; the narrowed cards and charts, and the window-and-repository-only mark",
     "T30",
-  ],
-  [
-    "painted | the brush set on the timeline | subscribed: the cards' views over the brushed days; the cards name the days",
-    "T14",
   ],
   [
     'subscribed | sources answer "delivery off" | hidden (delivery, CI)',
@@ -458,12 +642,6 @@ const laterRows: [string, string][] = [
     "painted, a declared eval or open panel | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new method, charts and answer (D11a)",
     "T16 and T20",
   ],
-  ["closed (timeline) | open | subscribed with limit=200", "T14"],
-  [
-    "painted (timeline) | scrolled to the end | growing: same sub, limit + 200, a resume with the held revisions; past 500 as below it",
-    "T14",
-  ],
-  ["painted (timeline) | limit reaches total | painted: no further growth", "T14"],
 ];
 
 for (const [row, task] of laterRows) {

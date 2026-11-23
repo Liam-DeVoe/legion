@@ -6,6 +6,7 @@ import type { EvalsUrlState } from "./evals-url";
 import { useEvalsScope } from "./useEvalsScope";
 
 const PRESET: EvalsUrlState = {
+  brush: null,
   compare: { kind: "previous" },
   repos: [],
   window: { kind: "preset", preset: "28d" },
