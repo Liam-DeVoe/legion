@@ -56,7 +56,6 @@ var settingRoles = map[string]settingRole{
 	"BROKER_EDGE_LISTEN_ADDR":              givesNone("a listen address"),
 	"BROKER_EDGE_URL":                      givesNone("the broker's own URL at its edge"),
 	"BROKER_EDGE_MACHINE_LOGIN_URL":        givesNone("a page's URL"),
-	"BROKER_SIGNIN_WORKSPACE_DOMAINS":      givesNone("the Workspace's domains"),
 	"BROKER_SECRETS_STORE":                 givesNone("a secret store"),
 	"BROKER_SECRETS_PREFIX":                givesNone("a secret-name prefix"),
 	"BROKER_PROFILES_FILE":                 givesNone("a file path"),
@@ -78,8 +77,6 @@ var settingRoles = map[string]settingRole{
 	"BROKER_PROJECT_ACCESS_TOKEN_FILE":     givesNone("a file path"),
 	"BROKER_AZURE_TOKEN_FILE":              givesNone("a file path"),
 	"BROKER_AZURE_LOGIN_SECRET":            givesNone("a secret's name"),
-	"BROKER_K8S_OIDC_ISSUER":               givesNone("an issuer"),
-	"BROKER_K8S_OIDC_AUDIENCE":             givesNone("an audience"),
 	"BROKER_GOOGLE_OIDC_ISSUER":            givesNone("an issuer"),
 	"BROKER_GOOGLE_OIDC_AUDIENCE":          givesNone("an audience"),
 	"BROKER_ENVOY_URL":                     givesNone("an Envoy listener's URL"),
@@ -92,15 +89,15 @@ var settingRoles = map[string]settingRole{
 	"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY": givesNone("a test-only host"),
 	"BROKER_JUDGE_TEST_SKIP_CHECKS":       givesNone("a test-only switch"),
 
-	"BROKER_SECRETS_KMS_KEY_ARN":    givesNone("a KMS key"),
-	"BROKER_SECRETS_KMS_KEY_NAME":   givesNone("a KMS key"),
-	"BROKER_AIRLOCK_CLUSTER_RANGES": givesNone("address ranges"),
+	"BROKER_SECRETS_KMS_KEY_NAME":     givesNone("a KMS key"),
+	"BROKER_SECRETS_KMS_KEY_ARN":      givesNone("a KMS key"),
+	"BROKER_SIGNIN_WORKSPACE_DOMAINS": givesNone("the Workspace's domains"),
+	"BROKER_AIRLOCK_CLUSTER_RANGES":   givesNone("address ranges"),
 
 	"BROKER_SERVICES": givesARole(
 		"a BROKER_SERVICES entry names its login service",
 		"a BROKER_SERVICES entry binds it",
 	),
-	"BROKER_SERVICE_LOGINS": givesARole("BROKER_SERVICE_LOGINS does not name it"),
 	"BROKER_SESSION_ACCOUNT_PAIRS": givesARole(
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the first account",
 		"a BROKER_SESSION_ACCOUNT_PAIRS pair names it as the second account",
@@ -113,6 +110,9 @@ var settingRoles = map[string]settingRole{
 	"BROKER_VM_PROJECTS":             givesNone("a Google account's project"),
 	"BROKER_VM_INSTANCES":            givesNone("a Google account's instance names"),
 	"BROKER_VM_EXCHANGE_ACCOUNTS":    givesNone("a Google account's person and project"),
+	"BROKER_K8S_OIDC_ISSUER":         givesNone("an issuer"),
+	"BROKER_K8S_OIDC_AUDIENCE":       givesNone("an audience"),
+	"BROKER_SERVICE_LOGINS":          givesARole("BROKER_SERVICE_LOGINS does not name it"),
 
 	"BROKER_API_ACCOUNTS":             givesARole("a BROKER_API_ACCOUNTS entry names it"),
 	"BROKER_EXCHANGE_GITHUB_ISSUER":   givesNone("an issuer"),
