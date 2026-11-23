@@ -110,6 +110,10 @@ test("a click on an issue on the page makes it the box's chip and the context of
   try {
     renderPanel(<span data-dispatch-ref="/issues/CORE-7">Track the comet</span>);
     const chip = screen.getByTestId("going-box-chip");
+    const box = screen.getByRole("textbox", { name: "Ask the command bar" });
+    // The chip stands inside the box's frame, at the left of the words, as it does in the bar.
+    expect(chip.parentElement).toBe(box.parentElement);
+    expect(chip.nextElementSibling).toBe(box);
     expect(chip).toHaveTextContent("CORE-1");
     await user.click(screen.getByText("Track the comet"));
     expect(chip).toHaveTextContent("CORE-7");
@@ -137,7 +141,13 @@ test("the panel is 420 px wide; Open over the page moves it back, and its × clo
   expect(panel.className).toContain("sm:w-[420px]");
   // The panel has the bar's header, conversation and box, and no search list.
   expect(within(panel).queryByRole("listbox")).toBeNull();
-  await user.click(within(panel).getByRole("button", { name: "Open over the page" }));
+  // The move is an icon with its words as its tooltip, as the pin is, so the title keeps the
+  // header's room.
+  const move = within(panel).getByRole("button", { name: "Open over the page" });
+  expect(move).toHaveAttribute("title", "Open over the page");
+  expect(move.textContent).toBe("");
+  expect(move.querySelector("svg")).not.toBeNull();
+  await user.click(move);
   expect(goingState().place).toBe("over");
   expect(screen.queryByTestId("going-side-panel")).toBeNull();
 

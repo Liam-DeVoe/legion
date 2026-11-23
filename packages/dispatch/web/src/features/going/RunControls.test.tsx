@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { goingState } from "./going-store";
-import { BoxRow } from "./RunControls";
+import { BoxFrame, BoxRow } from "./RunControls";
 
 // The mode control (design v3, state 12): a small text button at the left of the box that names
 // the mode the next run takes, and its menu of the three modes, each with one line on what it is
@@ -17,8 +17,11 @@ function renderRow(): string[] {
   render(
     <div aria-label="Search" onKeyDown={(event) => heard.push(event.key)} role="dialog">
       <BoxRow
-        box={<input aria-label="Ask the command bar" type="text" />}
-        chip="CORE-1"
+        box={
+          <BoxFrame chip="CORE-1" chipTitle="CORE-1">
+            <input aria-label="Ask the command bar" type="text" />
+          </BoxFrame>
+        }
         hint={undefined}
         onStop={() => {}}
       />

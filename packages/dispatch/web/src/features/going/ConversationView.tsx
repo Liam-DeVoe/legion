@@ -15,6 +15,7 @@ import {
   dangerText,
   linkHoverText,
   linkText,
+  pageQuietText,
   primaryButton,
   secondaryButtonCompact,
   surfaceBg,
@@ -72,7 +73,7 @@ const PLAN_SENT: Readonly<Record<string, true>> = { approved: true, done: true, 
 function Thinking({ since }: { readonly since: number }): ReactNode {
   return (
     <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-thinking">
-      <span role="status">Thinking…</span> <RunTimer since={since} />
+      <span role="status">Thinking…</span> <RunTimer since={since} testId="going-thinking-timer" />
     </p>
   );
 }
@@ -148,9 +149,10 @@ function earliest(read: number | undefined, record: GoingRun): number | undefine
 }
 
 /**
- * What stands under an answer (design v2, state 4), small and grey: `status` ("Done", "Waits for
- * your answer" where the answer asks the person a question (R8), or that nothing changed); and on
- * hover or focus, Copy, which copies the answer's text, and Retry, a new run of the same words.
+ * What stands under an answer (design v2, state 4), small and grey - the page's grey, which no
+ * reader takes for a link: `status` ("Done", "Waits for your answer" where the answer asks the
+ * person a question (R8), or that nothing changed); and on hover or focus, Copy, which copies the
+ * answer's text, and Retry, a new run of the same words.
  */
 function AnswerFoot({
   answer,
@@ -163,7 +165,7 @@ function AnswerFoot({
 }): ReactNode {
   return (
     <div className="group flex flex-wrap items-center gap-1" data-testid="going-run-foot">
-      <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-run-state" role="status">
+      <p className={`text-xs ${pageQuietText}`} data-testid="going-run-state" role="status">
         {status}
       </p>
       <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
@@ -330,13 +332,11 @@ function RunTurn({
       <Words testId="going-run-words" words={run.record.words} />
       {waitsForSteps ? <Thinking since={run.since} /> : null}
       <StepSection
-        // The steps fold into one line once the answer or the plan came and the run no longer
-        // works (design v3, rule 3), and stay folded while the rows of its approved plan run,
-        // which the plan's card shows as its rows' ticks (state 7).
-        folded={
-          PLAN_SENT[run.frames.plan?.state ?? ""] === true ||
-          (!working && (answer !== undefined || run.frames.plan !== undefined))
-        }
+        // The steps fold into one line once the run no longer works (design v3, rule 3) - its
+        // answer or its plan came, or it stopped or failed, whose end then counts what that line
+        // counts (state 9) - and stay folded while the rows of its approved plan run, which the
+        // plan's card shows as its rows' ticks (state 7).
+        folded={PLAN_SENT[run.frames.plan?.state ?? ""] === true || !working}
         live={working}
         since={run.since}
         steps={steps}
@@ -352,7 +352,13 @@ function RunTurn({
         </p>
       ) : null}
       {answer === undefined ? null : (
-        <div className={`text-sm ${textPrimaryOnSurface}`} data-testid="going-run-answer">
+        // An item that leads its line of a list - a line of a tight list, or the first paragraph
+        // of a loose list's line - is its chip, which marks the line as a bullet would: a list
+        // of chips draws no bullet beside each (design v3, state 4).
+        <div
+          className={`text-sm ${textPrimaryOnSurface} [&_li:has(>a:first-child>[data-testid=item-chip])]:list-none [&_li:has(>p:first-child>a:first-child>[data-testid=item-chip])]:list-none`}
+          data-testid="going-run-answer"
+        >
           <MarkdownBody chips markdown={answer} referenceText="" softBreaks="line" />
         </div>
       )}

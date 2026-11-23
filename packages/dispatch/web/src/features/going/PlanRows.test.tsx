@@ -8,6 +8,7 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
+import { linkText, pageQuietText } from "../../theme/classes";
 import { clockWords } from "../search/blocks/block-cells";
 import { resetGoingStore, setPlace, startRun } from "./going-store";
 import { PlannedChanges } from "./PlannedChanges";
@@ -180,7 +181,11 @@ test("a change row names its item and each field in the page's words, the values
     await waitFor(() => expect(chip).toHaveTextContent("DEMO-10In progressThe issue DEMO-10"));
     const priority = fieldOf(drawn, "priority");
     expect(priority).toHaveTextContent(/^Priority: No priority → P2/u);
-    expect(within(priority).getByTestId("going-plan-now")).toHaveTextContent("No priority");
+    const now = within(priority).getByTestId("going-plan-now");
+    expect(now).toHaveTextContent("No priority");
+    // The value now is the page's grey, never the colour of a link.
+    expect(now.className).toContain(pageQuietText);
+    expect(now.className).not.toContain(linkText);
     const labels = fieldOf(drawn, "labels");
     expect(labels).toHaveTextContent(/^Labels: board →/u);
     // The label added is the one marked in green; the label kept is the page's plain chip.
@@ -190,6 +195,55 @@ test("a change row names its item and each field in the page's words, the values
     // No raw field name and no JSON.
     expect(drawn.textContent ?? "").not.toMatch(/[[\]{}"]|priority none|labels \[/u);
     expect(drawn).not.toHaveAttribute("data-removes");
+  } finally {
+    restore();
+  }
+});
+
+// A change of a document's text names the issue whose document it changes by that issue's chip,
+// as a change row names its item: in place of the issue's key where the row's words write it,
+// and after them where they do not (design v3, state 6).
+test("a document row names the issue whose document it changes by its chip", async () => {
+  const restore = await openPlan(
+    planOf([
+      row(0, {
+        arguments: {
+          artifact: "spec",
+          body: "The dome turns by motor once it has one.",
+          issue: "DEMO-15",
+          quote: "The dome turns by hand.",
+          replace_with: "The dome turns by motor.",
+        },
+        class: "suggestion",
+        issue: "DEMO-15",
+        item: "8c1f0a52-4d1e-4f7b-9a43-0d6c1b2e7f10",
+        tool: "dispatch_suggest",
+      }),
+      row(1, {
+        arguments: { content: "The split moves DEMO-3.\n", issue: "DEMO-16", name: "design.md" },
+        class: "create_text",
+        issue: "DEMO-16",
+        item: "design.md",
+        tool: "dispatch_artifact",
+      }),
+    ])
+  );
+  try {
+    renderWithQueries(<Card />);
+    await screen.findByTestId("going-plan-card-rows");
+    const suggestion = within(drawnRow(0)).getByTestId("going-plan-document");
+    const chip = within(suggestion).getByTestId("item-chip");
+    await waitFor(() => expect(chip).toHaveTextContent("DEMO-15In progressThe issue DEMO-15"));
+    expect(suggestion).toHaveTextContent(
+      /^Suggest a change to spec on DEMO-15In progressThe issue DEMO-15$/u
+    );
+    const upload = within(drawnRow(1)).getByTestId("going-plan-document");
+    await waitFor(() =>
+      expect(upload).toHaveTextContent(
+        /^Upload design\.md to DEMO-16In progressThe issue DEMO-16$/u
+      )
+    );
+    expect(within(upload).getAllByTestId("item-chip")).toHaveLength(1);
   } finally {
     restore();
   }
@@ -1027,7 +1081,6 @@ function CardAndBox(): ReactNode {
       <Card />
       <BoxRow
         box={<input aria-label="Ask the command bar" type="text" />}
-        chip={undefined}
         hint={undefined}
         onStop={() => {}}
       />

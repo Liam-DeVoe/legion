@@ -8,7 +8,7 @@ import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun } from "../../api/types";
-import { dangerText } from "../../theme/classes";
+import { dangerText, linkText, pageQuietText } from "../../theme/classes";
 import { clockWords } from "../search/blocks/block-cells";
 import { ConversationView } from "./ConversationView";
 import { goingState, openConversation, resetGoingStore, startRun } from "./going-store";
@@ -154,13 +154,19 @@ test("a failure reads one sentence and Try again, which runs the same words agai
   }
 });
 
+// A bound stops a run with no answer: its steps fold into one line as an answered run's do, and
+// that line and the card count what the run read from the same steps, so they never disagree.
 test("a bound is a grey card with what the run did so far, Continue and Continue in Deep", async () => {
   const user = userEvent.setup();
   const continued: (readonly [string, GoingRun["level"] | undefined])[] = [];
+  const read = (step: number): readonly [string, unknown] => [
+    "tool",
+    { items: [`DEMO-${step}`], kind: "read", label: `Read DEMO-${step}`, step, tool: "read" },
+  ];
   const restore = await showRun(
     "stopped",
     [
-      ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
+      ...[2, 3, 4, 5, 6].map(read),
       [
         "end",
         {
@@ -175,8 +181,23 @@ test("a bound is a grey card with what the run did so far, Continue and Continue
   try {
     const bound = await screen.findByTestId("going-run-bound");
     expect(within(bound).getByTestId("going-run-state").textContent).toBe(
-      "Stopped at Standard's time limit · read 1 item so far"
+      "Stopped at Standard's time limit · read 5 items so far"
     );
+    // One line above the card, closed, with no step drawn under it until it opens.
+    const fold = screen.getByTestId("going-steps-fold");
+    expect(fold).toHaveAccessibleName("Worked for 1 s · read 5 items");
+    expect(fold).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("going-steps-older")).toBeNull();
+    expect(stepWords()).toEqual([]);
+    await user.click(fold);
+    expect(fold).toHaveAttribute("aria-expanded", "true");
+    expect(stepWords()).toEqual([
+      "Read DEMO-2",
+      "Read DEMO-3",
+      "Read DEMO-4",
+      "Read DEMO-5",
+      "Read DEMO-6",
+    ]);
     await user.click(within(bound).getByTestId("going-run-continue"));
     await user.click(within(bound).getByTestId("going-run-continue-deep"));
     expect(continued).toEqual([
@@ -666,6 +687,7 @@ test("a tool frame after its call frame, or before its reply frame, draws one li
 });
 
 test("no running line stays once the run ended: a call its end cut draws no line", async () => {
+  const user = userEvent.setup();
   const restore = await showRun("stopped", [
     ["call", { kind: "read", label: "Reading DEMO-15", step: 2, text: "Checking.", tool: "read" }],
     ["tool", { items: ["DEMO-15"], kind: "read", label: "Read DEMO-15", step: 2, tool: "read" }],
@@ -676,6 +698,10 @@ test("no running line stays once the run ended: a call its end cut draws no line
     await waitFor(() =>
       expect(screen.getByTestId("going-run-state").textContent).toContain("Stopped")
     );
+    // The stopped run's steps fold into one line, which counts only the call that ended.
+    const fold = screen.getByTestId("going-steps-fold");
+    expect(fold).toHaveAccessibleName("Worked for 1 s · read 1 item");
+    await user.click(fold);
     expect(stepLines()).toEqual([["Read DEMO-15", "false"]]);
     // The prose stays as the header of the call it heads; the stopped run has no timer.
     expect(screen.getByTestId("going-step-words").textContent).toBe("Checking.");
@@ -843,7 +869,11 @@ test("under the answer, Done in grey, with Copy of the answer's text and Retry o
   });
   try {
     const foot = await screen.findByTestId("going-run-foot");
-    expect(within(foot).getByTestId("going-run-state").textContent).toBe("Done");
+    const state = within(foot).getByTestId("going-run-state");
+    expect(state.textContent).toBe("Done");
+    // The page's grey, never the colour of a link.
+    expect(state.className).toContain(pageQuietText);
+    expect(state.className).not.toContain(linkText);
     await user.click(within(foot).getByRole("button", { name: "Copy the answer" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("DEMO-1 is the oldest."));
     await user.click(within(foot).getByRole("button", { name: "Retry" }));
@@ -1017,6 +1047,42 @@ test("each issue the answer links is a chip: its key, a status dot and its title
   } finally {
     restore();
     summary.mockRestore();
+  }
+});
+
+// A chip that leads a line of a list marks it as a bullet would, so the answer's list of chips
+// draws no bullet beside them (design v3, state 4); a line of words keeps its bullet.
+test("a list of chips in the answer draws no bullet before each chip, and a list of words keeps its bullets", async () => {
+  const restore = await showRun("done", [
+    [
+      "reply",
+      {
+        labels: [],
+        text: "Two are open:\n\n- [DEMO-1](dispatch://DEMO-1)\n- [DEMO-2](dispatch://DEMO-2)\n\nAnd one more:\n\n- [DEMO-3](dispatch://DEMO-3)\n\n- a word",
+        tools: [],
+      },
+    ],
+    ["end", { offers: [], reason: "", state: "done" }],
+  ]);
+  try {
+    const answer = await screen.findByTestId("going-run-answer");
+    await waitFor(() => expect(within(answer).getAllByTestId("item-chip")).toHaveLength(3));
+    // The answer's rules: a line whose first word is a chip, in a tight list or a loose one,
+    // takes no list mark.
+    const chipLines = [
+      "li:has(>a:first-child>[data-testid=item-chip])",
+      "li:has(>p:first-child>a:first-child>[data-testid=item-chip])",
+    ];
+    for (const line of chipLines) expect(answer.className).toContain(`[&_${line}]:list-none`);
+    const lines = [...answer.querySelectorAll("li")];
+    expect(lines.map((line) => chipLines.some((chipLine) => line.matches(chipLine)))).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
+  } finally {
+    restore();
   }
 });
 

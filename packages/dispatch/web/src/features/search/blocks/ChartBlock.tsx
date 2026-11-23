@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { CHART_AXIS_COLORS } from "../../../theme/chart-colors";
 import { borderDefault } from "../../../theme/classes";
+import { issueStatuses } from "../../project/board-model";
 import { useMediaQuery } from "../../shell/useDialog";
 import { type BlockOf, cellNumber, columnText, columnWords } from "./block-cells";
 import { blockCellClassName, blockHeadClassName } from "./TableBlock";
@@ -22,11 +23,25 @@ export interface ChartPoint {
   readonly value: number;
 }
 
+/** Where a status's column stands on the board (`issueStatuses`, the board's columns in their
+ *  order); a status the board has no column for stands after them all. */
+function boardPlace(status: unknown): number {
+  const place =
+    typeof status === "string" ? (issueStatuses as readonly string[]).indexOf(status) : -1;
+  return place === -1 ? issueStatuses.length : place;
+}
+
 /** The points of a chart's block: one for each row with a number in the spec's `y`, its `x` in
- *  Dispatch's words ("In progress", "P1"), as `columnText` writes a table's cell. */
+ *  Dispatch's words ("In progress", "P1"), as `columnText` writes a table's cell. A chart along
+ *  the status puts its places in the order the board puts its columns, whatever order the read
+ *  answered its groups in; along any other field, in the read's order. */
 export function chartPoints(block: BlockOf<"chart">): readonly ChartPoint[] {
   const { x, y } = block.spec;
-  return block.rows.flatMap((row) => {
+  const rows =
+    x === "status"
+      ? [...block.rows].sort((one, other) => boardPlace(one[x]) - boardPlace(other[x]))
+      : block.rows;
+  return rows.flatMap((row) => {
     const value = cellNumber(row[y]);
     return value === undefined ? [] : [{ label: columnText(x, row[x]), value }];
   });

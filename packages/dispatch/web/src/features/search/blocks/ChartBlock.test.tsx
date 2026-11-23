@@ -11,8 +11,8 @@ const byStatus: BlockOf<"chart"> = {
   title: "DEMO issues by status",
   spec: { mark: "bar", params: {}, source: "run", table: "chain", x: "status", y: "issues" },
   rows: [
-    { issues: 2, status: "in_progress" },
     { issues: 1, status: "todo" },
+    { issues: 2, status: "in_progress" },
     { issues: "many", status: "done" },
   ],
 };
@@ -21,9 +21,37 @@ const palette = { axis: "#111", label: "#222", split: "#333" };
 
 test("a chart's points are its rows with a number, each place in Dispatch's words", () => {
   expect(chartPoints(byStatus)).toEqual([
-    { label: "In progress", value: 2 },
     { label: "Todo", value: 1 },
+    { label: "In progress", value: 2 },
   ]);
+});
+
+// A chart along the status reads as the board does: its places stand in the order of the board's
+// columns (`issueStatuses`), whatever order the read answered its groups in, and a status the
+// board has no column for comes after them.
+test("a chart by status puts its places in the order of the board's columns", () => {
+  const outOfOrder: BlockOf<"chart"> = {
+    ...byStatus,
+    rows: ["todo", "triage", "someday", "done", "backlog", "icebox", "in_progress"].map(
+      (status) => ({ issues: 1, status })
+    ),
+  };
+  expect(chartPoints(outOfOrder).map((point) => point.label)).toEqual([
+    "Triage",
+    "Icebox",
+    "Backlog",
+    "Todo",
+    "In progress",
+    "Done",
+    "someday",
+  ]);
+  // Along any other field the places keep the read's order.
+  const byPriority: BlockOf<"chart"> = {
+    ...byStatus,
+    spec: { ...byStatus.spec, x: "priority" },
+    rows: [2, 0, 1].map((priority) => ({ issues: 1, priority })),
+  };
+  expect(chartPoints(byPriority).map((point) => point.label)).toEqual(["P2", "P0", "P1"]);
 });
 
 test("hovering a bar or a point shows its value, the series named as its field is headed", () => {
@@ -31,9 +59,9 @@ test("hovering a bar or a point shows its value, the series named as its field i
     const option = chartOption(chartPoints(byStatus), mark, "Issues", palette, 720);
     expect(option.tooltip).toEqual({ trigger: "axis" });
     expect(option.series).toEqual([
-      expect.objectContaining({ data: [2, 1], name: "Issues", type: mark }),
+      expect.objectContaining({ data: [1, 2], name: "Issues", type: mark }),
     ]);
-    expect(option.xAxis).toEqual(expect.objectContaining({ data: ["In progress", "Todo"] }));
+    expect(option.xAxis).toEqual(expect.objectContaining({ data: ["Todo", "In progress"] }));
     expect(option.animation).toBe(false);
   }
 });

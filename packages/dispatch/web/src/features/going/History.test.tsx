@@ -333,18 +333,20 @@ test("opening a conversation again shows each step of its runs once", async () =
     );
     const [first] = await screen.findAllByTestId("going-history-open");
     await user.click(first as HTMLElement);
-    const steps = (run: string) =>
+    // Each run ended, so its steps fold into one line, which counts each step it holds: a step
+    // shown twice would read "2 items".
+    const folds = (run: string) =>
       screen
         .getAllByTestId("going-run")
         .filter((shown) => shown.getAttribute("data-run") === run)
-        .flatMap((shown) => within(shown).queryAllByTestId("going-step"))
-        .map((step) => step.textContent);
-    await waitFor(() => expect(steps("r-3")).toEqual(["Read the notes of r-3"]));
+        .flatMap((shown) => within(shown).queryAllByTestId("going-steps-fold"))
+        .map((fold) => fold.textContent);
+    await waitFor(() => expect(folds("r-3")).toEqual(["Worked for 1 s · read 1 item›"]));
 
     await user.click(first as HTMLElement);
 
-    expect(steps("r-3")).toEqual(["Read the notes of r-3"]);
-    expect(steps("r-4")).toEqual(["Read the notes of r-4"]);
+    expect(folds("r-3")).toEqual(["Worked for 1 s · read 1 item›"]);
+    expect(folds("r-4")).toEqual(["Worked for 1 s · read 1 item›"]);
     expect(stream.mock.calls.map(([id]) => id)).toEqual(["r-3", "r-4"]);
   } finally {
     read.mockRestore();

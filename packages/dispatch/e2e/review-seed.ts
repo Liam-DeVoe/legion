@@ -31,6 +31,7 @@ import {
 import { blockId } from "./editor";
 import { sql } from "./psql";
 import type { BarSeed, ReviewSeed } from "./review-routes";
+import { sessionIds } from "./session-ids";
 import { seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
@@ -151,7 +152,10 @@ async function markWhatTheShotPagesRead(
  *  Inbox the shot pages draw for her count her open asks, and none of these holds one. None
  *  stands in a status in flight either (`work_under_no_priority`, the rail's Priorities count and
  *  `/priorities`'s first fault list): a new issue is in triage, and the three patched below go
- *  to todo, backlog and icebox.
+ *  to todo, backlog and icebox. The dome's route names the workspace's Planner, so the Planner
+ *  works on the dome, and a message to it that state 6's plan proposes is placed on the dome
+ *  (R7, `goingPlaceSend`): "Message to Planner on ‹the dome's key› · as a BTW". A route draws on
+ *  no page of the shot set.
  *
  *  Created one at a time, for the reason `seedWorkspace` gives: the server numbers a key as it
  *  inserts the issue, so a round of them at once would give each a different key on each run,
@@ -175,6 +179,7 @@ async function seedBarIssues(): Promise<BarSeed> {
   await patchIssue(mount, { status: "todo" }, bob);
   await patchIssue(craters, { status: "backlog" }, bob);
   await patchIssue(mirror, { status: "icebox" }, bob);
+  await patchIssue(dome, { route: `session:${sessionIds.planner}` }, bob);
   return { craters, dome, eyepiece, finder, mirror, mount, project, shutter };
 }
 

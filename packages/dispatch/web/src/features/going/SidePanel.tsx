@@ -5,7 +5,7 @@ import { useLocation } from "react-router-dom";
 import { whoAmIQuery } from "../../api/queries";
 import type { GoingContextInput } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
-import { borderDefault, card, dangerText, inputClasses } from "../../theme/classes";
+import { borderDefault, card, dangerText } from "../../theme/classes";
 import { nodeRouteFromHref, routeProjectOf } from "../refs/routes";
 import { issueOfPage, scopeOfPage } from "../search/bar-scope";
 import { ConversationView } from "./ConversationView";
@@ -22,7 +22,14 @@ import {
 } from "./going-store";
 import { History } from "./History";
 import { usePlanCardKeys } from "./PlanRows";
-import { BoxRow, boxHint, boxWords, ConversationHeader } from "./RunControls";
+import {
+  BoxFrame,
+  BoxRow,
+  boxHint,
+  boxInputClassName,
+  boxWords,
+  ConversationHeader,
+} from "./RunControls";
 import { useAsk } from "./useAsk";
 
 /** The side panel's element id. */
@@ -90,10 +97,10 @@ function chipWords(pathname: string, search: string, clicked: ClickedItem | unde
  * search list; its header has "Open over the page", which moves it back, and its × closes it. Its
  * box asks with the page as the context, and a click on the page that opens or selects an item
  * makes that item the chip and the context of the next request. The box is the bar's: the mode
- * control, the context chip, Stop while the run works, the plan card's keys while a plan waits,
- * and words sent during a run held until it ends. Esc in the panel puts the focus on the page and
- * the panel stays, except that Esc in its empty box while a run works stops the run (R10); Ctrl-K
- * brings the conversation back over the page.
+ * control, the context chip inside the box's frame, Stop while the run works, the plan card's
+ * keys while a plan waits, and words sent during a run held until it ends. Esc in the panel puts
+ * the focus on the page and the panel stays, except that Esc in its empty box while a run works
+ * stops the run (R10); Ctrl-K brings the conversation back over the page.
  */
 export function SidePanel(): ReactNode {
   const going = useGoing();
@@ -105,6 +112,7 @@ export function SidePanel(): ReactNode {
   const side = going.place === "side";
   const clicked = going.clicked?.path === location.pathname ? going.clicked : undefined;
   const context = contextOf(location.pathname, location.search, clicked);
+  const chip = chipWords(location.pathname, location.search, clicked);
   const asking = useAsk(context);
   const cardKeys = usePlanCardKeys();
   // Words sent while the run worked go once it no longer works, from the panel while it shows the
@@ -174,38 +182,39 @@ export function SidePanel(): ReactNode {
       <div className={`shrink-0 border-t p-3 ${borderDefault}`}>
         <BoxRow
           box={
-            <input
-              aria-label="Ask the command bar"
-              className={`block min-w-48 flex-1 rounded-lg border px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
-              onChange={(event) => setWords(event.target.value)}
-              onKeyDown={(event) => {
-                if (cardKeys(event)) {
-                  return;
-                }
-                if (event.key === "Enter" && !event.shiftKey) {
-                  if (asking.enter(words)) {
-                    event.preventDefault();
-                    setWords("");
+            <BoxFrame chip={chip} chipTitle={chip}>
+              <input
+                aria-label="Ask the command bar"
+                className={boxInputClassName}
+                onChange={(event) => setWords(event.target.value)}
+                onKeyDown={(event) => {
+                  if (cardKeys(event)) {
+                    return;
                   }
-                } else if (event.key === "Escape" && words === "" && conversationWorking()) {
-                  // Esc in the empty box while the run works stops the run (R10), and the
-                  // focus stays in the box.
-                  event.preventDefault();
-                  event.stopPropagation();
-                  asking.escape(words);
-                }
-              }}
-              placeholder={boxWords({
-                asked: asksPerson(going),
-                open: going.conversation !== undefined || going.starting !== undefined,
-                planWaits: asking.planWaits || asking.runWaits,
-                search: false,
-              })}
-              type="text"
-              value={words}
-            />
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    if (asking.enter(words)) {
+                      event.preventDefault();
+                      setWords("");
+                    }
+                  } else if (event.key === "Escape" && words === "" && conversationWorking()) {
+                    // Esc in the empty box while the run works stops the run (R10), and the
+                    // focus stays in the box.
+                    event.preventDefault();
+                    event.stopPropagation();
+                    asking.escape(words);
+                  }
+                }}
+                placeholder={boxWords({
+                  asked: asksPerson(going),
+                  open: going.conversation !== undefined || going.starting !== undefined,
+                  planWaits: asking.planWaits || asking.runWaits,
+                  search: false,
+                })}
+                type="text"
+                value={words}
+              />
+            </BoxFrame>
           }
-          chip={chipWords(location.pathname, location.search, clicked)}
           hint={boxHint(asking, words)}
           onStop={asking.stop}
         />

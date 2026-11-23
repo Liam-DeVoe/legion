@@ -16,6 +16,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { endWords } from "../going/run-states";
+import { ItemChip } from "../refs/ItemChip";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AnswerBlock } from "./blocks/AnswerBlock";
 import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
@@ -57,18 +58,29 @@ function changedText(dropped: number): string {
     : `the answer changed: ${dropped} links, images or tags were dropped`;
 }
 
+/** Whether `text`, a text frame's markdown with every punctuation byte escaped, writes `key` as a
+ *  word of its own once its escapes are read. */
+function writesKey(text: string, key: string): boolean {
+  return text
+    .replace(/\\(.)/gu, "$1")
+    .split(/(?<![\w-])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![\w-])/u)
+    .some((part, index) => index % 2 === 1 && part === key);
+}
+
 /**
  * Dispatch's short answer to the words in the bar (R3), in its own panel under the rows. Its
  * text shows at most 3 lines; Enter on the line Ask starts the run that gives the full answer,
  * which the panel's foot says while that line is the selected row (`fullAnswer`). The text is the
  * stream's `text` frames drawn through the page's markdown renderer as plain text: the server
  * escaped every punctuation byte of it, so no link, image, tag or code span comes of anything the
- * model wrote, and the renderer reads no reference in it either. The answer's links are its
- * `item` frames, listed beneath it, and nothing else. The block, where the answer draws one,
- * follows the text, as its frame follows the text's. Each line below says what the stream said
- * about the answer: that it was cut, that the server changed it, that the model wrote none, that
- * it rests on no source, how fresh the roster it read was, or that it failed. A failure says why
- * and its own next step (`errorText`), so the foot does not say the full answer again.
+ * model wrote. The answer's links are its `item` frames, and nothing else: an issue an item frame
+ * names is its chip (design v3, state 4), in the text where the text writes its key - the one
+ * reference the renderer reads in it - and beneath the text where it does not, as is every other
+ * item, by its title. The block, where the answer draws one, follows the text, as its frame
+ * follows the text's. Each line below says what the stream said about the answer: that it was
+ * cut, that the server changed it, that the model wrote none, that it rests on no source, how
+ * fresh the roster it read was, or that it failed. A failure says why and its own next step
+ * (`errorText`), so the foot does not say the full answer again.
  *
  * An answer to words the person has typed past (`stale`) is drawn as it stood when they typed
  * on, its links, block and lines with it, inside a dashed outline with its text muted, under a
@@ -122,6 +134,12 @@ function AnswerBody({
   // An answer that ended citing nothing rests on no source of Dispatch's; one the model wrote no
   // text for says that instead, and its end frame's count of nothing says nothing more.
   const restsOnNothing = answer.end !== undefined && answer.end.items === 0 && !answer.none;
+  // The issues of the item frames whose keys the text writes are drawn there, as their chips;
+  // every other item is drawn beneath it.
+  const inText = answer.items
+    .filter((item) => item.kind === "issue" && writesKey(answer.text, item.id))
+    .map((item) => item.id);
+  const beneath = answer.items.filter((item) => item.kind !== "issue" || !inText.includes(item.id));
   // The wrapper is drawn whether or not the answer is stale, so going stale moves no part of the
   // answer to another element: only the wrapper's classes change.
   return (
@@ -150,25 +168,40 @@ function AnswerBody({
             className={`line-clamp-3 ${stale ? textMutedOnSurface : textPrimaryOnSurface}`}
             data-testid="going-answer-text"
           >
-            <MarkdownBody markdown={answer.text} referenceText="" softBreaks="line" />
+            <MarkdownBody
+              chips
+              markdown={answer.text}
+              referenceText={inText.join(" ")}
+              softBreaks="line"
+            />
           </div>
         )}
         {answer.block === undefined ? null : <AnswerBlock block={answer.block} />}
-        {answer.items.length === 0 ? null : (
+        {beneath.length === 0 ? null : (
           <ul
             aria-label="Sources"
-            className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs"
+            className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs"
             data-testid="going-answer-items"
           >
-            {answer.items.map((item) => (
+            {beneath.map((item) => (
               <li key={item.href}>
                 <Link
-                  className={`underline ${linkText} ${linkHoverText}`}
+                  className={
+                    item.kind === "issue"
+                      ? "no-underline"
+                      : `underline ${linkText} ${linkHoverText}`
+                  }
                   data-kind={item.kind}
                   data-testid="going-answer-item"
                   to={item.href}
                 >
-                  {item.title === "" ? item.id : item.title}
+                  {item.kind === "issue" ? (
+                    <ItemChip issue={item.id} />
+                  ) : item.title === "" ? (
+                    item.id
+                  ) : (
+                    item.title
+                  )}
                 </Link>
               </li>
             ))}

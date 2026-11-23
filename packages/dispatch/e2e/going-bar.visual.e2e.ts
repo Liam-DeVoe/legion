@@ -15,8 +15,10 @@
  *
  *  ONE SEED, AND NO ROW SEEDS. The issues these rows read, plan on and change are the review
  *  corpus's own (`seedBarIssues`, e2e/review-seed.ts): seven issues of project OPS, bob's, with
- *  no ask among them, which no page of the shot set draws. A row reads their keys from the seed
- *  file and scripts the fake models with them; it writes nothing before it opens the bar.
+ *  no ask among them, which no page of the shot set draws, and the dome routed to the
+ *  workspace's Planner, so a message to the Planner is placed on the dome. A row reads their
+ *  keys from the seed file and scripts the fake models with them; it writes nothing before it
+ *  opens the bar.
  *
  *  WHAT A ROW LEAVES. A row signs in as a login of its own (`bar-<state>`), so its runs, its
  *  conversations and History are its own: no other row's History lists them, and a plan that
@@ -59,11 +61,15 @@
  *    set back would keep an item chip on the title it read before a change.
  *  - Times. The `<time>` elements are masked, as `e2e/visual.e2e.ts` masks them, and each reads
  *    "just now" here, a box that holds its width. The words that count seconds from the
- *    person's Enter - the timer beside "Thinking…", the newest step line's timer and the
- *    "Worked for 2 s · …" line the steps fold into - are hidden while the shot is taken
- *    (`e2e/going-bar.visual.css`, which says why hidden and not masked), and the row reads the
- *    folded line's words with an assertion instead. The rail's Inbox entry is masked, for the
- *    reason `e2e/visual.e2e.ts` gives.
+ *    person's Enter - the timer beside "Thinking…", the newest step line's timer and the time in
+ *    the "Worked for 2 s · read 2 items" line the steps fold into - are masked too, each held to
+ *    one width while the shot is taken (`e2e/going-bar.visual.css`, which says why), so the shot
+ *    shows where each stands and the row reads the words around them with an assertion. The
+ *    rail's Inbox entry is masked, for the reason `e2e/visual.e2e.ts` gives.
+ *  - The run's pace. A run that worked for less than a second folds its steps into "Read 2
+ *    items", with no time, and one that worked longer into "Worked for 2 s · read 2 items", so a
+ *    run of the fake models, which answer at once, could draw either. Each run whose steps a shot
+ *    draws folded takes one slow turn (`slow`), so it works for more than a second on every run.
  *  - Animations. `reducedMotion: "reduce"` turns the bar's shimmer, pulse and spinner off (each
  *    is a `motion-safe:` class), and `toHaveScreenshot` disables what is left, as it does for
  *    the pages.
@@ -104,6 +110,7 @@ import {
 import {
   ANSWER_ENDS_MS,
   answerPanel,
+  answerText,
   askTheAgent,
   bar,
   lineOnTop,
@@ -123,6 +130,7 @@ import {
   type VisualSeed,
   waitForRouteSettled,
 } from "./review-routes";
+import { sessionIds } from "./session-ids";
 import { asUser } from "./users";
 import { inVisualOrder, visualOrder } from "./visual-order";
 import { workspaceSessions } from "./workspace";
@@ -136,8 +144,9 @@ const SKIP_REASON =
   "the pinned Playwright image: run `e2e/visual-run.sh` from packages/dispatch, which seeds on " +
   "the host and takes every shot in that container. DISPATCH_E2E_VISUAL_SEED is unset.";
 
-/** The style sheet applied while a shot is taken, which hides the words that count seconds. */
-const hiddenWhileShot = fileURLToPath(new URL("./going-bar.visual.css", import.meta.url));
+/** The style sheet applied while a shot is taken, which holds each of the words that count
+ *  seconds to one width, so the mask over it is the same box on every run. */
+const heldWhileShot = fileURLToPath(new URL("./going-bar.visual.css", import.meta.url));
 
 /** 16:30 UTC on a day before any run of this lane: where a row whose shot draws a time of day
  *  installs the page's clock, ahead of the minutes it then sets the clock forward to. */
@@ -161,7 +170,7 @@ const pageUnderTheBar: ReviewedRoute = {
 
 /** The short answer the fake writing model gives a pause in every row that types words. It links
  *  the telescope mount by the href the search's hit of it carries, so the answer panel draws the
- *  mount as its source. */
+ *  mount's key, which the server keeps as words, as the mount's chip. */
 function shortAnswer(issues: BarSeed): ChatReply {
   return prose(`The telescope's mount waits for its calibration, ${naming(issues.mount)}.`);
 }
@@ -193,13 +202,20 @@ async function openTheBar(page: Page, seed: VisualSeed): Promise<void> {
 }
 
 /** Compares the window against the baseline `name`, with the pointer off every control. Soft,
- *  as `e2e/visual.e2e.ts`'s shots are, so a row whose first shot differs still takes the rest. */
+ *  as `e2e/visual.e2e.ts`'s shots are, so a row whose first shot differs still takes the rest.
+ *  Each time of day and each count of seconds is masked. */
 async function shoot(page: Page, name: string): Promise<void> {
   await page.mouse.move(0, 0);
   await expect.soft(page).toHaveScreenshot(`${name}.png`, {
-    mask: [page.locator("time"), railInboxLink(page)],
+    mask: [
+      page.locator("time"),
+      railInboxLink(page),
+      page.getByTestId("going-thinking-timer"),
+      page.getByTestId("going-step-timer"),
+      page.getByTestId("going-steps-fold-time"),
+    ],
     maxDiffPixels: 20,
-    stylePath: hiddenWhileShot,
+    stylePath: heldWhileShot,
     threshold: 0,
   });
 }
@@ -207,6 +223,14 @@ async function shoot(page: Page, name: string): Promise<void> {
 /** A turn that reads `issue` with `dispatch_read`. */
 function read(issue: string): ChatTurn {
   return callTool("dispatch_read", { issue });
+}
+
+/** `turn`, written in one piece with 400 ms between its frames. A turn is four frames at least -
+ *  the role, its words or its calls, the finish and the count of tokens - so it takes 1.2 s or
+ *  more, and the run it is part of works for more than a second: the line its steps fold into
+ *  then says how long, "Worked for 2 s · read 2 items", on every run (see the run's pace above). */
+function slow(turn: ChatTurn): ChatTurn {
+  return { ...turn, chunk: 4096, delayMs: 400 };
 }
 
 /** An answer naming `issue` by a link, which the bar draws as the issue's chip. */
@@ -261,7 +285,8 @@ const barRows: readonly BarRow[] = [
   {
     // State 1. Scripts a short answer and the decision `none`, so the line on top reads Ask. The
     // words are two of the mount's title, so the search, which matches every word, lists it, and
-    // not the whole title, which would rank above the line on top.
+    // not the whole title, which would rank above the line on top. The short answer names the
+    // mount by its key, which the panel draws as the mount's chip, in the text and nowhere else.
     reach: async (page, seed) => {
       const words = "telescope mount";
       await script(seed, []);
@@ -280,6 +305,8 @@ const barRows: readonly BarRow[] = [
       });
       await expect(bar(page).getByTestId("search-line-deciding")).toHaveCount(0);
       await expect(lineOnTop(page)).toContainText(`Ask ${words}`);
+      await chipsRead(answerText(page), 1);
+      await expect(answerPanel(page).getByTestId("going-answer-item")).toHaveCount(0);
       await shoot(page, "01-typed");
     },
     shows: "the empty box, the filters, and typed words with the line on top",
@@ -306,8 +333,9 @@ const barRows: readonly BarRow[] = [
   },
   {
     // State 3. Scripts a run that looks for a tool, reads two issues in one model call under
-    // the words it wrote beside them, searches, then streams without end: three finished lines,
-    // the oldest step folded above them, and the run still working. Words sent while it works
+    // the words it wrote beside them, searches, then streams without end: four finished lines -
+    // the look in its own words, since one step past the newest three folds into no line of its
+    // own - the newest with the run's timer, and the run still working. Words sent while it works
     // wait under it; the row drops them before it stops the run.
     reach: async (page, seed) => {
       const words = "check the telescope work";
@@ -338,11 +366,18 @@ const barRows: readonly BarRow[] = [
       await openTheBar(page, seed);
       await askTheAgent(page, words);
       const run = newestRun(page);
-      await expect(run.locator('[data-testid="going-step"][data-running="false"]')).toHaveCount(3, {
-        timeout: RUN_STEPS_MS,
-      });
-      await expect(run.getByTestId("going-steps-older")).toBeVisible();
+      const finished = '[data-testid="going-step"][data-running="false"]';
+      await expect(run.locator(finished)).toHaveCount(4, { timeout: RUN_STEPS_MS });
+      await expect(run.getByTestId("going-steps-older")).toHaveCount(0);
+      await expect(run.getByTestId("going-step-label").first()).toHaveText(
+        /^Looked for a way to \S/
+      );
       await expect(run.getByTestId("going-step-words")).toContainText("Reading the telescope");
+      // One timer, on the newest line; it is masked in the shot, so its words are read here.
+      await expect(run.getByTestId("going-step-timer")).toHaveCount(1);
+      await expect(run.getByTestId("going-step").last().getByTestId("going-step-timer")).toHaveText(
+        /^\d+ s$/
+      );
       await expect(run).toHaveAttribute("data-state", "working");
       await searchBox(page).fill("and the primary mirror too");
       await searchBox(page).press("Enter");
@@ -350,9 +385,7 @@ const barRows: readonly BarRow[] = [
       await shoot(page, "03-working-bar");
       await keepAtTheSide(page);
       await expect(sidePanel(page).getByTestId("going-queued")).toBeVisible();
-      await expect(
-        sidePanel(page).locator('[data-testid="going-step"][data-running="false"]')
-      ).toHaveCount(3);
+      await expect(sidePanel(page).locator(finished)).toHaveCount(4);
       await shoot(page, "03-working-panel");
       await sidePanel(page).getByTestId("going-queued-drop").click();
       await expect(sidePanel(page).getByTestId("going-queued")).toHaveCount(0);
@@ -362,15 +395,15 @@ const barRows: readonly BarRow[] = [
     state: "03",
   },
   {
-    // State 4. Scripts a run that reads two issues and answers with both as links, which the
-    // bar draws as chips under the line its steps fold into.
+    // State 4. Scripts a run that reads two issues, the first in a slow turn, and answers with
+    // both as links, which the bar draws as chips under the line its steps fold into.
     reach: async (page, seed) => {
       const words = "what telescope work is still open";
       const { craters, mount } = seed.bar;
       await script(seed, [
         {
           turns: [
-            read(mount),
+            slow(read(mount)),
             read(craters),
             say(
               `Two pieces of telescope work are open:\n\n- ${naming(mount)}\n- ${naming(craters)}`
@@ -384,9 +417,9 @@ const barRows: readonly BarRow[] = [
       await expect(newestRun(page)).toHaveAttribute("data-state", "done", {
         timeout: RUN_STEPS_MS,
       });
-      // The folded line's words are hidden in the shot, so they are read here.
+      // The folded line's time is masked in the shot, so its words are read here.
       await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
-        /read 2 items$/i
+        /^Worked for \d+ s · read 2 items$/
       );
       await chipsRead(newestRun(page).getByTestId("going-run-answer"), 2);
       await shoot(page, "04-answer-bar");
@@ -398,16 +431,16 @@ const barRows: readonly BarRow[] = [
     state: "04",
   },
   {
-    // State 5. Scripts two runs, each listing OPS's issues with `dispatch_issues` and drawing a
-    // block over the seven seeded issues alone: a chart of them by status, then, in a new
-    // conversation, a table of them by key. The clock is set forward, to 16:40 before the
+    // State 5. Scripts two runs, each listing OPS's issues with `dispatch_issues` in a slow turn
+    // and drawing a block over the seven seeded issues alone: a chart of them by status, then, in
+    // a new conversation, a table of them by key. The clock is set forward, to 16:40 before the
     // chart's Enter and to 16:45 before the table's, since each caption says when its read was
     // made.
     fixedDay: true,
     reach: async (page, seed) => {
       const chartWords = "chart the telescope work by status";
       const tableWords = "list the telescope work";
-      const listing = callTool("dispatch_issues", { project: seed.bar.project });
+      const listing = slow(callTool("dispatch_issues", { project: seed.bar.project }));
       const telescopeWork = { field: "key", in: barKeys(seed.bar), op: "filter" };
       // The listing is the first model call's tool call, so its result is step 2, call 1.
       const listed = [{ call: 1, step: 2 }];
@@ -457,6 +490,9 @@ const barRows: readonly BarRow[] = [
       await expect(chart.getByTestId("going-block-caption")).toHaveText(
         /^Telescope work by status · as of 4:40\sPM$/
       );
+      await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
+        /^Worked for \d+ s · /
+      );
       await shoot(page, "05-chart");
       await newConversation(page);
       await page.clock.setSystemTime(AT_4_45_PM);
@@ -470,14 +506,20 @@ const barRows: readonly BarRow[] = [
         /^Telescope work · as of 4:45\sPM$/
       );
       await chipsRead(table, barKeys(seed.bar).length);
+      await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
+        /^Worked for \d+ s · /
+      );
       await shoot(page, "05-table");
     },
     shows: "a chart, and a table",
     state: "05",
   },
   {
-    // State 6. Scripts a run that proposes one row of each kind - a new issue, a change of
-    // fields, a document's text, a message and a close - and waits. The row discards it.
+    // State 6. Scripts a run that proposes, in a slow turn, one row of each kind - a new issue, a
+    // change of fields, a document's text, a message to an agent and a close - and waits. The
+    // message goes to the Planner, whom the seed routes the dome to (`seedBarIssues`), so its row
+    // names the session, the issue it is posted on and its delivery (R7). The row discards the
+    // plan, so nothing is sent.
     reach: async (page, seed) => {
       const words = "plan a motor for the observatory dome";
       const { dome, mount, project, shutter } = seed.bar;
@@ -485,38 +527,49 @@ const barRows: readonly BarRow[] = [
         {
           afterwards: say("Discarded."),
           turns: [
-            proposePlan("Fit a motor to the dome, and retire the old shutter it replaces.", [
-              {
-                arguments: { parent: dome, priority: 2, project, title: "Fit a motor to the dome" },
-                tool: "dispatch_issue",
-              },
-              {
-                arguments: { issue: mount, labels: ["optics"], priority: 2 },
-                tool: "dispatch_issue_update",
-              },
-              {
-                arguments: {
-                  artifact: "spec",
-                  body: "The dome turns by motor once it has one, so the spec says so.",
-                  issue: dome,
-                  quote: "The dome turns by hand.",
-                  replace_with: "The dome turns by motor.",
+            slow(
+              proposePlan("Fit a motor to the dome, and retire the old shutter it replaces.", [
+                {
+                  arguments: {
+                    parent: dome,
+                    priority: 2,
+                    project,
+                    title: "Fit a motor to the dome",
+                  },
+                  tool: "dispatch_issue",
                 },
-                tool: "dispatch_suggest",
-              },
-              {
-                arguments: { body: "A motor for the dome is planned.", issue: dome },
-                tool: "dispatch_message",
-              },
-              {
-                arguments: {
-                  issue: shutter,
-                  reason: "The motor's shutter replaces it.",
-                  status: "done",
+                {
+                  arguments: { issue: mount, labels: ["optics"], priority: 2 },
+                  tool: "dispatch_issue_update",
                 },
-                tool: "dispatch_issue_update",
-              },
-            ]),
+                {
+                  arguments: {
+                    artifact: "spec",
+                    body: "The dome turns by motor once it has one, so the spec says so.",
+                    issue: dome,
+                    quote: "The dome turns by hand.",
+                    replace_with: "The dome turns by motor.",
+                  },
+                  tool: "dispatch_suggest",
+                },
+                {
+                  arguments: {
+                    body: "A motor for the dome is planned.",
+                    delivery: "btw",
+                    session: sessionIds.planner,
+                  },
+                  tool: "dispatch_send_to_agent",
+                },
+                {
+                  arguments: {
+                    issue: shutter,
+                    reason: "The motor's shutter replaces it.",
+                    status: "done",
+                  },
+                  tool: "dispatch_issue_update",
+                },
+              ])
+            ),
           ],
           words,
         },
@@ -535,6 +588,14 @@ const barRows: readonly BarRow[] = [
           .getByTestId("item-chip")
           .filter({ hasNot: page.getByTestId("item-chip-status") })
       ).toHaveCount(0);
+      // The message row names the session, the issue it is posted on by its chip, and the
+      // delivery; the suggestion names the issue whose spec it changes by its chip.
+      await expect(planCard(page).getByTestId("going-plan-message")).toHaveText(
+        new RegExp(`^Message to Planner on ${dome}(?!\\d).* · as a BTW$`)
+      );
+      await expect(planCard(page).getByTestId("going-plan-document")).toHaveText(
+        new RegExp(`^Suggest a change to spec on ${dome}(?!\\d)`)
+      );
       await shoot(page, "06-plan-bar");
       await keepAtTheSide(page);
       await expect(planRows(planCard(page))).toHaveCount(5);
@@ -553,11 +614,13 @@ const barRows: readonly BarRow[] = [
     state: "06",
   },
   {
-    // State 7. Scripts a run that proposes two changes and a message, then answers once they
-    // ran. The row approves with Enter, with the clock set forward to 16:40, since the applied
-    // title says when; then it presses Undo, which takes both changes back and leaves the
-    // message sent. Each shot waits for the finder scope's chip to read its title as the
-    // change, then the Undo, left it.
+    // State 7. Scripts a run that proposes, in a slow turn, two changes and a message on an issue,
+    // then answers once they ran. The message is on the eyepiece and to no session: a message to
+    // an agent that ran here would reach the workspace's live session, whose pages the pages'
+    // rows shoot. The row approves with Enter, with the clock set forward to 16:40, since the
+    // applied title says when; then it presses Undo, which takes both changes back and leaves the
+    // message sent. Each shot waits for the finder scope's chip to read its title as the change,
+    // then the Undo, left it.
     fixedDay: true,
     reach: async (page, seed) => {
       const words = "raise the eyepiece and rename the finder scope";
@@ -566,17 +629,19 @@ const barRows: readonly BarRow[] = [
         {
           afterwards: say("Done."),
           turns: [
-            proposePlan("Raise the eyepiece first, and give the finder scope its full name.", [
-              { arguments: { issue: eyepiece, priority: 1 }, tool: "dispatch_issue_update" },
-              {
-                arguments: { issue: finder, title: "Align the finder scope to the mount" },
-                tool: "dispatch_issue_update",
-              },
-              {
-                arguments: { body: "The eyepiece comes first now.", issue: eyepiece },
-                tool: "dispatch_message",
-              },
-            ]),
+            slow(
+              proposePlan("Raise the eyepiece first, and give the finder scope its full name.", [
+                { arguments: { issue: eyepiece, priority: 1 }, tool: "dispatch_issue_update" },
+                {
+                  arguments: { issue: finder, title: "Align the finder scope to the mount" },
+                  tool: "dispatch_issue_update",
+                },
+                {
+                  arguments: { body: "The eyepiece comes first now.", issue: eyepiece },
+                  tool: "dispatch_message",
+                },
+              ])
+            ),
             say("Raised the eyepiece, renamed the finder scope and said so on the eyepiece."),
           ],
           words,
@@ -618,19 +683,20 @@ const barRows: readonly BarRow[] = [
     state: "07",
   },
   {
-    // State 8. Scripts two runs of one conversation, each reading one issue and answering with
-    // it as a link: the question, then the follow-up typed in the box under the first answer.
+    // State 8. Scripts two runs of one conversation, each reading one issue in a slow turn and
+    // answering with it as a link: the question, then the follow-up typed in the box under the
+    // first answer.
     reach: async (page, seed) => {
       const asked = "what is the primary mirror waiting on";
       const followUp = "and the telescope mount";
       const { mirror, mount } = seed.bar;
       await script(seed, [
         {
-          turns: [read(mirror), say(`The mirror waits for its grinding, ${naming(mirror)}.`)],
+          turns: [slow(read(mirror)), say(`The mirror waits for its grinding, ${naming(mirror)}.`)],
           words: asked,
         },
         {
-          turns: [read(mount), say(`The mount waits for its calibration, ${naming(mount)}.`)],
+          turns: [slow(read(mount)), say(`The mount waits for its calibration, ${naming(mount)}.`)],
           words: followUp,
         },
       ]);
@@ -646,6 +712,10 @@ const barRows: readonly BarRow[] = [
         timeout: RUN_STEPS_MS,
       });
       await chipsRead(bar(page), 2);
+      await expect(bar(page).getByTestId("going-steps-fold")).toHaveText([
+        /^Worked for \d+ s · read 1 item›$/,
+        /^Worked for \d+ s · read 1 item›$/,
+      ]);
       await shoot(page, "08-follow-up");
     },
     shows: "a follow-up under the first answer",
@@ -653,17 +723,20 @@ const barRows: readonly BarRow[] = [
   },
   {
     // State 9. Three conversations at the Fast level, which the row chooses in the mode menu.
-    // The first is scripted to call a tool in each of Fast's six model calls, so it stops at its
-    // step limit; the second reads one issue and then streams without end, and the row stops
-    // it with Escape; the third is answered 500 twice, the call and its one retry, so it fails.
+    // The first is scripted to call a tool in each of Fast's six model calls, the first of them
+    // slow, so it stops at its step limit; the second reads one issue in a slow turn and then
+    // streams without end, and the row stops it with Escape; the third is answered 500 twice,
+    // the call and its one retry, so it fails. The steps of each run that stopped fold into one
+    // line, which counts what the bound's card counts.
     reach: async (page, seed) => {
       const bounded = "read every telescope issue one by one";
       const stopped = "keep reading the telescope mount";
       const failed = "what is the finder scope waiting on";
       const { craters, dome, eyepiece, mirror, mount, shutter } = seed.bar;
+      const later = [craters, mirror, dome, shutter, eyepiece].map(read);
       await script(seed, [
-        { turns: [mount, craters, mirror, dome, shutter, eyepiece].map(read), words: bounded },
-        { turns: [read(mount), endlessStream()], words: stopped },
+        { turns: [slow(read(mount)), ...later], words: bounded },
+        { turns: [slow(read(mount)), endlessStream()], words: stopped },
         { turns: [refusedWith(500), refusedWith(500)], words: failed },
       ]);
       await openTheBar(page, seed);
@@ -679,6 +752,17 @@ const barRows: readonly BarRow[] = [
         timeout: RUN_STEPS_MS,
       });
       await expect(newestRun(page).getByTestId("going-run-bound")).toBeVisible();
+      await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
+        /^Worked for \d+ s · read 6 items$/
+      );
+      await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      await expect(newestRun(page).getByTestId("going-step")).toHaveCount(0);
+      await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
+        "Stopped at Fast's step limit · read 6 items so far"
+      );
       await shoot(page, "09-bound");
       await newConversation(page);
       await askTheAgent(page, stopped);
@@ -693,6 +777,9 @@ const barRows: readonly BarRow[] = [
       });
       await expect(newestRun(page).getByTestId("going-run-state")).toHaveText(
         "Stopped · kept what it did"
+      );
+      await expect(newestRun(page).getByTestId("going-steps-fold")).toHaveAccessibleName(
+        /^Worked for \d+ s · read 1 item$/
       );
       await shoot(page, "09-stopped");
       await newConversation(page);
@@ -709,14 +796,18 @@ const barRows: readonly BarRow[] = [
     state: "09",
   },
   {
-    // State 10. Scripts a run that reads one issue and answers with it as a link; the row moves
-    // the answer to the side with the header's button.
+    // State 10. Scripts a run that reads one issue in a slow turn and answers with it as a link;
+    // the row moves the answer to the side with the header's button. The panel's header moves it
+    // back with an icon whose words are its tooltip, and its box holds the context chip.
     reach: async (page, seed) => {
       const words = "what does the observatory dome need";
       const { dome } = seed.bar;
       await script(seed, [
         {
-          turns: [read(dome), say(`The dome turns by hand and needs a motor, ${naming(dome)}.`)],
+          turns: [
+            slow(read(dome)),
+            say(`The dome turns by hand and needs a motor, ${naming(dome)}.`),
+          ],
           words,
         },
       ]);
@@ -729,6 +820,10 @@ const barRows: readonly BarRow[] = [
       await expect(bar(page)).toHaveCount(0);
       await expect(sidePanel(page)).toBeVisible();
       await chipsRead(sidePanel(page).getByTestId("going-run-answer"), 1);
+      await expect(
+        sidePanel(page).getByRole("button", { name: "Open over the page" })
+      ).toHaveAttribute("title", "Open over the page");
+      await expect(sidePanel(page).getByTestId("going-title")).toHaveText(words);
       await shoot(page, "10-side-panel");
     },
     shows: "the side panel",

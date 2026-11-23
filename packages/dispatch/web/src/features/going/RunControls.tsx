@@ -4,9 +4,15 @@ import type { GoingRun } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import {
+  bgTransparent,
   borderDefault,
   card,
+  focusWithinBorder,
+  inputClasses,
+  secondaryButtonBorder,
   secondaryButtonCompact,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
   surfaceMutedHoverBg,
   textMutedOnSurface,
   textPrimaryOnSurface,
@@ -181,11 +187,30 @@ export function LevelControl(): ReactNode {
   );
 }
 
+/** The glyph of "Open over the page": the page, and the bar over it. */
+function OverThePageIcon(): ReactNode {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" fill="none" viewBox="0 0 16 16">
+      <rect
+        height="11"
+        rx="1.5"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        width="13"
+        x="1.5"
+        y="2.5"
+      />
+      <rect fill="currentColor" height="4" rx="0.75" width="7" x="4.5" y="5" />
+    </svg>
+  );
+}
+
 /**
  * The header of the conversation, in the bar and in the panel (design v3, states 2 and 10): the
  * conversation's title, its first question on one line, then History, a new conversation, the
- * button that moves it, and Close. Over the page the move is a pin, "Keep at the side", and Close
- * says its word; at the side the move is "Open over the page", and Close is the panel's ×. Each
+ * button that moves it, and Close. The move is an icon with its words as its tooltip, so the
+ * title keeps the room: over the page a pin, "Keep at the side", and Close says its word; at the
+ * side the page with the bar over it, "Open over the page", and Close is the panel's ×. Each
  * press is the surface's own.
  */
 export function ConversationHeader({
@@ -243,12 +268,14 @@ export function ConversationHeader({
       ) : null}
       {side ? (
         <button
-          className={secondaryButtonCompact}
+          aria-label={move}
+          className={`flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg md:min-h-8 md:min-w-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
           data-testid="going-move"
           onClick={onMove}
+          title={move}
           type="button"
         >
-          {move}
+          <OverThePageIcon />
         </button>
       ) : (
         <PinButton label={move} onClick={onMove} pinned={false} />
@@ -317,22 +344,56 @@ export function focusConversationBox(): boolean {
   return box !== undefined && box !== null;
 }
 
+/** The input the person types in, inside the box's frame (`BoxFrame`), which draws its border. */
+export const boxInputClassName = `block min-w-0 flex-1 px-1.5 py-2 text-sm outline-none ${bgTransparent}`;
+
+/**
+ * The conversation's box, in the bar and in the panel (design v3, states 1, 2 and 10): one frame
+ * holding the context chip on its left (`chip`, cut where the chip ends, its whole words in
+ * `chipTitle`), then `children` - the input, and in the bar before Enter its Filters button - so
+ * the chip stands in the same place on every surface.
+ */
+export function BoxFrame({
+  children,
+  chip,
+  chipTitle,
+}: {
+  readonly children: ReactNode;
+  readonly chip: string | undefined;
+  readonly chipTitle: string | undefined;
+}): ReactNode {
+  return (
+    <div
+      className={`flex min-w-48 flex-1 items-center gap-1.5 rounded-lg border px-1.5 ${inputClasses(true)} ${focusWithinBorder}`}
+    >
+      {chip === undefined ? null : (
+        <span
+          className={`${pillClassName("label")} max-w-48 shrink-0`}
+          data-testid="going-box-chip"
+          title={chipTitle}
+        >
+          <span className="min-w-0 truncate">{chip}</span>
+        </span>
+      )}
+      {children}
+    </div>
+  );
+}
+
 /**
  * The row of the conversation's box, in the bar and in the panel (design v3, states 2 and 12):
- * the mode control at its left, then the context chip (`chip`, none where the surface draws its
- * context inside the box), the box itself (`box`), and Stop at its right while the run works;
- * under it, the hint of what Enter does (`boxHint`). The box keeps its place among the row's
- * parts in every state, so the element the person types in, and its focus, stay as the row
- * changes. While the row is drawn, `focusConversationBox` puts the cursor in its box.
+ * the mode control at its left, the box itself (`box`, its `BoxFrame` with the context chip), and
+ * Stop at its right while the run works; under it, the hint of what Enter does (`boxHint`). The
+ * box keeps its place among the row's parts in every state, so the element the person types in,
+ * and its focus, stay as the row changes. While the row is drawn, `focusConversationBox` puts the
+ * cursor in its box.
  */
 export function BoxRow({
   box,
-  chip,
   hint,
   onStop,
 }: {
   readonly box: ReactNode;
-  readonly chip: string | undefined;
   readonly hint: string | undefined;
   readonly onStop: () => void;
 }): ReactNode {
@@ -349,15 +410,6 @@ export function BoxRow({
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-2" ref={row}>
         <LevelControl />
-        {chip === undefined ? null : (
-          <span
-            className={`${pillClassName("label")} max-w-48`}
-            data-testid="going-box-chip"
-            title={chip}
-          >
-            <span className="min-w-0 truncate">{chip}</span>
-          </span>
-        )}
         {box}
         {working ? (
           <button

@@ -8,7 +8,7 @@ import { focusManager } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { onRealTurns, realClock, tick } from "../../__tests__/fake-clock";
 import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
@@ -145,6 +145,13 @@ test("one more letter keeps the answer on the screen as the earlier words', with
     );
     await waitFor(() =>
       expect(screen.getByTestId("going-answer-item")).toHaveAttribute("href", "/issues/LEGION-3")
+    );
+    // The text does not write the issue's key, so its chip stands beneath the text, in place of
+    // a plain link of its title.
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("going-answer-item")).getByTestId("item-chip")
+      ).toHaveTextContent("LEGION-3TodoInstruments")
     );
 
     // One more letter: the run is cancelled on Dispatch and its stream let go, as ever, and the
@@ -467,7 +474,7 @@ test("closing the bar cancels the run out, and a run that ended is never cancell
   expect(cancelGoingRequest.mock.calls.map(([id]) => id)).toEqual(["run-1"]);
 });
 
-test("each frame of the stream is drawn as its own line, and the item frames are the only links", async () => {
+test("each frame of the stream is drawn as its own line, and the item frames are the only links, an issue's key in the text its chip", async () => {
   await warmMarkdownRenderer();
   const user = userOnFakeClock();
   const bar = renderBar();
@@ -495,14 +502,23 @@ test("each frame of the stream is drawn as its own line, and the item frames are
       { data: { age_ms: 4200, source: "live" }, event: "roster" },
       { data: { items: 1, words: 120 }, event: "end" }
     );
+    // The item frame's key makes the text read that issue's summary, whose answer draws the text
+    // again with the key as the issue's chip: it is let answer before anything is read.
+    await tick(0);
     const text = await screen.findByTestId("going-answer-text");
+    // The key an item frame names is that issue's chip, in the text where the text writes it, as
+    // a run's answer draws an issue it links (design v3, state 4); the panel lists it no more.
     await waitFor(() =>
-      expect(text).toHaveTextContent(
-        "See LEGION-3, [x](/issues/LEGION-9), ![pic](/p.png) and <b>bold</b>"
-      )
+      expect(within(text).getByTestId("item-chip")).toHaveTextContent("LEGION-3TodoInstruments")
     );
-    // Not a link, an image or a tag, and not a reference to the issue key either.
-    expect(text.querySelector("a, img, b")).toBeNull();
+    const chip = within(text).getByTestId("item-chip");
+    expect(text).toHaveTextContent(
+      "See LEGION-3TodoInstruments, [x](/issues/LEGION-9), ![pic](/p.png) and <b>bold</b>"
+    );
+    expect(chip.closest("a")).toHaveAttribute("href", "/issues/LEGION-3");
+    expect(screen.queryByTestId("going-answer-items")).toBeNull();
+    // Nothing the model wrote is a link, an image or a tag: the one link is the item frame's.
+    expect(text.querySelector("img, b")).toBeNull();
     const links = screen.getByTestId("going-answer").querySelectorAll("a");
     expect([...links].map((link) => link.getAttribute("href"))).toEqual(["/issues/LEGION-3"]);
     expect(screen.getByTestId("going-answer-cut")).toHaveTextContent("answer cut to 120 words");

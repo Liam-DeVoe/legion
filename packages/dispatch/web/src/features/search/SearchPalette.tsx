@@ -13,17 +13,13 @@ import { useNavigate } from "react-router-dom";
 
 import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { GoingLine, Project, SearchResult, SearchResultKind } from "../../api/types";
-import { pillClassName } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import {
   backdrop50,
   badgeLow,
-  bgTransparent,
   borderDefault,
   card,
   dangerText,
-  focusWithinBorder,
-  inputClasses,
   kbdHint,
   searchHitBg,
   searchHitText,
@@ -50,7 +46,14 @@ import {
 import { History } from "../going/History";
 import { usePlanCardKeys } from "../going/PlanRows";
 import { BROWSER_PANEL_KEYS } from "../going/panel-states";
-import { BoxRow, boxHint, boxWords, ConversationHeader } from "../going/RunControls";
+import {
+  BoxFrame,
+  BoxRow,
+  boxHint,
+  boxInputClassName,
+  boxWords,
+  ConversationHeader,
+} from "../going/RunControls";
 import { NO_MODEL_WORDS } from "../going/run-states";
 import { useAsk } from "../going/useAsk";
 import { statusText } from "../project/board-model";
@@ -1111,22 +1114,11 @@ function PaletteDialog({
         role: "combobox",
       };
   const box = (
-    <div
-      className={`flex min-w-48 flex-1 items-center gap-1.5 rounded-lg border px-1.5 ${inputClasses(true)} ${focusWithinBorder}`}
-    >
-      {scope.chip === undefined ? null : (
-        <span
-          className={`${pillClassName("label")} max-w-48 shrink-0`}
-          data-testid="going-box-chip"
-          title={scope.chipTitle}
-        >
-          <span className="min-w-0 truncate">{scope.chip}</span>
-        </span>
-      )}
+    <BoxFrame chip={scope.chip} chipTitle={scope.chipTitle}>
       <input
         {...listParts}
         aria-label={talking ? "Ask the command bar" : "Search"}
-        className={`block min-w-0 flex-1 px-1.5 py-2 text-sm outline-none ${bgTransparent}`}
+        className={boxInputClassName}
         data-testid="bar-box"
         onChange={(event) => {
           setQuery(event.target.value);
@@ -1157,7 +1149,7 @@ function PaletteDialog({
           {filterCount === 0 ? "Filters" : `Filters · ${filterCount}`}
         </button>
       )}
-    </div>
+    </BoxFrame>
   );
   // What Enter does on the highlighted row, for the foot.
   const enterHint = enterWord(activeRow);
@@ -1211,7 +1203,6 @@ function PaletteDialog({
           <div className={`shrink-0 p-3 ${talking ? "border-t" : "border-b"} ${borderDefault}`}>
             <BoxRow
               box={box}
-              chip={undefined}
               hint={talking ? boxHint(asking, query) : undefined}
               onStop={asking.stop}
             />

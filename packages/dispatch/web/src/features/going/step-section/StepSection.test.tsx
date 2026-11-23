@@ -10,9 +10,10 @@ import { elapsedTimeWords, foldWords, StepSection, workedWords } from "./StepSec
 // A run's steps as the bar draws them (design v2, states 3 and 4): one line for each call, the
 // running ones in the present tense with a shimmer and the ended ones in the past tense, the
 // newest line with the run's timer; past three calls at once, "and 2 more…"; at most three
-// finished lines, the older ones folded into one line that opens on a click; the model's prose as
-// a grey header above its calls; keys as plain links; and once the answer or the plan came, every
-// step folded into "Worked for 1 min 48 s · read 14 items, searched twice ›".
+// finished lines, two or more older ones folded into one line that opens on a click, and one
+// older one drawn as its own line; the model's prose as a grey header above its calls; keys as
+// plain links; and once the run no longer works, every step folded into "Worked for 1 min 48 s ·
+// read 14 items, searched twice ›".
 
 afterEach(cleanup);
 
@@ -170,8 +171,32 @@ test("at most three finished lines show, and the older ones fold into one line t
   expect(labels()).toHaveLength(4);
 });
 
+// A fold of one step would only say again, in other words, what its one line says: that step
+// keeps its own line, in its own words, and nothing folds.
+test("one finished step past the newest three draws as its own line, in its own words", () => {
+  const look = "Looked for a way to list an issue's messages";
+  render(
+    <StepSection
+      folded={false}
+      live
+      since={Date.now()}
+      steps={[
+        step(0, { items: [], kind: "look", label: look, tool: "find_tools" }),
+        step(1),
+        step(2),
+        step(3),
+      ]}
+      workedMs={undefined}
+    />
+  );
+  expect(screen.queryByTestId("going-steps-older")).toBeNull();
+  expect(screen.queryByText(/looked for a way once/iu)).toBeNull();
+  expect(labels()).toEqual([look, "Read DEMO-2", "Read DEMO-3", "Read DEMO-4"]);
+});
+
 test("the model's prose heads its calls as one grey line, and folds with them", async () => {
   const user = userEvent.setup();
+  const first = "Reading the issue first.";
   const children = "Checking the children of DEMO-1.";
   render(
     <StepSection
@@ -179,23 +204,24 @@ test("the model's prose heads its calls as one grey line, and folds with them", 
       live
       since={Date.now()}
       steps={[
-        step(0, { header: "Reading the issue first." }),
-        step(1, { header: children }),
+        step(0, { header: first }),
+        step(1, { header: first }),
         step(2, { header: children }),
         step(3, { header: children }),
-        running(4, "Reading DEMO-5"),
+        step(4, { header: children }),
+        running(5, "Reading DEMO-6"),
       ]}
       workedMs={undefined}
     />
   );
-  // The first call folded, and its header with it; the others stand under theirs.
+  // The first two calls folded, and their header with them; the others stand under theirs.
   expect(screen.getAllByTestId("going-step-words").map((line) => line.textContent)).toEqual([
     children,
   ]);
-  expect(labels()).toEqual(["Read DEMO-2", "Read DEMO-3", "Read DEMO-4", "Reading DEMO-5…"]);
+  expect(labels()).toEqual(["Read DEMO-3", "Read DEMO-4", "Read DEMO-5", "Reading DEMO-6…"]);
   await user.click(screen.getByTestId("going-steps-older"));
   expect(screen.getAllByTestId("going-step-words").map((line) => line.textContent)).toEqual([
-    "Reading the issue first.",
+    first,
     children,
   ]);
 });
@@ -244,10 +270,17 @@ test("once the answer came, every step folds into Worked for… with what they w
   );
   const fold = screen.getByTestId("going-steps-fold");
   expect(fold.textContent).toBe("Worked for 1 min 48 s · read 14 items, searched twice›");
+  // The time stands in an element of its own, which a screenshot masks.
+  expect(within(fold).getByTestId("going-steps-fold-time").textContent).toBe("1 min 48 s");
+  // Its mark points along the line while the fold is closed, and turns down once it opens.
+  const mark = fold.lastElementChild as HTMLElement;
   expect(fold.getAttribute("aria-expanded")).toBe("false");
+  expect(mark.className).not.toContain("rotate-90");
   expect(labels()).toEqual([]);
 
   await user.click(fold);
+  expect(fold.getAttribute("aria-expanded")).toBe("true");
+  expect(mark.className).toContain("rotate-90");
   expect(labels()).toEqual([
     "Read DEMO-1",
     "Read DEMO-2",

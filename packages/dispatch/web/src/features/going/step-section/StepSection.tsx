@@ -41,7 +41,8 @@ import { dangerText, linkHoverText, linkText, textMutedOnSurface } from "../../.
 import { buildReferencePath } from "../../refs/routes";
 import type { RunStep } from "../run-frames";
 
-/** How many finished steps show as lines while the run works; older ones fold into one line. */
+/** How many finished steps show as lines while the run works; two or more older ones fold into
+ *  one line. */
 export const FINISHED_LINES = 3;
 /** How many calls that run at once show as lines; the rest fold into "and 2 more…". */
 export const RUNNING_LINES = 3;
@@ -125,21 +126,56 @@ export function foldWords(steps: readonly RunStep[]): string {
   return parts.join(", ");
 }
 
+/** How long a run worked, for the line its steps fold into: "1 min 48 s"; undefined, as in
+ *  Happy, for a run that worked for less than a second, and for one whose time the page does not
+ *  know. */
+function workedTime(workedMs: number | undefined): string | undefined {
+  return workedMs === undefined || workedMs < 1_000 ? undefined : elapsedTimeWords(workedMs);
+}
+
+/** What the line steps fold into says after how long the run worked: what the steps were made
+ *  of (`foldWords`), with its first letter a capital where no time comes before it, and "Steps"
+ *  for steps that were all slips and no time to say. */
+function workedRest(steps: readonly RunStep[], time: string | undefined): string {
+  const words = foldWords(steps);
+  if (time !== undefined) return words;
+  return words === "" ? "Steps" : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 /**
- * The one line steps fold into, with the first letter a capital. Once the run's answer or its
- * plan came (design v2, state 4), it is every step's, with how long the run worked: "Worked for
- * 1 min 48 s · read 14 items, searched twice". As in Happy, a run that worked for less than a
- * second says no time at all, and so does one whose time the page does not know, or older steps
- * folded while the run works (state 3): "Read 6 items, searched twice". Steps that were all
- * slips say only the time, "Worked for 12 s", or with no time to say, "Steps".
+ * The one line steps fold into. Once the run's answer or its plan came, or the run ended (design
+ * v2, state 4), it is every step's, with how long the run worked: "Worked for 1 min 48 s · read
+ * 14 items, searched twice". A run whose time `workedTime` does not say, and older steps folded
+ * while the run works (state 3), say what the steps were made of alone: "Read 6 items, searched
+ * twice". Steps that were all slips say only the time, "Worked for 12 s", or with no time to
+ * say, "Steps".
  */
 export function workedWords(steps: readonly RunStep[], workedMs: number | undefined): string {
-  const words = foldWords(steps);
-  if (workedMs === undefined || workedMs < 1_000) {
-    return words === "" ? "Steps" : words.charAt(0).toUpperCase() + words.slice(1);
-  }
-  const worked = `Worked for ${elapsedTimeWords(workedMs)}`;
-  return words === "" ? worked : `${worked} · ${words}`;
+  const time = workedTime(workedMs);
+  const rest = workedRest(steps, time);
+  if (time === undefined) return rest;
+  return rest === "" ? `Worked for ${time}` : `Worked for ${time} · ${rest}`;
+}
+
+/** `workedWords` as the folded line draws them, the time in an element of its own
+ *  (`going-steps-fold-time`), so that a screenshot can mask the one part that moves with the
+ *  run's pace. */
+function WorkedLine({
+  steps,
+  workedMs,
+}: {
+  readonly steps: readonly RunStep[];
+  readonly workedMs: number | undefined;
+}): ReactNode {
+  const time = workedTime(workedMs);
+  const rest = workedRest(steps, time);
+  if (time === undefined) return rest;
+  return (
+    <>
+      Worked for <span data-testid="going-steps-fold-time">{time}</span>
+      {rest === "" ? null : ` · ${rest}`}
+    </>
+  );
 }
 
 /** Which steps draw as lines while the run works (design v2, state 3). */
@@ -154,11 +190,15 @@ export interface StepLines {
   readonly more: number;
 }
 
-/** Which of `steps` draw as lines while the run works, and which fold. */
+/** Which of `steps` draw as lines while the run works, and which fold. The finished steps past
+ *  the newest `FINISHED_LINES` fold into one line only where there are two or more of them: one
+ *  such step draws as its own line, in its own words ("Looked for a way to list an issue's
+ *  messages"), which takes the room the line folding it would. */
 export function stepLines(steps: readonly RunStep[]): StepLines {
   const finished = steps.filter((step) => !step.running);
   const running = steps.filter((step) => step.running);
-  const older = finished.slice(0, Math.max(0, finished.length - FINISHED_LINES));
+  const past = finished.length - FINISHED_LINES;
+  const older = past > 1 ? finished.slice(0, past) : [];
   const folded = new Set([...older, ...running.slice(RUNNING_LINES)]);
   return {
     more: Math.max(0, running.length - RUNNING_LINES),
@@ -340,7 +380,7 @@ function FoldLine({
   readonly onToggle: () => void;
   readonly open: boolean;
   readonly testId: string;
-  readonly words: string;
+  readonly words: ReactNode;
 }): ReactNode {
   return (
     <button
@@ -363,15 +403,16 @@ function FoldLine({
  *
  * While the run works (design v2, state 3), each call has a line, as Happy's section is live:
  * the newest finished ones, at most `FINISHED_LINES`, under one grey line that folds the older
- * ones ("Read 6 items, searched twice ›", which opens them), then the calls that run, at most
- * `RUNNING_LINES` of them and "and 2 more…" for the rest. The prose the model wrote beside its
- * calls heads them as a grey line and folds with them. The newest line carries the run's timer,
- * counted from `since`.
+ * ones where there are two or more ("Read 6 items, searched twice ›", which opens them), then the
+ * calls that run, at most `RUNNING_LINES` of them and "and 2 more…" for the rest. The prose the
+ * model wrote beside its calls heads them as a grey line and folds with them. The newest line
+ * carries the run's timer, counted from `since`.
  *
- * Once the answer or the plan came (`folded`, design v2, state 4), and while the rows of an
- * approved plan run (state 7), every step folds into one grey line, "Worked for 1 min 48 s · read
- * 14 items, searched twice ›", as Happy's section is summed up once it is over; a click opens
- * them.
+ * Once the run no longer works - its answer or its plan came, or it stopped or failed (`folded`,
+ * design v2, states 4 and 9) - and while the rows of an approved plan run (state 7), every step
+ * folds into one grey line, "Worked for 1 min 48 s · read 14 items, searched twice ›", as Happy's
+ * section is summed up once it is over; a click opens them, and its mark turns to say so. The
+ * line counts what the end of a stopped run counts ("read 14 items so far").
  */
 export function StepSection({
   folded,
@@ -387,8 +428,8 @@ export function StepSection({
   readonly live: boolean;
   /** When the person asked for the run, in this page's clock: what its timer counts from. */
   readonly since: number;
-  /** Whether the run's answer or plan came, or its approved plan's rows run, so that every step
-   *  folds into one line. */
+  /** Whether the run no longer works, or its approved plan's rows run, so that every step folds
+   *  into one line. */
   readonly folded: boolean;
   /** How long the run worked, for its folded line; undefined where the page does not know. */
   readonly workedMs: number | undefined;
@@ -405,7 +446,7 @@ export function StepSection({
           onToggle={() => setWorkedOpen((open) => !open)}
           open={workedOpen}
           testId="going-steps-fold"
-          words={workedWords(steps, workedMs)}
+          words={<WorkedLine steps={steps} workedMs={workedMs} />}
         />
         {workedOpen ? <StepList more={0} steps={steps} timer={undefined} /> : null}
       </div>

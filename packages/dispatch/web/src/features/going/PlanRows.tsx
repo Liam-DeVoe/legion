@@ -28,6 +28,7 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
+  pageQuietText,
   primaryButton,
   quoteAccentBorder,
   quoteBodyText,
@@ -364,17 +365,17 @@ const VALUE_BUTTON = `rounded text-left underline decoration-dotted underline-of
 
 /**
  * One field a row writes, in the issue page's words (design v3, rule 6): as a line, its name, the
- * value now and the new value ("Priority: No priority → P2"); as a new issue's title, the value
- * alone; as a part of a new issue's line, the value with the word that says what it is ("under
- * CORE-1"). While the row waits, a press on the new value, or its Edit, opens the field's own
- * control from the issue page: the priority menu, the label picker, the status menu, the assignee
- * picker, or a box of text; the status menu and the assignee picker stand as the new value itself,
- * as the priority menu does. A value of a field that may name a new issue of the plan
- * (`RowChange.namesNewIssue`) naming one shows that issue's title and "(new)" (`newIssues`), and
- * its edit box holds the value itself, which the person may replace with an issue's key. The
- * edit box starts from the new value of the plan it is drawn for, and its caller keys it to that
- * plan, so a revised plan or a new run's never opens with an earlier plan's value or the person's
- * unsaved typing. An edited value says "Edited".
+ * value now in the page's grey, which no reader takes for a link, and the new value ("Priority: No
+ * priority → P2"); as a new issue's title, the value alone; as a part of a new issue's line, the
+ * value with the word that says what it is ("under CORE-1"). While the row waits, a press on the
+ * new value, or its Edit, opens the field's own control from the issue page: the priority menu,
+ * the label picker, the status menu, the assignee picker, or a box of text; the status menu and the
+ * assignee picker stand as the new value itself, as the priority menu does. A value of a field
+ * that may name a new issue of the plan (`RowChange.namesNewIssue`) naming one shows that issue's
+ * title and "(new)" (`newIssues`), and its edit box holds the value itself, which the person may
+ * replace with an issue's key. The edit box starts from the new value of the plan it is drawn
+ * for, and its caller keys it to that plan, so a revised plan or a new run's never opens with an
+ * earlier plan's value or the person's unsaved typing. An edited value says "Edited".
  */
 function FieldChange({
   change,
@@ -534,7 +535,7 @@ function FieldChange({
       {shape === "line" ? (
         <>
           <span className={`font-medium ${textSecondaryOnSurface}`}>{fieldWords(field)}:</span>{" "}
-          <span className={textMutedOnSurface} data-testid="going-plan-now">
+          <span className={pageQuietText} data-testid="going-plan-now">
             <FieldValue field={field} newIssues={undefined} value={now} />
           </span>{" "}
           <span aria-hidden="true">→</span>{" "}
@@ -638,18 +639,45 @@ function MessageBody({
   );
 }
 
-/** A change of a document's text (R4): what the row does, two or three sentences on what it
- *  changes, and its diff under them, closed. */
+/** An issue key in a row's words, as a word of its own (`going/agent/labels.go` writes keys so),
+ *  captured so that splitting the words keeps it. */
+const KEY_IN_WORDS = /(?<![\w-])([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?![\w-])/u;
+
+/** A change of a document's text (R4): what the row does, naming the issue whose document it
+ *  changes (`issue`, "" for a project's document) by its chip - in place of its key where the
+ *  row's words write it ("Upload notes.md to DEMO-15"), else after them ("Suggest a change to
+ *  spec on DEMO-15") - then two or three sentences on what it changes, and its diff under them,
+ *  closed. */
 function DocumentBody({
   document,
+  issue,
   label,
 }: {
   readonly document: DocumentChange;
+  readonly issue: string;
   readonly label: string;
 }): ReactNode {
+  // The words between the keys at the even places, each key at the odd place after them.
+  const parts = label.split(KEY_IN_WORDS);
+  const named = parts.some((part, index) => index % 2 === 1 && part === issue);
   return (
     <div className="space-y-1">
-      <p className={textPrimaryOnSurface}>{label}</p>
+      <p className={textPrimaryOnSurface} data-testid="going-plan-document">
+        {parts.map((part, index) =>
+          index % 2 === 1 && part === issue ? (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the row's words, which never change for one row
+            <ItemSlot item={issue} key={index} />
+          ) : (
+            part
+          )
+        )}
+        {issue === "" || named ? null : (
+          <>
+            {" on "}
+            <ItemSlot item={issue} />
+          </>
+        )}
+      </p>
       <p className={textSecondaryOnSurface} data-testid="going-plan-sentences">
         {document.sentences}
       </p>
@@ -793,7 +821,9 @@ export function PlanRowView({
   } else if (kind === "message") {
     body = <MessageBody row={row} waiting={waiting} />;
   } else if (kind === "document" && document !== undefined) {
-    body = <DocumentBody document={document} label={label} />;
+    body = (
+      <DocumentBody document={document} issue={row.issue || textOf(args.issue)} label={label} />
+    );
   } else if (kind === "change" || kind === "claim") {
     body = (
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
