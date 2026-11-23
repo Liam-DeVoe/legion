@@ -1018,6 +1018,22 @@ close_unpassed_run_pull_requests() {
   close_smoke_cleanup >&2 || true
   return 0
 }
+# implementer_pull_request ISSUE prints the number of the one open pull request on ISSUE's branch,
+# legion/ISSUE, of the smoke repository: the completion route applies an implementer's completion
+# in implementing only once GitHub shows one open there (implementationPullRequest in
+# packages/daemon/internal/api/handoff.go). It fails naming what GitHub listed when that is none or
+# more than one, and fails when the listing fails, whose reason gh writes to stderr. The call gets
+# 60 s.
+implementer_pull_request() {
+  local listed
+  listed=$(timeout 60 gh -R "$repo" pr list --head "legion/$1" --state open --json number --jq '[.[].number] | join(" ")') ||
+    fail "GitHub did not list the open pull requests on $repo legion/$1 (gh's reason is above)"
+  case "$listed" in
+    '') fail "$repo has no open pull request on legion/$1, which the completion route requires before it applies an implementer's completion in implementing" ;;
+    *' '*) fail "$repo has more than one open pull request on legion/$1: #${listed// /, #}" ;;
+  esac
+  printf '%s\n' "$listed"
+}
 
 # ---- the handoffs the daemon accepted -------------------------------------------------------------
 
