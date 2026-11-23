@@ -446,7 +446,7 @@ Each item below names a script, then what it proves.
   `APPROVED_VERSION_NEWS_STEP`, `APPROVED_VERSION_NEWS_ARM` and `APPROVED_VERSION_NEWS_RUNS` narrow part two to one step, one arm and a count of runs, so one command measures one arm.
   Such a run is a measurement, and its last line reads `MEASURED`, never `PASS`.
   A run of both parts is the default, and `--part one` runs part one alone.
-  `--control` runs part one against the daemon and the Dispatch of the base commit, `git merge-base HEAD origin/main`, taken with `git archive`.
+  `--control` runs part one against the daemon and the Dispatch of the base commit, the parent of the first commit in `HEAD`'s history that adds a news mark, taken with `git archive`.
   `--base-commit <rev>` does the same against another commit.
   That run must fail at A2's first one-approval check, in that check's own words.
   A model for part two and a loopback PostgreSQL; no GitHub, no cluster
@@ -5310,7 +5310,7 @@ A refusal inside the lib, exit 2, is the script's exit 2 too.
 
 | check | what it holds |
 | :--- | :--- |
-| `arguments` | `--part` is `one` or `both`; `--control` and `--base-commit` run part one alone, and `--part both` with either is refused; `LEGION_TEST_PG_DSN` is set and loopback; the base, when a run uses it, is a commit of this checkout; part two's inputs are there when part two runs, its model key among them: a key file that holds a key, or else an audience of the pod's identity token in `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE`, of letters, digits and `._~:/-` alone, with `curl` on `PATH` to mint it, which fails the run with exit 1 otherwise; none of `APPROVED_VERSION_NEWS_STEP`, `APPROVED_VERSION_NEWS_ARM` and `APPROVED_VERSION_NEWS_RUNS` is set for a run of part one alone; anything else is refused with exit 2; and the jj the daemon runs, `LEGION_JJ_PATH` where it is set and the `jj` on `PATH` otherwise, is 0.38 or later, read from `jj --version` as the daemon's boot reads it, which fails the run with exit 1 otherwise (`check_jj`) |
+| `arguments` | `--part` is `one` or `both`; `--control` and `--base-commit` run part one alone, and `--part both` with either is refused; `LEGION_TEST_PG_DSN` is set and loopback; the base, when a run uses it, is the commit of this checkout `--base-commit` names, or else the parent of the first commit in `HEAD`'s history that adds a news mark, which the clone holds (`news_base`), and a part-two driver file that names no news mark fails the run with exit 1; part two's inputs are there when part two runs, its model key among them: a key file that holds a key, or else an audience of the pod's identity token in `APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE`, of letters, digits and `._~:/-` alone, with `curl` on `PATH` to mint it, which fails the run with exit 1 otherwise; none of `APPROVED_VERSION_NEWS_STEP`, `APPROVED_VERSION_NEWS_ARM` and `APPROVED_VERSION_NEWS_RUNS` is set for a run of part one alone; anything else is refused with exit 2; and the jj the daemon runs, `LEGION_JJ_PATH` where it is set and the `jj` on `PATH` otherwise, is 0.38 or later, read from `jj --version` as the daemon's boot reads it, which fails the run with exit 1 otherwise (`check_jj`) |
 | `gateway-token` | when part two runs on the pod's identity token: the metadata server minted a JWT for the audience whose `exp` claim leaves it more than 40 minutes (`gateway_keep_seconds`), written to a key file of the run's own scratch under `TMPDIR`, mode 600, which is removed on any exit; a first mint that fails fails the run with exit 1, before anything is built; the check starts the refresher, which mints the next token when the one in the file has 40 minutes left and tries again 30 s after a mint that fails, until the script's exit stops it (`mint_gateway_token`, `refresh_gateway_token`); [`lib/approved-version-news-runs.test.ts`](lib/approved-version-news-runs.test.ts) drives the script's run of both parts over a stand-in `curl` that answers the metadata server with JWTs whose `exp` claim it sets, beside a run on a key file and a run with neither a key nor an audience |
 | `plan` | when part two runs, before part one: part two's driver, built from this checkout with `-tags e2e` (`build_daemon_driver`), the one build both parts then run, prints its plan under `-part-two-plan` and makes no run, with no `LEGION_TEST_PG_DSN`, so it makes no database (`driver_plan`): a `plan step <word> <name> <arm>…` line for each step, in order, and `plan runs <n>`; it is read once with no pick, the plan of a full run, and, for a run that picks, once more with the run's pick; a pick the driver refuses (`plan refused: …`, a value that names no step, no arm or no count) is refused with exit 2, in the driver's words; a driver that prints no plan, or a plan of no step, a step of no arm or of an arm other than `head` and `base`, or no count, fails the run; `head_only` holds the measurement that retired each base arm, which the driver does not know, and the plan of a full run must agree with it (`check_plan`): a step the plan makes in the head arm alone that `head_only` holds no measurement for, a step it makes in both arms that `head_only` holds one for, and an entry of `head_only` for a step the plan does not make each fail the run, naming the step |
 | `base-tree` | with `--control` or `--base-commit` alone: the base extracted with `git archive <rev> \| tar -x` into a scratch tree under `TMPDIR`, removed on any exit, with this checkout's part-one driver copied into it (its three files: the test, its steps and its seed) |
@@ -5372,13 +5372,25 @@ and no agent runs: each claim is launched by the package's fake runtime, which p
 
 ### The base and the negative control
 
-The base is the commit before this change: `git merge-base HEAD origin/main`, main's tip as the branch last merged it, which holds everything the branch carries but its own change.
-It is the base by default because main moves under the branch and each forward merge brings main's changes in, so a fixed older commit would differ from the head by those as well.
+The base is the newest commit that carries none of the head's news marks: the first parent of the first commit in `HEAD`'s history that adds a news mark to `packages/daemon/internal/prompts` (`news_base`).
+The news marks are the sentences part two's driver reads a pane's prompt for to tell the arms apart, every `sessions…Mark` constant of `internal/daemon/approved_version_news_sessions_live_test.go`.
+The script reads them from that file and keeps no copy of them, and a file that names none fails the `arguments` check with exit 1.
+`git log -S<mark>` names each commit that adds or removes a mark and skips merge commits, so a forward merge that brings a mark in from main is never the commit found.
+Of those commits the script takes the first in `git rev-list --topo-order --reverse HEAD`, where each commit comes after its parents.
+The base was `git merge-base HEAD origin/main` until #3995 merged.
+That change brought the news marks to main, so the merge base of a branch merged forward past it carries #3995's own sentences.
+Part two's driver refuses a base arm whose prompt carries the head's mark, and part one's control passes there, so the merge base is no control.
+The base no longer moves with main, so it differs from the head by main's later changes as well.
+On main, and on a branch merged forward past #3995, it is `e3152081a4c3`, the parent of #3995's squash commit `b537812fb53d`.
 The driver compiles there, and its `registeredStep` refuses nothing A2 needs, since A2 registers its spec alone.
+The base's Dispatch serves no `PUT /api/v1/projects/{key}/default-repository`, which #4457 added after #3995, and answers it 404.
+The driver then sets the project's default repository through `PUT /api/v1/settings/repo-projects/{owner}/{repo}`, which names the project as the repository's default one and which that Dispatch serves (`setDefaultRepository`).
+The driver's boot note names the route it used.
 The plan's own control runs used `2a6ff6c03269dc9377bf60f8f06e6682df55419e`, the base before the branch's forward merges.
 Part two and the control need the checkout's history down to the base, which a shallow clone lacks.
-The `arguments` check refuses a base it cannot find with exit 2.
-`--control` runs part one's negative control against the base, and `--base-commit <rev>` against `<rev>`.
+The `arguments` check refuses with exit 2 a history in which no commit adds a news mark, or whose first such commit has no parent in the clone.
+The refusal names the remedies: fetch the history (`git fetch --unshallow`), or, for part one's control alone, name its base with `--base-commit <rev>`.
+`--control` runs part one's negative control against the base, and `--base-commit <rev>` against `<rev>` in its place, with no search for the base.
 The script takes that commit's tree with `git archive | tar -x` into a scratch directory under `TMPDIR`, copies this checkout's part-one driver into it (`approved_version_news_live_test.go`, `approved_version_news_part_one_steps_live_test.go` and `approved_version_news_seed_live_test.go`), and builds the daemon and Dispatch both from that tree, so nothing of this checkout is written.
 The driver uses no Go symbol the change adds: the start path's functions are main's own, and it reads and writes the told record in SQL alone, so it builds there.
 On that daemon A2's five setup checks hold and its sixth fails, since no task is ever queued for the reviewer.
@@ -6830,7 +6842,8 @@ A `run_end` put last in `controller-sweep-kind.sh`'s `left()`, which the script 
 A call of `busy-relaunch-delivery.sh`'s `negative_control` with `&& note x` after it on its line fails it too, since `note x` runs after the call.
 A one-line `if …; then …; fi` in an `else` branch, with more after its `fi` or not, closes its own `if`, and so does a `fi` before a comment, so the line after the outer `fi` is still read.
 `lib/live-daemon-proof.test.ts` and `lib/approved-version-news-runs.test.ts` drive the real `live_daemon_proof` and the real `approved-version-news.sh --part one` over stand-ins of `go`, the `nats-server`, `python3` and the driver (`lib/live-daemon-proof-fixture.ts`), killed in their setup and in their driver by a signal to the whole process group, and run to their end.
-`lib/approved-version-news-runs.test.ts` drives the script's run of both parts over the same stand-ins too, from a scratch checkout whose one commit is its base.
+`lib/approved-version-news-runs.test.ts` drives the script's run of both parts over the same stand-ins too, from a scratch checkout whose first commit is its base and whose next commit adds a news mark.
+It also drives the script, both parts and `--control`, from a branch merged forward past main's commit that adds the marks, where the base is that commit's parent and the merge base of `HEAD` and `origin/main` carries the marks, and from histories with no base, which the script refuses.
 
 ## lib/rig.sh
 

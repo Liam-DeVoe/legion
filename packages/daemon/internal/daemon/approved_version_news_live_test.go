@@ -266,10 +266,11 @@ func newVersionNewsLive(t *testing.T) *versionNewsLive {
 }
 
 // boot readies a fresh configuration gating steps, on a database of its own, with a Dispatch
-// project of its own whose default repository is repo; makes fixture's trees on Dispatch and seeds
-// them into the store through the daemon's start path; boots the whole daemon; brings every claim
-// its starts launch to ready as its pane would, and waits for each to take the task its start
-// queued; and checks in SETUP that each stands at its entry (standAtTheirEntries).
+// project of its own whose default repository is repo, set through the route the Dispatch serves
+// (setDefaultRepository); makes fixture's trees on Dispatch and seeds them into the store through
+// the daemon's start path; boots the whole daemon; brings every claim its starts launch to ready as
+// its pane would, and waits for each to take the task its start queued; and checks in SETUP that
+// each stands at its entry (standAtTheirEntries).
 func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo string, fixture func()) {
 	t := r.t
 	t.Helper()
@@ -312,13 +313,13 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.rt, r.built = fake.NewRuntime(), &built{}
 	r.rt.InPod = true
 	r.dispatchAs(versionNewsPerson, http.MethodPost, "/api/v1/projects", map[string]string{"key": cfg.Project, "name": "Approved version news, " + gates}, nil)
-	r.dispatchAs(versionNewsPerson, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository", map[string]any{"repo": repo}, nil)
+	route := r.setDefaultRepository(cfg.Project, repo)
 	fixture()
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	r.d = startDaemonWithin(t, cfg, o, r.log(), 2*time.Minute)
-	r.note("daemon booted under gates.design: %s, project %s with default repository %s, dispatch_url %s", gates, cfg.Project, repo, r.dispatch.base)
+	r.note("daemon booted under gates.design: %s, project %s with default repository %s, set through %s, dispatch_url %s", gates, cfg.Project, repo, route, r.dispatch.base)
 	// The boot's run of each seeded start is its claim's first launch, so none before it counts.
 	for _, tree := range r.trees {
 		for _, member := range tree.members {
@@ -957,8 +958,45 @@ func (r *versionNewsLive) dispatchAgent(method, path string, body any, want int,
 	r.dispatchCall(method, path, body, want, into, func(request *http.Request) { request.Header.Set("Authorization", "Bearer "+r.dispatch.token) })
 }
 
+// setDefaultRepository makes repo, an owner/name, the default repository of the Dispatch project
+// project, as the person, and answers the route that set it. It asks PUT
+// /api/v1/projects/{key}/default-repository first. A Dispatch from before #4457, such as the one
+// of the base commit that part one's negative control runs against, serves no such route and
+// answers 404, so it then asks PUT /api/v1/settings/repo-projects/{owner}/{name} to make project
+// the repository's default one, the route that Dispatch serves. Any other answer that is not 2xx
+// fails the run, as dispatchCall fails it.
+func (r *versionNewsLive) setDefaultRepository(project, repo string) string {
+	r.t.Helper()
+	person := func(request *http.Request) { request.Header.Set("X-Dispatch-User", versionNewsPerson) }
+	path := "/api/v1/projects/" + project + "/default-repository"
+	status, answer := r.dispatchSend(http.MethodPut, path, map[string]any{"repo": repo}, person)
+	switch {
+	case status == http.StatusNotFound:
+		path = "/api/v1/settings/repo-projects/" + repo
+		r.dispatchAs(versionNewsPerson, http.MethodPut, path, map[string]any{"project": project, "default": true}, nil)
+	case status/100 != 2:
+		r.fail("Dispatch %s %s = %d %s", http.MethodPut, path, status, answer)
+	}
+	return http.MethodPut + " " + path
+}
+
 // dispatchCall is one request to Dispatch: want 0 takes any 2xx answer.
 func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, into any, identify func(*http.Request)) {
+	r.t.Helper()
+	status, answer := r.dispatchSend(method, path, body, identify)
+	if (want != 0 && status != want) || (want == 0 && status/100 != 2) {
+		r.fail("Dispatch %s %s = %d %s", method, path, status, answer)
+	}
+	if into != nil {
+		if err := json.Unmarshal(answer, into); err != nil {
+			r.fail("decode Dispatch's answer to %s %s (%s): %v", method, path, answer, err)
+		}
+	}
+}
+
+// dispatchSend sends one request to Dispatch, identified by identify, and answers its status and
+// its body, whatever the status.
+func (r *versionNewsLive) dispatchSend(method, path string, body any, identify func(*http.Request)) (int, []byte) {
 	r.t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -983,12 +1021,5 @@ func (r *versionNewsLive) dispatchCall(method, path string, body any, want int, 
 	if err != nil {
 		r.fail("read Dispatch's answer to %s %s: %v", method, path, err)
 	}
-	if (want != 0 && response.StatusCode != want) || (want == 0 && response.StatusCode/100 != 2) {
-		r.fail("Dispatch %s %s = %d %s", method, path, response.StatusCode, answer)
-	}
-	if into != nil {
-		if err := json.Unmarshal(answer, into); err != nil {
-			r.fail("decode Dispatch's answer to %s %s (%s): %v", method, path, answer, err)
-		}
-	}
+	return response.StatusCode, answer
 }

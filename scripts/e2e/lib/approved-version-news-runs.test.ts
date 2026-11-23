@@ -4,7 +4,9 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -34,9 +36,10 @@ import { scriptAssignments, sourcedLibraries } from "./script-functions";
 
 // approved-version-news.sh's runs of part one and of both parts, driven whole over
 // lib/live-daemon-proof-fixture.ts's stand-ins, so the script's own end mark is the one under
-// test: its run_end, its finish and the real lib/run-verdict.sh print the last line.
-// approved-version-news-verdicts.test.ts runs the script's controls, its plan check and its last
-// line by name.
+// test: its run_end, its finish and the real lib/run-verdict.sh print the last line. The same runs
+// show the base the script finds for part two's base arm and for part one's negative control, in
+// scratch histories of their own. approved-version-news-verdicts.test.ts runs the script's
+// controls, its plan check and its last line by name.
 
 const assignment = scriptAssignments(script);
 const scratch = temporaryDirectories("approved-version-news-run-test");
@@ -145,6 +148,158 @@ const tokenHeader = Buffer.from(
 // mint's number in the run.
 const mintedToken = new RegExp(`^${tokenHeader}\\.[A-Za-z0-9_-]+\\.fixtureSignatureOfMint(\\d+)$`);
 
+// The value the script assigns to NAME, to the end of its line.
+const scriptValue = (name: string) => assignment(name).slice(`${name}=`.length);
+const repoRoot = join(dirname(script), "..", "..");
+// Part two's driver, which the script reads the news marks from, and the prompts it finds the base
+// by, each at the path the script reads it at.
+const sessionsFile = scriptValue("sessions_file");
+const promptsDir = scriptValue("prompts_dir");
+// Part one's driver files, which the control copies from the checkout into the base tree.
+const partOneDriverFiles = ["driver_file", "steps_file", "seed_file"].map(scriptValue);
+// The news marks: the text of every sessions…Mark constant of this checkout's part two driver,
+// which the scratch checkout holds as it is here, so a scratch prompt written with them is one the
+// script's own read of that file finds.
+const newsMarks = [
+  ...readFileSync(join(repoRoot, sessionsFile), "utf8").matchAll(
+    /^\s*sessions\w*Mark\s*=\s*"(.*)"\s*$/gm
+  ),
+].map((match) => match[1]);
+// The two prompt files part two's base arm takes in the scratch checkout, a prompt with no news
+// mark, and the same prompt with every news mark after it.
+const reviewerPrompt = join(promptsDir, "roles", "reviewer.md");
+const workerPrompt = join(promptsDir, "go", "worker-common.md");
+const unmarked = "a base prompt\n";
+const marked = `${unmarked}${newsMarks.map((mark) => `${mark}\n`).join("")}`;
+// What the script's refusal of a history with no base says to do.
+const remedy =
+  "a shallow clone lacks that history: fetch it (git fetch --unshallow), or, for part one's control alone, name its base with --base-commit <rev>";
+
+// The caller's variables a scratch run drops: a pick of part two's runs or an audience would
+// change the run under test, and git's own would point git away from the scratch checkout.
+const callerVariables = [
+  "APPROVED_VERSION_NEWS_STEP",
+  "APPROVED_VERSION_NEWS_ARM",
+  "APPROVED_VERSION_NEWS_RUNS",
+  "APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE",
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+];
+
+/** Runs git ARGS in CHECKOUT as the fixture's committer, with none of callerVariables, and
+ * answers what it printed, trimmed. */
+function git(checkout: string, ...args: string[]): string {
+  const env = { ...process.env } as Record<string, string>;
+  for (const name of callerVariables) delete env[name];
+  const run = Bun.spawnSync(
+    [
+      "git",
+      "-C",
+      checkout,
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      ...args,
+    ],
+    { env }
+  );
+  if (run.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${run.stderr.toString()}`);
+  return run.stdout.toString().trim();
+}
+
+/**
+ * What a History builds with: the scratch checkout's path, git in it, and `commit`, which writes
+ * FILES (each a path under the checkout and its text) and commits every change as MESSAGE, and
+ * answers the commit.
+ */
+type Scratch = {
+  checkout: string;
+  git: (...args: string[]) => string;
+  commit: (message: string, files?: Record<string, string>) => string;
+};
+
+/** Builds the history of a scratch checkout on its first commit, BASE, leaves HEAD where the run
+ * starts, and answers each commit a test names, by name. */
+type History = (scratch: Scratch, base: string) => Record<string, string>;
+
+/** The base, then the commit that adds the news marks to a prompt file, which is HEAD. */
+const markAdded: History = ({ commit }, base) => ({
+  base,
+  mark: commit("the change", { [workerPrompt]: marked }),
+});
+
+/** The base alone: no commit adds a news mark. */
+const noMark: History = (_, base) => ({ base });
+
+/** markAdded's history, cut where a shallow clone of depth 1 cuts it: git takes each commit
+ * .git/shallow names as one whose parents the clone lacks, so HEAD, the commit that adds the
+ * marks, has no parent here. */
+const shallowAtMark: History = (scratch, base) => {
+  const commits = markAdded(scratch, base);
+  writeFileSync(join(scratch.checkout, ".git", "shallow"), `${commits.mark}\n`);
+  return commits;
+};
+
+/** A branch merged forward: main adds the news marks after c0 (c1) and moves on (c2), which
+ * origin/main names; the branch forks at c0, makes a commit of its own, and merges c2 forward,
+ * and HEAD is that merge. */
+const mergedForward: History = ({ git, commit }, c0) => {
+  const c1 = commit("main adds the news marks", { [workerPrompt]: marked });
+  const c2 = commit("main moves on", {
+    [reviewerPrompt]: `${unmarked}a later sentence of main's\n`,
+  });
+  git("update-ref", "refs/remotes/origin/main", c2);
+  git("checkout", "-q", "-b", "branch", c0);
+  commit("the branch's own change", { "branch-change": "the branch's own change\n" });
+  git("merge", "-q", "--no-ff", "--no-edit", "--no-gpg-sign", c2);
+  return { c0, c1, c2 };
+};
+
+/**
+ * Lays out a scratch checkout in DIR/checkout and builds its history. Its first commit holds the
+ * script and the libraries it sources, this checkout's part two driver (sessions_file) and part
+ * one's three driver files, each at the path it has here, a placeholder of packages/envoy, which
+ * the control's base must hold, and the two prompt files part two's base arm takes, with no news
+ * mark. HISTORY builds the rest on that commit.
+ */
+function scratchCheckout(dir: string, history: History) {
+  const checkout = join(dir, "checkout");
+  const place = (path: string) => {
+    const to = join(checkout, path);
+    mkdirSync(dirname(to), { recursive: true });
+    return to;
+  };
+  const write = (files: Record<string, string>) => {
+    for (const [path, text] of Object.entries(files)) writeFileSync(place(path), text);
+  };
+  for (const path of sourcedLibraries(script)) {
+    copyFileSync(path, place(join("scripts", "e2e", relative(dirname(script), path))));
+  }
+  for (const path of [sessionsFile, ...partOneDriverFiles]) {
+    copyFileSync(join(repoRoot, path), place(path));
+  }
+  write({
+    [join("packages", "envoy", "go.mod")]: "module fixture/envoy\n",
+    [reviewerPrompt]: unmarked,
+    [workerPrompt]: unmarked,
+  });
+  const scratch: Scratch = {
+    checkout,
+    git: (...args) => git(checkout, ...args),
+    commit: (message, files = {}) => {
+      write(files);
+      git(checkout, "add", "-A");
+      git(checkout, "commit", "-q", "--no-gpg-sign", "-m", message);
+      return git(checkout, "rev-parse", "HEAD");
+    },
+  };
+  git(checkout, "init", "-q");
+  const base = scratch.commit("the base");
+  return { checkout, commits: history(scratch, base) };
+}
+
 /**
  * Where a run of both parts takes part two's model key from (bothPartsRun's KEY): the key file
  * that holds `modelKey` unless `keyFile` is false, which names a file that does not exist; the
@@ -165,73 +320,34 @@ type KeyRun = {
 
 /**
  * Runs the script, both parts, with the variables PICK sets, over lib/live-daemon-proof-fixture.ts's
- * stand-ins, from a scratch checkout of its own: the script and the libraries it sources at the
- * paths they have here, in a git repository whose one commit holds the base's prompt files and is
- * origin/main, so that commit is the base. The stand-in driver prints part one's output for part
- * one's test; under -part-two-plan it prints PLANS.full when the run picks nothing and PLANS.pick
- * when it picks; and for part two's test it prints PART_TWO's run lines, the count of model calls
- * and the test's ENDED, a FAIL for a driver that stopped at a head run, with that run's status.
- * Part two's test also keeps in `seen/` of the run's directory what it was given as its key file:
- * the file's path, its mode and its text as the test starts, and, for a run that mints the pod's
- * identity token, its text once the script's refresher has written another token into it. The
- * stand-in `curl` answers the metadata server's identity route with a token whose `exp` claim is
- * `keepSeconds` and 4 seconds on, lists each call's arguments in `curl-calls` and each token it
- * answered in `tokens`, one a line. KEY says where the run takes its model key from (KeyRun).
- * Every line, its stderr's included, is in `out`, the script's own last line is `last`, `dir` is
- * the run's directory, and `dsn` is the LEGION_TEST_PG_DSN the run was given.
+ * stand-ins, from a scratch checkout of its own whose history HISTORY builds (scratchCheckout): by
+ * default markAdded's, whose first commit is the base. The stand-in driver prints part one's
+ * output for part one's test; under -part-two-plan it prints PLANS.full when the run picks nothing
+ * and PLANS.pick when it picks; and for part two's test it prints PART_TWO's run lines, the count
+ * of model calls and the test's ENDED, a FAIL for a driver that stopped at a head run, with that
+ * run's status. Part two's test also keeps in `seen/` of the run's directory what it was given as
+ * its key file: the file's path, its mode and its text as the test starts, and, for a run that
+ * mints the pod's identity token, its text once the script's refresher has written another token
+ * into it; and what it was given as the base: the commit (`base-commit`) and a copy of the base's
+ * prompt files (`base-prompts`). The stand-in `curl` answers the metadata server's identity route
+ * with a token whose `exp` claim is `keepSeconds` and 4 seconds on, lists each call's arguments in
+ * `curl-calls` and each token it answered in `tokens`, one a line. KEY says where the run takes
+ * its model key from (KeyRun). Every line, its stderr's included, is in `out`, the script's own
+ * last line is `last`, `dir` is the run's directory, `dsn` is the LEGION_TEST_PG_DSN the run was
+ * given, `checkout` is the scratch checkout, and `commits` are the ones HISTORY named.
  */
 function bothPartsRun(
   pick: Record<string, string>,
   plans: { full: string; pick?: string },
   partTwo: string[],
   ended: "PASS" | "FAIL" = "PASS",
-  key: KeyRun = {}
+  key: KeyRun = {},
+  history: History = markAdded
 ) {
   const dir = scratch();
-  const checkout = join(dir, "checkout");
-  for (const path of sourcedLibraries(script)) {
-    const to = join(checkout, "scripts", "e2e", relative(dirname(script), path));
-    mkdirSync(dirname(to), { recursive: true });
-    copyFileSync(path, to);
-  }
-  for (const prompt of ["roles/reviewer.md", "go/worker-common.md"]) {
-    const to = join(checkout, "packages", "daemon", "internal", "prompts", prompt);
-    mkdirSync(dirname(to), { recursive: true });
-    writeFileSync(to, "a base prompt\n");
-  }
   const env = liveDaemonStandIns(dir, { driverOutput: partOneDriver });
-  for (const name of [
-    "APPROVED_VERSION_NEWS_STEP",
-    "APPROVED_VERSION_NEWS_ARM",
-    "APPROVED_VERSION_NEWS_RUNS",
-    "APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE",
-    "GIT_DIR",
-    "GIT_WORK_TREE",
-    "GIT_INDEX_FILE",
-  ]) {
-    delete env[name];
-  }
-  for (const args of [
-    ["init", "-q"],
-    ["add", "."],
-    ["commit", "-q", "--no-gpg-sign", "-m", "the base"],
-    ["update-ref", "refs/remotes/origin/main", "HEAD"],
-  ]) {
-    const git = Bun.spawnSync(
-      [
-        "git",
-        "-C",
-        checkout,
-        "-c",
-        "user.name=fixture",
-        "-c",
-        "user.email=fixture@example.invalid",
-        ...args,
-      ],
-      { env }
-    );
-    if (git.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${git.stderr.toString()}`);
-  }
+  for (const name of callerVariables) delete env[name];
+  const { checkout, commits } = scratchCheckout(dir, history);
   writeFileSync(join(dir, "full-plan"), `${plans.full}\n`);
   writeFileSync(join(dir, "pick-plan"), `${plans.pick ?? plans.full}\n`);
   const output = [
@@ -261,6 +377,8 @@ case " $* " in
     printf '%s\\n' "$key" >"$seen/path"
     stat -c %a "$key" >"$seen/mode"
     cp "$key" "$seen/first"
+    printf '%s\\n' "$APPROVED_VERSION_NEWS_BASE_COMMIT" >"$seen/base-commit"
+    cp -R "$APPROVED_VERSION_NEWS_BASE_PROMPTS" "$seen/base-prompts"
     if [ -n "\${STAND_IN_AWAIT_REFRESH:-}" ]; then
       for _ in $(seq 1 300); do
         [ "$(<"$key")" = "$(<"$seen/first")" ] || break
@@ -321,6 +439,8 @@ printf '%s' "$token"
     last: out.trimEnd().split("\n").at(-1) ?? "",
     dir,
     dsn: env.LEGION_TEST_PG_DSN ?? "",
+    checkout,
+    commits,
   };
 }
 
@@ -500,6 +620,16 @@ describe.skipIf(withoutGit)("the script's run of both parts", () => {
   }, 60_000);
 });
 
+// A full run's part two: every head run passes, and off's base runs fail at their assertion.
+const fullRun = [
+  ...runsOf(a4, "head", passed, passed, passed),
+  ...runsOf(off, "head", passed, passed, passed),
+  ...runsOf(off, "base", failed, failed, failed),
+  ...runsOf(answers, "head", passed, passed, passed),
+];
+/** What part two's stand-in driver kept as NAME in `seen/` of the run's directory DIR. */
+const seen = (dir: string, name: string) => readFileSync(join(dir, "seen", name), "utf8");
+
 // A full run of both parts again, for where part two takes its model key from. Where the key file
 // holds a key, the run takes it, an audience named beside it or not, and mints nothing. Where it
 // holds none and APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names an audience, the run mints the
@@ -512,15 +642,8 @@ describe.skipIf(withoutGit)("the script's run of both parts", () => {
 // LEGION_TEST_PG_DSN, which the run reads by its name. With neither, the run is refused before
 // anything is built.
 describe.skipIf(withoutGit)("part two's model key", () => {
-  const fullRun = [
-    ...runsOf(a4, "head", passed, passed, passed),
-    ...runsOf(off, "head", passed, passed, passed),
-    ...runsOf(off, "base", failed, failed, failed),
-    ...runsOf(answers, "head", passed, passed, passed),
-  ];
   const identityRoute =
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=model-gateway-gce&format=full";
-  const seen = (dir: string, name: string) => readFileSync(join(dir, "seen", name), "utf8");
 
   test("is the key file's key where the file holds one, with an audience beside it, and nothing is minted", () => {
     const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {
@@ -660,5 +783,116 @@ describe.skipIf(withoutGit)("part two's model key", () => {
     expect(run.out).not.toContain("== plan");
     expect(existsSync(join(run.dir, "curl-calls"))).toBe(false);
     expect(run.last).toMatch(/^approved version news e2e: FAIL at arguments after \d+s \(/);
+  }, 60_000);
+});
+
+// Part one's negative control as the driver prints it on a daemon from before the change: the
+// control step's setup checks, as many as the script's control_setup_checks, each held, then its
+// one-approval check's failure in that check's own words.
+const controlStep = scriptValue("control_step");
+const controlDriver = [
+  `=== RUN   ${driverTest}`,
+  `== ${controlStep}`,
+  ...Array.from(
+    { length: Number(scriptValue("control_setup_checks")) },
+    (_, n) => `   assert ${controlStep}: setup check ${n + 1} held`
+  ),
+  `FAIL ${controlStep}: waited 2m0s for a task queued for the reviewer of AVQ1-1 behind its open turn; last seen: its claim holds no task`,
+  `--- FAIL: ${driverTest} (191.40s)`,
+  "FAIL",
+];
+
+/** Runs the script with --control and no --base-commit over lib/live-daemon-proof-fixture.ts's
+ * stand-ins, whose driver prints controlDriver, from a scratch checkout whose history HISTORY
+ * builds (scratchCheckout). It answers `code`, `out`, `last` and `commits` as bothPartsRun does. */
+function controlRun(history: History) {
+  const dir = scratch();
+  const env = liveDaemonStandIns(dir, { driverOutput: controlDriver });
+  for (const name of callerVariables) delete env[name];
+  const { checkout, commits } = scratchCheckout(dir, history);
+  env.APPROVED_VERSION_NEWS_EVIDENCE_DIR = join(dir, "evidence");
+  const result = Bun.spawnSync(
+    ["bash", join(checkout, "scripts", "e2e", "approved-version-news.sh"), "--control"],
+    { env }
+  );
+  const out = result.stdout.toString() + result.stderr.toString();
+  return { code: result.exitCode, out, last: out.trimEnd().split("\n").at(-1) ?? "", commits };
+}
+
+// The base part two's base arm and part one's negative control run against where no
+// --base-commit names one: the first parent of the first commit in HEAD's history that adds a news
+// mark. In a branch merged forward past main's commit that adds the marks, the base is that
+// commit's parent, which carries none, while the merge base of HEAD and origin/main, the base
+// before this rule, carries them: the first test shows both, so it fails on the old rule. A
+// history in which no commit adds a mark, and one cut where a shallow clone cuts it, are refused
+// with exit 2, naming the remedies.
+describe.skipIf(withoutGit)("the base", () => {
+  /** Each prompt file part two's stand-in driver was given as the base's, by its path in the copy
+   * it kept, with its text. */
+  const basePrompts = (dir: string) => {
+    const copy = join(dir, "seen", "base-prompts");
+    return Object.fromEntries(
+      readdirSync(copy, { recursive: true, encoding: "utf8" })
+        .filter((path) => statSync(join(copy, path)).isFile())
+        .map((path) => [path, readFileSync(join(copy, path), "utf8")])
+    );
+  };
+
+  test("is the parent of the first commit that adds a news mark, in a branch merged forward past it", () => {
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, mergedForward);
+    const { c0, c1, c2 } = run.commits;
+    // The test's own control: the old rule's base, the merge base of HEAD and origin/main, is c2,
+    // whose prompts carry the news marks, so a run on that rule fails every check below.
+    expect(git(run.checkout, "merge-base", "HEAD", "origin/main")).toBe(c2);
+    const mainPrompt = git(run.checkout, "show", `${c2}:${workerPrompt}`);
+    expect(newsMarks.length).toBeGreaterThan(0);
+    for (const mark of newsMarks) expect(mainPrompt).toContain(mark);
+    expect(run.code).toBe(0);
+    expect(run.out).toContain(
+      `\n   the base: ${c0}, the parent of ${c1}, the first commit that adds a news mark\n`
+    );
+    expect(seen(run.dir, "base-commit")).toBe(`${c0}\n`);
+    const prompts = basePrompts(run.dir);
+    expect(Object.keys(prompts).sort()).toEqual([reviewerPrompt, workerPrompt].sort());
+    for (const text of Object.values(prompts)) {
+      for (const mark of newsMarks) expect(text).not.toContain(mark);
+    }
+    expect(run.last).toMatch(/^approved version news e2e: PASS in \d+s \(/);
+  }, 60_000);
+
+  test("is refused with exit 2 where no commit in HEAD's history adds a news mark, naming the remedies", () => {
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, noMark);
+    expect(run.code).toBe(2);
+    expect(run.out).toContain(
+      `FAIL arguments: no commit in HEAD's history adds a news mark to ${promptsDir}, so this run finds no base for part one's control or part two's base arm: ${remedy}\n`
+    );
+    expect(run.out).not.toContain("== plan");
+    expect(run.last).toMatch(/^approved version news e2e: FAIL at arguments after \d+s \(/);
+  }, 60_000);
+
+  test("is refused with exit 2 where the clone lacks the parent of the first commit that adds a news mark", () => {
+    const run = bothPartsRun({}, { full: fullPlan }, fullRun, "PASS", {}, shallowAtMark);
+    expect(git(run.checkout, "rev-parse", "--is-shallow-repository")).toBe("true");
+    expect(run.code).toBe(2);
+    expect(run.out).toContain(
+      `FAIL arguments: ${run.commits.mark}, the first commit in HEAD's history that adds a news mark to ${promptsDir}, has no parent in this clone, so this run finds no base for part one's control or part two's base arm: ${remedy}\n`
+    );
+    expect(run.out).not.toContain("== plan");
+    expect(run.last).toMatch(/^approved version news e2e: FAIL at arguments after \d+s \(/);
+  }, 60_000);
+
+  test("is the same for part one's negative control, --control with no --base-commit", () => {
+    const run = controlRun(mergedForward);
+    const { c0, c1 } = run.commits;
+    expect(run.out).toContain(
+      `\n   the base: ${c0}, the parent of ${c1}, the first commit that adds a news mark\n`
+    );
+    expect(run.out).toContain(`\n   part one's negative control against ${c0}\n`);
+    expect(run.code).toBe(0);
+    expect(run.last).toMatch(
+      new RegExp(
+        `^approved version news e2e: control bites at ${controlStep} against ${c0} in \\d+s \\(assertions: \\d+/\\d+; part one alone, part two did not run, evidence: `
+      )
+    );
   }, 60_000);
 });

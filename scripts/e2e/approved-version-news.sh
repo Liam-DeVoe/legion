@@ -162,27 +162,37 @@
 # output (panes/) and each run's session transcripts (transcripts/). Nothing reaches github.com or
 # a deployed Dispatch.
 #
-# The base is the commit before this change: `git merge-base HEAD origin/main`, main's tip as this
-# branch last merged it, which holds everything this branch carries but its own change. That is the
-# base by default because main moves under the branch and each forward merge brings its changes
-# in: a fixed older commit would differ from the head by those too. The driver compiles there, and
-# its registeredStep refuses nothing A2 needs, since A2 registers its spec alone. The plan's own
+# The base is the newest commit that carries none of the head's news marks: the first parent of
+# the first commit, in HEAD's history, that adds a news mark to packages/daemon/internal/prompts
+# (news_base). The news marks are the sentences part two's driver reads a pane's prompt for to
+# tell the arms apart, every sessions…Mark constant of its file, and this script reads them from
+# there and keeps no copy of them. The base was `git merge-base HEAD origin/main` until #3995
+# merged: that change brought the news marks to main, so the merge base of a branch merged forward
+# past it carries #3995's own sentences, part two's driver refuses a base arm whose prompts carry
+# the head's mark, and part one's control passes there, so the merge base is no control. The base
+# no longer moves with main, so it differs from the head by main's later changes as well. The
+# driver compiles there, and its registeredStep refuses nothing A2 needs, since A2 registers its
+# spec alone. The base's Dispatch serves no PUT /api/v1/projects/{key}/default-repository, which
+# #4457 added after #3995, so the driver sets the project's default repository through the route
+# that Dispatch serves where it answers 404 (setDefaultRepository in its file). The plan's own
 # control runs used 2a6ff6c03269dc9377bf60f8f06e6682df55419e, the base before the forward merges.
 # Part two's base arm takes that commit's role prompt files (`git archive <base>
 # packages/daemon/internal/prompts/{roles,go}`), which its driver writes over the snapshot the
 # daemon takes at boot. So part two and the control need the checkout's history down to the base,
-# which a shallow clone lacks: the arguments check refuses a base it cannot find with exit 2.
+# which a shallow clone lacks: the arguments check refuses with exit 2 a history in which no commit
+# adds a news mark, or whose first such commit has no parent in the clone.
 #
 # --control runs part one's negative control against the base, and --base-commit <rev> against
-# <rev>: `git archive <rev> | tar -x` into a scratch tree under TMPDIR, this checkout's part-one
-# driver copied into it, and part one built and run there, daemon and Dispatch both of that
-# commit; nothing of this checkout is written. Either runs part one alone, since the control is
-# part one's. The run must fail at a2-the-reviewer-is-told-the-changed-sections, past that step's
-# setup checks, on the one-approval check after them, in that check's own words (control_failure
-# below): the script reports the control as biting then. It reports no control for a pass, a
-# failure in an earlier check or step, a build failure, a killed driver, a failure line that names
-# no step, and a failure at that step in other words, such as the line the driver prints when its
-# harness fails because the base daemon died.
+# <rev> in its place, with no search for the base (news_base): `git archive <rev> | tar -x` into a
+# scratch tree under TMPDIR, this checkout's part-one driver copied into it, and part one built and
+# run there, daemon and Dispatch both of that commit; nothing of this checkout is written. Either
+# runs part one alone, since the control is part one's. The run must fail at
+# a2-the-reviewer-is-told-the-changed-sections, past that step's setup checks, on the one-approval
+# check after them, in that check's own words (control_failure below): the script reports the
+# control as biting then. It reports no control for a pass, a failure in an earlier check or step,
+# a build failure, a killed driver, a failure line that names no step, and a failure at that step
+# in other words, such as the line the driver prints when its harness fails because the base
+# daemon died.
 #
 # Exit 0 is a pass, a control that bites, or a measurement that reached its end; exit 2 is an
 # input of the caller's the run refuses, here, in the plan check or in the lib's prerequisites;
@@ -201,6 +211,10 @@ driver_file=packages/daemon/internal/daemon/approved_version_news_live_test.go
 # the steps call the seed.
 steps_file=packages/daemon/internal/daemon/approved_version_news_part_one_steps_live_test.go
 seed_file=packages/daemon/internal/daemon/approved_version_news_seed_live_test.go
+# Part two's driver, whose sessions…Mark constants are the news marks news_base finds the base by,
+# and the prompts those marks are written in.
+sessions_file=packages/daemon/internal/daemon/approved_version_news_sessions_live_test.go
+prompts_dir=packages/daemon/internal/prompts
 driver_test=TestAnApprovedVersionReachesItsHolderLive
 sessions_test=TestRealSessionsTellAndAnswerANewVersionLive
 
@@ -383,6 +397,45 @@ check_jj() {
     fail "$jj --version printed '${said%%$'\n'*}', which names no release, so this run cannot tell its jj is 0.38 or later"
   ((BASH_REMATCH[1] > 0 || BASH_REMATCH[2] >= 38)) ||
     fail "$jj is jj ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}, below 0.38, the oldest jj the daemon's boot starts with"
+}
+
+# news_base sets base_sha to the base where no --base-commit names one: the first parent of the
+# first commit, in HEAD's history, that adds a news mark to prompts_dir, which is the newest commit
+# that carries none. The news marks are the text between the quotes of every sessions…Mark
+# constant of sessions_file, part two's driver; a driver that names none, or writes one with a
+# backslash or a quote in its text, fails the run. `git log -S<mark>` names each commit that adds
+# or removes a mark and skips merge commits, so a forward merge that brings a mark in from main is
+# never the commit found. Of those commits, the first in `git rev-list --topo-order --reverse HEAD`,
+# where each commit comes after its parents, has none of the others before it in its history. A
+# history in which no commit adds a mark, and a first such commit whose parent the clone lacks, as
+# at the edge of a shallow clone, are refused with exit 2, naming the remedies.
+news_base() {
+  local line marks=() mark found sha adders=() order first remedy
+  remedy="a shallow clone lacks that history: fetch it (git fetch --unshallow), or, for part one's control alone, name its base with --base-commit <rev>"
+  [ -r "$root/$sessions_file" ] || fail "this checkout holds no $sessions_file to read the news marks from"
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*(sessions[A-Za-z0-9_]*Mark)[[:space:]]*=[[:space:]]*\"(.*)\"[[:space:]]*$ ]] || continue
+    [[ "${BASH_REMATCH[2]}" != *[\\\"]* ]] ||
+      fail "$sessions_file writes the news mark ${BASH_REMATCH[1]} with a backslash or a quote in its text, which this script does not read"
+    marks+=("${BASH_REMATCH[2]}")
+  done <"$root/$sessions_file"
+  [ "${#marks[@]}" -gt 0 ] ||
+    fail "$sessions_file names no news mark (no sessions…Mark constant), so this run cannot find the base, the parent of the first commit that adds one"
+  for mark in "${marks[@]}"; do
+    found=$(git -C "$root" log --format=%H -S"$mark" HEAD -- "$prompts_dir") ||
+      fail "git log could not read the history of $root for the commits that add a news mark"
+    while IFS= read -r sha; do
+      [ -z "$sha" ] || adders+=("$sha")
+    done <<<"$found"
+  done
+  [ "${#adders[@]}" -gt 0 ] ||
+    refuse "no commit in HEAD's history adds a news mark to $prompts_dir, so this run finds no base for part one's control or part two's base arm: $remedy"
+  order=$(git -C "$root" rev-list --topo-order --reverse HEAD) || fail "git rev-list could not read the history of $root"
+  first=$(grep -m1 -Fx -f <(printf '%s\n' "${adders[@]}") <<<"$order") ||
+    fail "git rev-list HEAD lists none of the commits git log names as adding a news mark: ${adders[*]}"
+  base_sha=$(git -C "$root" rev-parse --verify --quiet "$first^1^{commit}") ||
+    refuse "$first, the first commit in HEAD's history that adds a news mark to $prompts_dir, has no parent in this clone, so this run finds no base for part one's control or part two's base arm: $remedy"
+  note "the base: $base_sha, the parent of $first, the first commit that adds a news mark"
 }
 
 # jwt_exp TOKEN prints the exp claim of the JWT TOKEN, the second it ends at, read from its payload
@@ -769,16 +822,17 @@ unset ANTHROPIC_API_KEY
 require_loopback_env db_host LEGION_TEST_PG_DSN "this run creates and drops databases there" ||
   refuse "$db_host"
 note "store LEGION_TEST_PG_DSN on $db_host (not printed)"
-# The base is read only by a run that uses it: the control, and part two's base arm.
+# The base is read only by a run that uses it: the control, and part two's base arm. It is the
+# commit --base-commit names, or else the one news_base finds.
 base_sha=''
 if [ -n "$control" ] || [ "$parts" = both ]; then
-  if [ -z "$base_commit" ]; then
-    base_commit=$(git -C "$root" merge-base HEAD origin/main 2>/dev/null) ||
-      refuse "no merge base of HEAD and origin/main, the base the control and part two's base arm run against: fetch main, or name the control's base with --base-commit <rev>"
+  if [ -n "$base_commit" ]; then
+    base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
+      refuse "the base '$base_commit' names no commit of $root"
+    note "the base: $base_sha"
+  else
+    news_base
   fi
-  base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
-    refuse "the base '$base_commit' names no commit of $root"
-  note "the base: $base_sha"
 fi
 for entry in "${part_one_checks[@]}"; do
   expected=$((expected + ${entry##*:}))
