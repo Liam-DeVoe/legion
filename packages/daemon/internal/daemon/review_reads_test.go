@@ -121,10 +121,15 @@ func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64
 // reviewReadRuntime is a workflow runtime over pool whose GitHub reads go to api, with the review
 // App's login set on the engine and the runtime as a boot sets both.
 func reviewReadRuntime(pool *store.Pool, api string) *workflowRuntime {
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, ReviewAppLogin: reviewReadApp}, quietLogger())
+	return reviewReadRuntimeLogging(pool, api, quietLogger())
+}
+
+// reviewReadRuntimeLogging is reviewReadRuntime whose engine and runtime both log to log.
+func reviewReadRuntimeLogging(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, ReviewAppLogin: reviewReadApp}, log)
 	return &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, engine: engine, handlers: []intake.Handler{engine},
-		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: quietLogger(), githubAPI: api, reviewAppLogin: reviewReadApp, repositories: servedAcme(),
+		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api, reviewAppLogin: reviewReadApp, repositories: servedAcme(),
 	}
 }
 
@@ -958,12 +963,20 @@ func TestAListedReviewOfXDecidesBesideTheFix(t *testing.T) {
 			api := reviewsStandIn(t, func() string {
 				return "[" + legionReview(5463503611, "APPROVED", pushedHead, "2026-10-08T22:15:40Z", captureHead) + "]"
 			}, &reads).URL
-			readCapture(t, reviewReadRuntime(pool, api))
+			var logs bytes.Buffer
+			readCapture(t, reviewReadRuntimeLogging(pool, api, slog.New(slog.NewTextHandler(&logs, nil))))
+			if got := reads.Load(); got != 1 {
+				t.Fatalf("the read read the pull request's reviews %d times, want once", got)
+			}
 			if got, _ := reviewerDecision(t, pool); got != tc.decision {
-				t.Fatalf("the round's recorded decision = %q, want %q", got, tc.decision)
+				t.Fatalf("the round's recorded decision = %q, want %q; the read logged:\n%s", got, tc.decision, logs.String())
 			}
 			if got, _ := capturePhase(t, pool); (got == phase.Reviewing) == tc.fix {
-				t.Fatalf("after the read CAPTURE-1 stands in %s; beside a fix %v, the approval of the commit the review step started at decides it", got, tc.fix)
+				t.Fatalf("after the read CAPTURE-1 stands in %s; beside a fix %v, the approval of the commit the review step started at decides it; the read logged:\n%s",
+					got, tc.fix, logs.String())
+			}
+			if refused := "footer names " + captureHead + ", not the head " + pushedHead; !tc.fix && !strings.Contains(logs.String(), refused) {
+				t.Fatalf("the read logged:\n%s\nwant the approval passed over as %q", logs.String(), refused)
 			}
 		})
 	}
