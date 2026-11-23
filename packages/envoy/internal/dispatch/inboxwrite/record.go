@@ -91,6 +91,10 @@ type Write struct {
 	// mentioned is, for a comment or a message, the login of each person a mention of its text
 	// newly names (ReachesMentioned), in the order the text first names them.
 	mentioned []string
+	// mentions is, for a comment or a message an older build wrote, the mentions tuple to each
+	// person its text names, and identities to each session and role, which RecordOlder appends
+	// under the write's event (Names).
+	mentions, identities []graphstore.Tuple
 	// unstored is a write whose head pointers the store holds no tuple of (Unstored).
 	unstored bool
 	// members are the thread's members as the write's own read phase read them (Members, or an
@@ -217,6 +221,21 @@ func mentionedLogins(indexed graphstore.Uncaused) []string {
 		}
 	}
 	return logins
+}
+
+// Names is w, a comment or an issue message an older build wrote, with the mentions tuples out of
+// its node to each identity its text names as refs' item index states them of this release's own
+// write of the same text (refs.ItemIdentityMentions), which that build stated none of: identities
+// to the sessions and roles, people to the persons. RecordOlder appends each under the write's
+// event; delivers the write to each person beside the people the old trigger raised the rows of
+// (ReachesMentioned, R2's mention arm), and has each person but its writer take part in its
+// thread's root (MentionParticipation, R4's): what this release's write of the text states of them
+// (api's createCommentFor and createStoredMessage). A session or a role a mention names is reached
+// by nothing of the record: a session is told of a write through its delivery routes and the
+// outbox, which the backfill's comment mention, attempt and published-delivery passes state.
+func (w Write) Names(identities, people []graphstore.Tuple) Write {
+	w.identities, w.mentions = identities, people
+	return w.ReachesMentioned(graphstore.Uncaused{People: people})
 }
 
 // MentionParticipation is R4's mention arm for the facts indexed states of one comment or message

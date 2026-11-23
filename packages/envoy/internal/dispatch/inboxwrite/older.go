@@ -3,6 +3,7 @@ package inboxwrite
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -37,7 +38,20 @@ func AnsweredBefore(askID, user string, at time.Time) Write {
 //     and the retraction of each dismissal the old trigger cleared by it: the dismissed tuple
 //     into the root of each person it reached, and for a session's reply to a message every
 //     person's (user_agent_thread_dismissed_clear), whose newest tuple asserts it at a moment
-//     before the write's.
+//     before the write's;
+//   - a comment or an issue message whose text names identities (Write.Names), first: the
+//     mentions tuple to each of them, as this release's write of the text states it - a session's
+//     and a role's, which reach nobody by themselves, and a person's; then, for the persons, with
+//     the deliveries above, one delivered_to to each of them but its writer whom the old trigger
+//     raised no row of (R2's mention arm, Record's step 3), their rows of the thread locked in the
+//     same ascending pass; and last the participates_in of each but its writer in the thread's
+//     root (MentionParticipation, R4's mention arm). A person among them who holds a row of the
+//     thread that is marked already, and whom the old trigger did not reach, began that row after
+//     the write, through this release's writer: the row's mark counts no delivery the write made,
+//     and one stated now would stand above it, so R6's equation would count it, and it takes
+//     none. A write the log holds no event of states no participation of theirs: a participation
+//     no mention explains under its own event is one the census holds to a row (graphcensus'
+//     mentioned_alone), which a mention keeps none of.
 //
 // Every tuple carries event, the older write's own, so the repeat key graph_tuples_once keeps one
 // copy beside the same tuple an answer's catch-up states first (owedBy). A declined ask takes
@@ -93,13 +107,46 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 	if err != nil {
 		return 0, err
 	}
+	var mentioned []string
+	for _, login := range w.mentioned {
+		if login != person && !slices.Contains(reached, login) {
+			mentioned = append(mentioned, login)
+		}
+	}
 	everyone := w.NodeKind == graphstore.KindMessage && authorKind == graphstore.KindSession && thread.id != w.NodeID
-	cleared, err := lockReachedAndReadCleared(ctx, tx, thread, w.At, reached, everyone)
+	cleared, joined, err := lockReachedAndReadCleared(ctx, tx, thread, w.At, reached, mentioned, everyone)
 	if err != nil {
 		return 0, err
 	}
+	if len(w.identities) > 0 {
+		identities := make([]graphstore.Tuple, 0, len(w.identities))
+		for _, mention := range w.identities {
+			mention.SourceEvent = event
+			identities = append(identities, mention)
+		}
+		if err := graphstore.Write(ctx, tx, nil, identities); err != nil {
+			return 0, fmt.Errorf("state the sessions and roles %s/%s names: %w", w.NodeKind, w.NodeID, err)
+		}
+		stated += len(identities)
+	}
+	if len(w.mentions) > 0 {
+		mentions := make([]graphstore.Tuple, 0, len(w.mentions)+len(people))
+		for _, mention := range w.mentions {
+			mention.SourceEvent = event
+			mentions = append(mentions, mention)
+		}
+		people = append(mentions, people...)
+	}
 	for _, login := range reached {
 		people = append(people, deliveredTo(w.NodeKind, w.NodeID, login, w.At, w.Who, event))
+	}
+	for _, login := range mentioned {
+		if !slices.Contains(joined, login) {
+			people = append(people, deliveredTo(w.NodeKind, w.NodeID, login, w.At, w.Who, event))
+		}
+	}
+	if event != graphstore.NoEvent {
+		people = append(people, MentionParticipation(thread.kind, thread.id, graphstore.Uncaused{People: w.mentions}, w.Who, w.At, event)...)
 	}
 	if err := graphstore.ToPerson(ctx, tx, people); err != nil {
 		return 0, fmt.Errorf("deliver %s/%s to who wrote in %s/%s before it: %w", w.NodeKind, w.NodeID, thread.kind, thread.id, err)
@@ -113,27 +160,34 @@ func RecordOlder(ctx context.Context, tx pgx.Tx, w Write, event int64) (int, err
 	return stated + len(cleared), nil
 }
 
-// lockReachedAndReadCleared takes the user_threads rows of thread that reached hold, and reads who
-// a write at `at` into thread ended a dismissal of, as two statements sent as one pgx batch: the
-// two hang on reached alone and not on each other, and a batch runs its statements in order, each
-// in a snapshot of its own, so the read still runs once the lock is held.
+// lockReachedAndReadCleared takes the user_threads rows of thread that reached and mentioned hold,
+// and reads who a write at `at` into thread ended a dismissal of and which of mentioned hold a
+// marked row of it, as statements sent as one pgx batch: they hang on reached and mentioned alone
+// and not on each other, and a batch runs its statements in order, each in a snapshot of its own,
+// so the reads still run once the lock is held.
 //
 // The lock takes the rows `for no key update` in ascending login order, before the deliveries to
 // those persons are appended (the lock rule Record's steps 2 to 4 hold): the row the backfill
 // marks later is then marked above each of those deliveries. A person who holds no row of the
-// thread - one whose thread's owner resolves to no project - locks nothing.
+// thread - one whose thread's owner resolves to no project - locks nothing. mentioned is the
+// people the write's text names whom the old trigger did not reach (RecordOlder), whose rows the
+// one pass takes beside the reached ones.
 //
-// The read answers who the write ended a dismissal of, as the old triggers cleared it: each person
-// of reached, or each person at all where everyone is set (a session's reply to a message, whose
-// root's Agent dismissals user_agent_thread_dismissed_clear deletes), whose newest dismissed tuple
-// into the thread's root asserts it at a moment before the write's. A dismissal stated at or after
-// the write is a later act, which the write did not end. It reads the store alone, sorted, each
-// login once.
-func lockReachedAndReadCleared(ctx context.Context, tx pgx.Tx, thread thread, at time.Time, reached []string, everyone bool) ([]string, error) {
-	locks := len(reached) > 0
+// The first read answers who the write ended a dismissal of, as the old triggers cleared it: each
+// person of reached, or each person at all where everyone is set (a session's reply to a message,
+// whose root's Agent dismissals user_agent_thread_dismissed_clear deletes), whose newest dismissed
+// tuple into the thread's root asserts it at a moment before the write's. A dismissal stated at or
+// after the write is a later act, which the write did not end. It reads the store alone, sorted,
+// each login once. The second, made only where mentioned names anybody, answers each of them whose
+// row of the thread is marked (marked_seq set, migration 20261116160000), sorted.
+func lockReachedAndReadCleared(ctx context.Context, tx pgx.Tx, thread thread, at time.Time, reached, mentioned []string, everyone bool) (cleared, joined []string, err error) {
+	held := slices.Concat(reached, mentioned)
+	slices.Sort(held)
+	held = slices.Compact(held)
+	locks := len(held) > 0
 	reads := locks || everyone
 	if !reads {
-		return nil, nil
+		return nil, nil, nil
 	}
 	batch := &pgx.Batch{}
 	if locks {
@@ -142,7 +196,7 @@ func lockReachedAndReadCleared(ctx context.Context, tx pgx.Tx, thread thread, at
 			where thread_id = $1::uuid and login = any($2::text[])
 			order by login
 			for no key update
-		`, thread.id, reached)
+		`, thread.id, held)
 	}
 	batch.Queue(`
 		select current.from_id from (
@@ -152,25 +206,40 @@ func lockReachedAndReadCleared(ctx context.Context, tx pgx.Tx, thread thread, at
 		where current.asserted and current.at < $5 and ($6::boolean or current.from_id = any($7::text[]))
 		order by 1
 	`, thread.kind, thread.id, graphstore.TupleDismissed, graphstore.KindPerson, at, everyone, reached)
+	if len(mentioned) > 0 {
+		batch.Queue(`
+			select login from user_threads
+			where thread_id = $1::uuid and login = any($2::text[]) and marked_seq is not null
+			order by login
+		`, thread.id, mentioned)
+	}
 	results := tx.SendBatch(ctx, batch)
 	defer results.Close()
 	if locks {
 		if _, err := results.Exec(); err != nil {
-			return nil, fmt.Errorf("lock the rows of thread %s/%s: %w", thread.kind, thread.id, err)
+			return nil, nil, fmt.Errorf("lock the rows of thread %s/%s: %w", thread.kind, thread.id, err)
 		}
 	}
 	rows, err := results.Query()
 	if err != nil {
-		return nil, fmt.Errorf("read the dismissals of %s/%s a write ended: %w", thread.kind, thread.id, err)
+		return nil, nil, fmt.Errorf("read the dismissals of %s/%s a write ended: %w", thread.kind, thread.id, err)
 	}
-	cleared, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the dismissals of %s/%s a write ended: %w", thread.kind, thread.id, err)
+	if cleared, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		return nil, nil, fmt.Errorf("read the dismissals of %s/%s a write ended: %w", thread.kind, thread.id, err)
+	}
+	if len(mentioned) > 0 {
+		rows, err := results.Query()
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the marked rows of %s/%s of the people a write names: %w", thread.kind, thread.id, err)
+		}
+		if joined, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+			return nil, nil, fmt.Errorf("read the marked rows of %s/%s of the people a write names: %w", thread.kind, thread.id, err)
+		}
 	}
 	if err := results.Close(); err != nil {
-		return nil, fmt.Errorf("lock the rows of thread %s/%s and read the dismissals a write ended: %w", thread.kind, thread.id, err)
+		return nil, nil, fmt.Errorf("lock the rows of thread %s/%s and read the dismissals a write ended: %w", thread.kind, thread.id, err)
 	}
-	return cleared, nil
+	return cleared, joined, nil
 }
 
 // reachedBefore is who a reply into thread at `at` by writer reached, by the rule of the trigger

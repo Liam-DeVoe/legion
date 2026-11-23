@@ -97,6 +97,41 @@ func statedMentions(tuples []graphstore.UncausedTuple) []graphstore.Tuple {
 	return mentions
 }
 
+// ItemIdentityMentions is the mentions tuple out of the comment or the message kind/itemID to each
+// identity its text body names, as the item index states one of this release's own write of that
+// text (PlanItemIndex, identityMentions): read off the references the text spells out, by the
+// grammar every indexing path reads (identityTargets), a person by their canonical login, an
+// agent's session by its id and a role by its token, a mention in a code context naming nobody;
+// refused to a node of visibility reserved for its author but for that author, and to an identity
+// past the store's bound; made by who, the node's maker, at `at`, the write's moment; and to none
+// of standing, the identities the store holds a mention of out of the node already. No identity's
+// address is a short id, a bare key or an `#id`, the forms a reader resolves against the database
+// (Reader.Mentions), or a page of the dashboard, so the references body writes out
+// (text.ExtractAt) name every identity the whole grammar names, whatever deployment it is read
+// for. It answers the tuples split by the writer that appends them - a session's and a role's
+// beside the node's other facts (graphstore.Write), a person's through graphstore.ToPerson - each
+// with no event: they are appended under the event of the write they belong to.
+//
+// The backfill reads it for a comment or an issue message an older build wrote, and for an edit
+// of a comment it made (graphcensus' commentPointersPass, messagesPass and its pass over the queue
+// of that build's events): that build states none of these tuples and stores no row of a
+// person's mention (TargetOf), so the item's own text is the one record of whom it names.
+func ItemIdentityMentions(kind ItemKind, itemID, visibility string, who model.Actor, at time.Time, body string, standing []Target) (identities, people []graphstore.Tuple) {
+	named := identityTargets(text.ExtractAt(body, ""))
+	if len(named) == 0 {
+		return nil, nil
+	}
+	held := make(map[Target]struct{}, len(standing))
+	for _, target := range standing {
+		if target.Kind == graphstore.KindPerson {
+			target.ID = model.CanonicalLogin(target.ID)
+		}
+		held[target] = struct{}{}
+	}
+	stated, people := identityMentions(string(kind), itemID, visibility, who, at, named, held)
+	return statedMentions(stated), people
+}
+
 // blockIdentityMentions plans the identity mentions of a document version's blocks: each
 // identity a reference of located names, from the innermost of nodes holding its start, as a
 // block's other mentions are placed (blockPairs), where that block is a node of the store (fits,

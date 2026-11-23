@@ -19,8 +19,9 @@ import (
 // through those indexes, which hold the owed rows alone in the order each pass walks them: the
 // user_threads rows whose marked_seq is null, the citations of an item whose tuples_stored is
 // false, the rows of the five other read-state tables whose tuples_stored_at is null, the
-// comment_mentions rows and the comments whose tuples_stored is false; and the published-delivery
-// pass reads the queue of what an older build's outbox recorded through its key. Without them,
+// comment_mentions rows and the comments whose tuples_stored is false, and the documents whose
+// identities_stated is false; and the published-delivery pass and the pass over an older build's
+// events read their queues (events_published_owed, events_inbox_owed) through their keys. Without them,
 // each tick that owes the catch-up read each of those tables whole (CatchUpOwedRows). The plan is
 // taken with sequential scans off, since a fixture's few rows are read fastest whole however the
 // statement is written; the index a plan then reads by is the one its predicate and its order let
@@ -41,6 +42,8 @@ func TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes(t *testing.T) {
 		"comment_pointers":            "comments_tuples_unstored",
 		"comments_past_bound":         "comments_tuples_unstored",
 		"published_destinations":      "events_published_owed_pkey",
+		"inbox_events":                "events_inbox_owed_pkey",
+		"block_identities":            "document_block_versions_identities_unstated",
 	}
 	read := map[string]bool{}
 	for _, pass := range rollPasses() {
