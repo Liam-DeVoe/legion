@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -186,9 +187,9 @@ func (r *ownerStepsRig) testerFirstRefused() string {
 func (r *ownerStepsRig) pullRequest() *record.PullRequest {
 	r.t.Helper()
 	var pr *record.PullRequest
-	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.TransactWith(context.Background(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		pr, err = r.records.PullRequest(context.Background(), tx, r.key)
+		pr, err = r.records.PullRequest(ctx, tx, r.key)
 		return err
 	}); err != nil {
 		r.t.Fatalf("read the pull request of %s: %v", r.key, err)
