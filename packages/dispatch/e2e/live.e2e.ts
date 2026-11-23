@@ -743,18 +743,15 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // landing carries those two counts and seeds them under the key the rail reads them by
     // (`seedShell`, `prioritySummaryQuery`), where the client's 30,000 ms `staleTime` leaves them
     // fresh, so the rail sends no read of its own on this load.
-    // The credential requests the Inbox counts are NOT in this set, and a measurement is why.
-    // The landing carries that list - this harness runs a broker, which answers it - and seeds
-    // it under this route's own key (`seedShell`), where the client's 30,000 ms `staleTime`
-    // (`web/src/main.tsx`) leaves it fresh, so no reader of it fetches on mount. The read that
-    // used to stand in this set arrived 15.8 s and 16.0 s after the load in two measured runs of
-    // this row: the first tick of that list's own 15-second poll, which is the cadence the agent
-    // registry polls on as well. The fifteen-second wait this row used to end on took whichever
-    // of those two ticks reached it first, which is how `/api/v1/agents` joined a set the load
-    // never asked for (dispatch://INFRA-1109). A Dispatch whose landing answers null for the
-    // list leaves that key unseeded, and its own fresh load does read this route, since nothing
-    // but the route tells "could not read it" from "nothing to read"; that is a deployment with
-    // no secrets broker, which this harness is not.
+    // The credential requests the Inbox counts are NOT in this set either. The landing carries
+    // that list - this harness runs a broker, which answers it - and seeds it under this route's
+    // own key (`seedShell`), where the client's 30,000 ms `staleTime` (`web/src/main.tsx`) leaves
+    // it fresh, so no reader of it fetches on mount. The list's own poll reads it again every 15
+    // seconds, the cadence the agent registry polls on as well, and the page's paused clock
+    // (above) never reaches that tick: it is the poller's, not the load's. A Dispatch whose
+    // landing answers null for the list leaves that key unseeded, and its own fresh load does
+    // read this route, since nothing but the route tells "could not read it" from "nothing to
+    // read"; that is a deployment with no secrets broker, which this harness is not.
   ].sort();
   // The tail of the load waits on a timer of the page as well: the read mark rides the reader's
   // dwell on the newest card (`DWELL_MS`), and the event read and the viewer-state read that

@@ -914,10 +914,11 @@ test("another tab's sign-out that lands while the take-up waits drops the write 
   );
 });
 
-// Before the take-up begins - while the sign-in check the page loaded with is still out, so the
-// app has not called `resume` - the writes the reload kept are in the tab's storage alone.
-// Another tab's sign-out of their person asks this tab what it would discard (`unsent`), and its
-// landing here (`dropLogin`) discards them: the person's next sign-in takes none of them up.
+// Before the take-up begins - while the sign-in check the page loaded with is still out, or on a
+// page that loaded signed out, so the app has not called `resume` - the writes the reload kept are
+// in the tab's storage alone. Another tab's sign-out of their person asks this tab what it would
+// discard (`unsent`), and its landing here (`dropLogin`) discards them: the person's next sign-in
+// takes none of them up.
 test("another tab's sign-out before the take-up begins names the write the reload kept, and its landing drops it unsent", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();

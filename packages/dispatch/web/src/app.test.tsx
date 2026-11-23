@@ -14,12 +14,13 @@ import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser, LandingResponse } from "./api/types";
 import { AuthGate } from "./app";
 // The Answers, document and project pages are lazy routes of the app, the Inbox it draws at `/` a
-// chunk of its own (`features/inbox/InboxHost.tsx`), and the margin and the reference preview lazy
-// parts of its shell (`MarginColumn.tsx`, which mounts the margin on every route, and
-// `features/refs/RefPreviewLayer.tsx`, which mounts the card's host once the page has drawn). A
-// page module's first compile is not what a wait is for, and a load a row starts and ends before
-// lands in a later row as React's report of a suspended resource outside `act`. So the modules are
-// loaded here, with the test file, and no row starts or waits for that load.
+// chunk of its own (`features/inbox/InboxHost.tsx`), the margin a lazy part of its shell
+// (`MarginColumn.tsx`, which mounts the margin on every route), and the reference preview a chunk
+// its layer draws through `chunkComponent`, with no `Suspense`, once the page has drawn
+// (`features/refs/RefPreviewLayer.tsx`). A page module's first compile is not what a wait is for,
+// and a load a row starts and ends before lands in a later row: as React's report of a suspended
+// resource outside `act` for a lazy part, and as a state set outside `act` for the preview layer.
+// So the modules are loaded here, with the test file, and no row starts or waits for that load.
 import "./features/answers/AnswersPage";
 import "./features/document/DocumentPage";
 import "./features/inbox/inbox-chunk";

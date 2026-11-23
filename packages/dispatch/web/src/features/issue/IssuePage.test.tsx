@@ -232,8 +232,9 @@ function stubIssuePage(
   api.listAgents = async () => agents;
   api.getIssueSubscribers = async () => subscribers;
   // The header reads the shared project list to learn which design-gate steps the project
-  // gates; a list without this issue's project gates nothing, which is the one chip these
-  // tests assert.
+  // gates, and its repository control (`RepoControl`) reads it for the project's default
+  // repository: a list without this issue's project gates nothing, which is the one chip these
+  // tests assert, and suggests no repository.
   api.listProjects = async () => [];
   return () => {
     api.getIssue = originalGetIssue;

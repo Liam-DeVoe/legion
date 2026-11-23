@@ -373,8 +373,9 @@ func (s *server) getLanding(w http.ResponseWriter, r *http.Request) {
 //   - A part read once the request's own context had ended (ctx is the request's): the page went
 //     away, and every part not yet read fails on that alone. The head read above the parts skips
 //     such a request for the same reason (getLanding). Logged, one closed tab would write a line
-//     for each part the landing had not reached: eight from one issue landing cancelled at its
-//     first listener read, which TestLandingWarnsOfNoPartACancelledRequestLeftOut refuses.
+//     for each part the landing had not reached, as many as the landing's timing left unread,
+//     which TestLandingWarnsOfNoPartACancelledRequestLeftOut refuses for an issue landing
+//     cancelled at its first listener read.
 //
 // Every other failure is logged: a service's refusal, a query that failed, a broker answer that
 // did not decode. A part whose service did not answer within landingServiceBound is logged once,

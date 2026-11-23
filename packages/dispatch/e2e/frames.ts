@@ -79,8 +79,8 @@ export interface Viewport {
  * a load, the shell held a column for it that narrowed the page (381b29ad), which a resize, with
  * the chunk long in, never showed. The rule is the walks' alone: rows that set the viewport
  * themselves (`page.setViewportSize`) resize across a breakpoint too, in `issue-page-d.e2e.ts`,
- * `issue-page-g.e2e.ts`, `issue-page-k.e2e.ts` and `issue-page-p.e2e.ts` itself, and are not
- * listed here.
+ * `issue-page-g.e2e.ts`, `issue-page-i.e2e.ts`, `issue-page-k.e2e.ts` and `issue-page-p.e2e.ts`
+ * itself, and are not listed here.
  *
  * Three walks, all in `issue-page-p.e2e.ts`, cross one by a resize, each where nothing it reads
  * after the resize turns on how the page reached the width:
