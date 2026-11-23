@@ -3106,8 +3106,8 @@ package api
 // than from this line.)
 //
 // 222: a claim of `GET /legion/v1/state`'s `strandedClaims` names its claim token in a new key,
-// `strandedClaims.*.token`. Two claims of one issue can hold one role, a keyed agent's on another
-// role's step among them, so the issue and the role no longer name one claim; the boot's log line
+// `strandedClaims.*.token`. Two claims of one issue can hold one role (record.WorkerClaim), so the
+// issue and the role no longer name one claim; the boot's log line
 // and `legion state` read who suspended each stranded claim by that token (api.Suspenders), so
 // each takes the move its own suspender calls for. A caller whose contract is below 222 is served
 // each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): a
@@ -3123,8 +3123,8 @@ package api
 // claim view of the state and of the issue record names its claim's token, `token`
 // (api.ClaimView), and an issue lists each claim neither its `architect` nor its `workers` shows,
 // with its role, in `otherClaims` (api.Issue.OtherClaims): `workers` holds one entry per role, so
-// the other claim of a role a keyed agent works the step of was absent from the state. A caller
-// below 222 is served the issues without either (withoutClaimTokens). A row a pause holds
+// a second claim of one role was absent from the state. A caller below 222 is served the issues
+// without either (withoutClaimTokens). A row a pause holds
 // (api.PauseHeldView) that names no claim, a merge-queue message or a row the release before
 // wrote, names in `claim` the worker on its role's step, the claim its executor reaches, where it
 // named the role's own token; the key and its shape are unchanged, so every contract is served

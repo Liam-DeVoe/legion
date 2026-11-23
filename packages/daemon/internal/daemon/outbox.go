@@ -3182,9 +3182,7 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 // machine only while the claim still stands in payload.Tree, waits for a stored claim in that tree
 // until its machine is available, and otherwise finishes without acting. The claim is the one the
 // row names, else the claim of the worker on the role's step (workerToken), as reservedTreeClose
-// reads it: two claims of one issue can hold one role — a second agent of the role in a task,
-// `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of another role,
-// beside that role's own claim of an earlier version of the plan — so the role's own token
+// reads it: two claims of one issue can hold one role (record.WorkerClaim), so the role's own token
 // could stop the other one, or wait for its machine, and leave this claim running in the old tree.
 // This row and a new-tree start run on the issue's lifecycle lane, so the claim cannot be
 // re-pointed between this check and the suspension. A stop this call completes wakes the old
@@ -4000,8 +3998,8 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 // slot's launcher, Secret and volumes and the role's own pod resources, its role_config_files
 // overlays among them, and a launch into a pod that lacks either would replace it, ending every
 // agent in it and taking the issue's disk with everything they did not push. A keyed agent's slot
-// and its step's role can be two names. It answers a wait, whose text begins with
-// pods.StartWaitsForPodPrefix, names what the pod lacks (runtime.PodLacks), and is
+// and its step's role can be two names, as can a second agent's. It answers a wait, whose text
+// begins with pods.StartWaitsForPodPrefix, names what the pod lacks (runtime.PodLacks), and is
 // runtime.ErrAwaitsPodUpdate too, and the row tries again on its own backoff; once the pod is gone
 // — released, or replaced by its update round, which a pod without a slot of its plan opens by its
 // drift — the start creates the claim, whose launch builds the new pod with every slot. A runtime
@@ -4242,9 +4240,8 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 // the latest pause ended, or in a project no pause has ended, keeps the bound its row was due at.
 // The pause is read as admit's readStallFloor reads it (store.OpenOrLastPauseTx), with the claim
 // of the look, in one transaction: the claim the look's start reaches, the worker on the check
-// role's step (record.ReadWorkerClaim), since two claims of one issue can hold one role — a second
-// agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of a key on
-// a step of another role, beside that role's own claim — and the other's ready says
+// role's step (record.ReadWorkerClaim), since two claims of one issue can hold one role, and the
+// other's ready says
 // nothing of when the look's claim could take a turn. While the project is paused the row is held
 // and does not run, so a pause read open here began after the row was claimed, and the row ends
 // the look as it would have.

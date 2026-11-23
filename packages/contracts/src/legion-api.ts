@@ -665,8 +665,8 @@ const legionPendingStatusWrite = z.object({
 /** `api.StrandedClaim` — one claim nothing will wake (`workflow.Stranded`): a worker of its issue's
  * phase, or its tree's architect, in a tree that runs, named by its issue, its role, its state and
  * its claim `token`; the issue's entry under `issues` carries the rest. Two claims of one issue can
- * hold one role, a keyed agent's on another role's step among them, so the token is what tells them
- * apart, and a reader of who suspended a claim reads it by that token. Its state, role and
+ * hold one role (`record.WorkerClaim`), so the token is what tells them apart, and a reader of who
+ * suspended a claim reads it by that token. Its state, role and
  * suspension say the move that brings it back (`api.StrandedClaim.Move`). A `retired` entry is a
  * claim a close or a stop retired while its tree runs: only a start of the phase it owns relaunches
  * it, and no rule the daemon runs queues that start, so nothing will wake it either. That state
@@ -794,8 +794,8 @@ const legionIssue = z.object({
   architect: legionClaimView.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
   /** `api.Issue.OtherClaims` — each claim of the issue that neither `architect` nor `workers`
-   * shows, with the role it holds (contract 222): the other claim of a role a keyed agent works the
-   * step of, found by its token. */
+   * shows, with the role it holds (contract 222): two claims of one issue can hold one role
+   * (`record.WorkerClaim`), and the one `workers` does not show is listed here by its token. */
   otherClaims: z.array(z.object({ role: stepRole, claim: legionClaimView })).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
@@ -1538,7 +1538,7 @@ export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
  * claims it suspended (each once, sorted, as the store holds them), the tokens of those claims
  * (`claims`, sorted; contract 222), when the release completed, and the size of the git bundle of
  * unpushed work it saved, zero when the workspace held none. Two claims of one issue can hold one
- * role, a keyed agent's on another role's step among them, so `claims` names what `roles` cannot;
+ * role (`record.WorkerClaim`), so `claims` names what `roles` cannot;
  * it is absent on a release that suspended no claim and on one recorded before contract 222.
  * `roles` is required because `read_release_records` reads it: the empty list is the whole mark
  * of a release no wake can reach, which that report counts and measures nowhere, and the daemon

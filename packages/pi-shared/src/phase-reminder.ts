@@ -257,9 +257,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * names, the role that works it is the issue's `stepRole`, a role of the deployment — when
    * another claim of this role works the role's step, and when the daemon has failed this claim,
    * which is the daemon's own word that this process is finished. Two claims of one issue can hold
-   * one role — the agent of a key on a step of another role, beside that role's own claim of an
-   * earlier version of the plan — and only the worker on the step, the claim the record names by
-   * its token under `workers` (contract 222), works the phase: the other claim is not reminded, so
+   * one role (the daemon's `record.WorkerClaim`), and only the worker on the step, the claim the
+   * record names by its token under `workers` (contract 222), works the phase: the other claim is
+   * not reminded, so
    * it never reaches the architect as that role's worker. A record that names no token, from a
    * daemon below 222, keeps the role's rule. A claim the daemon failed runs no further turn in
    * this process — its retry relaunches this session in a new process, or starts a new session

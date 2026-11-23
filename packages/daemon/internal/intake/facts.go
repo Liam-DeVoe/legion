@@ -1388,11 +1388,9 @@ func (f CloseRoot) Message() string {
 type ClaimFailed struct {
 	Issue string
 	Role  claim.Role
-	// Claim is the token of the claim that failed. Two claims of one issue can hold one role — a
-	// second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of
-	// a key on a step of another role, beside that role's own claim of an earlier version of the
-	// plan — so the role does not name the claim: only the failure of the claim that works
-	// the role's step holds the issue, and only the failure of a look's claim ends that look
+	// Claim is the token of the claim that failed. Two claims of one issue can hold one role
+	// (record.WorkerClaim), so the role does not name the claim: only the failure of the claim that
+	// works the role's step holds the issue, and only the failure of a look's claim ends that look
 	// (workflow's claimFailed). It is "" on a fact from a daemon before the claim was carried,
 	// which keeps the role's rule.
 	Claim        claim.Token
@@ -2147,10 +2145,8 @@ func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token,
 
 // StepsWorkerFence is the 409 HANDOFF_NOT_THE_STEPS_WORKER refusal of a completion by token, a
 // claim of role on issue, of a step whose run's row names another claim, holder, on a step of the
-// plan (stepTask), and nil where token works the step. Two claims of one issue can hold one role —
-// a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of
-// a key on a step of another role, beside that role's own claim of an earlier version of the
-// plan — and the row names the one that works its step (record.WorkerClaim), so a completion
+// plan (stepTask), and nil where token works the step. Two claims of one issue can hold one role,
+// and the row names the one that works its step (record.WorkerClaim), so a completion
 // from the other is no report of the step. A row of no step (stepTask "") or one that names no
 // claim names no worker, and a completion that names no claim, from a route before the claim was
 // carried, is judged by its role. A completion of an entry token's own claim served (served,

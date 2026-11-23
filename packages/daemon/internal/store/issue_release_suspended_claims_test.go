@@ -8,9 +8,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Two claims can hold one role of an issue: the second agent of a role (`…-implementer-2`), or a
-// keyed agent beside its role's own claim. The release's mark records the token of each claim its
-// stops suspended (issue_releases.suspended, 20261122102933), and the check that the pod went on
+// Two claims of one issue can hold one role (record.WorkerClaim). The release's mark records the
+// token of each claim its stops suspended (issue_releases.suspended, 20261122102933), and the check
+// that the pod went on
 // working after the mark reads those tokens: a claim of the same role that this release did not
 // suspend — here `…-implementer-2`, which the daemon suspended for a stop of its step — is no claim
 // the release suspended and something resumed since, so it cancels nothing, at every idle release

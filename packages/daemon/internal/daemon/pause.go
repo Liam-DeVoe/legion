@@ -533,10 +533,8 @@ func pauseStopClaimOf(c supervise.Claim) store.PauseStopClaim {
 //   - failed or retired, or no machine at all: the stop row ends `failed`.
 //
 // The claim is the one the row names (record.SuperviseRequest.Claim, pause.StopRow): two claims of
-// one issue can hold one role — a second agent of the role in a task, `…-implementer-2` beside
-// `…-implementer`, or the agent of a key on a step of another role, beside that role's own claim
-// of an earlier version of the plan — so the role alone would stop the other one, or no
-// machine, and leave the claim the pause asked to stop running and its stop row open. A row the
+// one issue can hold one role (record.WorkerClaim), so the role alone would stop the other one, or
+// no machine, and leave the claim the pause asked to stop running and its stop row open. A row the
 // release before wrote names no claim, and stops the claim of the worker on the role's step
 // (workerToken), as every other executor reaches the claim of a row that names a role alone, of the
 // row's issue, or, on a row keyed by the project, of the issue its payload names

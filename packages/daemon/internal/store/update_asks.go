@@ -19,9 +19,7 @@ import (
 // without this read every sweep between the enqueue and that mark would enqueue the claim again.
 //
 // A row is read by the claim it names (record.UpdateAsk.Claim): two claims of one issue can hold
-// one role — a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or
-// the agent of a key on a step of another role, beside that role's own claim of an earlier
-// version of the plan — and the one's ask in flight is no ask of the other. A row the
+// one role (record.WorkerClaim), and the one's ask in flight is no ask of the other. A row the
 // release before wrote names no claim, and stands for each claim of its role.
 //
 // One read answers for every claim of the issue, and it reads the outbox through its issue index

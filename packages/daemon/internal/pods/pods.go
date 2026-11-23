@@ -38,10 +38,8 @@ const (
 // activity route alone and are deliberately absent from the claim insert's conflict update, so a
 // machine's in-memory claim shows their zero values until the claim is read again.
 type IdleClaim struct {
-	// Token is the claim's token, which names its agent: a release suspends each live claim by
-	// it, since two claims of the pod can hold one role (a second agent of the role in a task,
-	// `…-implementer-2` beside `…-implementer`, or a keyed agent on a step of another role,
-	// beside that role's own claim from an earlier version of the plan).
+	// Token is the claim's token, which names its agent: a release suspends each live claim by it,
+	// since two claims of one issue can hold one role (record.WorkerClaim).
 	Token          claim.Token
 	Role           claim.Role
 	State          supervise.ClaimState
@@ -175,9 +173,7 @@ type IdleView struct {
 	// Phases is each role's phases row of the issue as the record holds it, keyed by the row's
 	// role: the claim the row names and the task of the plan's step it runs. The worker of the open
 	// phase is read from it as every reader of a role's worker reads it, through record.WorkerClaim
-	// (workflow's idlePhaseOpen): two claims of one issue can hold one role — a second agent of the
-	// role in a task, `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of
-	// another role, beside that role's own claim of an earlier version of the plan — and
+	// (workflow's idlePhaseOpen): two claims of one issue can hold one role, and
 	// only one of them works the role's phase. This package sits below record, so the view carries
 	// the row's fields rather than the rule.
 	Phases map[claim.Role]IdlePhase

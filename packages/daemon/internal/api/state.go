@@ -766,10 +766,8 @@ type Issue struct {
 	Workers map[claim.Role]PhaseView `json:"workers"`
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
 	// with the role it holds, in token order, and absent where there is none (contract 222). Two
-	// claims of one issue can hold one role — the agent of a key on a step of another role,
-	// beside that role's own claim of an earlier version of the plan, or a second agent of one
-	// role, `implementer-2`, beside the first — and `workers` holds one entry per role, so a
-	// reader finds the other one here, by its token (ClaimView.Token).
+	// claims of one issue can hold one role (record.WorkerClaim), and `workers` holds one entry per
+	// role, so a reader finds the other one here, by its token (ClaimView.Token).
 	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
 	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
 	DesignGate  *GateView        `json:"designGate,omitempty"`
@@ -1676,9 +1674,8 @@ type HeldOutboxRow struct {
 
 // StrandedClaim is one claim nothing will wake — a worker of its issue's phase, or its tree's
 // architect, in a tree that runs — named by its issue, its role, its state and its claim token;
-// the issue's own entry under `issues` carries the rest. Two claims of one issue can hold one
-// role, the claim of a second agent of the role in a task (`…-implementer-2`) and a keyed agent's
-// on another role's step among them, so the token is what tells them apart;
+// the issue's own entry under `issues` carries the rest. Two claims of one issue can hold one role
+// (record.WorkerClaim), so the token is what tells them apart;
 // a caller below strandedTokenContract, which knows no `token`, is served each entry without it
 // (shaping.go's withoutStrandedTokens).
 // Its state, its role and who suspended it say the move that brings it back (Move), and that

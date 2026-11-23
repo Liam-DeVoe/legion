@@ -1977,12 +1977,10 @@ func workingClaims(group []supervise.Claim) []string {
 // backgroundHold is the background hold over a round's pod replacement
 // (dispatch://INFRA-4203 R1) as backgroundClaims reads it: running is each claim whose activity
 // report names background work that runs, with the kinds that report names, and unreported is
-// each claim that has sent no report since its last turn started, in the group's order. Each
-// claim is named by its agent (heldName), which names one claim of the issue: two claims can hold
-// one role — a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the
-// agent of a key on a step of another role beside that role's own claim — and the one's kinds are
-// not the other's. It holds the replacement when it names a claim; the zero value
-// names none.
+// each claim that has sent no report since its last turn started, in the group's order. Each claim
+// is named by its agent (heldName), which names one claim of the issue: two claims of one issue can
+// hold one role (record.WorkerClaim), and the one's kinds are not the other's. It holds the
+// replacement when it names a claim; the zero value names none.
 type backgroundHold struct {
 	running    map[string][]string
 	unreported []string

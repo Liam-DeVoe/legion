@@ -130,8 +130,9 @@ export function assertLegionProjectToken(project: string): void {
 }
 
 /** The claim token of the agent named for `role` on `issue`, byte for byte the Go daemon's
- * `claim.NewToken`: the role's own claim, which a step of no key runs in. A keyed agent's token
- * ends in its own name, the role of its first step, whatever role its step is on now. A role
+ * `claim.NewToken`: the role's own claim, which a step of no key runs in unless its agent is a
+ * second agent of the role, whose claim has a name of its own (`implementer-2`). A keyed agent's
+ * token ends in its own name, the role of its first step, whatever role its step is on now. A role
  * outside the step grammar (`isStepRole`), the controller's among them, is refused as Go refuses
  * it. */
 export function roleToken(project: string, issue: IssueKey, role: LegionStepRole): string {

@@ -445,12 +445,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
 	//
 	// Who completed is in the key by its role, and by its claim's agent where that is not the role
-	// (completionWho): two claims of one issue can hold one role — a second agent of the role in a
-	// task, `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of another
-	// role, beside that role's own claim of an earlier version of the plan — and the same report
-	// from each is a fact of its own, so the workflow's refusal of the one recorded under the
-	// key never answers the other's completion as its duplicate. A role's own claim keeps the key
-	// it had.
+	// (completionWho): two claims of one issue can hold one role (record.WorkerClaim), and the same
+	// report from each is a fact of its own, so the workflow's refusal of the one recorded under
+	// the key never answers the other's completion as its duplicate. A role's own claim keeps the
+	// key it had.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)

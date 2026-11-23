@@ -473,9 +473,8 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // notice: in an outage every claim's turns fail, each claim owes a notice of its own, and the
 // machine tells at exactly the sixth turn in a row, so a notice dropped because another claim's
 // still waited would never be sent. Two claims of one issue, an architect and its worker, or two
-// claims that hold one role (a second agent of the role in a task, `…-implementer-2` beside
-// `…-implementer`, or a keyed agent on a step of another role, beside that role's own claim), are
-// two such claims, which is why the claim is the key. The tree-stalled notice names
+// claims that hold one role (record.WorkerClaim), are two such claims, which is why the claim is
+// the key. The tree-stalled notice names
 // no claim and no role, which keys it by its issue alone: a claim and a role that are empty are
 // terms the pending read leaves out.
 //
@@ -2701,8 +2700,9 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 		// Every other stored claim of the member comes back with the tree, on a start that names it
 		// with its stored role (record.Store.IssueClaims): one claim gets one start, and no row of
-		// this walk names a role alone, whose claim a keyed agent can share with another role. A
-		// claim row is the durable record that a claim has run, so a role that never ran gets
+		// this walk names a role alone, which does not name one claim: two claims of one issue can
+		// hold one role (record.WorkerClaim). A claim row is the durable record that a claim has
+		// run, so a role that never ran gets
 		// nothing. The tree's architect is promotion's own start, with the task that hands it its
 		// tree; a member's own sub-architect is no phase worker and comes back with the rest.
 		stored, err := a.store.IssueClaims(ctx, tx, project, member.Key)

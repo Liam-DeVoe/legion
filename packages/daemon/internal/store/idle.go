@@ -612,10 +612,9 @@ type releasedRole struct {
 
 // stillReleasedClaims are the claims among suspended, the tokens of the claims a release's own
 // stops suspended (issue_releases.suspended), that are still suspended as `released`, in token
-// order. Two claims can hold one role — a second agent of the role in a task, `…-implementer-2`
-// beside `…-implementer`, or a keyed agent on a step of another role, beside that role's own
-// claim from an earlier version of the plan — and only the ones the release suspended
-// are its to resume: another claim of the role an earlier release left released is not.
+// order. Two claims of one issue can hold one role (record.WorkerClaim), and only the ones the
+// release suspended are its to resume: another claim of the role an earlier release left released
+// is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil

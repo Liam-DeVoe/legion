@@ -1544,9 +1544,10 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 	// re-admitted tree keeps its generation, its plan and its task's place, so its rows keep their
 	// steps, a row for each step a role ran, each naming the claim of the step's agent its entry
 	// wrote, which every reader of the role's worker reads (WorkerClaim) and every start of that step
-	// names (workflow's stepReach). A row of no step would be read as the role's own token while the
-	// member's step is a keyed agent's, so a retry of a held member's phase would queue the step's
-	// work for its agent and every reader would send it to another.
+	// names (workflow's stepReach). A row of no step would be read as the role's own token while
+	// the member's step is a keyed agent's or a second agent's of the role, so a retry of a held
+	// member's phase would queue the step's work for its agent and every reader would send it to
+	// another.
 	//
 	// A role of that issue that stood at two steps has a row for each, and the statement after the
 	// fold gives every row of the role the same step, ('', 0), so the rows of one role fold first
@@ -2462,10 +2463,8 @@ var liveClaimStates = []string{
 
 // RoleHolder is one live claim of an issue, the role it holds and the session that holds it:
 // Claim is the claim's token, and WorksStep whether the claim is the worker on its role's step
-// (WorkerClaim), the claim the record gives the step. Two claims of one issue can hold one role —
-// a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the agent of
-// a key on a step of another role, beside that role's own claim of an earlier version of the
-// plan — and each is a holder of its own.
+// (WorkerClaim), the claim the record gives the step. Two claims of one issue can hold one role,
+// and each is a holder of its own.
 type RoleHolder struct {
 	Role      claim.Role
 	Session   string
@@ -3502,9 +3501,7 @@ type IssueClaim struct {
 
 // IssueClaims is every stored claim of issue in project, the claims' project token as
 // claims.project holds it, in any state, with its stored role and the agent of its session,
-// ordered by token. Two claims of an issue can hold one role — a second agent of the role in a
-// task, `…-implementer-2` beside `…-implementer`, or a keyed agent on a step of another role,
-// beside that role's own claim from an earlier version of the plan — so a walk over every
+// ordered by token. Two claims of one issue can hold one role (WorkerClaim), so a walk over every
 // claim of an issue reads them here rather than one claim for each role.
 func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error) {
 	rows, err := tx.Query(ctx, `select token, role, session_agent from claims where project = $1 and issue = $2 order by token`, project, issue)
@@ -3538,10 +3535,8 @@ func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, is
 
 // roleRunIdentity is a candidate role run as an outbox supervise row names it: its issue, and the
 // payload's role and generation exactly as Postgres renders them (`payload->>'role'`,
-// `payload->>'generation'`), so a row is matched before it is decoded. Two claims can hold one
-// role of an issue at one generation — a second agent of the role in a task, `…-implementer-2`
-// beside `…-implementer`, or the agent of a key on a step of another role, beside that role's own
-// claim of an earlier version of the plan — so one identity can stand for several keys.
+// `payload->>'generation'`), so a row is matched before it is decoded. Two claims of one issue can
+// hold one role (WorkerClaim) at one generation, so one identity can stand for several keys.
 type roleRunIdentity struct {
 	issue      string
 	role       string
@@ -3620,9 +3615,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 		// A row that names a claim (SuperviseRequest.Claim) is that claim's alone, read as a run
 		// of that claim where keys ask for it at the row's issue, role and generation: every
-		// phase worker's start names the claim it was queued for, and two claims can hold one
-		// role — two agents of a role in one task, or a keyed agent on a step of another role
-		// beside the role's own claim — so a start of one is no queued run of the other, whichever
+		// phase worker's start names the claim it was queued for, and two claims of one issue can
+		// hold one role (WorkerClaim), so a start of one is no queued run of the other, whichever
 		// of them keys ask for that role by. A row that names none, one the release before wrote,
 		// is the run of the claim it reaches, the worker on its role's step.
 		wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]

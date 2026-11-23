@@ -117,8 +117,9 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 	requireHeldRole(t, database, issue, "ses-b", "tester")
 }
 
-// Two claims of one issue can hold one role: the agent of a key on the tester's step, beside the
-// tester's own claim of an earlier version of the plan. The daemon publishes the session of each,
+// Two claims of one issue can hold one role (the Legion daemon's record.WorkerClaim): here the
+// agent of a key on the tester's step, beside the tester's own claim of an earlier version of the
+// plan. The daemon publishes the session of each,
 // with the claim it holds the role by and whether that claim works the role's step, and Dispatch
 // stores both: each session holds the role, the set reads back with both, and a later set that
 // names one of them leaves the other's session with no role.

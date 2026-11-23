@@ -1103,10 +1103,8 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	if err != nil {
 		return intake.Result{}, err
 	}
-	// Two claims of one issue can hold one role — a second agent of the role in a task,
-	// `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of another role,
-	// beside that role's own claim of an earlier version of the plan — and the role's row names the
-	// one that works its step (record.WorkerClaim). A completion from the other is no report of
+	// Two claims of one issue can hold one role (record.WorkerClaim), and the role's row names the
+	// one that works its step. A completion from the other is no report of
 	// the step: taken, it would move the issue and write its own claim on the row, and every later
 	// start and message of the step would reach it. It is refused before anything is written, and
 	// left unspent, so the same report applies should a later entry of the step give it to that
@@ -1286,9 +1284,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // suspended its claims (a parked child) or closed them (a child closed as done), and a lingering
 // tree holds its members where they stood, so neither tells anyone.
 //
-// Two claims of one issue can hold one role — a second agent of the role in a task,
-// `…-implementer-2` beside `…-implementer`, or the agent of a key on a step of another role,
-// beside that role's own claim of an earlier version of the plan — so the role the fact names does
+// Two claims of one issue can hold one role (record.WorkerClaim), so the role the fact names does
 // not name the claim that failed: the fact names it too (intake.ClaimFailed.Claim). Only the
 // failure of the claim that works the role's step (workerClaim) holds the issue; another claim of
 // that role failing is told in a worker-died that names it and the step's worker, and holds
@@ -1861,10 +1857,11 @@ func missingList(list []record.VolumeMissing) string {
 // carry no detail; they name the session the claim forgot (intake.SessionLost.Session), which the
 // agent's registration chose, quoted the same way.
 //
-// A claim is its agent's, so a keyed agent's claim can lose its session on a step of another role
-// than its name: the sentence then names the agent and the step's role, and says that each later
-// step of that agent runs in the fresh session, which is the key's. A claim named by its role, the
-// claim of every step of an issue with no plan rows, keeps the sentence it always had.
+// A claim is its agent's, so the claim that loses its session can be one whose agent is not named
+// for the step's role: a keyed agent's, or a second agent's of the role. The sentence then names
+// the agent and the step's role, and says that each later step of that agent runs in the fresh
+// session. A claim named by its role, the claim of every step of an issue with no plan rows, keeps
+// the sentence it always had.
 func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.SessionLost) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1873,8 +1870,9 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 	kind := record.NoticeKind("session-lost")
 	const fresh = "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives."
 	// subject names who lost the session and runner who runs the fresh agent: the step's role, or,
-	// for a keyed agent's claim, whose name is another role's, that agent on its step, whose later
-	// steps run in the fresh session too (later).
+	// for a claim whose agent is not named for the step's role (a keyed agent's, or a second
+	// agent's of the role), that agent on its step, whose later steps run in the fresh session too
+	// (later).
 	subject, runner, later := fmt.Sprintf("The %s of %s", fact.Role, issue.Key), "The "+string(fact.Role), ""
 	if _, agent, ok := fact.Claim.Cut(); ok && agent != claim.Agent(fact.Role) {
 		subject = fmt.Sprintf("The agent %s of %s, on its %s step,", agent, issue.Key, fact.Role)
@@ -2466,9 +2464,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 		return intake.Result{Refusal: staleBackwardMove(issue.Key, fact.Requester, issue.Phase, row.Entry, fact.PhaseEntry), Unspent: true}, nil
 	}
 	// A phase worker's move is its step's worker's decision: two claims of one issue can hold one
-	// role — a second agent of the role in a task, `…-implementer-2` beside `…-implementer`, or the
-	// agent of a key on a step of another role, beside that role's own claim of an earlier
-	// version of the plan — and the move names the claim that asked it (By). A claim the
+	// role (record.WorkerClaim), and the move names the claim that asked it (By). A claim the
 	// role's row does not name on its step works nothing the move would send back, so its move is
 	// refused, unspent. A row that runs no step of the plan names no worker, and a move that names
 	// no claim, from a route before the claim was carried, is judged by its role as before.
@@ -3048,10 +3044,9 @@ type claimTarget struct {
 // linger's tree close), but the one except's close reaches: each stored claim of issue
 // (record.Store.IssueClaims) by its token, whether or not its agent ever reported a handoff — its
 // architect among them, which admission starts with a root's tree and a child's first phase start
-// starts for a child (StartFirstPhase). Two claims can hold one role — a second agent of the role
-// in a task, `…-implementer-2` beside `…-implementer`, or a keyed agent on a step of another role,
-// beside that role's own claim from an earlier version of the plan — so a row naming
-// a role alone would reach the claim of the worker on that role's step twice and leave the other
+// starts for a child (StartFirstPhase). Two claims of one issue can hold one role
+// (record.WorkerClaim), so a row naming a role alone would reach the claim of the worker on that
+// role's step twice and leave the other
 // claim without its request. except is the one role left out, "" for none: a merged child's close
 // leaves out the role that works its production check (Engine.checkRole), whose claim the check's
 // own close retires (closeCheck); that close names the role alone, so the claim it reaches, and the

@@ -2,9 +2,8 @@
 -- open resume per claim.
 --
 -- pod_resumes.claim is the token of the claim the wake that took the resume brings back
--- (store.PodResume.Claim). Two claims can hold one role of an issue: the agent of a key works a
--- step of another role than its name, beside that role's own claim of an earlier version of the
--- plan. A resume read or closed by its role alone was then each of those claims', so a cancel of a
+-- (store.PodResume.Claim). Two claims of one issue can hold one role (record.WorkerClaim). A resume
+-- read or closed by its role alone was then each of those claims', so a cancel of a
 -- release made while the project is paused (store's stopReleasedForPause) marked a claim owed the
 -- launch a wake took for another claim of its role, and a pause's first stop of one claim closed
 -- the resume of the other (store.CloseRoleOpenResumeTx). And the index of one open resume per role

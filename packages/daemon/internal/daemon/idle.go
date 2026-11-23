@@ -503,13 +503,11 @@ func (r *outbox) recordPodHold(ctx context.Context, issue string, hold workflow.
 //     because only a shim can build it and a shim dies with its claim's process, which act 2
 //     stops. It stops nothing itself, so a release cancelled here costs only the save;
 //  2. the claim stops: one `release` supervise row per live claim, each naming that claim
-//     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims
-//     can hold one role — a second agent of the role in a task, `…-implementer-2` beside
-//     `…-implementer`, or a keyed agent on a step of another role, beside that role's own claim
-//     from an earlier version of the plan — so a stop names its claim rather than a role. The
-//     first of them is the release's boundary — the stop of the first role process of the pod —
-//     which is what R4's cancel is read against, so a delivery queued while the save ran is still
-//     below it and cancels the whole release;
+//     (record.SuperviseRequest.Claim), stopping its process and keeping its session. Two claims of
+//     one issue can hold one role (record.WorkerClaim), so a stop names its claim rather than a
+//     role. The first of them is the release's boundary — the stop of the first role process of the
+//     pod — which is what R4's cancel is read against, so a delivery queued while the save ran is
+//     still below it and cancels the whole release;
 //  3. the teardown (record.IssueRelease): it deletes the pod, its disk and its Sandbox, and
 //     records the release with the size the save stored. A Sandbox that owns the issue's kept
 //     volume stays, Suspended, with that volume: its pod and its Secrets go (runtime.IssueReleaser).

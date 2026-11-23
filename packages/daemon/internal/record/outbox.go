@@ -1060,11 +1060,9 @@ type ArchitectStall struct {
 // provider error, and in an outage every claim of the project has a notice of its own to send.
 // It is told at exactly the sixth turn in a row and never again until a turn with no error puts
 // that run back to zero, so a second claim's notice dropped behind the first claim's would
-// never be sent at all. Two claims of one issue are two such claims — an issue's architect and
-// its worker fail their turns in the same outage, and two claims can hold one role (a second
-// agent of the role in a task, `…-implementer-2` beside `…-implementer`, or a keyed agent on a
-// step of another role, beside that role's own claim) — so neither the issue nor the issue
-// and the role is the key: the claim is.
+// never be sent at all. Two claims of one issue are two such claims — an issue's architect and its
+// worker fail their turns in the same outage, and two claims of one issue can hold one role
+// (WorkerClaim) — so neither the issue nor the issue and the role is the key: the claim is.
 //
 // A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
 // is the whole tree's and not one agent's. So its key is the issue alone, which is what an
