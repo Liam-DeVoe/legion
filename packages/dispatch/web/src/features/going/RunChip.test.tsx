@@ -8,7 +8,14 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { api } from "../../api/client";
 import type { GoingPlanAnswer, GoingRun } from "../../api/types";
 import { borderDefault, card } from "../../theme/classes";
-import { goingState, newConversation, openRun, setPlace, startRun } from "./going-store";
+import {
+  goingState,
+  newConversation,
+  openConversation,
+  openRun,
+  setPlace,
+  startRun,
+} from "./going-store";
 import { Notice } from "./Notice";
 import { RunChip } from "./RunChip";
 
@@ -123,10 +130,11 @@ function chipText(): string | null {
 
 test("the chip names the most urgent conversation in words, and how many more go on, and a click opens it", async () => {
   const user = userEvent.setup();
-  const runs = answerRuns(
-    record("r-1", "c-1", "count the moons"),
-    record("r-2", "c-2", "raise CORE-10")
-  );
+  // Dispatch started the second run after the first, as its own clock says.
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"), {
+    ...record("r-2", "c-2", "raise CORE-10"),
+    created_at: new Date(Date.now() + 1_000).toISOString(),
+  });
   try {
     renderChip();
     expect(screen.queryByTestId("going-chip")).toBeNull();
@@ -156,6 +164,35 @@ test("the chip names the most urgent conversation in words, and how many more go
     expect(goingState().place).toBe("over");
     expect(goingState().conversation).toEqual(["r-2"]);
     expect(screen.queryByTestId("going-chip")).toBeNull();
+  } finally {
+    runs.restore();
+  }
+});
+
+// A conversation's runs are ordered on Dispatch's clock (`created_at`), whether this page started
+// them or History listed them: a page whose clock is behind Dispatch's still names the follow-up
+// it started, which works, and the conversation by its first question.
+test("the chip names the follow-up started here, though this page's clock is behind Dispatch's", async () => {
+  const ahead = Date.now() + 60_000;
+  const first: GoingRun = {
+    ...record("r-1", "c-1", "count the moons"),
+    created_at: new Date(ahead).toISOString(),
+    state: "done",
+  };
+  const runs = answerRuns({
+    ...record("r-2", "c-1", "and the comets"),
+    continues: "r-1",
+    created_at: new Date(ahead + 10_000).toISOString(),
+  });
+  try {
+    renderChip();
+    act(() => openConversation({ id: "c-1", newest_at: first.created_at, runs: [first] }));
+    await act(async () => {
+      await startRun("and the comets", CONTEXT, "alice");
+    });
+    act(() => setPlace("closed"));
+    expect(screen.getByTestId("going-chip")).toHaveAttribute("data-state", "working");
+    expect(chipText()).toBe("Working · Count the moons");
   } finally {
     runs.restore();
   }

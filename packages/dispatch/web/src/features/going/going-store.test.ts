@@ -1,21 +1,27 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { waitFor } from "@testing-library/react";
 
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { api } from "../../api/client";
 import type { GoingRun } from "../../api/types";
 import {
   asksPerson,
   continueRun,
   conversationTitle,
+  draftOf,
   dropQueued,
   goingState,
   newConversation,
+  newestRun,
   openConversation,
+  openRun,
   queuedReady,
   resetGoingStore,
+  setDraft,
   setLevel,
   setPlace,
   startRun,
+  stopRun,
   titleWords,
 } from "./going-store";
 
@@ -318,4 +324,288 @@ test("a conversation's title is its first question with its first letter a capit
   expect(titleWords("Hand CORE-1 to Legion")).toBe("Hand CORE-1 to Legion");
   expect(titleWords("ébauche du plan")).toBe("Ébauche du plan");
   expect(titleWords("")).toBe("");
+});
+
+/** A conversation History lists, of one run that ended done. */
+function listed(id: string, conversation: string, words: string) {
+  const run: GoingRun = { ...record(id, conversation, words), state: "done" };
+  return { id: conversation, newest_at: run.created_at, runs: [run] };
+}
+
+// A start belongs to the conversation on the screen at the press. History opening another while
+// it is out lets it go: the one opened shows none of it, and the run Dispatch answers joins its
+// own conversation, which the chip names, never the one on the screen.
+test("a follow-up whose start answers after History opened another conversation joins its own, and the one open shows none of it", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  const held = Promise.withResolvers<GoingRun>();
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    runs.send("r-1", "end", ENDED_DONE);
+    runs.start.mockReturnValueOnce(held.promise);
+    const started = startRun("and the comets", CONTEXT, "alice");
+    expect(goingState().starting?.follows).toBe("r-1");
+
+    openConversation(listed("r-9", "c-9", "chart the stars"));
+    expect(goingState().starting).toBeUndefined();
+    expect(conversationTitle()).toBe("Chart the stars");
+
+    held.resolve({ ...record("r-2", "c-1", "and the comets"), continues: "r-1" });
+    expect(await started).toBe(true);
+    expect(goingState().conversation).toEqual(["r-9"]);
+    expect(goingState().runs.get("r-2")?.startedHere).toBe(true);
+    // The next Enter follows up the conversation on the screen, not the one the start was of.
+    expect(newestRun()?.id).toBe("r-9");
+  } finally {
+    runs.restore();
+  }
+});
+
+test("a start refused while its conversation is open says why, and one refused after another opened is let go with it", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    runs.send("r-1", "end", ENDED_DONE);
+    runs.start.mockRejectedValueOnce(new Error("the start was refused"));
+    expect(await startRun("and the comets", CONTEXT, "alice")).toBe(false);
+    expect(goingState().refusal).toBeDefined();
+
+    const held = Promise.withResolvers<GoingRun>();
+    runs.start.mockReturnValueOnce(held.promise);
+    const started = startRun("and the comets", CONTEXT, "alice");
+    openConversation(listed("r-9", "c-9", "chart the stars"));
+    held.reject(new Error("the start was refused"));
+    expect(await started).toBe(false);
+    expect(goingState().refusal).toBeUndefined();
+    expect(goingState().starting).toBeUndefined();
+    expect(goingState().conversation).toEqual(["r-9"]);
+  } finally {
+    runs.restore();
+  }
+});
+
+// New closes the conversation while its next run's start is out: the bar shows the search again,
+// with nothing of that start, and its run, once Dispatch answers it, opens nothing over it.
+test("New lets a start that is out go, and its run opens nothing once Dispatch answers it", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  const held = Promise.withResolvers<GoingRun>();
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    runs.send("r-1", "end", ENDED_DONE);
+    runs.start.mockReturnValueOnce(held.promise);
+    const started = startRun("and the comets", CONTEXT, "alice");
+    newConversation();
+    expect(goingState().starting).toBeUndefined();
+    held.resolve({ ...record("r-2", "c-1", "and the comets"), continues: "r-1" });
+    expect(await started).toBe(true);
+    expect(goingState().conversation).toBeUndefined();
+    expect(goingState().runs.has("r-2")).toBe(true);
+  } finally {
+    runs.restore();
+  }
+});
+
+// History's Open of the conversation a start follows up keeps the start, which then joins it;
+// History's Open of any other lets go of the words that waited for the run on the screen, which
+// then never go, even once that run's conversation is opened again.
+test("History's Open keeps a start of the conversation it opens, and lets the words that wait for another conversation's run go", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  const held = Promise.withResolvers<GoingRun>();
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    expect(await startRun("and the comets", CONTEXT, "alice")).toBe(false);
+    expect(goingState().queued).toEqual({ run: "r-1", words: "and the comets" });
+    openConversation(listed("r-9", "c-9", "chart the stars"));
+    expect(goingState().queued).toBeUndefined();
+    openRun("r-1");
+    runs.send("r-1", "end", ENDED_DONE);
+    expect(queuedReady()).toBeUndefined();
+
+    runs.start.mockReturnValueOnce(held.promise);
+    const started = startRun("and the comets", CONTEXT, "alice");
+    const first = goingState().runs.get("r-1")?.record;
+    openConversation({
+      id: "c-1",
+      newest_at: first?.created_at ?? "",
+      runs: first === undefined ? [] : [first],
+    });
+    expect(goingState().starting?.words).toBe("and the comets");
+    held.resolve({ ...record("r-2", "c-1", "and the comets"), continues: "r-1" });
+    await started;
+    expect(goingState().conversation).toEqual(["r-1", "r-2"]);
+  } finally {
+    runs.restore();
+  }
+});
+
+// The chip's Open, and a notice's Open or Review, keep the words that wait and a start that is
+// out only where they are of the conversation opened; any other lets them go.
+test("the chip's Open keeps the words that wait and a start that is out where they are of the conversation it opens, and lets them go otherwise", async () => {
+  const runs = answerRuns(
+    record("r-1", "c-1", "count the moons"),
+    record("r-2", "c-2", "watch the comet")
+  );
+  const held = Promise.withResolvers<GoingRun>();
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    newConversation();
+    await startRun("watch the comet", CONTEXT, "alice");
+    expect(await startRun("and the tail", CONTEXT, "alice")).toBe(false);
+    openRun("r-2");
+    expect(goingState().queued).toEqual({ run: "r-2", words: "and the tail" });
+    openRun("r-1");
+    expect(goingState().queued).toBeUndefined();
+
+    runs.send("r-2", "end", ENDED_DONE);
+    openRun("r-2");
+    runs.start.mockReturnValueOnce(held.promise);
+    const started = startRun("and the tail", CONTEXT, "alice");
+    openRun("r-2");
+    expect(goingState().starting?.follows).toBe("r-2");
+    openRun("r-1");
+    expect(goingState().starting).toBeUndefined();
+    held.resolve({ ...record("r-3", "c-2", "and the tail"), continues: "r-2" });
+    await started;
+    expect(goingState().conversation).toEqual(["r-1"]);
+  } finally {
+    runs.restore();
+  }
+});
+
+// Why a stop was refused belongs to the conversation of the run it would have stopped: it shows
+// while that conversation is open, the chip's Open of another lets it go, and a refusal that
+// lands after another was opened is let go too.
+test("a refused stop says why under its run's conversation alone", async () => {
+  const runs = answerRuns(
+    record("r-1", "c-1", "count the moons"),
+    record("r-2", "c-2", "watch the comet")
+  );
+  const stop = spyOn(api, "stopGoingRun");
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    newConversation();
+    await startRun("watch the comet", CONTEXT, "alice");
+    const refused = Promise.withResolvers<GoingRun>();
+    stop.mockReturnValueOnce(refused.promise);
+    stopRun("r-2", "alice");
+    refused.reject(new Error("the stop was refused"));
+    await refused.promise.catch(() => undefined);
+    expect(goingState().refusal).toBeDefined();
+    openRun("r-1");
+    expect(goingState().refusal).toBeUndefined();
+
+    const late = Promise.withResolvers<GoingRun>();
+    stop.mockReturnValueOnce(late.promise);
+    stopRun("r-1", "alice");
+    openRun("r-2");
+    late.reject(new Error("the stop was refused"));
+    await late.promise.catch(() => undefined);
+    expect(goingState().refusal).toBeUndefined();
+  } finally {
+    stop.mockRestore();
+    runs.restore();
+  }
+});
+
+// Design v2, Keys: Ctrl-K from closed opens the bar on the open conversation while the start of
+// its next run is out, and while words wait for its run, however that run ended.
+test("Ctrl-K opens the bar on the conversation while its next run's start is out", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  const held = Promise.withResolvers<GoingRun>();
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    runs.send("r-1", "end", ENDED_DONE);
+    runs.start.mockReturnValueOnce(held.promise);
+    const started = startRun("and the comets", CONTEXT, "alice");
+    setPlace("over");
+    expect(goingState().conversation).toEqual(["r-1"]);
+    held.resolve({ ...record("r-2", "c-1", "and the comets"), continues: "r-1" });
+    await started;
+    expect(goingState().conversation).toEqual(["r-1", "r-2"]);
+  } finally {
+    runs.restore();
+  }
+});
+
+test("Ctrl-K opens the bar on the conversation while words wait for its run", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    await startRun("and the comets", CONTEXT, "alice");
+    runs.send("r-1", "end", ENDED_DONE);
+    setPlace("over");
+    expect(goingState().conversation).toEqual(["r-1"]);
+    expect(queuedReady()).toEqual({ run: "r-1", words: "and the comets" });
+  } finally {
+    runs.restore();
+  }
+});
+
+// Ctrl-K from closed that opens another conversation - this page's run that works - lets go of
+// the answer to the plan drafted and of the refusal shown under the conversation before.
+test("Ctrl-K that opens another conversation lets the plan's draft and the refusal go", async () => {
+  const runs = answerRuns(record("r-1", "c-1", "count the moons"));
+  try {
+    await startRun("count the moons", CONTEXT, "alice");
+    openConversation(listed("r-0", "c-0", "chart the stars"));
+    setDraft({ edits: new Map(), plan: 1, run: "r-0", unticked: new Set([0]) });
+    runs.start.mockRejectedValueOnce(new Error("the start was refused"));
+    await startRun("and the comets", CONTEXT, "alice");
+    expect(goingState().refusal).toBeDefined();
+    setPlace("closed");
+
+    setPlace("over");
+    expect(goingState().conversation).toEqual(["r-1"]);
+    expect(goingState().refusal).toBeUndefined();
+    expect(draftOf("r-0", 1).unticked.size).toBe(0);
+  } finally {
+    runs.restore();
+  }
+});
+
+// A block's time is when it was read (its caption's "as of"): a run's stream read again from its
+// first frame, as History's Open of a run whose stream ended early reads it, reads each block
+// again, and keeps the time the block was first read, which the block holds; a block new to the
+// second reading takes that reading's time.
+test("a run's stream read again from its first frame keeps the time each block was first read", async () => {
+  jest.useFakeTimers();
+  const start = spyOn(api, "createGoingRun").mockResolvedValue({
+    ...record("r-1", "c-1", "chart the moons"),
+    state: "working",
+  });
+  const readings: {
+    readonly frame: (name: string, data: unknown) => void;
+    readonly end: () => void;
+  }[] = [];
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    const ended = Promise.withResolvers<void>();
+    readings.push({ end: () => ended.resolve(), frame: onFrame });
+    return ended.promise;
+  });
+  const block = (title: string) => ({ kind: "table", rows: [], spec: {}, title });
+  try {
+    await startRun("chart the moons", CONTEXT, "alice");
+    const firstRead = Date.now();
+    readings[0]?.frame("block", block("Moons by orbit"));
+    expect(goingState().runs.get("r-1")?.blocksAt).toEqual([firstRead]);
+    // The stream ends before the run did, so History's Open reads it again from its first frame.
+    readings[0]?.end();
+    await settle();
+
+    jest.advanceTimersByTime(120_000);
+    const known = goingState().runs.get("r-1")?.record;
+    openConversation({
+      id: "c-1",
+      newest_at: known?.created_at ?? "",
+      runs: known === undefined ? [] : [known],
+    });
+    expect(readings).toHaveLength(2);
+    readings[1]?.frame("block", block("Moons by orbit"));
+    expect(goingState().runs.get("r-1")?.blocksAt).toEqual([firstRead]);
+    readings[1]?.frame("block", block("Moons by size"));
+    expect(goingState().runs.get("r-1")?.blocksAt).toEqual([firstRead, Date.now()]);
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+    realClock();
+  }
 });

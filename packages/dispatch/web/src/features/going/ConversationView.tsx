@@ -170,12 +170,13 @@ function earliest(read: number | undefined, record: GoingRun): number | undefine
 }
 
 /**
- * When `record`'s run was undone, for the line under its answer: when this page's Undo of it
- * answered (`pressed`), else when Dispatch says its undo landed (`undone_at`), as a run undone
- * before this page was opened reads; undefined for a run not undone.
+ * When Dispatch says an undo of `record`'s run landed (`undone_at`, the newest undo of any one of
+ * its changes), in this page's clock; undefined where none did. It is read off the run's record,
+ * as History lists it or as it is read again once this page's Undo answers (`setUndone`), so the
+ * page says what a reload would.
  */
-function undoneAt(pressed: number | undefined, record: GoingRun): number | undefined {
-  if (pressed !== undefined || record.undone_at === null) return pressed;
+function undoneAt(record: GoingRun): number | undefined {
+  if (record.undone_at === null) return undefined;
   const landed = Date.parse(record.undone_at);
   return Number.isNaN(landed) ? undefined : landed;
 }
@@ -322,11 +323,13 @@ interface WholeBlock {
  *  and Undo of a run with no plan that changed something. Its steps' fold line, its answer and
  *  its plan's card come in that order, as the answer (state 4) then the applied plan (state 7)
  *  do. Once its plan's rows ran, its fold line says so ("applied 3 changes") in place of
- *  "proposed a plan", which is no longer the last thing it did. Once its changes were undone, its
- *  answer, which speaks of them, turns grey and the line under it reads "Undone": the card says
- *  what was taken back. A run that stopped or failed shows what it found so far, its steps
- *  opened, above how it ended. `asks` is whether its answer asks the person a question and waits
- *  for their answer; `onShowAll` opens one of its tables whole over the bar or the panel. */
+ *  "proposed a plan", which is no longer the last thing it did. Once Dispatch says its changes
+ *  were undone and none is left to take back, its answer, which speaks of them, turns grey and
+ *  the line under it reads "Undone"; where an undo landed and a change is left, it reads "Partly
+ *  undone" and Undo is still offered: the card says what was taken back. A run that stopped or
+ *  failed shows what it found so far, its steps opened, above how it ended. `asks` is whether its
+ *  answer asks the person a question and waits for their answer; `onShowAll` opens one of its
+ *  tables whole over the bar or the panel. */
 function RunTurn({
   answering,
   asks,
@@ -334,7 +337,6 @@ function RunTurn({
   onRetry,
   onShowAll,
   run,
-  undoneAt,
 }: {
   readonly answering: PlanAnswering | undefined;
   readonly asks: boolean;
@@ -342,8 +344,6 @@ function RunTurn({
   readonly onRetry: (words: string) => void;
   readonly onShowAll: (whole: WholeBlock) => void;
   readonly run: RunEntry;
-  /** When the run was undone, in this page's clock (`undoneAt`); undefined where it was not. */
-  readonly undoneAt: number | undefined;
 }): ReactNode {
   const newest = answering !== undefined;
   const own = usePlan(newest ? undefined : run.id, newest ? 0 : run.frames.planReads);
@@ -352,10 +352,13 @@ function RunTurn({
   const answer = run.frames.replies.at(-1);
   const waitsForSteps = thinking(run);
   const working = state === "working";
-  // A run undone before this page was opened, as Dispatch says (`undone_at`), offers no Undo: the
-  // page holds no answer of its Undo to show, and there is nothing left to take back.
-  const undoneHere = useGoingValue((of) => of.undone.has(run.id));
-  const undoneBefore = undoneAt !== undefined && !undoneHere;
+  // Whether an undo of the run landed, and whether a change of it is still left to take back,
+  // are Dispatch's word, read off the run's record (`undone_at`, `undoable`); an answer of this
+  // page's Undo says only what became of each change, on the card.
+  const landed = undoneAt(run.record);
+  const left = run.record.undoable;
+  const undone = landed !== undefined && !left;
+  const pressed = useGoingValue((of) => of.undone.has(run.id));
   // A call with no words draws no line, and nor does a change of an approved plan, which its
   // row's tick on the plan's card shows.
   const steps = run.frames.steps.filter((step) => step.label !== "" && step.kind !== "write");
@@ -365,7 +368,6 @@ function RunTurn({
     run.record.level,
     foldWords(steps)
   );
-  const undone = undoneAt !== undefined;
   return (
     <li className="space-y-2" data-run={run.id} data-state={state} data-testid="going-run">
       <Words testId="going-run-words" words={run.record.words} />
@@ -425,7 +427,7 @@ function RunTurn({
         answering={plan}
         appliedAt={earliest(run.endedAt, run.record)}
         folded={!newest}
-        undoneAt={undoneBefore ? undoneAt : undefined}
+        undone={pressed || landed === undefined ? undefined : { at: landed, left }}
       />
       {state === "done" && answer !== undefined ? (
         <AnswerFoot
@@ -434,11 +436,13 @@ function RunTurn({
           status={
             undone
               ? "Undone"
-              : asks
-                ? "Waits for your answer"
-                : changedNothing(run)
-                  ? NOTHING_CHANGED
-                  : "Done"
+              : landed !== undefined
+                ? "Partly undone"
+                : asks
+                  ? "Waits for your answer"
+                  : changedNothing(run)
+                    ? NOTHING_CHANGED
+                    : "Done"
           }
         />
       ) : ended !== undefined ? (
@@ -462,7 +466,7 @@ function RunTurn({
       {run.frames.plan === undefined &&
       runEnded(state) &&
       (run.record.issues ?? []).length > 0 &&
-      !undoneBefore ? (
+      (pressed || !undone) ? (
         <RunUndo run={run.id} />
       ) : null}
       {run.unreadable === undefined ? null : (
@@ -589,11 +593,17 @@ export function ConversationView({
   const starting = going.starting;
   const [whole, setWhole] = useState<WholeBlock>();
   // A run that starts a conversation of its own takes the place of the one open.
-  const ids = starting?.follows === false ? [] : (going.conversation ?? []);
+  const ids =
+    starting !== undefined && starting.follows === undefined ? [] : (going.conversation ?? []);
   const runs = ids.flatMap((id) => {
     const run = going.runs.get(id);
     return run === undefined ? [] : [run];
   });
+  // A table opened whole is of one run: it goes once that run's turn leaves the screen, as
+  // another conversation opens under a view that stays, and does not come back with it.
+  if (whole !== undefined && !runs.some((run) => run.id === whole.run)) {
+    setWhole(undefined);
+  }
   const queued =
     going.queued !== undefined && going.queued.run === newestRun(going)?.id
       ? going.queued
@@ -673,7 +683,6 @@ export function ConversationView({
                 onRetry={onRetry}
                 onShowAll={setWhole}
                 run={run}
-                undoneAt={undoneAt(going.undone.get(run.id)?.at, run.record)}
               />
             ))}
             {starting === undefined ? null : <StartingTurn starting={starting} />}

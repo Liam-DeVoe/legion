@@ -1141,22 +1141,24 @@ function useRanAt(plan: GoingPlanAnswer | undefined): number | undefined {
  * sent, so it counts in no Undo, and a plan of messages alone offers none. Once pressed, its title
  * reads "Undone · 3 changes reverted" and each row says what became of its change, in one line.
  * An old turn's card (`folded`, design v2, state 8) draws a plan that no longer waits as its one
- * line, "Applied 3 changes · Undo 3 changes", which opens it. A run undone before this page was
- * opened (`undoneAt`) reads "Undone · 11:35 AM" and offers no Undo. A plan that could not be read
- * says so, with Retry.
+ * line, "Applied 3 changes · Undo 3 changes", which opens it. A run Dispatch says was undone
+ * before this page pressed its Undo (`undone`) reads "Undone · 11:35 AM" and offers no Undo once
+ * nothing is left to take back; where a change is left it reads "Partly undone · 11:35 AM" and
+ * offers "Undo the rest". A plan that could not be read says so, with Retry.
  */
 export function PlanCard({
   answering,
   appliedAt,
   folded = false,
-  undoneAt,
+  undone,
 }: {
   readonly answering: PlanAnswering;
   readonly appliedAt?: number;
   readonly folded?: boolean;
-  /** When the plan's run was undone before this page was opened, as Dispatch says, in this page's
-   *  clock: its card says so and offers no Undo, which has nothing left to take back. */
-  readonly undoneAt?: number;
+  /** What Dispatch says of the plan's run's Undo where this page holds no answer of a press of it:
+   *  when an undo of it landed (`undone_at`), in this page's clock, and whether a change of it is
+   *  still left to take back (`undoable`), which the card then offers to undo. */
+  readonly undone?: { readonly at: number; readonly left: boolean };
 }): ReactNode {
   const going = useGoing();
   const plan = answering.plan;
@@ -1198,7 +1200,7 @@ export function PlanCard({
     appliedAt === undefined || ranAt === undefined
       ? (appliedAt ?? ranAt)
       : Math.min(appliedAt, ranAt);
-  const title = cardTitle(plan, lines, folded ? undefined : appliedTime, undoneAt);
+  const title = cardTitle(plan, lines, folded ? undefined : appliedTime, undone);
   // The rows the page draws are the open plan's, which an old turn's card is not.
   const onPage = folded ? new Set<number>() : new Set([...going.onPage.values()].flat());
   const rows = (plan.rows ?? []).filter((row) => !onPage.has(row.row));
@@ -1207,18 +1209,26 @@ export function PlanCard({
     (line) => line.plan !== plan.plan || !rows.some((row) => row.row === line.row)
   );
   const undoable = undoableCount(plan);
-  const undo =
-    lines === undefined && undoneAt === undefined && undoable > 0 ? (
-      <button
-        className={secondaryButtonCompact}
-        data-testid="going-undo-button"
-        disabled={undoing.pending}
-        onClick={undoing.undo}
-        type="button"
-      >
-        {undoable === 1 ? "Undo 1 change" : `Undo ${undoable} changes`}
-      </button>
-    ) : null;
+  // A run Dispatch says was undone in part offers its Undo again for what is left, which no count
+  // of the plan's rows says.
+  const offered = lines === undefined && (undone === undefined ? undoable > 0 : undone.left);
+  const label =
+    undone !== undefined
+      ? "Undo the rest"
+      : undoable === 1
+        ? "Undo 1 change"
+        : `Undo ${undoable} changes`;
+  const undo = offered ? (
+    <button
+      className={secondaryButtonCompact}
+      data-testid="going-undo-button"
+      disabled={undoing.pending}
+      onClick={undoing.undo}
+      type="button"
+    >
+      {label}
+    </button>
+  ) : null;
   const refusal =
     undoing.refusal === undefined ? null : (
       <p className={`text-xs ${dangerText}`} role="alert">

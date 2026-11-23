@@ -38,30 +38,36 @@ export interface RunUndoing {
  * changed something while its conversation is in History: it writes each old value back, newest
  * first, closes each issue the run filed, rejects each of its suggestions still open, and names a
  * message sent, not undone. Its answer stays in the store (`GoingState.undone`), so the plan card
- * of the run and its folded line in a later turn show the same answer.
+ * of the run and its folded line in a later turn show the same answer. A surface can hand the hook
+ * another run while a press is out (History's row names its conversation's newest run), so the
+ * answer is held for the run pressed, and the press and its refusal show only under that run.
  */
 export function useRunUndo(run: string): RunUndoing {
   const queryClient = useQueryClient();
-  const lines = useGoingValue((of) => of.undone.get(run)?.lines);
-  const [refusal, setRefusal] = useState<string>();
+  const lines = useGoingValue((of) => of.undone.get(run));
+  const [refused, setRefused] = useState<{ readonly run: string; readonly message: string }>();
   const undo = useKeyedWrite<GoingUndoAnswer, string>({
     inline: true,
     label: () => "Undo the command bar's run",
-    onError: (error) => setRefusal(apiErrorMessage(error, "The undo did not reach Dispatch.")),
-    onSuccess: (answered) => {
-      setUndone(run, answered?.lines ?? []);
-      void queryClient.invalidateQueries({ queryKey: goingPlanQuery(run).queryKey });
+    onError: (error, pressed) =>
+      setRefused({
+        message: apiErrorMessage(error, "The undo did not reach Dispatch."),
+        run: pressed,
+      }),
+    onSuccess: (answered, pressed) => {
+      setUndone(pressed, answered?.lines ?? []);
+      void queryClient.invalidateQueries({ queryKey: goingPlanQuery(pressed).queryKey });
       void queryClient.invalidateQueries({ queryKey: goingConversationsQuery().queryKey });
     },
-    request: (id) => goingRunUndoRequest(id),
+    request: (pressed) => goingRunUndoRequest(pressed),
     target: planTarget,
   });
   return {
     lines,
-    pending: undo.isPending,
-    refusal,
+    pending: undo.isPending && undo.variables === run,
+    refusal: refused?.run === run ? refused.message : undefined,
     undo: () => {
-      setRefusal(undefined);
+      setRefused(undefined);
       undo.mutate(run);
     },
   };

@@ -35,7 +35,9 @@ export interface Asking {
   readonly stop: () => void;
   /** Continue on a run a bound stopped: a follow-up of `level`, else of the run's own level. */
   readonly onContinue: (run: string, level?: GoingRun["level"]) => void;
-  /** Retry under an answer: a new run of the same `words`, started as Enter starts one, a
+  /** Retry under an answer: the same `words` as Enter in the box takes them, so it never starts a
+   *  conversation beside the open one's waiting plan: a revision of the plan that waits, nothing
+   *  while the newest run's plan is still being read or a start is out, else a new run, a
    *  follow-up of the conversation where its newest run has ended. */
   readonly retry: (words: string) => void;
 }
@@ -64,27 +66,28 @@ export function useAsk(context: GoingContextInput): Asking {
         void queryClient.invalidateQueries({ queryKey: goingConversationsQuery().queryKey });
       }
     });
+  const enter = (words: string, line?: GoingLine): boolean => {
+    const said = words.trim();
+    if (planWaits) {
+      if (said === "") answering.approve();
+      else answering.revise(said);
+      return true;
+    }
+    if (runWaits || goingState().starting) {
+      return false;
+    }
+    const newest = newestRun();
+    if (said === "") {
+      if (newest === undefined || shownState(newest) !== "stopped_bound") return false;
+      listed(continueRun(newest.id, context, login));
+      return true;
+    }
+    listed(startRun(said, context, login, { line }));
+    return true;
+  };
   return {
     answering,
-    enter: (words, line) => {
-      const said = words.trim();
-      if (planWaits) {
-        if (said === "") answering.approve();
-        else answering.revise(said);
-        return true;
-      }
-      if (runWaits || goingState().starting) {
-        return false;
-      }
-      const newest = newestRun();
-      if (said === "") {
-        if (newest === undefined || shownState(newest) !== "stopped_bound") return false;
-        listed(continueRun(newest.id, context, login));
-        return true;
-      }
-      listed(startRun(said, context, login, { line }));
-      return true;
-    },
+    enter,
     escape: (words) => {
       movePanel(
         words === "" ? { kind: "esc_empty", working: conversationWorking() } : { kind: "esc_full" },
@@ -93,7 +96,9 @@ export function useAsk(context: GoingContextInput): Asking {
     },
     onContinue: (run, level) => listed(continueRun(run, context, login, level)),
     planWaits,
-    retry: (words) => listed(startRun(words, context, login)),
+    retry: (words) => {
+      enter(words);
+    },
     runWaits,
     stop: () => {
       const run = newestRun();

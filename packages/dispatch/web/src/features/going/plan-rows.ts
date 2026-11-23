@@ -699,19 +699,21 @@ export function undoneTitle(lines: readonly GoingUndoLine[]): string {
  * that runs now among the rows sent to run; once they ran, "Applied 3 changes · 16:42", the time
  * the last row ran (`appliedAt`) where the page knows it, and how many of them ran where some did
  * not; once its run was undone (`undone`, what Undo answered), "Undone · 3 changes reverted"; for
- * a run undone before this page was opened, which holds no answer of that Undo, "Undone · 11:35
- * AM", when Dispatch says it was undone (`undoneAt`); and "Discarded" once the person discarded
- * it.
+ * a run whose Undo this page holds no answer of, as Dispatch says (`landed`): "Undone · 11:35 AM",
+ * when an undo of it landed, where no change of it is left to take back, and "Partly undone ·
+ * 11:35 AM" where one is; and "Discarded" once the person discarded it.
  */
 export function cardTitle(
   plan: GoingPlanAnswer,
   undone: readonly GoingUndoLine[] | undefined,
   appliedAt: number | undefined,
-  undoneAt?: number
+  landed?: { readonly at: number; readonly left: boolean }
 ): string {
   const rows = plan.rows ?? [];
   if (undone !== undefined) return undoneTitle(undone);
-  if (undoneAt !== undefined) return `Undone · ${clockWords(undoneAt)}`;
+  if (landed !== undefined) {
+    return `${landed.left ? "Partly undone" : "Undone"} · ${clockWords(landed.at)}`;
+  }
   const sent = rows.filter((row) => SENT_STATES[row.state] === true);
   switch (plan.state) {
     case "waiting":

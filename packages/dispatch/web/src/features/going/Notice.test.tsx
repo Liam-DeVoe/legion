@@ -9,7 +9,7 @@ import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import type { WriteBounds } from "../../api/client";
+import { ApiError, type WriteBounds } from "../../api/client";
 import type { GoingUndoAnswer } from "../../api/types";
 import { Notice, showNotice } from "./Notice";
 
@@ -173,4 +173,32 @@ test("Undo reverses the run through its own undo, and the notice says what was u
       "Not undone: bob reopened CORE-47 since"
     )
   );
+});
+
+// A refused Undo says why under its own notice, and the refusal goes with that notice: a newer
+// notice takes its place, saying nothing of an Undo it never offered.
+test("a refused Undo says why under its notice, and a newer notice shows none of it", async () => {
+  const user = userEvent.setup();
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  undo.mockImplementationOnce(async () => {
+    throw new ApiError(409, { code: "GOING_UNDO_UNKNOWN", error: "nothing was undone" });
+  });
+  renderNotice();
+  act(() =>
+    showNotice({
+      ms: 10_000,
+      text: "Filed CORE-46",
+      undo: { run: "r-file", undone: "Undone · CORE-46 closed" },
+    })
+  );
+  await user.click(
+    within(screen.getByTestId("going-notice")).getByRole("button", { name: "Undo" })
+  );
+  expect(await screen.findByRole("alert")).toHaveTextContent("nothing was undone");
+
+  act(() => showNotice({ ms: 10_000, text: "Done: Count the moons" }));
+  expect(screen.getByTestId("going-notice")).toHaveTextContent("Done: Count the moons");
+  expect(screen.queryByRole("alert")).toBeNull();
 });

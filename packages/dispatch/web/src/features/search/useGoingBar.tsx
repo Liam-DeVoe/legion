@@ -134,34 +134,38 @@ export function useGoingBar({
 }): GoingBar {
   const capability = useQuery(goingCapabilityQuery());
   const answers = capability.data?.answer.configured === true;
-  const { answer, earlier } = useGoingAnswer({
-    context,
-    enabled: enabled && answers,
-    login,
-    project,
-    words,
-  });
-  // The line's state is held beside the words it is about, and worked out in the render from
-  // what that render holds: new words start it over, the hits on the screen, the run of these
-  // words asked on the pause and the line its decision frame names each move it on (`lineNext`).
-  const [held, setHeld] = useState<{ readonly state: LineState; readonly words: string }>(() => ({
-    state: LINE_TYPING,
-    words,
-  }));
-  let state = held.words === words ? held.state : lineNext(held.state, { kind: "keystroke" });
+  const asked = enabled && answers;
+  const { answer, earlier } = useGoingAnswer({ context, enabled: asked, login, project, words });
+  // The line's state is held beside the question it is about - the words, the project they are
+  // asked of and whether they are asked at all, the keys `useGoingAnswer` asks a new run under -
+  // and worked out in the render from what that render holds: a new question starts it over, the
+  // hits on the screen, the run of the question asked on the pause and the line its decision
+  // frame names each move it on (`lineNext`). The render a new question comes in still holds the
+  // answer to the one before, the old run's, until `useGoingAnswer` lets it go: that answer
+  // (`before`) moves the new question's line no more.
+  const [held, setHeld] = useState<{
+    readonly state: LineState;
+    readonly words: string;
+    readonly project: string;
+    readonly asked: boolean;
+    readonly before: GoingAnswer | undefined;
+  }>(() => ({ asked, before: undefined, project, state: LINE_TYPING, words }));
+  const same = held.words === words && held.project === project && held.asked === asked;
+  const before = same ? held.before : answer;
+  let state = same ? held.state : lineNext(held.state, { kind: "keystroke" });
   if (showHits) {
     state = lineNext(state, { kind: "hits" });
   }
-  if (answer !== undefined && !answer.replayed) {
+  if (answer !== undefined && answer !== before && !answer.replayed) {
     state = lineNext(state, { kind: "pause" });
     if (answer.line !== undefined) {
       state = lineNext(state, { kind: "jev", line: answer.line });
     }
   }
-  if (held.words !== words || held.state !== state) {
-    setHeld({ state, words });
+  if (!same || held.state !== state) {
+    setHeld({ asked, before, project, state, words });
   }
-  // `LINE_WAIT_MS` after the pause asked Jev, the line reads Ask for these words for good.
+  // `LINE_WAIT_MS` after the pause asked Jev, the line reads Ask for this question for good.
   const waiting = state.kind === "pending";
   useEffect(() => {
     if (!waiting) {
@@ -169,25 +173,22 @@ export function useGoingBar({
     }
     const timer = window.setTimeout(() => {
       setHeld((now) =>
-        now.words === words ? { state: lineNext(now.state, { kind: "wait" }), words } : now
+        now.words === words && now.project === project && now.asked === asked
+          ? { ...now, state: lineNext(now.state, { kind: "wait" }) }
+          : now
       );
     }, LINE_WAIT_MS);
     return () => window.clearTimeout(timer);
-  }, [waiting, words]);
+  }, [asked, project, waiting, words]);
   const decision = capability.data?.decision;
   const unsettled = state.kind === "typing" || state.kind === "hits" || state.kind === "pending";
   return {
     answers,
     answersOff: capability.data !== undefined && !answers,
     deciding:
-      enabled &&
-      answers &&
-      decision?.configured === true &&
-      decision.reachable &&
-      words !== "" &&
-      unsettled,
+      asked && decision?.configured === true && decision.reachable && words !== "" && unsettled,
     enterLine: () => {
-      setHeld({ state: lineNext(state, { kind: "enter" }), words });
+      setHeld({ asked, before, project, state: lineNext(state, { kind: "enter" }), words });
       return lineShown(state);
     },
     line: lineShown(state),

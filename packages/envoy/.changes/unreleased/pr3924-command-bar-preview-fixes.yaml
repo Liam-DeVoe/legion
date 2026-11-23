@@ -42,4 +42,6 @@ body: |-
   stands in a card, heads its issues "Issue" and keeps its cells level with their chips. Stop is
   a filled button with a stop square; the mode button keeps one width and its menu wears the
   page's focus ring. Settings names the setting "Approval mode" (Ask, Auto-review), in a card like
-  the other sections, says when a choice was saved, and draws radios that read in dark mode.
+  the other sections, says when a choice was saved, and draws radios that read in dark mode. The
+  bar says a run was undone only once Dispatch's record says an undo landed; a run undone in part
+  reads "Partly undone" and offers "Undo the rest".

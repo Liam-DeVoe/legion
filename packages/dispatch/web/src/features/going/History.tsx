@@ -240,7 +240,9 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
                   ) : null}
                   {row.undo === undefined ? null : (
                     <div className="px-2 pb-1">
-                      <RunUndo run={row.undo} />
+                      {/* One run's Undo: the row names its conversation's newest run, and a newer
+                          one takes the place of the Undo, never its press or its refusal. */}
+                      <RunUndo key={row.undo} run={row.undo} />
                     </div>
                   )}
                 </li>

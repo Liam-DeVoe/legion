@@ -1063,6 +1063,16 @@ test("the margin folds while the conversation is at the side, and comes back as 
     act(() => setPlace("closed"));
     expect(screen.getByRole("button", { name: "Hide margin" })).toBeTruthy();
     expect(window.localStorage.getItem(marginStorageKey)).toBeNull();
+
+    // The margin opened beside the panel is let go with the panel: once the panel is at the side
+    // again, the margin folds to its rail, as it did the first time.
+    act(() => setPlace("side"));
+    await user.keyboard("{Shift>}M{/Shift}");
+    expect(await screen.findByRole("button", { name: "Hide margin" })).toBeTruthy();
+    act(() => setPlace("closed"));
+    act(() => setPlace("side"));
+    expect(await screen.findByRole("button", { name: "Show margin" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Hide margin" })).toBeNull();
   } finally {
     view.unmount();
     for (const read of [...reads, ...issueReads]) read.mockRestore();

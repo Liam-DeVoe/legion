@@ -84,22 +84,20 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
       plan: answered.plan,
       run: answered.run,
     });
-  const settle = (answered: GoingPlanAnswer | null) => {
+  // An answer settles into the plan of the run it answered, `pressed`, read off the press: the
+  // hook stays mounted as the open run changes, and an answer can land after another run opened.
+  const settle = (answered: GoingPlanAnswer | null, pressed: GoingPlanAnswer) => {
+    const pressedPlan = goingPlanQuery(pressed.run).queryKey;
     if (answered !== null) {
-      queryClient.setQueryData(query.queryKey, answered);
+      queryClient.setQueryData(pressedPlan, answered);
     } else {
-      void queryClient.invalidateQueries({ exact: true, queryKey: query.queryKey });
+      void queryClient.invalidateQueries({ exact: true, queryKey: pressedPlan });
     }
     void queryClient.invalidateQueries({ queryKey: goingWaitingPlansQuery().queryKey });
     void queryClient.invalidateQueries({ queryKey: goingConversationsQuery().queryKey });
   };
-  const common = {
-    inline: true,
-    onSuccess: settle,
-    target: () => planTarget(run ?? ""),
-  };
   const approve = useKeyedWrite<GoingPlanAnswer, GoingPlanAnswer>({
-    ...common,
+    inline: true,
     label: () => "Approve the command bar's plan",
     // An approval names the version of the plan the page shows; one refused because the plan
     // changed since reads the plan again, so the person sees what they would approve under the
@@ -113,24 +111,30 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
         });
       }
     },
+    onSuccess: settle,
     request: (answered) =>
       goingPlanApproveRequest(
         answered.run,
         approvalOf(answered, draftOf(answered.run, answered.plan))
       ),
+    target: (answered) => planTarget(answered.run),
   });
   const reject = useKeyedWrite<GoingPlanAnswer, GoingPlanAnswer>({
-    ...common,
+    inline: true,
     label: () => "Reject the command bar's plan",
     onError: refuse,
+    onSuccess: settle,
     request: (answered) => goingPlanRejectRequest(answered.run, { plan: answered.plan }),
+    target: (answered) => planTarget(answered.run),
   });
   const revise = useKeyedWrite<GoingPlanAnswer, { plan: GoingPlanAnswer; words: string }>({
-    ...common,
+    inline: true,
     label: () => "Revise the command bar's plan",
     onError: (error, { plan: answered }) => refuse(error, answered),
+    onSuccess: (revised, { plan: answered }) => settle(revised, answered),
     request: ({ plan: answered, words }) =>
       goingPlanReviseRequest(answered.run, { plan: answered.plan, words }),
+    target: ({ plan: answered }) => planTarget(answered.run),
   });
   const shown = plan.data;
   const waiting = shown?.state === "waiting" ? shown : undefined;
@@ -141,13 +145,20 @@ export function usePlan(run: string | undefined, planReads: number): PlanAnsweri
     refused.plan === shown.plan
       ? refused.message
       : undefined;
+  // An answer out holds the plan of the run it was pressed on, never the plan of another run the
+  // hook draws since.
+  const out = [
+    approve.isPending ? approve.variables?.run : undefined,
+    reject.isPending ? reject.variables?.run : undefined,
+    revise.isPending ? revise.variables?.plan.run : undefined,
+  ];
   return {
     approve: () => {
       if (waiting === undefined) return;
       setRefused(undefined);
       approve.mutate(waiting);
     },
-    pending: approve.isPending || reject.isPending || revise.isPending,
+    pending: shown !== undefined && out.includes(shown.run),
     plan: shown,
     refusal,
     reject: () => {

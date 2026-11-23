@@ -48,12 +48,22 @@ interface GoingOn {
   readonly title: string;
 }
 
+/** When Dispatch started `run`, on its own clock (`created_at`). Every run the page holds has one,
+ *  so runs started here and runs read from History order alike; `since` would not: it is this
+ *  page's clock for a run started here and Dispatch's for any other. */
+function startedAt(run: RunEntry): number {
+  return Date.parse(run.record.created_at);
+}
+
 /** The title of `run`'s conversation: its first question, the words of the first of its runs
  *  the page holds, as a title (`titleWords`). */
 function titleOf(of: GoingState, run: RunEntry): string {
   let first = run;
   for (const other of of.runs.values()) {
-    if (other.record.conversation === run.record.conversation && other.since < first.since) {
+    if (
+      other.record.conversation === run.record.conversation &&
+      startedAt(other) < startedAt(first)
+    ) {
       first = other;
     }
   }
@@ -70,7 +80,9 @@ function goingOn(of: GoingState): readonly GoingOn[] {
   const newest = new Map<string, RunEntry>();
   for (const run of of.runs.values()) {
     const held = newest.get(run.record.conversation);
-    if (held === undefined || run.since >= held.since) newest.set(run.record.conversation, run);
+    if (held === undefined || startedAt(run) >= startedAt(held)) {
+      newest.set(run.record.conversation, run);
+    }
   }
   const shown: GoingOn[] = [];
   for (const run of newest.values()) {
@@ -81,7 +93,7 @@ function goingOn(of: GoingState): readonly GoingOn[] {
       shown.push({ rank: named.rank, run, state, title: titleOf(of, run) });
     }
   }
-  return shown.sort((a, b) => a.rank - b.rank || b.run.since - a.run.since);
+  return shown.sort((a, b) => a.rank - b.rank || startedAt(b.run) - startedAt(a.run));
 }
 
 /**

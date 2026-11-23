@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -16,7 +17,14 @@ import {
   spyOnGoingBar,
 } from "./going-bar-fixture";
 import { forgetAnsweredRun } from "./useGoingAnswer";
-import { LINE_WAIT_MS, type LineEvent, type LineState, lineNext, lineShown } from "./useGoingBar";
+import {
+  LINE_WAIT_MS,
+  type LineEvent,
+  type LineState,
+  lineNext,
+  lineShown,
+  useGoingBar,
+} from "./useGoingBar";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
 // The line on top of the command bar (spec R2, design v3, state 1): the hits show at once, and the
@@ -482,4 +490,53 @@ test("the page's issue is the filing's parent unless the words say top-level or 
   expect(filingParent("a dome, top level", "DEMO-6")).toBeUndefined();
   expect(filingParent("a dome with no parent", "DEMO-6")).toBeUndefined();
   expect(filingParent("a dome under DEMO-12", "DEMO-6")).toBeUndefined();
+});
+
+// The line on top is of one question: the words, and the project the filter chip asks them of. A
+// chip moved to another project asks the same words again, a run of its own, and the line starts
+// over for it: the line Jev named for the run asked of the project before is not this run's, and
+// the new run's decision names the line.
+test("a project change asks the same words again, and the line on top starts over for that run", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const bar = renderHook(
+    ({ project }: { readonly project: string }) =>
+      useGoingBar({
+        context: { path: "/projects/LEGION/issues" },
+        enabled: true,
+        login: "alice",
+        project,
+        showHits: true,
+        words: "mark the astrolabe started",
+      }),
+    {
+      initialProps: { project: "LEGION" },
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  try {
+    await waitFor(() => expect(bar.result.current.answers).toBe(true));
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(1));
+    decide("do", "dispatch_issue_update");
+    await waitFor(() => expect(bar.result.current.line).toBe("do"));
+
+    bar.rerender({ project: "CORE" });
+    expect(bar.result.current.line).toBe("ask");
+    expect(bar.result.current.deciding).toBe(true);
+    await tick(MEANING_PAUSE_MS);
+    await waitFor(() => expect(streams).toHaveLength(2));
+    expect(spies.createGoingRequest.mock.calls[1]?.[0]).toMatchObject({ project: "CORE" });
+    act(() =>
+      streams[1]?.send({
+        data: { action: "dispatch_issue", context: "named", line: "file" },
+        event: "decision",
+      })
+    );
+    await waitFor(() => expect(bar.result.current.line).toBe("file"));
+  } finally {
+    bar.unmount();
+    client.clear();
+  }
 });

@@ -1731,6 +1731,40 @@ test("an issue's key or its exact title ranks above the line on top, so Enter op
   }
 });
 
+// The arrows keep the highlight where the reader put it for the words they arrowed on, and no
+// longer: new words are a new list, so a best match that arrives after the line on top takes the
+// head again, and Enter opens it.
+test("after the arrows, new words let a best match take the head again as it arrives", async () => {
+  const user = userOnFakeClock();
+  const hit = issueHit("LEGION-3");
+  const other = issueHit("LEGION-4");
+  const spies = [
+    spyOn(api, "goingCapability").mockResolvedValue(CONFIGURED_CAPABILITY),
+    spyOn(api, "createGoingRequest").mockImplementation(
+      () => Promise.withResolvers<never>().promise
+    ),
+    spyOn(api, "search").mockResolvedValue(searchAnswer([hit, other])),
+  ];
+  const view = renderPalette();
+
+  try {
+    const input = await searchFor(user, "instrument");
+    await waitFor(() => expect(optionIds()).toContain(optionId(other)));
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionIds()[1] ?? "");
+
+    await searchFor(user, "Instrument LEGION-3");
+    await waitFor(() => expect(optionIds()[0]).toBe(optionId(hit)));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 // The bar after Enter (design v2, state 2; spec R1, R3, R10): the search parts leave it and it is
 // the conversation, the question at its top with "Thinking…" and its seconds from the moment of
 // Enter, and the box under it reading what Enter does now, with the chip, the level and Stop;

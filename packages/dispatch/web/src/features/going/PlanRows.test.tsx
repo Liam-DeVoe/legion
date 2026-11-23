@@ -1,16 +1,26 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { useQuery } from "@tanstack/react-query";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
+import { ApiError, api, type WriteBounds } from "../../api/client";
+import { goingPlanQuery } from "../../api/queries";
 import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from "../../api/types";
 import { linkText, pageQuietText } from "../../theme/classes";
 import { clockWords } from "../search/blocks/block-cells";
-import { resetGoingStore, setPlace, startRun } from "./going-store";
+import {
+  goingState,
+  newConversation,
+  openRun,
+  resetGoingStore,
+  setPlace,
+  startRun,
+} from "./going-store";
 import { PlannedChanges } from "./PlannedChanges";
 import { PlanCard, usePlanCardKeys } from "./PlanRows";
 import { BoxRow } from "./RunControls";
@@ -1034,6 +1044,7 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
     { state: "done" }
   );
   const restore = await openPlan(ran);
+  const reread = spyOn(api, "goingRun").mockResolvedValue(created);
   const undo = answerRoute<
     (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
   >("POST", "/api/v1/going/runs/*/undo");
@@ -1108,7 +1119,168 @@ test("Undo on the card reverts the run, names a value someone else changed, and 
     expect(fieldOf(drawnRow(1), "title")).not.toHaveAttribute("data-reverted");
     expect(screen.getByTestId("going-plan").textContent ?? "").not.toMatch(/[{}"]|GOING_/u);
   } finally {
+    reread.mockRestore();
     restore();
+  }
+});
+
+/** A start of run `id`, a conversation of its own, of `words`. */
+function startedAs(id: string, words: string): GoingRun {
+  return { ...created, conversation: id, id, words };
+}
+
+/** A change of DEMO-11's priority, which the second run's plan proposes. */
+const raiseDemo11 = row(0, {
+  arguments: { issue: "DEMO-11", priority: 1 },
+  fields: ["priority"],
+  issue: "DEMO-11",
+  item: "DEMO-11",
+  now: { priority: null },
+});
+
+/** Answers the starts of `run-1` and then `run-2`, each its own conversation, whose streams carry
+ *  a plan frame and stay open, and each run's plan as `plans` says. */
+function answerTwoRuns(plans: (run: string) => GoingPlanAnswer): () => void {
+  const start = spyOn(api, "createGoingRun")
+    .mockResolvedValueOnce(created)
+    .mockResolvedValueOnce(startedAs("run-2", "raise DEMO-11"));
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    onFrame("plan", { plan: 1, state: "waiting" });
+    return Promise.withResolvers<void>().promise;
+  });
+  const read = spyOn(api, "goingPlan").mockImplementation(async (run) => plans(run));
+  return () => {
+    start.mockRestore();
+    stream.mockRestore();
+    read.mockRestore();
+  };
+}
+
+/** Starts `run-2` in a conversation of its own, as New and then Enter in the bar do. */
+async function startTheSecond(): Promise<void> {
+  await act(async () => {
+    newConversation();
+    await startRun("raise DEMO-11", { path: "/projects/DEMO/issues" }, "alice");
+  });
+}
+
+/** The state of the plan of `run` as the page holds it, read from nowhere. */
+function HeldPlan({ run }: { readonly run: string }): ReactNode {
+  const held = useQuery({ ...goingPlanQuery(run), enabled: false }).data;
+  return <output data-testid={`held-plan-${run}`}>{held?.state}</output>;
+}
+
+// An answer to a plan is of the run it was pressed on: an approval that lands after the person
+// started another conversation settles into that run's plan, while the card of the run open keeps
+// its own plan, whose Approve was its own to press all along.
+test("an approval that lands after another run opened settles into the plan it approved, and the open card keeps its own", async () => {
+  const user = userEvent.setup();
+  const first = planOf([labelsAndPriority]);
+  const restore = answerTwoRuns((run) =>
+    run === "run-1" ? first : planOf([raiseDemo11], { run: "run-2" })
+  );
+  const approve = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/approve");
+  const approved = Promise.withResolvers<GoingPlanAnswer>();
+  approve.mockImplementationOnce(() => approved.promise);
+  try {
+    await startRun("tidy DEMO-10", { path: "/projects/DEMO/issues" }, "alice");
+    setPlace("over");
+    renderWithQueries(
+      <>
+        <Card />
+        <HeldPlan run="run-1" />
+      </>
+    );
+    await user.click(await screen.findByTestId("going-plan-approve"));
+    await waitFor(() =>
+      expect(approve).toHaveBeenCalledWith("run-1", expect.anything(), keyedAttempt)
+    );
+    await startTheSecond();
+    await waitFor(() =>
+      expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Change DEMO-11")
+    );
+    expect(screen.getByTestId("going-plan-approve")).toBeEnabled();
+
+    approved.resolve({ ...first, rows: [{ ...labelsAndPriority, state: "done" }], state: "done" });
+    await waitFor(() => expect(screen.getByTestId("held-plan-run-1")).toHaveTextContent("done"));
+    expect(screen.getByTestId("going-plan-title")).toHaveTextContent("Change DEMO-11");
+    expect(screen.getByTestId("going-plan-approve")).toBeEnabled();
+  } finally {
+    restore();
+  }
+});
+
+// One run's Undo on a card is that run's: the card of the conversation open draws another run's
+// plan once another opens, and an Undo out meanwhile, its answer and a refusal of it, stay with
+// the run pressed.
+test("a card's Undo out when another run opens keeps its answer and its refusal that run's", async () => {
+  const user = userEvent.setup();
+  const ran = (run: string) =>
+    planOf([{ ...labelsAndPriority, state: "done" }], { run, state: "done" });
+  const restore = answerTwoRuns(ran);
+  const reread = spyOn(api, "goingRun").mockImplementation(async (id) => ({ ...created, id }));
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  const answered = Promise.withResolvers<GoingUndoAnswer>();
+  undo.mockImplementationOnce(() => answered.promise);
+  undo.mockImplementationOnce(async () => {
+    throw new ApiError(409, { code: "GOING_UNDO_UNKNOWN", error: "nothing was undone" });
+  });
+  try {
+    await startRun("tidy DEMO-10", { path: "/projects/DEMO/issues" }, "alice");
+    setPlace("over");
+    renderWithQueries(<Card />);
+    await user.click(await screen.findByTestId("going-undo-button"));
+    await waitFor(() => expect(undo).toHaveBeenCalledWith("run-1", undefined, keyedAttempt));
+    await startTheSecond();
+    await waitFor(() => expect(screen.getByTestId("going-undo-button")).toBeEnabled());
+
+    answered.resolve({ lines: [] });
+    await waitFor(() => expect(goingState().undone.has("run-1")).toBe(true));
+    expect(goingState().undone.has("run-2")).toBe(false);
+    expect(screen.getByTestId("going-undo-button")).toBeEnabled();
+
+    await user.click(screen.getByTestId("going-undo-button"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("nothing was undone");
+    act(() => openRun("run-1"));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  } finally {
+    reread.mockRestore();
+    restore();
+  }
+});
+
+// Design v3, state 7: the time a plan's rows ran is the time the card first drew them run, taken
+// again for each plan it draws: the card of the conversation open draws the next run's plan once
+// another conversation starts, and that plan's time is its own.
+test("the time a plan's rows ran is taken again for the next plan the card draws", async () => {
+  jest.useFakeTimers();
+  const restore = answerTwoRuns((run) =>
+    planOf([{ ...labelsAndPriority, state: "done" }], { run, state: "done" })
+  );
+  try {
+    await startRun("tidy DEMO-10", { path: "/projects/DEMO/issues" }, "alice");
+    setPlace("over");
+    renderWithQueries(<Card />);
+    // The card draws nothing while the next plan is read, so its title is read afresh each time.
+    const title = () => screen.getByTestId("going-plan-title").textContent;
+    await waitFor(() => expect(title()).toMatch(/^Applied 1 change · /u));
+    const first = title();
+
+    await tick(120_000, 120_000);
+    const before = Date.now();
+    await startTheSecond();
+    await waitFor(() => expect(title()).not.toBe(first));
+    const after = Date.now();
+    expect([before, after].map((at) => `Applied 1 change · ${clockWords(at)}`)).toContain(
+      title() ?? ""
+    );
+  } finally {
+    restore();
+    realClock();
   }
 });
 

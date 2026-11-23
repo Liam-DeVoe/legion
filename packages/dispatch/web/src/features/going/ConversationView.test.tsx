@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
@@ -12,7 +13,8 @@ import type { GoingPlanAnswer, GoingPlanRow, GoingRun, GoingUndoAnswer } from ".
 import { dangerText, linkText, pageQuietText, textMutedOnSurface } from "../../theme/classes";
 import { clockWords } from "../search/blocks/block-cells";
 import { ConversationView } from "./ConversationView";
-import { goingState, openConversation, resetGoingStore, startRun } from "./going-store";
+import { goingState, openConversation, openRun, resetGoingStore, startRun } from "./going-store";
+import { useAsk } from "./useAsk";
 import { useOpenPlan } from "./usePlan";
 
 // The steps of a run as the bar draws them (design v2, state 3): one line for each call, in the
@@ -361,6 +363,43 @@ test("a table's caption says what it counts and when, and Show all opens it over
 
     await user.click(screen.getByTestId("going-block-show-all"));
     await user.click(screen.getByTestId("going-block-whole-close"));
+    expect(screen.queryByTestId("going-block-whole")).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+// The table opened whole is one run's: another conversation opened under the same view - the
+// side panel while the Inbox's Review opens one - takes it away, and it does not come back when
+// its own conversation is opened again.
+test("a table opened whole goes once another conversation opens, and does not come back with its own", async () => {
+  const user = userEvent.setup();
+  const restore = await showRun("done", [
+    [
+      "block",
+      {
+        kind: "table",
+        rows: Array.from({ length: 12 }, (_, index) => ({ issues: index + 1, status: "todo" })),
+        spec: { columns: ["status", "issues"], params: {}, source: "run", table: "chain" },
+        title: "DEMO issues by status",
+      },
+    ],
+    ["reply", { labels: [], text: "Here they are.", tools: [] }],
+    ["end", { offers: [], reason: "", state: "done" }],
+  ]);
+  try {
+    await user.click(await screen.findByTestId("going-block-show-all"));
+    expect(screen.getByTestId("going-block-whole")).toBeInTheDocument();
+    act(() =>
+      openConversation({
+        id: "c-2",
+        newest_at: new Date().toISOString(),
+        runs: [record("done", 1000, { conversation: "c-2", id: "r-2", words: "count the moons" })],
+      })
+    );
+    expect(screen.queryByTestId("going-block-whole")).toBeNull();
+    act(() => openRun("r-1"));
+    expect(await screen.findByTestId("going-block-show-all")).toBeInTheDocument();
     expect(screen.queryByTestId("going-block-whole")).toBeNull();
   } finally {
     restore();
@@ -986,6 +1025,75 @@ test("under the answer, Done in grey, with Copy of the answer's text and Retry o
   }
 });
 
+/** The conversation as the bar draws it, with the bar's own box behind its Retry and Continue. */
+function AskedConversation(): ReactNode {
+  const asking = useAsk({ path: "/projects/DEMO/issues" });
+  return (
+    <ConversationView
+      answering={asking.answering}
+      onContinue={asking.onContinue}
+      onRetry={asking.retry}
+    />
+  );
+}
+
+// Retry under an older answer takes the words as Enter in the box does: while the newest run's
+// plan waits, they say what to change of it. It starts no conversation of its own, which would
+// hide the one open, the waiting plan's card with it, and drop the person's answer to it so far.
+test("Retry under an older answer while the newest run's plan waits revises that plan, and starts no run", async () => {
+  const user = userEvent.setup();
+  const waiting: GoingPlanAnswer = {
+    ...appliedPlan,
+    rows: (appliedPlan.rows ?? []).map((row) => ({ ...row, result: null, state: "waiting" })),
+    run: "r-2",
+    state: "waiting",
+  };
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((id, onFrame) => {
+    if (id === "r-1") {
+      onFrame("reply", { labels: [], text: "DEMO-15 is in the release.", tools: [] });
+      onFrame("end", { offers: [], reason: "", state: "done" });
+    } else {
+      onFrame("plan", { plan: 1, state: "waiting" });
+      onFrame("end", { offers: [], reason: "", state: "waiting" });
+    }
+    return new Promise<void>(() => {});
+  });
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => waiting);
+  const start = spyOn(api, "createGoingRun");
+  const revise = answerRoute<
+    (run: string, body: unknown, bounds: WriteBounds) => Promise<GoingPlanAnswer>
+  >("POST", "/api/v1/going/runs/*/plan/revise");
+  revise.mockImplementation(async () => ({ ...waiting, plan: 2 }));
+  openConversation({
+    id: "c-1",
+    newest_at: new Date().toISOString(),
+    runs: [
+      record("waiting", 1000, { continues: "r-1", id: "r-2", words: "raise DEMO-10" }),
+      record("done"),
+    ],
+  });
+  try {
+    renderWithQueries(<AskedConversation />);
+    await screen.findByTestId("going-plan-approve");
+    const [older] = screen.getAllByTestId("going-run");
+    await user.click(within(older as HTMLElement).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(revise).toHaveBeenCalledWith(
+        "r-2",
+        { plan: 1, words: "where is DEMO-15" },
+        keyedAttempt
+      )
+    );
+    expect(start).not.toHaveBeenCalled();
+    expect(goingState().starting).toBeUndefined();
+    expect(screen.getAllByTestId("going-run")).toHaveLength(2);
+  } finally {
+    stream.mockRestore();
+    read.mockRestore();
+    start.mockRestore();
+  }
+});
+
 // Copy gives the words a reader sees: a time the agent wrote as a link to its instant is copied
 // as the words it shows, never as its address.
 test("Copy of an answer gives each time in it as the words it shows, never its link", async () => {
@@ -1058,12 +1166,16 @@ const appliedFrames: readonly (readonly [string, unknown])[] = [
 
 // Design v3, state 7: an applied plan draws its steps' fold line, its answer, then its card, in
 // that order, and its fold line says what the run did last, "applied 1 change", not "proposed a
-// plan". The card's Undo says what it takes back. Once pressed, the answer, which speaks of the
-// changes, turns grey and the line under it reads "Undone"; the card's title says what was taken
-// back, so no second line under the answer says it again.
+// plan". The card's Undo says what it takes back. Once pressed, the run's record is read again,
+// and where Dispatch says its undo landed and nothing is left to take back, the answer, which
+// speaks of the changes, turns grey and the line under it reads "Undone"; the card's title says
+// what was taken back, so no second line under the answer says it again.
 test("an applied plan's run says what it applied, and after Undo greys its answer and reads Undone", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
+  const reread = spyOn(api, "goingRun").mockImplementation(async () =>
+    record("done", 1000, { undone_at: new Date().toISOString() })
+  );
   const undo = answerRoute<
     (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
   >("POST", "/api/v1/going/runs/*/undo");
@@ -1106,14 +1218,73 @@ test("an applied plan's run says what it applied, and after Undo greys its answe
         "Undone · 1 change reverted"
       )
     );
-    expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Undone$/u);
+    await waitFor(() =>
+      expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Undone$/u)
+    );
     // The answer keeps its words, in grey, and no line under it says when.
     expect(answered.textContent).toBe(appliedAnswer);
     expect(answered).toHaveAttribute("data-undone", "true");
     expect(answered.className).toContain(textMutedOnSurface);
     expect(screen.getByTestId("going-run").textContent ?? "").not.toContain("Undone at");
+    expect(reread).toHaveBeenCalledWith("r-1");
   } finally {
     read.mockRestore();
+    reread.mockRestore();
+    restore();
+  }
+});
+
+// Round 4 #1: whether an undo landed is read from what committed, as Dispatch's record says
+// (`undone_at`), never from the Undo's answer: an Undo whose every change another writer kept
+// put nothing back, so the run reads as before and its answer keeps its colour, as it would
+// after a reload; the card says what became of the change.
+test("an Undo that put nothing back leaves the run reading Done, as Dispatch's record says after it", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
+  const reread = spyOn(api, "goingRun").mockImplementation(async () =>
+    record("done", 1000, { undoable: true })
+  );
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  undo.mockImplementation(async () => ({
+    lines: [
+      {
+        fields: [
+          {
+            by: { id: "bob", kind: "user" },
+            field: "priority",
+            message: "holds P1 now, which user bob wrote after this run, so it is kept",
+            now: 1,
+            ok: false,
+          },
+        ],
+        item: "DEMO-10",
+        outcome: {
+          code: "GOING_UNDO_CHANGED",
+          message: "priority: holds …",
+          ok: false,
+          status: 409,
+        },
+        plan: 1,
+        row: 0,
+        tool: "dispatch_issue_update",
+        undo: "write_back",
+      },
+    ],
+  }));
+  const restore = await showRun("done", appliedFrames);
+  try {
+    const card = await screen.findByTestId("going-plan");
+    await user.click(await within(card).findByTestId("going-undo-button"));
+    await waitFor(() => expect(within(card).getByTestId("going-undo-line")).toBeInTheDocument());
+    await waitFor(() => expect(reread).toHaveBeenCalledWith("r-1"));
+    await waitFor(() => expect(goingState().runs.get("r-1")?.record.undoable).toBe(true));
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Done$/u);
+    expect(screen.getByTestId("going-run-answer")).not.toHaveAttribute("data-undone");
+  } finally {
+    read.mockRestore();
+    reread.mockRestore();
     restore();
   }
 });
@@ -1135,6 +1306,31 @@ test("a run undone before this page was opened says so on its card, as Dispatch 
     expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Undone$/u);
     expect(screen.getByTestId("going-run-answer")).toHaveAttribute("data-undone", "true");
     expect(within(card).queryByTestId("going-undo-button")).toBeNull();
+  } finally {
+    read.mockRestore();
+    restore();
+  }
+});
+
+// Round 6 B: `undone_at` is when the undo of any one change landed, so a run whose record still
+// holds a change Undo can take back (`undoable`) was undone in part: it reads "Partly undone", its
+// answer keeps its colour, and its card says when and offers Undo of the rest, as Dispatch decides.
+test("a run undone in part before this page was opened says so, and its card offers Undo of the rest", async () => {
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => appliedPlan);
+  const undoneAt = "2026-11-18T11:35:00Z";
+  const restore = await showRun("done", appliedFrames, {
+    run: { undoable: true, undone_at: undoneAt },
+  });
+  try {
+    const card = await screen.findByTestId("going-plan");
+    await waitFor(() =>
+      expect(within(card).getByTestId("going-plan-title")).toHaveTextContent(
+        `Partly undone · ${clockWords(Date.parse(undoneAt))}`
+      )
+    );
+    expect(within(card).getByTestId("going-undo-button")).toHaveTextContent(/^Undo the rest$/u);
+    expect(screen.getByTestId("going-run-state")).toHaveTextContent(/^Partly undone$/u);
+    expect(screen.getByTestId("going-run-answer")).not.toHaveAttribute("data-undone");
   } finally {
     read.mockRestore();
     restore();

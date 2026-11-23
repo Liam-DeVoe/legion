@@ -26,6 +26,7 @@ import {
   installFakeParseWorker,
   restoreParseWorker,
 } from "./parse-worker-fixture";
+import { askQuery } from "./reference-target";
 
 function withQueries(children: ReactNode): ReactNode {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -2177,20 +2178,27 @@ test("a time link draws as a time showing its words with the full date on hover,
 
 // A long question titles its link cut to fit, and the sentence the link ends draws one stop: the
 // link's "…", never "…." with the full stop the answer's own sentence adds after it. The cut is
-// the one every page's link titles take, at 60 characters: the bar changes no other page.
-test("a link whose title is cut draws no second full stop after its …", async () => {
+// the one every page's link titles take, at 60 characters: the bar changes no other page. Once
+// the question is reworded short, its title ends in no "…", and the stop is back.
+test("a link whose title is cut draws no second full stop after its …, and draws it again once the title is whole", async () => {
   await warmMarkdownRenderer();
   const question =
     "Does a reply in the side panel start a new turn, or is it the same turn as the last one?";
   const asked = Promise.withResolvers<AskRead>();
   const getAsk = spyOn(api, "getAsk").mockReturnValue(asked.promise);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <MarkdownBody
       chips
       markdown="Asked in [the question](dispatch://CORE-1/ask/ask-1). Pick one."
       referenceText=""
       softBreaks="line"
-    />
+    />,
+    {
+      wrapper: ({ children }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
   );
   try {
     const link = await view.findByRole("link", { name: "the question" });
@@ -2236,6 +2244,20 @@ test("a link whose title is cut draws no second full stop after its …", async 
     expect(view.container.textContent).toBe(
       "Asked in Does a reply in the side panel start a new turn, or is it th… Pick one."
     );
+
+    const reworded = "One turn or two";
+    act(() =>
+      client.setQueryData(askQuery("ask-1").queryKey, (read) =>
+        read === undefined
+          ? read
+          : {
+              ...read,
+              ask: { ...read.ask, question: reworded, question_tree: displayTree(reworded) },
+            }
+      )
+    );
+    await waitFor(() => expect(link.textContent).toBe(reworded));
+    expect(view.container.textContent).toBe(`Asked in ${reworded}. Pick one.`);
   } finally {
     view.unmount();
     getAsk.mockRestore();

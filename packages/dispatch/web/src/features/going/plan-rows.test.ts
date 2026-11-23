@@ -513,6 +513,24 @@ test("after Undo the title counts the changes reverted, never a message", () => 
   expect(undoneTitle([])).toBe("Undone · nothing to revert");
 });
 
+// A run whose Undo this page holds no answer of says when Dispatch's undo of it landed, wholly
+// where no change is left to take back, and in part where one is (`undoable`): `undone_at` is the
+// newest undo of any one change.
+test("a run Dispatch says was undone reads Undone at that time, or Partly undone where a change is left", () => {
+  const at = Date.parse("2026-11-18T11:35:00Z");
+  const ran = sentPlan("done", ["done", "done"]);
+  expect(cardTitle(ran, undefined, undefined, { at, left: false })).toBe(
+    `Undone · ${clockWords(at)}`
+  );
+  expect(cardTitle(ran, undefined, undefined, { at, left: true })).toBe(
+    `Partly undone · ${clockWords(at)}`
+  );
+  // What this page's Undo answered says more, and is said instead.
+  expect(cardTitle(ran, [undoLine({ row: 0 })], undefined, { at, left: true })).toBe(
+    "Undone · 1 change reverted"
+  );
+});
+
 test("a row that no longer waits says how it stands: a message's result, a failure, a row not run", () => {
   const sent = (delivery: "sent" | "queued" | "refused", words: string): GoingPlanRow => ({
     ...message(0),

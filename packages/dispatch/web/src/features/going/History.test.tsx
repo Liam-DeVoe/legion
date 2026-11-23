@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -6,7 +7,8 @@ import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
+import { ApiError, api, type WriteBounds } from "../../api/client";
+import { goingConversationsQuery } from "../../api/queries";
 import type { GoingConversation, GoingRun, GoingUndoAnswer } from "../../api/types";
 import { ConversationView } from "./ConversationView";
 import { goingState, openConversation, resetGoingStore } from "./going-store";
@@ -294,6 +296,81 @@ test("Undo in History undoes that run and names a value another person changed, 
       "Update CORE-3: Parent kept: bob set it to CORE-9 since",
       "Send a message to CORE-1: Sent, not undone",
     ]);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+/** History over `client`, which the row holds, so it reads History again as Dispatch's list
+ *  changes. */
+function renderHistoryOver(client: QueryClient): void {
+  renderWithQueries(<History onOpen={() => {}} />, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+}
+
+/** Run `id` of the split conversation, which moved CORE-3 and which Undo can take back. */
+function moved(id: string): GoingRun {
+  return run(id, "now move CORE-3 under the new one", now, {
+    conversation: "c-3",
+    issues: ["CORE-3"],
+    undoable: true,
+  });
+}
+
+// One run's Undo stays that run's: a History row names its conversation's newest run, and where
+// a newer one comes while an Undo is out, the newer run's Undo is its own - not pressed, with no
+// refusal - and the answer that lands is held for the run pressed.
+test("an Undo out when its conversation lists a newer run keeps its press, its answer and its refusal that run's", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const listedAs = (...runs: GoingRun[]): GoingConversation[] => [
+    { id: "c-3", newest_at: new Date(now).toISOString(), runs },
+  ];
+  let rows = listedAs(moved("r-4"));
+  const read = spyOn(api, "myGoingRuns").mockImplementation(async () => ({
+    limit: 50,
+    offset: 0,
+    rows,
+    total: rows.length,
+  }));
+  const undo = answerRoute<
+    (run: string, body: undefined, bounds: WriteBounds) => Promise<GoingUndoAnswer>
+  >("POST", "/api/v1/going/runs/*/undo");
+  const answered = Promise.withResolvers<GoingUndoAnswer>();
+  undo.mockImplementationOnce(() => answered.promise);
+  undo.mockImplementationOnce(async () => {
+    throw new ApiError(409, { code: "GOING_UNDO_UNKNOWN", error: "nothing was undone" });
+  });
+  const relist = async (...runs: GoingRun[]) => {
+    rows = listedAs(...runs);
+    await act(() => client.invalidateQueries({ queryKey: goingConversationsQuery().queryKey }));
+  };
+  try {
+    renderHistoryOver(client);
+    await user.click(await screen.findByTestId("going-undo-button"));
+    await waitFor(() => expect(undo).toHaveBeenCalledWith("r-4", undefined, keyedAttempt));
+    expect(screen.getByTestId("going-undo-button")).toBeDisabled();
+
+    await relist(moved("r-5"), moved("r-4"));
+    await waitFor(() =>
+      expect(screen.getByTestId("going-undo")).toHaveAttribute("data-run", "r-5")
+    );
+    expect(screen.getByTestId("going-undo-button")).toBeEnabled();
+    answered.resolve({ lines: [] });
+    await waitFor(() => expect(goingState().undone.has("r-4")).toBe(true));
+    expect(goingState().undone.has("r-5")).toBe(false);
+    expect(screen.getByTestId("going-undo-button")).toBeEnabled();
+
+    await user.click(screen.getByTestId("going-undo-button"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("nothing was undone");
+    await relist(moved("r-6"), moved("r-5"), moved("r-4"));
+    await waitFor(() =>
+      expect(screen.getByTestId("going-undo")).toHaveAttribute("data-run", "r-6")
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
   } finally {
     read.mockRestore();
   }

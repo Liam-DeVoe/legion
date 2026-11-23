@@ -52,8 +52,10 @@ export interface RunEntry {
   readonly settledAt: number | undefined;
   /** When this page read the run's end, in this page's clock; undefined until then. */
   readonly endedAt: number | undefined;
-  /** When this page read each of the run's block frames, in this page's clock, in the order of
-   *  `frames.blocks`: the time a block's read was made, for a run followed while it works. */
+  /** When this page first read each of the run's block frames, in this page's clock, in the order
+   *  of `frames.blocks`: the time a block's read was made, for a run followed while it works. A
+   *  stream read again from its first frame keeps these: the block it reads again holds what was
+   *  read then. */
   readonly blocksAt: readonly number[];
 }
 
@@ -73,12 +75,14 @@ export interface ClickedItem {
 }
 
 /** A run whose start is out: the person's words, which the bar shows as the question at once
- *  (design v2, rule 4), when they pressed Enter, in this page's clock, and whether the run
- *  follows up the open conversation, which then stays on the screen above it. */
+ *  (design v2, rule 4), when they pressed Enter, in this page's clock, and the run it follows up,
+ *  whose conversation then stays on the screen above it; undefined for a run that starts a
+ *  conversation of its own. It is the start of the conversation on the screen at the press, so
+ *  opening another conversation lets it go (`openConversation`, `openRun`, `newConversation`). */
 export interface StartingRun {
   readonly words: string;
   readonly at: number;
-  readonly follows: boolean;
+  readonly follows: string | undefined;
 }
 
 /** The words the person sent while `run`, the open conversation's newest run, worked. They wait
@@ -118,17 +122,11 @@ export interface GoingState {
   readonly queued: QueuedWords | undefined;
   /** Why the last start, stop or Continue was refused, in Dispatch's words. */
   readonly refusal: string | undefined;
-  /** What each run's Undo answered, by run, once it was pressed on this page, with when it
-   *  answered in this page's clock: one line for each change it reversed or kept. Dispatch answers
-   *  a second press from the same landings, so this only keeps the answer on the screen while the
-   *  page lives. */
-  readonly undone: ReadonlyMap<string, RunUndone>;
-}
-
-/** What one run's Undo answered (`GoingState.undone`), and when, in this page's clock. */
-export interface RunUndone {
-  readonly at: number;
-  readonly lines: readonly GoingUndoLine[];
+  /** What each run's Undo answered, by run, once it was pressed on this page: one line for each
+   *  change it reversed or kept. Dispatch answers a second press from the same landings, so this
+   *  only keeps the answer on the screen while the page lives. Whether an undo landed is not read
+   *  from it: the run's record, read again once it answers (`setUndone`), says so. */
+  readonly undone: ReadonlyMap<string, readonly GoingUndoLine[]>;
 }
 
 const INITIAL: GoingState = {
@@ -269,7 +267,7 @@ export function titleWords(words: string): string {
  *  where that run starts a conversation of its own, as a title (`titleWords`); empty where there
  *  is neither. */
 export function conversationTitle(of: GoingState = state): string {
-  if (of.starting !== undefined && !of.starting.follows) {
+  if (of.starting !== undefined && of.starting.follows === undefined) {
     return titleWords(of.starting.words);
   }
   const first = of.conversation?.[0];
@@ -305,8 +303,9 @@ function follow(id: string): void {
           const frames = withRunFrame(first ? STARTED_RUN : run.frames, name, data);
           const at = Date.now();
           // A frame adds at most one block; the stream read again from its first frame reads
-          // each block again.
-          const blocksAt = first ? [] : run.blocksAt;
+          // each block again, which keeps the time it was first read, as `settledAt` and
+          // `endedAt` keep theirs.
+          const blocksAt = run.blocksAt;
           return {
             ...run,
             blocksAt: frames.blocks.length > blocksAt.length ? [...blocksAt, at] : blocksAt,
@@ -428,7 +427,9 @@ export function setClicked(context: GoingContextInput, path: string): void {
 }
 
 /** Closes the open conversation, so the next request starts another. Its runs are still
- *  followed, and History lists it; the words that waited for its run are let go. */
+ *  followed, and History lists it; the words that waited for its run, and the question of a start
+ *  that is out, are let go: that start's run is followed once Dispatch answers it, and the chip
+ *  names it, but it opens nothing over the search. */
 export function newConversation(): void {
   set({
     ...state,
@@ -436,6 +437,7 @@ export function newConversation(): void {
     draft: undefined,
     queued: undefined,
     refusal: undefined,
+    starting: undefined,
   });
 }
 
@@ -463,7 +465,10 @@ function entryOf(record: GoingRun, startedHere: boolean, since?: number): RunEnt
  * words start no run beside it: they wait for it (`queued`, after any words that wait already),
  * and `useSendQueued` sends them once it no longer works. The run takes `start.level`, else the
  * level the bar is set to, and records `start.line`, the line on top it was started from. The
- * words show as the question from the moment of the call (`starting`).
+ * words show as the question from the moment of the call (`starting`). The start belongs to the
+ * conversation on the screen at the press: where another was opened while it was out, which lets
+ * the start go, the run Dispatch answers is followed, and the chip names it, but it joins no
+ * conversation on the screen, and a refusal of it is let go with it.
  */
 export async function startRun(
   words: string,
@@ -478,12 +483,8 @@ export async function startRun(
     return false;
   }
   const follows = continues ?? (newest !== undefined && ended(newest) ? newest.id : undefined);
-  const at = Date.now();
-  set({
-    ...state,
-    refusal: undefined,
-    starting: { at, follows: follows !== undefined, words },
-  });
+  const starting: StartingRun = { at: Date.now(), follows, words };
+  set({ ...state, refusal: undefined, starting });
   try {
     const run = await api.createGoingRun(
       {
@@ -495,24 +496,30 @@ export async function startRun(
       },
       goingBounds(login)
     );
-    const entry = entryOf(run, true, at);
-    const conversation =
-      follows !== undefined && state.conversation !== undefined ? state.conversation : [];
-    set({
-      ...state,
-      conversation: [...conversation, run.id],
-      draft: undefined,
-      runs: new Map(state.runs).set(run.id, entry),
-      starting: undefined,
-    });
+    const runs = new Map(state.runs).set(run.id, entryOf(run, true, starting.at));
+    if (state.starting !== starting) {
+      set({ ...state, runs });
+    } else {
+      // Still on the screen, the conversation open is the one the start follows up.
+      const conversation = follows === undefined ? [] : (state.conversation ?? []);
+      set({
+        ...state,
+        conversation: [...conversation, run.id],
+        draft: undefined,
+        runs,
+        starting: undefined,
+      });
+    }
     follow(run.id);
     return true;
   } catch (error) {
-    set({
-      ...state,
-      refusal: apiErrorMessage(error, "The run did not start."),
-      starting: undefined,
-    });
+    if (state.starting === starting) {
+      set({
+        ...state,
+        refusal: apiErrorMessage(error, "The run did not start."),
+        starting: undefined,
+      });
+    }
     return false;
   }
 }
@@ -553,7 +560,9 @@ export function useSendQueued(enter: (words: string) => boolean): void {
   });
 }
 
-/** Stops the run at once (`POST /api/v1/going/runs/{id}/stop`); its end frame says it stopped. */
+/** Stops the run at once (`POST /api/v1/going/runs/{id}/stop`); its end frame says it stopped. A
+ *  refusal says why while the run's conversation is open, and is let go where another was opened
+ *  since. */
 export function stopRun(id: string, login: string | undefined): void {
   const run = state.runs.get(id);
   if (run === undefined || runNext(shownState(run), "stop").send !== "stop") {
@@ -561,7 +570,11 @@ export function stopRun(id: string, login: string | undefined): void {
   }
   api.stopGoingRun(id, goingBounds(login)).then(
     (stopped) => withRun(id, (entry) => ({ ...entry, record: stopped })),
-    (error: unknown) => set({ ...state, refusal: apiErrorMessage(error, "The run did not stop.") })
+    (error: unknown) => {
+      if (state.conversation?.includes(id) === true) {
+        set({ ...state, refusal: apiErrorMessage(error, "The run did not stop.") });
+      }
+    }
   );
 }
 
@@ -581,14 +594,26 @@ export function continueRun(
   return startRun("Continue", context, login, { continues: id, level: level ?? run.record.level });
 }
 
-/** Holds what the Undo of `run` answered (`GoingState.undone`), as of now. */
+/** Holds what the Undo of `run` answered (`GoingState.undone`), and reads the run's record again
+ *  where the page holds the run: whether an undo of it landed (`undone_at`) and whether a change
+ *  of it is still left to take back (`undoable`) are Dispatch's to say, from what committed, and
+ *  the answer's lines do not say which of their requests did. A record that cannot be read leaves
+ *  the one held, as a reload that could not read it would. */
 export function setUndone(run: string, lines: readonly GoingUndoLine[]): void {
-  set({ ...state, undone: new Map(state.undone).set(run, { at: Date.now(), lines }) });
+  set({ ...state, undone: new Map(state.undone).set(run, lines) });
+  if (state.runs.has(run)) {
+    api.goingRun(run).then(
+      (record) => withRun(run, (entry) => ({ ...entry, record })),
+      () => undefined
+    );
+  }
 }
 
 /** Opens a conversation History lists: its runs, oldest first, each read from its stream's first
  *  frame unless its frames were read to its end already, and the conversation shown over the page
- *  where nothing shows it yet. */
+ *  where nothing shows it yet. What the conversation open before held - its plan's draft, the
+ *  words that waited for its run, why its last start, stop or Continue was refused, and the start
+ *  of its next run that is out - is let go. */
 export function openConversation(conversation: GoingConversation): void {
   const records = [...(conversation.runs ?? [])].reverse();
   const runs = new Map(state.runs);
@@ -600,27 +625,35 @@ export function openConversation(conversation: GoingConversation): void {
       unread.push(record.id);
     }
   }
+  const opened = records.map((record) => record.id);
+  // A start that is out stays only where it follows up a run of the conversation opened.
+  const follows = state.starting?.follows;
   set({
     ...state,
-    conversation: records.map((record) => record.id),
+    conversation: opened,
     draft: undefined,
     place: state.place === "closed" ? "over" : state.place,
     queued: undefined,
     refusal: undefined,
     runs,
+    starting: follows !== undefined && opened.includes(follows) ? state.starting : undefined,
   });
   for (const id of unread) {
     follow(id);
   }
 }
 
-/** Opens the conversation of a run the page already follows (the chip's Open). */
+/** Opens the conversation of a run the page already follows (the chip's Open, a notice's Open or
+ *  Review). The words that wait, and a start that is out, stay where they are of that
+ *  conversation, and are let go otherwise; why the last start, stop or Continue was refused is
+ *  let go. */
 export function openRun(id: string): void {
   const run = state.runs.get(id);
   if (run === undefined) {
     return;
   }
   const conversation = conversationOf(run);
+  const follows = state.starting?.follows;
   set({
     ...state,
     conversation,
@@ -629,6 +662,8 @@ export function openRun(id: string): void {
       state.queued !== undefined && conversation.includes(state.queued.run)
         ? state.queued
         : undefined,
+    refusal: undefined,
+    starting: follows !== undefined && conversation.includes(follows) ? state.starting : undefined,
   });
 }
 
