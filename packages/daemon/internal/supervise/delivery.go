@@ -897,11 +897,11 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		}
 	}
 	if holds {
-		if err := m.currentTaskText(ctx); err != nil {
+		next, err := m.currentTaskText(ctx)
+		if err != nil {
 			return err
 		}
-		var err error
-		if says, err = m.currentNews(ctx); err != nil {
+		if says, err = m.currentNews(ctx, next); err != nil {
 			return err
 		}
 	}
@@ -1162,11 +1162,11 @@ func renderedID(was string, news, held []byte) string {
 
 // rewritePending writes the pending delivery back under id with task as its text, and kept and
 // news as the decisions and the news it carries, then holds that delivery in memory: the one
-// persist-and-swap of a held task read again at its send (currentRootTask, currentNews), each of
-// which keeps its own rule for when to rewrite and when to retire. Its callers render the task's
-// text and its news together, so news is always what task names. The write comes first, so a
-// restart reads the task the send that follows carries, and a failed write leaves memory as the
-// record holds it.
+// persist-and-swap of a held task read again at its send (currentRootTask, currentTaskText for a
+// task that carries no news, currentNews), each of which keeps its own rule for when to rewrite
+// and when to retire. Its callers render the task's text and its news together, so news is always
+// what task names. The write comes first, so a restart reads the task the send that follows
+// carries, and a failed write leaves memory as the record holds it.
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
@@ -1177,40 +1177,50 @@ func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, new
 	return nil
 }
 
-// currentTaskText writes a phase worker's held task back to the text of its task's block as the
-// plan in force gives it now (Deps.TaskText), before the news it carries is rendered again from
-// the start's own text (currentNews). A later version of the plan can change only the text of a
-// running task, and the claim of the step that runs holds the start task it was given: the task
-// waits for its send, or a turn of it was cut off and the task was taken back (interrupted), and
-// the send that follows goes to the relaunched agent, which can be a fresh session. That send
-// carries the text the plan holds now, and no send is made for the version itself. This is where
-// the task is rewritten, because it is the machine that owns the pending delivery: the version
-// commits in a transaction of the workflow's, with no lock on this claim, and a task rewritten
-// there would be overwritten by the machine's next write of what memory still held.
+// currentTaskText is a phase worker's held task with the text of its task's block as the plan in
+// force gives it now (Deps.TaskText), before the news it carries is rendered again from the start's
+// own text (currentNews). A later version of the plan can change only the text of a running task,
+// and the claim of the step that runs holds the start task it was given: the task waits for its
+// send, or a turn of it was cut off and the task was taken back (interrupted), and the send that
+// follows goes to the relaunched agent, which can be a fresh session. That send carries the text
+// the plan holds now, and no send is made for the version itself. This is where the task is
+// rewritten, because it is the machine that owns the pending delivery: the version commits in a
+// transaction of the workflow's, with no lock on this claim, and a task rewritten there would be
+// overwritten by the machine's next write of what memory still held.
+//
+// A task that carries no news is written back here (rewritePending). A task that carries news is
+// answered with the news rewritten, and is not written: its text is rendered from that news, and
+// currentNews renders it and writes the two together, so no failure between them leaves a task
+// on record whose news its text does not name.
 //
 // The id is kept, as currentRootTask keeps it across a rewrite of the text: a send under that id
 // that reached the agent before is one the shim answers from its record, and the agent then keeps
 // the start task it already read. A task taken back from a turn carries a new id already
 // (rotateTaskID), so its send is a new prompt. The daemon's own delivery of a relaunch's record has
 // no task text to rewrite, and a delivery of no phase or no run is no phase worker's start.
-func (m *Machine) currentTaskText(ctx context.Context) error {
+func (m *Machine) currentTaskText(ctx context.Context) (Delivery, error) {
 	p := m.claim.Pending
 	if m.deps.TaskText == nil || p.Relaunch() || p.Phase == "" || p.Generation == 0 {
-		return nil
+		return *p, nil
 	}
 	task, news, err := m.deps.TaskText(ctx, m.claim, *p)
 	if err != nil {
-		return fmt.Errorf("read the text of the task of %s's held task now: %w", m.claim.Token, err)
+		return Delivery{}, fmt.Errorf("read the text of the task of %s's held task now: %w", m.claim.Token, err)
 	}
 	if task == p.Task && bytes.Equal(news, p.News) {
-		return nil
-	}
-	if err := m.rewritePending(ctx, p.ID, task, p.Kept, news); err != nil {
-		return err
+		return *p, nil
 	}
 	m.log.Info("supervise: a later version of the plan changed the text of this held task's task; the task is sent with it",
 		"delivery", p.ID, "issue", m.claim.Issue, "phase", p.Phase, "run", p.Generation)
-	return nil
+	if len(p.News) > 0 {
+		next := *p
+		next.Task, next.News = task, news
+		return next, nil
+	}
+	if err := m.rewritePending(ctx, p.ID, task, p.Kept, news); err != nil {
+		return Delivery{}, err
+	}
+	return *m.claim.Pending, nil
 }
 
 // currentNews writes a task that carries news of the approved design back to what it says now
@@ -1253,12 +1263,17 @@ func (m *Machine) currentTaskText(ctx context.Context) error {
 // rewritten task is persisted before it is sent, so a restart reads the task this send carried. A
 // task that carries no news is never asked about, and every task holds where nothing answers
 // (Deps.DesignNews nil).
-func (m *Machine) currentNews(ctx context.Context) (bool, error) {
+//
+// d is the held task as currentTaskText answers it, whose news can carry a later text of the
+// task's block that nothing wrote yet: the render reads it from d, and the one write here saves the
+// text and the news together. The id is judged against d's news, so a later text of the task's
+// block alone keeps it.
+func (m *Machine) currentNews(ctx context.Context, d Delivery) (bool, error) {
 	p := m.claim.Pending
-	if m.deps.DesignNews == nil || len(p.News) == 0 {
+	if m.deps.DesignNews == nil || len(d.News) == 0 {
 		return true, nil
 	}
-	task, news, err := m.deps.DesignNews(ctx, m.claim, *p)
+	task, news, err := m.deps.DesignNews(ctx, m.claim, d)
 	if err != nil {
 		return false, fmt.Errorf("read what the news task held for %s says now: %w", m.claim.Token, err)
 	}
@@ -1269,7 +1284,7 @@ func (m *Machine) currentNews(ctx context.Context) (bool, error) {
 		return true, nil
 	}
 	was := p.ID
-	id := renderedID(was, news, p.News)
+	id := renderedID(was, news, d.News)
 	if err := m.rewritePending(ctx, id, task, p.Kept, news); err != nil {
 		return false, err
 	}

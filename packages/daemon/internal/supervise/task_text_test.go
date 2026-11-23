@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -129,5 +130,53 @@ func TestADeliveryOfNoPhaseOrNoRunIsNeverPutToTaskText(t *testing.T) {
 		if sent := h.wantPrompts(1)[0]; sent.Message != textOneTask {
 			t.Fatalf("prompt = %+v, want the task as it was queued", sent)
 		}
+	}
+}
+
+// A held task that carries news of the approved design is rendered from its news (currentNews), so
+// a later text of its task's block reaches the prompt through that news: Deps.TaskText answers the
+// news rewritten, and the render's task and news are written together, under the same id. A
+// render that fails writes nothing, so the stored task keeps the news its text names.
+func TestAHeldTaskWithNewsTakesALaterTextOnlyWithItsRender(t *testing.T) {
+	const later = `{"task":"the start's own text with a later task text"}`
+	for _, tc := range []struct {
+		name  string
+		fails bool
+	}{{"the render answers", false}, {"the render fails", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newBareHarness(t)
+			h.deps.TaskText = func(_ context.Context, _ Claim, d Delivery) (string, []byte, error) {
+				return d.Task, []byte(later), nil
+			}
+			h.deps.DesignNews = func(_ context.Context, _ Claim, d Delivery) (string, []byte, error) {
+				if tc.fails {
+					return "", nil, errBoom
+				}
+				return "rendered from " + string(d.News), d.News, nil
+			}
+			c := queuedClaim()
+			if err := h.store.PutClaim(h.ctx, c); err != nil {
+				t.Fatal(err)
+			}
+			h.start(c)
+			h.reach(StateReady)
+
+			err := h.handle(newsStart("outbox:41", 41))
+			stored, ok := h.store.delivery(testToken)
+			if tc.fails {
+				if !ok || stored.Task != queuedTask || !bytes.Equal(stored.News, []byte(queuedNews)) {
+					t.Fatalf("a failed render (the send answered %v) left the stored delivery %+v (held %t), want the task as the start queued it, with the news its text names",
+						err, stored, ok)
+				}
+				return
+			}
+			want := "rendered from " + later
+			if err != nil || !ok || stored.ID != "outbox:41" || stored.Task != want || !bytes.Equal(stored.News, []byte(later)) {
+				t.Fatalf("the send answered %v and stored %+v (held %t), want outbox:41 holding the render of the later news and that news", err, stored, ok)
+			}
+			if sent := h.wantPrompts(1)[0]; sent.DeliveryID != "outbox:41" || sent.Message != want {
+				t.Fatalf("prompt = %+v, want outbox:41 carrying %q", sent, want)
+			}
+		})
 	}
 }
