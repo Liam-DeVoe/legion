@@ -25,8 +25,7 @@
 -- file.
 --
 -- It runs once, as the runner applies every file: its inserts are not repeatable, so it joins no
--- second run (typeMigrations in cmd/dispatch/supertag_nodes_test.go). Its census refuses a store
--- whose rows it would overwrite or collide with.
+-- second run (typeMigrations in cmd/dispatch/supertag_nodes_test.go).
 --
 -- The change is stated here as rows rather than read from the file, for the reason the seed
 -- copies its text in: a migration states what the database held at one version and must not
@@ -75,9 +74,9 @@ values ('attribute', 'plan_task/steps', 'state', 'value', 'live', now(), '{"kind
 -- every type node goes on carrying the version of the schema the store holds, as 20261113230000
 -- left them. A bounded write sets a column to a literal, so each node's whole attributes are
 -- written out: what 20261109051232, 20261113230000 and 20261115130000 left on it, its version
--- moved from 4 to 5. The census refuses a store whose block type nodes hold anything else, so
--- this rewrites nothing but the version. A supertag that declares no block type carries no
--- version and is left alone.
+-- moved from 4 to 5. Nothing but a migration writes a type node, so that is what each holds, and
+-- this rewrites nothing but the version (the census says why). A supertag that declares no block
+-- type carries no version and is left alone.
 update graph_nodes
 set attributes = '{"block_type": true, "content": "block+", "render": "host", "version": 5, "position": 0}'::jsonb
 where kind = 'supertag' and id = 'callout';
