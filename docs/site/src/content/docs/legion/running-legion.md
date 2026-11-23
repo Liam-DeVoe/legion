@@ -1324,9 +1324,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with until it is replaced. An issue pod on another image has
-   drifted, so an update round asks each of its roles to push its work and answer, and the daemon
+   drifted, so an update round asks each of its agents to push its work and answer, and the daemon
    replaces the pod once each has answered, or at the round's bound (`pod_update_grace_minutes`);
-   each role then comes back on the new pod in its own session. The controller's pod, which no
+   each agent then comes back on the new pod in its own session. The controller's pod, which no
    round covers, takes the new image at its next launch. At a release that moves the daemon API
    contract, the daemon moves its own controller (`controller: daemon`) for you where it knows a
    plugin pair to install: it relaunches the controller at once onto the release's plugins, and

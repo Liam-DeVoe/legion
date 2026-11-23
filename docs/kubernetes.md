@@ -3063,7 +3063,7 @@ The boot action is the log line alone: refusing to adopt a drifted pod would sto
 An issue pod on another image is replaced by its own update round (INFRA-484, [The disk dies with its pod](#the-disk-dies-with-its-pod)):
 the orphan sweep reads the image as drift and publishes one message to the topic of each claim the round asks, which asks its agent to push its work, let its subagents and background jobs finish or stop them, push what they made and answer `ready_for_update`.
 The round asks no claim that failed and no claim the daemon itself suspended, and it does not wait for either ([The disk dies with its pod](#the-disk-dies-with-its-pod) says which claims it asks).
-The daemon ends the pod once every claim it asks has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered.
+The daemon ends the pod once every claim it asks has answered, no turn runs and each claim's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the claims answered.
 So pinning such a release reaches a running issue pod by itself, without stopping a tree.
 A turn that still runs at the bound ends with the pod.
 A role's own push is what keeps its work, and work a role did not push before the pod goes is lost with the disk, a failed claim's and a passed-over claim's included, unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)); an operator who wants such work kept runs [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) before the roll.
