@@ -26,7 +26,8 @@ import (
 // is published where that claim records the round, also where that claim is not the one the
 // record gives the role: a fresh tester an earlier version of the plan started still holds its
 // claim in the pod. An ask the release before wrote names no claim, and reaches the claim the
-// record gives the role.
+// record gives the role. The asks run while key a's agent is ready, before the step's stop: a
+// claim the daemon suspended is published no ask (supervise's UpdateAskSuspended).
 func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -85,14 +86,6 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	if err := machine.Handle(ctx, supervise.RequestReady{Claim: keyed, Generation: launch, Session: "ses-a"}); err != nil {
 		t.Fatalf("ready key a's agent: %v", err)
 	}
-	stop := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1}, time.Now())
-	stop.ID = 58
-	if err := runner.execute(ctx, stop); err != nil {
-		t.Fatalf("the tester's step stop: %v", err)
-	}
-	if got := machine.Claim().State; got != supervise.StateSuspended {
-		t.Fatalf("key a's claim after the tester's step stop = %s, want suspended", got)
-	}
 
 	// A claim is asked once per round (the outbox marks it asked), so the ask the release before
 	// wrote, which names no claim, runs first: it reaches the claim the record gives the role.
@@ -118,6 +111,16 @@ func TestARowOfATesterStepReachesItsAgent(t *testing.T) {
 	}
 	if published := publisher.publishes(); len(published) != 2 || published[1].topic != notify.RoleTopicPrefix+string(own) || published[1].message != "Push yours too." {
 		t.Fatalf("the update ask of the earlier version's tester was published as %+v, want it on %s", published, notify.RoleTopicPrefix+string(own))
+	}
+
+	// The step's stop suspends key a's agent, the claim the record gives the tester's step.
+	stop := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: claim.RoleTester, Generation: 1}, time.Now())
+	stop.ID = 58
+	if err := runner.execute(ctx, stop); err != nil {
+		t.Fatalf("the tester's step stop: %v", err)
+	}
+	if got := machine.Claim().State; got != supervise.StateSuspended {
+		t.Fatalf("key a's claim after the tester's step stop = %s, want suspended", got)
 	}
 }
 
