@@ -416,6 +416,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"-R", "acme/widgets", "pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: paneWith("GH_REPO", "acme/widgets"), remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "list", "-R", "ssh://git@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
+		{argv: []string{"pr", "list", "-R", "git+ssh://git@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
+		{argv: []string{"pr", "list", "-R", "git+ssh://git:" + madeUpGhToken + "@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), err: "a -R value holds a user name or a password"},
 		{argv: []string{"pr", "list", "-R", "https://github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "list", "-R", "ssh://git:" + madeUpGhToken + "@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), err: "a -R value holds a user name or a password"},
 		{argv: []string{"pr", "list", "-R", "https://git@github.com/acme/widgets"}, env: pane, remotes: remotes(sjawharClone), err: "a -R value holds a user name or a password"},

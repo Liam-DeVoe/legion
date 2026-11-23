@@ -543,8 +543,9 @@ func isGitHubHost(host string) bool {
 // ghconfig.RepositoryName), so two spellings of one repository are one selector.
 //
 // A refusal names the value by its slot alone (ghShown, with the repository's strict form, which
-// no value it refuses has): a URL holding a password, or a user name other than an ssh:// URL's
-// SSH login (`ssh://git@github.com/o/r`, which gh takes and which places as before), a value with
+// no value it refuses has): a URL holding a password, or a user name other than an ssh:// or
+// git+ssh:// URL's SSH login (`ssh://git@github.com/o/r`, `git+ssh://git@github.com/o/r`, which gh
+// reads as ssh and which place as before, as the remote rule reads them), a value with
 // no scheme holding an "@", a ":", a "?" or a "#" in any segment, on a github.com host or another,
 // where a user name, a password or a query stands (`x-access-token:<token>@ghe.example/o/r`,
 // `<token>@github.com:o/r`, `ghe.example/x:<token>@ghe.example/o/r`, `ghe.example/o/r?t=<token>`),
@@ -554,7 +555,7 @@ func repositoryTarget(value, kind string, api bool) (owner, repo string, err err
 	shown := ghShown(value, kind, ghRepository)
 	host, rest := "", value
 	if parsed, err := url.Parse(value); err == nil && parsed.Scheme != "" && parsed.Host != "" {
-		if _, hasPassword := parsed.User.Password(); parsed.User != nil && (hasPassword || !strings.EqualFold(parsed.Scheme, "ssh")) {
+		if _, hasPassword := parsed.User.Password(); parsed.User != nil && (hasPassword || !slices.Contains([]string{"ssh", "git+ssh"}, strings.ToLower(parsed.Scheme))) {
 			return "", "", cannotPlace(shown, "holds a user name or a password, which no GitHub repository's URL does, and is not printed", api)
 		}
 		host, rest = parsed.Hostname(), strings.Trim(parsed.Path, "/")

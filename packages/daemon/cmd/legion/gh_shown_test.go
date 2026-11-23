@@ -278,3 +278,167 @@ func ghCanaryRefusal(row ghCanaryRow) error {
 	_, err := ghTargetOf(row.argv, row.env, help, remotes, ownersOwnDirectories)
 	return err
 }
+
+// ghFormattedValues are the places in the package's non-test gh*.go files that quote or format a
+// value themselves, without ghShown, each keyed as ghFormatSites keys it and given the reason it is
+// no value a person typed in a slot a refusal names: a name gh's own help or this command's tables
+// gave, a position, a kind built from literals, a configured path. A new such place fails
+// TestNoRefusalFormatsAPersonsValueItself until it joins this table, which is where a reviewer
+// reads it.
+var ghFormattedValues = map[string]string{
+	"ghShown: strconv.Quote(value)":                                         "the helper itself: a value its slot's strict form admits",
+	"ghCallLogValue: strconv.Quote(value)":                                  "the call log's fields (role, issue, a placed repository, gh's command path, a visibility), no refusal",
+	"ghArgs.set: %q \"--\"+name":                                            "an option the leaf's help lists, by the help's name",
+	"ghCloneGitFlags: %q name":                                              "a git clone flag of ghCloneGitFlagTakes, by the table's spelling",
+	"ghCommand.addFlag: %q strings.TrimSpace(line)":                         "a line of gh's own help, which gh printed for no argument of the call",
+	"ghCommand.mayRead: %q word":                                            "a gh alias or extension gh's own help lists",
+	"ghCommand.parse: cannotPlace(strconv.Quote(\"--\"+name))":              "an option the leaf's help lists, by the help's name",
+	"ghCommand.parse: strconv.Quote(\"--\"+name)":                           "an option the leaf's help lists, by the help's name",
+	"ghRemote.what: %q r.name":                                              "a git remote's name, which git config holds and the refusals of remotes name",
+	"parseGhHelp: %q entry":                                                 "a line of gh's own help",
+	"parseGhHelp: %q placeholder":                                           "a usage placeholder of gh's own help",
+	"parseGhHelp: %q strings.TrimSpace(line)":                               "a line of gh's own help",
+	"readGitRemotes: %q name":                                               "a git remote's name, the text before the tab of git remote -v's line",
+	"refuseLegionGhAsRealGh: %q gh":                                         "LEGION_GH_PATH, a configured path, no argument of the call",
+	"checkedOwner: cannotPlace(kind)":                                       "a slot's kind, built from literals and a help-listed option name",
+	"repositoryTarget: cannotPlace(shown)":                                  "ghShown's words for the value, with the repository's strict form",
+	"selectors.fromAPI: cannotPlace(ordinalArgument(2))":                    "a position",
+	"selectors.fromCommand: cannotPlace(ordinalArgument(i+1))":              "a position",
+	"selectors.fromCommand: cannotPlace(ordinalArgument(len(cmd.slots)+1))": "a position",
+	"selectors.fromOptions: cannotPlace(kind)":                              "a slot's kind, built from literals and a help-listed option name",
+	"selectors.fromOptions: cannotPlace(strconv.Quote(\"--\"+name))":        "an option the leaf's help lists, by the help's name",
+	"selectors.fromOptions: strconv.Quote(\"--\"+name)":                     "an option the leaf's help lists, by the help's name",
+}
+
+// ghFormatSites is every place in the package's non-test gh*.go files that quotes or formats a
+// value without ghShown: each strconv.Quote call (`fn: strconv.Quote(<arg>)`), each argument a
+// %q verb of an fmt call's literal format formats (`fn: %q <arg>`), and each cannotPlace call whose
+// name is neither a ghShown call nor a literal (`fn: cannotPlace(<name>)`), fn the function that
+// holds it, a method by its receiver's type.
+func ghFormatSites(t *testing.T) map[string]string {
+	t.Helper()
+	files, err := filepath.Glob("gh*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites := map[string]string{}
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		file, err := parser.ParseFile(fset, name, source, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := func(node ast.Node) string {
+			return string(source[fset.Position(node.Pos()).Offset:fset.Position(node.End()).Offset])
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			owner := fn.Name.Name
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				recv := fn.Recv.List[0].Type
+				if star, ok := recv.(*ast.StarExpr); ok {
+					recv = star.X
+				}
+				if ident, ok := recv.(*ast.Ident); ok {
+					owner = ident.Name + "." + owner
+				}
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				at := fset.Position(call.Pos()).String()
+				switch callee := text(call.Fun); {
+				case callee == "strconv.Quote" && len(call.Args) == 1:
+					sites[owner+": strconv.Quote("+text(call.Args[0])+")"] = at
+				case callee == "cannotPlace" && len(call.Args) > 0:
+					first := call.Args[0]
+					if _, literal := first.(*ast.BasicLit); literal {
+						break
+					}
+					if inner, ok := first.(*ast.CallExpr); ok && text(inner.Fun) == "ghShown" {
+						break
+					}
+					sites[owner+": cannotPlace("+text(first)+")"] = at
+				case strings.HasPrefix(callee, "fmt.") && len(call.Args) > 0:
+					formatAt := 0
+					if callee == "fmt.Fprintf" {
+						formatAt = 1
+					}
+					if formatAt >= len(call.Args) {
+						break
+					}
+					literal, ok := call.Args[formatAt].(*ast.BasicLit)
+					if !ok || literal.Kind != token.STRING {
+						break
+					}
+					format, err := strconv.Unquote(literal.Value)
+					if err != nil {
+						break
+					}
+					for i, verb := range formatVerbs(format) {
+						if arg := formatAt + 1 + i; verb == 'q' && arg < len(call.Args) {
+							sites[owner+": %q "+text(call.Args[arg])] = at
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	return sites
+}
+
+// formatVerbs is the verb of each argument format formats, in order; %% takes none.
+func formatVerbs(format string) []rune {
+	var verbs []rune
+	runes := []rune(format)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] != '%' {
+			continue
+		}
+		i++
+		for i < len(runes) && strings.ContainsRune("+-# 0123456789.[]*", runes[i]) {
+			i++
+		}
+		if i < len(runes) && runes[i] != '%' {
+			verbs = append(verbs, runes[i])
+		}
+	}
+	return verbs
+}
+
+// No refusal of legion gh formats a person's value itself: every place in the source that quotes
+// or formats a value without ghShown (ghFormatSites) is one ghFormattedValues holds, with the
+// reason its value is none a person typed, and every place that table holds is still in the
+// source. A place added to the code, such as a cannotPlace(strconv.Quote(word), …) of a search
+// word, fails here naming its function and its argument. A source holding no such place at all
+// is refused: the walk would have read nothing.
+func TestNoRefusalFormatsAPersonsValueItself(t *testing.T) {
+	sites := ghFormatSites(t)
+	if len(sites) == 0 {
+		t.Fatal("UNKNOWN: the source holds no strconv.Quote call, no q verb and no cannotPlace name, so this read nothing")
+	}
+	for _, key := range slices.Sorted(maps.Keys(sites)) {
+		if _, ok := ghFormattedValues[key]; !ok {
+			t.Errorf("%s formats a value itself, at %s, which ghFormattedValues does not hold: print a person's value through ghShown, or name why this one is none", key, sites[key])
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(ghFormattedValues)) {
+		if _, ok := sites[key]; !ok {
+			t.Errorf("ghFormattedValues holds %s, which the source no longer has", key)
+		}
+	}
+	t.Logf("%d places format a value without ghShown, each reviewed", len(sites))
+}
