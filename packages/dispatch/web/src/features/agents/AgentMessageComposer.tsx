@@ -116,16 +116,17 @@ export function AgentMessageComposer({
   // and consumed by the `onClose` that follows it.
   const sentJustNow = useRef(false);
   const box = useRef<HTMLDivElement>(null);
-  // `MentionComposer` disables its control fieldset while a send is in flight, including this
-  // textarea. The browser then hands focus back to the document, so focus returns the moment React
-  // re-enables the field - watched, rather than guessed at with a frame or timer, because the
-  // write's latency is the server's.
+  // `MentionComposer` holds its control fieldset while a send is in flight (`aria-disabled`, each
+  // text field read-only), never disabled, so this textarea keeps the focus through the send. A
+  // focus that is on the document once the send lands is given back to the field then, and a
+  // field disabled at that moment is given it once it is enabled again - watched, rather than
+  // guessed at with a frame or timer.
   const refocusWatcher = useRef<MutationObserver | null>(null);
   useEffect(() => () => refocusWatcher.current?.disconnect(), []);
-  /** Only the focus the disable took is the composer's to give back: through the whole round trip
-   *  it sits on the document, so a reader who has clicked something else in the meantime keeps
-   *  where they went - otherwise the next keys, `Ctrl+Enter` included, would land in the composer
-   *  they have already sent from, addressed to another agent. */
+  /** Only a focus left on the document is the composer's to give back: a reader who has clicked
+   *  something else while the send was out keeps where they went - otherwise the next keys,
+   *  `Ctrl+Enter` included, would land in the composer they have already sent from, addressed to
+   *  another agent. */
   const refocusComposer = () => {
     const field = box.current?.querySelector("textarea");
     if (field === null || field === undefined) return;
@@ -288,7 +289,7 @@ export function AgentMessageComposer({
           void queryClient.invalidateQueries({
             queryKey: agentMessagesQuery(agent.session_id).queryKey,
           });
-          // Focus went to the document when the field disabled itself; take it back.
+          // A focus left on the document goes back to the field (`refocusComposer`).
           refocusComposer();
         }}
         owner={composerOwner}

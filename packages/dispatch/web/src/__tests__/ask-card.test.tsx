@@ -24,6 +24,7 @@ import { emulateChromiumFocusFixup } from "../features/issue-page/chromium-focus
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
+import { pressHeld } from "./held-press";
 import { keyedAttempt } from "./keyed-attempt";
 import { userOnFakeClock } from "./user";
 
@@ -2666,18 +2667,22 @@ test("AskCard compact variant keeps an open note visible when a real option is p
   }
 });
 
-test("AskCard compact variant hands focus to the row when Answer disables under it", async () => {
+// While its answer is out Answer is held (`aria-disabled`), never disabled: the browser takes the
+// focus off a button that turns disabled, which would drop the keyboard reader who pressed it onto
+// the page. Held, it keeps the focus, and a second press sends nothing. Once the answer lands its
+// record takes the form's place, and the card hands the focus the form held to the row.
+test("AskCard compact variant keeps the focus on Answer while its answer is out, and hands it to the row when the answer lands", async () => {
   const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
-  let release: (value: Ask) => void = () => {};
+  const answering = Promise.withResolvers<Ask>();
+  let sent = 0;
   const { view } = renderCard(
     <div data-testid="row" tabIndex={-1}>
       <AskCard
-        answerAsk={() =>
-          new Promise<Ask>((resolve) => {
-            release = resolve;
-          })
-        }
+        answerAsk={() => {
+          sent += 1;
+          return answering.promise;
+        }}
         ask={input}
         getAskThread={emptyThread(input)}
         variant="compact"
@@ -2689,13 +2694,10 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
     const card = view.getByTestId("ask-ask-1");
     await user.click(await within(card).findByRole("radio", { name: "Ship" }));
     const answer = within(card).getByRole("button", { name: "Answer" });
-    answer.focus();
-    expect(answer).toHaveFocus();
-    await user.click(answer);
-    await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(true));
-    expect(view.getByTestId("row")).toHaveFocus();
-    release(answered(input, ["Ship"]));
+    await pressHeld(user, answer, { name: "Answer", sent: () => sent });
+    answering.resolve(answered(input, ["Ship"]));
     await view.findByRole("img", { name: "Selected" });
+    expect(document.activeElement?.getAttribute("data-testid")).toBe("row");
   } finally {
     view.unmount();
   }

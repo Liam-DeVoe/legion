@@ -19,7 +19,6 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
-import { focusOnMount } from "../../components/focus-place";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -387,10 +386,11 @@ export function AskCard({
       answerFieldRef.current?.focus();
     }
   }, [ownWordsOpen]);
-  // A control that disables itself under the reader's focus - Ask back while sending and once
-  // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
-  // of the row, which then lets the row go) with nothing the card could act on afterwards; the
-  // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
+  // A control that disables itself under the reader's focus - Ask back once its text is sent and
+  // the card no longer refuses - would have the browser drop focus to the document body (in the
+  // Inbox, out of the row, which then lets the row go) with nothing the card could act on
+  // afterwards; the same hand-off as a vanishing form, in the commit that disables it, before the
+  // browser looks.
   const [formRef, trackForm] = useFormRef();
   useLayoutEffect(() => {
     const form = formRef.current;
@@ -400,16 +400,17 @@ export function AskCard({
     }
   });
   const tooltips = useTooltips();
-  // Inside `NoTooltips` the card refuses its form from the press of an answer or a clarification
-  // until that write is done with: while it is out, and, once it lands, until a read of the ask's
-  // thread newer than the landing is drawn (`awaitingRead`). Until then the form on the page is
-  // stale: after an answer that landed with no body to show, its options are still picked, and
-  // Answer would send a second answer. A landing that starts no read of the thread ends the
-  // refusal as it lands (a first answer that comes back with its body, whose record replaces the
-  // form at once), and so does a read that fails, so the card never stays refused. Each control it
-  // refuses - the answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it
-  // anyway, the Cancel of a change, and the options with Other - is `aria-disabled` in place of
-  // `disabled`: the box is `readOnly`, and the options are refused by their group. `disabled`
+  // The card refuses its form from the press of an answer or a clarification until that write is
+  // done with: while it is out, and inside `NoTooltips`, once it lands, until a read of the ask's
+  // thread newer than the landing is drawn as well (`awaitingRead`). Until then the form on that
+  // page is stale: after an answer that landed with no body to show, its options are still
+  // picked, and Answer would send a second answer. A landing that starts no read of the thread
+  // ends the refusal as it lands (a first answer that comes back with its body, whose record
+  // replaces the form at once), and so does a read that fails, so the card never stays refused.
+  // Outside `NoTooltips` the refusal ends as the write is done with. Each control it refuses - the
+  // answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it anyway, the
+  // Cancel of a change, and the options with Other - is `aria-disabled` in place of `disabled` on
+  // every page: the box is `readOnly`, and the options are refused by their group. `disabled`
   // drops the focus to the body in a browser; this way the control the reader pressed keeps it.
   // A press of any of them does nothing then, and neither does Ctrl+Enter, a paste or a drop in
   // the box, or the form's submit. Each is drawn from the form as it stood when the refusal began
@@ -420,9 +421,8 @@ export function AskCard({
   // as the refusal ends: the form's hand-off, or Ask back instead's, as it leaves the page, or the
   // one above as Ask back turns `disabled`; a focus the reader moved out of the form meanwhile
   // stays where they put it. Any other reason a control cannot be pressed - nothing typed before
-  // the press, an upload still out - still disables it, on both sides. Outside `NoTooltips` each
-  // is `disabled` while the write is out and no longer, as on `main`.
-  const holdsFocus = !tooltips;
+  // the press, an upload still out - still disables it.
+  const waitsForRead = !tooltips;
   // The newest write of the form that has landed, by when it was sent: 0 while none has.
   const landedWrite = Math.max(
     mutation.isSuccess ? mutation.submittedAt : 0,
@@ -440,18 +440,17 @@ export function AskCard({
   const landedNow = landedWrite > landing.write;
   let readAfter = landedNow ? threadQuery.dataUpdatedAt : landing.readAfter;
   const awaitingRead =
-    holdsFocus &&
+    waitsForRead &&
     readAfter !== null &&
     threadQuery.isFetching &&
     threadQuery.dataUpdatedAt <= readAfter;
   if (!awaitingRead) readAfter = null;
-  if (holdsFocus && (landedNow || readAfter !== landing.readAfter)) {
+  if (waitsForRead && (landedNow || readAfter !== landing.readAfter)) {
     setLanding({ readAfter, write: Math.max(landedWrite, landing.write) });
   }
-  // The one flag every refusal of the form reads: outside `NoTooltips` it is `isSubmitting`.
+  // The one flag every refusal of the form reads.
   const refusing = isSubmitting || awaitingRead;
-  const refusedWhileOut = (holdsFocus && refusing) || undefined;
-  const disabledWhileOut = !holdsFocus && isSubmitting;
+  const refusedWhileOut = refusing || undefined;
   // What a refused control is drawn from, recorded while rendering as the landing is, in the
   // first render that refuses: the press, before the landing empties the box.
   const formNow = {
@@ -465,14 +464,12 @@ export function AskCard({
   const cannotAnswer = held?.cannotAnswer ?? !canAnswer;
   const nothingToAskBack = held?.nothingToAskBack ?? trimmedAnswer === "";
   const choiceShown = held?.choice ?? questionChoice;
-  // Ask back instead takes the focus as it is drawn, once. Outside `NoTooltips` its callback is
-  // `focusOnMount`, one function for every render, which never pulls the focus back on a later
-  // render. Inside it is this one callback, stable across renders as `useFormRef`'s is, which
-  // focuses it once as well: a focus taken at each render would move the reader's focus while a
-  // write is out - from Answer with it anyway, say, whose answer is out. The choice leaves the
-  // page, and the button with it, as the clarification lands outside `NoTooltips`, and inside
-  // once the ask is read again after it. Only inside does a focus the button still holds then go
-  // where the form's own hand-off puts it, not to the body.
+  // Ask back instead takes the focus as it is drawn, once: this one callback, stable across
+  // renders as `useFormRef`'s is, focuses it once, since a focus taken at each render would move
+  // the reader's focus while a write is out - from Answer with it anyway, say, whose answer is
+  // out. The choice leaves the page, and the button with it, once the card stops refusing after
+  // the clarification lands, and a focus the button still holds then goes where the form's own
+  // hand-off puts it, not to the body.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
@@ -613,7 +610,6 @@ export function AskCard({
         <textarea
           className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
           data-ask-answer=""
-          disabled={disabledWhileOut}
           id={answerFieldId}
           onChange={(event) => {
             setAnswerText(event.target.value);
@@ -635,7 +631,7 @@ export function AskCard({
                 }
           }
           placeholder={answerPlaceholder}
-          readOnly={holdsFocus && refusing}
+          readOnly={refusing}
           ref={answerFieldRef}
           rows={2}
           value={answerText}
@@ -646,12 +642,12 @@ export function AskCard({
   );
   const submitButton = (
     <button
-      // While nothing can be sent it is `disabled` alone, on both sides of `NoTooltips`; while the
-      // card refuses, that is read from the form as the refusal found it (`held`).
+      // While nothing can be sent it is `disabled` alone; while the card refuses, that is read
+      // from the form as the refusal found it (`held`).
       aria-disabled={cannotAnswer || uploading ? undefined : refusedWhileOut}
       aria-describedby={submitHint === undefined ? undefined : submitHintId}
       className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-      disabled={cannotAnswer || disabledWhileOut || uploading}
+      disabled={cannotAnswer || uploading}
       title={tooltips ? submitHint : undefined}
       type="submit"
     >
@@ -675,11 +671,10 @@ export function AskCard({
       <button
         aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg px-3 py-2 text-sm font-semibold ${filledLook}`}
-        disabled={disabledWhileOut}
         onClick={() => {
           if (!refusing) sendClarification();
         }}
-        ref={tooltips ? focusOnMount : focusAskBackInstead}
+        ref={focusAskBackInstead}
         type="button"
       >
         {clarification.isPending ? "Sending…" : "Ask back instead"}
@@ -687,7 +682,6 @@ export function AskCard({
       <button
         aria-disabled={refusedWhileOut}
         className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-        disabled={disabledWhileOut}
         onClick={() => {
           if (!refusing) sendAnswer(answerText);
         }}
@@ -704,7 +698,6 @@ export function AskCard({
           <button
             aria-disabled={refusedWhileOut}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={disabledWhileOut}
             onClick={() => {
               if (!refusing) cancelChanging();
             }}
@@ -714,12 +707,12 @@ export function AskCard({
           </button>
         ) : (
           <button
-            // While it has no text to send it is `disabled` alone, on both sides of `NoTooltips`;
-            // while the card refuses, that is read from the form as the refusal found it (`held`),
-            // so the text the landing clears leaves it refused and not `disabled`.
+            // While it has no text to send it is `disabled` alone; while the card refuses, that is
+            // read from the form as the refusal found it (`held`), so the text the landing clears
+            // leaves it refused and not `disabled`.
             aria-disabled={nothingToAskBack || uploading ? undefined : refusedWhileOut}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryLook}`}
-            disabled={nothingToAskBack || disabledWhileOut || uploading}
+            disabled={nothingToAskBack || uploading}
             onClick={() => {
               if (!refusing) sendClarification();
             }}
@@ -954,8 +947,8 @@ export function AskCard({
       {answerFirst ? null : threadNode}
       <form
         className="mt-3 space-y-3"
-        // While the card refuses a submit sends nothing: inside `NoTooltips` a press of Answer,
-        // or Enter in an option, still reaches it then (`refusing`).
+        // While the card refuses a submit sends nothing: a press of Answer, or Enter in an
+        // option, still reaches it then (`refusing`).
         onSubmit={(event) => {
           if (refusing) event.preventDefault();
           else submit(event);
@@ -963,15 +956,14 @@ export function AskCard({
         ref={trackForm}
       >
         {(displayedAsk.options ?? []).length === 0 ? null : (
-          // Inside `NoTooltips`, while the card refuses, the options are refused by their group's
-          // `aria-disabled`, which ARIA passes to each option in it: an option row puts no
-          // attribute of its own on its input (`AskChoiceRow`).
+          // While the card refuses, the options are refused by their group's `aria-disabled`,
+          // which ARIA passes to each option in it: an option row puts no attribute of its own on
+          // its input (`AskChoiceRow`).
           <fieldset aria-disabled={refusedWhileOut} className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
             {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
-                disabled={disabledWhileOut}
                 hotkey
                 key={option.label}
                 multiple={displayedAsk.multiple}
@@ -988,7 +980,6 @@ export function AskCard({
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
-                disabled={disabledWhileOut}
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
