@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,7 +44,11 @@ const plantedToken = "not-a-secret-token"
 // which the row keeps as the call passed it (logged), hold none of it. Each row checks that the
 // stand-in was asked and that each text it wrote holding a credential held plantedToken, that the
 // line's error is logged's text as the handler writes it, and that neither the line nor logged's
-// text holds a credential (oauth2calltest.RequireNone). Captures sink/sandbox/<file>/<function>.
+// text holds a credential (oauth2calltest.RequireNone), and prints logged, and for a refused mint
+// the GitHub answer it keeps on appauth.AnswerError, under every fmt verb and a bad verb, at every
+// holding, beside the first text the stand-in wrote as a plain string
+// (oauth2calltest.KeptPrintTest). Captures sink/sandbox/<file>/<function>, and
+// kept/sandbox/<file>/<function>/{error,answer}/<holding>/<verb>.
 //
 //   - refreshGitHubCredentials: the walk's mint of an issue pod's provisioning lease, through the
 //     daemon's token source over a real token manager in token mode (mintedTokens, as
@@ -88,11 +93,14 @@ func TestTheSandboxRuntimesWarningsOfARefusedAnswerHoldNoCredentialTheRequestCar
 		drive func(t *testing.T, log *slog.Logger) (ghrepo.Repository, *echoes)
 		// check, when set, is the row's own checks of the error its sink logged.
 		check func(t *testing.T, logged error)
+		// mint is whether the sink's error is a refused mint's, which keeps GitHub's answer on
+		// appauth.AnswerError.
+		mint bool
 	}{
 		{
 			name:    "ghcredential.go:refreshGitHubCredentials provisioning token mint failed",
 			capture: "sink/sandbox/ghcredential.go/refreshGitHubCredentials",
-			message: "sandbox runtime: provisioning token mint failed", key: "err",
+			message: "sandbox runtime: provisioning token mint failed", key: "err", mint: true,
 			drive: func(t *testing.T, log *slog.Logger) (ghrepo.Repository, *echoes) {
 				repo := rootSpec(t).Repository
 				tokens, echoed := plantedApps(t, repo.Owner())
@@ -169,7 +177,7 @@ func TestTheSandboxRuntimesWarningsOfARefusedAnswerHoldNoCredentialTheRequestCar
 		{
 			name:    "repocache.go:refreshCacheTokens repository cache token refresh failed",
 			capture: "sink/sandbox/repocache.go/refreshCacheTokens",
-			message: "sandbox runtime: repository cache token refresh failed", key: "err",
+			message: "sandbox runtime: repository cache token refresh failed", key: "err", mint: true,
 			drive: func(t *testing.T, log *slog.Logger) (ghrepo.Repository, *echoes) {
 				tokens, echoed := plantedApps(t, cacheRepo.Owner())
 				tokens.minting.Store(true)
@@ -183,7 +191,7 @@ func TestTheSandboxRuntimesWarningsOfARefusedAnswerHoldNoCredentialTheRequestCar
 		{
 			name:    "repocache.go:sweepCaches repository cache sweep failed",
 			capture: "sink/sandbox/repocache.go/sweepCaches",
-			message: "sandbox runtime: repository cache sweep failed; tried at the next sweep", key: "err",
+			message: "sandbox runtime: repository cache sweep failed; tried at the next sweep", key: "err", mint: true,
 			drive: func(t *testing.T, log *slog.Logger) (ghrepo.Repository, *echoes) {
 				tokens, echoed := plantedApps(t, cacheRepo.Owner())
 				tokens.minting.Store(true)
@@ -237,6 +245,17 @@ func TestTheSandboxRuntimesWarningsOfARefusedAnswerHoldNoCredentialTheRequestCar
 				row.check(t, logged)
 			}
 			oauth2calltest.RequireNone(t, row.capture, strings.Join(append(texts, logged.Error()), "\n"))
+			name := strings.TrimPrefix(row.capture, "sink/")
+			oauth2calltest.KeptPrintTest(t, name+"/error", logged, sent[0])
+			if row.mint {
+				// The error prints none of GitHub's answer (an AnswerError prints its Err alone), so
+				// the answer it keeps is printed too: there the request's credential sits.
+				var answered *appauth.AnswerError
+				if !errors.As(logged, &answered) || answered.Answer == nil {
+					t.Fatalf("the %q line's error %q keeps no GitHub answer of appauth's", row.message, logged)
+				}
+				oauth2calltest.KeptPrintTest(t, name+"/answer", answered.Answer, sent[0])
+			}
 		})
 	}
 }

@@ -330,8 +330,10 @@ func controllerCredentialServer(t *testing.T, tokens appauth.Source, log *slog.L
 // printer subtracts them (RemoteText.String); the line holds none of the token. The mint's error
 // prints appauth's own message (appauth.AnswerError.Error), its answer a field it never prints;
 // the read's error prints the answer (githubrest.Answer.Error). Each row holds the logged error to
-// that answer and the answer to the echo (requireEchoKept). Captures
-// sink/api/handoff.go/implementationPullRequest/<call>.
+// that answer and the answer to the echo (requireEchoKept), and prints the logged error and that
+// answer under every fmt verb and a bad verb, at every holding, beside the echo as a plain string
+// (oauth2calltest.KeptPrintTest). Captures sink/api/handoff.go/implementationPullRequest/<call>,
+// and kept/api/handoff.go/implementationPullRequest/<call>/{error,answer}/<holding>/<verb>.
 func TestACompletionsUnreadPullRequestLineHoldsNoCredential(t *testing.T) {
 	for _, row := range []struct {
 		name, capture string
@@ -377,7 +379,11 @@ func TestACompletionsUnreadPullRequestLineHoldsNoCredential(t *testing.T) {
 				t.Errorf("the line's error is %q, want %q in it", said, row.names)
 			}
 			logged := loggedError(t, value)
-			requireEchoKept(t, row.answer(t, logged))
+			answer := row.answer(t, logged)
+			requireEchoKept(t, answer)
+			name := strings.TrimPrefix(row.capture, "sink/")
+			oauth2calltest.KeptPrintTest(t, name+"/error", logged, row.authorization)
+			oauth2calltest.KeptPrintTest(t, name+"/answer", answer, row.authorization)
 		})
 	}
 }
@@ -395,13 +401,15 @@ func TestACompletionsUnreadPullRequestLineHoldsNoCredential(t *testing.T) {
 // request carried in its carried field), and the box's printer subtracts them
 // (RemoteText.String); the line prints appauth's own message (appauth.AnswerError.Error) and holds
 // none of the token. Each row holds the logged error to that answer and the answer to the echo
-// (requireEchoKept).
+// (requireEchoKept), and prints the logged error and that answer under every fmt verb and a bad
+// verb, at every holding, beside the echo as a plain string (oauth2calltest.KeptPrintTest).
 //
 // No error of appauth's is a refusal and the request's ending at once: a refusal that arrives as
 // the request ends is GitHub's answer alone, which logs at Error. So the Warn row's token source
 // (endingTokens) hangs the request up as the manager's real refusal arrives and returns the two
 // joined, the one value that reaches that branch carrying GitHub's answer. Captures
-// sink/api/server.go/<function>[/<level>].
+// sink/api/server.go/<function>[/<level>], and
+// kept/api/server.go/<function>[/<level>]/{error,answer}/<holding>/<verb>.
 func TestTheControllerCredentialsFailureLinesHoldNoCredential(t *testing.T) {
 	for _, row := range []struct {
 		name, capture string
@@ -466,7 +474,11 @@ func TestTheControllerCredentialsFailureLinesHoldNoCredential(t *testing.T) {
 			if ended := errors.Is(logged, context.Canceled); ended != row.endRequest {
 				t.Errorf("the logged error is the request's own ending: %t, want %t", ended, row.endRequest)
 			}
-			requireEchoKept(t, appauthAnswer(t, logged))
+			answer := appauthAnswer(t, logged)
+			requireEchoKept(t, answer)
+			name := strings.TrimPrefix(row.capture, "sink/")
+			oauth2calltest.KeptPrintTest(t, name+"/error", logged, "token "+plantedToken)
+			oauth2calltest.KeptPrintTest(t, name+"/answer", answer, "token "+plantedToken)
 		})
 	}
 }

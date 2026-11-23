@@ -516,9 +516,12 @@ func loggedText(logged any) string {
 // package's own tests drive it by, the machine logging through the daemon's production logger. The
 // row's line is there, logs the row's value (logged: the error the sink logs, or the failure
 // sentence or the let-go's cause the machine derived from it, as text), and neither the line nor
-// that value holds a made-up credential (oauth2calltest.RequireNone). Captures
-// sink/supervise/<file>/<function>, with the line's first words after it where one function holds
-// two of the sinks.
+// that value holds a made-up credential (oauth2calltest.RequireNone); the row prints logged, the
+// runtime's refusal it carries, and the GitHub answer that refusal keeps on appauth.AnswerError,
+// under every fmt verb and a bad verb, at every holding, beside the echo the stand-in wrote as a
+// plain string (oauth2calltest.KeptPrintTest). Captures sink/supervise/<file>/<function>, with the
+// line's first words after it where one function holds two of the sinks, and
+// kept/supervise/<file>/<function>/{logged,refusal,answer}/<holding>/<verb>.
 //
 // Two rows drive their sink with a runtime's answer no runtime gives, and their comments name
 // that limit: launchNow's branch for a hold the store did not answer is taken for an error that
@@ -727,6 +730,17 @@ func TestTheSinksOfAMintRefusalLogNoCredential(t *testing.T) {
 				}
 			}
 			oauth2calltest.RequireNone(t, row.capture, strings.Join(append(lines, text), "\n"))
+			name := strings.TrimPrefix(row.capture, "sink/")
+			echo := "token " + plantedToken
+			oauth2calltest.KeptPrintTest(t, name+"/logged", logged, echo)
+			oauth2calltest.KeptPrintTest(t, name+"/refusal", refused, echo)
+			// The refusal prints none of GitHub's answer (an AnswerError prints its Err alone), so
+			// the answer it keeps is printed too: there the request's credential sits.
+			var answered *appauth.AnswerError
+			if !errors.As(refused, &answered) || answered.Answer == nil {
+				t.Fatalf("the refusal %q keeps no GitHub answer of appauth's", refused)
+			}
+			oauth2calltest.KeptPrintTest(t, name+"/answer", answered.Answer, echo)
 		})
 	}
 }

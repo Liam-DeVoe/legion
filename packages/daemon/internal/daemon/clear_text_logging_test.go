@@ -333,7 +333,9 @@ type sinkRow struct {
 // the handler `legion start` builds (redact.HandlerOptions), names the refusal - its route and
 // status, and "[redacted]" where the echo stood, which says the credential reached the value
 // logged - and holds no run of the credential. Each row keeps the value its sink logged (kept) and
-// the echo as a plain string (twin). Captures sink/daemon/<file>/<function>.
+// the echo as a plain string (twin), and prints each kept value under every fmt verb and a bad
+// verb, at every holding, beside twin (oauth2calltest.KeptPrintTest). Captures
+// sink/daemon/<file>/<function>, and kept/daemon/<file>/<function>/<key>/<holding>/<verb>.
 func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) {
 	for _, row := range []sinkRow{
 		{
@@ -675,6 +677,7 @@ func TestTheClearTextLoggingSinksLogNoCredentialTheRequestCarried(t *testing.T) 
 				if value == nil {
 					t.Fatalf("the sink's record logged nothing under %q", row.keys[i])
 				}
+				oauth2calltest.KeptPrintTest(t, strings.TrimPrefix(row.capture, "sink/")+"/"+row.keys[i], value, twin, credential)
 			}
 		})
 	}
