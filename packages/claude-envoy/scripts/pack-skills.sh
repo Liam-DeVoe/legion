@@ -2,7 +2,7 @@
 # The `prepack` and `postpack` of @sjawhar/claude-envoy, and the one place that makes the packed
 # tarball carry the plugin's skills.
 #
-# skills/<name> is a symlink into the repository's skills/, and those eight links are the
+# skills/<name> is a symlink into the repository's skills/, and those links are the
 # statement of which skills this plugin ships. `bun pm pack` packs a link as nothing at all —
 # measured on bun 1.4.4: with `skills/**` in `files` and the links in place, the tarball held no
 # package/skills member whatever — so an install got no skill, and the SessionStart and

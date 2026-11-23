@@ -5,7 +5,7 @@ import { join, resolve } from "node:path"
 
 // What the first tarball of this package held: no package/skills member at all. skills/<name> is
 // a link into the repository's skills/, `bun pm pack` packs a link as nothing, and so every
-// install lost all eight skills and the dispatch-first hook hooks/hooks.json runs on every
+// install lost all its skills and the dispatch-first hook hooks/hooks.json runs on every
 // session threw on the SKILL.md it reads under the plugin root. scripts/pack-skills.sh is the
 // prepack that resolves the links and the postpack that puts them back, and
 // scripts/check-packed-skills.sh is what release.yaml's claude_envoy_build reads out of the
@@ -41,7 +41,7 @@ let tarball = ""
 let skillNames: string[] = []
 
 /** A copy of this package at <scratch>/<name>/repository/packages/claude-envoy: the committed
- *  package.json and prepack, the eight links as the checkout holds them, and a skills/ of the
+ *  package.json and prepack, the links as the checkout holds them, and a skills/ of the
  *  repository's own, so a pack over it is the release's.
  *
  *  A pack runs in a copy, never in the checkout: the prepack writes into skills/, and jj records
@@ -265,7 +265,7 @@ test("the release's check of the packed tarball passes a listing longer than a p
 
 // The two ways a pack can stop with the links already swapped. The links are tracked files, so
 // what the prepack leaves behind is what the working copy holds: jj's next command would record
-// eight deleted links and eight copied skill trees.
+// every link deleted and every skill tree copied.
 test("a prepack refused by one entry leaves every link as it found it", async () => {
   const copy = await copyPackage("wrong-target")
   // The last name, so the entries before it are the ones a loop that swapped as it checked would
