@@ -9,6 +9,7 @@ import { useOpenedDocument, useOutlineAddress } from "./document-address";
 import { HEADER_SCROLLS_QUERY } from "./identity-block";
 import { issueAddress } from "./issue-address";
 import type { SlotProps } from "./slot-props";
+import { useFollowing } from "./slots/following";
 import { useDocumentToolbars } from "./useDocumentToolbars";
 import { useIssueDetail } from "./useIssueDetail";
 import { VersionControl } from "./VersionControl";
@@ -20,9 +21,8 @@ export interface ViewRowTools {
   readonly isClosed: boolean;
   readonly nodeMenu: boolean;
   readonly onFilterChange: (next: string) => void;
-  /** Present at 760 px and below only, where the sheet stands in place of part D's Outline
-   *  control, so the row draws one Outline control and it holds the three small controls. */
-  readonly outline?: undefined;
+  /** Present at 760 px and below only: the Outline sheet that holds the three small controls,
+   *  which the row draws in place of part D's Outline control (`slots/view-row.tsx`). */
   readonly sheet?: (tools: ReactNode) => ReactNode;
   readonly toolbar: ReactNode;
 }
@@ -39,6 +39,7 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
   const { issue, route } = props;
   const navigate = useNavigate();
   const { hash, pathname, search } = useLocation();
+  const following = useFollowing();
   const { planArtifact, primaryArtifact, verificationArtifact } = useIssueDetail(issue, route);
   const address = issueAddress(route, search, hash, primaryArtifact?.slug);
   const opened = useOpenedDocument(issue, route);
@@ -47,13 +48,19 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
   const phone = useMediaQuery(HEADER_SCROLLS_QUERY);
   const isClosed = issue.closed_at !== null;
   // What the filter by words holds is `?q=`, which the box writes in place, keeping the rest of
-  // the address.
+  // the address, by a replace marked with the following it was typed in (`slots/following.ts`),
+  // so the stage never swaps a view for the outline while the reader types (decision 368). The
+  // mark keeps the outline an opened document goes back to, and leaves out a press of the
+  // count of what waits (`waitingPress`), which acts once.
   const onFilterChange = (next: string) => {
     const query = new URLSearchParams(search);
     if (next === "") query.delete("q");
     else query.set("q", next);
     const rest = query.toString();
-    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
+    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, {
+      replace: true,
+      state: { outline, words: following },
+    });
   };
   // A document opened at a version of its own: its own address at that version, which keeps the
   // outline it was opened from to go back to.
@@ -119,11 +126,6 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
     nodeMenu: address.nodeMenu,
     onFilterChange,
     toolbar,
-    ...(phone
-      ? {
-          outline: undefined,
-          sheet: (tools: ReactNode) => <OutlineSheet slot={props} tools={tools} />,
-        }
-      : {}),
+    ...(phone ? { sheet: (tools: ReactNode) => <OutlineSheet slot={props} tools={tools} /> } : {}),
   };
 }

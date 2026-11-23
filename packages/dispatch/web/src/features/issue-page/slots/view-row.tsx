@@ -39,8 +39,8 @@ import { useViewRowTools } from "../view-row-tools";
  *
  * Part N adds the row's three small controls, the version control, the node menu and the filter
  * by words, before Keys, and at 760 px and below the Outline sheet that holds them with a view on
- * or a document open too (`view-row-tools.tsx`); its props come after part D's, so its sheet
- * stands in place of D's Outline control where it draws one.
+ * or a document open too (`view-row-tools.tsx`), which the row draws in place of D's Outline
+ * control there.
  */
 export function ViewRowSlot(props: SlotProps): ReactNode {
   const { issue, route } = props;
@@ -71,6 +71,10 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   useViewRowHeight(row);
   useIssueKeymap(issue.key);
   const tools = useViewRowTools(props);
+  // Part D's Outline sheet, beside the one control below 1024 px with no view on. At 760 px and
+  // below part N's sheet stands in its place, with a view on or a document open too, and holds
+  // the row's three small controls (`view-row-tools.tsx`).
+  const drawsOutline = !paned && !isFilter(address.preset) && tools.sheet === undefined;
   return (
     <div
       className={`border-b ${PAGE_INSET} ${pageLineBorder} ${pagePaperBg} max-[761px]:sticky max-[761px]:top-0 max-[761px]:z-[19]`}
@@ -79,7 +83,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        outline={paned || isFilter(address.preset) ? undefined : <OutlineSheet slot={props} />}
+        outline={drawsOutline ? <OutlineSheet slot={props} /> : undefined}
         signals={signals}
         {...tools}
       />

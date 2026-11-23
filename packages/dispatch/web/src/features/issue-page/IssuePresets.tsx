@@ -100,7 +100,7 @@ export function IssuePresets({
   /** The Outline sheet at 760 px and below, handed the three small controls this row moves into
    *  it there - the version control, the node menu and the filter by words (part N's R4) - with a
    *  view on or a document open too. A caller that gives it leaves `outline` undefined, so the
-   *  row draws one Outline control (`view-row-tools.tsx`). */
+   *  row draws one Outline control (`slots/view-row.tsx`). */
   sheet?: (tools: ReactNode) => ReactNode;
   /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
    *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
@@ -230,6 +230,13 @@ export function IssuePresets({
   // to the issue's own.
   const press = (preset: Preset) => {
     if (preset === "conversation" && pathname === presetPath(issueKey, "conversation")) return;
+    // Part N's words go with the reader to the view they press, which draws with them, and the
+    // box keeps them (its R4).
+    if (filter !== undefined && filter !== "") {
+      const to = preset === active && preset !== "conversation" ? "conversation" : preset;
+      navigate(`${presetPath(issueKey, to)}?${new URLSearchParams({ q: filter })}`);
+      return;
+    }
     navigate(
       presetPath(issueKey, preset === active && preset !== "conversation" ? "conversation" : preset)
     );
@@ -311,7 +318,7 @@ export function IssuePresets({
             {...pageChrome}
           >
             {CONTROL_LABELS.version}
-            <span aria-hidden="true">▾</span>
+            <MenuMark />
           </button>
           {/* Drawn while it is shut too, so a version the reader picked, a name they typed and
               a comparison they opened outlive the control closing. */}
@@ -586,11 +593,12 @@ function Signal({
 }
 
 /**
- * The filter by words (R2's `?q=`, `t f`, part N's R4): one small control while it holds no
- * words, which opens the box with the caret in it, and the box itself while it holds words or has
- * the caret. In the Outline sheet the box is drawn open. Leaving an empty box shuts it back into
- * its control. The box shows its name as its placeholder, so a reader sees what it is for before
- * typing (WCAG 3.3.2).
+ * The filter by words (R2's `?q=`, `t f`, part N's R4 and its ST-1): one small control while it
+ * holds no words, which opens the box with the caret in it, and the box itself while it holds
+ * words or the caret: emptied with the caret in it, it stays open, and left empty it shuts back
+ * into its control. In the Outline sheet the box is drawn open. The box shows its name as its
+ * placeholder, so a reader sees what it is for before typing (WCAG 3.3.2), and is at least 24 px
+ * tall at every width, as the row's controls are.
  */
 function WordsFilter({
   filter,
@@ -601,18 +609,19 @@ function WordsFilter({
   inSheet?: boolean;
   onFilterChange: (next: string) => void;
 }): ReactNode {
-  const [opened, setOpened] = useState(false);
+  // Whether the box holds the caret, or was opened to take it.
+  const [caret, setCaret] = useState(false);
   const box = useRef<HTMLInputElement>(null);
   // The control's press opens the box with the caret in it, once the box is drawn.
   useEffect(() => {
-    if (opened) box.current?.focus();
-  }, [opened]);
-  if (!inSheet && !opened && filter === "") {
+    if (caret) box.current?.focus();
+  }, [caret]);
+  if (!inSheet && !caret && filter === "") {
     return (
       <button
         className={pageHeaderControl}
         {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
-        onClick={() => setOpened(true)}
+        onClick={() => setCaret(true)}
         type="button"
         {...pageChrome}
       >
@@ -624,15 +633,14 @@ function WordsFilter({
     <input
       aria-label={CONTROL_LABELS.filter}
       ref={box}
-      className={`min-w-0 rounded-[7px] border px-2 text-xs leading-5 outline-none ${focusVisibleRing} ${pageField} ${
-        inSheet ? "min-h-6 w-full basis-full text-sm" : "w-40 md:py-px"
+      className={`min-h-6 min-w-0 rounded-[7px] border px-2 text-xs leading-5 outline-none ${focusVisibleRing} ${pageField} ${
+        inSheet ? "w-full basis-full text-sm" : "w-40 md:py-px"
       }`}
       data-testid="issue-filter"
       {...{ [WORDS_FILTER_ATTRIBUTE]: "" }}
-      onBlur={(event) => {
-        if (event.currentTarget.value === "") setOpened(false);
-      }}
+      onBlur={() => setCaret(false)}
       onChange={(event) => onFilterChange(event.target.value)}
+      onFocus={() => setCaret(true)}
       placeholder={CONTROL_LABELS.filter}
       type="search"
       value={filter}
