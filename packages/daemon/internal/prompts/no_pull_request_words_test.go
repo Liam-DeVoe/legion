@@ -157,3 +157,17 @@ func TestTheGuidesSayHowAnIssueWithNoPullRequestClosesAndWhatEndsAReviewRound(t 
 		{"docs/site/src/content/docs/legion/using-legion.md", "An issue whose steps opened no pull request"},
 	})
 }
+
+// The owner's sign_off and request_backward_move keep the pull request's head, and complete_step
+// the review record's (workflow's recordOwnersReview, recordStepReview); owner-does-step.sh proves no
+// step acceptance, and its driver posts the route with the commit itself.
+func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve(t *testing.T) {
+	saysAndRetires(t, repoFile, [][2]string{
+		{"docs/kubernetes.md", "Where the owner's `sign_off` ended its `acceptance:owner`, or its `request_backward_move` ended any review step of its own"},
+		{"docs/kubernetes.md", "A `complete_step` holds the head of the `review` record it reported instead"},
+		{"scripts/e2e/README.md", "A step `acceptance` with no key is a fresh agent of the role `acceptance`."},
+		{"scripts/e2e/README.md", "which the driver posts itself (an agent's `legion` tool fills the commit in)"},
+	}, [][2]string{
+		{"scripts/e2e/README.md", "a step `acceptance` with no key is a fresh agent, and a task with no pull request is done"},
+	})
+}
