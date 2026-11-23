@@ -3401,12 +3401,12 @@ envoy-dispatch when `envoy_ci_state` is among the buckets. `create` takes no suc
 only a bucket that is absent, which holds no write to lose.
 
 **The check is best effort.** Every `recreate` and `check` prints so first, on standard error. A
-writer gets past it five ways: a host or dev box you do not name, a binary renamed to a name the
-check does not know, a pod deleted with `--force` whose containers still run (a cluster is read
-through its API, not its nodes' runtimes), a writer that starts between the final scan and the
-create, and a restore after `check` that nothing holds. So before every `recreate` or `check`, stop
-every listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on
-each host that it has ended; the check confirms what you did, and does not replace it. `create`
+writer gets past it five ways: a host, dev box or namespace you do not name, a binary renamed to a
+name the check does not know, a pod deleted with `--force` whose containers still run (a cluster is
+read through its API, not its nodes' runtimes), a writer that starts between the final scan and
+the create, and a restore after `check` that nothing holds. So before every `recreate` or `check`,
+stop every listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm
+on each host that it has ended; the check confirms what you did, and does not replace it. `create`
 needs no listener stopped and prints no warning.
 The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
@@ -3480,18 +3480,29 @@ without one:
 
 - `--kube-context <ctx>`, once for each cluster (an empty value is kubectl's current context), with
   `--namespace <ns>` once for each namespace where the deployment's writers run, such as `envoy` and
-  `dispatch`; each needs the other. For each namespace the check reads the namespace (one the API
-  does not hold blocks, since its pod list would be empty) and its pods through the Kubernetes API,
-  which GKE Autopilot allows, and blocks on each container that has not terminated and writes one
-  of the buckets named. Which buckets a container writes is read from its configuration: a listener
-  (one that sets `ENVOY_MACHINE_ID`, or is named or runs as `listener` or `envoy-listener`) writes
-  `envoy_interests`, `envoy_roles`, `envoy_sessions` and `envoy_known_sessions`, and
-  `envoy_ci_state` too when its `ENVOY_WEBHOOKS` names `github` or comes from a Secret or a
-  ConfigMap; `envoy-dispatch` writes `envoy_ci_state`; no other container writes any. A pod of
-  another namespace is never read, so an Actions runner's container named `listener` does not
-  block. No node's kubelet runtime list is read (Autopilot refuses `nodes/proxy`), so a pod deleted
-  with `--force` whose containers still run gets past the check: that is the fifth way the warning
-  names, and `--connz` still sees its open connection.
+  `dispatch`; each needs the other. A namespace is an RFC 1123 label (at most 63 lower-case
+  letters, digits and `-`, starting and ending with a letter or a digit), and any other value is
+  refused with exit 2 before anything runs: kubectl would read one starting with `-`, such as
+  `--all-namespaces`, as its own flag. Every `--namespace` is read in every `--kube-context`, and a
+  namespace a context does not hold blocks, naming the context. For each namespace the check reads
+  the namespace (`kubectl get namespace/<ns> -o name`; one the API does not hold blocks, since its
+  pod list would be empty) and its pods (`kubectl get pods --namespace=<ns> -o json`) through the
+  Kubernetes API, which GKE Autopilot allows, and blocks on each container, init container (a
+  native sidecar among them) or ephemeral container that has not terminated and may write one of
+  the buckets named. Which buckets a container may write is read from its configuration: a
+  listener (one that sets `ENVOY_MACHINE_ID`, or is named or runs as `listener` or
+  `envoy-listener`) writes `envoy_interests`, `envoy_roles`, `envoy_sessions` and
+  `envoy_known_sessions`, and `envoy_ci_state` too when its `ENVOY_WEBHOOKS` names `github` (read
+  as the listener reads it: split at commas, each entry trimmed of white space), holds a `$(VAR)`
+  reference, or comes from a Secret, a ConfigMap or a field; `envoy-dispatch` writes
+  `envoy_ci_state`. A container whose `envFrom` may set `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS` (a
+  source with no prefix, or a prefix that starts the name, and no `env` entry of that name, which
+  takes precedence) counts as a writer of each bucket that variable could select, and its blocker
+  says so: one nothing else names a writer, with a source of no prefix, blocks every bucket. No
+  other container writes any. A pod of another namespace is never read, so an Actions runner's
+  container named `listener` does not block. No node's kubelet runtime list is read (Autopilot
+  refuses `nodes/proxy`), so a pod deleted with `--force` whose containers still run gets past the
+  check: that is the third way the warning names, and `--connz` still sees its open connection.
 - `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
   names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
   machine runs under a name this repository runs a writer as - `envoy-listener`, `listener`, the

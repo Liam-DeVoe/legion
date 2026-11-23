@@ -27,9 +27,11 @@ import (
 
 // world is what the fake kubectl and ssh answer: the pods the API lists in each namespace
 // (podsIn, else pods for any namespace), the namespaces the API refuses or does not hold
-// (namespaceErr) and the pod lists it fails (podsErr), and each host query's output, this
-// machine's (--this-machine, run through sh) under the key here. hostAnswers is consumed in order,
-// so a test can make the second proof differ from the first.
+// (namespaceErr, keyed by the namespace, or by <context>/<namespace> for one context alone) and
+// the pod lists it fails (podsErr), and each host query's output, this machine's (--this-machine,
+// run through sh) under the key here. hostAnswers is consumed in order, so a test can make the
+// second proof differ from the first. The fake answers kubectl only as the proof calls it, with
+// the namespace as namespace/<ns> and --namespace=<ns>, never a word of its own.
 type world struct {
 	pods         string
 	podsIn       map[string]string
@@ -59,24 +61,30 @@ func (w *world) run(ctx context.Context, name string, args ...string) ([]byte, e
 		return nil, ctx.Err()
 	}
 	if name == "kubectl" {
+		kube := ""
 		if len(args) > 2 && args[0] == "--context" {
-			args = args[2:]
+			kube, args = args[1], args[2:]
 		}
 		if !strings.HasPrefix(args[0], "--request-timeout=") {
 			return nil, fmt.Errorf("kubectl called without its request timeout: %v", args)
 		}
 		args = args[1:]
 		switch {
-		case len(args) == 5 && args[0] == "get" && args[1] == "namespace" && args[3] == "-o" && args[4] == "name":
-			if err := w.namespaceErr[args[2]]; err != nil {
+		case len(args) == 4 && args[0] == "get" && strings.HasPrefix(args[1], "namespace/") && args[2] == "-o" && args[3] == "name":
+			namespace := strings.TrimPrefix(args[1], "namespace/")
+			if err := w.namespaceErr[kube+"/"+namespace]; err != nil {
 				return nil, err
 			}
-			return []byte("namespace/" + args[2] + "\n"), nil
-		case len(args) == 6 && args[0] == "get" && args[1] == "pods" && args[2] == "--namespace" && args[4] == "-o" && args[5] == "json":
-			if err := w.podsErr[args[3]]; err != nil {
+			if err := w.namespaceErr[namespace]; err != nil {
 				return nil, err
 			}
-			if pods, ok := w.podsIn[args[3]]; ok {
+			return []byte(args[1] + "\n"), nil
+		case len(args) == 5 && args[0] == "get" && args[1] == "pods" && strings.HasPrefix(args[2], "--namespace=") && args[3] == "-o" && args[4] == "json":
+			namespace := strings.TrimPrefix(args[2], "--namespace=")
+			if err := w.podsErr[namespace]; err != nil {
+				return nil, err
+			}
+			if pods, ok := w.podsIn[namespace]; ok {
 				return []byte(pods), nil
 			}
 			if w.pods == "" {
@@ -197,7 +205,7 @@ func TestRecreateOnceEveryWriterIsProvenEnded(t *testing.T) {
 	}
 	calls := strings.Join(w.calls, "\n")
 	for _, namespace := range []string{"envoy", "dispatch"} {
-		for _, call := range []string{"kubectl --context prod --request-timeout=45s get namespace " + namespace + " -o name", "kubectl --context prod --request-timeout=45s get pods --namespace " + namespace + " -o json"} {
+		for _, call := range []string{"kubectl --context prod --request-timeout=45s get namespace/" + namespace + " -o name", "kubectl --context prod --request-timeout=45s get pods --namespace=" + namespace + " -o json"} {
 			if !strings.Contains(calls, call) {
 				t.Fatalf("the proof never read %q; calls:\n%s", call, calls)
 			}
@@ -749,7 +757,7 @@ func TestEveryRecreateAndCheckPrintsTheBestEffortWarning(t *testing.T) {
 			if code != c.code || !strings.HasPrefix(stderr, bestEffortWarning) {
 				t.Fatalf("%v = %d, want %d with the warning first on standard error:\n%s", c.args, code, c.code, stderr)
 			}
-			for _, way := range []string{"an omitted host or dev box", "a renamed binary", "a pod deleted with --force", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
+			for _, way := range []string{"an omitted host, dev box or namespace", "--namespace, --host and --this-machine you name", "a renamed binary", "a pod deleted with --force", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
 				if !strings.Contains(stderr, way) {
 					t.Fatalf("the warning does not name %q:\n%s", way, stderr)
 				}
