@@ -1775,7 +1775,7 @@ check_dispatch_identity() {
   elif [ "$status" = 400 ] && jq -e '.expected == ["target_session"]' <<<"$body" >/dev/null 2>&1; then
     note "the listener admits Dispatch's token ($principal, issued by $(state .oidc_issuer)); its build reads no send's role mark, so the replay's role-routed sends reach their targets unmarked"
   else
-    die "the listener does not take a send's role mark from Dispatch's token: a send marked with the role -identity-probe, which no claim can name, on the token Dispatch's ENVOY_ACCOUNT_TOKEN_FILE holds was answered $status $body. A 400 naming the role means the mark was taken from $principal, and one naming target_session a listener that admitted the token and reads no mark; a 401 is a token the listener did not verify against $(state .oidc_issuer), a 403 another principal, and a 503 for all of $IDENTITY_CHECK_SECONDS s a listener still starting or one that cannot read its issuer. The replay's role-routed issues need it; kubectl -n $NS logs deployment/listener says why"
+    die "the listener does not take a send's role mark from Dispatch's token: a send marked with the role -identity-probe, which no claim can name, on the token Dispatch's ENVOY_ACCOUNT_TOKEN_FILE holds was answered $status $body. A 400 naming the role means the mark was taken from $principal, and one naming target_session a listener that admitted the token and reads no mark; a 401 is a token the listener did not verify against $(state .oidc_issuer), a 403 another principal, and a 503 for all of $IDENTITY_CHECK_SECONDS s a listener that cannot read its issuer or a listener from before #2404 still starting. The replay's role-routed issues need it; kubectl -n $NS logs deployment/listener says why"
   fi
 }
 

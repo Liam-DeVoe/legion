@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -621,10 +622,12 @@ func TestPutClearingGapDecidesFromEachPassRecord(t *testing.T) {
 }
 
 // PutClearingGap answers the zero entry and false over no record at all, and over a writer's record
-// that names no key, one an earlier build wrote, which it keeps but for its projects: neither is
-// the session's own registration naming its key, so neither names the client instance
-// cmd/listener's roleSetHandler falls back to. Control: own read as `found` answers the no-key
-// record and true.
+// that names no key, one an earlier build wrote, which it keeps but for its projects and the keys
+// this build does not know: neither is the session's own registration naming its key, so neither
+// names the client instance cmd/listener's roleSetHandler falls back to, and the no-key record's
+// unknown key forged_key is not written back. Control: own read as `found` answers the no-key
+// record and true; the no-key case copying the record whole, its unknown keys with it, stores
+// forged_key.
 func TestPutClearingGapAnswersNoRecordOverNoneAndOverOneNamingNoKey(t *testing.T) {
 	client := setupNATS(t)
 	r := openBindingRegistry(t, client)
@@ -640,14 +643,25 @@ func TestPutClearingGapAnswersNoRecordOverNoneAndOverOneNamingNoKey(t *testing.T
 	if err := r.PutWithin(ctx, noKey, SessionEntry{MachineID: "edge-a", Projects: []string{"PRIV"}}); err != nil {
 		t.Fatalf("register %s: %v", noKey, err)
 	}
-	restore := r.SetStoredByWriterSeamForTest(noKey,
-		SessionEntry{MachineID: "edge-a", Projects: []string{"PUB"}, ClientInstanceID: "instance-no-key"}, true, nil)
+	restore := r.SetStoredByWriterSeamForTest(noKey, SessionEntry{MachineID: "edge-a", Projects: []string{"PUB"}, ClientInstanceID: "instance-no-key",
+		unknown: map[string]json.RawMessage{"forged_key": json.RawMessage(`"forged"`)}}, true, nil)
 	prior, own, err = r.PutClearingGap(ctx, noKey, "edge-a", true, []string{"PRIV"})
 	restore()
 	if err != nil {
 		t.Fatalf("PutClearingGap(%s): %v", noKey, err)
 	}
 	requireNoOwnRecord(t, prior, own, "over a writer's record naming no key")
+	var written map[string]json.RawMessage
+	value := storedValue(t, client.Conn, noKey)
+	if err := json.Unmarshal(value, &written); err != nil {
+		t.Fatalf("decode %s's stored record %s: %v", noKey, value, err)
+	}
+	if string(written["session_id"]) != strconv.Quote(noKey) || string(written["client_instance_id"]) != `"instance-no-key"` {
+		t.Fatalf("the refresh of %s stored %s, want its own key and the no-key record's client instance", noKey, value)
+	}
+	if forged, kept := written["forged_key"]; kept {
+		t.Errorf("the refresh of %s over a writer's record naming no key stored that record's unknown key forged_key = %s, want none", noKey, forged)
+	}
 }
 
 // PutClearingGap's last read: once it has lost entryWriteLosses writes, a read of the leader that

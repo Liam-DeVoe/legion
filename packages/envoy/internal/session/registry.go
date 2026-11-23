@@ -1168,9 +1168,11 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 //     instance, capabilities, display fields and the keys this build does not know - so a live
 //     session's own registration is never cleared by this write.
 //   - a writer's record that names no key, one an earlier build wrote: the same, except its
-//     projects, which are projects, the claim token's, since a record naming no key may be another
-//     session's record the server copied under this one, and its projects would be bound to
-//     sessionID.
+//     projects, which are projects, the claim token's, and the keys this build does not know,
+//     which it drops: a record naming no key may be another session's record the server copied
+//     under this one, so its projects would be bound to sessionID, and nothing says its unknown
+//     keys are this session's (a registration carries them only from a record naming its key
+//     and a machine, stampClaim).
 //   - any other - a RePublish, a copy of another key's record, a record naming another key, a
 //     marker, or no message at all: the session's key, machineID, selfSubscribed and projects and
 //     nothing else, no gap mark, so a forged record is cleared at the sequence it is stored at.
@@ -1218,7 +1220,7 @@ func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machine
 			entry.MachineID, entry.SelfSubscribed, entry.Port = machineID, selfSubscribed, 0
 		case found && stored.SessionID == "":
 			entry = stored
-			entry.MachineID, entry.SelfSubscribed, entry.Projects, entry.Port = machineID, selfSubscribed, projects, 0
+			entry.MachineID, entry.SelfSubscribed, entry.Projects, entry.Port, entry.unknown = machineID, selfSubscribed, projects, 0, nil
 		}
 		entry.SessionID = sessionID
 		entry.UpdatedAt = r.now().UnixMilli()

@@ -5,9 +5,14 @@
 // (session.SessionRegistry.RefreshFromLeader) or the revision a write or a delete is fenced on
 // (KeyValue.ReadStored, and store's latestStored); KeyValue.NewestFromLeader and
 // KeyValue.ReadFromLeader, whose callers decide a delete or the revision a write is fenced on; and
-// KeyValue.GetLatestFromLeader, whose caller decides the revision a conditional write that lost to
-// another writes at next. The read of a key's newest message they all make (newestMessage) is
-// GetLatest's marker read too.
+// KeyValue.GetLatestFromLeader, whose one caller, internal/session's readLatest, reads it for the
+// revision a conditional write that lost to another writes at next (session.SessionRegistry's
+// registration writes), for the record each pass of a rewrite of a session's entry decides from
+// and the revision it writes at, its first pass included, before any write was lost
+// (SessionRegistry.PutClearingGap, SetRepositoryGap, ClearRepositoryGap and RenewWithin), and for
+// SessionRegistry.StoredByWriter, whose callers decide whether the edge listener shows a session,
+// sends to it or names it as a role's holder (cmd/listener's project_scope.go). The read of a key's
+// newest message they all make (newestMessage) is GetLatest's marker read too.
 
 package bus
 

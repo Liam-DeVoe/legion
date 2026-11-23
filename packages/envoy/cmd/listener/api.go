@@ -2185,9 +2185,9 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// back with only the machine, the self-subscription and the port changed and its UpdatedAt
 		// stamped, so the newer host another listener stored is kept, and so are its projects and
 		// the client instance id the registration carries: this write names none of its own. A
-		// record an earlier build wrote, naming no key, keeps its fields but takes the claim token's
-		// projects (registeringProjects), since it may be another session's record the server
-		// copied here.
+		// record an earlier build wrote, naming no key, keeps the fields this build knows but for
+		// its projects, which become the claim token's (registeringProjects), and drops the keys
+		// this build does not know, as it may be another session's record the server copied here.
 		// Any other - a record the server wrote, a copy of another key's, a marker or none - is
 		// cleared to the machine, the self-subscription and the claim token's projects: a RePublish
 		// could set its own session's title, a non-consumer delivery that pauses its relay until the

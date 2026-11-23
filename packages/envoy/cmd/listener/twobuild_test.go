@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -524,27 +525,44 @@ func TestTwoBuildsTheOlderPodStoresAPublishOnATopicTheNewerBuildAddedInsideTheRe
 }
 
 // tbRequireStored fails the test unless the stream's last message on topic, as the row's own
-// client reads the stream, is the envelope a publish route answered with answer, and returns its
-// stream sequence. The read cannot tell which transport the publish took: the stream stores a core
-// NATS publish on a subject it captures as it stores a JetStream one.
+// client reads the stream, is the envelope a publish route answered with answer within 5 s, and
+// returns its stream sequence. The publish's 200 says the server took it. In the roll window the
+// route can send it over core NATS (bus.Client.PublishTakesJetStream), confirmed by a flush alone,
+// and the stream stores it just after, so the row waits for the stored copy, at most 5 s, as
+// roll_window_topic_test.go's requireStored does, and past that fails with the stream's last answer
+// and how long it waited. The read cannot tell which transport the publish took: the stream stores
+// a core NATS publish on a subject it captures as it stores a JetStream one.
 func tbRequireStored(t *testing.T, publisher *mpPublisher, topic, answer string) uint64 {
 	t.Helper()
 	var answered contracts.Envelope
 	if err := json.Unmarshal([]byte(answer), &answered); err != nil {
 		t.Fatalf("decode the publish's answer %s: %v", answer, err)
 	}
-	stored, err := publisher.client.JS().GetLastMsg(bus.Stream, topic)
-	if err != nil {
-		t.Fatalf("the stream %s holds no message on %s after a publish answered 200 with event %s: %v", bus.Stream, topic, answered.EventID, err)
+	started := time.Now()
+	var sequence uint64
+	var err error
+	if !testwait.Holds(5*time.Second, 50*time.Millisecond, func() bool {
+		stored, getErr := publisher.client.JS().GetLastMsg(bus.Stream, topic)
+		if getErr != nil {
+			err = getErr
+			return false
+		}
+		var envelope contracts.Envelope
+		if decodeErr := json.Unmarshal(stored.Data, &envelope); decodeErr != nil {
+			err = fmt.Errorf("decode the stream's last message on %s: %w", topic, decodeErr)
+			return false
+		}
+		if envelope.EventID != answered.EventID {
+			err = fmt.Errorf("the stream's last message on %s is event %s, not the published %s", topic, envelope.EventID, answered.EventID)
+			return false
+		}
+		sequence = stored.Sequence
+		return true
+	}) {
+		t.Fatalf("the stream %s holds no message of event %s on %s after a publish answered 200 and a wait of %s for its stored copy: %v",
+			bus.Stream, answered.EventID, topic, time.Since(started).Round(time.Millisecond), err)
 	}
-	var envelope contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &envelope); err != nil {
-		t.Fatalf("decode the stream's last message on %s: %v", topic, err)
-	}
-	if envelope.EventID != answered.EventID {
-		t.Fatalf("the stream's last message on %s is event %s, not the published %s", topic, envelope.EventID, answered.EventID)
-	}
-	return stored.Sequence
+	return sequence
 }
 
 // tbAwaitRelayPull waits until a pull request stands on sessionID's consumer, as the row's own

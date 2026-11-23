@@ -9,14 +9,15 @@ body: |-
   plugin and plugin version) are all cleared, so a RePublish cannot bind another session's projects,
   pause a relay with a non-consumer delivery, or name a machine or pane through a claim. A writer's
   record naming no key - one an earlier build wrote - is not a RePublish at the session's key: the
-  renewal keeps its title and its other fields, and only its projects become the claim token's, as a
-  registration's do. Where the leader holds the session's own writer's record, the renewal writes that
-  record back with only the machine and the self-subscription changed, keeping its projects, its gap
-  mark, its delivery set (delivery, delivery epoch and consumer start, read together) and the rest, so
-  a live session is not cleared and does not miss the notice it owes. A write that lands between the
-  renewal's read and its write, a RePublish or a registration, moves the record's revision, so the
-  renewal's write loses, and it reads and decides again: no field of a record stored in between is
-  written back on a decision made before it.
+  renewal keeps its title and its other fields, but writes the claim token's projects and drops any
+  field this build does not know, as a registration does. Where the leader holds the session's own
+  writer's record, the renewal writes that record back with only the machine and the
+  self-subscription changed, keeping its projects, its gap mark, its delivery set (delivery,
+  delivery epoch and consumer start, read together) and the rest, so a live session is not cleared
+  and does not miss the notice it owes. A write that lands between the renewal's read and its write,
+  a RePublish or a registration, moves the record's revision, so the renewal's write loses, and it
+  reads and decides again: no field of a record stored in between is written back on a decision
+  made before it.
 time: 2026-11-21T09:05:04Z
 custom:
     Issue: pr4858
