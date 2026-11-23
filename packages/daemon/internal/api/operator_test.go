@@ -846,11 +846,11 @@ func TestTheOperatorsRefusedFreshSessionRetryHasAlreadyForgottenTheSession(t *te
 	}
 }
 
-// R2: an operator's retry of an architect whose issue stands at no step or retro of its own
-// builds no phase restart and relaunches the claim through its machine, on the session it
-// recorded: admitted here, which phase.RoleFor answers the architect for, is no place the owner
-// works, so no phase start reaches the architect. (The retry of the issue's own architect at a
-// step or a retro it does as the owner also tells it that step again, one more owner-step.)
+// R2: an operator's retry of an architect that is no owner at a place of its own builds no phase
+// restart and relaunches the claim through its machine, on the session it recorded. Its issue
+// stands at admitted here, which phase.RoleFor answers the architect for, and which is no step of
+// the owner's (ownersOwnPlace), so restartWorkedPhase applies nothing; the owner's retry at its own
+// step is TestTheOperatorsRetryOfAFailedOwnerAtItsStepTellsItTheStepAgain.
 func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *testing.T) {
 	facts := &phaseRestarter{}
 	h := newHarness(t)
