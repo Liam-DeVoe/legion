@@ -104,9 +104,10 @@ whose webhook carries GitHub's events ([The GitHub Apps](#the-github-apps)), is 
 repository, and a read of the live records asks it of each repository the read adds that no
 preparation checked. A repository it is not installed on is worked all the same, but GitHub sends
 Legion none of its events and Dispatch has no delivery of it to redeliver, so nothing brings its
-pull requests' changes in and its issues stand still. `legion state` names each such repository
-on a `webhook App missing on <repo>: <reason>` line, and `--json` lists it with its `reason` under
-`repositories.withoutWebhookApp`: the App is not installed, `the webhook App check failed:
+pull requests' changes in and its issues that wait on a pull request stand still. `legion state`
+names each such repository on a `webhook App missing on <repo>: <reason>` line, and `--json`
+lists it with its `reason` under `repositories.withoutWebhookApp`: the App is not installed,
+`the webhook App check failed:
 <error>` (Dispatch holds no App key, `GITHUB_APP_UNCONFIGURED`, or its read of GitHub failed,
 `GITHUB_UNREADABLE`), or `this Dispatch does not answer the webhook App check` (a Dispatch older
 than the check). The check never leaves a repository out and never fails the boot. It reads only

@@ -1953,8 +1953,9 @@ notice comes once per handoff commit, from whichever read finds it first.
   webhook carries GitHub's events, is not known to be installed on a repository a live record
   names. With `Dispatch's GitHub App is not installed on <repo>: …`, GitHub sends Legion none of
   that repository's events and nothing redelivers them: the repository is worked, and nothing
-  brings its pull requests' changes in, so its issues stand still. An operator installs Dispatch's
-  GitHub App on the repository ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
+  brings its pull requests' changes in, so its issues that wait on a pull request stand still. An
+  operator installs Dispatch's GitHub App on the repository
+  ([The GitHub Apps](/legion/legion/running-legion/#the-github-apps));
   the daemon asks Dispatch again on its own, 30 s doubling to 10 min, and the line goes at the
   first answer that the App is installed.
   `the webhook App check failed: GITHUB_APP_UNCONFIGURED: …` is a Dispatch that holds no App key
