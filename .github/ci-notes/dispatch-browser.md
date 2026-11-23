@@ -1488,9 +1488,9 @@ job's from the Runner.Worker process GitHub's runner starts for it and the step'
 process's child. With neither set, or no Runner.Worker among its parents, a reader has no
 deadline and waits for nothing. In this step the step's limit binds: the steps before it take
 30 s at most by the maxima above, so its 180 s end before the job's 240 s do. A wait ends no later
-than 150 s after the step's start, which leaves 30 s: the step's own 4.6 s and an attempt after
-the wait of up to 25.4 s fit in it, and an attempt that runs to its 30 s bound there needs
-34.6 s, so it meets the step's limit, which ends the step and names it. The wait was made for
+than 150 s after the step's start, which leaves 30 s: the step's own 5.75 s and an attempt after
+the wait of up to 24.25 s fit in it, and an attempt that runs to its 30 s bound there needs
+35.75 s, so it meets the step's limit, which ends the step and names it. The wait was made for
 two refusals of the jobs read, `API rate limit exceeded for installation` on all three attempts,
 that failed the job on a read that would have answered minutes later: job 136922567868 of run
 44926842882 at 17:22Z on 2026-11-21, and job 137064876909 of pull request run 44974625499 at

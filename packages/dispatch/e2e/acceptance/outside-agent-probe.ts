@@ -619,31 +619,38 @@ async function scriptedModel(): Promise<never> {
   return Promise.withResolvers<never>().promise;
 }
 
+/** GET /api/v1/issues's answer to `issue`'s list, which names a limit and an offset: one page
+ *  (IssueSummaryPage), where a list that names neither answers the bare array. */
+type IssuePage = Extract<Result<"/api/v1/issues", "get">, { issues: unknown }>;
+type ListedIssue = NonNullable<IssuePage["issues"]>[number];
+
+/** One comment of an issue's comments as Dispatch answers them. */
+type ListedComment = Result<"/api/v1/issues/{key}/comments", "get">[number];
+
 /** What `comment-find` reads of the first comment of `comments` (an issue's comments as Dispatch
  *  answers them) whose body holds `wanted`: its id, and its author as Dispatch records a write
  *  made with a broker-issued token (api/broker_token.go): kind `session`, the session as `id`,
  *  `proven` true, the person as `owner`, and `project` only for a token mapped to one project.
- *  Each field absent reads null. Exported for the Codex leg's tests, which give it Dispatch's
- *  shape. */
+ *  Each field absent reads null. A comment and its author are read as the route's answer types
+ *  them (`ListedComment`), so a field the contract renames is a type error here. Exported for
+ *  the Codex leg's tests, which give it Dispatch's shape. */
 export function commentAuthor(
   comments: unknown,
   wanted: string
 ): Record<string, string | boolean | null> {
-  const read = (value: unknown, name: string): unknown =>
-    typeof value === "object" && value !== null ? Reflect.get(value, name) : undefined;
   const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
-  const found = (Array.isArray(comments) ? comments : []).find((each) =>
-    String(read(each, "body") ?? "").includes(wanted)
-  );
-  const author = read(found, "author");
+  const found = (Array.isArray(comments) ? comments : [])
+    .map((each: unknown) => fieldsOf<ListedComment>(each))
+    .find((each) => String(each.body ?? "").includes(wanted));
+  const author = fieldsOf<ListedComment["author"]>(found?.author);
   return {
     found: found !== undefined,
-    id: text(read(found, "id")),
-    author_kind: text(read(author, "kind")),
-    author_id: text(read(author, "id")),
-    proven: read(author, "proven") === true,
-    owner: text(read(author, "owner")),
-    project: text(read(author, "project")),
+    id: text(found?.id),
+    author_kind: text(author.kind),
+    author_id: text(author.id),
+    proven: author.proven === true,
+    owner: text(author.owner),
+    project: text(author.project),
   };
 }
 
@@ -937,19 +944,15 @@ async function main(): Promise<void> {
       const [project = "", ...words] = args;
       const title = words.join(" ");
       if (project === "" || title === "") throw new Unreadable("issue needs a project and a title");
-      const query = new URLSearchParams({ project, limit: "250", offset: "0" });
-      const answer = await call("GET", dispatch(`/api/v1/issues?${query}`));
-      const issues: unknown =
-        typeof answer.body === "object" && answer.body !== null
-          ? Reflect.get(answer.body, "issues")
-          : undefined;
+      const list = routePath("get", "/api/v1/issues", {}, { project, limit: 250, offset: 0 });
+      const answer = await call("GET", dispatch(list));
+      const page = fieldsOf<IssuePage>(answer.body);
       let key: string | null = null;
-      for (const issue of Array.isArray(issues) ? issues : []) {
-        if (typeof issue !== "object" || issue === null) continue;
-        const named: unknown = Reflect.get(issue, "key");
-        if (Reflect.get(issue, "title") === title && typeof named === "string") key = named;
+      for (const listed of Array.isArray(page.issues) ? page.issues : []) {
+        const issue = fieldsOf<ListedIssue>(listed);
+        if (issue.title === title && typeof issue.key === "string") key = issue.key;
       }
-      print({ ...flat(answer), key });
+      print({ ...flat(answer, fieldsOf<Refusal<"/api/v1/issues", "get">>(answer.body)), key });
       return;
     }
     case "comment-find": {
@@ -957,11 +960,12 @@ async function main(): Promise<void> {
       const wanted = words.join(" ");
       if (issue === "" || wanted === "")
         throw new Unreadable("comment-find needs an issue and a text");
-      const answer = await call(
-        "GET",
-        dispatch(`/api/v1/issues/${encodeURIComponent(issue)}/comments`)
-      );
-      print({ ...flat(answer), ...commentAuthor(answer.body, wanted) });
+      const comments = routePath("get", "/api/v1/issues/{key}/comments", { key: issue });
+      const answer = await call("GET", dispatch(comments));
+      print({
+        ...flat(answer, fieldsOf<Refusal<"/api/v1/issues/{key}/comments", "get">>(answer.body)),
+        ...commentAuthor(answer.body, wanted),
+      });
       return;
     }
     case "receive": {
