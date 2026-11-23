@@ -331,6 +331,46 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	}
 }
 
+// A conflict confirmed while the issue is held is decided where it stands, the phase its hold came
+// from (record.StandsAt): an issue held from testing whose base requires a check that is not green
+// on the head has the implementer asked to merge the base forward, and the architect's checks-red
+// notice names testing and says the issue stays held from it, since it stands in held, not in
+// testing (mergeForward). The issue stays held. The control is the same issue in testing, not held,
+// whose notice says it stays in testing.
+func TestAConflictConfirmedWhileHeldTellsTheArchitectTheIssueStaysHeldFromItsPhase(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name  string
+		held  bool
+		at    phase.Phase
+		stays string
+	}{
+		{name: "held from testing", held: true, at: phase.Held, stays: "and the issue stays held from testing"},
+		{name: "control: in testing", at: phase.Testing, stays: "and the issue stays in testing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			if tc.held {
+				holdFrom(t, pool, "LEGION-208", phase.Testing)
+			}
+			confirmsConflict(t, pool, requiresCI)
+			if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Role != claim.RoleImplementer ||
+				asked.Phase != phase.Testing || asked.Why != record.ConflictCheckNotGreen {
+				t.Fatalf("the record's merge forward = %+v, want the implementer's ask in testing for a required check not green", asked)
+			}
+			if told := capNotices(t, pool, "checks-red"); told != 1 {
+				t.Fatalf("%d checks-red notices, want one", told)
+			}
+			if reason, named := checksRedNotice(t, pool); named != phase.Testing || !strings.HasSuffix(reason, tc.stays) {
+				t.Fatalf("the checks-red notice names phase %q with reason %q, want testing and a reason ending %q", named, reason, tc.stays)
+			}
+			if got := issuePhase(t, pool); got != tc.at {
+				t.Fatalf("the issue is in %s, want it still in %s", got, tc.at)
+			}
+		})
+	}
+}
+
 // Past the review a conflict is the merger's (cybermonklabs/legion#4979). In merging the merger is
 // asked, on its own role topic, to merge the base forward and resolve the conflict itself: no ask
 // and no hold reach the implementer or anyone else, the architect's one checks-red notice names the
