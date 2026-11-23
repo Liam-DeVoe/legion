@@ -1,5 +1,6 @@
-import { callTool, modelsLane, runCalls, say, scriptChat } from "./fake-models-helpers";
-import { openBarOver, prose, RUN_STEPS_MS, searchBox, seedCoreIssue } from "./going-panel";
+import { callTool, modelsLane, prose, runCalls, say, scriptChat } from "./fake-models-helpers";
+import { openBarOver, RUN_STEPS_MS, searchBox } from "./going-locators";
+import { seedCoreIssue } from "./going-panel";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
 

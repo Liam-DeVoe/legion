@@ -158,6 +158,8 @@ export const realStackReasons: Record<string, string> = {
     "every row reads an answer the server streams from the fake writing and decision models, cut, changed and linked by the server, and counts those models' calls",
   "going-bar.e2e.ts":
     "every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor",
+  "going-bar.visual.e2e.ts":
+    "it compares each state of the command bar, reached through runs the server's agent process makes of the fake models, against a committed baseline inside the pinned Playwright image, which is its own project",
   "going-blocks.e2e.ts":
     "each block is filled by the server's own read of a seeded fixture, drawn by the server's display rule and record, and replayed from the run's stored frames",
   "going-key-forms.e2e.ts":

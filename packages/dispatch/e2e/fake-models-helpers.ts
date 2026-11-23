@@ -6,12 +6,13 @@ import { test } from "@playwright/test";
 
 import type {
   ChatCallRecord,
+  ChatReply,
   ChatScript,
   ChatToolCall,
   ChatTurn,
   FakeChatCalls,
 } from "./fake-chat-model";
-import type { DecisionScript, FakeDecisionCalls } from "./fake-decision-model";
+import type { DecisionReply, DecisionScript, FakeDecisionCalls } from "./fake-decision-model";
 import { modelsDirVariable, modelsFilesIn, usesFakeModels } from "./harness-models";
 import { type HarnessListenerKey, harnessPorts, stackValue } from "./harness-ports";
 
@@ -146,6 +147,21 @@ export async function releaseDecisions(): Promise<void> {
  *  the turn that answered it (`e2e/fake-chat-model.ts`). */
 export async function runCalls(words: string): Promise<ChatCallRecord[]> {
   return (await chatCalls()).received.filter((call) => call.words === words);
+}
+
+/** A structured reply whose answer is `answer` and which draws no block: what the fake writing
+ *  model answers a pause's short answer with (`ChatScript.default`). */
+export function prose(answer: string, pace: Partial<ChatReply> = {}): ChatReply {
+  return { final: { answer }, ...pace };
+}
+
+/** A decision of `action` at `confidence`, about the items the words name: the probabilities
+ *  are written out, so the action holds them all and not the fake's even share of the rest. */
+export function decided(action: string, confidence: number): DecisionReply {
+  return {
+    action: { choice: action, confidence, probabilities: { [action]: 1 } },
+    context: { choice: "named", confidence: 0.99 },
+  };
 }
 
 // The turns of an agent run's script (`ChatScript.runs`), one per model call, each written as the

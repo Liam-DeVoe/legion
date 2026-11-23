@@ -5,10 +5,12 @@
  *  It builds on the fixtures that already exist rather than writing a second corpus:
  *  `seedWorkspace` fills the Inbox, the Agents page, a broadcast, the answers, the projects and
  *  the issue tree, and the delivery fixtures fill `/delivery` and `/pipeline`. What it adds is
- *  the four documents the issue tabs need, and the one priority the two priority pages are read
- *  against: `seedWorkspace` writes none, and both of those pages draw a sentence instead of a
- *  row for a deployment that has written no priority. */
+ *  the four documents the issue tabs need, the one priority the two priority pages are read
+ *  against - `seedWorkspace` writes none, and both of those pages draw a sentence instead of a
+ *  row for a deployment that has written no priority - and the issues the visual lane's
+ *  command-bar rows read (`seedBarIssues`), which no reviewed page draws. */
 import {
+  createIssue,
   createIssueArtifact,
   createPlanReview,
   createPriority,
@@ -28,7 +30,7 @@ import {
 } from "./delivery-seed";
 import { blockId } from "./editor";
 import { sql } from "./psql";
-import type { ReviewSeed } from "./review-routes";
+import type { BarSeed, ReviewSeed } from "./review-routes";
 import { seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
@@ -137,6 +139,39 @@ async function markWhatTheShotPagesRead(
   await putDocumentRead(specId, Math.max(...numbers));
 }
 
+/** The issues the visual lane's command-bar rows read, plan on and change
+ *  (`e2e/going-bar.visual.e2e.ts`), since those rows seed nothing. They are OPS's, a project whose
+ *  pages no row of the shot set opens, and bob's, so none of them is alice's: the rail and the
+ *  Inbox the shot pages draw for her count her open asks, and none of these holds one. None
+ *  stands in a status in flight either (`work_under_no_priority`, the rail's Priorities count and
+ *  `/priorities`'s first fault list): a new issue is in triage, and the three patched below go
+ *  to todo, backlog and icebox.
+ *
+ *  Created one at a time, for the reason `seedWorkspace` gives: the server numbers a key as it
+ *  inserts the issue, so a round of them at once would give each a different key on each run,
+ *  and a key is printed on the bar's shots. */
+async function seedBarIssues(): Promise<BarSeed> {
+  const bob = { login: "bob" };
+  const project = "OPS";
+  const make = async (title: string, spec?: string) =>
+    (await createIssue(spec === undefined ? { project, title } : { project, spec, title }, bob))
+      .key;
+  const mount = await make("Calibrate the telescope mount");
+  const craters = await make("Map the lunar craters");
+  const mirror = await make("Grind the primary mirror");
+  const dome = await make(
+    "Raise the observatory dome",
+    "# Raise the observatory dome\n\nThe dome turns by hand.\n"
+  );
+  const shutter = await make("Retire the old shutter");
+  const eyepiece = await make("Polish the eyepiece");
+  const finder = await make("Align the finder scope");
+  await patchIssue(mount, { status: "todo" }, bob);
+  await patchIssue(craters, { status: "backlog" }, bob);
+  await patchIssue(mirror, { status: "icebox" }, bob);
+  return { craters, dome, eyepiece, finder, mirror, mount, project, shutter };
+}
+
 /** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
  *  bound of the seed's waits, which `seedWorkspace` gives each of its own: the caller's, so a
  *  browser row's seed gives up at the bound that row's assertions use. */
@@ -239,10 +274,14 @@ Each page is read once it is drawn.
   // so a rename there fails this seed instead of the page it opens.
   const runbook = await getProjectArtifact("CORE", "runbook");
 
+  // The command bar's issues, before the read marks below, which stay last.
+  const bar = await seedBarIssues();
+
   // Last, so the spec's newest version is the one its tab will show.
   await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
 
   return {
+    bar,
     broadcast: workspace.broadcast.id,
     deliveryQuery: TIMELINE_FIXTURE_QUERY,
     issue,

@@ -1,8 +1,9 @@
 /** The order the visual review's rows run in: `normal`, the order `e2e/review-routes.ts` lists its
- *  pages in, or `reverse`, every row of the run the other way round - the phone project's rows
- *  before the desktop project's, and each project's rows last first. `DISPATCH_E2E_VISUAL_ORDER`
- *  names it, and `e2e/visual-run.sh` forwards that variable into the container with the other
- *  `DISPATCH_E2E_*` variables.
+ *  pages in and `e2e/going-bar.visual.e2e.ts` its states in, or `reverse`, every row of the run the
+ *  other way round - the projects last first, the command bar's rows before the phone project's
+ *  and those before the desktop project's, and each project's rows last first.
+ *  `DISPATCH_E2E_VISUAL_ORDER` names it, and `e2e/visual-run.sh` forwards that variable into the
+ *  container with the other `DISPATCH_E2E_*` variables.
  *
  *  WHY A SECOND ORDER. One seed serves the whole visual run, so a page that writes state changes
  *  every page drawn after it, and a baseline then holds the state the rows before it left. That

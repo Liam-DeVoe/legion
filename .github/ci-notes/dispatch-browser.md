@@ -959,8 +959,21 @@ results of the step that failed.
 
 The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
 set compared against a committed baseline, in light and in dark, at a desktop width and two
-of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
-number of PNGs under `packages/dispatch/e2e/__screenshots__`.
+of them again at a phone width - twenty pages and two, so forty-four comparisons, in the
+`visual` and `visual-phone` projects - and each state of the command bar's design compared
+against its own, in the `visual-bar` project (packages/dispatch/e2e/going-bar.visual.e2e.ts):
+thirteen rows, one per state, which take twenty-five shots, those of states 2, 3, 4 and 6 over
+the page and again in the panel at the side. Sixty-nine baselines, which is the number of PNGs
+under `packages/dispatch/e2e/__screenshots__` once the first full-lane run that holds the bar's
+rows has written its twenty-five and a person has committed them (the upload's section below
+says how that file reaches the tree).
+
+The bar's rows draw what only a model's answer makes, so the stack this job starts is the
+models lane's: packages/dispatch/e2e/visual-run.sh sets `DISPATCH_E2E_MODELS=fake` itself, so
+the job and a person run the same command, and the harness starts the fake writing model and
+the fake decision model beside the server, on the host, as the embedder job's models step
+does. The pages' rows open no bar, and only the bar asks the server whether it has a model, so
+the forty-four pages' baselines are drawn as before.
 
 The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
 or a layout regression is refused at the merge rather than found the next morning, and the
@@ -1048,6 +1061,24 @@ was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
 240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
 
+The command bar's thirteen rows (the `visual-bar` project) were added later, and no run of this
+job had read them when its budgets were moved for them: their shots are taken in this job's
+container and nowhere else, so the issue pod that wrote them could not time them. The two
+browser steps' budgets are therefore derived, as the embedder job's models step's were
+(.github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets),
+from two readings already in this file: the models lane's 37 rows in 9.9 min on one worker,
+16 s a row, for rows that script the same two fakes and wait on the same runs these do; and
+this job's own slowest browser step above, 183 s for the stack, the seed and the twenty page
+rows the shot set held then, each with a sign-in, a navigation and two shots: about 9 s a
+row, which bounds one shot, with its share of the rest, by about 4 s. The bar's rows then add
+13 x 16 + 25 x 4 = 308 s to each browser step: (183 + 308) x 1.15 = 565 s -> 10 min for the
+normal step and the same for the reverse one, which runs the same rows. The job budget is
+that step's 600 s plus the same 333 s and 120 s: 1,053 s, 17 min 33 s, rounded up to 18
+minutes, and 18 + 10 = 28 minutes with the reverse-order step. That is at most twelve more
+minutes of an ubuntu-24.04 runner on each full-lane run, and none on the pull-request lane,
+which runs no visual job. The first runs that hold the bar's rows give these steps a reading
+of their own, and that reading replaces this derivation, as this file's head requires.
+
 ## Why the visual job restores go-envoy-test
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
@@ -1091,8 +1122,9 @@ browser steps to pull their own inside their budgets again.
 
 ## Why the visual job runs its rows again in reverse order
 
-The same rows again in reverse order, on a new stack and a new seed: the phone rows before
-the desktop rows, and each project's rows last first (packages/dispatch/e2e/visual-order.ts).
+The same rows again in reverse order, on a new stack and a new seed: the projects last first -
+the command bar's rows, then the phone rows, then the desktop rows - and each project's rows
+last first (packages/dispatch/e2e/visual-order.ts).
 One seed serves a whole run, so a row whose page reads a write another row made fails one
 of the two runs by its own name, and a baseline that holds another row's write is found
 here rather than as a flake. It runs when the normal run failed too, since that is when its
@@ -1102,15 +1134,24 @@ rows on a new stack of the same size.
 
 Its results go to `test-results-reverse` (Playwright's `--output`, which e2e/visual-run.sh
 passes on), so the normal run's stay in `test-results`, where a reader of a failed run
-looks for the shots, however this run ends.
+looks for the shots, however this run ends. A baseline the normal run wrote for a shot no tree
+held (the upload's section below) is on the runner's checkout by then, so this run compares the
+reverse order's shot against it at once.
 
 ## Why the visual job's upload is always
 
 Always, not on failure alone: a reader of a green run wants the report too, and a run
-that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
-which is how that file reaches the pull request from a machine with no container. It
-holds both runs: the normal run's results under test-results, the reverse run's under
-test-results-reverse.
+that wrote a baseline no tree holds yet - a route or a command bar state this layer gained -
+leaves it here, which is how that file reaches the pull request from a machine with no
+container. Playwright writes a shot that has no baseline as the baseline itself, at
+`packages/dispatch/e2e/__screenshots__/<project>/<shot>.png`, which this upload takes, and fails
+the row that took it; that failure is soft, so the row goes on to its other shots, and every
+other row runs (`updateSnapshots` is `"default"` when neither the config nor the command line
+names it, at node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/common/index.js:531,
+and `handleMissing` in lib/matchers/expect.js writes the file and answers a soft error for that
+mode). So the first full-lane run of a change that adds a shot fails this job by design, and its
+artifact holds the new baselines. The upload holds both runs: the normal run's results under
+test-results, the reverse run's under test-results-reverse.
 
 ## Why the visual upload keeps a pattern that matches no file
 

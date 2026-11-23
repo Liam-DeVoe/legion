@@ -1,16 +1,7 @@
 import { createIssue, createProject } from "./api";
-import { chatCalls, modelsLane, scriptChat } from "./fake-models-helpers";
-import {
-  ANSWER_ENDS_MS,
-  answerPanel,
-  answerText,
-  countAskedRuns,
-  openBarOver,
-  plainWords,
-  prose,
-  searchBox,
-  seedIssue,
-} from "./going-panel";
+import { chatCalls, modelsLane, prose, scriptChat } from "./fake-models-helpers";
+import { ANSWER_ENDS_MS, answerPanel, answerText, openBarOver, searchBox } from "./going-locators";
+import { countAskedRuns, plainWords, seedIssue } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 

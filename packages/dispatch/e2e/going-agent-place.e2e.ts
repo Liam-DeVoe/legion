@@ -1,16 +1,15 @@
 import { createIssue, createProject } from "./api";
-import { modelsLane, runCalls, say, scriptChat } from "./fake-models-helpers";
+import { modelsLane, prose, runCalls, say, scriptChat } from "./fake-models-helpers";
 import {
   askTheAgent,
   bar,
   closeBar,
   newestRun,
   openBarOver,
-  prose,
   RUN_STEPS_MS,
   searchBox,
   sidePanel,
-} from "./going-panel";
+} from "./going-locators";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 

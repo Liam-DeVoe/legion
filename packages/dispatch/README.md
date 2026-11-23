@@ -975,7 +975,7 @@ every recording no row writes any more.
 
 ## Projects
 
-The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
+The suite has sixteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
 three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
 stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
@@ -1059,9 +1059,12 @@ reason, and two layers read it: the axe scan of `e2e/accessibility.e2e.ts` and t
 of `e2e/visual.e2e.ts`, whose baselines are committed as
 `e2e/__screenshots__/<project>/<route>-<scheme>.png`. An axe finding is fixed in `web/src`;
 `e2e/accessibility-exclusions.ts` takes an entry only where the fix would change what another row
-claims. A baseline comes only from the pinned container, through
-`e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
-machine with no container.
+claims. The same lane's `visual-bar` project compares each state of the command bar's design,
+reached through runs of the fake models, against its baseline at
+`e2e/__screenshots__/visual-bar/<state>-<shot>.png` (`e2e/going-bar.visual.e2e.ts`, whose
+header says how its rows hold still). A baseline comes only from the pinned container, through
+`e2e/visual-run.sh --update-snapshots`, which starts its stack with the fake models; the
+script's header says how to take one from CI on a machine with no container.
 
 ## Phone check
 

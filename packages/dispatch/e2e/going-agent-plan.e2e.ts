@@ -1,6 +1,6 @@
 import { createProject, createProjectDocument, getIssue, listIssues, patchIssue } from "./api";
 import type { ChatTurn } from "./fake-chat-model";
-import { modelsLane, proposePlan, say, scriptChat } from "./fake-models-helpers";
+import { modelsLane, proposePlan, prose, say, scriptChat } from "./fake-models-helpers";
 import {
   askTheAgent,
   bar,
@@ -12,12 +12,10 @@ import {
   planCard,
   planOnPage,
   planRows,
-  prose,
   RUN_STEPS_MS,
-  type Split,
   searchBox,
-  seedSplit,
-} from "./going-panel";
+} from "./going-locators";
+import { type Split, seedSplit } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 

@@ -259,6 +259,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/going-answer-safety.e2e.ts` | the prose it reads is what the server's filter left of the fake writing model's reply, and the links are the item frames the server's stream carries |
 | `e2e/going-answer.e2e.ts` | every row reads an answer the server streams from the fake writing and decision models, cut, changed and linked by the server, and counts those models' calls |
 | `e2e/going-bar.e2e.ts` | every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor |
+| `e2e/going-bar.visual.e2e.ts` | it compares each state of the command bar, reached through runs the server's agent process makes of the fake models, against a committed baseline inside the pinned Playwright image, which is its own project |
 | `e2e/going-blocks.e2e.ts` | each block is filled by the server's own read of a seeded fixture, drawn by the server's display rule and record, and replayed from the run's stored frames |
 | `e2e/going-key-forms.e2e.ts` | each form of a key is resolved by the server, and the row reads the rows it answers |
 | `e2e/going-operators.e2e.ts` | each operator form and each chip narrows a list the server answers |

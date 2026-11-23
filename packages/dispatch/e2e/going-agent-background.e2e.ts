@@ -4,6 +4,7 @@ import {
   endlessStream,
   modelsLane,
   proposePlan,
+  prose,
   runCalls,
   say,
   scriptChat,
@@ -13,11 +14,10 @@ import {
   bar,
   newestRun,
   openBarOver,
-  prose,
   RUN_STEPS_MS,
   searchBox,
-  seedCoreIssue,
-} from "./going-panel";
+} from "./going-locators";
+import { seedCoreIssue } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 

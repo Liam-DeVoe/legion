@@ -2,23 +2,16 @@ import { setLiveSessions } from "./agents";
 import { claimIssue, listAgentMessages, listIssueMessages, mintAgentToken } from "./api";
 import {
   chatCalls,
+  decided,
   decisionCalls,
   modelsLane,
+  prose,
   releaseDecisions,
   scriptChat,
   scriptDecision,
 } from "./fake-models-helpers";
-import {
-  bar,
-  decided,
-  lineOnTop,
-  newestRun,
-  openBarOver,
-  prose,
-  RUN_STEPS_MS,
-  searchBox,
-  seedCoreIssue,
-} from "./going-panel";
+import { bar, lineOnTop, newestRun, openBarOver, RUN_STEPS_MS, searchBox } from "./going-locators";
+import { seedCoreIssue } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 

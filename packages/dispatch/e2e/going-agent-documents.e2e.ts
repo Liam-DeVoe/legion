@@ -9,17 +9,16 @@ import {
   listIssueMessages,
   mintAgentToken,
 } from "./api";
-import { modelsLane, proposePlan, say, scriptChat } from "./fake-models-helpers";
+import { modelsLane, proposePlan, prose, say, scriptChat } from "./fake-models-helpers";
 import {
   approveAndFinish,
   askTheAgent,
   openBarOver,
   planCard,
   planRows,
-  prose,
   RUN_STEPS_MS,
-  writeSpec,
-} from "./going-panel";
+} from "./going-locators";
+import { writeSpec } from "./going-panel";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
 

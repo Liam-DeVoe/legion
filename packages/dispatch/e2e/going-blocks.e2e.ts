@@ -7,17 +7,18 @@ import {
   patchIssue,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
-import { modelsLane, scriptChat } from "./fake-models-helpers";
+import { modelsLane, prose, scriptChat } from "./fake-models-helpers";
 import {
   answerPanel,
   answerText,
   askAndWait,
   closeBar,
-  countAskedRuns,
   openBar,
   openBarOver,
+} from "./going-locators";
+import {
+  countAskedRuns,
   plainWords,
-  prose,
   STATUS_CHART_SPEC,
   shownWords,
   withBlock,

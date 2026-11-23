@@ -6,6 +6,7 @@ import {
   decisionCalls,
   decisionRecord,
   modelsLane,
+  prose,
   scriptChat,
 } from "./fake-models-helpers";
 import {
@@ -14,14 +15,10 @@ import {
   answerText,
   askAndWait,
   bar,
-  countAskedRuns,
   openBarOver,
-  plainWords,
-  prose,
   searchBox,
-  seedIssue,
-  shownWords,
-} from "./going-panel";
+} from "./going-locators";
+import { countAskedRuns, plainWords, seedIssue, shownWords } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -211,7 +208,9 @@ test("an answer that kept no link is shown, saying it rests on no source", async
     await askAndWait(page, question);
 
     await expect(answerText(page)).toContainText("written down in the log every night");
-    await expect(page.getByTestId("going-answer-no-source")).toHaveText("rests on no source");
+    await expect(page.getByTestId("going-answer-no-source")).toHaveText(
+      "This answer rests on no source."
+    );
     await expect(answerPanel(page).getByTestId("going-answer-item")).toHaveCount(0);
     await expect(page.getByTestId("going-answer-none")).toHaveCount(0);
   } finally {

@@ -1,14 +1,7 @@
 import { createIssue, createProject, getIssueEvents, patchIssue } from "./api";
-import { callTool, modelsLane, say, scriptChat } from "./fake-models-helpers";
-import {
-  askAndWait,
-  askTheAgent,
-  newestRun,
-  openBarOver,
-  prose,
-  RUN_STEPS_MS,
-  runFrames,
-} from "./going-panel";
+import { callTool, modelsLane, prose, say, scriptChat } from "./fake-models-helpers";
+import { askAndWait, askTheAgent, newestRun, openBarOver, RUN_STEPS_MS } from "./going-locators";
+import { runFrames } from "./going-panel";
 import { expect, type Locator, test } from "./test";
 import { withAlice } from "./users";
 

@@ -8,22 +8,28 @@ import {
   listIssues,
   setNewIssueSettings,
 } from "./api";
-import { modelsLane, proposePlan, say, scriptChat, scriptDecision } from "./fake-models-helpers";
+import {
+  decided,
+  modelsLane,
+  proposePlan,
+  prose,
+  say,
+  scriptChat,
+  scriptDecision,
+} from "./fake-models-helpers";
 import {
   askTheAgent,
   bar,
-  decided,
   lineOnTop,
   newestRun,
-  newIssueRun,
   openBarOver,
   planCard,
   planOnPage,
   planRows,
-  prose,
   RUN_STEPS_MS,
   searchBox,
-} from "./going-panel";
+} from "./going-locators";
+import { newIssueRun } from "./going-panel";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
 

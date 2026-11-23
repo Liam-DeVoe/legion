@@ -9,22 +9,26 @@ import {
   patchIssue,
   setNewIssueSettings,
 } from "./api";
-import { modelsLane, proposePlan, say, scriptChat, scriptDecision } from "./fake-models-helpers";
+import {
+  decided,
+  modelsLane,
+  proposePlan,
+  prose,
+  say,
+  scriptChat,
+  scriptDecision,
+} from "./fake-models-helpers";
 import {
   approveAndFinish,
   askTheAgent,
   bar,
-  decided,
   lineOnTop,
   newestRun,
-  newIssueRun,
   openBarOver,
-  prose,
   RUN_STEPS_MS,
   searchBox,
-  seedSplit,
-  writeSpec,
-} from "./going-panel";
+} from "./going-locators";
+import { newIssueRun, seedSplit, writeSpec } from "./going-panel";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 

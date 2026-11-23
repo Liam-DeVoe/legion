@@ -1,5 +1,6 @@
 import { createIssue, createProject, getGoingCapability, setNewIssueSettings } from "./api";
-import { answerText, bar, countAskedRuns, lineOnTop, openBarOver, searchBox } from "./going-panel";
+import { answerText, bar, lineOnTop, openBarOver, searchBox } from "./going-locators";
+import { countAskedRuns } from "./going-panel";
 import { usesFakeModels } from "./harness-models";
 import { expect, test } from "./test";
 import { asUser } from "./users";

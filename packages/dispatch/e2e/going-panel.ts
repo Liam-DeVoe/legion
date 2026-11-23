@@ -1,66 +1,12 @@
 import { createIssue, createIssueArtifact, createProject, documentBase, search } from "./api";
 import type { ChatReply, ChatRunScript } from "./fake-chat-model";
-import type { DecisionReply } from "./fake-decision-model";
 import { proposePlan, say } from "./fake-models-helpers";
-import { expect, type Locator, type Page } from "./test";
+import { answerText } from "./going-locators";
+import { expect, type Page } from "./test";
 
-// What the command bar's rows share: the bar, its answer panel, opening the bar over a page,
-// asking it a question, the issue a question is answered from, the fake writing model's replies
-// those rows script, and the conversation of the agent's runs. The panel and its lines are read by
-// the test ids `features/search/AnswerPanel.tsx` gives them, the conversation, its steps and its
-// plan by those of `features/going`.
-
-/** How long a row waits for one answer to end: the run's own window (`GOING_RUN_MS`, 30 s) and
- *  the stream's grace past it. */
-export const ANSWER_ENDS_MS = 40_000;
-
-export function bar(page: Page): Locator {
-  return page.getByRole("dialog", { name: "Search" });
-}
-
-/** The bar's one box: the search box before Enter, and the same element under the conversation
- *  after it (`features/search/SearchPalette.tsx`), whose name and role change with it. */
-export function searchBox(page: Page): Locator {
-  return bar(page).getByTestId("bar-box");
-}
-
-/** The line under the bar's box that says what Enter does where the box's words do not. */
-export function boxHint(page: Page): Locator {
-  return bar(page).getByTestId("going-box-hint");
-}
-
-export function answerPanel(page: Page): Locator {
-  return page.getByTestId("going-answer");
-}
-
-export function answerText(page: Page): Locator {
-  return page.getByTestId("going-answer-text");
-}
-
-/** Opens `path` and waits for the shell, whose search button opens the bar. */
-export async function openShell(page: Page, path: string): Promise<void> {
-  await page.goto(path);
-  await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
-}
-
-/** Opens the bar over the page with `Control+K`, from the page's body. */
-export async function openBar(page: Page): Promise<void> {
-  await page.locator("body").focus();
-  await page.keyboard.press("Control+k");
-  await expect(searchBox(page)).toBeFocused();
-}
-
-/** Closes the bar with `Escape`. */
-export async function closeBar(page: Page): Promise<void> {
-  await page.keyboard.press("Escape");
-  await expect(bar(page)).toHaveCount(0);
-}
-
-/** Opens `path`, waits for the shell, and opens the bar over it with `Control+K`. */
-export async function openBarOver(page: Page, path: string): Promise<void> {
-  await openShell(page, path);
-  await openBar(page);
-}
+// What the command bar's rows share beside the bar's locators (`e2e/going-locators.ts`): the
+// issue a question is answered from, the blocks and the runs the fake writing model's scripts
+// draw, what the bar asked the server, and the frames of the agent's runs.
 
 /** Seeds project CORE and one issue of it titled `title`, and answers the issue's key. */
 export async function seedCoreIssue(title: string): Promise<string> {
@@ -132,15 +78,6 @@ export const STATUS_CHART_SPEC = {
   y: "count",
 } as const;
 
-/** Puts `words` in the box in one input, so the bar's pause starts once, and waits for the answer
- *  the pause asks for to end. */
-export async function askAndWait(page: Page, words: string): Promise<void> {
-  await searchBox(page).fill(words);
-  await expect(answerPanel(page)).toHaveAttribute("data-state", "ended", {
-    timeout: ANSWER_ENDS_MS,
-  });
-}
-
 /** Counts the bar's `POST /api/v1/going/requests` from here on, each with the words it asked. */
 export function countAskedRuns(page: Page): { readonly words: string[] } {
   const asked = { words: [] as string[] };
@@ -154,11 +91,6 @@ export function countAskedRuns(page: Page): { readonly words: string[] } {
     }
   });
   return asked;
-}
-
-/** A structured reply whose answer is `answer` and which draws no block. */
-export function prose(answer: string, pace: Partial<ChatReply> = {}): ChatReply {
-  return { final: { answer }, ...pace };
 }
 
 /** A structured reply with a block of `kind`, its spec naming the read that fills it. */
@@ -177,15 +109,6 @@ export async function shownWords(page: Page): Promise<string[]> {
   return text.split(/\s+/).filter((word) => word !== "");
 }
 
-/** A decision of `action` at `confidence`, about the items the words name: the probabilities
- *  are written out, so the action holds them all and not the fake's even share of the rest. */
-export function decided(action: string, confidence: number): DecisionReply {
-  return {
-    action: { choice: action, confidence, probabilities: { [action]: 1 } },
-    context: { choice: "named", confidence: 0.99 },
-  };
-}
-
 /** The run Enter on File as a new issue starts for `words`, as the fake writing model answers it:
  *  one plan of one create of an issue of CORE titled `title`, which the server files at once, as
  *  the agent's new-issue prompt asks (`going/agent/prompt.go`). */
@@ -202,27 +125,6 @@ export function newIssueRun(words: string, title: string): ChatRunScript {
     ],
     words,
   };
-}
-
-/** How long a row waits for a run of the fake model to reach a step, a plan or its end. */
-export const RUN_STEPS_MS = 40_000;
-
-/** The line on top of the bar's list: the next step the words lead to (`search-option-line`). */
-export function lineOnTop(page: Page): Locator {
-  return bar(page).locator("#search-option-line");
-}
-
-/** Types `words` in the bar's box and presses Enter on the line on top, which starts a run. */
-export async function askTheAgent(page: Page, words: string): Promise<void> {
-  await searchBox(page).fill(words);
-  await expect(lineOnTop(page)).toBeVisible();
-  await searchBox(page).press("Enter");
-  await expect(newestRun(page)).toBeVisible({ timeout: RUN_STEPS_MS });
-}
-
-/** The newest run of the conversation on the screen. */
-export function newestRun(page: Page): Locator {
-  return page.getByTestId("going-run").last();
 }
 
 /** One frame of a run's stream, as `GET /api/v1/going/runs/{id}/events` writes it. */
@@ -250,34 +152,4 @@ export async function runFrames(page: Page, id: string): Promise<RunFrame[]> {
     if (data.length > 0) frames.push({ data: JSON.parse(data.join("\n")), name });
   }
   return frames;
-}
-
-/** Approves the newest run's waiting plan from the bar's empty box once the bar has read the plan,
- *  and waits for the run to end done. */
-export async function approveAndFinish(page: Page): Promise<void> {
-  await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", { timeout: RUN_STEPS_MS });
-  await expect(planCard(page).last()).toHaveAttribute("data-state", "waiting");
-  await searchBox(page).focus();
-  await searchBox(page).press("Enter");
-  await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
-}
-
-/** The panel at the side of the page. */
-export function sidePanel(page: Page): Locator {
-  return page.getByTestId("going-side-panel");
-}
-
-/** The plan card of the conversation's newest run, in the bar or the panel. */
-export function planCard(page: Page): Locator {
-  return page.getByTestId("going-plan");
-}
-
-/** The rows of the open plan the page draws on itself. */
-export function planOnPage(page: Page): Locator {
-  return page.getByTestId("going-plan-on-page");
-}
-
-/** The plan rows of `where`, a card or the page's drawing. */
-export function planRows(where: Locator): Locator {
-  return where.getByTestId("going-plan-row");
 }

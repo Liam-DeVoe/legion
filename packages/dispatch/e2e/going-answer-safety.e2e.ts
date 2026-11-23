@@ -1,5 +1,6 @@
-import { modelsLane, scriptChat } from "./fake-models-helpers";
-import { answerPanel, answerText, askAndWait, openBarOver, prose, seedIssue } from "./going-panel";
+import { modelsLane, prose, scriptChat } from "./fake-models-helpers";
+import { answerPanel, answerText, askAndWait, openBarOver } from "./going-locators";
+import { seedIssue } from "./going-panel";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
