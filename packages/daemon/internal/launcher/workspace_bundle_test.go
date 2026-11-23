@@ -566,18 +566,20 @@ func (f *bundleFixture) workOne() {
 // failing the test where the shim built none. The exchange runs until beforeDeadline runs out, or
 // the fixture's context ends, whichever comes first, as the launcher's other waits do: a save that
 // runs a while with real git and jj on a loaded machine is merely slow, and one that never comes
-// fails here, naming the bound and the context's cause.
+// fails here, naming the bound, and the context's cause where the context ended.
 func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	f.t.Helper()
 	bound := beforeDeadline(f.t)
-	// The fixture's context bounds the save too: when it ends first, the exchange ends with it, and
-	// the shim, whose context it is, kills its save (shimtest.Workspace.Bundle).
 	ctx, cancel := context.WithTimeout(f.Ctx, bound)
 	defer cancel()
 	saved, err := f.Bundle(ctx, runtime.MaxWorkspaceBundleBytes)
 	if err != nil {
-		f.t.Fatalf("the shim's bundle: %v (the exchange waited up to %s, to 30 s before the test binary's deadline; the fixture's context: %v)",
-			err, bound.Round(time.Second), context.Cause(f.Ctx))
+		ended := ""
+		if f.Ctx.Err() != nil {
+			ended = fmt.Sprintf("; the fixture's context ended: %v", context.Cause(f.Ctx))
+		}
+		f.t.Fatalf("the shim's bundle: %v (the exchange waited up to %s, to 30 s before the test binary's deadline%s)",
+			err, bound.Round(time.Second), ended)
 	}
 	return saved
 }

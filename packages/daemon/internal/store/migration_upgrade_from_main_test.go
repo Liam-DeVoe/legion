@@ -81,6 +81,11 @@ import (
 // as one of main's own. It creates experiment_assignments and fills it from the issues' memory
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
+// cybermonklabs/legion#3519's cache trimmer's two, the pod volume notices (20261111090000) and the
+// claim's record of how its pod ended (20261111091500), are named here for the same reason: both
+// stand below main's newest, but main took them after it recorded its newest, so a database main
+// migrated has not recorded them. The first creates pod_volume_notices, the second adds
+// claims.pod_end at its default, and neither touches outbox_kind_check.
 //
 // Three more are INFRA-1117's, which a database main migrated has not recorded either: the
 // running copy's table (20261112105448), the newest push of each issue's branch and the heads its
@@ -91,11 +96,6 @@ import (
 // the second widens workspace_bundles' attempt-outcome check, so every value main's rows hold
 // still passes it. None of them touches outbox_kind_check.
 //
-// cybermonklabs/legion#3519's cache trimmer's two, the pod volume notices (20261111090000) and the
-// claim's record of how its pod ended (20261111091500), are named here for the same reason: both
-// stand below main's newest, but main took them after it recorded its newest, so a database main
-// migrated has not recorded them. The first creates pod_volume_notices, the second adds
-// claims.pod_end at its default, and neither touches outbox_kind_check.
 // dispatch://INFRA-3759's project pause (20261115194357) adds the pause's three tables, two
 // columns of pod_resumes and the outbox's held_by_pause, stands below the design news, and
 // rewrites no kind list, so it needs no row of its own here (migration_20261115194357_test.go

@@ -992,8 +992,8 @@ const repositoriesLiveContract = 202
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the word arrived at stays where it is. It moves only with
-// dispatch://INFRA-4036's own number, which is why the last entry of answers.go's
-// SupportedContracts names it rather than its number:
+// dispatch://INFRA-4036's own number, which is why an entry of answers.go's SupportedContracts
+// names it rather than its number:
 // TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp holds that list to version.go's
 // entry headers, so a renumber that moves dispatch://INFRA-4036's entry and leaves this
 // constant behind names a contract no entry declares and fails there.
