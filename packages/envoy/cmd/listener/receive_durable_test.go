@@ -182,7 +182,7 @@ func TestAStandbyOutlivesThreeSelfHealthIntervals(t *testing.T) {
 	go func() {
 		defer close(done)
 		runSelfHealthMonitor(ctx, logging.NewWithWriter("test", logs),
-			func() error { return checkSelfHealth(caches, probe) },
+			func() error { return checkSelfHealth(caches, nil, probe) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, standby.client, caches) },
 			standby.client.Connected,
 			func() error {

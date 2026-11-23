@@ -88,7 +88,9 @@ func (c *Client) countConnectionEvent(nc *nats.Conn) {
 	// nats.go has re-sent every subscription, so a refusal the server made of the core one before
 	// is past: this server may grant it.
 	c.subscriptionsMu.Lock()
-	c.subscriptions[coreSubscription].refused = false
+	core := &c.subscriptions[coreSubscription]
+	core.refused = false
+	core.sentOn, core.sentReconnects = nc, nc.Stats().Reconnects
 	c.subscriptionsMu.Unlock()
 }
 
@@ -668,6 +670,7 @@ func (c *Client) restoreSubscriptions() (pending bool, err error) {
 		subscription.binding = make(chan struct{})
 		// The bind sends the subscription anew, on a connection that may grant it.
 		subscription.refused = false
+		subscription.sentOn, subscription.sentReconnects = conn, reconnectsOf(conn)
 		restoring = append(restoring, subscription)
 	}
 	registrations := make([]recoverableSubscription, len(restoring))

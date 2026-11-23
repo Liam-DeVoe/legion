@@ -31,10 +31,20 @@ const roleForwardDedupePrefix = contracts.RoleForwardDedupePrefix
 // (startRoleForward).
 const roleForwardTimeout = 2 * time.Second
 
-// exceptionPublishFailedLine is the line a delivery logs when its delivery exception could not be
-// published. The deployed publish-failure metric filter, which the deployment repository's
+// exceptionPublishFailedLine is the line a delivery logs at ERROR when its delivery exception could
+// not be published. The deployed publish-failure metric filter, which the deployment repository's
 // listener infrastructure defines, matches it exactly, so every site that logs it uses this constant.
 const exceptionPublishFailedLine = "listener exception publish failed"
+
+// exceptionPublishInProcessLine is the line a delivery logs at WARN, in place of
+// exceptionPublishFailedLine, when a clustered stream refused its delivery exception as still in
+// process under an earlier publish under the same message id (bus.ErrDuplicateInProcess):
+// another listener that raised the same exception from its own durable (publishDeliveryException)
+// is storing the one copy the stream keeps, so it is no failure the publish-failure alarm should
+// count, and that filter, matching exceptionPublishFailedLine at ERROR, does not. A failure still
+// clears the attempt where the outcome says so (exceptionFailureClearsAttempt), since that copy is
+// not stored yet.
+const exceptionPublishInProcessLine = "listener exception publish in process"
 
 // ledgerUnavailableLine is the WARN a delivery logs when the delivery ledger could not be read or
 // written: the durable lane then retries the message, while a core lane delivers without the
@@ -65,10 +75,15 @@ type listenerDeliveryHandlerConfig struct {
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
-	// storing it, which is what its wait returns nil for. The wait's bus.ErrForwardNotStored means
-	// the stream did not acknowledge storing it inside timeout; any other error — a raw
-	// nats.ErrTimeout from the flush included, returned by the publish or the wait — means the
-	// forward is not known to have left this process.
+	// storing it, which is what its wait returns nil for, a duplicate of an earlier forward under
+	// msgID included. The wait's error wraps errEarlierAttemptInProcess (earlierAttemptInProcess)
+	// when the stream refused a send of the forward as still in process under an earlier forward
+	// under msgID and timeout ended, or a later send failed, before an answer named that forward's
+	// copy: a forward under msgID reached the stream and may yet be stored, whether or not the
+	// error also wraps bus.ErrForwardNotStored. Otherwise the wait's bus.ErrForwardNotStored means
+	// the stream did not acknowledge storing it inside timeout, and any other error, returned by
+	// the publish (a raw nats.ErrTimeout from its flush included) or by the wait, means the forward
+	// is not known to have left this process.
 	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the

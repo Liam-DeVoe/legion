@@ -49,10 +49,21 @@ func setupUnboundDurableFixture(t *testing.T, machineID string, handle durableHa
 	return rig, healthzFor(t, rig.client, rig.receiver)
 }
 
-// healthzFor opens both registries over client with their caches ready, subscribes its role lane
-// and returns a get() that serves one /healthz request over them and receiver, as main's
-// listenerDeps would.
+// healthzFor opens the listenerDeps /healthz reads over client and receiver (openHealthzDeps),
+// subscribes client's role lane and makes it the deps' role lane, and returns a get() that serves
+// one /healthz request over them (healthzOver), as main's listenerDeps would.
 func healthzFor(t *testing.T, client *bus.Client, receiver *durableReceiver) func() (int, map[string]any) {
+	t.Helper()
+	deps := openHealthzDeps(t, client, receiver)
+	subscribeRoleLane(t, client)
+	deps.roleLane = client
+	return healthzOver(deps)
+}
+
+// openHealthzDeps is the listenerDeps /healthz reads, built on client and receiver: both
+// registries open with their caches ready. The deps are returned for a caller to add what its test
+// reads, such as a role lane.
+func openHealthzDeps(t *testing.T, client *bus.Client, receiver *durableReceiver) *listenerDeps {
 	t.Helper()
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
@@ -72,9 +83,13 @@ func healthzFor(t *testing.T, client *bus.Client, receiver *durableReceiver) fun
 	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("wait for session cache: %v", err)
 	}
-	subscribeRoleLane(t, client)
+	return &listenerDeps{client: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), receiver: receiver}
+}
+
+// healthzOver returns a get() that serves one /healthz request over deps (serveHealthz).
+func healthzOver(deps *listenerDeps) func() (int, map[string]any) {
 	state := &atomic.Pointer[listenerDeps]{}
-	state.Store(&listenerDeps{client: client, roleLane: client, registry: registry, sessions: sessions, caches: listenerCaches(registry, sessions, nil), receiver: receiver})
+	state.Store(deps)
 	return func() (int, map[string]any) { return serveHealthz(state) }
 }
 
@@ -94,7 +109,7 @@ func startUnboundDurableMonitor(t *testing.T, rig *receiverRig, logger *logging.
 		runSelfHealthMonitor(
 			ctx,
 			logger,
-			func() error { return checkSelfHealth(caches, probe) },
+			func() error { return checkSelfHealth(caches, nil, probe) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, rig.client, caches) },
 			rig.client.Connected,
 			func() error {

@@ -38,13 +38,17 @@ type joinedHarness struct {
 	marker, key       string
 }
 
-// newJoinedHarness fails the test at once without jq on this machine (tool): the script reads
-// each state with it, and without it reads none, so it would ask again every 5 seconds forever,
-// its sleep stubbed to return at once, until the shell's deadline (gcp.ShellCommand). It skips the
-// test where this machine's jq is too old to run the script (skipUnlessJqRunsTheScript).
+// newJoinedHarness fails the test at once without jq, or the wc or sed its docker stub runs, on
+// this machine (tool): the script reads each state with jq, and without one of them reads none, so
+// it would ask again every 5 seconds forever, its sleep stubbed to return at once, until the
+// shell's deadline (gcp.ShellCommand). It skips the test where this machine's jq is too old to run
+// the script (skipUnlessJqRunsTheScript).
 func newJoinedHarness(t *testing.T) *joinedHarness {
 	t.Helper()
 	skipUnlessJqRunsTheScript(t, tool(t, "jq"))
+	for _, name := range []string{"wc", "sed"} {
+		tool(t, name)
+	}
 	var doc gcp.CloudConfig
 	require.NoError(t, yamlUnmarshalGolden(t, &doc))
 	h := &joinedHarness{

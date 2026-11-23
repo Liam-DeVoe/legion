@@ -23,7 +23,7 @@ Every pod of a machine id, active or standby:
 - is a member of the role lane's core-NATS queue group `envoy-listener-<machine id>`;
   NATS hands each message of a queue group to one member, so no role message is delivered by two pods;
 
-- runs the self-health monitor over its caches;
+- runs the self-health monitor over its caches and its own role lane; an inactive role lane is logged at each probe and is never a reason to rebuild or restart the pod (`isUnrecoverableSelfHealthFailure`);
 
 - reports the Legion wakes the routes it serves raise
   — a role send with no live holder, a send to a session that is gone

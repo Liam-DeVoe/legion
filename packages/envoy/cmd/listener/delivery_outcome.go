@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -118,6 +119,9 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // while another read younger than 2 s is in flight, and a read can fail: in each case the lane is
 // judged on the subjects the client holds, and an exception on a lane only a newer build's subjects
 // capture can still be that second copy.
+// A clustered stream still storing another listener's copy refuses this one as still in process
+// under that publish (bus.ErrDuplicateInProcess), which applyDeliveryOutcome logs apart from a
+// failure (exceptionPublishInProcessLine).
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -273,7 +277,11 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 		if !cfg.edge.publishesException(item) {
 			cfg.edge.withhold(cfg.logger, item, outcome.exceptionReason)
 		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
-			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
+			if errors.Is(err, bus.ErrDuplicateInProcess) {
+				cfg.logger.Warn(exceptionPublishInProcessLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
+			} else {
+				cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
+			}
 			if outcome.exceptionFailureClearsAttempt {
 				settle = settleClear
 			}
