@@ -3,6 +3,8 @@ package admission
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"testing"
 	"time"
@@ -58,6 +60,48 @@ func admitInBackground(t *testing.T, l *Limiter, ctx context.Context, class Clas
 	return outcome
 }
 
+// queueAtOnce starts n requests of class at once on ctx, each sending its outcome on outcomes,
+// which has room for it, and returns once all n are queued.
+func queueAtOnce(t *testing.T, l *Limiter, ctx context.Context, class Class, n int, outcomes chan<- admitted) {
+	t.Helper()
+	queuedBefore := classStats(l, class).Queued
+	for range n {
+		go func() {
+			ticket, err := l.Admit(ctx, class, 1)
+			outcomes <- admitted{ticket, err}
+		}()
+	}
+	waitForQueued(t, l, class, queuedBefore+n)
+}
+
+// standQueue makes class's queue in l a standing queue, non-empty for a whole interval - its
+// wait, a short one the row gives the class - with n requests in it, every unit of the class held
+// and no request's wait run out, the queue never past n on the way. The caller holds every unit of
+// the class, held among them: a first request joins the empty queue, which starts the interval, a
+// second joins half an interval later, the first then takes held's unit, so the queue never
+// empties, and n-1 more join behind the second, each of the n sending its outcome on outcomes.
+// standQueue answers the first's ticket once the interval has passed, half an interval before the
+// n run out their wait; ctx's end takes them out of the queue.
+func standQueue(t *testing.T, l *Limiter, ctx context.Context, class Class, held *Ticket, n int, outcomes chan<- admitted) *Ticket {
+	t.Helper()
+	wait := l.classes[class].wait
+	first := admitInBackground(t, l, ctx, class, 1)
+	joined := time.Now() // the queue became non-empty by now
+	time.Sleep(wait / 2)
+	queueAtOnce(t, l, ctx, class, 1, outcomes)
+	held.Release()
+	granted := receive(t, first)
+	if granted.err != nil {
+		t.Fatalf("the request that started the queue, given a unit: %v", granted.err)
+	}
+	queueAtOnce(t, l, ctx, class, n-1, outcomes)
+	time.Sleep(time.Until(joined.Add(wait)))
+	if stats := classStats(l, class); stats.Queued != n || stats.InFlight != stats.Limit || stats.QueueFull+stats.WaitExceeded != 0 {
+		t.Fatalf("%s stats %+v an interval after the queue began, want %d queued, every unit held and nothing refused", class, stats, n)
+	}
+	return granted.ticket
+}
+
 type admitted struct {
 	ticket *Ticket
 	err    error
@@ -94,7 +138,7 @@ func refusalReason(err error) Reason {
 // Each queued request takes the whole limit, so the next is admitted only once the one before it
 // is released: the order they are admitted in is the order the queue serves them.
 func TestQueuedRequestsAreAdmittedInArrivalOrder(t *testing.T) {
-	l := newLimiter(3, 1, patient) // the queue holds six requests
+	l := newLimiter(3, 1, patient) // the queue holds six requests once it stands, 66 in a burst
 	held := admit(t, l, Read, 3)
 	order := make(chan int, 3)
 	for index := range 3 {
@@ -168,15 +212,15 @@ func TestEachClassHasItsOwnLimit(t *testing.T) {
 	}
 }
 
-// A class's queue holds twice as many requests as its limit; the next request is refused at once.
+// A class's standing queue - one non-empty for a whole interval, its wait - holds twice as many
+// requests as its limit; the next request is refused at once.
 func TestAFullQueueRefusesAtOnce(t *testing.T) {
-	l := newLimiter(1, 2, patient)
+	l := newLimiter(1, 2, time.Second)
 	held := []*Ticket{admit(t, l, Write, 1), admit(t, l, Write, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	for range 4 { // the queue holds twice the limit's two requests
-		admitInBackground(t, l, ctx, Write, 1)
-	}
+	// The queue holds twice the limit's two requests.
+	held[1] = standQueue(t, l, ctx, Write, held[1], 4, make(chan admitted, 4))
 	started := time.Now()
 	_, err := l.Admit(context.Background(), Write, 1)
 	if refusalReason(err) != QueueFull {
@@ -196,6 +240,235 @@ func TestAFullQueueRefusesAtOnce(t *testing.T) {
 	waitForQueued(t, l, Write, 0)
 	for _, ticket := range held {
 		ticket.Release()
+	}
+}
+
+// A burst the server can serve within its wait is served, however far past twice the limit it
+// queues: with the class full at the server's width and its queue empty a moment before, ten
+// times the read limit arrive at once - 280 reads, five times the 56 a standing queue holds - and
+// the burst cap's worth of writes, 96, twice a standing queue's 48; the holders give their units
+// back within the wait, and every request is admitted, none refused queue_full. Held to twice the
+// limit, the read queue refused such a burst on the cluster copy at 10x (INFRA-592, test handoff
+// v39) that the server then served.
+func TestABurstIntoAnEmptyQueueIsServed(t *testing.T) {
+	const wait = 5 * time.Second
+	for _, test := range []struct {
+		class Class
+		burst int
+	}{
+		{Read, 10 * MaxReadLimit},
+		{Write, WriteBurstFactor * MaxWriteLimit},
+	} {
+		t.Run(test.class.String(), func(t *testing.T) {
+			l := newLimiter(MaxReadLimit, MaxWriteLimit, wait)
+			held := make([]*Ticket, classStats(l, test.class).Limit)
+			for i := range held {
+				held[i] = admit(t, l, test.class, 1)
+			}
+			outcomes := make(chan error, test.burst)
+			for range test.burst {
+				go func() {
+					ticket, err := l.Admit(context.Background(), test.class, 1)
+					if err == nil {
+						ticket.Release()
+					}
+					outcomes <- err
+				}()
+			}
+			// Each request of the burst has arrived once it is queued or refused.
+			deadline := time.Now().Add(5 * time.Second)
+			for stats := classStats(l, test.class); stats.Queued+int(stats.QueueFull) != test.burst; stats = classStats(l, test.class) {
+				if time.Now().After(deadline) {
+					t.Fatalf("%s stats %+v, want the whole burst of %d queued or refused", test.class, stats, test.burst)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if stats := classStats(l, test.class); stats.QueueFull != 0 {
+				t.Fatalf("%d of a burst of %d %ss were refused queue_full into a queue empty a moment before (%+v), want none: the queue takes a burst up to its cap of %d",
+					stats.QueueFull, test.burst, test.class, stats, l.classes[test.class].burstCap)
+			}
+			for _, ticket := range held {
+				ticket.Release()
+			}
+			for range test.burst {
+				select {
+				case err := <-outcomes:
+					if err != nil {
+						t.Fatalf("a %s of the burst: %v, want it admitted within its %v wait", test.class, err, wait)
+					}
+				case <-time.After(wait):
+					t.Fatalf("a %s of the burst was not answered within its %v wait", test.class, wait)
+				}
+			}
+			if stats := classStats(l, test.class); stats.InFlight != 0 || stats.Queued != 0 || stats.QueueFull+stats.WaitExceeded != 0 {
+				t.Fatalf("%s stats %+v once the burst was served, want nothing held, queued or refused", test.class, stats)
+			}
+		})
+	}
+}
+
+// A standing queue is refused at once: with the read class full at the server's width, 28, and
+// its queue non-empty for longer than one interval, its 1 s wait, a read past twice the limit -
+// the 57th - is refused queue_full in milliseconds rather than at the end of its wait, so
+// sustained overload is still refused early.
+func TestAStandingQueueRefusesPastTwiceItsLimitAtOnce(t *testing.T) {
+	const wait = time.Second
+	l := newLimiter(MaxReadLimit, 1, wait)
+	held := make([]*Ticket, MaxReadLimit)
+	for i := range held {
+		held[i] = admit(t, l, Read, 1)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bound := queueFactor * MaxReadLimit
+	held[0] = standQueue(t, l, ctx, Read, held[0], bound, make(chan admitted, bound))
+	started := time.Now()
+	_, err := l.Admit(context.Background(), Read, 1)
+	waited := time.Since(started)
+	if refusalReason(err) != QueueFull {
+		t.Fatalf("a read past a standing queue of %d: %v, want a queue_full refusal", bound, err)
+	}
+	if waited > 100*time.Millisecond {
+		t.Fatalf("a standing queue refused after %v, want at once, not at its %v wait", waited, wait)
+	}
+	if stats := classStats(l, Read); stats.QueueFull != 1 || stats.WaitExceeded != 0 || stats.Queued != bound {
+		t.Fatalf("read stats %+v, want one queue_full refusal and the %d still queued", stats, bound)
+	}
+	cancel()
+	waitForQueued(t, l, Read, 0)
+	for _, ticket := range held {
+		ticket.Release()
+	}
+}
+
+// The burst cap is a bound on memory, and holds: with each class full at the server's width and
+// its queue absorbing a burst, the queue takes the class's burst factor times its limit - 616
+// reads, 96 writes - and the next request is refused queue_full at once.
+func TestABurstPastItsCapIsRefusedAtOnce(t *testing.T) {
+	for _, test := range []struct {
+		class    Class
+		burstCap int
+	}{
+		{Read, ReadBurstFactor * MaxReadLimit},
+		{Write, WriteBurstFactor * MaxWriteLimit},
+	} {
+		t.Run(test.class.String(), func(t *testing.T) {
+			l := newLimiter(MaxReadLimit, MaxWriteLimit, patient)
+			held := make([]*Ticket, classStats(l, test.class).Limit)
+			for i := range held {
+				held[i] = admit(t, l, test.class, 1)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			queueAtOnce(t, l, ctx, test.class, test.burstCap, make(chan admitted, test.burstCap))
+			started := time.Now()
+			_, err := l.Admit(context.Background(), test.class, 1)
+			if refusalReason(err) != QueueFull {
+				t.Fatalf("a %s past a burst of %d: %v, want a queue_full refusal", test.class, test.burstCap, err)
+			}
+			if waited := time.Since(started); waited > 100*time.Millisecond {
+				t.Fatalf("a queue at its burst cap refused after %v, want at once", waited)
+			}
+			if stats := classStats(l, test.class); stats.QueueFull != 1 || stats.Queued != test.burstCap {
+				t.Fatalf("%s stats %+v, want one queue_full refusal and the %d of the burst still queued", test.class, stats, test.burstCap)
+			}
+			cancel()
+			waitForQueued(t, l, test.class, 0)
+			for _, ticket := range held {
+				ticket.Release()
+			}
+		})
+	}
+}
+
+// A standing queue takes a burst again only once it has emptied: held at twice the limit and
+// never empty, it refuses every request past that bound at once for three intervals more, however
+// long it stands, and only once it has emptied may a new burst queue past the bound again. So
+// sustained overload cannot alternate into the burst allowance. Every eighth of an interval the
+// unit's holder gives it to the queue's head, which holds it in turn, and a new request takes the
+// place the head left, so the queue keeps its two and no request's wait runs out.
+func TestAStandingQueueTakesABurstAgainOnlyOnceItHasEmptied(t *testing.T) {
+	const wait, intervals = time.Second, 3
+	l := newLimiter(1, 1, wait)
+	bound := queueFactor
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rotations := intervals * 8
+	outcomes := make(chan admitted, bound+rotations)
+	holder := standQueue(t, l, ctx, Read, admit(t, l, Read, 1), bound, outcomes)
+	began := time.Now().Add(-wait) // about when the queue last became non-empty
+	probes := 0
+	refusedAtOnce := func() {
+		t.Helper()
+		probes++
+		started := time.Now()
+		_, err := l.Admit(context.Background(), Read, 1)
+		if waited := time.Since(started); refusalReason(err) != QueueFull || waited > 100*time.Millisecond {
+			t.Fatalf("a read past the queue standing %v: %v after %v, want a queue_full refusal at once",
+				started.Sub(began).Round(time.Millisecond), err, waited)
+		}
+	}
+	refusedAtOnce()
+	for range rotations {
+		holder.Release()
+		granted := receive(t, outcomes)
+		if granted.err != nil {
+			t.Fatalf("the head of the standing queue, given the unit: %v", granted.err)
+		}
+		holder = granted.ticket
+		queueAtOnce(t, l, ctx, Read, 1, outcomes)
+		refusedAtOnce()
+		time.Sleep(wait / 8)
+	}
+	if stats := classStats(l, Read); stats.QueueFull != uint64(probes) || stats.WaitExceeded != 0 || stats.Queued != bound {
+		t.Fatalf("read stats %+v after %d intervals standing, want the %d probes refused queue_full, no wait run out and %d queued", stats, intervals+1, probes, bound)
+	}
+
+	cancel()
+	waitForQueued(t, l, Read, 0)
+	burst := 5 * bound
+	again, stop := context.WithCancel(context.Background())
+	defer stop()
+	queueAtOnce(t, l, again, Read, burst, make(chan admitted, burst))
+	if stats := classStats(l, Read); stats.QueueFull != uint64(probes) || stats.Queued != burst {
+		t.Fatalf("read stats %+v for a burst into the emptied queue, want all %d queued past its standing bound of %d and no refusal", stats, burst, bound)
+	}
+	stop()
+	waitForQueued(t, l, Read, 0)
+	holder.Release()
+}
+
+// A request queued past twice the limit, in a burst's allowance, still waits no longer than its
+// class's wait: where its room never comes it is refused wait_exceeded at that wait, and answered
+// 429 OVERLOADED with Retry-After: 1, as every refusal is.
+func TestARequestQueuedPastTwiceTheLimitWaitsNoLongerThanItsClasssWait(t *testing.T) {
+	const wait = 300 * time.Millisecond
+	l := newLimiter(1, 1, wait)
+	held := admit(t, l, Read, 1)
+	defer held.Release()
+	bound := queueFactor
+	outcomes := make(chan admitted, bound)
+	queueAtOnce(t, l, context.Background(), Read, bound, outcomes)
+	started := time.Now()
+	_, err := l.Admit(context.Background(), Read, 1)
+	waited := time.Since(started)
+	var refusal *Refusal
+	if !errors.As(err, &refusal) || refusal.Reason != WaitExceeded {
+		t.Fatalf("a read queued past twice the limit with no room coming: %v, want a wait_exceeded refusal", err)
+	}
+	if waited < wait || waited >= wait+250*time.Millisecond {
+		t.Fatalf("refused after %v, want after its %v wait and within 250ms of it", waited, wait)
+	}
+	w := httptest.NewRecorder()
+	WriteRefused(w, refusal)
+	assertRetryable(t, w, http.StatusTooManyRequests, CodeOverloaded)
+	for range bound {
+		if result := receive(t, outcomes); refusalReason(result.err) != WaitExceeded {
+			t.Fatalf("a read queued ahead of it: %+v, want a wait_exceeded refusal", result)
+		}
+	}
+	if stats := classStats(l, Read); stats.QueueFull != 0 || stats.WaitExceeded != uint64(bound+1) || stats.Queued != 0 {
+		t.Fatalf("read stats %+v, want all %d refused at their wait and none for a full queue", stats, bound+1)
 	}
 }
 
@@ -295,7 +568,7 @@ func TestAWriteWaitsForRoomPastAReadsWait(t *testing.T) {
 // A request whose client goes away while it waits leaves the queue and takes no unit with it:
 // the units it would have held go to the request behind it.
 func TestACancelledWaitLeaksNoUnits(t *testing.T) {
-	l := newLimiter(1, 2, patient) // the queue holds four requests
+	l := newLimiter(1, 2, patient) // the queue holds four requests once it stands, eight in a burst
 	held := admit(t, l, Write, 2)
 	ctx, cancel := context.WithCancel(context.Background())
 	gone := admitInBackground(t, l, ctx, Write, 1)

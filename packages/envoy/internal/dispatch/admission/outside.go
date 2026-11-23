@@ -79,8 +79,8 @@ import (
 const OutsideLimit = unadmittedConnections
 
 // OutsideQueueLimit is how much work may wait for a place at once: queueFactor times OutsideLimit,
-// 16, the shape of a class's queue and a lane's (queueFactor says why). Work that finds it full is
-// refused at once (QueueFull).
+// 16, the shape of a lane's queue and of a class's standing queue, and fixed as a lane's is, with
+// no burst cap (queueFactor says why). Work that finds it full is refused at once (QueueFull).
 const OutsideQueueLimit = queueFactor * OutsideLimit
 
 // OutsideUser is a kind of work that takes a place of OutsideLimit, which the refusals are counted

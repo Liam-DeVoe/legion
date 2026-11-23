@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  A burst that fills a class's admission queue within its wait is no longer refused `429 OVERLOADED` past twice the class's limit: on the cluster copy at ten times the load two of three steps refused bursts of 85 and 129 reads during a 0.4-0.7 second stall that the server, with no limiter, served late, and a queue that has emptied within its wait now takes up to 22 times the read limit and 4 times the write limit (616 reads, 96 writes) while one that has stood non-empty for a whole wait is still refused past twice the limit at once.

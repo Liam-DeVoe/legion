@@ -120,8 +120,9 @@ const MaxHeavyReadLane = MaxReadLimit / int(laneCount-1)
 // fifoGate is a limit of places and the queue that waits for one, served first in, first out, one
 // place a holder: the gate a heavy read's lane (laneGate) and the request pool's work outside
 // admission (Outside) are both built on. It has a mutex of its own, since neither holds any of the
-// Limiter's while it waits, and its queue holds at most queueFactor times its limit, the shape of
-// a class's queue (queueFactor says why). How long a waiter waits, and what a refusal is and is
+// Limiter's while it waits, and its queue holds at most queueFactor times its limit, burst or not:
+// the bound of a class's standing queue, without the burst cap a class's queue takes while it
+// absorbs a burst (queueFactor says why). How long a waiter waits, and what a refusal is and is
 // counted against, are the caller's (enter).
 type fifoGate struct {
 	limit int

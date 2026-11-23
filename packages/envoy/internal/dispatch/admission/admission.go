@@ -73,7 +73,9 @@ func (c Class) String() string {
 type Reason string
 
 const (
-	// QueueFull is a request that arrived with its class's wait queue already full.
+	// QueueFull is a request that arrived with its wait queue already full: a class's queue at
+	// its bound (gate.queueBound), or a lane's or the outside places' at queueFactor times its
+	// limit.
 	QueueFull Reason = "queue_full"
 	// WaitExceeded is a request that waited in the queue for its class's wait
 	// (Limits.ReadWait, Limits.WriteWait) without room coming free.
@@ -211,12 +213,52 @@ const DefaultReadWait = time.Second
 // and a read's work is the shorter of the two to redo.
 const DefaultWriteWait = 2 * time.Second
 
-// queueFactor is how many requests each class's queue holds per unit of its limit: twice the
-// limit, room for two more bursts of the class's full width behind the one running. A read's 1 s
-// wait, and a write's 2 s, outlast a full width's work, so a request two widths back still
+// queueFactor is how many requests a class's standing queue holds per unit of its limit: twice
+// the limit, room for two more bursts of the class's full width behind the one running. A read's
+// 1 s wait, and a write's 2 s, outlast a full width's work, so a request two widths back still
 // expects room within its wait: 16 reads with a 75 ms wait and a queue of one limit refused 889
 // reads at 1x, and with a 1 s wait and a queue of two limits 112.
+//
+// A class's queue is held to this bound only once it is a standing queue, non-empty for a whole
+// interval, the queue's own wait (gate.queueBound). Until then - while it has emptied within its
+// last interval - it is absorbing a burst, and a request that finds the class full may queue past
+// this bound, up to the class's burst cap (ReadBurstFactor, WriteBurstFactor). That is CoDel's
+// rule for a request queue (Maurer, "Fail at Scale", ACM Queue 2015): a queue that empties within
+// its interval is serving a burst it can serve, and one that has stood a whole interval is
+// sustained overload, which this bound still refuses at once, so a refusal under sustained
+// overload is answered early rather than at the end of its wait. Held to this bound always, the
+// read queue refused bursts the server would have served: on the cluster copy at 10x (INFRA-592,
+// test handoff v39, c-scale at c605071b) two head steps each refused one burst of reads queue_full
+// - 85 and 129 reads, and one event write - during a 0.4-0.7 s stall of Dispatch that main, which
+// has no limiter, served late, its slowest request taking 525 ms. At about 540 reads a second the
+// read queue's 56 places filled in about a tenth of a second, refusing reads that their 1 s wait
+// would have let wait and that the server then served.
+//
+// The heavy read lanes (EnterLane) and the request pool's places outside admission (Outside) keep
+// this fixed bound, burst or not (fifoGate): a lane exists to bound one slow route's hold on the
+// database (INFRA-592, round 60), and the architect ruled that the lanes keep fixed queues
+// (INFRA-592, 2026-11-23 05:36Z).
 const queueFactor = 2
+
+// ReadBurstFactor and WriteBurstFactor are how many requests per unit of its limit a class's
+// queue holds while it absorbs a burst (queueFactor says when): its burst cap. The cap is a bound
+// on memory rather than a refusal policy: each request queued under it is still refused at its
+// class's wait where no room comes, as every waiter is, and the cap only keeps a flood within the
+// memory its waiters take - a read's goroutine and request, and a write's as well as its body, of
+// which a queued write holds up to a MiB in memory (api's spooledBodyInMemory).
+//
+// Each is what arrives within one wait of its class at the load test's 10x on the cluster copy,
+// 600 reads and 40 writes a second (c-scale, 10 times 1x's 60 and 4; INFRA-592, test handoff v39,
+// committed 23,931 events in 600 s): 600 reads a second over a read's 1 s wait is 600 reads, and
+// 22 times the read limit of 28 is 616; 40 writes a second over a write's 2 s wait is 80 writes,
+// and 4 times the write limit of 24 is 96, at most 96 MiB of bodies. They are factors of the limit
+// rather than counts, as queueFactor is, because what a server serves within one wait is its
+// limit's worth of requests over and over: a pod with half the CPUs has half the limit
+// (readsPerCPU, writesPerCPU), serves half the burst in that wait and holds half the queue for it.
+const (
+	ReadBurstFactor  = 22
+	WriteBurstFactor = 4
+)
 
 // Limits are a Limiter's concurrency limits in units (a request takes its route's weight): one
 // per class, one over the two together, how much of that one is kept for reads, and how long a
@@ -272,8 +314,10 @@ func DefaultLimits() Limits {
 // Limits.Total beside the read units Limits.ReservedReads still keeps for waiting reads. One
 // that finds no room waits in its class's queue, in the order the requests arrived (Arrive),
 // for at most its class's wait over the whole request - Limits.ReadWait for a read,
-// Limits.WriteWait for a write - and one that finds that queue already holding queueFactor times
-// the class's limit is refused at once. A Limiter is safe for concurrent use.
+// Limits.WriteWait for a write - and one that finds that queue already at its bound is refused at
+// once: the class's burst cap while the queue absorbs a burst, and queueFactor times the class's
+// limit once it has stood non-empty for a whole wait (queueFactor says why). A Limiter is safe for
+// concurrent use.
 type Limiter struct {
 	// arrived counts the arrivals so far, which is each one's place in the order the two queues
 	// are served in (Arrive). It is atomic rather than under mu, so an arrival takes no lock.
@@ -312,13 +356,18 @@ func New(limits Limits) *Limiter {
 	}
 	waits := [classCount]time.Duration{Read: limits.ReadWait, Write: limits.WriteWait}
 	defaults := [classCount]time.Duration{Read: DefaultReadWait, Write: DefaultWriteWait}
+	burstFactors := [classCount]int{Read: ReadBurstFactor, Write: WriteBurstFactor}
 	for class, limit := range [classCount]int{Read: limits.Read, Write: limits.Write} {
 		wait := waits[class]
 		if wait <= 0 {
 			wait = defaults[class]
 		}
-		l.classes[class] = &gate{class: Class(class), limit: max(limit, 1), wait: wait}
-		l.total += l.classes[class].limit
+		limit = max(limit, 1)
+		l.classes[class] = &gate{
+			class: Class(class), limit: limit, wait: wait,
+			queueCap: queueFactor * limit, burstCap: burstFactors[class] * limit,
+		}
+		l.total += limit
 	}
 	if limits.Total > 0 {
 		l.total = limits.Total
@@ -718,14 +767,32 @@ func (a Away) TakeBack(ctx context.Context) error {
 // queue, since the combined cap ties the classes together; only the refusal counters, which no
 // decision reads, stand on their own.
 type gate struct {
-	class   Class
-	limit   int
-	wait    time.Duration
-	used    int
-	waiters list.List // of *waiter, in arrival order
+	class Class
+	limit int
+	wait  time.Duration
+	// queueCap is the most a standing queue holds, queueFactor times the limit, and burstCap the
+	// most a queue absorbing a burst holds, the class's burst factor times it (queueBound).
+	queueCap, burstCap int
+	used               int
+	waiters            list.List // of *waiter, in arrival order
+	// nonEmptySince is when the queue last became non-empty: when a waiter last joined it empty.
+	nonEmptySince time.Time
 
 	queueFull, waitExceeded atomic.Uint64
 	longestRefusedWait      atomic.Int64
+}
+
+// queueBound is how many waiters g's queue may hold for a request that arrives at now and finds
+// no room (queueFactor says why). The queue's interval is its own wait, g.wait - the class's
+// Limits.ReadWait or Limits.WriteWait - and this is the one place that reads it as such: a queue
+// that is empty, or that has emptied within its last interval, so it became non-empty less than
+// an interval ago, is absorbing a burst and holds burstCap; one that has stood non-empty for a
+// whole interval is a standing queue and holds queueCap, until it empties. l.mu is held.
+func (g *gate) queueBound(now time.Time) int {
+	if g.waiters.Len() > 0 && now.Sub(g.nonEmptySince) >= g.wait {
+		return g.queueCap
+	}
+	return g.burstCap
 }
 
 // waiter is one queued acquire; ready closes once its units are granted. seq is its place among
@@ -777,11 +844,16 @@ func (l *Limiter) acquire(ctx context.Context, a *Arrival) error {
 		l.mu.Unlock()
 		return nil
 	}
-	// The queue holds queueFactor times the class's limit (queueFactor says why).
-	if g.waiters.Len() >= queueFactor*g.limit {
+	// The queue holds its burst cap while it absorbs a burst and queueFactor times the class's
+	// limit once it stands (gate.queueBound).
+	now := time.Now()
+	if g.waiters.Len() >= g.queueBound(now) {
 		l.mu.Unlock()
 		g.queueFull.Add(1)
 		return &Refusal{Class: a.class, Reason: QueueFull}
+	}
+	if g.waiters.Len() == 0 {
+		g.nonEmptySince = now
 	}
 	queued := &waiter{units: a.units, seq: a.seq, ready: make(chan struct{})}
 	element := g.queue(queued)

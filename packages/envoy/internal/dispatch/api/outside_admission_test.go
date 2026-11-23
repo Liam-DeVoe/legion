@@ -462,7 +462,11 @@ func (h *heldIntrospections) RoundTrip(r *http.Request) (*http.Response, error) 
 
 // admissionsQueueFullRefusal is admission's own answer to a read on rig's server it has no room
 // for and no place in its queue for: every read unit of limiter, whose read limit is limit, held,
-// and as many reads queued as the queue holds, twice that limit (admission.DefaultLimits).
+// and as many reads queued as the queue holds. The reads join a queue that was empty a moment
+// before, which is a burst the queue absorbs, so it holds the read class's burst cap,
+// admission.ReadBurstFactor times the limit, rather than twice the limit, all a queue that has
+// stood for a whole wait holds: a request past twice the limit would queue for its minute here
+// and never be refused queue_full.
 func admissionsQueueFullRefusal(t *testing.T, rig *brokerTokenRig, limiter *admission.Limiter, limit int) *httptest.ResponseRecorder {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -478,14 +482,15 @@ func admissionsQueueFullRefusal(t *testing.T, rig *brokerTokenRig, limiter *admi
 		}
 		defer ticket.Release()
 	}
-	for range 2 * limit {
+	burstCap := admission.ReadBurstFactor * limit
+	for range burstCap {
 		queued.Go(func() {
 			if ticket, err := limiter.Admit(ctx, admission.Read, 1); err == nil {
 				ticket.Release()
 			}
 		})
 	}
-	pollUntil(t, 10*time.Second, "a full read queue", func() bool { return limiter.Stats()[admission.Read].Queued == 2*limit })
+	pollUntil(t, 10*time.Second, "a full read queue", func() bool { return limiter.Stats()[admission.Read].Queued == burstCap })
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
 	request.Header.Set("X-Dispatch-User", "alice")
 	refusal := rig.serve(request)
