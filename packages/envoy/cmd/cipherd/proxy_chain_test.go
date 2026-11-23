@@ -224,7 +224,7 @@ func mountedIntermediate(t *testing.T, names []string) (certFile, keyFile string
 	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(4242), Subject: pkix.Name{CommonName: "mounted test intermediate"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(7 * 24 * time.Hour),
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(7*24*time.Hour - time.Hour),
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
 		PermittedDNSDomains: names, PermittedDNSDomainsCritical: true,
 	}

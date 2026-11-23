@@ -54,6 +54,12 @@ func testRoot(t *testing.T, name string) testCertificate {
 // name constraint at all), from notBefore to notAfter.
 func testIntermediate(t *testing.T, issuer testCertificate, names []string, notBefore, notAfter time.Time) testCertificate {
 	t.Helper()
+	return shapedIntermediate(t, issuer, names, notBefore, notAfter, nil)
+}
+
+// shapedIntermediate is testIntermediate with shape changing its template before it is signed.
+func shapedIntermediate(t *testing.T, issuer testCertificate, names []string, notBefore, notAfter time.Time, shape func(*x509.Certificate)) testCertificate {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +73,9 @@ func testIntermediate(t *testing.T, issuer testCertificate, names []string, notB
 		NotBefore: notBefore, NotAfter: notAfter,
 		BasicConstraintsValid: true, IsCA: true, MaxPathLenZero: true, KeyUsage: x509.KeyUsageCertSign,
 		PermittedDNSDomains: names, PermittedDNSDomainsCritical: len(names) > 0,
+	}
+	if shape != nil {
+		shape(template)
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, issuer.cert, &key.PublicKey, issuer.key)
 	if err != nil {
@@ -131,7 +140,7 @@ func verifyLeaf(t *testing.T, a *Authority, host string, root *x509.Certificate,
 // and the release carries that root.
 func TestAMountedIntermediateAndItsChainSign(t *testing.T) {
 	root := testRoot(t, "mounted root")
-	intermediate := testIntermediate(t, root, []string{"s.airlock.test", "example.com"}, time.Now().Add(-time.Hour), time.Now().Add(7*24*time.Hour))
+	intermediate := testIntermediate(t, root, []string{"s.airlock.test", "example.com"}, time.Now().Add(-time.Hour), time.Now().Add(7*24*time.Hour-time.Hour))
 	certFile, keyFile := writeChain(t, intermediate, root.cert)
 	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Hosts: []string{"s.airlock.test", "*.example.com"}})
 	if err != nil {
@@ -238,10 +247,10 @@ func TestTheReleaseCarriesTheReleaseRootsBesideItsOwn(t *testing.T) {
 func TestALeafEndsNoLaterThanItsIntermediate(t *testing.T) {
 	root := testRoot(t, "root")
 	now := time.Now().Truncate(time.Second)
-	intermediate := testIntermediate(t, root, nil, now.Add(-time.Hour), now.Add(10*time.Hour))
+	intermediate := testIntermediate(t, root, []string{"s.airlock.test"}, now.Add(-time.Hour), now.Add(10*time.Hour))
 	certFile, keyFile := writeChain(t, intermediate, root.cert)
 	clock := &steppedClock{now: now}
-	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock})
+	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock, Hosts: []string{"s.airlock.test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,9 +259,9 @@ func TestALeafEndsNoLaterThanItsIntermediate(t *testing.T) {
 		t.Errorf("the leaf ends %v; want the intermediate's end %v", leaf.NotAfter, intermediate.cert.NotAfter)
 	}
 	// Another authority with a long life: the leaf's whole validity is 25 hours at most.
-	long := testIntermediate(t, root, nil, now.Add(-time.Hour), now.Add(7*24*time.Hour))
+	long := testIntermediate(t, root, []string{"s.airlock.test"}, now.Add(-time.Hour), now.Add(7*24*time.Hour-time.Hour))
 	certFile, keyFile = writeChain(t, long, root.cert)
-	longAuthority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock})
+	longAuthority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock, Hosts: []string{"s.airlock.test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,10 +285,10 @@ func TestALeafEndsNoLaterThanItsIntermediate(t *testing.T) {
 func TestALeafNearItsIntermediatesEndIsNotSignedAgainForNothing(t *testing.T) {
 	root := testRoot(t, "root")
 	now := time.Now().Truncate(time.Second)
-	intermediate := testIntermediate(t, root, nil, now.Add(-time.Hour), now.Add(3*time.Hour))
+	intermediate := testIntermediate(t, root, []string{"s.airlock.test"}, now.Add(-time.Hour), now.Add(3*time.Hour))
 	certFile, keyFile := writeChain(t, intermediate, root.cert)
 	clock := &steppedClock{now: now}
-	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock})
+	authority, err := NewAuthority(certFile, keyFile, AuthorityOptions{Clock: clock, Hosts: []string{"s.airlock.test"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +303,49 @@ func TestALeafNearItsIntermediatesEndIsNotSignedAgainForNothing(t *testing.T) {
 	}
 	if again != first {
 		t.Error("the authority signed a leaf again that would end no later than the one it holds")
+	}
+}
+
+// TestEachBoundNamesWhatItRefuses: the mounted form is held to the bounds the pool's answer is
+// (checkBounds), and each refusal names the bound and the value past it: an intermediate of path
+// length 1, of no path length constraint, whose key usage does not name signing certificates, of
+// 30 days, with a name no host binds, or
+// with no name constraints is refused at start, naming the bound. Control: the same intermediate
+// inside every bound starts.
+func TestEachBoundNamesWhatItRefuses(t *testing.T) {
+	root := testRoot(t, "root")
+	now := time.Now()
+	hosts := []string{"s.airlock.test", "*.googleapis.com"}
+	names := []string{"googleapis.com", "s.airlock.test"}
+	week := 7 * 24 * time.Hour
+	for _, row := range []struct {
+		name, want string
+		names      []string
+		life       time.Duration
+		shape      func(*x509.Certificate)
+	}{
+		{"inside every bound (control)", "", names, week, nil},
+		{"path length 1", "path length is 1", names, week, func(c *x509.Certificate) { c.MaxPathLenZero, c.MaxPathLen = false, 1 }},
+		{"no path length constraint", "path length is unconstrained", names, week, func(c *x509.Certificate) { c.MaxPathLenZero, c.MaxPathLen = false, -1 }},
+		{"no key usage", "key usage does not name signing certificates", names, week, func(c *x509.Certificate) { c.KeyUsage = 0 }},
+		{"30 days", "its life is 720h0m0s", names, 30 * 24 * time.Hour, nil},
+		{"a name no host binds", "permit [evil.example googleapis.com s.airlock.test]", append([]string{"evil.example"}, names...), week, nil},
+		{"no name constraints", "permit []", nil, week, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			intermediate := shapedIntermediate(t, root, row.names, now, now.Add(row.life), row.shape)
+			certFile, keyFile := writeChain(t, intermediate, root.cert)
+			_, err := NewAuthority(certFile, keyFile, AuthorityOptions{Hosts: hosts})
+			if row.want == "" {
+				if err != nil {
+					t.Fatalf("NewAuthority on an intermediate inside every bound: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), row.want) {
+				t.Errorf("NewAuthority = %v; want a refusal naming %q", err, row.want)
+			}
+		})
 	}
 }
 

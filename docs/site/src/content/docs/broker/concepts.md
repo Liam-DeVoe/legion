@@ -1624,16 +1624,20 @@ deployment's settings name one of two ways (`packages/envoy/internal/cipher/prox
   (`projects.locations.caPools.certificates.create`) with its own Google
   credential: an authority of path length 0, for 7 days, whose name constraints are the names of
   the profiles file's hosts, a `*.` pattern as its domain. The pool's issuance policy fixes what the
-  answer may be, and the pod checks it too: the answer must certify its key, chain to a root, sign
-  a leaf a client trusts for every bound host, and chain to the same root as the pod's first
+  answer may be, and the pod holds the answer to it too, so a leaked pod key is never more than
+  that: the answer must certify the pod's key, chain to a root, be an authority of path length 0
+  whose key usage signs certificates, last 7 days and 5 minutes at most, permit exactly the names
+  of the bound hosts (no other name, and not no constraint at all), sign a leaf a client trusts for
+  every bound host, and chain to the same root as the pod's first
   answer, since every release the pod has made names that root. The pod asks for the next
   intermediate when the one it holds has less than 2 days left, and goes on asking with a backoff
   of 1 second doubling to 5 minutes until it gets one; an answer it refuses counts as a failure.
   It logs one line for each intermediate it takes, and one for each request that failed.
 - **A mounted pair** (`BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`), for a deployment
   without that service: an intermediate and then each authority up to and including its root, or a
-  self-signed root alone. The broker refuses at start a chain that reaches no root, one that would
-  sign no trusted leaf for a bound host, and one whose life is over.
+  self-signed root alone. The broker refuses at start a chain that reaches no root, one whose life
+  is over, one that would sign no trusted leaf for a bound host, and an intermediate past any bound
+  a pool's answer is held to.
 
 With both set, the pool is the one used. A leaf lasts 25 hours from its start to its end, and
 never past the end of the certificate that signed it, so a leaf signed while the pool fails ends

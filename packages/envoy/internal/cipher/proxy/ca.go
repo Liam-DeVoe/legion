@@ -218,6 +218,57 @@ func selfSigned(c *x509.Certificate) bool {
 	return bytes.Equal(c.RawIssuer, c.RawSubject) && c.CheckSignatureFrom(c) == nil
 }
 
+// intermediateLifeSlack is how much longer than intermediateLifetime an intermediate may last
+// from its start to its end: 5 minutes, for a pool that rounds its times. So the bound is 7 days
+// and 5 minutes. A pool's backdating (its issuance policy's backdate_duration) keeps the
+// requested lifetime, so it adds nothing to it.
+const intermediateLifeSlack = 5 * time.Minute
+
+// checkBounds refuses an intermediate past the bounds a pod holds every intermediate to, the
+// pool's answer and a mounted one alike, whatever the pool's issuance policy is: an authority
+// of path length 0 that may sign certificates, 7 days and intermediateLifeSlack at most, whose
+// name constraints permit exactly the names hosts asks for (requestedNames). The policy should
+// make each of these so, but a pod's own key signs under the intermediate, so an intermediate
+// wider than these would make a leaked pod key an authority for other authorities, for longer,
+// or for names no profile binds, under a root every command trusts.
+func checkBounds(cert *x509.Certificate, hosts []string) error {
+	if !cert.BasicConstraintsValid || cert.MaxPathLen != 0 || !cert.MaxPathLenZero {
+		return fmt.Errorf("its path length is %s, not 0, so it could sign other authorities", pathLength(cert))
+	}
+	if cert.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return errors.New("its key usage does not name signing certificates")
+	}
+	if life := cert.NotAfter.Sub(cert.NotBefore); life > intermediateLifetime+intermediateLifeSlack {
+		return fmt.Errorf("its life is %s, past the %s a pod asks for and %s of slack", life, intermediateLifetime, intermediateLifeSlack)
+	}
+	want, got := lowerNames(requestedNames(hosts)), lowerNames(cert.PermittedDNSDomains)
+	if len(got) == 0 || !slices.Equal(got, want) {
+		return fmt.Errorf("its name constraints permit [%s]; want exactly the bound hosts' names [%s]", strings.Join(got, " "), strings.Join(want, " "))
+	}
+	return nil
+}
+
+// pathLength is a certificate's path length constraint as a sentence reads it.
+func pathLength(cert *x509.Certificate) string {
+	switch {
+	case !cert.BasicConstraintsValid:
+		return "unset, with no basic constraints"
+	case cert.MaxPathLen < 0 || cert.MaxPathLen == 0 && !cert.MaxPathLenZero:
+		return "unconstrained"
+	}
+	return fmt.Sprint(cert.MaxPathLen)
+}
+
+// lowerNames is names in lower case, sorted, each once: DNS names compare without case.
+func lowerNames(names []string) []string {
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, strings.ToLower(name))
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // take makes s the certificate the authority signs with, once it holds that s chains to root
 // now, that root is the root of every certificate taken before it, and that a leaf s signs for
 // each bound host verifies under root alone, name constraints and all. Then it logs the line an
@@ -244,6 +295,11 @@ func (a *Authority) take(s *signer, root *x509.Certificate) error {
 	}
 	if _, err := s.cert.Verify(x509.VerifyOptions{Roots: roots, Intermediates: between, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err != nil {
 		return fmt.Errorf("it does not chain to its root: %w", err)
+	}
+	if s.cert != root {
+		if err := checkBounds(s.cert, a.hosts); err != nil {
+			return err
+		}
 	}
 	for _, host := range a.hosts {
 		name := host
