@@ -7,7 +7,13 @@ import { fileHash } from "./build";
 import { type Case, loadCasesAt, pathHash } from "./cases";
 import { DAEMON_IMAGE_ITEM, composedAt, localSource, rolePromptParts } from "./context";
 import { loadPrompt } from "./readers";
-import { messageSse, type RecordedRequest, type Recorder, sseResponse, startRecorder } from "./recorder";
+import {
+  messageSse,
+  type RecordedRequest,
+  type Recorder,
+  sseResponse,
+  startRecorder,
+} from "./recorder";
 import { main, type RoleCasesIo } from "./rolecases";
 import {
   BASE_COMMIT,
@@ -43,7 +49,8 @@ const SESSION = readFileSync(path.join(TESTDATA, "R8-implementer.jsonl"), "utf8"
 const KEPT_TASK = "Make the widget list.";
 const ABSENT_TASK = "Make the gadget list.";
 /** Where the store keeps each session, under a Legion workspace's session directory. */
-const KEPT = "/sessions/--legion-workspaces-acme-widgets-acme-1--/2026-11-20T02-00-00-000Z_kept.jsonl";
+const KEPT =
+  "/sessions/--legion-workspaces-acme-widgets-acme-1--/2026-11-20T02-00-00-000Z_kept.jsonl";
 const ABSENT =
   "/sessions/--legion-workspaces-acme-widgets-acme-1--/2026-11-20T02-00-00-000Z_absent.jsonl";
 /** The daemon image's commit of each session, as the stand-in profile step names it. */
@@ -152,7 +159,9 @@ function inputs(dir: string) {
   writeFileSync(
     sessions,
     [KEPT, ABSENT]
-      .map((each) => `${JSON.stringify({ store: "store_acme", hash: fileHash(each), path: each })}\n`)
+      .map(
+        (each) => `${JSON.stringify({ store: "store_acme", hash: fileHash(each), path: each })}\n`
+      )
       .join("")
   );
   for (const each of ["copies", "count"]) mkdirSync(path.join(dir, each), { recursive: true });

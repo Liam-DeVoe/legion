@@ -272,14 +272,7 @@ import {
   sessionHeads,
   userTurnKey,
 } from "./capture";
-import {
-  type Case,
-  loadCases,
-  loadCasesAt,
-  pathReadFile,
-  skillReadFile,
-  Thinking,
-} from "./cases";
+import { type Case, loadCases, loadCasesAt, pathReadFile, skillReadFile, Thinking } from "./cases";
 import {
   configFrom,
   json,
@@ -349,6 +342,7 @@ import {
   type Replayed,
   replayInterleaved,
 } from "./replay";
+import { main as roleCasesMain } from "./rolecases";
 import {
   type CaseFacts,
   type CaseScore,
@@ -1007,7 +1001,9 @@ export function armCaptureDir(
           : textDigest(arm.skillDir);
   const less = arm.rolePrompt?.less;
   const line =
-    less === undefined ? "" : `-less-${createHash("sha256").update(less).digest("hex").slice(0, 16)}`;
+    less === undefined
+      ? ""
+      : `-less-${createHash("sha256").update(less).digest("hex").slice(0, 16)}`;
   return path.join(out, "captures", `${arm.name}-${text}${line}`);
 }
 
@@ -1970,9 +1966,11 @@ async function controlStageCommand(r: Runner): Promise<void> {
   const result = id === undefined ? undefined : results.get(id);
   if (c === undefined || result === undefined) throw new Error(`no control case ${id}`);
   const planted = r.dirs.plantedLine;
-  const left = planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`;
+  const left =
+    planted === undefined ? "the case's line" : `the planted line ${JSON.stringify(planted)}`;
   // A role-line case's minus leaves its line out of the old arm's role prompt, not of the skill.
-  const from = c.rolePromptLine === undefined ? "" : " of the old arm's role prompt, the skill kept";
+  const from =
+    c.rolePromptLine === undefined ? "" : " of the old arm's role prompt, the skill kept";
   say(
     r,
     `the control case is ${c.id}${replacedWords(score)}; minus leaves out ${left}${from}, and twin is the old text again (the false-loss control); old, minus and twin are sent in one order each round`
@@ -2918,6 +2916,7 @@ const USAGE = [
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]",
   "  build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]",
   "  build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]",
+  "  build-role-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --role <role> --line <text> --old-role-prompt-at <commit> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--repos <dir>] [--cache-dir <dir>]",
 ].join("\n");
 
 /** The command line. Returns the exit status (EXIT). */
@@ -2948,6 +2947,13 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       case "build-cases":
       case "build-tasks":
         return await buildMain(argv, {
+          out: io.out,
+          err: io.err,
+          gh: spawnGh,
+          now: () => performance.now(),
+        });
+      case "build-role-cases":
+        return await roleCasesMain(rest, {
           out: io.out,
           err: io.err,
           gh: spawnGh,

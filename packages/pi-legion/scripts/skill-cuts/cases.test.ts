@@ -514,7 +514,10 @@ test("refuses a whole read by path of the copy that skillReads leaves out, a pat
 // testdata/roleprompt.ts, and a skill case still against the skill's directory.
 describe("a role-line case", () => {
   /** F1's `task` step in a Legion implementer's session, as a case of ROLE_LINE. */
-  function roleCase(id: string, rolePromptLine: unknown = { role: "implementer", part: ROLE_PART }) {
+  function roleCase(
+    id: string,
+    rolePromptLine: unknown = { role: "implementer", part: ROLE_PART }
+  ) {
     return {
       ...f1Case(id),
       baseFile: ROLE_PART,

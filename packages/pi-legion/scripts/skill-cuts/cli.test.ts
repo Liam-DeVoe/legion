@@ -2288,7 +2288,8 @@ describe("behaviour with role-prompt commits: refusals before any model call", (
 
   test("one option alone, a role-line case with neither, a case that holds its own role prompt, a case with no Legion role and a commit the repository does not hold are each refused, naming why", async () => {
     const legion = roleScenario("role-refused", [legionCase("l1")]);
-    const together = "--old-role-prompt-at and --new-role-prompt-at go together: give both, or neither";
+    const together =
+      "--old-role-prompt-at and --new-role-prompt-at go together: give both, or neither";
     for (const one of [
       ["--old-role-prompt-at", BASE_COMMIT],
       ["--new-role-prompt-at", HEAD_COMMIT],

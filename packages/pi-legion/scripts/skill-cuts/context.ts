@@ -114,13 +114,7 @@ import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { mapLimit } from "../skill-scenarios/production-dispatch";
 import { type Arm, legionStore, type SkillCopy, withoutLine } from "./arms";
-import {
-  type Case,
-  listedName,
-  type ProfileSkill,
-  type RolePromptAt,
-  testedCopy,
-} from "./cases";
+import { type Case, listedName, type ProfileSkill, type RolePromptAt, testedCopy } from "./cases";
 import {
   eachChunk,
   firstLine,

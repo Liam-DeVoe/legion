@@ -1522,7 +1522,10 @@ test("with role-prompt commits, each arm names its commit; a role-line case's no
   }
   // A planted line is left out of the prompt in place of the role line, by minus alone.
   const planted = armsOf(role, { ...dirs, plantedLine: "End with the word done." });
-  expect(planted.minus.rolePrompt).toEqual({ commit: BASE_COMMIT, less: "End with the word done." });
+  expect(planted.minus.rolePrompt).toEqual({
+    commit: BASE_COMMIT,
+    less: "End with the word done.",
+  });
   expect(planted.none.rolePrompt).toEqual({ commit: BASE_COMMIT, less: ROLE_LINE });
 
   // A skill case: none has no skill, minus the old text less its line, each at the old commit.

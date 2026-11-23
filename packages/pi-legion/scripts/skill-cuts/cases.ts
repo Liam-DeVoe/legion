@@ -512,11 +512,12 @@ export function loadCases(file: string, baseDir: string): Case[] {
 export interface RolePromptAt {
   /** The commit: `behaviour`'s `--old-role-prompt-at`. */
   readonly commit: string;
-  /** The text of the prompt part `part` of `c`'s plugin repository at `commit`, and the place a
-   *  refusal names it by (`<repo>:<part> at <commit>`), its text undefined when the repository
-   *  holds no such file there; or why `c` has no plugin repository to read it from. */
+  /** The text of the prompt part `part` of the plugin repository of a case of profile `c` at
+   *  `commit`, and the place a refusal names it by (`<repo>:<part> at <commit>`), its text
+   *  undefined when the repository holds no such file there; or why `c` has no plugin repository
+   *  to read it from. */
   part(
-    c: Case,
+    c: Pick<Case, "profile">,
     part: string
   ): Promise<{ readonly where: string; readonly text: string | undefined } | string>;
 }
@@ -540,7 +541,10 @@ async function roleLineRefusal(
   if (typeof read === "string") return read;
   return refusal(
     c,
-    { file: read.where, missing: `its rolePromptLine.part is no file: ${read.where} does not exist` },
+    {
+      file: read.where,
+      missing: `its rolePromptLine.part is no file: ${read.where} does not exist`,
+    },
     read.text === undefined ? undefined : textLines(read.text)
   );
 }
