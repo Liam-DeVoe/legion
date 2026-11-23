@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -94,16 +95,28 @@ func RetryAfter(err error) (time.Duration, Budget) {
 // reads a message saying "secondary rate" before that header, and this package reads the limit's
 // older name, "abuse detection mechanism", the same way. Else the secondary limit when the answer
 // asks for a Retry-After or leaves requests (no x-ratelimit-remaining: 0); and otherwise the
-// primary budget x-ratelimit-resource names, or the core budget, the REST API's own, when it names
-// none.
+// primary budget x-ratelimit-resource names, where it names a resource GitHub documents
+// (documentedResources), or the core budget, the REST API's own, when it names none or any other.
+// The header is the answering party's own words, which whatever answers in GitHub's place can
+// make an echo of the request's token, and a Budget is decided on and printed as it is (the
+// daemon's limitAttributes logs it), so only a name GitHub documents is kept as a Budget; the
+// header itself is kept for a log as the rule reads it (LimitHeaders.Resource).
 func spent(headers http.Header, named bool) Budget {
 	if named || headers.Get("Retry-After") != "" || headers.Get("X-RateLimit-Remaining") != "0" {
 		return BudgetSecondary
 	}
-	if resource := headers.Get("X-RateLimit-Resource"); resource != "" {
+	if resource := headers.Get("X-RateLimit-Resource"); slices.Contains(documentedResources, resource) {
 		return Budget(resource)
 	}
 	return BudgetCore
+}
+
+// documentedResources are the rate-limit resources x-ratelimit-resource names one of, the one a
+// request counted against: the objects under `resources` that GitHub's REST reference documents
+// for GET /rate_limit ("Rate limits for the REST API", "REST API endpoints for rate limits").
+var documentedResources = []string{
+	"core", "search", "code_search", "graphql", "integration_manifest", "dependency_snapshots", "dependency_sbom",
+	"code_scanning_upload", "code_scanning_autofix", "actions_runner_registration", "source_import", "scim", "copilot_usage_records",
 }
 
 // GetPages reads every page of the JSON array GitHub answers at path, a hundred items to a page,

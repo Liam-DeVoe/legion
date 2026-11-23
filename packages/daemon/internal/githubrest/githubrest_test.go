@@ -56,7 +56,8 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 // the limit spent: a Retry-After, a limit that reports no primary budget spent, or one whose
 // message names the secondary limit, whatever x-ratelimit-remaining says, is GitHub's secondary
 // limit, which every call of the token meets; a primary limit spends the budget
-// x-ratelimit-resource names, or the REST API's core budget when it names none. Any other error is
+// x-ratelimit-resource names where it is a resource GitHub documents, or the REST API's core budget
+// when it names none or any other (TestARateLimitsBudgetIsAResourceGitHubDocumentsOrTheCoreBudget). Any other error is
 // no limit.
 func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
