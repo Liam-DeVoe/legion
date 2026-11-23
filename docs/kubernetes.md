@@ -7590,13 +7590,19 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
 - the API read failed → **alive** if the pod's stream is registered (live proof), else **unknown**.
 
 `unknown` never marks anything dead by itself.
-A graceful stop sends the RPC `shutdown` frame over the registered stream, waits up to the stop timeout, then deletes the pod with that many seconds of grace (0 when the caller skips the graceful step) and the recorded uid as precondition, then deletes the per-pod Secret.
-Before a replacement generation is created, the previous generation's pod is deleted the same way and awaited until it is gone (force-deleted at grace 0 if it outlives the stop timeout):
-two generations never share a working copy.
+A graceful stop of a role sends that role's launcher a stop frame for the recorded generation, with the runtime's stop grace (`Suspend`, `internal/runtime/sandbox/sandbox.go`).
+It ends that role's process alone: the issue's other roles run on in the pod, which stays.
+Before a new generation of a role starts, the daemon sends the same stop to a launcher still running an earlier generation of it.
+Two generations of a role never run side by side (`relaunch`, `internal/runtime/sandbox/relaunch.go`).
 
-A phase worker or architect pod that dies mid-task
-— its container crashed, or the pod was deleted
-— is relaunched by the daemon itself, as the same agent one generation later (`legion-<issue>-<role>-g<n+1>`, its command carrying `--resume=<the recorded session>`): a phase worker is sent the task its dead turn held again, behind the sentence that says what the relaunch ended, or its phase's task when it held none, and an architect, a root's or a child's, is sent its catch-up at its ready (LEGION-179).
+A role that dies mid-task, a phase worker or an architect, is relaunched by the daemon itself.
+It starts again as the same agent one generation later, on the session it recorded.
+Its process dies when it exits, when the `roles` container ends, or when the pod is deleted.
+The relaunch starts only that role, through its launcher in the issue's one pod.
+It keeps the pod, unless the pod cannot run the role, such as one whose init container failed or that is gone.
+Replacing a live pod ends every role still running in it, and the daemon resumes each of them without charging a launch failure.
+A phase worker gets its dead turn's task again, behind a sentence saying what the relaunch ended, or its phase's task where it held none.
+An architect, a root's or a child's, is sent its catch-up at its ready.
 The death is seen twice over: at once, when the pod's worker stream closes and the daemon's one reconnect (`connect` awaiting a fresh registration for `worker_rpc_timeout_seconds`) finds none;
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon reads that session's registration from the Envoy listener (`GET /v1/registry/<the session the claim registered>?include=unresponsive&view=registration`) and then sends `DELETE /v1/sessions/<that session>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>&client_instance_id=<the client instance that read named>`.
