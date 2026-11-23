@@ -364,11 +364,13 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
 // release counted, which ran under the release before: the agent its start would have named
 // (startAgent, so a step of the owner's is the architect that runs it now, ownerAgent), and the
-// moment its phase worker's entry was raised. Accepting's architect raises no entry, and so the
-// moment is unknown there. A merge whose merger's entry this visit to merging did not raise is one
-// GitHub had already made when the issue reached merging, which started no merger: an entry never
-// raised, or one raised before the retro's completion that brought the issue there, the one move
-// into merging (the table's retro row), which is an earlier visit's.
+// moment its phase worker's entry was raised. At a place the owner works (RoleAt is the
+// architect) the moment is unknown: the release before raised no entry for the architect's
+// acceptance, the one step of the owner's it ran. A merge whose merger's entry this visit to
+// merging did not raise is one GitHub had already made when the issue reached merging, which
+// started no merger: an entry never raised, or one raised before the retro's completion that
+// brought the issue there, the one move into merging (the table's retro row), which is an
+// earlier visit's.
 func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
 	worker := issue.RoleAt(at)
 	if worker == claim.RoleArchitect {
@@ -437,10 +439,10 @@ func (e *Engine) placeToken(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // which each entry takes (enter) and writes to the step's phases row (record.PhaseRow.Claim) and
 // to its step record (startStep). A place whose agent is the owner (Walk.OwnerAt: a step of the key
 // owner, or the retro of a task whose retro is the owner's) is run by the architect that owns the
-// issue now (ownerAgent), as the accepting step is (startAgent). Where AgentAt names an agent, it
-// is that agent's token (claim.AgentToken), so the steps of one key are one claim; where it names
-// none — the merge, and every place of a run with no plan rows — it is the role's own token
-// (R20).
+// issue now (ownerAgent), as an acceptance the owner does is (startAgent). Where AgentAt names an
+// agent, it is that agent's token (claim.AgentToken), so the steps of one key are one claim; where
+// it names none — the merge, and every place of a run with no plan rows — it is the role's own
+// token (R20).
 func (e *Engine) stepToken(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place record.TaskPlace, at phase.Phase, role claim.Role) (claim.Token, error) {
 	if w.OwnerAt(place) {
 		return e.ownerAgent(ctx, tx, issue, at)
@@ -456,9 +458,10 @@ func (e *Engine) stepToken(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	return claim.AgentToken(project, issue.Key, name)
 }
 
-// ownerAgent is the claim that runs a step of the owner of issue's task at at, a step of the key
-// owner or accepting, and that the step's record names: the architect that owns issue now, the one
-// that does the step. The owner by rule is the issue's own architect (record.OwnerClaim), and it
+// ownerAgent is the claim that runs a step of the owner of issue's task at at (a step of the key
+// owner, the owner's retro, or the acceptance of a run with no plan rows), and that the step's
+// record names: the architect that owns issue now, the one that does the step. The owner by rule
+// is the issue's own architect (record.OwnerClaim), and it
 // runs the step while its claim holds its role (owningArchitect, the owner walk over the claims
 // this transaction reads), or while a start of it that will run waits in the outbox
 // (ownArchitectStarting); else the nearest architect above it whose claim holds its role does the

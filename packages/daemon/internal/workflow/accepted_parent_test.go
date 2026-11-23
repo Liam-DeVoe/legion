@@ -205,7 +205,9 @@ func TestAPersonsTodoUnderAnAcceptedAncestorIsHeldAtAdmitted(t *testing.T) {
 func TestTheNoticeOfATodoUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
 	const want = "LEGION-300 is beneath LEGION-208, whose head the last step of its task passed and the daemon has already accepted, " +
 		"so LEGION-300 is recorded at admitted and nothing starts it until LEGION-208 closes. " +
-		"Take LEGION-208 back with a backward move to run LEGION-300 under it now, or leave LEGION-300 where it is and it starts once LEGION-208 has closed."
+		"To run LEGION-300 under it now, LEGION-208 must go back to an earlier step: a request_backward_move by the agent that works it now, " +
+		"which is the agent of its retro (its own architect where the retro is the owner's) or its merger. " +
+		"Or leave LEGION-300 where it is, and it starts once LEGION-208 has closed."
 	for _, tc := range []struct {
 		name  string
 		steps []string
