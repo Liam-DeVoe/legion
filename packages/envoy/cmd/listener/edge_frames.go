@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/store"
 )
 
 // withheldProjectNotHeld is the reason envoy_edge_github_withheld_total counts a frame under that
@@ -104,14 +103,16 @@ func frameAnswerUnknownVerdict() frameVerdict {
 //   - a GitHub event is the repository rule's (relayVerdict), with no reader withheld
 //     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
 //   - a message on an agent subject passes only on the session's own (ownFrameAgentSubject): a
-//     role message - a role-lane forward or a role-marked send - passes only for the project its
-//     role's claim works for (roleOfProjects), judged by the role and not by the
-//     subject it is stored on, since a forged role claim or a kept or taken copy can store
-//     another project's role's message on the session's own subject; any other frame passes by
-//     the topic its envelope names: the session's own agent subject is a message to the session,
-//     a send or a dead letter, which passes, and any other topic is judged as a frame of that
-//     topic. A forward of a GitHub event or of another agent subject, an envelope that names no
-//     topic, and a frame encoding/json does not read (frameIsJSON), are withheld;
+//     role message - a role-lane forward or a role-marked send, told by the read the session
+//     relay tells one by (readRoleFrame) - passes only for the project its role's claim works for
+//     (roleOfProjects), judged by the role and not by the subject it is stored on, since a forged
+//     role claim or a kept or taken copy can store another project's role's message on the
+//     session's own subject; any other frame, a message whose role that read cannot tell among
+//     them, as the relay sends one, passes by the topic its envelope names: the session's own
+//     agent subject is a message to the session, a send or a dead letter, which passes, and any
+//     other topic is judged as a frame of that topic. A forward of a GitHub event or of another
+//     agent subject, an envelope that names no topic, and a frame encoding/json does not read
+//     (frameIsJSON) that is no role message, are withheld;
 //   - every other frame passes when contracts.SubjectProject gives it a project the token lists
 //     and, where its envelope names a topic, that topic is of the same project: the subject a
 //     relay header names and the envelope it carries are both what a publisher on the relay
@@ -132,26 +133,37 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		return repositories.relayVerdict(projects, subject, data)
 	}
 	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
-		if !ownFrameAgentSubject(sessionID, projects, subject) || !named || !frameIsJSON(data) {
+		if !ownFrameAgentSubject(sessionID, projects, subject) {
 			return frameDrops(withheldProjectNotHeld)
 		}
 		// A role message - a role-lane forward, whose topic names the lane, or a role-marked
-		// send, whose role mark names the role (exactFrameRole) - is judged by the project
-		// its role's claim works for (roleOfProjects), not by the
-		// subject the frame is stored on. A forged role claim can name the session for another
-		// project's role and have Dispatch send that role's message on the session's own subject,
-		// and a kept or a taken copy of the session's own project's role keeps the previous
-		// holder's subject as its topic; both reach the session on its own agent subject. Reading
-		// the role is how the role lane, the relay and a takeover read one, and it holds a role
-		// lane to the project edgeTopicRule does (contracts.RoleClaimOf).
-		role, isRole, err := exactFrameRole(data, topic)
-		if err != nil {
+		// send, whose role mark names the role - is judged by the project its role's claim works
+		// for (roleOfProjects), not by the subject the frame is stored on. A forged role claim can
+		// name the session for another project's role and have Dispatch send that role's message
+		// on the session's own subject, and a kept or a taken copy of the session's own project's
+		// role keeps the previous holder's subject as its topic; both reach the session on its own
+		// agent subject. The role is read as the session relay, a takeover pass and the kept
+		// lane's walk read it (readRoleFrame): by the exact keys the plugins' transport reads,
+		// past a byte order mark and at any depth, so a frame the session's plugin reads as a
+		// role's message is judged by that role here, whatever encoding/json makes of its other
+		// fields. It holds a role lane to the project edgeTopicRule does (contracts.RoleClaimOf).
+		// A frame whose role mark readers disagree on - one under more than one "role" key, or
+		// under a key that differs from "role" only in case, which readRoleFrame passes over and
+		// encoding/json takes - is withheld first, as one whose topic they disagree on is above
+		// (exactFrameField). A message whose role that read cannot tell is no role message, as
+		// the relay sends it, and is judged by its topic below; one encoding/json does not read
+		// (frameIsJSON) is withheld there, as it was when the edge read the topic with
+		// encoding/json.
+		if _, _, err := exactFrameField(data, "role"); err != nil {
 			return frameKeyWithheld(err)
 		}
-		if isRole {
-			if roleOfProjects(role, projects) {
+		if frame, err := readRoleFrame(data); err == nil && frame.role != "" {
+			if roleOfProjects(frame.role, projects) {
 				return framePasses()
 			}
+			return frameDrops(withheldProjectNotHeld)
+		}
+		if !named || !frameIsJSON(data) {
 			return frameDrops(withheldProjectNotHeld)
 		}
 		if ownFrameAgentSubject(sessionID, projects, topic) {
@@ -185,26 +197,6 @@ func exactFrameTopic(data []byte) (string, bool, error) {
 	return exactFrameField(data, "topic")
 }
 
-// exactFrameRole is the role a frame whose exact topic is topic is a message of, keyed as its
-// claim is, and whether it is a role message, as roleOfMessage.role tells one: a role-lane topic
-// (roleOfLaneTopic) names its role, and a role mark (the "role" field, read by its exact key)
-// names one otherwise. It answers errAmbiguousFrameKey for a frame whose role mark readers
-// disagree on, as exactFrameField does.
-func exactFrameRole(data []byte, topic string) (string, bool, error) {
-	mark, marked, err := exactFrameField(data, "role")
-	if err != nil {
-		return "", false, err
-	}
-	if role, ok := roleOfLaneTopic(topic); ok {
-		return role, true, nil
-	}
-	if !marked {
-		return "", false, nil
-	}
-	role := store.RoleClaimKeyOf(mark)
-	return role, role != "", nil
-}
-
 // frameByteOrderMark is the UTF-8 byte order mark a frame's JSON may start with. The plugins'
 // transport decodes a frame's bytes with TextDecoder, which drops one, before JSON.parse reads
 // them, so the edge reads a frame past it too.
@@ -225,7 +217,8 @@ var errPrototypeFrameKey = errors.New(`a frame holds a "__proto__" key, whose fi
 // frameIsJSON reports whether data, past one leading byte order mark, is JSON encoding/json reads
 // (json.Valid). A frame it is not is either text JSON.parse refuses too, such as an object with
 // text after it or a misspelt literal, or a document nested deeper than 10,000. The edge withholds
-// such a frame on an agent subject and names no repository for such a GitHub event, as it did
+// such a frame on an agent subject unless the relay's read tells it a role message, which is
+// judged by its role (readRoleFrame), and names no repository for such a GitHub event, as it did
 // when it read both with encoding/json; on any other subject it judges such a frame by the topic
 // exactFrameTopic reads, or by its subject when it names none, as it judged it then.
 func frameIsJSON(data []byte) bool {
