@@ -288,10 +288,11 @@ func TestAStaleOwnerStepOfAnotherRunHoldsBackNoTellingOfTheOpenRun(t *testing.T)
 }
 
 // The stranded list names a child's own architect that failed while its child stands at a place
-// only that architect ends — a step of its own, or its retro — with no start of it queued: nothing
-// but the operator's retry starts it then. It names none where a start is queued (the daemon's
-// own restart), none at a worker's step (the child's next phase start brings it back), and none at
-// an acceptance the owner does, which the architect above ends with sign_off as well.
+// only that architect ends — a step of its own other than its acceptance, or its retro — with no
+// start of it queued. Only the operator's retry or the controller's fresh_session starts it
+// then. It names none where a start is queued (the daemon's own restart), none at a worker's step
+// (the child's next phase start brings it back), and none at an acceptance the owner does, which
+// the architect above ends with sign_off as well.
 func TestStrandedNamesAFailedChildArchitectAtAPlaceOnlyItEnds(t *testing.T) {
 	owners := func(key string, at phase.Phase) record.Issue {
 		issue := strandedIssue(key, "LEGION-1", at)

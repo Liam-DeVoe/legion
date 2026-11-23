@@ -33,8 +33,8 @@ func ownerAlone(issue record.Issue) bool {
 // worker-died that tells the architect above of the failure (claimFailed), and whether the
 // controller must be told too. The start is the plain one a phase start queues
 // (childArchitectStart), and the owner is told its step again when it runs again (claimReady's
-// owedOwnersStep, where no owner-step of it is still queued). A start already queued is the
-// start, and counts nothing (architectStartQueued). Each other
+// owedOwnersStep, where no owner-step of the step's open run is still queued). A start already
+// queued is the start, and counts nothing (architectStartQueued). Each other
 // start spends one of the OwnerRestarts of the step's run (record.Store.CountOwnerRestart). Once
 // they are spent nothing is queued, and the architect above can do nothing about it: complete_step
 // takes the step's report from the owner alone, and no route of an architect's retries a claim.
