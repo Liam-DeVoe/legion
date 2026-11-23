@@ -346,8 +346,10 @@ func (s *Postgres) PutPlanRoles(ctx context.Context, tx pgx.Tx, issue string, ge
 	return nil
 }
 
-// planRoleColumns are the columns of a plan_roles row as scanPlanRole reads them.
-const planRoleColumns = `issue, generation, role, plan_version, type, model, prompt`
+// planRoleColumns are the columns of a plan_roles row, named by their table so a read joined to
+// another table names no column twice, in the order scanPlanRole reads them.
+const planRoleColumns = `plan_roles.issue, plan_roles.generation, plan_roles.role, plan_roles.plan_version,
+	plan_roles.type, plan_roles.model, plan_roles.prompt`
 
 func scanPlanRole(row pgx.Row) (PlanRole, error) {
 	var role PlanRole
@@ -363,8 +365,7 @@ func scanPlanRole(row pgx.Row) (PlanRole, error) {
 // generation, and false, with no error, where that plan defines none of that name or the daemon
 // records no issue of that key: what a launch of a role of a plan reads.
 func (s *Postgres) PlanRoleOf(ctx context.Context, tx pgx.Tx, issue, role string) (PlanRole, bool, error) {
-	found, err := scanPlanRole(tx.QueryRow(ctx, `select plan_roles.issue, plan_roles.generation, plan_roles.role, plan_roles.plan_version,
-		plan_roles.type, plan_roles.model, plan_roles.prompt from plan_roles
+	found, err := scanPlanRole(tx.QueryRow(ctx, `select `+planRoleColumns+` from plan_roles
 		join issues on issues.key = plan_roles.issue and issues.generation = plan_roles.generation
 		where plan_roles.issue = $1 and plan_roles.role = $2`, issue, role))
 	if errors.Is(err, pgx.ErrNoRows) {
