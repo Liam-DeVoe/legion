@@ -36,7 +36,7 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * as a chunk of its own (`features/shell/DeploymentResilience.tsx`), it took 13,554 bytes out,
  * and the commits and forward merges after it moved the entry by about a thousand bytes, most
  * of it down (the landing seed's query factories; 485,658 bytes at `61e5c402` on 2026-11-16).
- * This budget refused two forward merges since. The merge of `d079920d`, the default branch's
+ * This budget refused three forward merges since. The merge of `d079920d`, the default branch's
  * own frame for the new issue page (2026-11-19), wrote 508,066 bytes, and `b18ea8d5` the same day
  * answered it by loading that frame's shell and the pending-writes indicator as chunks; the merge
  * of `bafd3618`, which brought the default branch's draft-keeping (2026-11-20), wrote 519,305,
@@ -44,7 +44,9 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * for and taking the draft hook out of the entry. At `381b29ad` (2026-11-20) the entry was
  * 496,982 bytes, 3,018 under this budget, at `1293f3d9` the same day 497,475, and at `06c1e7b2`
  * (2026-11-21), built with a 40-character build id as CI builds it, it is 497,539 bytes, 2,461
- * under.
+ * under. The third, the merge of `4b22ece4` (2026-11-23, the default branch's dialog focus, #4985),
+ * wrote 500,672, and `01fc0e41` the same day answered it with the two moves `web/vite.config.ts`'s
+ * build comment names.
  * No hash is recorded with these sizes: that hash carries the build id, which falls back to the clock
  * (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two builds of one tree write the same bytes
  * under two names. The id is in the entry too, so CI's build, whose id is the 40-character
@@ -62,9 +64,11 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * three sizes of `61e5c402` above - the entry, the Mermaid worker and the ECharts chunk - were
  * measured that way on 2026-11-16, and the entry sizes after them are this check's readings at
  * the commit or merge each names; the two older entry sizes are the readings of 2026-10-29 and
- * 2026-11-11 named above. `web/vite.config.ts` records the entry at the merge of 4b22ece4
- * (2026-11-23), 499,380 bytes, 620 under this budget, and the sizes of `53286717` the same day,
- * seven days after `61e5c402`: the Mermaid worker and the ECharts chunk at the sizes above.
+ * 2026-11-11 named above. `web/vite.config.ts` records the entry: the merge of 4b22ece4
+ * (2026-11-23) read 500,672 bytes, the cut in `01fc0e41` brought it to 499,380, and `97c0cde6`
+ * added 105, so the head's build at the merge of 54b78b71 (4548096d) reads 499,485 bytes, 515
+ * under this budget. It records the sizes of `53286717` the same day too, seven days after
+ * `61e5c402`: the Mermaid worker and the ECharts chunk at the sizes above.
  */
 export const MAX_ENTRY_BYTES = 500_000;
 

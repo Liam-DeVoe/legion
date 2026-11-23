@@ -94,9 +94,9 @@ for 1,730 rows: 1.523, 1.564 and 1.546 machine-seconds a row, in own times of 1,
 merge-queue full lane of ci.yaml up to 13:11:30Z, is 43 runs of twelve jobs for 1,677 to 1,681
 rows that cost 3,431 to 4,034 s, a median of 3,840 s and 2.28571 s a row at the median of their
 per-row figures. So the three attempts cost 0.686, 0.705 and 0.696 of that median, and spend
-0.666, 0.684 and 0.676 of its row's machine time. The pull-request lane's reading at this head is
-in pull request #3513; the last one measured here is run 45130649093 at 5e22df0a: 701 s over five
-jobs for 290 rows, in an own time of 432 s.
+0.666, 0.684 and 0.676 of its row's machine time. Each head's reading of the pull-request lane
+is in pull request #3513; the last one measured here is run 45130649093 at 5e22df0a: 701 s over
+five jobs for 290 rows, in an own time of 432 s.
 
 That cost is now held to a budget by the run itself, at the merge job's step "Reading five, the
 lane's machine time": the jobs of a lane, this merge job apart, may cost that lane's committed
@@ -1785,14 +1785,16 @@ One step carries a budget of its own: "Reading one, the rows", which calls
 .github/scripts/dispatch-browser-run-reads.sh and so waits on gh-read.sh's ladder. The
 ladder bounds that wait rather than measuring it - three attempts, each bounded by
 `timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
-bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
-4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
-that step carries. The rule's two-minute floor does not bind. The step now also runs
-packages/dispatch/e2e/tools/leg-rows.ts over the shard legs' row lists, measured by main at
-0.02 to 0.08 s on the development box over three runs, over four legs' lists of the full
-lane's 1,617 rows (1.1 MB: each leg lists the whole selection and the rows it ran, so four
-legs write five selections' worth and this job's two write three, about 0.66 MB); counted at
-a whole second, (4 + 1) x 1.15 = 5.75 s and 120 + 5.75 = 125.75 s, still the 3 min.
+bound takes no 15 per cent. The step's own work has a measured maximum of 11 s, the 11 s of
+job 137694934103 above (run 45151841335 attempt 2, 12:33:18Z to 12:33:29Z), which replaces the
+4 s of the 2026-11-08 sample, and 11 x 1.15 = 12.65 s, so 120 + 12.65 = 132.65 s, at the next
+whole minute above, is the 3 min that step carries. The rule's two-minute floor does not bind.
+The step now also runs packages/dispatch/e2e/tools/leg-rows.ts over the shard legs' row lists,
+measured by main at 0.02 to 0.08 s on the development box over three runs, over four legs'
+lists of the full lane's 1,617 rows (1.1 MB: each leg lists the whole selection and the rows it
+ran, so four legs write five selections' worth and this job's two write three, about 0.66 MB).
+Job 137694934103 ran it, on the full lane at e2399655, so that work is inside the 11 s and is
+not added to it.
 
 A spent API budget or a secondary rate limit is not in that bound: gh-read.sh's gh_wait_reset
 waits for GitHub to answer again only when that falls at least 30 s before this step's limit and

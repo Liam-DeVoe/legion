@@ -547,7 +547,7 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#why-each-reading-goes-to-the-step-summary-and-to-the-log
       - name: Reading one, the rows
         if: always()
-        # 120 + 4 x 1.15 = 124.6 s -> 3 min.
+        # 120 + 11 x 1.15 = 132.65 s -> 3 min.
         timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}

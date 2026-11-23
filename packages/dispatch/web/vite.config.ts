@@ -205,21 +205,23 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    // The entry - the one `assets/index-*.js` that dist/index.html names - is 499,380 bytes,
-    // measured with `bun run build:web` at the merge of 4b22ece4 on 2026-11-23, where the default
-    // branch's own build at `d795b25c` writes 1,144,188, before dispatch://INFRA-1109 split the
-    // shell: the Inbox and its peek, the ask card, the search bar, the Create issue dialog, the
-    // shortcut sheet, the reference-preview layer, the event-refresh map, the headless Markdown
-    // engine the shell warms at boot, the new issue page's frame shell, the pending-writes
+    // The entry - the one `assets/index-*.js` that dist/index.html names - is 499,485 bytes,
+    // measured with `bun run build:web` at the merge of 54b78b71 (4548096d) on 2026-11-23, where
+    // the default branch's own build at `d795b25c` writes 1,144,188, before dispatch://INFRA-1109
+    // split the shell: the Inbox and its peek, the ask card, the search bar, the Create issue
+    // dialog, the shortcut sheet, the reference-preview layer, the event-refresh map, the headless
+    // Markdown engine the shell warms at boot, the new issue page's frame shell, the pending-writes
     // indicator, the kept writes and the kinds of write are each a chunk of their own now, and
     // `@legion/contracts`' subpaths keep that package's reference table and zod's schema modules
     // out of a page that reads neither - in the editor's chunks too, which import that package
     // by subpath alone (`packages/proof-editor/src/block-pointers.ts`).
-    // Two cuts hold that merge under the budget. The Inbox's `Blocked on you` strip and the
-    // project page's pill left the entry for a file of their own,
-    // `features/inbox/BlockedOnYouLink.tsx`, a chunk of 866 bytes the Inbox's and the project
-    // page's chunks share, and without that move the entry measures 500,104 bytes. The
-    // modulepreload polyfill, 710 bytes of the entry, is off, for the reason beside
+    // The merge of 4b22ece4 read 500,672 bytes, over the budget; the cut in `01fc0e41` brought it
+    // to 499,380, and `97c0cde6`'s focus helper added 105, so the head's build at the merge of
+    // 54b78b71 reads those 499,485 bytes, 515 under the budget. That cut made two moves. The
+    // Inbox's `Blocked on you` strip and the project page's pill left the entry for a file of
+    // their own, `features/inbox/BlockedOnYouLink.tsx`, a chunk of 866 bytes the Inbox's and the
+    // project page's chunks share, and without that move the entry at `01fc0e41` measured 500,104
+    // bytes. The modulepreload polyfill, 710 bytes of the entry, is off, for the reason beside
     // `modulePreload` below.
     // The other sizes here were measured the same way at `53286717` the same day: the largest
     // chunk is ECharts (an `index-*.js` of 1,134,772 bytes raw), which only the Delivery page
