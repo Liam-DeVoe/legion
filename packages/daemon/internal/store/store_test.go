@@ -1092,15 +1092,18 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // migrated applies a version left out of the list before the list's own rewrites of that check,
 // which do not name the later kind, so the row seeded of that kind fails the upgrade. So does one
 // that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
-// claims.abandoned_session (20261029121200): applied before that version, it fails on the missing
-// column. So does a migration that builds on a table only a version of the list creates, as
+// claims.abandoned_session (20261029121200) and 20261123060645 writes pull_requests.merge_forward
+// (20261119003157): applied before that version, it fails on the missing column. So does a
+// migration that builds on a table only a version of the list creates, as
 // 20261117201743's foreign key on issue_plans does: the case of a database main migrated would
 // apply it before 20261117034837 creates that table. So does a migration that changes a table a
 // version of the list creates, as 20261117213545 adds a column to 20261117034837's plan_steps and
 // 20261122062637 writes the key of phases over the two columns 20261117034837 adds, and
 // 20261123042513 and 20261123072537 add columns to 20261117004117's step_starts: left out, each
-// is applied as main's, before that table or those columns exist. Any other version left out makes
-// the cases below weaker, never red, which is why the comment says where the list comes from.
+// is applied as main's, before that table or those columns exist; and one that replaces an index a
+// version of the list creates, as 20261122074350 replaces 20261105183200's
+// pod_resumes_one_open_per_role. Any other version left out makes the cases below weaker, never
+// red, which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1110,7 +1113,8 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261117201743: true, 20261117213545: true,
-	20261119003157: true, 20261122062637: true, 20261123042513: true, 20261123072537: true,
+	20261119003157: true, 20261122062637: true, 20261122074350: true, 20261123042513: true,
+	20261123060645: true, 20261123072537: true, 20261123092755: true,
 }
 
 const idleRelease = 20261101222956

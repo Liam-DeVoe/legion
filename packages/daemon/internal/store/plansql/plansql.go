@@ -1,10 +1,11 @@
 // Package plansql is the SQL of the two roles a read of an issue takes from the plan rows of the
 // issue's generation: the role of the step its task stands at (record.Issue.StepRole) and the role
 // of the claim that works its task's place (record.Issue.PlaceRole). The record's read of an issue
-// (record's issueColumns), the idle view of its pod (store's readIdleView) and the cancel of its
-// pod's release while the project is paused (store's ReleaseCancelPause.backstopTargetOf) all select
-// them, so the reads give one answer. It is a package of its own, under internal/store, because
-// store and record import neither each other, and it imports nothing, so both can.
+// (record's issueColumns), which the cancel of a pod's release while the project is paused reads
+// through the daemon (store's ReleaseCancelPause.BackstopTarget), and the idle view of its pod
+// (store's readIdleView) both select them, so the reads give one answer. It is a package of its
+// own, under internal/store, because store and record import neither each other, and it imports
+// nothing, so both can.
 //
 // Each is a subquery over a row of issues the caller names by its alias. A run holds one task in
 // this release, so each finds one row at most.

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,28 +8,35 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/legion/daemon/internal/appauth"
-	"github.com/sjawhar/legion/daemon/internal/claim"
-	stepplan "github.com/sjawhar/legion/daemon/internal/plan" // the package's own `plan` type holds the bare name
-	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
+// ownersPromptText is what the daemon's copy of the prompt of a role of a plan holds: the prompt,
+// between a line before it and a line after it that name it as the owner's, so the agent reads that
+// text as the owner's, between Legion's headless mechanics before it and Legion's worker part after
+// it, which hold where the two differ. Both lines carry a mark made from the prompt's own hash, so
+// a prompt cannot hold the closing line of its own copy and end the block early: a text that held
+// it would hash to another mark.
+func ownersPromptText(prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	mark := hex.EncodeToString(sum[:8])
+	closing := "End of the role prompt the issue's owner wrote (" + mark + ")."
+	return "The text from here to the line \"" + closing + "\" is the prompt of your role, as the architect that owns this issue " +
+		"wrote it in its plan. Where it and Legion's own instructions differ, Legion's instructions hold.\n\n" + prompt + "\n\n" + closing + "\n"
+}
+
 // planRolePromptFile is the daemon's own copy of the prompt of a role an owner's plan defines:
-// <stateDir>/plan-roles/<sha256 of the prompt, in hex>.md, with mode 0600. A launch reads a role's
+// <stateDir>/plan-roles/<sha256 of the copy's text, in hex>.md, with mode 0600, holding the prompt
+// between the lines that name it as the owner's (ownersPromptText). A launch reads a role's
 // prompt from a file (runtime.PromptParts.RolePromptPaths), and a copy named by its text is the
 // one file every version that gives the role that text shares: two versions of one prompt read
 // one file, and a changed prompt is another file. A copy in place is used again only while its
-// text hashes to its name. A copy a crash cut short, empty or holding part of the prompt, hashes
+// text hashes to its name. A copy a crash cut short, empty or holding part of the text, hashes
 // to another name, so it is written again before the launch uses it. The write goes through a
-// file of its own beside it, synced, and a rename, so a reader finds the whole prompt or the copy
-// it replaces, and a crash after the rename leaves the whole prompt.
+// file of its own beside it, synced, and a rename, so a reader finds the whole text or the copy
+// it replaces, and a crash after the rename leaves the whole text.
 func planRolePromptFile(stateDir, prompt string) (string, error) {
-	sum := sha256.Sum256([]byte(prompt))
+	text := ownersPromptText(prompt)
+	sum := sha256.Sum256([]byte(text))
 	dir := filepath.Join(stateDir, "plan-roles")
 	path := filepath.Join(dir, hex.EncodeToString(sum[:])+".md")
 	held, err := os.ReadFile(path)
@@ -48,7 +54,7 @@ func planRolePromptFile(stateDir, prompt string) (string, error) {
 		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
 	}
 	defer os.Remove(staged.Name())
-	if _, err := staged.WriteString(prompt); err != nil {
+	if _, err := staged.WriteString(text); err != nil {
 		staged.Close()
 		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
 	}
@@ -63,81 +69,4 @@ func planRolePromptFile(stateDir, prompt string) (string, error) {
 		return "", fmt.Errorf("the copy of a plan role's prompt: %w", err)
 	}
 	return path, nil
-}
-
-// planRoleOf is the daemon's one reader of a role an owner's plan defines: the role of issue's
-// plan in force named role (record.Store.PlanRoleOf, at the issue's current generation), and
-// whether the plan defines one. It reads the daemon's own store in a transaction of its own, as
-// the supervisor's predicates read a record (launchVariants), so a launch never waits on Dispatch:
-// the store kept the role when the version that defines it was taken.
-func planRoleOf(st *store.Store) func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
-	records := record.NewStore()
-	return func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
-		var defined record.PlanRole
-		var found bool
-		err := st.Tx(ctx, func(tx pgx.Tx) error {
-			var err error
-			defined, found, err = records.PlanRoleOf(ctx, tx, issue, string(role))
-			return err
-		})
-		if err != nil {
-			return record.PlanRole{}, false, fmt.Errorf("the role %s of the plan of %s: %w", role, issue, err)
-		}
-		return defined, found, nil
-	}
-}
-
-// planRoleIn is planRoleOf for a caller that already holds tx, a transaction of the daemon's
-// store: the role is read through tx, since the pool refuses a caller that holds a connection a
-// second one of its own (store.ErrNestedAcquire). The state's snapshot is such a caller
-// (stateNoPluginInstall).
-func planRoleIn(tx pgx.Tx) func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
-	records := record.NewStore()
-	return func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error) {
-		defined, found, err := records.PlanRoleOf(ctx, tx, issue, string(role))
-		if err != nil {
-			return record.PlanRole{}, false, fmt.Errorf("the role %s of the plan of %s: %w", role, issue, err)
-		}
-		return defined, found, nil
-	}
-}
-
-// roleApps is the one value every reader of a claim's App holds (appauth.RoleApps): deployed, the
-// App of each role the deployment defines (deploymentApps), and planRole, the daemon's one reader
-// of a role of a plan (planRoleOf), read for the role's type, so a role of an issue's plan acts as
-// the App of its type.
-func roleApps(deployed appauth.DeploymentApps, planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)) appauth.RoleApps {
-	return appauth.RoleApps{Deployed: deployed, Plan: func(ctx context.Context, issue string, role claim.Role) (appauth.Planned, error) {
-		defined, found, err := planRole(ctx, issue, role)
-		if err != nil {
-			return appauth.Planned{}, err
-		}
-		return appauth.Planned{Defines: found, Type: stepplan.Type(defined.Type)}, nil
-	}}
-}
-
-// roleBackend is the harness role runs on for a claim of issue (roleBackends).
-type roleBackend func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error)
-
-// roleBackends is the one decision of the harness a role runs on for a claim of issue, which the
-// launch (specs.launchBackend), the rule of a claim no install can move (noPluginInstall) and the
-// compaction route (api.Options.Backend) all read. A role the plan in force of issue defines runs
-// on Oh My Pi, as every role of a plan does (plan.RolesOf), even where the deployment took its name
-// and worker_backends puts the deployment's role on another harness. Every other role runs on the
-// harness worker_backends names (backendFor, config.Config.BackendFor). Legion's own roles and a
-// claim of no issue read no plan, and neither does a nil planRole. A read of the plan that fails is
-// the error.
-func roleBackends(backendFor func(claim.Role) runtime.Backend, planRole func(ctx context.Context, issue string, role claim.Role) (record.PlanRole, bool, error)) roleBackend {
-	return func(ctx context.Context, issue string, role claim.Role) (runtime.Backend, error) {
-		if planRole != nil && issue != "" && !claim.IsBuiltin(role) {
-			_, found, err := planRole(ctx, issue, role)
-			if err != nil {
-				return "", fmt.Errorf("the harness of %s on %s: %w", role, issue, err)
-			}
-			if found {
-				return runtime.BackendOmp, nil
-			}
-		}
-		return backendFor(role), nil
-	}
 }

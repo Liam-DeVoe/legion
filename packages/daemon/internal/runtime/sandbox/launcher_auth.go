@@ -48,15 +48,13 @@ type launcherCredentials struct {
 const credentialRetry = 10 * time.Second
 
 // LauncherResolver rejects unknown pods from informer state before consulting credentials: a
-// launcher's slot must be one of the slots its pod's stored template binds (templateRoles: the
-// runtime's roles when the pod was built and, for an issue pod, each agent name of its plan, a name
-// that is no role among them), or, for a template that binds none (one no launcher of this layout
-// wrote), one of the roles of the kind its labels name (podKindOf). Its claim is the one that kind
-// derives for the slot (podKind.claimToken): the agent the slot is named for. Tokens minted here
-// are cached as hashes; after a restart a known slot's Secret is read once however often its
-// launcher says hello (launcherCredential), so a restart's reconnecting launchers cost one read
-// each and unauthenticated hellos cannot turn into an unbounded stream of Kubernetes requests. A
-// hello waits for that read up to apiTimeout.
+// launcher's slot must be one of its pod's slots (podSlots: the slots its stored template binds,
+// or, for a template that binds none, the roles of the kind its labels name, podKindOf). Its claim
+// is the one that kind derives for the slot (podKind.claimToken): the agent the slot is named for.
+// Tokens minted here are cached as hashes; after a restart a known slot's Secret is read once
+// however often its launcher says hello (launcherCredential), so a restart's reconnecting
+// launchers cost one read each and unauthenticated hellos cannot turn into an unbounded stream of
+// Kubernetes requests. A hello waits for that read up to apiTimeout.
 //
 // An accepted launcher is answered with the acknowledgement launcherHelloAck builds for its pod's
 // kind, which the listener writes whole; every refusal answers the zero acknowledgement, which
@@ -72,11 +70,7 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 		if err != nil {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
-		slots := templateRoles(view.sandbox)
-		if len(slots) == 0 {
-			slots = kind.roles(r)
-		}
-		if !slices.Contains(slots, role) {
+		if !slices.Contains(r.podSlots(view.sandbox, kind), role) {
 			return nil, shimwire.LauncherHelloAck{}, "launcher role is not one of its pod's roles"
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
@@ -111,6 +105,19 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 		// objects, so neither costs a request.
 		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, keptVolumeSince(view.sandbox), hello), r.launcherHelloAck(kind), ""
 	}
+}
+
+// podSlots are the slots of the pod the Sandbox s builds, each with a launcher and a Secret of its
+// own (roleSecretName): the slots its stored template binds (templateRoles: the runtime's roles
+// when the pod was built and, for an issue pod, each agent name of its plan that no role has), or,
+// for a template that binds none (one no launcher of this layout wrote), the roles of kind, the
+// kind its labels name (podKindOf). It is the one list of a pod's slots that a launcher's hello is
+// held to (LauncherResolver) and that a release deletes the Secrets of (deleteIssueSecrets).
+func (r *Runtime) podSlots(s *sandbox, kind podKind) []claim.Role {
+	if slots := templateRoles(s); len(slots) > 0 {
+		return slots
+	}
+	return kind.roles(r)
 }
 
 // keptVolumeSince is when the API server created s, where s owns an issue's kept volume
@@ -258,9 +265,10 @@ func (c *launcherCredentials) fail(name string, uid types.UID, at time.Time) {
 }
 
 // forgetSandbox drops whatever is held of each slot Secret of the Sandbox named sandbox, for every
-// Sandbox: each name of roleSecretName's form for it, `<sandbox>-<slot>-boot`, whatever the slot,
-// a role's or the name of an agent of the issue's plan. No other Sandbox's slot Secret has a name
-// of that form, since a slot's name begins with a letter and no other Sandbox's name is sandbox, a
+// Sandbox, once that Sandbox is deleted or its Secrets are: each name of roleSecretName's form for
+// it, `<sandbox>-<slot>-boot`, whatever the slot (isSlotName), a role's, the deployment's among
+// them, or the name of an agent of the issue's plan. No other Sandbox's slot Secret has a name of
+// that form, since a slot's name begins with a letter and no other Sandbox's name is sandbox, a
 // dash and a letter: an issue's part ends in its number or in a hash at the name's full length. A
 // read that lands afterwards for a Sandbox since deleted writes only that Sandbox's entry, which
 // nothing looks up again, until the name's next bind or forget drops it.
@@ -270,7 +278,7 @@ func (c *launcherCredentials) forgetSandbox(sandbox string) {
 	for name := range c.secrets {
 		rest, ours := strings.CutPrefix(name, sandbox+"-")
 		slot, secret := strings.CutSuffix(rest, "-boot")
-		if ours && secret && (claim.IsRole(claim.Role(slot)) || claim.Role(slot) == claim.RoleController) {
+		if ours && secret && isSlotName(claim.Role(slot)) {
 			delete(c.secrets, name)
 		}
 	}
@@ -291,11 +299,4 @@ func (c *launcherCredentials) put(name string, uid types.UID, secret launcherSec
 // Sandbox s.
 func (r *Runtime) cacheLauncherCredential(s *sandbox, secret *corev1.Secret) {
 	r.launcherAuth.bind(secret.Name, s.UID, credentialFromSecret(secret))
-}
-
-// forgetLauncherCredentials drops what is held of every slot's Secret of the Sandbox named name
-// (forgetSandbox: a role's, the deployment's among them, or an agent's of the issue's plan), once
-// that Sandbox is deleted: whichever slots its pod ran, no other Sandbox's Secret has a name of its.
-func (r *Runtime) forgetLauncherCredentials(name string) {
-	r.launcherAuth.forgetSandbox(name)
 }

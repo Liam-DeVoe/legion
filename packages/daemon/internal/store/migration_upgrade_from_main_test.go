@@ -65,10 +65,9 @@ import (
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
 // dispatch://INFRA-1997's commit statuses of the checked head (20261117112334) are named here too:
-// it stands above every other version of this list but the ones the list names after it, from
-// dispatch://INFRA-4109's 20261117200337 on, so an upgrade of a database main migrated applies it
-// just before all of those. It adds pull_requests.statuses at its default, the empty list, and it
-// touches no outbox_kind_check.
+// an upgrade of a database main migrated applies it in version order with the rest of this list,
+// after each version of the list below it and before each version above it. It adds
+// pull_requests.statuses at its default, the empty list, and it touches no outbox_kind_check.
 // The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
 // same reason: it adds one column at its default, which every row it finds reads as no commit
 // (migration_20261116234034_test.go), and it touches no outbox_kind_check.
@@ -106,15 +105,13 @@ import (
 // plan's step table and touches no outbox_kind_check, and every row it finds reads as its role
 // (migration_20261117213545_test.go).
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list but dispatch://INFRA-4108's
-// 20261120042902, dispatch://INFRA-4729's 20261120055717 and 20261121183336, and it is still the last of them to
-// rewrite outbox_kind_check: it is now that constraint's last word, and it names every kind the
+// (20261119003157) is the last version of this list to rewrite outbox_kind_check: no version above
+// it touches that constraint, so it is the constraint's last word, and it names every kind the
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
 // and pull_requests.merge_forward, both null on every row it finds.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
-// (20261120042902) stands above every other version of this list but dispatch://INFRA-4729's
-// 20261120055717 and 20261121183336; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
+// (20261120042902) adds claims.agent_resume_generation at its default, 0, on every row it finds,
 // and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
 // touches no outbox_kind_check: it adds columns to dispatch_issues at their defaults, an index on
@@ -132,13 +129,33 @@ import (
 // and touches no outbox_kind_check: it writes the primary key of phases over step_task and
 // step_place, which the plan of an issue (20261117034837) added, and every row it finds keeps its
 // step (migration_20261122062637_test.go).
-// The count of an owner's restarts in a step's run (20261123042513) is applied after the key of a
-// phases row by its step and touches no outbox_kind_check: it adds step_starts.owner_restarts,
-// which the count of starts of each step (20261117004117) created, at its default, 0, on every row
-// it finds.
-// The claim an owner-step of a step's run reached (20261123072537) is applied after the count of
-// an owner's restarts and touches no outbox_kind_check: it adds step_starts.owner_told_launch and
-// step_starts.owner_told_session at their defaults, 0 and the empty string, on every row it finds.
+// The claim of each backstop (20261122072945) is applied after it and touches no
+// outbox_kind_check: it adds pod_wake_backstops.claim at its default, the empty string, on every
+// row it finds, and splits the one open backstop per role into one per claim for the rows that
+// name one, so it needs no row of its own here (migration_20261122072945_test.go).
+// One open resume per claim (20261122074350) is applied after it and touches no
+// outbox_kind_check: it keeps the one open resume per role for the resumes that name no claim and
+// holds one per claim for the rest, and closes no row, so it needs no row of its own here
+// (migration_20261122074350_test.go).
+// The agent of a claim's session (20261122120917) is applied after one open resume per claim and
+// touches no outbox_kind_check: it adds claims.session_agent at its default, the empty string, on
+// every row it finds, so it needs no row of its own here (migration_20261122120917_test.go).
+// The count of an owner's restarts in a step's run (20261123042513) is applied after the agent of
+// a claim's session and touches no outbox_kind_check: it adds step_starts.owner_restarts, which
+// the count of starts of each step (20261117004117) created, at its default, 0, on every row it
+// finds.
+// The mark of an ask made at the task's implementation step (20261123060645) is applied after all
+// of these and touches no outbox_kind_check: it adds the key own to each merge_forward ask recorded
+// in implementing, on the column 20261119003157 added, which a database main migrated holds null on
+// every row (migration_20261123060645_test.go).
+// The claim an owner-step of a step's run reached (20261123072537) is applied after the mark of an
+// ask made at the implementation step and touches no outbox_kind_check: it adds
+// step_starts.owner_told_launch and step_starts.owner_told_session at their defaults, 0 and the
+// empty string, on every row it finds.
+// The definition a claim's process was launched with (20261123092755) is applied after all of
+// these and touches no outbox_kind_check: it adds claims.launched_definition and
+// claims.launched_generation at their defaults, the empty string and 0, on every row it finds
+// (migration_20261123092755_test.go).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -149,7 +166,8 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
 	20261117201743, 20261117213545, 20261117223524, 20261119003157, 20261120042902, 20261120055717,
-	20261121183336, 20261122062637, 20261123042513, 20261123072537,
+	20261121183336, 20261122062637, 20261122072945, 20261122074350, 20261122120917, 20261123042513,
+	20261123060645, 20261123072537, 20261123092755,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -168,10 +186,12 @@ var thisBranchsMigrations = []int{
 // 20261117200337, the name of each step's agent's 20261117213545, dispatch://INFRA-4374's
 // 20261119003157, dispatch://INFRA-4108's 20261120042902, dispatch://INFRA-4729's 20261120055717,
 // the claim of each resume's 20261121183336, the key of a phases row by its step's 20261122062637,
-// the count of an owner's restarts' 20261123042513 and the claim an owner-step reached's
-// 20261123072537. That is why the loop below holds the list rather
-// than counting it, so that a version added above any of them is named here rather than read as
-// main's.
+// the claim of each backstop's 20261122072945, one open resume per claim's 20261122074350, the
+// agent of a claim's session's 20261122120917, the count of an owner's restarts' 20261123042513,
+// the mark of an ask made at the implementation step's 20261123060645, the claim an owner-step
+// reached's 20261123072537 and the definition a claim's process was launched with, 20261123092755.
+// That is why the loop below holds the list rather than counting it, so that a version added above
+// any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

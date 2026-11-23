@@ -195,8 +195,8 @@ var stepRecordsSeven = []stepWant{
 // count of starts of each step that ran. With the daemon stopped, the operator's way backs run,
 // newest first: the key of a phases row by its step (rollBackStepKey), then the roll forward's as
 // its header carries it (internal/textcheck holds it to docs/kubernetes.md), and every outbox row
-// and every count stands after them as it stood before. The earlier release came
-// before the owner's plan too, so the rollback also takes the way back of the plan's migration
+// and every count stands after them as it stood before. The earlier release came before the
+// owner's plan too, so the rollback also takes the way back of the plan's migration
 // (rollBackOwnersPlans), which drops the issue's plan rows: kept, the place of its task would stand
 // at implementing while the earlier release moves the issue to testing. The earlier release's move
 // is then written as the rows this release reads of it: the issue in testing, and the tester's
@@ -454,8 +454,9 @@ func (r *stepRecordsRig) headerTransaction(suffix string) string {
 // agent.
 const planStepAgentMigration = "_plan_step_agent.up.sql"
 
-// phaseStepKeyMigration is the migration that keys a phases row by the issue, the role and the
-// step the row runs.
+// phaseStepKeyMigration is the migration that keys a phases row by its step, so a role that
+// stands at two steps of a task keeps a row for each; its way back writes the key (issue, role)
+// again, which every release before it writes its phases rows by.
 const phaseStepKeyMigration = "_phase_step_key.up.sql"
 
 // The record of a member of a tree: the acceptance of a child with no plan rows, as here, is the

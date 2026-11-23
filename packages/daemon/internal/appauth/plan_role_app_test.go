@@ -43,6 +43,12 @@ func TestTheAppOfARoleIsItsDefinitions(t *testing.T) {
 	if !errors.Is(err, ErrRoleNotDefined) || err.Error() != want {
 		t.Fatalf("AppRoleFor(ghost) = %v; want an error that is ErrRoleNotDefined and reads %q", err, want)
 	}
+	// Every name of Legion's has an App of the switch, whatever a plan or the deployment says of it.
+	for _, name := range plan.LegionNames() {
+		if _, err := AppRoleFor(claim.Role(name), DeploymentApps{claim.Role(name): Implement}, Planned{Defines: true, Type: plan.TypeTesting}); err != nil {
+			t.Errorf("AppRoleFor(%s) = %v; want an App for every name of Legion's", name, err)
+		}
+	}
 
 	type asked struct {
 		issue string

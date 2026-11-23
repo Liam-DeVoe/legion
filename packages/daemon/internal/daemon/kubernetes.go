@@ -333,7 +333,10 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // drawn into an arm names that arm's overlays under any mode. A project that declares no
 // experiment of its own still declares the memory experiment and hands over its two arms, which
 // name no file where the project writes no `memory` block and so add nothing to a launch.
-// lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
+// lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets). The
+// Options' RoleApps holds the deployment's roles alone, which `legion probe-boot` reads for the
+// pod's issue roles (ProbeBoot); the factory replaces it with the boot's one reader of a claim's
+// App (roleApps), which holds the same roles and reads a role of an issue's plan too.
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
 	if err != nil {
@@ -568,11 +571,11 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, minted as the App the role acts as, opts.RoleApps naming the App of
-// each role the deployment defines and reading, from the store, a role the plan of a claim's issue
-// defines, a directory for each owner the role's App is installed on, read
-// from GitHub at every bundle, and one for each owner a configured rename moved a repository away
-// from while served answers the name it moved to is served), with the
+// bundle (gitHubCredential, minted as the App the role acts as, roleApps, the boot's one reader of
+// a claim's App, naming the App of each role the deployment defines and reading, from the store, a
+// role the plan of a claim's issue defines, a directory for each owner the role's App is
+// installed on, read from GitHub at every bundle, and one for each owner a configured rename
+// moved a repository away from while served answers the name it moved to is served), with the
 // controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
 // and the directory set those directories are compared with (appauth.GitHubDirs), which the
@@ -608,12 +611,12 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut,
 	githubAPI string, kills *memoryGuardKills, reports *volumeTrimReports) runtimeFactory {
-	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source,
+	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Source, roleApps appauth.RoleApps,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, cached func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.CacheRepositories = listener, address, st, cached
-		// The one reader of a role's App, which the credential and each walk's memo of bundles
-		// read alike: the deployment's roles, and a role of an issue's plan from the store.
-		opts.RoleApps = roleApps(opts.RoleApps.Deployed, planRoleOf(st))
+		// The boot's one reader of a role's App, which the credential and each walk's memo of
+		// bundles read alike: the deployment's roles, and a role of an issue's plan from the store.
+		opts.RoleApps = roleApps
 		// The two halves of the release's saved work: an idle release puts the issue's unpushed
 		// work here (outbox's release), and the runtime hands it to the launcher of the pod that
 		// replaces the released one before any role of that pod starts. The confirmation deletes
@@ -727,7 +730,8 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 }
 
 // killed applies one kill of issue's pod as one intake fact (runtime.MemoryGuardKilled), crediting
-// it to token, the role whose connection carried the report, and to podUID, the pod that launcher
+// it to token, the claim of the slot whose launcher connection carried the report (a claim token
+// names its agent, whatever role the agent's step is on), and to podUID, the pod that launcher
 // runs in, both the session's and never the report's. It runs on the launcher's own frame loop
 // under that loop's bounded context, so an apply that cannot be made is returned to the launcher
 // session, which logs it and drops the report. Every launcher's frame loop runs beside the others
@@ -738,7 +742,7 @@ func (m *memoryGuardKills) bind(pool *store.Pool, handlers []intake.Handler) {
 // The event id is the kill's own identity, the guard's id and its sequence
 // (memoryGuardKillEventID), and never the daemon's receipt: a launcher that wrote a report on a
 // connection it then lost sends it again on the next, and ApplyFact applies one id once, so the
-// role is told of one kill once however often its report arrives.
+// claim is told of one kill once however often its report arrives.
 func (m *memoryGuardKills) killed(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error {
 	if m.pool == nil || len(m.handlers) == 0 {
 		// Nothing bound the holder to the workflow, so there is no fact path to apply the report

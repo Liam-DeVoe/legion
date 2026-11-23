@@ -13,18 +13,18 @@ import (
 
 // mergeForwardMessage publishes one message of a merge forward (record.MergeForwardMessage,
 // dispatch://INFRA-4374 R1) to the Envoy topic of the role it names on the row's issue, and to
-// nothing else: the ask that the implementer merge the base forward and push, the hold that tells
-// the worker of the phase the issue stays in to stop writing the workspace while it does, and, once
-// the merge lands, the landed to that worker and the review to the reviewer of an issue past its
-// review whose task has a reviewer step (payload.Message, composed from the pull request as this
-// attempt reads it). It stops nothing it reaches.
+// nothing else: the ask that the agent of the task's implementation step merge the base forward
+// and push, the hold that tells the worker of the phase the issue stays in to stop writing the
+// workspace while it does, and, once the merge lands, the landed to that worker and the review to
+// the reviewer of an issue past its review whose task has a reviewer step (payload.Message,
+// composed from the pull request as this attempt reads it). It stops nothing it reaches.
 //
 // The row is held as a merge-queue removal's is (mergeQueueRemoval), not ended as a plain role
 // message to a released claim is (roleMessage): the issue keeps its phase while the merge runs and
-// no phase start carries the ask, so a released implementer that is not told never merges, and the
-// conflicting head stands with no CI and nobody at work on it. So the row is delivered as
-// deliverHeld delivers a held message: a released role is woken, and the row waits until a session
-// holds the role.
+// no phase start carries the ask, so a released agent of the implementation step that is not told
+// never merges, and the conflicting head stands with no CI and nobody at work on it. So the row is
+// delivered as deliverHeld delivers a held message: a released role is woken, and the row waits
+// until a session holds the role.
 //
 // Each attempt first reads the issue, its pull request and whether its tree lingers in one
 // transaction, and finishes the row undelivered, with one log line naming why, once the message is

@@ -118,15 +118,16 @@ of `skill://legion-architect/references/wake-routing.md` says. Park between even
 not poll or manufacture progress. The daemon starts every phase of each released child itself, in
 the order of the steps of the child's plan, or of the project's default steps where you gave none,
 each step's agent as its own process with that child's context already in its environment, and a
-step whose key is `owner` it gives to that child's own architect with an `owner-step` notice; a role
-it starts again resumes the same session, and it starts in a new session, which has read none of
-its own earlier work, only once supervise's `forgetSession` has dropped that one. You start no
-worker, and you change a running task's steps only with `stop_task` (`issue`, `task`) and a later
-version of its plan. Each released child gets its own architect when the daemon starts its first
-phase, and that architect owns the child while it holds its role; while it does not hold its role,
-which the daemon's `holdsRole` decides, the child's notices come to you, all but an `owner-step`,
-which goes to the child's own architect alone and waits for it while that step runs; when its
-claim has failed, it is told that step again when it runs again
+step whose key is `owner` it gives to that child's own architect with an `owner-step` notice; an
+agent it starts again resumes that agent's session, whatever role its next step is on, and it
+starts in a new session, which has read none of its own earlier work, only once supervise's
+`forgetSession` has dropped that one. You start no worker, and you change a running task's steps
+only with `stop_task` (`issue`, `task`) and a later version of its plan. Each released child gets
+its own architect when the daemon starts its first phase, and that architect owns the child while
+it holds its role; while it does not hold its role, which the daemon's `holdsRole` decides, the
+child's notices come to you, all but an `owner-step`, which goes to the child's own architect alone
+and waits for it while that step runs; when its claim has failed, it is told that step again when
+it runs again
 (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation

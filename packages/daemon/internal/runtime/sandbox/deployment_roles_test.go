@@ -165,17 +165,33 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 
 // An operator's pod volume may not take the name of a volume Legion gives a role of the
 // deployment, as it may not take one of Legion's own roles': the role's launcher volume in the
-// pod would collide with it. Nor may it take that form for a name no role has: every agent's name
-// of an issue's plan gets a slot of its own (TestAnOperatorVolumeMayNotTakeTheFormOfASlotsVolume).
+// pod would collide with it. Where no role has that name it is taken with no warning, since no
+// agent of a plan takes the name of a role that does not exist. The slot volume of a numbered
+// agent of the role, `launcher-checker-2`, is warned of while the role exists and taken with no
+// warning once it does not (TestAnOperatorVolumeOfASlotsFormIsTakenAndOneOfARolesSlotRefused).
 func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
-	pod := Pod{Volumes: []corev1.Volume{{Name: "launcher-checker", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
+	podOf := func(name string) Pod {
+		return Pod{Volumes: []corev1.Volume{{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
+	}
+	pod := podOf("launcher-checker")
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
+	withChecker := append(slices.Clone(legion), "checker")
 	want := "runtime.kubernetes.pod.volumes[0].name launcher-checker is a volume Legion puts in every pod"
-	if err := CheckPod(pod, append(slices.Clone(legion), "checker"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil || err.Error() != want {
+	if err := CheckPod(pod, withChecker, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil || err.Error() != want {
 		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
 	}
-	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil {
-		t.Errorf("CheckPod with no checker among the roles took launcher-checker, want it refused: a plan can name an agent checker")
+	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
+		t.Errorf("CheckPod with no checker among the roles = %v, want it taken", err)
+	}
+	if warnings := PodVolumeWarnings(pod, legion); len(warnings) != 0 {
+		t.Errorf("PodVolumeWarnings of launcher-checker with no checker among the roles = %q, want none: no agent takes the name checker", warnings)
+	}
+	numbered := podOf("launcher-checker-2")
+	if warnings := PodVolumeWarnings(numbered, withChecker); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "runtime.kubernetes.pod.volumes[0].name launcher-checker-2 has the form launcher-<slot>") {
+		t.Errorf("PodVolumeWarnings of launcher-checker-2 with the checker among the roles = %q, want the one warning of launcher-checker-2", warnings)
+	}
+	if warnings := PodVolumeWarnings(numbered, legion); len(warnings) != 0 {
+		t.Errorf("PodVolumeWarnings of launcher-checker-2 with no checker among the roles = %q, want none: no agent takes the name checker-2", warnings)
 	}
 }
 
@@ -195,7 +211,7 @@ func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *test
 	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); !held {
 		t.Fatalf("the checker's credential was not cached")
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(name)
 	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); held {
 		t.Errorf("the checker's launcher credential is still held after its Sandbox %s was forgotten", name)
 	}

@@ -8,7 +8,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -37,15 +36,14 @@ func (r *Runtime) SuspendIssue(ctx context.Context, issue, tree string, authoriz
 // the pod as SuspendIssue does, under the same launch turn and after the same authorize. Then a
 // Sandbox that owns the issue's kept volume (ownsKeptVolume) is kept, Suspended, with its uid and
 // the claim of its volume, for the issue's next pod, which mounts that claim (issuePod.disk). The
-// provisioning Secret and the role Secrets of Legion's six claim roles (claim.Roles) the Sandbox
-// owns are deleted, each of which holds a token that no pod reads any more; the role Secret of
-// another slot of the pod (the fresh agent of acceptance's, a role the deployment or the plan
-// defines) is left. The next launch writes each of them
-// again before its pod starts (provision, writeLauncherSecrets). Once every delete has succeeded,
-// the release records on the Sandbox that it deleted them (secretsReleasedAnnotation), in a patch
-// of its own. A release that stops before that patch leaves no record, and the next release
-// deletes the Secrets again, each one already gone counted as deleted, and then records it. Every
-// other Sandbox holds nothing the next pod can use, and is deleted as SuspendIssue deletes it.
+// Secrets the Sandbox owns are deleted: the provisioning Secret and the Secret of each slot its pod
+// held (podSlots), each of which holds a token that no pod reads any more. The next launch writes
+// each of them again before its pod starts (provision, writeLauncherSecrets). Once every delete
+// has succeeded, the release records on the Sandbox that it deleted them
+// (secretsReleasedAnnotation), in a patch of its own. A release that stops before that patch
+// leaves no record, and the next release deletes the Secrets again, each one already gone counted
+// as deleted, and then records it. Every other Sandbox holds nothing the next pod can use, and is
+// deleted as SuspendIssue deletes it.
 //
 // The pod may show that an init container failed on the kept volume for a cause local to it
 // (volumeFault, localInitFailure). The release then writes the reset mark (volumeResetAnnotation)
@@ -115,7 +113,7 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		return err
 	}
 	if keep && ownsKeptVolume(s) {
-		if err := r.deleteIssueSecrets(ctx, name); err != nil {
+		if err := r.deleteIssueSecrets(ctx, s); err != nil {
 			return fmt.Errorf("%s issue %s: %w", act, issue, err)
 		}
 		// The record goes on only after every delete has succeeded, so it is never on a Sandbox
@@ -139,12 +137,15 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	return nil
 }
 
-// deleteIssueSecrets deletes seven of the Secrets that the issue Sandbox name owns, the provisioning
-// Secret (secretName) and the role Secret of each of Legion's six claim roles (claim.Roles, roleSecretName), each
-// one already gone counted as deleted, and then forgets what is held of the role Secrets
-// (forgetLauncherCredentials). Its caller holds the pod's launch turn, so no launch writes one of
-// them in between. It is the delete a writeSecret already sends, so it needs no new permission.
-func (r *Runtime) deleteIssueSecrets(ctx context.Context, name string) error {
+// deleteIssueSecrets deletes the Secrets that the issue Sandbox s owns, the provisioning Secret
+// (secretName) and the Secret of each slot of its pod (roleSecretName over podSlots: each role the
+// runtime had when the pod was built, a role of the deployment among them, and each agent of the
+// issue's plan whose name no role has, as the stored template binds them), each one already gone
+// counted as deleted, and then forgets what is held of the slot Secrets
+// (launcherCredentials.forgetSandbox). Its caller holds the pod's launch turn, so no launch writes
+// one of them, or another template, in between. It is the delete a writeSecret already sends, so it
+// needs no new permission.
+func (r *Runtime) deleteIssueSecrets(ctx context.Context, s *sandbox) error {
 	secrets := r.kube.CoreV1().Secrets(r.namespace)
 	remove := func(secret string) error {
 		if err := secrets.Delete(ctx, secret, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
@@ -152,14 +153,14 @@ func (r *Runtime) deleteIssueSecrets(ctx context.Context, name string) error {
 		}
 		return nil
 	}
-	if err := remove(secretName(name)); err != nil {
+	if err := remove(secretName(s.Name)); err != nil {
 		return err
 	}
-	for _, role := range claim.Roles {
-		if err := remove(roleSecretName(name, role)); err != nil {
+	for _, slot := range r.podSlots(s, issuePod{}) {
+		if err := remove(roleSecretName(s.Name, slot)); err != nil {
 			return err
 		}
 	}
-	r.forgetLauncherCredentials(name)
+	r.launcherAuth.forgetSandbox(s.Name)
 	return nil
 }

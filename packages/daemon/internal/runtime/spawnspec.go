@@ -34,6 +34,17 @@ func SecretsDir(stateDir string) string { return filepath.Join(stateDir, "secret
 // SecretFilePath is the secret file name in SecretsDir: `<state_dir>/secrets/<name>`.
 func SecretFilePath(stateDir, name string) string { return filepath.Join(SecretsDir(stateDir), name) }
 
+// SecretFileName is the name of the file a claim's secret is written to in SecretsDir,
+// `<claim>-<name lowercased>`: the one spelling of it, which the tmux runtime writes a pane's
+// secrets by (secretFiles) and the daemon's prune reads a claim's files back by (ownedBy), so the
+// two cannot drift.
+func SecretFileName(token claim.Token, name string) string {
+	return string(token) + "-" + strings.ToLower(name)
+}
+
+// GHConfigDirName is the name of a claim's gh directory in SecretsDir, `<claim>-gh` (GHConfigDir).
+func GHConfigDirName(token claim.Token) string { return string(token) + "-gh" }
+
 // GitHubCredential is the daemon's one function a runtime calls for a role's GitHub credential
 // files: a gh bundle (ghconfig.Bundle), one directory of gh files per owner account the role's
 // GitHub App is installed on, each holding that account's installation lease minted at the
@@ -79,7 +90,7 @@ var ErrNoGitHubOwner = errors.New("the App is installed on no account, so there 
 // (ghconfig.Dir) is the pane's GH_CONFIG_DIR. A pod has no use for it: there the files are a
 // Secret volume the manifest mounts.
 func GHConfigDir(stateDir string, token claim.Token) string {
-	return SecretFilePath(stateDir, string(token)+"-gh")
+	return SecretFilePath(stateDir, GHConfigDirName(token))
 }
 
 // ValidateSpawnSpec is the refusal every runtime makes before anything touches its disk, its

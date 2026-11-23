@@ -102,7 +102,7 @@ func testOptions() Options {
 		ProbeInterval:         time.Hour,
 		AdoptTimeout:          time.Minute,
 		Tokens:                staticTokens{},
-		GitHubCredential:      staticCredential,
+		GitHubCredential:      appauth.CredentialOf(staticCredential),
 		ControllerCredential:  staticControllerCredential,
 		GitHubDirs:            func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
 		Conns:                 fake.NewConns(),
@@ -234,7 +234,7 @@ func servingAddedOwner(o *Options) {
 		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(legionApp(role)), staticCredentialExpiry)
 		return bundle, nil
 	}
-	o.GitHubCredential = credential
+	o.GitHubCredential = appauth.CredentialOf(credential)
 	o.ControllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		bundle, err := credential(ctx, "", claim.RoleController, ghrepo.Repository{})
 		if err != nil || defaultOwner == "" {
@@ -352,7 +352,8 @@ func launchOf(t *testing.T, r *Runtime, spec runtime.SpawnSpec) launch {
 // unless closed says its cleanup confirmed, a claim of an issue runs a process only when running
 // names it, in the tree it names, an issue's Sandbox belongs to a tree only when homes names it
 // (to none otherwise), a claim is stored unretired only when unretired names it, and an issue's
-// plan names the agents agents gives it (none otherwise). The store's own rule for a Sandbox's
+// plan names the agents agents gives it (none otherwise). A read of the plan's agents fails with
+// planErr where it is set, and planReads counts every read. The store's own rule for a Sandbox's
 // home is held by its tests (store.IssueSandboxHome); here a test sets it.
 type fakeStore struct {
 	mu        sync.Mutex
@@ -362,6 +363,8 @@ type fakeStore struct {
 	unretired map[claim.Token]bool
 	claims    []supervise.Claim
 	agents    map[string]map[claim.Agent]claim.Role
+	planErr   error
+	planReads int
 }
 
 // runningClaim is a claim of an issue that runs a process (token:state), in tree.
@@ -377,7 +380,25 @@ func newFakeStore() *fakeStore {
 func (s *fakeStore) PlanAgents(_ context.Context, _, issue string) (map[claim.Agent]claim.Role, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.planReads++
+	if s.planErr != nil {
+		return nil, s.planErr
+	}
 	return maps.Clone(s.agents[issue]), nil
+}
+
+// failPlan makes every later read of a plan's agents fail with err; nil clears it.
+func (s *fakeStore) failPlan(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.planErr = err
+}
+
+// planReadCount is how many reads of a plan's agents the store has answered or failed.
+func (s *fakeStore) planReadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.planReads
 }
 
 // plan sets the agents of issue's plan in force.

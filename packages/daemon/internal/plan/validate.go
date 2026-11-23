@@ -26,7 +26,7 @@ const recordForm = "is not of the form [a-z][a-z0-9-]* with at most 32 character
 
 // Validate is what Legion cannot carry out in any release: a plan with no task; each role the plan
 // defines whose name or type Dispatch's step record cannot hold, or whose name the deployment or
-// Legion holds already (LegionNames); each role whose model the deployment does not list, at the
+// Legion holds already (IsLegionName); each role whose model the deployment does not list, at the
 // first step of each task that names it, or for the whole plan where no step names it; each agent
 // (AgentOf) whose steps name roles of two models or two harnesses, once, and each role the key
 // owner does at a step of a task whose model is not the owner's, at its first such step; and each
@@ -40,7 +40,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 	}
 	roles := RolesOf(p, d)
 	refusals := append(roleReasons(p, d), modelReasons(p, d, roles)...)
-	refusals = append(refusals, agentReasons(p, d, roles)...)
+	refusals = append(refusals, agentReasons(p, roles)...)
 	for _, task := range p.Tasks {
 		refused := map[string]bool{}
 		for i, step := range task.Steps {
@@ -56,7 +56,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 }
 
 // roleReasons is Validate's causes in the roles p defines, in the document's order and, for each
-// role, in this order: a name outside recordWord, a name of a role of d or of LegionNames, and a
+// role, in this order: a name outside recordWord, a name of a role of d or of Legion's (IsLegionName), and a
 // type that is set and outside recordWord.
 func roleReasons(p Plan, d Deployment) []Refusal {
 	var refusals []Refusal
@@ -64,7 +64,7 @@ func roleReasons(p Plan, d Deployment) []Refusal {
 		if !recordWord.MatchString(role.Name) {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf("the plan defines the role %s, whose name %s", role.Name, recordForm)})
 		}
-		if _, ok := d.Roles[role.Name]; ok || slices.Contains(legionNames, role.Name) {
+		if _, ok := d.Roles[role.Name]; ok || IsLegionName(role.Name) {
 			refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 				"the plan defines the role %s, which the deployment or Legion defines already; a role of a plan takes a name of its own.", role.Name)})
 		}
@@ -75,15 +75,27 @@ func roleReasons(p Plan, d Deployment) []Refusal {
 	return refusals
 }
 
-// modelReasons is Validate's causes in the models of roles, each role a step names as RolesOf
-// answers it: each role whose model is set and is none of d's models, at the first step of each
-// task that names it, in task and step order; then each role p defines that no step names, whose
-// model is set and is none of d's models, in the document's order.
-func modelReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
-	listed := "it lists none."
-	if len(d.Models) > 0 {
-		listed = "it lists " + strings.Join(d.Models, ", ") + "."
+// Lists says whether d lists model: "" is the default model, which every deployment runs, and any
+// other model is listed where d's models name it. It is the one rule of a listed model, which
+// register_plan judges a plan by (modelReasons) and the workflow judges a step of the plan in force
+// by once the settings change under it.
+func (d Deployment) Lists(model string) bool {
+	return model == "" || slices.Contains(d.Models, model)
+}
+
+// Listed is d's models as a reason writes them: "it lists m-one, m-two", or "it lists none".
+func (d Deployment) Listed() string {
+	if len(d.Models) == 0 {
+		return "it lists none"
 	}
+	return "it lists " + strings.Join(d.Models, ", ")
+}
+
+// modelReasons is Validate's causes in the models of roles, each role a step names as RolesOf
+// answers it: each role whose model d does not list (Lists), at the first step of each task that
+// names it, in task and step order; then each role p defines that no step names, whose model d
+// does not list, in the document's order.
+func modelReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
 	var refusals []Refusal
 	named := map[string]bool{}
 	for _, task := range p.Tasks {
@@ -91,74 +103,137 @@ func modelReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
 		for i, step := range task.Steps {
 			named[step.Role] = true
 			role, ok := roles[step.Role]
-			if !ok || role.Model == "" || slices.Contains(d.Models, role.Model) || refused[step.Role] {
+			if !ok || d.Lists(role.Model) || refused[step.Role] {
 				continue
 			}
 			refused[step.Role] = true
 			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
-				"step %d of task %s names the role %s, whose model %s the deployment does not list; %s", i+1, task.ID, step.Role, role.Model, listed)})
+				"step %d of task %s names the role %s, whose model %s the deployment does not list; %s.", i+1, task.ID, step.Role, role.Model, d.Listed())})
 		}
 	}
 	for _, role := range p.Roles {
-		if named[role.Name] || role.Model == "" || slices.Contains(d.Models, role.Model) {
+		if named[role.Name] || d.Lists(role.Model) {
 			continue
 		}
 		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
-			"the plan defines the role %s with the model %s, which the deployment does not list; %s", role.Name, role.Model, listed)})
+			"the plan defines the role %s with the model %s, which the deployment does not list; %s.", role.Name, role.Model, d.Listed())})
 	}
 	return refusals
 }
 
-// agentReasons is Validate's causes in the agents of p's steps (AgentOf), each step's role as roles
-// answers it, in task and step order: for each agent of a key but owner, the first step whose role
-// runs on another model or another harness than the role of the agent's first step, once for each
-// agent; and for the key owner, in each task, the first step of each role whose model is not the
-// owner's (d.Owner). Two roles of no model run on one model, the deployment's default. The owner
-// does its step in its own session, so its harness is not compared. A step whose role nobody
-// defines is passed over: Validate refuses it on its own.
-func agentReasons(p Plan, d Deployment, roles map[string]RoleDef) []Refusal {
-	type firstStep struct {
-		task, role string
-		place      int
-		def        RoleDef
+// KeyStep is one step of a key's agent: its task, its place in the task (from 1), and its role,
+// by name and as the plan's roles answer it.
+type KeyStep struct {
+	Task  string
+	Place int
+	Role  string
+	Def   RoleDef
+}
+
+// KeyMismatch is a step whose key names one agent (AgentOf) with the key's first step, and whose
+// role runs on another model or another harness than that step's role: one agent runs on one model
+// and one harness.
+type KeyMismatch struct {
+	Key         string
+	First, Step KeyStep
+}
+
+// Reason is the mismatch in the words Validate refuses it with, each step named by its place and
+// its task.
+func (m KeyMismatch) Reason() string {
+	return m.reason(func(s KeyStep) string { return fmt.Sprintf("step %d of task %s", s.Place, s.Task) })
+}
+
+// StepsReason is the mismatch in a list of steps that is no task's, such as a project's
+// `default_steps`: Reason's words, each step named by its place alone.
+func (m KeyMismatch) StepsReason() string {
+	return m.reason(func(s KeyStep) string { return fmt.Sprintf("step %d", s.Place) })
+}
+
+// reason is the mismatch's words, each of its two steps named as at names it.
+func (m KeyMismatch) reason(at func(KeyStep) string) string {
+	runOn := fmt.Sprintf("two models (%s, %s); one agent runs on one model.", modelName(m.First.Def.Model), modelName(m.Step.Def.Model))
+	if m.Step.Def.Model == m.First.Def.Model {
+		runOn = fmt.Sprintf("two harnesses (%s, %s); one agent runs on one harness.", m.First.Def.Backend, m.Step.Def.Backend)
 	}
-	first := map[Agent]firstStep{}
-	refused := map[Agent]bool{}
-	var refusals []Refusal
+	return fmt.Sprintf("the key %s names one agent for %s at %s and %s at %s, whose roles run on %s",
+		m.Key, m.First.Role, at(m.First), m.Step.Role, at(m.Step), runOn)
+}
+
+// KeyMismatches is each step of p whose key, but the key owner, names one agent with the key's
+// first step, and whose role, as roles answers it, runs on another model or another harness than
+// that step's role, in task and step order. Two roles of no model run on one model, the
+// deployment's default. A step whose role roles does not hold is passed over: Validate refuses it
+// on its own. Validate refuses the first mismatch of each agent (agentReasons); the configuration
+// loader takes every one of a project's default steps with a warning first.
+func KeyMismatches(p Plan, roles map[string]RoleDef) []KeyMismatch {
+	first := map[string]KeyStep{}
+	var mismatches []KeyMismatch
 	for _, task := range p.Tasks {
+		for i, step := range task.Steps {
+			role, ok := roles[step.Role]
+			if !ok || step.Key == "" || AgentOf(task.ID, i+1, step).Owner() {
+				continue
+			}
+			at := KeyStep{Task: task.ID, Place: i + 1, Role: step.Role, Def: role}
+			was, seen := first[step.Key]
+			if !seen {
+				first[step.Key] = at
+				continue
+			}
+			if role.Model == was.Def.Model && role.Backend == was.Def.Backend {
+				continue
+			}
+			mismatches = append(mismatches, KeyMismatch{Key: step.Key, First: was, Step: at})
+		}
+	}
+	return mismatches
+}
+
+// agentReasons is Validate's causes in the agents of p's steps (AgentOf), each step's role as roles
+// answers it, in task and step order: for each agent of a key but owner, its first mismatch
+// (KeyMismatches), once for each agent; and for the key owner, in each task, the first step of each
+// role whose model is not the owner's, the default model (""), since the owner runs on the model
+// every role of Legion's runs on. The owner does its step in its own session, so its harness is
+// not compared. A step whose role nobody defines is passed over: Validate refuses it on its own.
+func agentReasons(p Plan, roles map[string]RoleDef) []Refusal {
+	type placed struct {
+		task, place int
+		refusal     Refusal
+	}
+	index := make(map[string]int, len(p.Tasks))
+	var found []placed
+	for t, task := range p.Tasks {
+		index[task.ID] = t
 		ownersRefused := map[string]bool{}
 		for i, step := range task.Steps {
 			role, ok := roles[step.Role]
-			if !ok {
+			if !ok || !AgentOf(task.ID, i+1, step).Owner() || role.Model == "" || ownersRefused[step.Role] {
 				continue
 			}
-			agent := AgentOf(task.ID, i+1, step)
-			if agent.Owner() {
-				if role.Model != d.Owner.Model && !ownersRefused[step.Role] {
-					ownersRefused[step.Role] = true
-					refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
-						"step %d of task %s names %s, whose model %s is not the owner's (%s); the owner runs on its own model.",
-						i+1, task.ID, step, modelName(role.Model), modelName(d.Owner.Model))})
-				}
-				continue
-			}
-			was, seen := first[agent]
-			if !seen {
-				first[agent] = firstStep{task: task.ID, role: step.Role, place: i + 1, def: role}
-				continue
-			}
-			if refused[agent] || (role.Model == was.def.Model && role.Backend == was.def.Backend) {
-				continue
-			}
-			refused[agent] = true
-			runOn := fmt.Sprintf("two models (%s, %s); one agent runs on one model.", modelName(was.def.Model), modelName(role.Model))
-			if role.Model == was.def.Model {
-				runOn = fmt.Sprintf("two harnesses (%s, %s); one agent runs on one harness.", was.def.Backend, role.Backend)
-			}
-			refusals = append(refusals, Refusal{Task: task.ID, Reason: fmt.Sprintf(
-				"the key %s names one agent for %s at step %d of task %s and %s at step %d of task %s, whose roles run on %s",
-				agent.Key, was.role, was.place, was.task, step.Role, i+1, task.ID, runOn)})
+			ownersRefused[step.Role] = true
+			found = append(found, placed{task: t, place: i + 1, refusal: Refusal{Task: task.ID, Reason: fmt.Sprintf(
+				"step %d of task %s names %s, whose model %s is not the owner's (%s); the owner runs on its own model.",
+				i+1, task.ID, step, role.Model, modelName(""))}})
 		}
+	}
+	refused := map[string]bool{}
+	for _, mismatch := range KeyMismatches(p, roles) {
+		if refused[mismatch.Key] {
+			continue
+		}
+		refused[mismatch.Key] = true
+		found = append(found, placed{task: index[mismatch.Step.Task], place: mismatch.Step.Place, refusal: Refusal{Task: mismatch.Step.Task, Reason: mismatch.Reason()}})
+	}
+	slices.SortStableFunc(found, func(a, b placed) int {
+		if a.task != b.task {
+			return a.task - b.task
+		}
+		return a.place - b.place
+	})
+	refusals := make([]Refusal, len(found))
+	for i, f := range found {
+		refusals[i] = f.refusal
 	}
 	return refusals
 }

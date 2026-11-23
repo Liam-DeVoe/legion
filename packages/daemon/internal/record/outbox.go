@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
@@ -240,6 +241,10 @@ type OwedStart struct {
 	Role       claim.Role
 	Phase      phase.Phase
 	Generation uint64
+	// Claim is the claim the start names (SuperviseRequest.Claim): the claim it was queued for,
+	// which the outbox acts on. A row the release before wrote names none, and acts on the claim
+	// of the worker on Role's step (WorkerClaim).
+	Claim      claim.Token
 	LeaseToken string
 }
 
@@ -1133,9 +1138,10 @@ type SuperviseRequest struct {
 	Op   SuperviseOp `json:"op"`
 	Tree string      `json:"tree"`
 	Role claim.Role  `json:"role"`
-	// Claim is the claim the request acts on where its producer holds it: a row that stands for
-	// one stored claim of the issue names it. A row that names none acts on the claim of the
-	// worker on Role's step (WorkerClaim), which is what a row the release before wrote reaches.
+	// Claim is the claim the request acts on where its producer holds it: a phase worker's start
+	// names the claim it was queued for (workflow's started), and a row that stands for one stored
+	// claim of the issue names it. A row that names none acts on the claim of the worker on Role's
+	// step (WorkerClaim), which is what a row the release before wrote reaches.
 	Claim claim.Token `json:"claim,omitempty"`
 	Task  string      `json:"task,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
@@ -1270,6 +1276,18 @@ type SuperviseRequest struct {
 	// to the claim's retry, which forgets the session inside that one decision (supervise's
 	// RequestRetry), so a start that never ran leaves the session where it was.
 	FreshSession bool `json:"freshSession,omitempty"`
+	// Agent is the agent of the step the start is a run of, in the identity plan.Agent.ID gives
+	// (plan.AgentID): `key:<key>` for the agent of a key, `step:<place>:<task>` for the agent of a
+	// step with no key. The workflow writes it on every start of a step's agent of an issue with
+	// plan rows (enter's, the held phase's retry and the send of an owed entry), the retro's naming
+	// the agent that runs it, and on no other start. The runner hands it to the decision that brings
+	// the claim back (supervise.StartWork.Agent), which leaves the claim's session behind where it
+	// is another agent's (supervise.Claim.SessionAgent) and records this agent as the agent of the
+	// session it begins or takes; a claim that runs another agent's process is suspended first. A
+	// run of the row again once the claim's session is this agent's asks nothing of the claim. The
+	// release before decodes strictly (DisallowUnknownFields), so the way back of
+	// 20261122120917_claim_session_agent takes the key off each queued supervise row.
+	Agent plan.AgentID `json:"agent,omitempty"`
 	// Linger is the root generation whose linger a tree close expires. A member keeps its
 	// generation across re-admission, so the close acts only while its tree lingers at that root
 	// generation: never in the tree's next run, nor in a later linger of it.
@@ -1888,13 +1906,13 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
 // dispatch://INFRA-4374 R1) to the claim of the worker on one role's step, on that claim's Envoy
-// topic. The daemon
-// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer
-// to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
-// worker of the phase the issue stays in to stop writing that workspace while the merge runs
-// (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
-// the reviewer of an issue past its review whose task has a reviewer step to read the merge
-// (MergeForwardReview).
+// topic. The daemon acts on a confirmed conflict without moving the issue out of its phase: it
+// asks the agent of the task's implementation step (workflow's implementationAgent: the
+// implementer of the default steps) to merge Base forward onto Head in the issue workspace and
+// push (MergeForwardAsk), and tells the worker of the phase the issue stays in to stop writing
+// that workspace while the merge runs (MergeForwardHold). Once a new head lands it tells that
+// worker so (MergeForwardLanded), and asks the reviewer of an issue past its review whose task has
+// a reviewer step to read the merge (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
 // to). Claim is the claim the message reaches: the claim of the worker on Role's step when the
@@ -1906,8 +1924,8 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // hold state.
 //
 // It is a row of its own kind rather than a RoleMessage, because a RoleMessage ends undelivered on
-// a released claim, and a released implementer must still be woken for the merge; its executor
-// follows the merge-queue removal's (MergeQueueRemoval).
+// a released claim, and a released agent of the implementation step must still be woken for the
+// merge; its executor follows the merge-queue removal's (MergeQueueRemoval).
 type MergeForwardMessage struct {
 	Role        claim.Role       `json:"role"`
 	Claim       claim.Token      `json:"claim,omitempty"`
@@ -1943,16 +1961,18 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // Message is what the runner publishes for issue to Role, where pr is the pull request as the
 // record holds it when the row is delivered: the repository it is held under (PullRequest.Repo),
 // and its merge forward (PullRequest.MergeForward), whose ReviewAsked says whether the landing
-// asked the reviewer to read the merge. It starts with the issue key, as every message of this
-// lane does, and names the pull request as `owner/name#n`. The sentences are short and plain, one
-// instruction to a sentence, because an agent reads them (ASD-STE100).
+// asked the reviewer to read the merge and whose Own whether the ask was made at the step of the
+// agent it asks. It starts with the issue key, as every message of this lane does, and names the
+// pull request as `owner/name#n`. The sentences are short and plain, one instruction to a
+// sentence, because an agent reads them (ASD-STE100).
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
 // the daemon acted, and tells the agent asked to merge the base forward in the issue workspace,
 // the one workspace every role of the issue shares, as the worker skill's conflicts reference
 // says, after the working-copy check of its foreign-path reference, and to push the issue branch,
-// with no handoff and no completion for the merge. In implementing it also says that the
-// agent's own assignment there and its completion stand: the act starts no phase entry there.
+// with no handoff and no completion for the merge. Where the record holds that ask as made at that
+// agent's own step, in the phase the row names (implementing on today's steps), it also says that
+// the agent's own assignment there and its completion stand: the act starts no phase entry there.
 //
 // The hold gives why the daemon acted, and tells the worker that the agent of the task's last
 // implementation step is asked to merge
@@ -1983,8 +2003,8 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	switch p.Step {
 	case MergeForwardAsk:
 		own := ""
-		if p.Phase == phase.Implementing {
-			own = " Your own assignment in implementing stands, and so does its completion."
+		if asked := pr.MergeForward; asked != nil && asked.Own && asked.Phase == p.Phase {
+			own = fmt.Sprintf(" Your own assignment in %s stands, and so does its completion.", p.Phase)
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+

@@ -86,7 +86,7 @@ func TestATickBuildsARoleOfTheDeploymentOnceForEveryIssuePod(t *testing.T) {
 	built := map[claim.Role][]string{}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.RoleApps.Deployed = appauth.DeploymentApps{"checker": appauth.Implement}
-		o.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			mu.Lock()
 			built[role] = append(built[role], issue)
 			mu.Unlock()
@@ -94,7 +94,7 @@ func TestATickBuildsARoleOfTheDeploymentOnceForEveryIssuePod(t *testing.T) {
 				return staticCredential(ctx, issue, claim.RoleImplementer, repo)
 			}
 			return staticCredential(ctx, issue, role, repo)
-		}
+		})
 	}))
 	g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	g.spawn(testSpec(t, childToken, claim.RoleImplementer, "LEGION-209"))

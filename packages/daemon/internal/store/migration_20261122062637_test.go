@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
 // phaseStepKeyVersion is the version of the migration this file tests, so the test can migrate
@@ -93,5 +95,37 @@ func TestAPhasesRowIsTheRowOfAStepAndTheWayBackFoldsARolesRows(t *testing.T) {
 	}
 	if got, want := rowsAsText(t, store, key), []string{"issue,role,step_task,step_place"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the key of phases after the roll forward = %v, want %v", got, want)
+	}
+}
+
+// The witness the way back of the release that records each step keeps (step_run_witness,
+// 20261117004117) reads one phases row of each role: the implementer's pass in a scalar subquery,
+// and each role's entry as one key of an object. A role at two steps of a task has a row for each
+// under the key by step, so that block fails on such an issue while the key stands, and a rollback
+// past both releases runs this migration's way back first, which keeps the row of each role with
+// the highest entry (docs/kubernetes.md); the witness then reads that row.
+func TestTheStepRecordsWayBackRunsOnceTheStepKeysWayBackFoldedARolesRows(t *testing.T) {
+	s := newRollBackStore(t)
+	s.issue("LEGION-208", "LEGION-208", "implementing", "", 1)
+	s.exec(`update phases set entry = 1, step_task = 't', step_place = 1 where issue = 'LEGION-208' and role = 'implementer'`)
+	s.exec(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass, entry, step_task, step_place)
+		values ('LEGION-208', 'implementer', '', '', 0, '', 1, 3, 't', 3)`)
+	s.row("LEGION-208", "step", 2, "open")
+
+	stepRecords := wayBackOf(t, migrations.StepRecordsRollForward, stepRecordsRelease)
+	_, err := s.store.Pool().Exec(t.Context(), stepRecords)
+	if err == nil || !strings.Contains(err.Error(), "more than one row returned by a subquery used as an expression") {
+		t.Fatalf("the step records' way back over a role's two rows = %v, want it refused for the witness's one row of each role", err)
+	}
+	t.Logf("the step records' way back before the step key's: %v", err)
+	if got := rowsAsText(t, s.store, `select count(*)::text from step_starts_rollback`); !reflect.DeepEqual(got, []string{"0"}) {
+		t.Fatalf("the refused way back kept %v witnesses, want none", got)
+	}
+
+	s.exec(wayBackOf(t, phaseStepKeyVersion, phaseStepKeyRelease))
+	s.exec(stepRecords)
+	if got := rowsAsText(t, s.store, `select concat_ws(' ', witness->>'pass', witness->'entries'->>'implementer') from step_starts_rollback
+		where issue = 'LEGION-208'`); !reflect.DeepEqual(got, []string{"1 3"}) {
+		t.Fatalf("the witness after the step key's way back = %v, want the pass and the entry of the row it kept, %q", got, "1 3")
 	}
 }

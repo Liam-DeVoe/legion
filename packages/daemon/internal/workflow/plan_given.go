@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -73,8 +74,9 @@ type givenVersion struct {
 //
 // Each step of the version is named from every row of the issue as it stands now
 // (record.NameAgents, Store.PlanStepsOf), before anything is written, since the write deletes the
-// steps of each task it gives: so a key keeps its name, and a fresh agent that would need the name
-// a key holds gets a name of its own.
+// steps of each task it gives, and from the issue's claims whose sessions are a key's agent's
+// (keySessions), which keep a key's name once no row names the key: so a key keeps its name, and
+// a fresh agent that would need the name a key holds gets a name of its own.
 func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (givenVersion, *intake.Refusal, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -129,8 +131,29 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if err != nil {
 		return givenVersion{}, nil, err
 	}
-	given.steps = record.NameAgents(earlier, given.steps)
+	var sessions record.KeySessions
+	if issue != nil {
+		if sessions, err = e.keySessions(ctx, tx, *issue); err != nil {
+			return givenVersion{}, nil, err
+		}
+	}
+	given.steps = record.NameAgents(earlier, sessions, given.steps)
 	return given, nil, nil
+}
+
+// keySessions is the names of issue's claims whose sessions are a key's agent's
+// (record.KeySessionsOf), read in tx with the rows a version is named from: the claim of such a
+// name and the session it holds wait for the key whatever the rows still name (record.NameAgents).
+func (e *Engine) keySessions(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.KeySessions, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return nil, fmt.Errorf("the claims of %s: %w", issue.Key, err)
+	}
+	claims, err := e.store.IssueClaims(ctx, tx, project, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	return record.KeySessionsOf(claims), nil
 }
 
 // refusalUnless is refusal where err is nil, and nil where a read failed, which answers the error

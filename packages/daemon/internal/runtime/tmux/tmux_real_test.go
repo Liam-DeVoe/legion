@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -528,7 +529,7 @@ func (r *rig) newRuntime(adjust ...func(*Options)) *Runtime {
 		Conns:                r.stream,
 		Environ:              r.environ,
 		Executable:           func() (string, error) { return r.legion, nil },
-		GitHubCredential:     staticCredential,
+		GitHubCredential:     appauth.CredentialOf(staticCredential),
 		ControllerCredential: staticControllerCredential,
 		GH:                   fakeGH,
 		ClaimRepository:      acmeWidgets,
@@ -1136,7 +1137,7 @@ func TestRealTmuxSplitsIntoTheIssueWindow(t *testing.T) {
 		bundle.Dirs[bundle.Default] = ghconfig.Render(token, written.App, staticCredentialExpiry)
 		return bundle, err
 	}
-	withMinting := func(o *Options) { o.GitHubCredential = minting }
+	withMinting := func(o *Options) { o.GitHubCredential = appauth.CredentialOf(minting) }
 	r := newRig(t, withMinting)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

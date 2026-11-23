@@ -33,13 +33,19 @@ func servingReleasedClaim(t *testing.T, st *Store, role claim.Role) {
 }
 
 // implementingWorker is the claim a backstop is armed for as workflow.BackstopTargetAt names it for
-// the places these tests use, where no plan rows give a role: the implementer serving the issue's
-// run while the issue implements, and nobody otherwise.
-func implementingWorker(_, _ string, p phase.Phase, _, _ claim.Role) (claim.Role, claim.Token) {
-	if p == phase.Implementing {
-		return claim.RoleImplementer, ""
+// the places these tests use, where no plan rows give a role, read from the issue in tx: the
+// implementer's own claim, serving the issue's run, while the issue implements, and nobody
+// otherwise.
+func implementingWorker(ctx context.Context, tx pgx.Tx, issue string) (claim.Role, claim.Token, error) {
+	var stands string
+	if err := tx.QueryRow(ctx, `select phase from issues where key = $1`, issue).Scan(&stands); err != nil {
+		return "", "", err
 	}
-	return "", ""
+	if phase.Phase(stands) != phase.Implementing {
+		return "", "", nil
+	}
+	token, err := claim.NewToken("legion", issue, claim.RoleImplementer)
+	return claim.RoleImplementer, token, err
 }
 
 // endPause ends pause at at as the operator, as the resume's transaction writes the end.

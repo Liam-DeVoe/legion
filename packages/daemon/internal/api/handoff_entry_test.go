@@ -74,7 +74,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
 	if secondStart.Entry != firstTesting+1 {
-		t.Fatalf("the second testing start is of entry %d, want the %d after the first: each entry of the phase raises the row by one",
+		t.Fatalf("the second testing start is of entry %d, want the %d after the first: an entry is one above the highest entry of the step's claim, the tester's own here",
 			secondStart.Entry, firstTesting+1)
 	}
 	if run := issueGeneration(t, h, "LEGION-208"); run != 1 {
@@ -214,7 +214,7 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 	}
 	// What decided the refusal stands in the middle of it (intake.BehindEntryClause), so the
 	// instruction is still the text the refusal ends with, whichever clause it carries.
-	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
+	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false, false)
 	for clause, pending := range map[string]*supervise.Delivery{
 		"the entry 2 the phase is on, and " + decided + "; nothing was recorded":                nil,
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},

@@ -845,10 +845,11 @@ What each part is for:
   each refused by name. What the pacing is holding right now is in the state's `wakesWaiting`
   ([Observe](#observe)).
 - **`worker_backends`** (optional) runs a role on Claude Code instead of Oh My Pi:
-  `worker_backends: {implementer: claude}`. Each key is an issue role, each value `omp` (the
-  default) or `claude`. Claude Code runs the phase workers (`planner`, `implementer`, `tester`,
-  `reviewer`, `merger`) under either runtime; the loader refuses `claude` for the architect, naming
-  why, and refuses any other value. The controller always runs on Oh My Pi. A tmux daemon running a
+  `worker_backends: {implementer: claude}`. Each key is an issue role, one of Legion's or a role
+  `roles` defines, and each value is `omp` (the default) or `claude`. Claude Code runs the phase
+  workers (`planner`, `implementer`, `tester`, `reviewer`, `merger`) and the roles `roles` defines,
+  under either runtime. The loader refuses `claude` for the architect, naming why, and refuses any
+  other value. The controller always runs on Oh My Pi. A tmux daemon running a
   Claude Code role resolves `claude` from `LEGION_CLAUDE_PATH` (else `PATH`), the `bun` its MCP
   server runs on from `LEGION_BUN_PATH` (else `PATH`), and a built `packages/claude-envoy` from
   `LEGION_CLAUDE_PLUGIN_DIR`, and refuses to boot without any of them. A Kubernetes daemon
@@ -1195,7 +1196,8 @@ To hand the controller back to a person, set `controller: operator`, drop
 and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
-Switching to `controller: daemon` again starts a fresh controller, not the old session.
+Switching to `controller: daemon` again relaunches that claim on the session it recorded, after a
+one-minute wait, in a new pod whose `/legion` is empty.
 
 A daemon built before LEGION-592 cannot run against a database a `controller: daemon` daemon used:
 it lists the controller's claim as an issue keyed `""`, which every agent's plugin refuses. So to

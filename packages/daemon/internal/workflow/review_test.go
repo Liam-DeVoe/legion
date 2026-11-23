@@ -1658,8 +1658,9 @@ func reviewStuckNotices(t *testing.T, pool *pgxpool.Pool) []record.Notice {
 	return notices
 }
 
-// reviewClaim is LEGION-208's reviewer claim as the daemon names it, the token claim.NewToken
-// spells for the issue's project, key and role (the workflow's reviewerToken): the claim the
+// reviewClaim is LEGION-208's reviewer claim as the daemon names it here, the reviewer role's own
+// token claim.NewToken spells for the issue's project, key and role: the claim of the worker on the
+// reviewer's step where no plan row names another (the workflow's reviewersClaim), the claim the
 // fixtures record the reviewer's session on, and the claim each of the reviewer's completions
 // carries, as the claim a reviewer's agent completes under does.
 const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
@@ -1669,12 +1670,12 @@ const reviewClaim claim.Token = "legion-legion-legion-208-reviewer"
 // The reviewer's row holds the entry the round's start raised, with its task, raised before any
 // review of the round (record.PhaseRow.Entry, EntryTask and EntryRaisedAt), as every round's row
 // does: only a review submitted after that entry moves the commit the reviewer read (workflow's
-// review). It names no claim, as a row that a release before this one raised and no completion
-// named a claim on does: a raise now writes the claim of the step's agent (record.PhaseRow.Claim,
-// Engine.enter), and a completion the claim it carried, but the reviewer's claim of an issue with
-// no plan rows is its role's own token whatever the row names (record.WorkerClaim). The reviewer's
-// claim is recorded as the daemon records it, under the token the daemon names it by (reviewClaim)
-// and with the session its agent registered, the session reviewBody's footer names.
+// review). It names no claim, as a row seeded with no step of a plan does, and the reviewer submits
+// its review before it completes: the claim the round reads is then the reviewer role's own token
+// (workflow's reviewersClaim, record.WorkerClaim). An entry of a plan's step writes the claim of its
+// agent on the row (record.PhaseRow.Claim, Engine.enter), and a completion the claim it carried.
+// The reviewer's claim is recorded as the daemon records it, under the token the daemon names it by
+// (reviewClaim) and with the session its agent registered, the session reviewBody's footer names.
 func seedRoundOneRows(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 1,
@@ -1746,12 +1747,13 @@ func TestAReviewAppReviewFromAnotherSessionIsSetAside(t *testing.T) {
 // because the reviewer's claim records no session yet (workflow's RefusedWhileNoSession).
 const reviewWaitsLine = "workflow: a review of the review App waits: the reviewer's claim records no session, so the next read of the pull request's reviews judges it again"
 
-// In the reviewer's first round here its row names no claim (seedRoundOneRows), and the reviewer
-// submits the review of its first round before it completes. The reviewer's session is the one the
-// claims record holds for the claim the daemon starts the reviewer under, in that round as in every
-// later one, so another review-App session's APPROVE or REQUEST_CHANGES at the head - the
-// controller's, here - decides nothing in round 1 either: it is set aside as in a later round, the
-// issue stays in reviewing and the round has no decision. The
+// In the reviewer's first round here its row names no claim (seedRoundOneRows), as a row that runs
+// no step of a plan does, and the reviewer submits the review of its first round before it
+// completes. The reviewer's session is the one the claims record holds for the claim the daemon
+// starts the reviewer under, in that round as in every later one, so another review-App session's
+// APPROVE or REQUEST_CHANGES at the head - the controller's, here - decides nothing in round 1
+// either: it is set aside as in a later round, the issue stays in reviewing and the round has no
+// decision. The
 // reviewer's own review decides, and records the commit it read. Until the reviewer's agent
 // registers, that claim records no session - the outbox makes the claim with none, and before the
 // outbox takes the start it has no row - and a review-App review then decides nothing, whoever
@@ -1804,7 +1806,7 @@ func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
 				SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
 			row := reviewerRow(t, pool)
 			if row.Claim != "" {
-				t.Fatalf("the reviewer's row names the claim %q, want none: no completion of the reviewer's was applied", row.Claim)
+				t.Fatalf("the reviewer's row names the claim %q, want none: it runs no step of a plan, and no completion of the reviewer's was applied", row.Claim)
 			}
 			if got := issuePhase(t, pool); got != tc.want {
 				t.Fatalf("after the review the issue is in %s, want %s", got, tc.want)
@@ -1834,6 +1836,71 @@ func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
 						t.Fatalf("logs = %s, want the waiting line naming %s", logs.String(), field)
 					}
 				}
+			}
+		})
+	}
+}
+
+// keyedReviewClaim is the claim of the agent a plan names for LEGION-208's tester and reviewer
+// steps by one key: an agent is named for the role of its first step, the tester here, so its
+// claim is the tester role's token while it works the reviewer's step.
+const keyedReviewClaim claim.Token = "legion-legion-legion-208-tester"
+
+// Where a plan keys the reviewer's step to the agent of an earlier step, the reviewer is that
+// agent's claim: the step's entry writes the claim on the reviewer's phases row with the step's
+// task (record.WorkerClaim), and the round is judged by the session the claims record holds for
+// that claim (workflow's reviewersClaim), never by the session of the reviewer role's own token.
+// The reviewer role's own token holds a session of its own here too (seedRoundOneRows), as a claim
+// an earlier run of the issue could leave, so a read of the wrong claim finds a session and judges
+// by it: only the keyed agent's own review decides the round and records the head it read, and a
+// review from the session of the reviewer role's own token is set aside, the line naming the keyed
+// agent's session as the reviewer's. This is the control of review-range.sh's proof that only the
+// reviewer's own session decides a round, for the one case that tells the two reads apart and
+// that the live run, whose plan keys no step, never makes.
+func TestAKeyedAgentOnTheReviewersStepDecidesTheRoundByTheSessionOfItsOwnClaim(t *testing.T) {
+	const setAside = "workflow: a review decides nothing: the review App submitted it from a session that is not the reviewer's"
+	for _, tc := range []struct {
+		name     string
+		session  string
+		decides  bool
+		want     phase.Phase
+		reviewed string
+	}{
+		{name: "the keyed agent's request for changes", session: "ses-key-a", decides: true, want: phase.Implementing, reviewed: headOne},
+		{name: "a request for changes from the session of the reviewer role's own token", session: "ses-reviewer", want: phase.Reviewing},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedReviewOf(t, pool, headOne, "green")
+			// The entry of the reviewer's step writes the row of that step, task a at place 3, with
+			// the keyed agent's claim: the fixtures' reviewer row moves to the step, as a phases row
+			// is keyed by its step and a put at another step would stand beside it.
+			if _, err := pool.Exec(t.Context(), "update phases set step_task = 'a', step_place = 3, claim = $1 where issue = 'LEGION-208' and role = $2",
+				string(keyedReviewClaim), string(claim.RoleReviewer)); err != nil {
+				t.Fatalf("move the reviewer's row to its step: %v", err)
+			}
+			seedClaimSession(t, pool, keyedReviewClaim, "ses-key-a")
+			var logs bytes.Buffer
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
+			apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "changes_requested", CommitID: headOne, Author: testReviewApp,
+				Body:        roundReviewBody(t, pool, tc.session, "the review", headOne),
+				SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
+			if got := issuePhase(t, pool); got != tc.want {
+				t.Fatalf("after the review from %s the issue is in %s, want %s: the reviewer is the keyed agent's claim %s, whose session is ses-key-a",
+					tc.session, got, tc.want, keyedReviewClaim)
+			}
+			got := reviewerRow(t, pool)
+			switch {
+			case !tc.decides && got.Decision != nil:
+				t.Fatalf("the round's decision = %+v, want none: only ses-key-a, the session of the claim on the reviewer's step, decides", got.Decision)
+			case tc.decides && (got.Decision == nil || got.Decision.Head != headOne):
+				t.Fatalf("the round's decision = %+v, want the keyed agent's request for changes at %s", got.Decision, headOne)
+			}
+			if got.ReviewedHead != tc.reviewed {
+				t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q", got.ReviewedHead, tc.reviewed)
+			}
+			if !tc.decides && (!strings.Contains(logs.String(), setAside) || !strings.Contains(logs.String(), "reviewer_session=ses-key-a")) {
+				t.Fatalf("logs = %s, want the set-aside line naming ses-key-a as the reviewer's session", logs.String())
 			}
 		})
 	}

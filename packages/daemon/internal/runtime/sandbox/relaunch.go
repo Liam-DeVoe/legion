@@ -212,9 +212,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err != nil {
 		return runtime.Locator{}, err
 	}
-	if err := r.issueSlots(ctx, &l); err != nil {
-		return runtime.Locator{}, fmt.Errorf("launch %s: read the agents of its issue's plan: %w", spec.Claim, err)
-	}
+	r.issueSlots(ctx, &l)
 	r.forget(spec.Claim)
 	release, err := r.lockPod(ctx, l.name)
 	if err != nil {
@@ -606,11 +604,17 @@ func launchBound(bootTimeout, startBound, provisionBound, terminationGrace time.
 
 // tryBound is the bound of one launch try of l once it holds its pod's launch turn (relaunch): the
 // runtime's launchBound, which counts the calls of every role of its issue pods, and the calls of
-// one more slot (relaunchRoleCalls) at apiTimeout for each slot l's pod has beyond them, an agent
-// name of the issue's plan (issueSlots).
+// one more slot (relaunchRoleCalls) at apiTimeout for each slot of l's pod that is no role of its
+// kind, an agent name of the issue's plan (issueSlots).
 func (r *Runtime) tryBound(l launch) time.Duration {
-	extra := len(l.roles) - len(r.issueRoles)
-	if extra <= 0 {
+	roles := l.kind.roles(r)
+	extra := 0
+	for _, slot := range l.roles {
+		if !slices.Contains(roles, slot) {
+			extra++
+		}
+	}
+	if extra == 0 {
 		return r.launchBound
 	}
 	return r.launchBound + time.Duration(relaunchRoleCalls*extra)*apiTimeout

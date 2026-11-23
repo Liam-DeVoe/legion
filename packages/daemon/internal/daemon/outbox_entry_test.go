@@ -213,8 +213,8 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 	ctx := context.Background()
 	rig := newOneStartRig(t)
 	rows := entryStartRows(t, rig.pool, rig.issue.Key)
-	if len(rows) != 1 || rows[0].request.Role != claim.RoleImplementer || rows[0].request.Entry != 1 {
-		t.Fatalf("the start rows after the planner's completion = %+v, want the implementer's one row of entry 1", rows)
+	if len(rows) != 1 || rows[0].request.Role != claim.RoleImplementer || rows[0].request.Entry != 1 || rows[0].request.Claim != rig.token {
+		t.Fatalf("the start rows after the planner's completion = %+v, want the implementer's one row of entry 1, naming its claim %s", rows, rig.token)
 	}
 	deleted := rows[0]
 	if _, err := rig.pool.Exec(ctx, "delete from outbox where id = $1", deleted.row.ID); err != nil {
@@ -232,14 +232,14 @@ func TestAppendOnlyStartRowsLoseNoWorkWhenOneIsDeletedBeforeTheLaneRunsIt(t *tes
 
 	issue := readIssue(t, rig.pool, rig.issue.Key)
 	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer, row)
+		return entryEngine(t).SendOwedEntry(ctx, tx, *issue, claim.RoleImplementer, rig.token, row)
 	}); err != nil {
 		t.Fatalf("send the implementer the work its entry names: %v", err)
 	}
 	again := entryStartRows(t, rig.pool, rig.issue.Key)
-	if len(again) != 1 || again[0].request.Entry != deleted.request.Entry || again[0].request.Task != deleted.request.Task {
-		t.Fatalf("the start rows the record wrote again = %+v, want one of entry %d carrying the task %q the deleted row carried",
-			again, deleted.request.Entry, deleted.request.Task)
+	if len(again) != 1 || again[0].request.Entry != deleted.request.Entry || again[0].request.Task != deleted.request.Task || again[0].request.Claim != rig.token {
+		t.Fatalf("the start rows the record wrote again = %+v, want one of entry %d carrying the task %q the deleted row carried, naming %s",
+			again, deleted.request.Entry, deleted.request.Task, rig.token)
 	}
 
 	if err := rig.runner.execute(ctx, again[0].row); err != nil {
@@ -376,8 +376,8 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 // A re-admission leaves the role's entry where it stood and takes the work of it away: the task
 // is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
 // which workflow's Adopt and enterChild run for each member), while the number stays, because it
-// counts the entries the role has been handed on this issue and nothing of a re-admission unhands
-// one (record.PhaseRow.Entry and EntryTask).
+// counts the entries handed on the role's row of this issue, numbered across the rows that name
+// the same claim, and nothing of a re-admission unhands one (record.PhaseRow.Entry and EntryTask).
 //
 // What writes the work again is the promotion of the re-admitted tree's member
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the

@@ -149,8 +149,8 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 				// plugin's own refusal text, which survives a rewording of the clauses around it.
 				"the daemon API contract does not describe",
 				// Every role is told the update round's terms (dispatch://INFRA-2981): its ask comes
-				// as a message on the role's own topic, the end of a turn answers nothing, and the
-				// round ends at the moment the ask names whatever the role answers.
+				// as a message on the topic of the claim it asks, the end of a turn answers nothing,
+				// and the round ends at the moment the ask names whatever the claim answers.
 				"The daemon can send an update message to your role topic.",
 				"The end of a turn is no answer",
 				"The round ends at the moment the message names, whether or not you answer.",

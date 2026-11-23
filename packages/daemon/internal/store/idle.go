@@ -23,12 +23,13 @@ import (
 // task it carries, a stop), an architect's notice, the words a hook fired on a move back puts in
 // front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
 // (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
-// (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer and
-// the word to the worker of the phase the issue stays in (record.MergeForwardMessage). Two reads of
-// GitHub reach no session themselves, but their answers are what write a message, so each holds
-// the pod as its message does: the read that comes before a merge-queue removal's message
-// (record.MergeQueueRead), and the second read of a head a first read found conflicting, whose
-// confirmation writes a merge forward's messages (record.ConflictConfirm). The issue's board
+// (record.MergeQueueRemoval), and each message of a merge forward, the ask to the agent of the
+// task's implementation step and the word to the worker of the phase the issue stays in
+// (record.MergeForwardMessage). Two reads of GitHub reach no session themselves, but their answers
+// are what write a message, so each holds the pod as its message does: the read that comes before
+// a merge-queue removal's message (record.MergeQueueRead), and the second read of a head a first
+// read found conflicting, whose confirmation writes a merge forward's messages
+// (record.ConflictConfirm). The issue's board
 // writes — its Dispatch status, its messages on the Dispatch issue — reach no session and hold no
 // pod. The same set is what the release's boundary is read over (IssueRelease), so the rule that
 // holds a pod and the rule that cancels its release never disagree about which row speaks to a
@@ -480,18 +481,18 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // (decision 12 of dispatch://INFRA-3759): the moment the stops it records, the pod's hold and a
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop transaction
 // arms (the idle release's backstop_minutes; zero arms none, as where the deployment releases no
-// pod), and which claim it arms it for (BackstopTarget, workflow.BackstopTargetAt), which the store
-// does not restate (nil arms no backstop). BackstopTarget is given the issue's key, its project as
-// its record holds it, its phase, the role of the step its task stands at and the role of the claim
-// that works its place. It answers a role, "" for none, and a token. A token names the one claim
-// meant whatever run it serves: the owner's, at a step or a retro of its own other than its
-// acceptance. No token names the claim of the role serving the issue's run. At is required of
-// every cancel, since whether the project is paused is read inside the cancel's own
-// transaction; a cancel made while the project runs reads nothing else of it.
+// pod), and which claim it arms it for, read in the cancel's transaction (BackstopTarget, the
+// workflow's workflow.BackstopTargetAt), which the store does not restate (nil arms no backstop).
+// BackstopTarget is given the issue's key and answers a role, "" for none, and the token of the
+// claim: the owner's, the architect's, at a step or a retro of its own other than its acceptance,
+// meant whatever run it serves; elsewhere the claim the record gives the step of the open phase's
+// role, which can be a keyed agent's beside the role's own claim, meant where it serves the issue's
+// run. At is required of every cancel, since whether the project is paused is read inside the
+// cancel's own transaction; a cancel made while the project runs reads nothing else of it.
 type ReleaseCancelPause struct {
 	At             time.Time
 	Backstop       time.Duration
-	BackstopTarget func(key, project string, p phase.Phase, stepRole, placeRole claim.Role) (claim.Role, claim.Token)
+	BackstopTarget func(ctx context.Context, tx pgx.Tx, issue string) (claim.Role, claim.Token, error)
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -514,17 +515,22 @@ type ReleaseCancelled struct {
 // owes it one (openPodResume); on the first record of its stop, the pod's hold, whatever the
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
-// unpushed work; and, for the claim backstopTargetOf names, its backstop, which the record arms
-// only where the stop owes no launch. That claim is the owner at a step or a retro of its own
-// other than its acceptance. Elsewhere it is the place's worker serving the issue's generation.
-// A wake taken since is left open: it is the launch the role is owed, and its start row runs at
-// the resume. The caller holds the issue's lock and held's row for share.
+// unpushed work; and, for the claim BackstopTarget names, read once for the cancel, its backstop,
+// which the record arms only where the stop owes no launch. That claim is the owner at a step or a
+// retro of its own other than its acceptance. Elsewhere it is the claim of the place's worker
+// serving the issue's generation: at step a keyed agent's claim works the step beside the role's
+// own claim, which gets none. A wake taken since is left open: it is the launch the role is owed,
+// and its start row runs at the resume. The caller holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
-	target, owner, err := paused.backstopTargetOf(ctx, tx, issue, standing)
-	if err != nil {
-		return err
+	var target claim.Role
+	var worker claim.Token
+	if paused.Backstop > 0 && paused.BackstopTarget != nil {
+		var err error
+		if target, worker, err = paused.BackstopTarget(ctx, tx, issue); err != nil {
+			return fmt.Errorf("read the claim a backstop of %s's pod is armed for: %w", issue, err)
+		}
 	}
 	for _, r := range roles {
 		_, _, owed, err := openPodResume(ctx, tx, project, issue, r.role, r.token)
@@ -533,8 +539,8 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
-		if target != "" && r.role == target && (owner != "" && r.token == owner || owner == "" && r.serving == standing.generation) {
-			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, DueAt: at.Add(paused.Backstop)}
+		if target != "" && worker != "" && r.token == worker && (target == claim.RoleArchitect || r.serving == standing.generation) {
+			rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Claim: r.token, Role: r.role, DueAt: at.Add(paused.Backstop)}
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
 			return err
@@ -543,34 +549,12 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 	return nil
 }
 
-// backstopTargetOf is the claim a backstop of issue's pod is armed for as paused names it
-// (BackstopTarget), read in tx from the issue's project, its phase in standing and the two roles
-// its plan rows give it (plansql, the subqueries the issue's own read selects), and no role where
-// paused arms no backstop.
-func (paused ReleaseCancelPause) backstopTargetOf(ctx context.Context, tx pgx.Tx, issue string, standing issueStanding) (claim.Role, claim.Token, error) {
-	if paused.Backstop <= 0 || paused.BackstopTarget == nil {
-		return "", "", nil
-	}
-	var project, stepRole, placeRole string
-	err := tx.QueryRow(ctx, `select i.project, `+plansql.StepRole("i")+`, `+plansql.PlaceRole("i")+` from issues i where i.key = $1`, issue).
-		Scan(&project, &stepRole, &placeRole)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", "", nil
-	}
-	if err != nil {
-		return "", "", fmt.Errorf("read the roles of the place %s's task stands at: %w", issue, err)
-	}
-	role, owner := paused.BackstopTarget(issue, project, standing.phase, claim.Role(stepRole), claim.Role(placeRole))
-	return role, owner, nil
-}
-
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding),
 // and what a start that has just stored a claim of it reads (StandsInWorkflow): the generation the
-// resume names, the phase whose worker a paused cancel arms a backstop for, and whether the issue
-// and its tree root are both still the workflow's to run (pods.InWorkflowNotLingering).
+// resume names, and whether the issue and its tree root are both still the workflow's to run
+// (pods.InWorkflowNotLingering).
 type issueStanding struct {
 	generation uint64
-	phase      phase.Phase
 	live       bool
 }
 
@@ -615,7 +599,7 @@ func readIssueStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkfl
 		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
 		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
 		outOfWorkflow)
-	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
+	return issueStanding{generation: uint64(generation), live: live}, nil
 }
 
 // releasedRole is one claim a release suspended that is still suspended as `released`: the claim

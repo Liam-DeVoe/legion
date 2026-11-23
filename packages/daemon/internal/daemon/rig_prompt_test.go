@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -38,7 +39,7 @@ func TestTheRigsArchitectPromptIsTheDaemons(t *testing.T) {
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) {
 			return ghrepo.MustParse("skills-rig/project"), "trunk", nil
 		},
-		appOwners: func(context.Context, string, claim.Role) []string { return []string{"skills-rig"} },
+		appOwners: func(context.Context, appauth.AppRole, claim.Role) []string { return []string{"skills-rig"} },
 	}
 	for _, tc := range []struct{ name, issue, mode string }{
 		{"the root's architect", "RIG-1", "root"},

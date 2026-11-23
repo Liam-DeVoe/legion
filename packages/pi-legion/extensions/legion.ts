@@ -464,7 +464,7 @@ export default function legionExtension(pi: PiApi): void {
       }),
       exits: createStallExits({
         stateDir: requiredEnvironment(process.env, "LEGION_STATE_DIR"),
-        session,
+        claim: paneClaim,
         now: Date.now,
         log: logger,
       }),

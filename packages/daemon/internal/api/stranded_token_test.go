@@ -30,7 +30,7 @@ func TestTwoStrandedClaimsOfOneRoleEachTakeTheirOwnMove(t *testing.T) {
 	want := map[StrandedMove][]string{
 		StrandedResume:           {},
 		StrandedSuspendedWorkers: {"LEGION-208 tester"},
-		StrandedReleasedNoResume: {"LEGION-208 tester"},
+		StrandedReleasedNoResume: {"LEGION-208 tester (claim legion-legion-legion-208-implementer)"},
 		StrandedRetry:            {},
 		StrandedWorkflowStart:    {},
 	}
@@ -56,5 +56,23 @@ func TestTwoStrandedClaimsOfOneRoleEachTakeTheirOwnMove(t *testing.T) {
 				t.Errorf("the stranded claims by move = %v, want %v: each claim takes its own move", got, want)
 			}
 		})
+	}
+}
+
+// Two claims of one role on one issue that take one move are named apart in the boot's line and
+// in `legion state` (StrandedByMove): the role's own claim, whose token the issue and the role
+// spell, by its issue and role, and the claim of an agent named for another role, which holds the
+// role for its step, by its token beside them, which is what `legion claims` takes. A name by issue
+// and role alone gives the two one name, and the operator cannot tell which to act on.
+func TestTwoStrandedClaimsOfOneRoleInOneMoveAreNamedApart(t *testing.T) {
+	const issue = "LEGION-208"
+	stranded := []supervise.Claim{
+		{Token: "legion-legion-legion-208-tester", Issue: issue, Role: claim.RoleTester, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator},
+		{Token: "legion-legion-legion-208-implementer", Issue: issue, Role: claim.RoleTester, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByOperator},
+	}
+	got := StrandedByMove(StrandedClaimsOf(stranded), SuspendersOf(stranded))[StrandedSuspendedWorkers]
+	want := []string{"LEGION-208 tester", "LEGION-208 tester (claim legion-legion-legion-208-implementer)"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the suspended workers = %q, want %q: two claims of one role, each named apart", got, want)
 	}
 }

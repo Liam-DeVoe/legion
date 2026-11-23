@@ -2571,7 +2571,10 @@ The `role` check names the six Legion roles, and a row goes with its issue.
 A later release reads the table in the write transaction of a result, so that the stored role of a result is the role that its session holds.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261121192021_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionagents.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
+Migration `20261121192021_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar.
+The grammar is `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionclaim.IsRole` takes.
+So a role a Legion deployment defines in its settings, or one an issue's plan defines, holds a role of an issue as the six do.
+The route takes it too (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The check is dropped without `cascade` and added back `not valid`, so no stored row is read: each was written under the narrower check.
 It narrows nothing, so it rolls: the release before it writes only the six and reads a role as text.
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
@@ -4841,7 +4844,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; the actor must be the Legion daemon's session)
 
   Publish the session that holds each role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
-  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionagents.IsRole`).
+  The role is a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionclaim.IsRole`).
+  That takes Legion's six roles (`architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`), a role the deployment defines, and a role the issue's plan defines.
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
@@ -4854,7 +4858,8 @@ Each item below names a path with its method and identity, then its purpose.
   A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.
-  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, Legion's six in workflow order, then every role the deployment defines by name.
+  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`.
+  The holders come in this order: Legion's six in workflow order, then every other role by name.
 
   - **Two writes of one issue.**
     A write holds the issue's owner lock (`store.LockOwner`), which a second write of the same issue waits for, so the stored set is always one whole set.
@@ -4876,7 +4881,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/role-holders` (GET; cookie, trusted header, or bearer)
 
-  The set that the daemon last published: `{issue, holders}`, Legion's six in workflow order, then every role the deployment defines by name, and `[]` when no session holds a role.
+  The set that the daemon last published: `{issue, holders}`, or `[]` when no session holds a role.
+  The holders come in the order of the `PUT` answer: Legion's six in workflow order, then every other role by name.
   A closed issue reads too, and an issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
 
 - `/api/v1/handoffs/{id}` (GET; cookie, trusted header, or bearer)
@@ -5017,7 +5023,8 @@ Each item below names a path with its method and identity, then its purpose.
   it is empty for a document that is not a spec.
 
   It never names a missing plan task, even for an issue that already holds a plan.
-  A spec with gaps still opens the request. A coverage read that failed answers `coverage_unread: true` with no lines.
+  A spec with gaps still opens the request.
+  A coverage read that failed answers `coverage_unread: true` with no lines.
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 

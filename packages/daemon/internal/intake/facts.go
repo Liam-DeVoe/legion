@@ -1202,8 +1202,10 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a plan of a run the issue has left
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
-// has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged, or StartedBeforePlans for an issue that ran before Legion took plans),
+// has not started, and applies the rules of a later version. A version in which a fresh agent
+// would need the name of its role that another agent of the plan holds is not refused: that agent
+// takes a numbered name of its own (record.NameAgents). It answers PLAN_REFUSED
+// (RunningTaskChanged; StartedBeforePlans for an issue that ran before Legion took plans),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1450,17 +1452,19 @@ func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
-// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
-// launcher reported it on the connection of the role whose process it was
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the claim's session), as the
+// pod's launcher reported it on the connection of the slot whose process it was, the slot of a
+// claim's agent
 // (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
 // the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
 // `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
 // twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
 // guest watch (memoryguard.Guest).
 //
-// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
-// the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim the
+// connection authenticated for, its slot's agent's whatever role that agent's step is on, and that
+// pod), never anything the report says. The workflow tells that claim, on the role topic of its
+// token, which of its processes was ended and why,
 // in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
@@ -1680,15 +1684,19 @@ const (
 )
 
 // PodBackstopDue is one armed backstop of a released pod coming due (the pod_wake_backstops row
-// at its due_at). The claim it was armed for is woken whatever else did or did not happen since
-// the release: the agent of the step its role names, or the owner for an architect's backstop,
-// which a release arms at a step or a retro of the owner's other than its acceptance. It is never
-// decoded from an event — the daemon's own pass reads the due rows and applies one fact per row,
-// under the row's id, so a backstop that came due while the daemon was down fires once after it
-// starts.
+// at its due_at): the claim it was armed for (Claim) is woken where it stands released
+// (ReleasedClaimByToken), whatever else did or did not happen since the release, and a backstop
+// of an issue the record no longer holds does nothing. That claim is the worker of the open phase
+// at its release, or the owner for an architect's backstop, which a release arms at a step or a
+// retro of the owner's other than its acceptance. Role is the role that claim held then; a
+// backstop the release before armed names no claim, and wakes the claim of the worker on Role's
+// step, or the owner for the architect's. It is never decoded from an event — the daemon's own
+// pass reads the due rows and applies one fact per row, under the row's id, so a backstop that
+// came due while the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
+	Claim claim.Token
 	Role  claim.Role
 }
 
@@ -2032,9 +2040,11 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // early refusal, and the workflow's handoff on the row the fact's own transaction reads (workflow's
 // Engine.handoff), which refuses a completion of an entry raised between the two reads. entry is
 // the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
-// row names (record.PhaseRow.Entry), and movedBack whether the move that raised it was a move back
-// (record.PhaseRow.EntryMovedBack); issue is the record as the same read holds it, pr the pull
-// request it holds, and pending the claim's queued task, which only the route reads.
+// row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
+// (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another step's row of the role
+// holds (record.OtherStepsEntry), 0 for a role at one step; issue is the record as the same read
+// holds it, pr the pull request it holds, and pending the claim's queued task, which only the
+// route reads.
 //
 // Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
 // entry the issue's phase has moved past is refused, and for the reason the run alone cannot
@@ -2081,7 +2091,8 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // that entry's task, so no delivery can carry an entry the row does not already name, and a row's
 // entry only rises. An entry behind the row's is refused (StaleEntry) unless BehindEntryClause
 // takes it.
-func EntryFence(issue record.Issue, role claim.Role, entry, current int64, movedBack bool, commit string, pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
+func EntryFence(issue record.Issue, role claim.Role, entry, current int64, movedBack bool, otherSteps int64, commit string, pr *record.PullRequest,
+	pending *supervise.Delivery) *Refusal {
 	if entry == 0 || current == 0 || entry == current {
 		return nil
 	}
@@ -2094,7 +2105,7 @@ func EntryFence(issue record.Issue, role claim.Role, entry, current int64, moved
 	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
 	_, _, recordBacked := phase.Handoff(p)
-	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack); clause != "" {
+	if clause := BehindEntryClause(recordBacked, commit, pr, movedBack, entry <= otherSteps); clause != "" {
 		return StaleEntry(issue.Key, role, p, current, entry, pending, clause)
 	}
 	return nil
@@ -2163,11 +2174,24 @@ const StaleEntryInstruction = "End this turn without completing. The task of the
 // transition that raised it, so the rule reads the move rather than guessing at it from the heads
 // (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
 //
+// Unless the entry the completion serves is of another step of the role (otherStep). A role can
+// stand at two steps of a task, one agent doing both, and a forward move enters the later one: the
+// reviewer's approval in `implementer:a reviewer implementer:a` hands the implementer step 3 at the
+// head step 1 left, while the agent's turn of step 1 can still be open. The two steps ask for
+// different work, so the same head is not the same work between them, and the first entry of the
+// role's other step asks for work no verdict of an earlier step answers, as a move back's entry
+// does. A row holds only the entry it stands on, and a step's start raises its entry above every
+// row of its role (workflow's enter), so the caller says it from the rows: the served entry is at
+// or below the entry another step's row of the role holds (EntryFence's otherSteps). That also
+// refuses an earlier entry of this same step that the role left for another step and came back
+// from, a turn that outlived a step the task stood at since.
+//
 // Otherwise the clause is the commit the completion gave, or that it gave none, against the head
 // the record holds for the issue, or that it holds no pull request at all; and, where movedBack,
-// that the entry the phase stands on was raised by a move back, which is what refuses this
-// completion whatever those two heads read.
-func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack bool) string {
+// that the entry the phase stands on was raised by a move back, and where otherStep, that the entry
+// served is of another step of the role, each of which refuses this completion whatever those two
+// heads read.
+func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest, movedBack, otherStep bool) string {
 	if !recordBacked {
 		return "this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is"
 	}
@@ -2175,7 +2199,7 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	if pr != nil {
 		head = pr.HeadSHA
 	}
-	if !movedBack && commit != "" && commit == head {
+	if !movedBack && !otherStep && commit != "" && commit == head {
 		return ""
 	}
 	gave := "this completion names no commit"
@@ -2189,6 +2213,9 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	clause := gave + " while " + holds
 	if movedBack {
 		clause += ", and the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it"
+	}
+	if otherStep {
+		clause += ", and the entry this completion serves is of another step of this role, whose work is not the work of the step the task stands at, so no verdict on either head answers for it"
 	}
 	return clause
 }

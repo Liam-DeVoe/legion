@@ -245,13 +245,13 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // the resume task's start sets it here.
 func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspendedOwner, row record.PhaseRow) (behind bool, err error) {
 	if OwedEntry(owner.run, owner.root, row.Entry) {
-		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
+		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, owner.token, row, startMarks{ruleResume: true})
 	}
 	resume, err := e.ResumeTask(ctx, tx, owner.issue)
 	if err != nil {
 		return false, err
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
+	return false, e.started(ctx, tx, owner.issue, owner.role, reach{claim: owner.token}, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported

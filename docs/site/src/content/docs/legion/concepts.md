@@ -18,7 +18,7 @@ section can use the words without stopping to explain them.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
   runtime the agents of one issue all run in that issue's one pod, from one published worker
   image. Each talks to the daemon over a connection its pod dials back, and a controller the daemon
-  launches runs in a pod of its own. Under the tmux runtime a phase
+  launches runs in a pod of its own. Under either runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
   work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
@@ -216,7 +216,9 @@ its roles in a `plan_role` block such as
 A step's key names its
 agent: two steps of one key are one agent's, and the key `owner` makes the step the architect's
 own, of any role and at any place: `acceptance:owner` is its acceptance in `accepting`, and
-`implementer:owner` its own implementation. A step `acceptance` with no key is a fresh agent of
+`implementer:owner` its own implementation. A role may stand at two steps, of one agent or of two:
+`implementer reviewer implementer` runs step 3 in a second agent of the role implementer,
+`implementer-2`, in a session of its own. A step `acceptance` with no key is a fresh agent of
 the role `acceptance`. Legion tells the architect each step of its own with an `owner-step` notice,
 once its slot holds the App of the step's role, and only while the step runs; while it runs and no
 such notice of it is queued, Legion tells it again, with the same task, at a launch of the

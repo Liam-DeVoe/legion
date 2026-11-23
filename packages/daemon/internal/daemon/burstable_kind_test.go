@@ -136,7 +136,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	}
 	opts.Conns, opts.StreamURL, opts.Store = listener, listener.Addr(), firstLaunchStore{}
 	opts.Tokens = publicCloneTokens{}
-	opts.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	opts.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
@@ -144,7 +144,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 		rendered := ghconfig.Render("ghs_placeholder", string(app), time.Now().Add(time.Hour))
 		owner := strings.ToLower(repo.Owner())
 		return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
-	}
+	})
 	// The controller's own bundle, which its launch and its refresh both ask for by owner
 	// (sandbox.Options.ControllerCredential, appauth.ControllerCredential): the review App's, over
 	// the proof's one owner, since the project serves burstableLiveRepository alone.

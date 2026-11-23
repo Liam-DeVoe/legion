@@ -107,6 +107,8 @@ type fakeServerRuntime struct {
 	argvs [][]string
 }
 
+// newFakeServerRuntime is a runtime over a fake tmux whose roles' gh bundles come from credential,
+// a bundle function that reads a role's App itself (appauth.CredentialOf); nil mints none.
 func newFakeServerRuntime(t *testing.T, credential runtime.GitHubCredential, log *slog.Logger) *fakeServerRuntime {
 	t.Helper()
 	return newFakeServerRuntimeWith(t, credential, log, nil)
@@ -123,7 +125,7 @@ func newFakeServerRuntimeWith(t *testing.T, credential runtime.GitHubCredential,
 		Project: "omp", StateDir: t.TempDir(), StreamAddress: "unix:///s", DaemonURL: "http://127.0.0.1:1",
 		EnvoyURL: "http://127.0.0.1:2", Launchers: ompOnly("omp"), StopGrace: time.Second, ProbeInterval: time.Second,
 		AdoptTimeout: time.Second, Conns: fake.NewConns(), Environ: []string{"PATH=" + bin},
-		Executable: func() (string, error) { return "/opt/legion", nil }, GitHubCredential: credential, ControllerCredential: staticControllerCredential,
+		Executable: func() (string, error) { return "/opt/legion", nil }, GitHubCredential: appauth.CredentialOf(credential), ControllerCredential: staticControllerCredential,
 		GH: fakeGH, ClaimRepository: acmeWidgets, Log: log,
 	}
 	if change != nil {
@@ -390,7 +392,7 @@ func TestNewRefusesACredentialFunctionWithoutTheRealGh(t *testing.T) {
 			Project: "omp", StateDir: t.TempDir(), StreamAddress: "unix:///s", DaemonURL: "http://127.0.0.1:1",
 			EnvoyURL: "http://127.0.0.1:2", Launchers: ompOnly("omp"), StopGrace: time.Second, ProbeInterval: time.Second,
 			AdoptTimeout: time.Second, Conns: fake.NewConns(), Environ: []string{"PATH=" + bin},
-			Executable: func() (string, error) { return "/opt/legion", nil }, GitHubCredential: staticCredential, GH: gh, ClaimRepository: acmeWidgets,
+			Executable: func() (string, error) { return "/opt/legion", nil }, GitHubCredential: appauth.CredentialOf(staticCredential), GH: gh, ClaimRepository: acmeWidgets,
 		})
 		if err == nil || !strings.Contains(err.Error(), "real gh") {
 			t.Errorf("New with GH %q = %v, want a refusal naming the real gh", gh, err)
@@ -413,7 +415,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 	var logs strings.Builder
 	r := &Runtime{
 		stateDir:             t.TempDir(),
-		gitHubCredential:     staticCredential,
+		gitHubCredential:     appauth.CredentialOf(staticCredential),
 		controllerCredential: staticControllerCredential,
 		log:                  slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
 		tracked:              map[string]*trackedProcess{},
@@ -509,7 +511,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 	// the owner of the pane's own repository is refused the same way; their siblings are still refreshed, each only
 	// for the owner that turned.
 	logs.Reset()
-	r.gitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	r.gitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		switch role {
 		case claim.RoleTester:
 			return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
@@ -522,7 +524,7 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseHostsAreStale(t *testing.T) {
 		}
 		bundle.Dirs["acme"] = ghconfig.Render("ghs_acme_second", string(legionApp(role)), staticCredentialExpiry)
 		return bundle, nil
-	}
+	})
 	r.controllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		bundle, err := staticControllerCredential(ctx, defaultOwner)
 		if err != nil {
@@ -588,7 +590,7 @@ func TestAnAdoptedPanesRepositoryIsTheDaemonsRecordNotItsGhDirectory(t *testing.
 	controller := claim.ControllerToken("omp")
 	r := &Runtime{
 		stateDir:             t.TempDir(),
-		gitHubCredential:     staticCredential,
+		gitHubCredential:     appauth.CredentialOf(staticCredential),
 		controllerCredential: staticControllerCredential,
 		claimRepository: func(_ context.Context, token claim.Token) (ghrepo.Repository, error) {
 			asked = append(asked, token)
@@ -665,9 +667,9 @@ func TestAControllerPaneIsRefreshedForTheOwnerItsLaunchRecorded(t *testing.T) {
 	// which sorts before it.
 	r := &Runtime{
 		stateDir: t.TempDir(),
-		gitHubCredential: func(context.Context, string, claim.Role, ghrepo.Repository) (ghconfig.Bundle, error) {
+		gitHubCredential: appauth.CredentialOf(func(context.Context, string, claim.Role, ghrepo.Repository) (ghconfig.Bundle, error) {
 			return ghconfig.Bundle{}, errors.New("the controller's bundle is not asked for by repository")
-		},
+		}),
 		controllerCredential: func(_ context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 			asked = append(asked, defaultOwner)
 			if defaultOwner == "" {
@@ -757,7 +759,7 @@ func TestAPaneWithNoRepositoryIsRenderedForThatSameAbsentRepository(t *testing.T
 		mu.Lock()
 		asked = append(asked, repo.String())
 		mu.Unlock()
-		return bundle(ctx, issue, role, repo)
+		return bundle.Bundle(ctx, issue, role, repo)
 	}
 	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	spec := f.spec(t, claim.RoleImplementer)
@@ -825,7 +827,7 @@ func TestATmuxPaneOfAReroledClaimFollowsItsRole(t *testing.T) {
 	}
 	r := &Runtime{
 		stateDir:             t.TempDir(),
-		gitHubCredential:     staticCredential,
+		gitHubCredential:     appauth.CredentialOf(staticCredential),
 		controllerCredential: staticControllerCredential,
 		claimRepository:      acmeWidgets,
 		claimRole:            func(context.Context, claim.Token) (claim.Role, error) { return claim.RoleTester, nil },
@@ -932,7 +934,7 @@ func TestAWalkBuildsARoleOfTheDeploymentOnceForEveryIssue(t *testing.T) {
 	var built []string
 	counting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		built = append(built, issue+"/"+string(role))
-		return credential(ctx, issue, role, repo)
+		return credential.Bundle(ctx, issue, role, repo)
 	}
 	f := newFakeServerRuntimeWith(t, counting, slog.New(slog.NewTextHandler(io.Discard, nil)), func(o *Options) { o.RoleApps = apps })
 	for i, pane := range []struct {
@@ -981,7 +983,8 @@ func TestAPaneRecordedOnAPairsFromKeepsRefreshing(t *testing.T) {
 	credential := appauth.GitHubCredential(pairTokens{},
 		servesOneOf(ghrepo.MustParse("cybermonklabs/legion"), ghrepo.MustParse("sjawhar/ygo")),
 		pair, nil, nil, appauth.RoleApps{}, slog.Default())
-	f := newFakeServerRuntime(t, credential, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	f := newFakeServerRuntimeWith(t, nil, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		func(o *Options) { o.GitHubCredential = credential })
 	token, err := claim.NewToken("omp", "LEGION-48", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -1035,7 +1038,7 @@ func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 		tracked:              map[string]*trackedProcess{},
 		writeBundle:          ghconfig.WriteBundle,
 	}
-	r.gitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	r.gitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 		if err != nil {
 			return ghconfig.Bundle{}, err
@@ -1047,7 +1050,7 @@ func TestAWalkBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 			return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 		}
 		return staticCredential(ctx, issue, role, repo)
-	}
+	})
 	token := func(issue string, role claim.Role) claim.Token {
 		t.Helper()
 		token, err := claim.NewToken("omp", issue, role)

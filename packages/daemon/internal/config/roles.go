@@ -52,15 +52,6 @@ const maxRoleWord = 32
 // builtinTypes are Legion's five types of a step, in the order a refusal lists them.
 var builtinTypes = []plan.Type{plan.TypeDesign, plan.TypePlanning, plan.TypeImplementation, plan.TypeTesting, plan.TypeReview}
 
-// legionName is whether name is a name Legion gives a role of its own (plan.LegionNames): a role
-// of a claim, the controller, or a role of a step, acceptance among them. A role of the deployment
-// takes none of them, and neither does a role of an owner's plan, which plan.Validate holds to the
-// same list. `owner` is none: it is the key of a task's owner, and the name of no role, claim,
-// token or slot.
-func legionName(name string) bool {
-	return slices.Contains(plan.LegionNames(), name)
-}
-
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
 // outside the grammar, longer than Dispatch's step record takes, a name of Legion's own or named
 // twice is refused naming it; the block's type is judged in resolveRoles, once `role_types` is
@@ -85,7 +76,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 			return nil, fmt.Errorf("%s names %q, which is outside %s", key, name, strings.Trim(roleWord.String(), "^$"))
 		case len(name) > maxRoleWord:
 			return nil, fmt.Errorf("%s is %d characters, and a role's name has at most %d: Dispatch's step record takes no longer one", field, len(name), maxRoleWord)
-		case legionName(name):
+		case plan.IsLegionName(name):
 			return nil, fmt.Errorf("%s names a role of Legion's own: a deployment defines roles of its own names", field)
 		case slices.ContainsFunc(roles, func(r Role) bool { return string(r.Name) == name }):
 			return nil, fmt.Errorf("%s names %s twice", key, name)
@@ -277,57 +268,28 @@ func checkDefaultSteps(cfg *Config) error {
 }
 
 // oneAgentOneModel is steps, the `default_steps` of the project project, with no key on each step
-// whose key names one agent for it and for an earlier step whose role runs on another model or
-// another harness, as d gives each role: one agent runs on one model and one harness, which
-// plan.Validate holds a plan's key to, and a step with no key runs as an agent of its own. It
-// answers one warning for each such step, naming the entry, the two steps and what they run on,
-// and saying the next release refuses it. The release before this one held no key of
-// `default_steps` to one model or one harness, so a file it took is taken here, and runs. The key
-// owner and a role d does not define are left as they are: plan.Supported and plan.Validate judge
-// them. steps is not changed: the answer is a copy where any key is left out.
+// plan.KeyMismatches finds, a step whose key names one agent with an earlier step whose role runs
+// on another model or another harness, as d gives each role; a step with no key runs as an agent
+// of its own. It answers one warning for each such step, naming the entry and giving plan.Validate's
+// reason in the words of a list of steps that is no task's (plan.KeyMismatch.StepsReason), and
+// saying the next release refuses it. Legion took a key of `default_steps` on two models or two
+// harnesses before it judged one, so such a file is taken here, and runs. steps is not changed:
+// the answer is a copy where any key is left out.
 func oneAgentOneModel(project string, steps []plan.Step, d plan.Deployment) ([]plan.Step, []string) {
-	type firstStep struct {
-		role  string
-		place int
-		def   plan.RoleDef
+	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
+	mismatches := plan.KeyMismatches(task, plan.RolesOf(task, d))
+	if len(mismatches) == 0 {
+		return steps, nil
 	}
-	first := map[string]firstStep{}
-	kept := steps
-	var warnings []string
-	for i, step := range steps {
-		role, defined := d.Roles[step.Role]
-		if step.Key == "" || step.Key == "owner" || !defined {
-			continue
-		}
-		was, seen := first[step.Key]
-		if !seen {
-			first[step.Key] = firstStep{role: step.Role, place: i + 1, def: role}
-			continue
-		}
-		if role.Model == was.def.Model && role.Backend == was.def.Backend {
-			continue
-		}
-		runOn, one := fmt.Sprintf("two models (%s, %s)", modelNamed(was.def.Model), modelNamed(role.Model)), "model"
-		if role.Model == was.def.Model {
-			runOn, one = fmt.Sprintf("two harnesses (%s, %s)", was.def.Backend, role.Backend), "harness"
-		}
-		if len(warnings) == 0 {
-			kept = slices.Clone(steps)
-		}
-		kept[i].Key = ""
-		warnings = append(warnings, fmt.Sprintf("projects.%s.default_steps[%d] is %s, and the key %s names one agent for %s at step %d and %s at step %d, whose roles run on %s; "+
-			"one agent runs on one %s: this release runs step %d as an agent of its own, and the next release refuses it; give that step another key, or none, in legion.yaml",
-			project, i, step, step.Key, was.role, was.place, step.Role, i+1, runOn, one, i+1))
+	kept := slices.Clone(steps)
+	warnings := make([]string, len(mismatches))
+	for i, mismatch := range mismatches {
+		at := mismatch.Step.Place - 1
+		kept[at].Key = ""
+		warnings[i] = fmt.Sprintf("projects.%s.default_steps[%d] is %s: %s This release runs step %d as an agent of its own, and the next release refuses it; give that step another key, or none, in legion.yaml",
+			project, at, steps[at], mismatch.StepsReason(), mismatch.Step.Place)
 	}
 	return kept, warnings
-}
-
-// modelNamed is a model as a warning writes it: "" is the default model.
-func modelNamed(model string) string {
-	if model == "" {
-		return "the default model"
-	}
-	return model
 }
 
 // namedRoles refuses the first role in name order that key names and roles does not hold, as the
@@ -352,9 +314,9 @@ func typeList(types []plan.Type) string {
 
 // Deployment is what a plan is judged against: the roles a step of a plan may name, Legion's own
 // (plan.BuiltinRoles) and each role of `roles`, each with its type, its model ("" for Legion's
-// own, which start on the default model) and its harness (BackendFor); the models a role may name
-// (ListedModels); and the owner's role, the architect's, on the default model and the architect's
-// harness. It names no phase for a role of the deployment: how a step runs is decided by its role.
+// own, which start on the default model) and its harness (BackendFor); and the models a role may
+// name (ListedModels). It names no phase for a role of the deployment: how a step runs is decided
+// by its role.
 func (c Config) Deployment() plan.Deployment {
 	roles := plan.BuiltinRoles()
 	for name, role := range roles {
@@ -364,11 +326,7 @@ func (c Config) Deployment() plan.Deployment {
 	for _, role := range c.Roles {
 		roles[string(role.Name)] = plan.RoleDef{Name: string(role.Name), Type: role.Type, Model: role.Model, Backend: string(c.BackendFor(role.Name))}
 	}
-	return plan.Deployment{
-		Roles:  roles,
-		Models: c.ListedModels(),
-		Owner:  plan.RoleDef{Name: string(claim.RoleArchitect), Backend: string(c.BackendFor(claim.RoleArchitect))},
-	}
+	return plan.Deployment{Roles: roles, Models: c.ListedModels()}
 }
 
 // RoleOf is the role of the deployment named name, and whether `roles` defines one.

@@ -122,7 +122,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3,
+		PluginContract: DaemonAPIVersion, PluginRelaunchFor: DaemonAPIVersion - 1, AgentResumeGeneration: 3, SessionAgent: "key:a",
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
@@ -134,6 +134,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		LastReady:        at.Add(-3 * time.Minute),
 		LastDeathCause:   "the pod was evicted",
 		LastStartFailure: "the launcher refused the start",
+		// A hash, and the generation it was written at, which no surface carries (ColumnWithheld).
+		LaunchedDefinition: "c0ffee",
+		LaunchedGeneration: 3,
 		TurnOutcomes: []supervise.TurnOutcome{{
 			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
 		}},

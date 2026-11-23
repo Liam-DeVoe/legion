@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 10,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -148,8 +148,8 @@
           "default": ""
         }
       },
-      "since": 7,
-      "creatable_since": 7
+      "since": 10,
+      "creatable_since": 10
     },
     {
       "name": "check",

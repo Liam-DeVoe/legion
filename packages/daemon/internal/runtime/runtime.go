@@ -131,7 +131,9 @@ type Runtime interface {
 	// place (ReplacePod) once every asked role has answered, no turn runs and no claim's activity
 	// report holds it (internal/daemon's roundEnd.holding), or at the round's bound
 	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
-	// suspension excepted.
+	// suspension excepted. The slots the issue's plan names are not among its reasons, and it reads
+	// nothing of the store: a runtime with such slots answers them once for each pod
+	// (PlanSlotsDrift).
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -247,6 +249,17 @@ type IssuePodRoles interface {
 	PodLacksSlot(issue string, token claim.Token) (pod string, lacks bool)
 	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
 	SlotWaitsForCredential(token claim.Token) (pod string, waits bool)
+}
+
+// PlanSlotsDrift answers the one reason an issue's pod drifts by that the issue's plan in force
+// decides rather than the configuration: a plan that names an agent whose name no role has, such
+// as `implementer-2`, whose slot the pod k's process runs in was built without (PodSlotsDrift). It
+// reads the plan from the store, so the daemon's sweep asks it once for each issue's pod, beside
+// PodDrift of each claim in it, and a read that fails costs that sweep this one reason alone: the
+// pod's other reasons, and whether it is there, are still read. A runtime with no pods (tmux) does
+// not implement it.
+type PlanSlotsDrift interface {
+	PodSlotsDrift(ctx context.Context, k Known) ([]string, error)
 }
 
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
@@ -519,6 +532,12 @@ type SpawnSpec struct {
 	Backend           Backend
 	Model             string
 	PlanRole          bool
+	// RoleDefinition is the fingerprint of the definition of a role the plan in force of Issue
+	// defines that this launch runs (its type, its model and its prompt), and "" for every other
+	// role. No runtime reads it: the claim keeps it with the process this launch starts, over a
+	// restart too (supervise.Claim.LaunchedDefinition), so a start of a later step can tell a
+	// process that runs an earlier definition of its role from one that runs the plan in force.
+	RoleDefinition string
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
