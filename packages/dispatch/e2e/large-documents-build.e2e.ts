@@ -3,9 +3,11 @@
 // block of the document in the editor and every block on the screen exactly once while it
 // fills, the editor standing before its socket has synced, and the decision cards drawn a task
 // each. What the numbers of `large-documents-measured.e2e.ts` are read over is this build, and
-// these rows read what it does rather than how long it takes: the throttling several of them
-// carry is there so the build lasts long enough for the page to draw frames while it runs,
-// which is the only state they are about, and no row here is timed.
+// these rows read what it does rather than how long it takes, and no row here is timed. The
+// three about the build itself read the page while the build runs: one throttles the renderer,
+// so its build lasts long enough for the page to draw frames while it runs, and two hold or pace
+// theirs between its batches through `holdTheBuild` (`large-documents-build-hold.ts`), which
+// gives them that state whatever the machine's speed.
 //
 // Which document a row seeds is in its title. Every row here seeds the AHXV6-1-shaped document
 // of `large-documents.ts`, the plain document beside it or the one short section
@@ -30,6 +32,7 @@ import {
   sectionHeading,
   smallDocument,
 } from "./large-documents";
+import { holdTheBuild } from "./large-documents-build-hold";
 import { throttleTheCpu } from "./large-documents-page";
 import {
   aDrawWithinMs,
@@ -39,6 +42,8 @@ import {
   type DrawnInATask,
   drawnBlocks,
   framesOfTheBuild,
+  liveEditorRoot,
+  namedEditor,
   seedDocument,
   serverDrawnBlocks,
   shortDocument,
@@ -61,26 +66,44 @@ import { asUser } from "./users";
 // throttles (dispatch://INFRA-341), the slower of `chromium` and `iphone`, each counted from the
 // navigation or from the release: the landmark half-way down the smaller document 8.7 s; the
 // whole plain document drawn 7.9 s; the editor open 3.6 s after the release over the reader's
-// place, 20.5 s over the framed build, 18.8 s under the other person's words and 18.7 s under
-// the per-frame count; his words in the open editor 8.7 s after it opened; and, with no socket
-// held, the editor open 9.2 s from the navigation and its five cards 0.7 s after it. Four
-// workers wide on CI the rows cost no more than they do here: 2.6 to 29.7 s each, against 1.8
-// to 34.5 s.
+// place and 20.5 s over the framed build; and, with no socket held, the editor open 9.2 s from
+// the navigation and its five cards 0.7 s after it. Four workers wide on CI the rows cost no
+// more than they do here: 2.6 to 29.7 s each, against 1.8 to 34.5 s.
+//
+// The edit row and the per-frame count's row throttled the renderer too when those figures
+// were read, and theirs were the editor open 18.8 s under the other person's words and 18.7 s
+// under the per-frame count, and his words in the open editor 8.7 s after it opened. Neither
+// throttles now. The edit row holds its build while his words go in, and the per-frame count's
+// row has the page draw a frame between every two batches (`holdTheBuild`), so those are
+// readings of builds four times the cost of theirs, and no run has timed either row since.
 //
 // The bounds: `theLandmarkWithinMs` and `theWholeDrawWithinMs` 30 s, `theBuildWithinMs` 45 s,
-// `theWordsWithinMs` 20 s, `theOpenedEditorWithinMs` 30 s, `theCardsWithinMs` 20 s and
-// `theSyncedEditorWithinMs` 20 s - between twice and nine times each reading. Measured with
-// them and `aDrawWithinMs`, in a copy of this tree whose editor never opens (`chromium`, one
-// worker, one retry), each failing attempt took 22.9 to 59.4 s, the longest the per-frame
-// count's row: its seeding, its whole draw and `theBuildWithinMs`. Twice that, less the 34.5 s
-// that row costs when it passes, is 84.3 s more on one worker. A page that never opens its
-// editor failed six of this file's eight rows, the first and the refused writer's passing: their
-// twelve attempts took 530.9 s, which shared four ways and less the 126.2 s those rows cost
-// passing is about 101 s more per worker. The first row now lets its socket through at its end
-// and waits `theBuildWithinMs` for the editor's first batch, so such a page fails it too: two
-// more attempts, each its seeding, its draw and 45 s, which no run has measured yet. Before it
-// lets the socket through it holds it until `theOpenedEditorWithinMs` after its navigation,
-// which adds up to 30 s to each run of it, passing or not; no run has measured that yet either.
+// `theOpenedEditorWithinMs` 30 s, `theCardsWithinMs` 20 s and `theSyncedEditorWithinMs` 20 s -
+// between twice and nine times each reading. The edit row times nothing, so its own bounds are
+// there only to end an attempt that fails, by name. `theBuildHeldWithinMs` bounds its wait for
+// her build to be held, from her socket's release, and `theBuildWithinMs` its wait for her
+// editor, from the hold's release: two parts of the one build it waited for whole inside
+// `theBuildWithinMs` at four times the cost, so each is given the same 45 s. `theWordsWithinMs`,
+// 20 s, bounds its wait for his words in her editor while her build is held, when her page has
+// nothing else to do.
+//
+// Measured with them and `aDrawWithinMs`, in a copy of this tree whose editor never opens
+// (`chromium`, one worker, one retry), each failing attempt took 22.9 to 59.4 s, the longest the
+// per-frame count's row: its seeding, its whole draw and `theBuildWithinMs`. Twice that, less
+// the 34.5 s that row costs when it passes, is 84.3 s more on one worker. A page that never
+// opens its editor failed six of this file's eight rows, the first and the refused writer's
+// passing: their twelve attempts took 530.9 s, which shared four ways and less the 126.2 s
+// those rows cost passing is about 101 s more per worker. Those were read while the edit row
+// and the per-frame count's row throttled, and each should now pass in less, which makes what a
+// failing attempt of each adds more than those figures say. An attempt of the edit row whose
+// build is never held runs out on the hold after `theBuildHeldWithinMs`, the same 45 s it ran
+// out on her editor after; one whose build is held and never opens spends up to
+// `theWordsWithinMs` on his words and then `theBuildWithinMs` on her editor. No run has
+// measured either. The first row now lets its socket through at its end and waits
+// `theBuildWithinMs` for the editor's first batch, so such a page fails it too: two more
+// attempts, each its seeding, its draw and 45 s, which no run has measured yet. Before it lets
+// the socket through it holds it until `theOpenedEditorWithinMs` after its navigation, which
+// adds up to 30 s to each run of it, passing or not; no run has measured that yet either.
 
 /** How long a row waits for the landmark half-way down the smaller document to be drawn. */
 const theLandmarkWithinMs = 30_000;
@@ -88,10 +111,15 @@ const theLandmarkWithinMs = 30_000;
 /** How long a row waits for the page's own draw to hold the whole plain document. */
 const theWholeDrawWithinMs = 30_000;
 
-/** How long a row waits, once the socket is let through, for the editor to open. */
+/** How long a row waits, once the socket is let through, for the editor to open, and the edit
+ *  row, whose build is held on the way, once that hold is let go. */
 const theBuildWithinMs = 45_000;
 
-/** How long the edit row waits, once the editor is open, for every word written into it. */
+/** How long the edit row waits, once the socket is let through, for her build to be held. */
+const theBuildHeldWithinMs = 45_000;
+
+/** How long the edit row waits, with her build held, for every word he wrote to be in her
+ *  editor. */
 const theWordsWithinMs = 20_000;
 
 /** How long a row whose socket is never held waits, from its navigation, for the editor to
@@ -213,9 +241,12 @@ test(`the editor opens ${documentNames.small} where its reader had got to @phone
 // adopts the document and the mapping those batches made rather than drawing the whole document
 // itself, and the last batch, that adoption and the swap are three tasks
 // (`packages/proof-editor/src/progressive-build.ts`). Each holds the document's
-// socket (`documentTransport`), so the build begins when the row releases it, and each throttles
-// the renderer as the measurement does - not to time anything, but so the build lasts long
-// enough for the page to draw frames while it runs, which is the only state these rows are about.
+// socket (`documentTransport`), so the build begins when the row releases it, and each reads a
+// state the page is in only while the build runs, without timing anything. The first throttles
+// the renderer as the measurement does, so its build lasts long enough for the page to draw
+// frames while it runs. The edit row holds its build between two batches while the other person
+// writes into it, and the per-frame count's row has the page draw a frame between every two
+// batches (`holdTheBuild`), so each has that state whatever the machine's speed.
 
 test(`the editor opens ${documentNames.small} with every block of it in the DOM @phone`, async ({
   browser,
@@ -281,21 +312,23 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
   }
 });
 
-// How long the other person rests between two of his words below: the pace a person types a
-// ten-character word at with the `delay: 25` his page used to carry, now that a word costs him
-// one insert rather than ten keystrokes. He writes at a person's pace rather than as fast as
-// this process can for the reason the row gives: a hundred words written in one turn would all
-// be in her document before her socket had finished syncing.
-const aWordApartMs = 250;
+// How many words the other person writes into the build of the row below, each an update of
+// its own: the four the row asked of him when he wrote at a person's pace over a build it did
+// not hold.
+const hisWords = 4;
 
 test(`an edit made while ${documentNames.small}'s editor is being built is in it when the build ends @phone`, async ({
   browser,
 }) => {
   test.setTimeout(900_000);
-  // The AHXV6-1-shaped document: what this row needs of a build is that it outlast several of
-  // the other person's words, which the row proves itself before it reads anything else. It
-  // costs 94 s over this document against 428 s over the larger one on this pod.
+  // The AHXV6-1-shaped document, whose first block is its title, the block he writes into: her
+  // build is held at the boundary after its first batch, 8 of its 202 top-level blocks, and his
+  // words then cross the rest of its batches and the binding's adoption of what they made.
   const { artifactId, path } = await seedDocument("specs-small.md", smallDocument);
+  const title = documentTitle(documentDiagrams.small);
+  const written = Array.from({ length: hisWords }, (_, word) => `Pangolin${word}`);
+  // What his words make of the title: each goes in at its end, after the one before it.
+  const hisTitle = `${title} ${written.join(" ")}`;
 
   const alice = await asUser(browser, "alice");
   // The other person holds the document and writes into its first block from this process, not
@@ -308,55 +341,69 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
   try {
     writer = await theOtherPersonsPen(artifactId);
     const page = await alice.newPage();
-    await framesOfTheBuild(page);
+    // Her build is held at its first boundary where her editor holds the title, and let go once
+    // every word of his is in it: the hold makes the window his words fall in, whatever the
+    // machine's speed (`holdTheBuild`), so nothing here throttles her renderer.
+    const hold = await holdTheBuild(page, { at: { texts: [title] } });
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
       { timeout: aDrawWithinMs }
     );
 
-    // Throttled here and not before the load: her build begins with the release below, and her
-    // boot and her page's own draw above it are setup (`throttleTheCpu`).
-    await throttleTheCpu(page);
-
-    // He writes a word at a time, from the moment Alice's socket is let through until her
-    // editor is open, so his writing covers the whole of her build rather than a moment the row
-    // has to guess at. Which of his words crossed the build is not something either side can
-    // say; that his writing covered one is what the frames below prove.
+    // He writes from inside her build's hold, never from the moment her socket is let through,
+    // which a build on a fast machine can be over before. Her page has nothing else to do while
+    // its build is held, so each reading of her editor below is answered at once.
     await transport.release();
-    const opened = documentEditor(page)
-      .waitFor({ state: "visible", timeout: theBuildWithinMs })
-      .then(() => true);
-    const written: string[] = [];
-    let open = false;
-    void opened.then((it) => {
-      open = it;
-    });
-    while (!open && written.length < 120) {
-      const word = `Pangolin${written.length}`;
-      writer.write(word);
-      written.push(word);
-      // His pace between words, not a wait for a state: what this row needs is that his writing
-      // be spread over the whole of her build rather than be in her document before her socket
-      // has synced, and a person's quarter of a second a word is what spreads it
-      // (`aWordApartMs`). Her build is waited for by `opened`, which ends this loop.
-      await sleep(aWordApartMs);
+    await hold.held(theBuildHeldWithinMs);
+    // Whether her editor had been named by the reading that first found his words in it.
+    let namedFirst = false;
+    try {
+      for (const word of written) {
+        writer.write(word);
+      }
+      await expect
+        .poll(
+          async () => {
+            const her = await page.evaluate(
+              ({ editor, named, text }) => ({
+                hisWords: document.querySelector(editor)?.textContent?.includes(text) ?? false,
+                named: document.querySelector(named) !== null,
+              }),
+              {
+                editor: `${liveEditorRoot} [contenteditable="true"]`,
+                named: namedEditor,
+                text: hisTitle,
+              }
+            );
+            namedFirst = her.named;
+            return her.hisWords;
+          },
+          {
+            message: "his words never reached her editor while her build was held",
+            timeout: theWordsWithinMs,
+          }
+        )
+        .toBe(true);
+    } finally {
+      hold.release();
     }
-    await opened;
-    expect(written.length).toBeGreaterThan(3);
+    // His words were in her editor before it was named, so they crossed her build: a build that
+    // went on past its hold could have ended before they landed, and what this row reads below
+    // would then be of an editor that was already finished.
+    expect(
+      namedFirst,
+      "his words reached her editor only after it was named, so they crossed no build and this " +
+        "run says nothing about an edit that does"
+    ).toBe(false);
 
     // Alice's editor holds every word he wrote while it was being built, in the block he wrote
-    // them in.
-    await expect(documentEditor(page)).toContainText(written.join(" "), {
-      timeout: theWordsWithinMs,
-    });
-    const whole = await blocksBuilt(page);
-    const frames = await page.evaluate(() => window.__blocksBuilt ?? []);
+    // them in, from the moment it is named.
+    await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
     expect(
-      frames.filter((held) => held > 0 && held < whole),
-      "no frame was drawn holding part of the document, so his words crossed no build and " +
-        "this run says nothing about an edit that does"
-    ).not.toEqual([]);
+      await documentEditor(page).textContent(),
+      "her editor was named without the words he wrote into it while it was being built"
+    ).toContain(hisTitle);
   } finally {
     writer?.close();
     await alice.close();
@@ -488,6 +535,12 @@ test("every block of a document is on the screen exactly once as its editor is b
   try {
     const page = await alice.newPage();
     await framesOfTheBlocks(page);
+    // Every boundary between two of the build's batches waits for a frame of the page, and is
+    // held no longer than that (`holdTheBuild`): the recorder above then reads the screen between
+    // every two batches, whatever the machine's speed, so nothing here throttles the renderer. A
+    // build that did not wait for the frame could place every batch between two frames, which is
+    // the run the partial-frame guard below fails by.
+    await holdTheBuild(page, { eachBoundary: "a frame" });
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
 
@@ -502,10 +555,6 @@ test("every block of a document is on the screen exactly once as its editor is b
       .toBe(whole);
     const drewAt = await page.evaluate(() => window.__blockFrames?.length ?? 0);
 
-    // Throttled here and not before the load: the build this row reads begins with the release
-    // below, and the boot and the page's own draw above it - with the poll that waits for it -
-    // are setup (`throttleTheCpu`).
-    await throttleTheCpu(page);
     await transport.release();
     await expect(documentEditor(page)).toBeVisible({ timeout: theBuildWithinMs });
     const frames = (await page.evaluate(() => window.__blockFrames ?? [])).slice(drewAt);
