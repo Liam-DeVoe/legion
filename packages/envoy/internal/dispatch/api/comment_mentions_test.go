@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -61,14 +62,31 @@ func decodeMentionedComment(t *testing.T, response *httptest.ResponseRecorder) m
 // settles each after the create has answered - and returns its attempts by target and attempt.
 func settledCommentDeliveries(t *testing.T, database *store.Store, commentID string) []model.CommentDelivery {
 	t.Helper()
+	return waitForCommentDeliveries(t, database, commentID, "no attempt pending", attemptsSettled)
+}
+
+// settledCommentDeliveriesOn is settledCommentDeliveries for a server on a fake clock whose
+// stand-in listener holds calls it never answers: each pass of the wait first moves that clock
+// through the waits the sender is in - each held call's window, and the take-over's backoff
+// between two tries - so the attempts settle without any of it costing wall clock.
+func settledCommentDeliveriesOn(
+	t *testing.T, database *store.Store, commentID string, fake *clocktest.Fake, calls *listenerCalls,
+) []model.CommentDelivery {
+	t.Helper()
 	return waitForCommentDeliveries(t, database, commentID, "no attempt pending", func(attempts []model.CommentDelivery) bool {
-		for _, attempt := range attempts {
-			if attempt.State == "pending" {
-				return false
-			}
-		}
-		return len(attempts) > 0
+		stepListenerWaits(fake, calls)
+		return attemptsSettled(attempts)
 	})
+}
+
+// attemptsSettled reports whether the comment has attempts and none of them is pending.
+func attemptsSettled(attempts []model.CommentDelivery) bool {
+	for _, attempt := range attempts {
+		if attempt.State == "pending" {
+			return false
+		}
+	}
+	return len(attempts) > 0
 }
 
 // waitForCommentDeliveries reads the comment's attempts, by target and attempt, until done accepts
@@ -266,7 +284,10 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
+	// answers it, s1, and is never left unanswered by its bound (mentionLookupTimeout), after which
+	// the send would look the role up a second time and find s2.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -590,7 +611,10 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
+	// answers it, no holder, and is never left unanswered by its bound (mentionLookupTimeout),
+	// after which the send would look the role up a second time.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Missing role holder", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -729,7 +753,12 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// A clock whose timers never fire: each route lookup is answered as the listener answers it,
+	// however slow the machine, and is never cut short by its bound (mentionLookupTimeout), which
+	// failed a lookup the listener answered late. It freezes the take-over's backoff and the
+	// related-item check's allowance too, so a retryable failure here would wait to the binary's
+	// deadline, where testwait ends it by name (newTargetedMessageHandlerOn).
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "role:reviewer",

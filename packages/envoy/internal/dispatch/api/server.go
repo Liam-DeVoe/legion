@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -67,11 +68,6 @@ func projectKeyProblem(field, value string) string {
 	return fmt.Sprintf("%s %q is not a project key: %s", field, value, contracts.ProjectKeyRule)
 }
 
-// repoLabelPrefix marks an issue created through DISPATCH_DEFAULT_PROJECT
-// with the external repository it came from, so the repository stays
-// visible and filterable once it's no longer named by the project key.
-const repoLabelPrefix = "repo:"
-
 // ServiceTokenVerifier verifies a Kubernetes pod's projected service-account token.
 // *oidc.LazyVerifier is the one Dispatch serves with: until its issuer is discovered every Verify
 // fails with an error matching oidc.ErrIssuerUnavailable.
@@ -92,10 +88,9 @@ type AgentPublisher interface {
 
 // Deps are the API's application dependencies.
 type Deps struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
 	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
@@ -125,6 +120,14 @@ type Deps struct {
 	// fetches one project twice at once. The source row, not this sharing, orders every process's
 	// writes (architecture.Importer).
 	Architecture *architecture.Importer
+	// Renames is the rename pairs the boot read (store.ReadRepoRenames). The results routes name
+	// a check's repository by its canonical name under them, and GET /api/v1/issues/resolve finds
+	// a link stored under either name of a pair. The zero value holds no pairs.
+	Renames refs.Renames
+	// Attributor attributes the pull requests a results read or a recorded result reads through
+	// for (delivery.Attributor.ReadThroughCommitPulls). NewDeps builds it of Renames, so it
+	// attributes by the same pairs renamedRepo and resolveIssueRef read.
+	Attributor *delivery.Attributor
 	// OIDC verifies a JWT-shaped bearer as a Kubernetes pod's projected
 	// service-account token; nil is the unconfigured deployment, where a
 	// JWT-shaped bearer is only ever an unknown personal token. A configured
@@ -187,6 +190,14 @@ type Deps struct {
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
+	// LiveSocketClock is what a GET /ws/live socket's read deadlines run on: the pong deadline, two
+	// heartbeats after the page's last pong, the wait for the page's close frame once the socket
+	// sent its own (liveSocketCloseWait), and the drain's wait for the rest of a frame past the read
+	// limit, liveSocketCloseWait too, which takes the pong deadline's place (drainReads). Nil is
+	// clock.Real(), as a deployment leaves it; only a test sets another, a clocktest fake on which
+	// no page's reads end until the test moves it there. It is not Clock, so a test that moves the
+	// server's clock through its heartbeats ends no read with it.
+	LiveSocketClock clock.Clock
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
@@ -219,6 +230,14 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// Clock is the clock every timer of this package that a test asserts runs on: the heartbeat on
+	// which a socket resolves its caller again (whileCallerResolves), the listener lookups'
+	// windows (mentionLookupTimeout, the listener client's window), the take-over's tries
+	// (takeoverRetry), the related-item check's allowance (relatedBounds), an agent view's wait
+	// for its replay (agentStreamReplayTimeout) and the time each access-log line records
+	// (accesslog.HandlerOn), which a test hands AnswersLatency's clock too. Nil, which every
+	// deployment leaves it, is clock.Real(); a test passes a clocktest.Fake and moves it.
+	Clock clock.Clock
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -226,10 +245,9 @@ const defaultStreamHeartbeat = 15 * time.Second
 
 // DepsInput contains raw boot values used to construct API dependencies.
 type DepsInput struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
@@ -260,6 +278,9 @@ type DepsInput struct {
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
 	Events   *events.Broker
+	// Renames is the rename pairs the boot read; see Deps.Renames. The zero value holds none.
+	// NewDeps builds Deps.Attributor of them.
+	Renames refs.Renames
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -314,14 +335,13 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// Clock is the clock the API's timers and the listener client's window run on; see
+	// Deps.Clock. Nil is clock.Real().
+	Clock clock.Clock
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
 func NewDeps(input DepsInput) (Deps, error) {
-	defaultProject := strings.TrimSpace(input.DefaultProject)
-	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
-		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
-	}
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
@@ -352,6 +372,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}
+		if input.Clock != nil {
+			options = append(options, envoy.WithClock(input.Clock))
+		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
 	// The GitHub client obeys and records the rate limits every process shares (github_rate_limits):
@@ -376,7 +399,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Store:                  input.Store,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
-		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
@@ -387,6 +409,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Events:                 input.Events,
 		GitHub:                 github,
 		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
+		Renames:                input.Renames,
+		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
@@ -406,43 +430,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		Clock:                  input.Clock,
 	}, nil
-}
-
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
-// trimmed, and its repository is read as a mapping's path is (refs.ParseGitHubRepo: lower-cased,
-// one trailing `.git` trimmed, and held to the names GitHub allows in that form), so the seed
-// stores no mapping the settings route refuses: `acme/.git=KEY`, which reads as `acme/`, a
-// mapping no request reaches, or `acme/..=KEY`. Nothing more is trimmed, so a space before the
-// `=` stays in the name and `acme/x =KEY` is refused. Such an entry is refused, naming it, and the
-// boot with it: one whose repository GitHub's rule refuses with that rule's own words, any other
-// with the form an entry takes.
-func ParseRepoProjects(raw string) (map[string]string, error) {
-	projects := make(map[string]string)
-	if strings.TrimSpace(raw) == "" {
-		return projects, nil
-	}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		repo, project, ok := strings.Cut(part, "=")
-		project = strings.TrimSpace(project)
-		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		owner, name, err := refs.ParseGitHubRepo(repo)
-		switch {
-		case errors.Is(err, refs.ErrNotGitHubRepo):
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
-		case err != nil:
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		canonical := owner + "/" + name
-		if _, exists := projects[canonical]; exists {
-			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
-		}
-		projects[canonical] = project
-	}
-	return projects, nil
 }
 
 type server struct {
@@ -456,7 +445,9 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime   context.Context
+	lifetime context.Context
+	// clock is Deps.Clock, clock.Real() where that is nil (register; directServer).
+	clock      clock.Clock
 	routeIndex []routeIndexEntry
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
@@ -499,6 +490,14 @@ type server struct {
 	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
 	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// inboxStatementBound overrides the statement_timeout of the mark-all's and the dismissal's
+	// transactions (boundInboxStatements); zero, which every server the deployment builds leaves
+	// it, means inboxReadStatementTimeout. Only a test sets it (testServerOptions'
+	// inboxStatementBound): a case that holds a dismissal behind a lock of its own while it takes
+	// its steps gives the dismissal a bound past any run, so the bound Postgres keeps from the
+	// moment the dismissal queues never ends a correct run however long a loaded machine takes over
+	// those steps (INFRA-3904).
+	inboxStatementBound time.Duration
 	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
 	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
 	// until the bound ends it, so the bound and nothing else decides that case.
@@ -799,7 +798,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, clock: cmp.Or[clock.Clock](deps.Clock, clock.Real()), agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -868,8 +867,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -960,10 +959,12 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
-		// pauses on is the time the line records for it, every layer of the chain included.
+		// pauses on is the time the line records for it, every layer of the chain included. The
+		// line is timed on the server's clock, which a test hands the Latency too, so the two read
+		// one clock.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
-	return accesslog.HandlerFunc(route.Pattern, served)
+	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -980,8 +981,8 @@ const liveSocketPattern = "/ws/live"
 // token or a sign-in cookie - so its heartbeat resolves that same credential again
 // (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
-	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
-		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
+		s.refuseReadOnlyToken(false, trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock)
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1019,13 +1020,16 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+			// The heartbeat runs on the server's clock, so a test that drives a fake decides
+			// when the caller is resolved again rather than shortening the interval.
+			heartbeat := s.clock.NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-heartbeat.C:
+				case <-heartbeat.C():
+					heartbeat.Reset(s.deps.StreamHeartbeat)
 					// The check resolves the admission's credential from a detached copy of
 					// the request, which for a broker-issued token on the live socket asks the
 					// broker's answer alone rather than the proof the upgrade already spent
@@ -1570,10 +1574,11 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // proven.
 //
 // Only those routes read it: decodeJSON ignores a member the route's input struct does not
-// declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
-// the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
-// names no agent (act is nil), so there is nothing for a body to name, and its body actor is
-// ignored here as it always was.
+// declare (it logs the member at debug and decodes the rest), so a body actor on any other route
+// is dropped unread and the caller's credential alone decides the act, and four of the mutating
+// rows a person's scope opened are DELETEs with no body at all. A browser's actor names no agent
+// (act is nil), so there is nothing for a body to name, and its body actor is ignored here as it
+// always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
@@ -1839,6 +1844,35 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 		s.deps.Events.Publish(event)
 	}
 	s.storeEventDisplayTrees(ctx, events)
+}
+
+// boundedByClock is ctx ended d from now on the server's clock, with cause as the cause its end
+// carries (context.Cause), so the work behind it tells its own bound from the request that ran it
+// going away. The caller cancels it, as it would a context.WithTimeout's. It is the bound the
+// related-item check's allowance takes (relatedBounds): a test moves the server's own fake clock
+// to the deadline the code armed, and no real time decides the outcome. On the real clock, which
+// every deployment runs, it is context.WithTimeoutCause's, as before the clock seam: its end reads
+// context.DeadlineExceeded and it reports its Deadline.
+//
+// A d already spent (zero or less, which only a test sets - suggestionTimeout) ends the context
+// here, before this returns, so nothing behind it reads at all. A timer of zero or less runs its
+// function on a goroutine of its own, on the real clock as on the fake (clocktest's
+// placeLocked), and work that began before that goroutine ran would be the machine deciding the
+// outcome rather than the case (INFRA-3149).
+func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause error) (context.Context, context.CancelFunc) {
+	if s.clock == clock.Real() {
+		return context.WithTimeoutCause(ctx, d, cause)
+	}
+	bounded, end := context.WithCancelCause(ctx)
+	if d <= 0 {
+		end(cause)
+		return bounded, func() { end(context.Canceled) }
+	}
+	timer := s.clock.AfterFunc(d, func() { end(cause) })
+	return bounded, func() {
+		timer.Stop()
+		end(context.Canceled)
+	}
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {

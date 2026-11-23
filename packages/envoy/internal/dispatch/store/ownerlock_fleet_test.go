@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -286,6 +285,24 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
+// waitRegistrationsOut takes owner_lock_legacy_registration's own bound (registrationGateBound,
+// the lock_timeout the function sets for itself) off the function, in s's database alone, for a row
+// whose subject is not that bound: one in which a transaction of this build can hold the gate while
+// a registration waits for it, the row's own steps or a writer it races. On a machine slow enough to
+// hold it longer than the function's 5 s, the function's own bound would refuse the registration
+// and fail the row by the clock. Without it, a registration waits as long as its own transaction
+// allows, and arriveOn's context (testwait.Context) bounds that: every registration, however late
+// in the row it starts, is cancelled where the test's waits give up, the test binary's deadline
+// less testwait's margin, and fails the row by name rather than on Go's alarm. A bound written into
+// the function once, when the row starts, ends a registration that starts later past that deadline.
+// TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound keeps the bound.
+func waitRegistrationsOut(ctx context.Context, t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.Pool.Exec(ctx, "alter function public.owner_lock_legacy_registration() reset lock_timeout"); err != nil {
+		t.Fatalf("take owner_lock_legacy_registration's own bound off it: %v", err)
+	}
+}
+
 // arriveOn runs arrival for key in a transaction of its own on conn and commits it. ctx is the
 // test's (testwait.Context): pgx cancels a statement still waiting when it ends, so a wait that
 // never ends fails rather than hangs, and one that is merely slow is waited for.
@@ -313,27 +330,43 @@ func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key stri
 
 // awaitGateWait waits for backend pid to wait for the owner lock gate exclusively, as an earlier
 // build's arrival waits for it, and fails the test when what it runs, named what, ends first
-// (ended). Its one bound is the test binary's deadline less testwait's margin.
+// (ended), which it reads as awaitGateWaitOrEnd does. Its one bound is the test binary's deadline
+// less testwait's margin (testwait.Until), whose failure prints the gate as pid last held or waited
+// for it.
 func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
 	t.Helper()
-	type seen struct {
-		err   error
-		early bool
+	if early, err := awaitGateWaitOrEnd(t, s, pid, ended, what); early {
+		t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
 	}
-	got := testwait.UntilPolling(t, 5*time.Millisecond, what+" to wait for the owner lock gate exclusively, or to end", func() (seen, bool) {
-		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
-			return seen{}, true
+}
+
+// awaitGateWaitOrEnd is awaitGateWait for an arrival with a bound of its own on the gate, an
+// earlier build's registration (registrationGateBound): such an arrival stops waiting once that
+// bound has passed, so a test slower than the bound between starting it and reading pg_locks finds
+// it ended rather than waiting. It answers true and the arrival's result when the arrival ended
+// first, and false and nil once backend pid is seen waiting for the gate exclusively; the caller
+// judges an ended arrival by its result. Its one bound is the test binary's deadline less
+// testwait's margin (testwait.Until).
+func awaitGateWaitOrEnd(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) (bool, error) {
+	t.Helper()
+	type outcome struct {
+		ended bool
+		err   error
+		gate  string
+	}
+	got := testwait.Until(t, what+" to wait for the owner lock gate exclusively or to end", func() (outcome, bool) {
+		gate, granted := gateLock(t, s, pid)
+		if gate == "ExclusiveLock" && !granted {
+			return outcome{}, true
 		}
 		select {
 		case err := <-ended:
-			return seen{err: err, early: true}, true
+			return outcome{ended: true, err: err}, true
 		default:
 		}
-		return seen{}, false
+		return outcome{gate: fmt.Sprintf("backend %d holds or waits for the gate as %q (granted %t)", pid, gate, granted)}, false
 	})
-	if got.early {
-		t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, got.err)
-	}
+	return got.ended, got.err
 }
 
 // writerShape is how one writer of the owner lock's races (ownerlock_fleet_race_test.go,

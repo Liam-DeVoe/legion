@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -190,6 +191,31 @@ func TestWriteAdviceOmitsDecisionBlocksWhenMarkdownCannotBeParsed(t *testing.T) 
 	for _, field := range []string{"decision_blocks", "unparsed_openers"} {
 		if _, exists := rawAdvice[field]; exists {
 			t.Fatalf("parse failure emitted %s: %s", field, encoded)
+		}
+	}
+}
+
+// An advised response is the payload's own fields with "advice" after them, each value byte for
+// byte as it encodes alone, with no comma after a payload that has no field; a payload that is no
+// JSON object is refused.
+func TestAnAdvisedResponseWritesTheAdviceAfterThePayloadsOwnFields(t *testing.T) {
+	advice := map[string]int{"decision_blocks": 2}
+	for _, row := range []struct {
+		name    string
+		payload any
+		want    string
+	}{
+		{"fields", map[string]any{"key": "ACME-1", "ok": true}, `{"key":"ACME-1","ok":true,"advice":{"decision_blocks":2}}`},
+		{"no field", struct{}{}, `{"advice":{"decision_blocks":2}}`},
+	} {
+		encoded, err := json.Marshal(withRawAdvice(row.payload, advice))
+		if err != nil || string(encoded) != row.want {
+			t.Errorf("%s: %s, %v; want %s", row.name, encoded, err, row.want)
+		}
+	}
+	for _, payload := range []any{[]int{1}, "text", nil} {
+		if encoded, err := json.Marshal(withRawAdvice(payload, advice)); err == nil {
+			t.Errorf("payload %#v: %s, want a refusal", payload, encoded)
 		}
 	}
 }
@@ -760,15 +786,8 @@ func TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded(t *testing.T) {
 func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 	handler := newTestHandler(t)
 	createAdviceProject(t, handler, "EXTERNAL")
-	mapped := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "EXTERNAL",
-	}, "alice")
-	if mapped.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", mapped.Code, mapped.Body.String())
-	}
-
 	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "owner/repo#777",
+		"external": "owner/repo#777", "project": "EXTERNAL",
 	}, "alice")
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first external create: status=%d body=%s", first.Code, first.Body.String())
@@ -776,6 +795,7 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 	ignoredSpec := ":::ask{#ignored urgency=\"med\" multiple=\"false\" state=\"open\"}\nIgnored?\n:::\n"
 	second := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"external": "owner/repo#777",
+		"project":  "EXTERNAL",
 		"spec":     ignoredSpec,
 	}, "alice")
 	advice := adviceFromResponse(t, second.Code, second.Body.String())
@@ -971,6 +991,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 	s := &server{
 		deps:              deps,
 		lifetime:          t.Context(),
+		clock:             clock.Real(),
 		suggestionTimeout: suggestionTimeout,
 		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
 			if got != query {

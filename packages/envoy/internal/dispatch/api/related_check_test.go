@@ -837,7 +837,7 @@ func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})
 
-	served.suggestionTimeout = time.Nanosecond
+	served.suggestionTimeout = spentRelatedAllowance
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 		"project": "FORCE", "title": title, "force": true,
 	}, "alice")
@@ -1201,17 +1201,12 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createSuggestionProject(t, handler, "EXT")
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "EXT",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
-	}
-	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12"}, "alice")
+	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12", "project": "EXT"}, "alice")
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first create: status=%d body=%s", first.Code, first.Body.String())
 	}
 	key := decodeBody[model.Issue](t, first).Key
-	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12"}, "alice")
+	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12", "project": "EXT"}, "alice")
 	if again.Code != http.StatusOK {
 		t.Fatalf("second create: status=%d body=%s", again.Code, again.Body.String())
 	}

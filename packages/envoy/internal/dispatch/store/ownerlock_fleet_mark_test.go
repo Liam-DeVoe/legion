@@ -123,7 +123,7 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !ended {
-				if err := testwait.Receive(t, "the earlier build's write to end after this build's commit", wrote); err != nil {
+				if err := testwait.Receive(t, "the earlier build's write to end once this build's committed", wrote); err != nil {
 					t.Fatalf("the earlier build's write after this build's committed: %v", err)
 				}
 			}

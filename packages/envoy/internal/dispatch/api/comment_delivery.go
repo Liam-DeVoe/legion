@@ -57,8 +57,9 @@ func (m ResolvedMention) mentionedSession() (string, bool) {
 // comment by one timeout however many mentions it carries.
 const mentionLookupTimeout = 250 * time.Millisecond
 
-// resolveMentionTarget resolves one mention target. timeout, when positive, bounds the lookup;
-// zero leaves it bounded by the listener client's own window. A lookup that timeout cut short,
+// resolveMentionTarget resolves one mention target. timeout, when positive, bounds the lookup on
+// the server's clock, so a test moves a fake to that bound rather than waiting it out; zero
+// leaves the lookup bounded by the listener client's own window. A lookup that timeout cut short,
 // while ctx itself is still live, yields the target unanswered, with no pinned session and no
 // resolve error: the listener has not answered, so nothing is known to refuse and nothing is
 // pinned. createCommentFor still counts the session a session:<id> target names
@@ -77,7 +78,7 @@ func (s *server) resolveMentionTarget(
 	lookup := ctx
 	if timeout > 0 {
 		var cancel context.CancelFunc
-		lookup, cancel = context.WithTimeout(ctx, timeout)
+		lookup, cancel = s.clock.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
 	sessionID, title, resolveError := s.resolveDeliveryTarget(lookup, route, delivery)
@@ -1285,8 +1286,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
 	// first, which is its only one wherever the transaction below takes a reply naming none. A
 	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500.
-	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
+	// or attempt as it always has. A read that fails is the route's 500. An attempt past
+	// comment_deliveries.attempt's range names no delivery, so no read is made with it: the bound
+	// below (fitsIntegerColumn) answers it, where it always has.
+	var roleReply roleHolderReply
+	var err error
+	if fitsIntegerColumn(input.Attempt) {
+		roleReply, err = s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
@@ -1294,9 +1300,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		order by m.target
 		limit 1
 	`, input.Target, input.Attempt)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 
 	tx, err := s.begin(r.Context())
@@ -1377,6 +1384,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The attempt is a number comment_deliveries keeps in an integer column, so one past that
+	// column (fitsIntegerColumn) is a delivery no comment has, answered as the read below answers
+	// one, before any query is made with it.
+	if !fitsIntegerColumn(input.Attempt) {
+		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment delivery not found")
+		return
+	}
 	attempt, err := scanCommentDelivery(tx.QueryRow(r.Context(), `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries where comment_id = $1 and target = $2 and attempt = $3 for update
