@@ -145,9 +145,11 @@ export interface FeedShape {
 /** What a fake changes of its answers. `omit` leaves a kind out of the lookup; `issues` is how many
  *  issues TGT lists (1 by default, 2 with `sharedRepo`), and `handoffOn` the one whose handoff the
  *  lookup finds; `conversationGone` answers the conversation file as missing to the full member
- *  too; `proxyReadsCookies` makes the GitHub proxy read as the real one does, as the browser's
- *  person alone, so the full member's token is answered there as a repository the App is not
- *  installed on; `notInstalled` answers that the App is installed on no repository, TGT's
+ *  too; `proxyReadsCookies` makes the GitHub proxy read as a build before
+ *  cybermonklabs/legion#5079 does, as the browser's person alone, so the full member's token is
+ *  answered there 401 NO_IDENTITY; without it the proxy reads a token too, as a build from #5079
+ *  on does, and answers a token without the person scope (`tokenScope` none) 403
+ *  OAUTH_SCOPE_REQUIRED; `notInstalled` answers that the App is installed on no repository, TGT's
  *  included; `sharedRepo` puts TGT's first issue and OWN's on one repository the App is installed
  *  on, which both callers may see; `full` plants answers for the full member's requests;
  *  `createdAt` is when OWN was created, which GET /api/v1/projects answers either caller, so
@@ -488,9 +490,19 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       }
       if (proxied !== null) {
         const repository = proxied[1] ?? "";
-        if ((fake.proxyReadsCookies === true && !fullBrowser) || repository.includes("no-such-")) {
-          return notInstalledOn(repository);
+        if (bearer && fake.proxyReadsCookies === true) {
+          return Response.json({ code: "NO_IDENTITY", error: "unauthorized" }, { status: 401 });
         }
+        if (bearer && fake.tokenScope === "none") {
+          return Response.json(
+            {
+              code: "OAUTH_SCOPE_REQUIRED",
+              error: "this request's credential does not hold the person scope",
+            },
+            { status: 403 }
+          );
+        }
+        if (repository.includes("no-such-")) return notInstalledOn(repository);
       }
       const answer = lookup(target, fake);
       if (answer === null) return Response.json({ code: "NOT_FOUND" }, { status: 404 });

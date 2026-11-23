@@ -58,11 +58,13 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     leaks: readonly Leak[] = [],
     {
       withoutCookie = false,
+      tokenProxy = false,
       full,
       omit,
       createdAt,
     }: {
       withoutCookie?: boolean;
+      tokenProxy?: boolean;
       full?: readonly Leak[];
       omit?: ReadonlySet<string>;
       createdAt?: string | null;
@@ -82,7 +84,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       feed: { live: true },
       ...(omit === undefined ? {} : { omit }),
       ...(createdAt === undefined ? {} : { createdAt }),
-      proxyReadsCookies: true,
+      proxyReadsCookies: !tokenProxy,
       ...(full === undefined ? {} : { full }),
       rows: someRows,
     });
@@ -313,11 +315,12 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
     rowLimit("short", "short")
   );
 
-  // Without the full member's cookie no proxy read can fail: fills mode keeps each with no
-  // can_fail line, so the rest of the split still runs, and a runner reads each UNKNOWN, never a
-  // pass of a read that could not fail. The agent view's half is the full member's token's.
+  // With no cookie on a build before cybermonklabs/legion#5079, whose proxy refuses the full
+  // member's token, no proxy read can fail: fills mode keeps each with no can_fail line, so the
+  // rest of the split still runs, and a runner reads each UNKNOWN, never a pass of a read that
+  // could not fail. The agent view's half is the full member's token's.
   test(
-    "fills mode with no full member's cookie writes the fills, no proxy read among the rows that can fail, and a runner reads each UNKNOWN",
+    "fills mode with no full member's cookie, against a proxy that refuses the token, writes the fills, no proxy read among the rows that can fail, and a runner reads each UNKNOWN",
     async () => {
       const { code, file, stdout } = await fills([], { withoutCookie: true });
       expect(verdictOf(stdout)).toStartWith("FILLS: ");
@@ -326,10 +329,10 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       for (const shape of proxyReads()) {
         const label = `GET /api/github/rest/repos/{owner}/{repo}/${shape}`;
         expect(stdout).toContain(
-          `\nfill    ${label} (cannot fail: SWEEP_FULL_COOKIE is not given, and the proxy reads the browser's person alone, so the full member's read of it was not made)\n`
+          `\nfill    ${label} (cannot fail: the proxy refused the full member's token (401 NO_IDENTITY): a build before cybermonklabs/legion#5079 reads the proxy as the browser's person alone; give SWEEP_FULL_COOKIE)\n`
         );
         expect(lines).not.toContain(`can_fail\t${label}`);
-        expect(lines).toContain(`full_status\tnone ${label}`);
+        expect(lines).toContain(`full_status\t401 ${label}`);
       }
       expect(lines).toContain("can_fail\t/ws/live agent view of {session_id}");
       const run = await runner(file);
@@ -346,6 +349,29 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
         `UNKNOWN: nothing reached the member, but this run did not prove it, for the ${proxyReads().length} reasons above`
       );
       expect(run.code).toBe(2);
+    },
+    rowLimit("short", "short")
+  );
+
+  // A build from #5079 on reads the proxy with the full member's token: with no cookie at all,
+  // the fills hold each proxy read as one that can fail, and a runner of them passes.
+  test(
+    "fills mode with no full member's cookie, against a proxy that reads the token, holds each proxy read as one that can fail, and a runner passes",
+    async () => {
+      const { code, file, stdout } = await fills([], { withoutCookie: true, tokenProxy: true });
+      expect(verdictOf(stdout)).toStartWith("FILLS: ");
+      expect(code, stdout).toBe(0);
+      const lines = readFileSync(file, "utf8").trimEnd().split("\n");
+      for (const shape of proxyReads()) {
+        expect(lines).toContain(`can_fail\tGET /api/github/rest/repos/{owner}/{repo}/${shape}`);
+      }
+      const run = await runner(file);
+      expect(verdictOf(run.stdout)).toMatch(
+        new RegExp(
+          `^${literally(passed)}; the live check holds once a writer's delivered write falls inside the live window \\S+ \\S+, which the tailnet leg joins$`
+        )
+      );
+      expect(run.code, run.stdout).toBe(0);
     },
     rowLimit("short", "short")
   );
