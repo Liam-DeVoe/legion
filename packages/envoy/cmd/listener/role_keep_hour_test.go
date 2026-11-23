@@ -76,10 +76,10 @@ type hourListener struct {
 	// lane is the role lane's handler over cfg: a raw role publish handed to it is one the lane
 	// took on its own subscription.
 	lane natsgo.MsgHandler
-	// sweepPasses counts the passes its sweep has ended, and sweepSlots is that sweep's pool of
-	// handover slots (startSweeps): nil until the sweep starts.
-	sweepPasses atomic.Int64
-	sweepSlots  chan struct{}
+	// sweepPasses counts the passes its sweep has ended with their work (startSweeps), and
+	// sweepStarted says whether startSweeps has started that sweep.
+	sweepPasses  atomic.Int64
+	sweepStarted bool
 }
 
 func newHourRig(t *testing.T, sessionOptions ...session.SessionRegistryOption) *hourRig {
@@ -124,16 +124,29 @@ func (r *hourRig) client() *bus.Client { return r.listeners[0].harness.client }
 const hourSweepInterval = 200 * time.Millisecond
 
 // startSweeps starts each listener's sweep of the kept lanes, the loop startKeptRoleSweep runs over
-// the pool of roleKeepSweepHandovers slots it runs, at hourSweepInterval and counting each pass it
-// ends, and stops both when the test ends, waiting for the pass each loop has in flight.
+// a pool of roleKeepSweepHandovers slots, at hourSweepInterval, and stops both when the test ends,
+// waiting for the pass each loop has in flight. A pass here counts once the work it started has
+// ended: after sweepKeptRoleLanes returns, the loop takes every slot of the pool, which it can only
+// once each handover and wake read the pass started has given its slot back, and then gives them
+// back. So the rig's sweeps never overlap a pass's work with the next pass, as main.go's may.
 func (r *hourRig) startSweeps() {
 	ctx, cancel := context.WithCancel(context.Background())
 	var loops []<-chan struct{}
 	for _, l := range r.listeners {
 		cfg, slots, passes := l.cfg, make(chan struct{}, roleKeepSweepHandovers), &l.sweepPasses
-		l.sweepSlots = slots
+		l.sweepStarted = true
 		loops = append(loops, startSweep(ctx, hourSweepInterval, func(ctx context.Context) {
 			sweepKeptRoleLanes(ctx, cfg, slots)
+			for range cap(slots) {
+				select {
+				case slots <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			for range cap(slots) {
+				<-slots
+			}
 			passes.Add(1)
 		}))
 	}
@@ -145,21 +158,20 @@ func (r *hourRig) startSweeps() {
 	})
 }
 
-// letSweepsRun waits until each listener's sweep has made two whole passes that began after the
-// call, and every handover and wake read those passes started has ended: a pass gives each slot it
-// took back only once that work is done (sweepKeptRoleLanes), so a pool with every slot back holds
-// none of it. It is the wait these rows make for nothing more to happen, which only the sweeps
-// could still make happen, and it counts passes rather than waiting out a stretch of time.
+// letSweepsRun waits until each listener's sweep has ended two passes that began after the call,
+// with the handovers and wake reads they started (startSweeps). It is the wait these rows make for
+// nothing more to happen, which only the sweeps could still make happen, and it counts passes
+// rather than waiting out a stretch of time.
 func (r *hourRig) letSweepsRun() {
 	r.t.Helper()
 	for i, l := range r.listeners {
-		if l.sweepSlots == nil {
+		if !l.sweepStarted {
 			r.t.Fatalf("listener %d's sweep was waited for before startSweeps started it", i)
 		}
 		// The pass in flight now may have begun before the call; the two after it did not.
 		through := l.sweepPasses.Load() + 3
-		waitFor(r.t, 20*time.Second, fmt.Sprintf("two more passes of listener %d's kept-lane sweep, and the work they started", i), func() bool {
-			return l.sweepPasses.Load() >= through && len(l.sweepSlots) == 0
+		waitFor(r.t, 20*time.Second, fmt.Sprintf("two more passes of listener %d's kept-lane sweep, with the work they started", i), func() bool {
+			return l.sweepPasses.Load() >= through
 		})
 	}
 }
