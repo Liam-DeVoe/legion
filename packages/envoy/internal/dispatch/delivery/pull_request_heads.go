@@ -1415,15 +1415,15 @@ func (a *Attributor) pullRequestHeld(ctx context.Context, pool *store.Pool, cano
 // acknowledges the envelope, or hands it back where the database cannot take that record now.
 // The line that says the read is owed is written once the record is (oweRefusedRead), so it is
 // true, and is written once for each envelope.
-// The name and the number were checked before this runs (pullRequestNamed). The canonical name is
-// checked the same way before anything is read of GitHub (checkPullRequestKey), since it comes
-// from repo_projects and not from the envelope, and one that names no pull request GitHub can
-// have (a rename target stored before the settings route held it to the rule, or by direct SQL)
-// is a head not stored (markHeadNotStored, and not errNoPullRequestNamed): Intake.deliver owes the
-// read under the name the envelope gave (owePullRequestRead), and the reconcile reads it once an
-// operator corrects the target. A GitHub answer that holds a value no head row holds is a head
-// not stored too (errNoRowHolds, checkHeadRow), which Intake.deliver owes a read for as for every
-// other.
+// The name and the number were checked before this runs (pullRequestNamed). The canonical name
+// comes from the rename pairs the boot read and not from the envelope, and it is held to the rule
+// every read that puts a stored name into a GitHub path holds a name to (refs.SplitGitHubRepo)
+// before anything is read of GitHub: a name given that the envelope's check takes and that rule
+// refuses, such as an owner that starts with `_`, is a head not stored (markHeadNotStored, and not
+// errNoPullRequestNamed), which Intake.deliver owes a read for. The boot's Renames holds no pair
+// whose new name that rule refuses (refs.NewRenames), so a rename never gives such a name. A
+// GitHub answer that holds a value no head row holds is a head not stored too (errNoRowHolds,
+// checkHeadRow), which Intake.deliver owes a read for as for every other.
 //
 // The read is spared where GitHub has already answered for the event (headReadCovers): the
 // stored row is GitHub's answer to a read whose updated_at is a later second than the envelope's.
@@ -1438,15 +1438,6 @@ func (a *Attributor) pullRequestHeld(ctx context.Context, pool *store.Pool, cano
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) (headRead, error) {
 	given := payload["repo"]
 	repoFull := in.attributor.canonical(given)
-	if err := checkPullRequestKey(repoFull, number); err != nil {
-		// A head not stored, and not errNoPullRequestNamed, which Intake.deliver ends with nothing
-		// owed: the name the envelope gave is one GitHub can have, and the read is owed under it
-		// (owePullRequestRead) until an operator corrects the target.
-		return headRead{}, markHeadNotStored(fmt.Errorf("the canonical name of %s: %v", given, err))
-	}
-	// The split holds the name to the rule every read that puts a stored name into a GitHub path
-	// holds it to (refs.SplitGitHubRepo), which also refuses a name that is empty, `.` or `..`
-	// once a trailing `.git` is trimmed: such a canonical name is a head not stored too.
 	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return headRead{}, markHeadNotStored(fmt.Errorf("the canonical name of %s: %v", given, err))

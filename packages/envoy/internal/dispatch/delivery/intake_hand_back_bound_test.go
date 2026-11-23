@@ -234,18 +234,18 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 	}
 }
 
-// An event of a repository whose stored rename target is no name GitHub can have (a target a
-// build before the settings route held it to the name rule stored, or direct SQL) is a head not
-// stored, owed a read under the name the envelope gave, since no canonical name can be formed for
-// it, and the reconcile of a process that boots once an operator has corrected the target reads
-// it: no path of the intake ends an envelope with nothing owed while its head is not stored. No
-// route writes a pair, so the correction is direct SQL, and a process reads the pairs at its boot.
-// #4243 has no row; #4241 has one, stored under the old name before the target went bad, and its
-// event moves its head. While the target stands, a pass reads both and both stay owed; after the
-// correction, one pass of a process that read the corrected pair writes both heads under the new
-// name. At 3a21edb2c9 the intake acknowledged each event with one WARN line and owed nothing, so
-// #4243's head never came and #4241 kept its older head, also after the correction (acceptance of
-// cybermonklabs/legion#4209 at 3a21edb2c9, D1: no head 204 s after the correction).
+// An event of a repository whose stored rename target is no name GitHub can hold (SQL by hand,
+// which nothing checks, since no route writes a pair) is owed a read under the repository's own
+// name, which a read can reach, and the reconcile of a process that boots once an operator has
+// corrected the target reads it: no path of the intake ends an envelope with nothing owed while
+// its head is not stored. The boot drops such a pair (refs.NewRenames), so while the target stands
+// the old name is its own canonical name. #4243 has no row; #4241 has one, stored under the old
+// name before the target went bad, and its event moves its head. While the target stands, GitHub
+// answers neither under the old name, the repository having moved, so a pass reads both and both
+// stay owed; after the correction, one pass of a process that read the corrected pair writes both
+// heads under the new name. At 3a21edb2c9 the intake acknowledged each event with one WARN line
+// and owed nothing, so #4243's head never came and #4241 kept its older head, also after the
+// correction (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D1).
 func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCorrected(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -259,7 +259,6 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 	)
 	refused := "acme/" + strings.Repeat("x", 101)
 	fake := newFakeGitHub(t)
-	fake.notInstalled.Store(refused, true)
 	github := serveGitHubPulls(t, fake, renamed)
 	client := fake.newTestClient()
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
@@ -271,7 +270,11 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 		t.Fatalf("store #%d under %s before the target went bad: %v", pushed, old, err)
 	}
 	renameRepository(t, ctx, pool, old, refused)
-	standing := NewAttributor(renamesOf(t, ctx, pool))
+	standingRenames := renamesOf(t, ctx, pool)
+	if dropped := standingRenames.Dropped(); len(dropped) != 1 || dropped[0].From != old || standingRenames.Canonical(old) != old {
+		t.Fatalf("the boot's Renames dropped %v and calls %s %q, want the one pair %s to %.20q… dropped and the old name its own", dropped, old, standingRenames.Canonical(old), old, refused)
+	}
+	standing := NewAttributor(standingRenames)
 	github.set(renamed, pushed, "open", after, "feature/x", "", at)
 	github.set(renamed, opened, "open", openedHead, "feature/y", "", at)
 

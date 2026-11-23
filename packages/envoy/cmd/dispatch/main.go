@@ -432,14 +432,9 @@ func main() {
 	// here (delivery.NewAttributor), and the API builds its own of the same pairs (api.NewDeps).
 	// A read that fails does not stop the boot: it is logged, it is one failure in the rename
 	// pass's summary below (renameRepositories), and the process serves with no pairs, so an old
-	// name reads as a repository of its own until a later boot reads the pairs.
-	renamesCtx, cancelRenames := context.WithTimeout(ctx, repoRenamesReadTimeout)
-	renamePairs, renamesErr := store.ReadRepoRenames(renamesCtx, database.Pool)
-	cancelRenames()
-	if renamesErr != nil {
-		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", renamesErr)
-	}
-	renames := refs.NewRenames(renamePairs)
+	// name reads as a repository of its own until a later boot reads the pairs. A pair whose new
+	// name GitHub cannot hold is dropped, not applied (readRenames).
+	renames, renamesErr := readRenames(ctx, database.Pool, repoRenamesReadTimeout)
 	attributor := delivery.NewAttributor(renames)
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
@@ -542,7 +537,7 @@ func main() {
 	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
-	renameRepositories(ctx, database.Pool, renamePairs, renamesErr, repoRenamePassTimeout)
+	renameRepositories(ctx, database.Pool, renames.Pairs(), renamesErr, repoRenamePassTimeout)
 
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
@@ -1847,6 +1842,33 @@ const decidedWordingRestoreTimeout = 30 * time.Second
 // The read is of a table of tens of rows, so the bound is reached only when another session
 // holds a lock on that table, and a boot that waited for it would not serve.
 const repoRenamesReadTimeout = 30 * time.Second
+
+// readRenames is the boot's one read of the rename pairs (store.ReadRepoRenames), bounded by
+// timeout, as the Renames every reader is given (refs.NewRenames). A read that fails is logged at
+// ERROR, and answers no pairs and the error, which the rename pass counts (renameRepositories).
+// A pair whose new name is no repository GitHub can hold is dropped, not applied: one ERROR line
+// names it and why, the pass is given the pairs the Renames holds (refs.Renames.Pairs) and so
+// rewrites no field for it, no reader calls its old name by its new one, and so no read is owed
+// under a name no read can reach. The other pairs apply. Such a pair is written only by SQL by
+// hand, since no route, event or migration writes one; it stays dropped, with its line at every
+// start, until its renamed_to in repo_projects is corrected. This refuses the one pair rather
+// than the start, so a bad row costs its rename alone and no process stops serving for it.
+func readRenames(ctx context.Context, pool *store.Pool, timeout time.Duration) (refs.Renames, error) {
+	readCtx, cancel := context.WithTimeout(ctx, timeout)
+	pairs, err := store.ReadRepoRenames(readCtx, pool)
+	cancel()
+	if err != nil {
+		slog.Error("dispatch: read the renamed repositories' pairs; serving with none", "error", err)
+	}
+	renames := refs.NewRenames(pairs)
+	for _, dropped := range renames.Dropped() {
+		// The new name is cut at 140 characters, the longest name GitHub can hold, since a pair
+		// written by hand can hold any text.
+		slog.Error("dispatch: dropped a rename pair whose new name GitHub cannot hold; its old name reads as its own until the pair is corrected",
+			"from", dropped.From, "to", fmt.Sprintf("%.140s", dropped.To), "error", dropped.Err)
+	}
+	return renames, err
+}
 
 // restoreDecidedWordings is the boot's restoration of the wording each decided ask was decided on,
 // where a task of an earlier release reworded it, and its marking owed of each such block ask's own

@@ -7,7 +7,6 @@ import (
 	"maps"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1477,13 +1476,14 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedOnceItsReadIsOwed(t *tes
 // is lost whichever step lost it, since no reconcile pass offers a row that was never written. So
 // ErrHeadNotStored marks every failure of that path (markHeadNotStored).
 //
-// A canonical name that names no pull request GitHub can have is marked too, though no redelivery
-// mends it: the envelope's own name was checked before this runs (pullRequestNamed), so deliver
-// owes the read under that name, and the reconcile of a process that boots once the stored rename
-// target is corrected reads it. The intake that meets that name is one of a process that read the
-// pair at its boot. Left bare, it ended the envelope with nothing owed (acceptance of
-// cybermonklabs/legion#4209 at 3a21edb2c9, D1). A rate limit is marked, and keeps GitHub's wait
-// inside the mark, so the line deliver logs as it owes the read names the limit.
+// A canonical name that no read of GitHub can reach (refs.SplitGitHubRepo) is marked too, though
+// no redelivery mends it: the envelope's own check (pullRequestNamed) takes an owner that starts
+// with `_`, which that rule refuses, so deliver owes the read under the name given. Left bare, it
+// would end the envelope with nothing owed. A rename gives no such name: the boot's Renames drops
+// a pair whose new name that rule refuses (refs.NewRenames), which the start's own test holds
+// (cmd/dispatch's TestTheStartDropsARenamePairWhoseNewNameGitHubCannotHold). A rate limit is
+// marked, and keeps GitHub's wait inside the mark, so the line deliver logs as it owes the read
+// names the limit.
 func TestEveryFailureOfTheReadsBeforeAHeadWriteIsMarked(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
@@ -1502,16 +1502,17 @@ func TestEveryFailureOfTheReadsBeforeAHeadWriteIsMarked(t *testing.T) {
 			err, ErrHeadNotStored)
 	}
 
-	const old = "acme/legacy-9103"
-	renameRepository(t, ctx, pool, old, "acme/"+strings.Repeat("x", 101))
-	booted := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, NewAttributor(renamesOf(t, ctx, pool)))
-	renamed := map[string]string{
-		"kind": "pr", "action": "opened", "repo": old, "number": "9103",
-		"head_sha": landedCommit, "head_ref": "legion/ACME-1691", "head_repo": old,
+	const unreachable = "_acme/legacy-9103"
+	underscored := map[string]string{
+		"kind": "pr", "action": "opened", "repo": unreachable, "number": "9103",
+		"head_sha": landedCommit, "head_ref": "legion/ACME-1691", "head_repo": unreachable,
 	}
-	if _, err := booted.recordPullRequestHead(ctx, renamed, 9103); !errors.Is(err, ErrHeadNotStored) {
-		t.Fatalf("recording a head of %s, whose stored rename target names no pull request GitHub can have, = %v, want it marked %v so deliver owes the read under %s",
-			old, err, ErrHeadNotStored, old)
+	if _, _, err := pullRequestNamed(underscored); err != nil {
+		t.Fatalf("control: the envelope's check refuses %s: %v; want it taken, so only the read's rule refuses it", unreachable, err)
+	}
+	if _, err := in.recordPullRequestHead(ctx, underscored, 9103); !errors.Is(err, ErrHeadNotStored) {
+		t.Fatalf("recording a head of %s, a name no read of GitHub can reach, = %v, want it marked %v so deliver owes the read under it",
+			unreachable, err, ErrHeadNotStored)
 	}
 
 	limited := &githubapp.RateLimitError{Status: http.StatusForbidden, Wait: time.Minute}

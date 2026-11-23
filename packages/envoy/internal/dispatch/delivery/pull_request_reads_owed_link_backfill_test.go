@@ -35,15 +35,17 @@ func runLinkBackfill(t *testing.T, ctx context.Context, database *store.Store) {
 // bootWithTheLinkBackfill does what the boot of this release does to the links stored before it:
 // it applies the backfill (runLinkBackfill), which reads no rename pair, and then the rename pass
 // writes the new name of each pair in place of its old name in the owed reads, the head rows and
-// the links alike (store.RewriteRenamedRepositories), with the pairs the boot reads
-// (store.ReadRepoRenames). It answers those pairs, and fails the test where the pass failed or
-// left an old name.
+// the links alike (store.RewriteRenamedRepositories), with the pairs the boot applies: those it
+// reads (store.ReadRepoRenames) but a pair whose new name GitHub cannot hold, which it drops
+// (refs.NewRenames, Renames.Pairs). It answers those pairs, and fails the test where the pass
+// failed or left an old name.
 func bootWithTheLinkBackfill(t *testing.T, ctx context.Context, database *store.Store) []store.RepoRename {
 	t.Helper()
-	pairs, err := store.ReadRepoRenames(ctx, database.Pool)
+	read, err := store.ReadRepoRenames(ctx, database.Pool)
 	if err != nil {
 		t.Fatalf("read the rename pairs: %v", err)
 	}
+	pairs := refs.NewRenames(read).Pairs()
 	runLinkBackfill(t, ctx, database)
 	if pass := store.RewriteRenamedRepositories(ctx, database.Pool, pairs); pass.Err() != nil {
 		t.Fatalf("the rename pass after the backfill = %+v: %v", pass, pass.Err())
@@ -318,7 +320,7 @@ func seedBackfillCorpus(t *testing.T, ctx context.Context, pool *store.Pool) []s
 }
 
 // The boot of this release owes what a link write of this release owes for the same links, row
-// for row, but for three rows it names below: the links of the corpus of the link rule
+// for row, but for two rows it names below: the links of the corpus of the link rule
 // (linkCorpus) are stored on two databases alike, with the same head rows, renames and owed reads.
 // On one, the link write's own entry point owes them with the pairs the boot reads
 // (OweLinkedPullRequestReads, in one transaction). On the other the boot does: the backfill, and
@@ -331,12 +333,14 @@ func seedBackfillCorpus(t *testing.T, ctx context.Context, pool *store.Pool) []s
 // `_` (#130), two spellings of #122 owed once, a link of #123 and #143 in another letter case than
 // the read owed already, which owes no second row, a link by the name before a rename (#105, and
 // #108 in capitals) owed under the new name, a link and a head row both stored under the name
-// before a rename (#106), and the scheme, the host and `pull` in capitals (#133, #134, #142),
+// before a rename (#106), a link of badrename/x (#109), whose pair to `not a repository name` the
+// boot drops, owed under badrename/x, a name a read can reach, by both, and the scheme, the host
+// and `pull` in capitals (#133, #134, #142),
 // while `.`, `..`, a name that is empty, `.` or `..` once a trailing `.git` is trimmed (#112,
 // #114, #148, #149), an owner that starts with `-` or `_` (#129, #147), a zero before the number,
 // another host and every other near miss of the corpus owe nothing.
 //
-// The two differ by design in three rows, each asserted:
+// The two differ by design in two rows, each asserted:
 //
 //   - #137: the link names oldco/widgets, the old name, and the head row is stored under
 //     ACME/WIDGETS, the new one. The backfill reads no pair, so it finds no head row under the
@@ -347,11 +351,6 @@ func seedBackfillCorpus(t *testing.T, ctx context.Context, pool *store.Pool) []s
 //     write owes nothing. Each of the two owes one read at the first boot with the pass, which the
 //     reconcile makes; at a boot after one that ran the pass, the links and the head rows hold the
 //     new names, and the two agree.
-//   - #109: badrename/x is renamed to `not a repository name`, a name no repository of GitHub can
-//     have. The link write owes the read under the name the link gives (owedName). The backfill
-//     owes badrename/x#109 too, and the pass then writes the pair's new name into that row as it
-//     writes it into every field, so the boot owes it under `not a repository name`. No read can
-//     reach either name.
 func TestTheLinkBackfillOwesWhatALinkWriteOwes(t *testing.T) {
 	writes := storetest.Open(t)
 	ctx := t.Context()
@@ -375,30 +374,21 @@ func TestTheLinkBackfillOwesWhatALinkWriteOwes(t *testing.T) {
 	backfill := storetest.Open(t)
 	seedBackfillCorpus(t, ctx, backfill.Pool)
 	before := owedStamps(t, ctx, backfill.Pool)
-	if booted := bootWithTheLinkBackfill(t, ctx, backfill); !slices.Equal(booted, pairs) {
-		t.Fatalf("the boot read the pairs %v, and the link write was given %v", booted, pairs)
+	if booted, applied := bootWithTheLinkBackfill(t, ctx, backfill), refs.NewRenames(pairs).Pairs(); !slices.Equal(booted, applied) {
+		t.Fatalf("the boot applied the pairs %v, and the link write was given %v", booted, applied)
 	}
 	got := owedRows(t, ctx, backfill.Pool)
 	t.Logf("the link write owes %d rows: %v", len(written), written)
 
 	const linkOwe = " failure reads=0 refused_as=none refused_since=none link"
-	bootOnly := []string{"acme/widgets#107" + linkOwe, "acme/widgets#137" + linkOwe, "not a repository name#109" + linkOwe}
-	writeOnly := []string{"badrename/x#109" + linkOwe}
+	bootOnly := []string{"acme/widgets#107" + linkOwe, "acme/widgets#137" + linkOwe}
 	for _, row := range bootOnly {
 		if !slices.Contains(got, row) || slices.Contains(written, row) {
 			t.Errorf("%s: the boot owes it %v and the link write %v, want the boot alone", row, slices.Contains(got, row), slices.Contains(written, row))
 		}
 	}
-	for _, row := range writeOnly {
-		if !slices.Contains(written, row) || slices.Contains(got, row) {
-			t.Errorf("%s: the link write owes it %v and the boot %v, want the link write alone", row, slices.Contains(written, row), slices.Contains(got, row))
-		}
-	}
-	without := func(rows, named []string) []string {
-		return slices.DeleteFunc(slices.Clone(rows), func(row string) bool { return slices.Contains(named, row) })
-	}
-	if boot, write := without(got, bootOnly), without(written, writeOnly); !slices.Equal(boot, write) {
-		t.Fatalf("but for the rows named, the boot owes\n\t%s\nthe link write owes\n\t%s", strings.Join(boot, "\n\t"), strings.Join(write, "\n\t"))
+	if boot := slices.DeleteFunc(slices.Clone(got), func(row string) bool { return slices.Contains(bootOnly, row) }); !slices.Equal(boot, written) {
+		t.Fatalf("but for the rows named, the boot owes\n\t%s\nthe link write owes\n\t%s", strings.Join(boot, "\n\t"), strings.Join(written, "\n\t"))
 	}
 	after := owedStamps(t, ctx, backfill.Pool)
 	for _, stamp := range before {
@@ -428,8 +418,8 @@ func TestTheLinkBackfillOwesWhatALinkWriteOwes(t *testing.T) {
 		"acme/widgets#2147483647 failure reads=0 refused_as=none refused_since=none link",
 		"acme/x.git#113 failure reads=0 refused_as=none refused_since=none link",
 		"acme_/w#130 failure reads=0 refused_as=none refused_since=none link",
+		"badrename/x#109 failure reads=0 refused_as=none refused_since=none link",
 		"gone/repo#140 failure reads=0 refused_as=none refused_since=none link",
-		"not a repository name#109 failure reads=0 refused_as=none refused_since=none link",
 		long + "#127 failure reads=0 refused_as=none refused_since=none link",
 	}
 	slices.Sort(pinned)

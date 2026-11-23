@@ -265,10 +265,10 @@ var errMalformedPayload = errors.New("malformed envelope payload")
 // GitHub can have (githubRepositoryName). pullRequestNamed answers it for a `pull_request`
 // envelope before anything is read or written, and checkPullRequestKey answers it for each row
 // that keys a pull request, where the row is built (owePullRequestRead, UpsertPullRequestHead),
-// since the repository a row is keyed by is its canonical name, which comes from repo_projects and
-// not from the envelope. GitHub has no such pull request and no delivery of the envelope can get
-// past it, so deliver acknowledges it at its first delivery and logs one line, and it owes no
-// read. Any caller of Envoy's /v1 publish route can send one.
+// since the repository a row is keyed by is its canonical name, which comes from the rename pairs
+// the boot read (refs.Renames) and not from the envelope. GitHub has no such pull request and no
+// delivery of the envelope can get past it, so deliver acknowledges it at its first delivery and
+// logs one line, and it owes no read. Any caller of Envoy's /v1 publish route can send one.
 var errNoPullRequestNamed = errors.New("the envelope names no pull request GitHub can have")
 
 // githubRepositoryName is the full name of a repository GitHub can have: an owner of 1 to 39
@@ -284,11 +284,10 @@ var githubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,39}/[A-Za-z0-9._
 
 // IsGitHubRepositoryName reports whether full, `owner/name`, is the full name of a repository
 // GitHub can have (githubRepositoryName), and not "." or "..": the one rule of the names that key
-// a pull request's rows (checkPullRequestKey). The settings route holds a repository's rename
-// target to it (api's parseRepoRename), since the intake and the reconcile read a pull request of
-// the old name under the target, and GitHub has no repository of a name this refuses: a read owed
-// under the old name (owePullRequestRead) stays owed until the target is corrected (review of
-// cybermonklabs/legion#4209 at def907052c, N10).
+// a pull request's rows (checkPullRequestKey). A rename pair's new name is held to the stricter
+// rule of every read of GitHub (refs.SplitGitHubRepo, which takes no name this refuses) as the
+// boot builds its Renames, which drops a pair that rule refuses (refs.NewRenames), so the
+// canonical name of a name this takes is one it takes too.
 func IsGitHubRepositoryName(full string) bool {
 	_, name, _ := strings.Cut(full, "/")
 	return githubRepositoryName.MatchString(full) && name != "." && name != ".."
@@ -700,9 +699,7 @@ func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) (repo s
 // (recordPullRequestHead). An envelope that names no pull request GitHub can have, a number
 // outside 1 to 2147483647 or a repository that is no name GitHub can have (githubRepositoryName),
 // is refused before anything is read or written (errNoPullRequestNamed) and returned to deliver,
-// which acknowledges it, since the same envelope delivered again fails the same way. One whose
-// repository's canonical name is no name GitHub can have is a head not stored, owed a read under
-// the name it gave (recordPullRequestHead, owePullRequestRead).
+// which acknowledges it, since the same envelope delivered again fails the same way.
 // A GitHub answer that holds a value no head row holds is refused where the row is built, before
 // any statement, and is a head not stored (errNoRowHolds, checkHeadRow).
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline

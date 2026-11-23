@@ -25,14 +25,12 @@ import (
 // check's own error, so no caller stores a row of it and no failure of Postgres stands in for the
 // check: an owner of 40, a name of 101, number 0 and 2147483648, "." and "..", a character no name
 // holds, a third segment. The rows that reach the owed table through a renamed repository
-// (renamedFrom) read the repository's canonical name from the pair the boot read, whose target a
-// build before the settings route held it to the name rule (api's parseRepoRename), or direct
-// SQL, stored and nothing held, so that name is checked where the row is built too: a rename to a
-// name of 101 characters, or of 3,500, which the btree of the owed table refused (SQLSTATE 54000),
-// reaches no statement. The read is owed under the name given, which the check takes, so the
-// reconcile of a process that boots once the target is corrected reads it (acceptance of
-// cybermonklabs/legion#4209 at 3a21edb2c9, D1), and the head row of the refused name is refused
-// where it is built.
+// (renamedFrom) read the repository's canonical name from the pairs the boot read, which SQL by
+// hand alone writes and nothing checks as it writes. A pair whose new name GitHub cannot hold, a
+// name of 101 characters or of 3,500, which the btree of the owed table refused (SQLSTATE 54000),
+// is dropped as the boot builds its Renames (refs.NewRenames), so the old name is its own
+// canonical name: the read is owed under it, which the check takes and a read can reach, and the
+// head row of the refused name is refused where it is built.
 func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const (
@@ -109,8 +107,9 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 				what string
 				err  error
 				rows int
-				// takes is whether the check takes the row's name: an owed read of a renamed
-				// repository is stored under the name given where the canonical one is refused.
+				// takes is whether the check takes the row's name: an owed read of a repository
+				// renamed to a name the check refuses is stored under the old name, since the boot
+				// drops that pair.
 				takes bool
 			}{{"owed read", oweErr, owed, takes || row.renamedFrom != ""}, {"head row", headErr, heads, takes}} {
 				if write.takes {

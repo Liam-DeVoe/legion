@@ -43,6 +43,74 @@ func TestCanonicalAnswersTheNewNameOfAPairInAnyCase(t *testing.T) {
 	}
 }
 
+// A pair whose new name is no repository GitHub can hold (SplitGitHubRepo) is dropped: Renames
+// holds no rule of it, so its old name is its own canonical name in Go and in SQL, and its URLs
+// are their own, and Dropped names it with SplitGitHubRepo's refusal. The pairs whose new name
+// GitHub can hold, among them one at each bound, are held, in the order given (Pairs). No route,
+// event or migration writes a pair, so such a pair comes only from SQL by hand.
+func TestNewRenamesDropsAPairWhoseNewNameGitHubCannotHold(t *testing.T) {
+	longest := strings.Repeat("o", 39) + "/" + strings.Repeat("n", 100)
+	held := []store.RepoRename{
+		{From: "sjawhar/legion", To: "cybermonklabs/legion"},
+		{From: "old/longest", To: longest},
+		{From: "old/git", To: "acme/x.git"},
+	}
+	dropped := []store.RepoRename{
+		{From: "badrename/x", To: "not a repository name"},
+		{From: "old/dots", To: "acme/.."},
+		{From: "old/dot-git", To: "acme/.git"},
+		{From: "old/hyphen", To: "-acme/widgets"},
+		{From: "old/underscore", To: "_acme/widgets"},
+		{From: "old/101", To: "acme/" + strings.Repeat("x", 101)},
+		{From: "old/owner-40", To: strings.Repeat("o", 40) + "/widgets"},
+		{From: "old/empty", To: ""},
+		{From: "old/three", To: "acme/widgets/pulls"},
+	}
+	var given []store.RepoRename
+	for i := range max(len(held), len(dropped)) {
+		if i < len(dropped) {
+			given = append(given, dropped[i])
+		}
+		if i < len(held) {
+			given = append(given, held[i])
+		}
+	}
+	renames := NewRenames(given)
+	if got := renames.Pairs(); !slices.Equal(got, held) {
+		t.Errorf("Pairs = %v, want %v", got, held)
+	}
+	var named []store.RepoRename
+	for _, d := range renames.Dropped() {
+		named = append(named, d.RepoRename)
+		if !errors.Is(d.Err, ErrNotGitHubRepo) {
+			t.Errorf("the pair %s to %.20q is dropped with %v, want SplitGitHubRepo's refusal", d.From, d.To, d.Err)
+		}
+	}
+	if !slices.Equal(named, dropped) {
+		t.Errorf("Dropped = %v, want %v", named, dropped)
+	}
+	for _, pair := range dropped {
+		if got := renames.Canonical(pair.From); got != pair.From {
+			t.Errorf("Canonical(%q) = %q, want the name itself: the pair is dropped", pair.From, got)
+		}
+		url := "https://github.com/" + pair.From + "/pull/7"
+		if got := renames.CanonicalURL(url); got != url {
+			t.Errorf("CanonicalURL(%q) = %q, want the URL itself", url, got)
+		}
+		if sql := CanonicalRepoSQL(renames, "r.repo"); strings.Contains(sql, store.QuoteLiteral(pair.From)) {
+			t.Errorf("CanonicalRepoSQL names the dropped pair's old name %q: %s", pair.From, sql)
+		}
+	}
+	for _, pair := range held {
+		if got := renames.Canonical(pair.From); got != pair.To {
+			t.Errorf("Canonical(%q) = %q, want %q: the pair is held", pair.From, got, pair.To)
+		}
+	}
+	if all := NewRenames(dropped); len(all.Pairs()) != 0 || len(all.Dropped()) != len(dropped) || CanonicalRepoSQL(all, "r.repo") != "r.repo" {
+		t.Errorf("NewRenames of pairs it drops every one of holds %v and drops %d, want none held and every one dropped", all.Pairs(), len(all.Dropped()))
+	}
+}
+
 // The SQL form answers what the Go form answers, for every name above, under one pair and under
 // none, and null for null. With no pairs it is the caller's expression itself, so a statement
 // built with no pairs is the statement that names no rename. A name that holds a quote is

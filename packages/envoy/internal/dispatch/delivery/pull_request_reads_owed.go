@@ -28,11 +28,9 @@ package delivery
 // And a link by hand records a failure for each pull request that it adds and whose head row is
 // not stored (OweLinkedPullRequestReads). No event carries a link. An envelope leaves the
 // intake with no record of its pull request only where it names no pull request GitHub can have
-// (Intake.deliver), which is checked before anything is read or written (pullRequestNamed). Where
-// its repository's canonical name is no name GitHub can have, the read is owed under the name the
-// envelope gave (owePullRequestRead); a GitHub answer that holds a value no head row holds is a
-// head not stored, and owed (errNoRowHolds). Every failure of a statement of the record is the
-// database not taking it now,
+// (Intake.deliver), which is checked before anything is read or written (pullRequestNamed). A
+// GitHub answer that holds a value no head row holds is a head not stored, and owed
+// (errNoRowHolds). Every failure of a statement of the record is the database not taking it now,
 // so the envelope is handed back, and stays with NATS for as long as the stream keeps it, 72
 // hours, as one a stop hands back and one a lapsed hold leaves outstanding for the next holder do.
 //
@@ -197,30 +195,23 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 // owePullRequestRead records that the pull request number of the repository given changed, that
 // no read of GitHub has answered for that change, and why (reason). given is canonicalised first
 // (Attributor.canonical, over the pairs the boot read), so one pull request is owed under one
-// name, or under the name given where the canonical one is no name GitHub can have (below).
-// Recording it again gives the row a new revision, moves its time to now and its reason to the
-// latest read's: the latest event is the one a later read must answer for, and a read that read
-// the row's revision before this owe settles nothing (settleOwedRead). It keeps the count of the
-// reconcile's reads, so publishing the same envelope again moves no row ahead of the rows that
-// have been read as often.
+// name. Recording it again gives the row a new revision, moves its time to now and its reason to
+// the latest read's: the latest event is the one a later read must answer for, and a read that
+// read the row's revision before this owe settles nothing (settleOwedRead). It keeps the count of
+// the reconcile's reads, so publishing the same envelope again moves no row ahead of the rows
+// that have been read as often.
 //
 // The row is built here, and its values are checked here, before any statement: the name given,
 // with the number, must be a pull request GitHub can have (checkPullRequestKey), else the answer
 // is errNoPullRequestNamed and nothing is written. The canonical name is the one value of the row
-// no envelope gives: it is the new name of a rename pair, which the route that wrote the pairs
-// held to the same rule (api's parseRepoRename, IsGitHubRepositoryName), and which a pair stored
-// before that rule or by direct SQL holds to nothing. Where the canonical name is no name GitHub
-// can have, the read is owed under the name given, which the check took: a rename to a name of
-// 3,500 characters would otherwise fail the insert at the btree of the table (SQLSTATE 54000) at
-// every delivery, and an owe refused for it would end the envelope with nothing owed, so the pull
-// request's head never came, also after the target was corrected (acceptance of
-// cybermonklabs/legion#4209 at 3a21edb2c9, D1). The reconcile reads the pull request under its
-// canonical name each pass (RefreshPullRequestHead), so the read stays owed while the target
-// stands and is read once a boot reads a corrected one. The reason is one of this package's two
-// constants. So no value this writes is one the table refuses, and a failure of a statement is the
-// database's alone, which the intake hands back (recordRefused). Its statements run within
-// owedReadWriteTimeout of the call. The checks and the canonical name are owedName's, which a link
-// by hand shares (oweLinkedRead).
+// no envelope gives: it is the new name of a rename pair, and the Renames the boot read holds no
+// pair whose new name GitHub cannot hold (refs.NewRenames drops one, by refs.SplitGitHubRepo,
+// which takes no name checkPullRequestKey refuses), so the canonical name of a name the check
+// takes is one the check takes too, and a read is never owed under a name no read can reach. The
+// reason is one of this package's two constants. So no value this writes is one the table
+// refuses, and a failure of a statement is the database's alone, which the intake hands back
+// (recordRefused). Its statements run within owedReadWriteTimeout of the call. The check and the
+// canonical name are owedName's, which a link by hand shares (oweLinkedRead).
 //
 // refusedAs is the word of GitHub's refusal where reason is owedRefusal (refusalOf), and "" for a
 // failure. A row that becomes a refusal takes the time of this write as refused_since, a row that
@@ -246,18 +237,13 @@ func (a *Attributor) owePullRequestRead(ctx context.Context, pool *store.Pool, g
 }
 
 // owedName is the name that the read of pull request number of the repository given is owed
-// under (owePullRequestRead): the canonical name, or the name given where the canonical name is
-// no name GitHub can have. Where given and number are no pull request GitHub can have, it answers
-// errNoPullRequestNamed.
+// under (owePullRequestRead): its canonical name. Where given and number are no pull request
+// GitHub can have, it answers errNoPullRequestNamed.
 func (a *Attributor) owedName(given string, number int) (string, error) {
 	if err := checkPullRequestKey(given, number); err != nil {
 		return "", fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)
 	}
-	repoFull := a.canonical(given)
-	if checkPullRequestKey(repoFull, number) != nil {
-		return given, nil
-	}
-	return repoFull, nil
+	return a.canonical(given), nil
 }
 
 // pullRequestURLPrefix is how the URL of each pull request that GitHub gives (html_url) starts.
@@ -637,9 +623,8 @@ func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead,
 // owedReadJoin is the lateral join of the owed read of each pull request `a` of the statement's
 // terms answers (attributedTerms): the row owed under a.repo, the canonical name, or under an old
 // name of a pair renamed to it, which a.names holds, read once a statement (namesOver). The
-// owed row's own name goes through the same rule, so a read owed under an old name matches, and so
-// does one owed under the name given where the canonical name is no name GitHub can have
-// (owePullRequestRead). A row that a link by hand alone owed, whose linked_revision is its
+// owed row's own name goes through the same rule, so a read owed under an old name matches. A row
+// that a link by hand alone owed, whose linked_revision is its
 // revision, is skipped where the statement holds a results row of the pull request (h, the alias
 // of each reader): a link says nothing of the head, so that owe leaves the stored head a basis
 // (OweLinkedPullRequestReads). Where no results row is stored, there is no head to hide, and such

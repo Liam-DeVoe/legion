@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -51,12 +52,30 @@ import (
 // no chain and no cycle exists to walk. Dispatch never asks GitHub to resolve a name. For a
 // repository renamed away, GitHub answers 404 for its installation, so the old name cannot be
 // read at all and the pair is declared, never discovered.
+//
+// No route, event or migration of this release writes a pair (store.RepoRename), so a pair is
+// written only by SQL by hand, which nothing checks. A pair whose new name is no repository GitHub
+// can hold (SplitGitHubRepo) is dropped, not applied (NewRenames): every reader would otherwise
+// call the old name's repository by a name no read of GitHub can reach, the boot's pass would
+// write that name into every field of the old name, and a read owed under it would stay owed for
+// ever. The boot logs each pair it drops at ERROR, naming it and why, and applies the others; the
+// old name reads as its own until the pair is corrected and a process starts again.
 
 // Renames is the rename pairs this process read at boot, which every reader of a repository
 // name is given. It is immutable: NewRenames copies the pairs, and nothing changes them after.
-// The zero value holds no pairs, and every rule below then answers each name as it is given.
+// The zero value holds no pairs, and every rule below then answers each name as it is given. It
+// holds no pair whose new name GitHub cannot hold (NewRenames), so a canonical name is always a
+// name a read can reach where the name it renames is.
 type Renames struct {
-	pairs []renamePair
+	pairs   []renamePair
+	dropped []DroppedRename
+}
+
+// DroppedRename is a pair NewRenames was given and holds no rule of: its new name is no
+// repository GitHub can hold, and Err says why (SplitGitHubRepo's refusal, which names it).
+type DroppedRename struct {
+	store.RepoRename
+	Err error
 }
 
 // renamePair is one pair with its URL rule in each direction: toNew rewrites a URL that names
@@ -67,20 +86,42 @@ type renamePair struct {
 }
 
 // NewRenames is the Renames of pairs, as store.ReadRepoRenames answers them: both names in lower
-// case, and one pair for each old name.
+// case, and one pair for each old name. A pair whose new name SplitGitHubRepo refuses is dropped
+// (Dropped): no rule below reads it, so its old name is its own canonical name.
 func NewRenames(pairs []store.RepoRename) Renames {
 	if len(pairs) == 0 {
 		return Renames{}
 	}
-	built := make([]renamePair, 0, len(pairs))
+	var renames Renames
 	for _, pair := range pairs {
-		built = append(built, renamePair{
+		if _, _, err := SplitGitHubRepo(pair.To); err != nil {
+			renames.dropped = append(renames.dropped, DroppedRename{RepoRename: pair, Err: err})
+			continue
+		}
+		renames.pairs = append(renames.pairs, renamePair{
 			RepoRename: pair,
 			toNew:      store.NewRepoURLRule(pair.From, pair.To),
 			toOld:      store.NewRepoURLRule(pair.To, pair.From),
 		})
 	}
-	return Renames{pairs: built}
+	return renames
+}
+
+// Pairs is the pairs r holds, in the order NewRenames was given them: the pairs the boot's
+// rename pass writes (store.RewriteRenamedRepositories), so the pass rewrites no field for a
+// pair r dropped.
+func (r Renames) Pairs() []store.RepoRename {
+	pairs := make([]store.RepoRename, 0, len(r.pairs))
+	for _, pair := range r.pairs {
+		pairs = append(pairs, pair.RepoRename)
+	}
+	return pairs
+}
+
+// Dropped is each pair NewRenames was given and dropped, with why, in the order it was given
+// them.
+func (r Renames) Dropped() []DroppedRename {
+	return slices.Clone(r.dropped)
 }
 
 // Canonical is the canonical name of repo: the new name of the pair whose old name is repo, in
