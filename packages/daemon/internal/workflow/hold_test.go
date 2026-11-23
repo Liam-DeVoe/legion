@@ -62,8 +62,7 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // which reaches the architect above it, and that architect takes the child's notices, all but an
 // owner-step, until the daemon starts the child's architect again
 // (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt). An owner-step goes to the child's own
-// architect alone: one sent while its claim has failed finishes undelivered, and that architect's
-// next launch's catch-up tells it the step again.
+// architect alone, which is told that step again when it runs again.
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	root := "LEGION-208"
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
