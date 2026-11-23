@@ -1569,6 +1569,14 @@ type Machine struct {
 	cancelStart    context.CancelFunc
 	startStopped   bool
 	storeFaultTold time.Time
+	// refusedPod is the uid of the issue pod the claim's last launch was refused on because that
+	// pod cannot run it until its update round or its release replaces it (podRefused), and
+	// podRefusedTold when the issue and the controller were last told of it (tellPodRefused).
+	// While that pod is the issue's pod, no launch is tried and nothing of the claim is written
+	// (podStillRefuses). Memory only: a daemon that restarts makes one more refused launch, which
+	// writes the claim once and records the pod again.
+	refusedPod     string
+	podRefusedTold time.Time
 	// wake is the launch the wake pacing holds until its turn (reserveWake), run when TimerWake
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
@@ -2767,6 +2775,9 @@ func (m *Machine) launch(ctx context.Context, cause string) error {
 // session kept, and the start of the role's next work resumes it (startLeft).
 func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause string, start StartWork) error {
 	again := func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, cause, start) }
+	if err := m.podStillRefuses(); err != nil {
+		return err
+	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, again, err)
 	}
@@ -2915,16 +2926,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			return m.startWaitsForStore(starting, err, charged, exempt, start)
 		}
 		if errors.Is(err, runtime.ErrAwaitsPodUpdate) {
-			// The pod is the daemon's to replace, by its update round or its release, and nothing
-			// of the claim failed: charged, the tries of the wait would fail the claim at its launch
-			// budget long before the pod is replaced.
-			err = errors.Join(err, m.stopPrevious(starting))
-			m.logFarSideError(ctx, slog.LevelWarn, "supervise: the claim's pod cannot run this launch until its update round or its release replaces it; trying it again at the probe interval, charging nothing",
-				err, "generation", m.claim.Generation)
-			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
-				return m.launchAfter(ctx, charged, exempt, noEnd, start)
-			}))
-			return errors.Join(err, m.persist(starting))
+			return m.podRefused(starting, err, start)
 		}
 		var tooLarge *runtime.PromptTooLarge
 		if errors.As(err, &tooLarge) {
@@ -2939,6 +2941,71 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 		}
 		charged = true
 	}
+}
+
+// podRefusedReport is how often the issue and the controller are told, while the pod a claim's
+// launch was refused on still stands, that the claim cannot start (tellPodRefused).
+const podRefusedReport = time.Hour
+
+// podRefused is a launch the runtime refused because the claim's issue pod cannot run it until
+// that pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate). Nothing of the
+// claim failed, so nothing is charged. A claim left launching would be live, which keeps both
+// release rules off the pod (workflow's IdleRelease and UnownedPodRelease), and its retries would
+// write it at every try, so the pod would never be quiet. So the process the launch let go is
+// stopped, the claim is suspended as the daemon's, in one write, and the pod the refusal names
+// (runtime.AwaitsPodUpdate) is remembered: while it stands, no launch is tried and nothing is
+// written (podStillRefuses). The issue and the controller are told at once and hourly after, and a
+// launch no outbox start stands behind (start names no generation: the machine's own relaunch, an
+// operator's resume) asks the daemon to queue a start of the claim, so that whatever replaces the
+// pod resumes it through the outbox's start.
+func (m *Machine) podRefused(ctx context.Context, cause error, start StartWork) error {
+	err := errors.Join(cause, m.stopPrevious(ctx))
+	var awaits runtime.AwaitsPodUpdate
+	if errors.As(cause, &awaits) {
+		m.refusedPod = awaits.Pod
+	}
+	m.logFarSideError(ctx, slog.LevelWarn, "supervise: the claim's pod cannot run this launch until its update round or its release replaces it; the claim is suspended, charged nothing, until another pod stands",
+		err, "generation", m.claim.Generation, "pod", m.refusedPod)
+	m.podRefusedTold = time.Time{}
+	m.tellPodRefused(cause, start.Generation == 0)
+	return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
+}
+
+// podStillRefuses is the fence of every launch and resume of a claim whose last launch was refused
+// on refusedPod (podRefused): while that pod is still the issue's pod (runtime.IssuePodReader), it
+// answers that refusal again (runtime.AwaitsPodUpdate), before anything of the claim is written,
+// and the issue and the controller are told at most hourly. Once another pod stands, or none, or
+// the runtime reads no pod, the record is dropped and the launch goes on.
+func (m *Machine) podStillRefuses() error {
+	if m.refusedPod == "" {
+		return nil
+	}
+	if reader, ok := m.deps.Runtime.(runtime.IssuePodReader); ok {
+		if pod, read := reader.IssuePod(m.claim.Issue); read && pod == m.refusedPod {
+			err := runtime.AwaitsPodUpdate{Pod: pod, Reason: fmt.Sprintf("launch %s: the pod %s of %s, which refused its last launch, still stands",
+				m.claim.Token, pod, m.claim.Issue)}
+			m.tellPodRefused(err, false)
+			return err
+		}
+	}
+	m.refusedPod = ""
+	return nil
+}
+
+// tellPodRefused tells the issue and the controller that the claim cannot start until its pod is
+// replaced (Deps.PodRefused), at the first refusal and at most once an hour after it, as
+// tellStoreFault reports a store fault. queue is whether the daemon is to queue a start of the
+// claim, which only the report of a refused launch no outbox start stood behind asks.
+func (m *Machine) tellPodRefused(cause error, queue bool) {
+	if m.deps.PodRefused == nil {
+		return
+	}
+	now := m.deps.Clock.Now()
+	if !m.podRefusedTold.IsZero() && now.Sub(m.podRefusedTold) < podRefusedReport {
+		return
+	}
+	m.podRefusedTold = now
+	m.deps.PodRefused(m.current(), m.refusedPod, storetext.FarSideError(cause.Error()), queue)
 }
 
 // promptRefused is a start the runtime refused because the role's composed system prompt is larger

@@ -292,8 +292,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		if lacks := runtime.PodLacks(func(name claim.Role) bool {
 			return len(held) > 0 && !slices.Contains(held, name)
 		}, slotOf(spec.Claim), spec.Role); lacks != "" {
-			return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built without %s: %w",
-				spec.Claim, pod.UID, spec.Issue, lacks, runtime.ErrAwaitsPodUpdate)
+			return runtime.Locator{}, runtime.AwaitsPodUpdate{Pod: string(pod.UID), Reason: fmt.Sprintf("launch %s: the pod %s of %s was built without %s",
+				spec.Claim, pod.UID, spec.Issue, lacks)}
 		}
 		bound, err := r.launcherBound(bounded, s, pod, &l)
 		if err != nil {
@@ -438,8 +438,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 				return fail("read the App its slot holds", err)
 			}
 			if changes {
-				return runtime.Locator{}, fmt.Errorf("launch %s: the pod %s of %s was built before its launchers waited for a start's credential, so its slot %s would start the %s at once as the App its gh files held: %w",
-					spec.Claim, pod.UID, spec.Issue, slotOf(spec.Claim), spec.Role, runtime.ErrAwaitsPodUpdate)
+				return runtime.Locator{}, runtime.AwaitsPodUpdate{Pod: string(pod.UID), Reason: fmt.Sprintf("launch %s: the pod %s of %s was built before its launchers waited for a start's credential, so its slot %s would start the %s at once as the App its gh files held",
+					spec.Claim, pod.UID, spec.Issue, slotOf(spec.Claim), spec.Role)}
 			}
 		}
 	}

@@ -1448,6 +1448,23 @@ type SessionStoreFault struct {
 
 func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 
+// PodRefusedLaunch is a launch of a claim refused because the issue's pod cannot run it until that
+// pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): the claim is
+// suspended, charged nothing, and runs nothing while that pod stands (supervise's podRefused). It
+// is told on the issue and to the controller at the first refusal and hourly while the pod
+// stands. Queue asks for a start of the claim, which a refused launch no outbox start stood behind
+// needs, so that whatever replaces the pod resumes the claim.
+type PodRefusedLaunch struct {
+	Issue  string
+	Role   claim.Role
+	Claim  claim.Token
+	Pod    string
+	Detail string
+	Queue  bool
+}
+
+func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
+
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or

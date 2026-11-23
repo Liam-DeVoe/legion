@@ -226,10 +226,10 @@ type IssuePodReader interface {
 // replaced it would end every role in it and delete the issue's disk with everything a role did not
 // push. Or the slot's launcher is of an image before the credential wait, and the launch would
 // start the slot as another App than its gh files hold: that launcher starts a child at once, as
-// the App the files held. The launch writes nothing and answers this, and the supervisor charges
-// it nothing and tries it again at the probe interval; the pod's update round, which asks each role
-// in it to push first, or its release replaces it, and the claim starts in the new pod
-// (IssuePodRoles).
+// the App the files held. The launch writes nothing and answers this (AwaitsPodUpdate, which names
+// the pod), and the supervisor charges it nothing and keeps the claim suspended, trying no launch of
+// it, while that pod stands; the pod's update round, which asks each role in it to push first, or
+// its release replaces it, and the claim starts in the new pod (IssuePodRoles).
 var ErrAwaitsPodUpdate = errors.New("the issue's pod cannot run this launch, and only its update round or its release replaces it")
 
 // AwaitsPodUpdate is a launch refused with ErrAwaitsPodUpdate that names Pod, the uid of the

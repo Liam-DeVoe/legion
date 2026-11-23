@@ -315,6 +315,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionLost(ctx, tx, fact)
 	case intake.SessionStoreFault:
 		return e.sessionStoreFault(ctx, tx, fact)
+	case intake.PodRefusedLaunch:
+		return e.podRefusedLaunch(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
@@ -1883,6 +1885,34 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 	e.warnOnCommit(ctx, "workflow: the session store could not be asked for a start", "issue", issue.Key, "role", fact.Role, "detail", fact.Detail)
 	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
 		Kind: "session-store-fault", Role: fact.Role, Phase: issue.Phase, Reason: told}))
+}
+
+// podRefusedLaunch tells the issue and the controller that a role cannot start until its issue's
+// pod is replaced, and queues a start of the claim where the fact asks for one (Queue): a start
+// naming the claim, at the issue's generation and of no phase, which the outbox runs as every start
+// of a suspended claim, waiting for the pod while it stands and resuming the claim once another
+// stands or none. The supervisor decides how often it is told — at the first refusal, then hourly
+// — so every fact that reaches here is reported.
+func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.PodRefusedLaunch) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	told := fmt.Sprintf("The %s of %s cannot be started: the issue's pod %s cannot run it until that pod's update round or its release replaces it: %s. Nothing is charged; the daemon starts the %s again once another pod stands.",
+		fact.Role, issue.Key, fact.Pod, strconv.Quote(fact.Detail), fact.Role)
+	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: told}); err != nil {
+		return intake.Result{}, err
+	}
+	e.warnOnCommit(ctx, "workflow: a role's launch waits for its issue's pod to be replaced", "issue", issue.Key, "role", fact.Role, "pod", fact.Pod, "detail", fact.Detail)
+	if err := e.enqueue(ctx, tx, issue.Key, record.ControllerNotice(record.Notice{
+		Kind: "pod-refused-launch", Role: fact.Role, Phase: issue.Phase, Reason: told})); err != nil {
+		return intake.Result{}, err
+	}
+	if !fact.Queue {
+		return intake.Result{}, nil
+	}
+	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: fact.Role, Claim: fact.Claim,
+		Generation: issue.Generation})
 }
 
 // memoryGuardKill tells the role whose process an issue pod's memory guard ended, or a microVM

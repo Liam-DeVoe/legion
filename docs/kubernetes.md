@@ -6779,7 +6779,9 @@ The one is a release, which keeps it as a bundle in the daemon's database and no
 On a kept volume, a new pod finds the workspace as the last pod left it, unpushed work included, and its agents are told `LEGION_WORKSPACE_RECREATED=false` ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 A start into a live pod also waits for the pod's update round or its release where the slot's launcher is of an image before the credential wait, whose hello does not say it waits, and the launch would start the slot as another App than its gh files may hold: such a launcher starts a child at once, as the App the files held.
 The launch judges the launcher it reached, so a re-role the outbox let through right after a daemon restart, while no launcher was connected, still waits.
-That wait, like the wait for a slot or a role the pod lacks, writes nothing in the pod and charges no launch failure: the supervisor keeps the refusal as the claim's `lastStartFailure` and tries the launch again at the probe interval until the pod is replaced.
+That wait, like the wait for a slot or a role the pod lacks, writes nothing in the pod and charges no launch failure.
+The supervisor keeps the refusal as the claim's `lastStartFailure` and suspends the claim, as the daemon's, so no live claim holds the pod and the idle release may take it; while that pod stands it tries no launch of the claim and writes nothing of it, and it tells the issue and the controller at the first refusal and hourly after.
+Once another pod stands, or none, the claim's start resumes it: the start row waits for the pod meanwhile, and a refused launch no start row stood behind (a relaunch after a crash, an operator's resume) has the daemon queue one.
 
 A near-full disk slows jj's working-copy snapshot before a push, which is why `legion push`'s grant lives `credential.pushTTL` (5 minutes) in place of the usual 60 seconds (`internal/credential/grants.go`;
 `docs/solutions/legion/worker-pane-shell-gotchas.md` has the mechanics).

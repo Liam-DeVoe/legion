@@ -2754,6 +2754,21 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				brought = fmt.Errorf("relaunch retired claim %s: %w", token, err)
 			}
 		}
+		// A launch refused because the issue's pod cannot run it until that pod's update round or
+		// its release replaces it (runtime.ErrAwaitsPodUpdate) left the claim suspended and running
+		// nothing (supervise's podRefused), and a try while that pod stands launches and writes
+		// nothing (podStillRefuses). The row waits for the pod as a start the pod lacks a name of
+		// waits (podWaitPrefix), so the idle view counts it as no delivery and the release rules
+		// may take the pod, and it tries again on its backoff until another pod stands.
+		if errors.Is(brought, runtime.ErrAwaitsPodUpdate) {
+			var awaits runtime.AwaitsPodUpdate
+			errors.As(brought, &awaits)
+			prefix, err := r.podWaitPrefix(ctx, row, issue.Key, awaits.Pod, payload.Role, "this start could run in it")
+			if err != nil {
+				return err
+			}
+			return wait.Errorf("%s%s of %s: %w", prefix, payload.Role, issue.Key, brought)
+		}
 		if errors.Is(brought, supervise.ErrStartLeft) {
 			r.log.Info("outbox start serves a phase or a step the issue left before its claim was brought back; finished without acting", "row", row.ID,
 				"issue", issue.Key, "phase", payload.Phase, "role", payload.Role, "error", brought)
