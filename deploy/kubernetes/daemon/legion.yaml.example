@@ -277,7 +277,7 @@ github_apps:
 #                                      # environment. Legion holds no model route for it either: put
 #                                      # ANTHROPIC_API_KEY in provider_keys (pod.env refuses a
 #                                      # credential-shaped name) and ANTHROPIC_BASE_URL and
-#                                      # ANTHROPIC_MODEL in runtime.kubernetes.pod.env; a role of roles
+#                                      # ANTHROPIC_MODEL in runtime.kubernetes.pod.env. A role of roles
 #                                      # that names a model is launched with --model and that model.
 # role_config_files:                   # Oh My Pi overlays one role names and no other: here a model
 #   implementer: [/etc/legion-operator-roles/fallback.yml] # fallback chain (retry.modelFallback and

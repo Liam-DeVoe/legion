@@ -1430,11 +1430,13 @@ These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
   implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)): a review's request for
-  changes raises the count, and so does the fail of a step of the type review whose agent is not
-  the owner, while a tester's fail, the fail of a step of another type and a move back raise none;
-  a round counted while the head conflicts with its base is a conflict round, which the cap leaves
-  out and the message's second number names. The daemon posts it and
+  ([what counts a round](/legion/legion/concepts/#review-signalling)).
+  A review's request for changes raises the count.
+  So does the fail of a step of the type review whose agent is not the owner.
+  A tester's fail, the fail of a step of another type and a move back raise none.
+  A round counted while the head conflicts with its base is a conflict round, which the cap leaves
+  out and the message's second number names.
+  The daemon posts it and
   tells the architect once for each value the cap holds, so the rounds after it say nothing again
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes
   on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or

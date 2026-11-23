@@ -463,13 +463,14 @@ Dispatch accepts a broker token.
 
 `roles` defines roles of the deployment's own, which a step of an owner's plan names as it names Legion's planner, implementer, tester, reviewer and acceptance.
 Each key is the role's name: a word of `a-z`, `0-9` and `-` that starts with a letter, at most 32 characters, and none of Legion's own names (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, `controller`, `acceptance`).
-Each value holds the role's `type`, `prompt_file`, `model` and `github_app`:
-the `type` of its steps is one of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds;
-the `prompt_file` is the deployment's own words for the role, resolved against the directory of the file that names it;
-the `model`, where it names one, is the model the role's agent runs, and without it the agent's own settings choose;
-and the `github_app` is the App the role works as, `implement` or `review`, `review` by default.
+Each value holds the role's `type`, `prompt_file`, `model` and `github_app`.
+The `type` of its steps is one of `design`, `planning`, `implementation`, `testing` and `review`, or a type `role_types` adds.
+The `prompt_file` is the deployment's own words for the role, resolved against the directory of the file that names it.
+The `model`, where it names one, is the model the role's agent runs, and without it the agent's own settings choose.
+The `github_app` is the App the role works as, `implement` or `review`, `review` by default.
 `role_types` lists the types a deployment adds to Legion's five, each named once.
-The daemon's start reads each role's `prompt_file` and refuses one it cannot read (`roles.<name>.prompt_file <path> cannot be read: <error>`); `legion config check` makes the same refusal and prints one line for each role, `roles.<name>: type <type>, model <model>, App <app>, prompt <path>`.
+The daemon's start reads each role's `prompt_file` and refuses one it cannot read (`roles.<name>.prompt_file <path> cannot be read: <error>`).
+`legion config check` makes the same refusal and prints one line for each role, `roles.<name>: type <type>, model <model>, App <app>, prompt <path>`.
 
 A step of such a role runs at the phase `step`, at the place the task's steps give it.
 Its agent's prompt is `mechanics/headless.md`, its `prompt_file` and the daemon's `worker-common.md`.
