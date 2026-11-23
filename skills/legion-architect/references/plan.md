@@ -22,13 +22,7 @@ writes it for them. For each step, a fresh agent or the agent of an earlier step
   A change of `serves` alone changes no task.
 
 - Steps that share a key, `<role>:<key>`, are one agent in one session, and a step with no key has an agent of its own.
-  To have one agent work several steps, give each of them the same key after its role, as `steps="implementer:a tester:a reviewer"`: Legion runs the steps of one key in one claim and one session, whatever role each step is on.
-  A key other than `owner` may stand on any role but `acceptance`, and `owner` on `acceptance` alone.
-  A role may stand at two steps, of one agent where both steps carry one key, or of two.
-  Each agent is named for the role of its first step, and an agent whose role's name another agent of the plan holds takes a numbered name of its own:
-  `steps="implementer reviewer implementer"` runs step 3 as a fresh agent, `implementer-2`, in a claim and a session of its own.
-  Under `runtime: kubernetes` that agent runs in a slot of the issue pod that carries its name, and where the pod was built without that slot, step 3 waits until the pod's update round or its release replaces the pod.
-  A key keeps its name in every version: a later version that names the key again runs its steps in the same agent and session, and while a version leaves the key out, no other agent takes its name.
+  Your role prompt gives the rules of keys and of a role at two steps.
   Write in the task's text whether each step needs a fresh agent or an earlier one, and why.
   Retro rates the plan's steps, and the agent that worked each, against that choice.
 
@@ -63,7 +57,7 @@ What the task must deliver.
 - The block's id is the role's name, and its text is the role's prompt.
   The role's agent runs on Oh My Pi and starts with that prompt.
 
-- `type` is the type of the role's step, as the table above gives each of Legion's; a role with no `type` is taken too.
+- `type` is the type of the role's step, as in the table above; a role with no `type` is taken too.
   A role of the type implementation acts as the implement App, and a role of any other type, or of none, as the review App.
   No role but `implementer` of the type implementation stands after the first `implementer` step, since the implementer also works the retro.
 
@@ -90,7 +84,6 @@ What the task must deliver.
 ## What Legion refuses
 
 `register_plan` answers `409 PLAN_REFUSED` with `reasons: [{task, reason}]`, one reason for each cause, its `task` empty for a cause of the whole plan.
-Fix each reason and give a new version.
 A role block is refused for a name that is not of the form `[a-z][a-z0-9-]*` with at most 32 characters.
 It is refused for a name Legion or the deployment defines already (`… which the deployment or Legion defines already; a role of a plan takes a name of its own.`), and for a `type` that is set and is not of that form (`… Dispatch's step record takes no other.`).
 A role block whose `model` the deployment does not list is refused at the first step of each task that names it (`step <n> of task <t> names the role <role>, whose model <m> the deployment does not list; it lists <m1>, <m2>.`, or `it lists none.`).
