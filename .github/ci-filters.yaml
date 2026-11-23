@@ -1841,6 +1841,7 @@ envoy_infra_go:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/cipheraddr/**/*_test.go'
   - '!packages/envoy/cmd/**/*_test.go'
+  - '!packages/envoy/consumernames/**/*_test.go'
   - '!packages/envoy/going/**/*_test.go'
   - '!packages/envoy/infra/aws/**/*_test.go'
   - '!packages/envoy/infra/cmd/**/*_test.go'
