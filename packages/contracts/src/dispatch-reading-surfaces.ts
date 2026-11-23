@@ -582,6 +582,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   {
     files: [
       "packages/dispatch/web/src/features/issue-page/NodeRow.tsx",
+      "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.tsx",
       "packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.tsx",
       "packages/dispatch/web/src/features/issue-page/verification-filter/VerificationFilterBody.tsx",
     ],
@@ -589,6 +590,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       {
         file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
         test: "a numbered step keeps its number in a chip and in a folded line",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsFilterBody.drawn.test.tsx",
+        test: "each statement on the informs line is named within 32 characters",
       },
       {
         file: "packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.test.tsx",
@@ -600,7 +605,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       },
     ],
     reach:
-      "/issues/<ISSUE> with the new issue page on, a plan task's needs chip; /issues/<ISSUE>/plan with it on, a step's needs and serves chips in the chart; /issues/<ISSUE>/verification with it on, a check's \"Also under\" line",
+      "/issues/<ISSUE> with the new issue page on, a plan task's needs chip; /issues/<ISSUE>/plan with it on, a step's needs and serves chips in the chart; /issues/<ISSUE>/verification with it on, a check's \"Also under\" line; /issues/<ISSUE>/decisions with it on, a decision's informs line",
     reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record, and a block by the line the store projects beside that name, the first block of its words (\`KnownReferences.lines\`). The Plan chart's chips - the tasks a step needs and the statements it serves - and the Verification view's "Also under" line, which names the other statements a check is drawn under, name each block as a tie's chip does, by that line cut to a chip's room (\`chipName\`), read off the store with no projection of their own: a serves chip as a link to its statement, and a need and an "Also under" name as words alone. The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
     record: false,
     rendered: false,
