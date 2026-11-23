@@ -77,7 +77,7 @@ export interface Price extends Rates {
 
 /** Where PRICES come from. */
 export const PRICE_SOURCE =
-  "https://platform.claude.com/docs/en/about-claude/pricing (standard speed, global inference) and https://developers.openai.com/api/docs/pricing (Standard), both read 2026-11-20";
+  "https://platform.claude.com/docs/en/about-claude/pricing (standard speed, global inference), read 2026-11-23, and https://developers.openai.com/api/docs/pricing (Standard), read 2026-11-20";
 
 /** The list prices by model id: Anthropic's Claude models from PRICE_SOURCE's "Model pricing"
  *  table, and OpenAI's models from its "Standard" table. A reply of fast mode or of US-only
@@ -94,6 +94,20 @@ export const PRICES: Readonly<Record<string, Price>> = {
     cacheWriteShort: 10,
     cacheWriteLong: 16,
     cacheRead: 0.2,
+  },
+  "claude-fable-5-1": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 0.25,
+  },
+  "claude-fable-5": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 1,
   },
   "claude-opus-5-5": {
     input: 4,
