@@ -39,6 +39,8 @@ Agent messages  --/       |
 - JetStream stream `ENVOY_NOTIFICATIONS` with 72h retention for non-role notification replay on listener restart, and an optional byte limit (`ENVOY_STREAM_MAX_BYTES`) past which it refuses new publishes (`DiscardNew`; the sender gets the retryable `bus.ErrStreamFull`, which the webhook answers 503) and keeps every stored message for its 72h, so the limit is sized above the stream's 72-hour volume; per-machine durable consumers carry a 7d inactive threshold so the server garbage-collects consumers of decommissioned listeners
 - Role lanes and delivery-exception lanes for role topics use core NATS; they have no durable consumer, retention, or replay. Stream reconciliation excludes role subjects and purges any role message captured while that configuration is updated. The listener forwards a role message to its holder's agent subject, which the stream stores, so a holder on consumer delivery gets the forward through its session consumer also after a restart.
 - Session consumers: a session that asks at registration (`delivery`) gets a durable pull consumer `s-<session id>` on the stream, filtered on its agent subject and its stored followed topics; the listener that owns the session relays it in stream order on `notifications.envoy.deliver.<session id>` (core NATS, not stored) and acks a message only on the session's `done`, which the session sends once it has written the message. That consumer is the only way a message reaches a session: no plain NATS subscription of the session's own and no fallback path carries one. The consumer is deleted when the session's registration ends (`DELETE /v1/sessions/<id>`) and by the listener's periodic sweep over the sessions the registry judges gone (`ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL`, 5m by default, at most 256 a pass); before each delete the consumer's ack floor is recorded on `notifications.envoy.resume.<session id>`, a lane of the stream no consumer filter takes, so a session that comes back with no resume point of its own is created again there. The inactive threshold, which each listener derives at start from its own windows so that it stands above that sweep bound (`bus.InactiveThresholdFor`; 1h floor), is only the server's backstop for a consumer neither delete reached.
+- Session replies: each relay frame's reply subject is the listener's reply inbox, then the session's id, then a token of 128 random bits (`bus.SessionReplySubject`, `crypto/rand.Text`), so no session can work out the token of a frame sent to another from its own. The relay moves a frame only on a reply whose subject names the session the frame was sent to: a reply that names another session, on the frame's token, moves nothing (`sessionRelays.onReply`). The first such reply is logged at WARN, then at most one a minute, each line counting in `held` the replies held back before it (`relayRefusedReplyLogEvery`). The send route's connection probe and Dispatch's agent stream replay (`agentstream.NATS.Replay`), the other two requests a session answers, ask on such a subject too, each on a reply inbox of its own, so neither reaches the relay's reply handler.
+- Session trust: a session the NATS auth service admits holds a grant of its own (`natsgrant.Session`): it subscribes its own relay subject and control subject alone, and publishes its replies under its own id alone (`bus.SessionReplies`, `_INBOX.*.<session id>.>`), so it can neither read another session's frames nor answer one. A holder of the shared session user (`core.SessionPermissions`, a `gcp:NatsHub`'s `sessionUser`) or of a host user (`core.HostPermissions`) can still read any session's relay subject and publish `done` to the reply subject a frame carries, which acknowledges that session's message away, since the relay reads the session the subject names and not who published the reply. That stays open while a hub renders either user.
 - The stream and every KV bucket hold the deployment's replica count, `ENVOY_NATS_REPLICAS` (1 to 5, default 1; more than 1 needs a clustered NATS), and the stream at least the byte limit `ENVOY_STREAM_MAX_BYTES` when set: a start creates them at that count and limit, raises one found with fewer copies or a smaller limit (or none), and never lowers either, and every program that owns the stream (each listener, the Dispatch server) runs a keeper that every 30 seconds raises the stream's copies and byte limit back to its settings, puts back the discard policy and `envoy_stream_id`, and raises its own buckets' copies. An operator's raise of the limit stands, and programs with different settings do not fight: the largest stands. JetStream's stream update has no compare-and-swap, so a start with other or no settings can put back what it read until the next keeper pass; a clustered deployment sets the same `ENVOY_NATS_REPLICAS` and `ENVOY_STREAM_MAX_BYTES` in every program
 - JetStream KV bucket `envoy_interests` for session subscriptions
 - JetStream KV bucket `envoy_sessions` for session host data, plus the `plugin` and `plugin_version` each registration names (the npm package the session registers through and that plugin's build; absent for a session whose plugin predates them). `ENVOY_SESSION_MAX_AGE` sets the bucket's `MaxAge` at start; unset, the listener leaves the bucket as it is. That age bounds how long a record survives, not how long a session is alive: liveness is computed from each record's `UpdatedAt` (see “Session state”), never from the presence of a key
@@ -386,6 +388,32 @@ A session holds a role exactly when the role's claim in `envoy_roles` names it, 
 rollback and its old holder's topic cleanup are best-effort tidying of interest topics within the
 same budget: a claim that landed answers 200 whatever the cleanup did, and a topic left behind
 gives nobody the role.
+
+## Webhook bodies
+
+Every webhook route reads its body, checks the sender's signature on the bytes it read, and only
+then parses them: an event whose signature does not check is a `401` whatever its body holds,
+Slack's `url_verification` handshake included, which Slack signs as it signs every request. The
+three routes read against one byte budget the listener holds, `ENVOY_WEBHOOK_BODY_BUDGET` bytes
+(64 MiB when unset), which the start logs as `listener webhook body budget: <bytes> bytes (<MiB>
+MiB) held at once across every webhook route` (`webhook.BodyBudget`). A body is charged as its
+bytes arrive, never past its route's cap (GitHub 25 MiB, Slack and Ghost Wispr 1 MiB) or its
+declared length, and stays charged until its handler returns, a refusal included, so a sender
+that sends only headers holds nothing. One read at a time may take the total past the budget, by
+at most its own body. A delivery whose next bytes do not fit waits for room at most its route's
+room wait, in all: Slack 1 s, GitHub 5 s, Ghost Wispr 4 s. It is then answered `503` with
+`Retry-After: 1`, the listener logs `webhook body refused path=<route> ...`, and
+`envoy_webhook_body_refused_total{path}` counts it. Slack retries a failed event nearly at once,
+then after one minute and after five. GitHub does not redeliver: the redelivery sweep
+(`internal/dispatch/redeliver`) asks again only for the GitHub App webhook's failed deliveries, so
+a delivery from any other GitHub webhook is lost. No Ghost Wispr retry policy is recorded.
+
+Anonymous senders can keep the budget full. One read that holds the total past the limit stops
+every other read from charging a byte, and a stalled GitHub read keeps its charge for 60 s at a
+25 MiB cap, so several senders taking turns, at about 32 MiB of body every 60 s (4.5 Mbit/s),
+keep every signed delivery at a `503` for as long as they send. The listener has no cheap bound
+for that; the bound is a limit per source in front of it, such as a relay that refuses unsigned
+requests.
 
 ## Webhook and health check bounds
 
