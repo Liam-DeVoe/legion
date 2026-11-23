@@ -30,6 +30,7 @@ import (
 // each for that same repository, nothing else of the Apps, and a launch whose own identity cannot
 // be resolved does not happen.
 func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
+	// Not parallel: it unsets environment variables of the whole process (Unset).
 	stateDir := t.TempDir()
 	token, err := claim.NewToken("s1", "S1-1", claim.RoleImplementer)
 	if err != nil {
