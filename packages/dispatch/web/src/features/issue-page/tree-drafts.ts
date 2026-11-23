@@ -1,4 +1,4 @@
-import { parseBlockPointerValue } from "@legion/contracts";
+import { parseBlockPointerValue, referenceSpans } from "@legion/contracts";
 
 import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import type {
@@ -16,7 +16,6 @@ import type {
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import type { ReferenceNameReading } from "../refs/reference-names";
-import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, issueOrDocumentTitle, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { firstWordedBlock } from "../refs/tree-fragment";

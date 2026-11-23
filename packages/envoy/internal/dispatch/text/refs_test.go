@@ -83,6 +83,29 @@ func TestExtractAtReportsByteOffsets(t *testing.T) {
 	}
 }
 
+// A `dispatch://` address's span runs from its first byte to the end of the reference as
+// trimReference leaves it, whether or not it names anything; a `dispatch://` inside a URL is part of
+// that URL's span, never an address of its own, and a text holding no address has no span.
+func TestDispatchSpansAreTheTrimmedAddresses(t *testing.T) {
+	person := "dispatch://person/john.doe@example.com"
+	rows := []struct {
+		value string
+		want  [][2]int
+	}{
+		{"", nil},
+		{"See https://example.com/docs, CORE-1.", nil},
+		{"Ask " + person + " now.", [][2]int{{4, 4 + len(person)}}},
+		{"(dispatch://CORE-1/spec).", [][2]int{{1, 1 + len("dispatch://CORE-1/spec")}}},
+		{"See dispatch://CORE-1, dispatch://nothing-here_*.", [][2]int{{4, 4 + len("dispatch://CORE-1")}, {23, 23 + len("dispatch://nothing-here")}}},
+		{"https://a.test/" + person + " and dispatch://CORE-2|x", [][2]int{{len("https://a.test/" + person + " and "), len("https://a.test/" + person + " and dispatch://CORE-2")}}},
+	}
+	for _, row := range rows {
+		if got := DispatchSpans(row.value); !reflect.DeepEqual(got, row.want) {
+			t.Errorf("DispatchSpans(%q) = %v, want %v", row.value, got, row.want)
+		}
+	}
+}
+
 func TestExtractTerminatesArtifactSlugsAtMarkdownPunctuation(t *testing.T) {
 	body := "`dispatch://CORE-2/artifact/diagram-png`` See dispatch://CORE-2/artifact/design-md. " +
 		`See dispatch://CORE-2/artifact/quoted-md".`

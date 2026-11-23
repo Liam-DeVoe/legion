@@ -1058,6 +1058,22 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
   }
 });
 
+// An email standing in text outside a `dispatch://` address is linked as before: the step that
+// keeps an address whole (`@legion/proof-editor`'s `whole-addresses.ts`) puts back as text only a
+// link that starts inside an address, so a dot or a hyphen in the local part cuts nothing here.
+test("a bare email in text renders as a link to its mailto: address", async () => {
+  const view = render(<MarkdownBody markdown="Mail john.doe@example.com for details" />);
+
+  try {
+    const link = await within(view.container).findByRole("link", {
+      name: "john.doe@example.com",
+    });
+    expect(link).toHaveAttribute("href", "mailto:john.doe@example.com");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("two references in one body each resolve their own inline link and title, reading only what each shows", async () => {
   await warmMarkdownRenderer();
   const askRead: AskRead = {

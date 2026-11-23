@@ -1,8 +1,7 @@
-import { isIdPrefix } from "@legion/contracts";
+import { isIdPrefix, referenceSpans } from "@legion/contracts";
 
 import { itemOfBlock } from "./block-reference";
 import { codeRanges, isInCode } from "./code-ranges";
-import { referenceSpans } from "./reference-spans";
 import {
   buildDispatchReference,
   type DispatchReferenceRoute,

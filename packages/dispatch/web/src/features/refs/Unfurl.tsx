@@ -1,4 +1,4 @@
-import type { DispatchReadingSurface } from "@legion/contracts";
+import { type DispatchReadingSurface, referenceSpans, trimReference } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 
@@ -13,7 +13,6 @@ import {
 
 import { MarkdownPreview } from "./MarkdownPreview";
 import { ReferenceHostIs } from "./reference-host";
-import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferenceHref, useReferenceTarget } from "./reference-target";
 import { buildDispatchReference, type DispatchReferenceRoute, referenceHref } from "./routes";
 import {

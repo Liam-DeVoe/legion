@@ -1,8 +1,8 @@
 export interface ReferenceSpan {
   start: number;
   /** Where the span the pattern matched ends, before `trimReference` cut what trails it in
-   *  prose: the gap a bare key or `#id` may stand in starts here (`text-references.ts`), as the
-   *  server's `Mentions` reads the gaps between the same matches. */
+   *  prose: the gap a bare key or `#id` may stand in starts here (the dashboard's
+   *  `text-references.ts`), as the server's `Mentions` reads the gaps between the same matches. */
   end: number;
   value: string;
 }
@@ -23,7 +23,9 @@ const referencePattern =
 /**
  * Every reference span in text that starts with `prefix`, trimmed; a span starting otherwise is
  * omitted from the result. The spans are the same whatever the prefix, so a `dispatch://` inside a
- * URL is never a span of its own, as the server reads it.
+ * URL is never a span of its own, as the server reads it. The `dispatch://` spans are the
+ * addresses the document engine keeps whole (`@legion/proof-editor`'s `whole-addresses.ts`), as
+ * the server's `text.DispatchSpans` reads them.
  */
 export function referenceSpans(text: string, prefix = ""): ReferenceSpan[] {
   const spans: ReferenceSpan[] = [];
@@ -46,8 +48,8 @@ export function referenceSpans(text: string, prefix = ""): ReferenceSpan[] {
  * parentheses once and walks back from the end, so a run of closers costs one pass.
  *
  * It is also the one list of what a word may hold beyond its reference and still be that
- * reference: the unfurl cards read it rather than keeping a second copy of these characters
- * (`Unfurl.tsx`).
+ * reference: the dashboard's unfurl cards read it rather than keeping a second copy of these
+ * characters (`Unfurl.tsx`).
  */
 export function trimReference(value: string): string {
   let opened = 0;
