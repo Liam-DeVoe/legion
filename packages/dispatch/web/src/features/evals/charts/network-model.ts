@@ -330,8 +330,10 @@ export function networkModel(spec: DeclaredSpec, input: DeclaredInput): NetworkM
   };
   const names = new Map(ids.map((id) => [id, nameOf(id, window.get(id))]));
 
-  const windowEdges = edgesOf(input.readings, "window");
-  const compareEdges = comparing ? edgesOf(input.readings, "compare").edges : [];
+  // Its edges are the edge readings of the series its nodes are readings of, not another graph's.
+  const nodeSeries = new Set(input.readings.filter(isNode).map((reading) => reading.series));
+  const windowEdges = edgesOf(input.readings, "window", nodeSeries);
+  const compareEdges = comparing ? edgesOf(input.readings, "compare", nodeSeries).edges : [];
   const drawn = windowEdges.edges.filter((edge) => window.has(edge.from) && window.has(edge.to));
   const strays = windowEdges.edges.length - drawn.length;
   const { columns, places, rows } = layout(ids, drawn);

@@ -6,7 +6,10 @@ import { createElement } from "react";
 import type { EvalItemRow } from "../../../api/types";
 import type { EvalRange } from "../chart-model";
 import { EvalChart } from "../EvalChart";
+import architectureFixture from "./__fixtures__/architecture-readings.json";
 import fixture from "./__fixtures__/network-readings.json";
+import { architectureKind } from "./architecture";
+import { isArchitectureModel } from "./architecture-model";
 import type { DeclaredSpec } from "./kind";
 import { networkKind } from "./network";
 import { isNetworkModel, LINKS, type NetworkModel } from "./network-model";
@@ -340,4 +343,38 @@ test("a network with no node reading in the window says so, and its table holds 
   ).toBeTruthy();
   await user.click(within(figure).getByRole("button", { name: "Table" }));
   expect(within(figure).getByText("No nodes.")).toBeTruthy();
+});
+
+// Ledger 31: an eval that declares a network and an architecture reads one `edge` view, so each
+// graph keeps only the edges of the series its nodes or parts are readings of.
+test("a network and an architecture of one eval neither draw nor count each other's edges", () => {
+  const network = (items: readonly unknown[]) => model(fixture.compare, items).network;
+  const alone = network(fixture.items);
+  const beside = network([...fixture.items, ...architectureFixture.items]);
+  expect(beside.edges).toEqual(alone.edges);
+  expect(beside.notes).toEqual(alone.notes);
+  // The network's own edges are drawn: the scoping keeps them.
+  expect(alone.edges.length).toBeGreaterThan(0);
+
+  const diagram: DeclaredSpec = {
+    id: "grader-risk",
+    kind: "architecture",
+    title: "Where the risk sits",
+    value_series: "risk",
+  };
+  const architecture = (items: readonly unknown[]) => {
+    const drawn = architectureKind.model(diagram, {
+      compare: architectureFixture.compare,
+      readings: readingsOf(items as EvalItemRow[]),
+      slug: "supply-chain",
+      window: architectureFixture.window,
+    });
+    if (!isArchitectureModel(drawn)) throw new Error("the architecture model holds no diagram");
+    return drawn.architecture;
+  };
+  const own = architecture(architectureFixture.items);
+  const both = architecture([...architectureFixture.items, ...fixture.items]);
+  expect(both.edges).toEqual(own.edges);
+  expect(both.notes).toEqual(own.notes);
+  expect(own.edges.length).toBeGreaterThan(0);
 });

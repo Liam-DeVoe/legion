@@ -58,15 +58,25 @@ function attributeText(attributes: Readonly<Record<string, unknown>>, name: stri
   return typeof value === "string" ? value : "";
 }
 
-/** The edges of `range`: the newest `edge` reading of each pair of ends, in the order of their
- *  first readings; and how many edge readings name no two ends, which no graph can draw. */
+/** The edges of `range` among the edge readings of `series`, the series a graph's nodes or parts
+ *  are readings of: the newest `edge` reading of each pair of ends, in the order of their first
+ *  readings; and how many of those edge readings name no two ends, which no graph can draw. An
+ *  eval's charts read one `edge` view, so the series keeps a network and an architecture of one
+ *  eval from drawing or counting each other's edges. */
 export function edgesOf(
   readings: readonly DeclaredReading[],
-  range: ReadingRange
+  range: ReadingRange,
+  series: ReadonlySet<string>
 ): { readonly edges: readonly GraphEdge[]; readonly unnamed: number } {
   let unnamed = 0;
   const named = readings.filter((reading) => {
-    if (reading.range !== range || reading.rowKind !== EDGE_ROW_KIND) return false;
+    if (
+      reading.range !== range ||
+      reading.rowKind !== EDGE_ROW_KIND ||
+      !series.has(reading.series)
+    ) {
+      return false;
+    }
     const ends =
       attributeText(reading.attributes, "from") !== "" &&
       attributeText(reading.attributes, "to") !== "";

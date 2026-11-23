@@ -228,7 +228,12 @@ export function architectureModel(spec: DeclaredSpec, input: DeclaredInput): Arc
     return label === "" ? id : label;
   };
   const cells = cellsOf(layout);
-  const windowEdges = edgesOf(input.readings, "window");
+  // Its edges are the edge readings of the series its parts are readings of, not another graph's.
+  const windowEdges = edgesOf(
+    input.readings,
+    "window",
+    new Set(secondSeries === null ? [valueSeries] : [valueSeries, secondSeries])
+  );
   const drawn = windowEdges.edges.filter((edge) => layout.has(edge.from) && layout.has(edge.to));
   const strays = windowEdges.edges.length - drawn.length;
 
