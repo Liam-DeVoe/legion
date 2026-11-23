@@ -107,11 +107,12 @@ func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
 		want, retired []string
 	}{
 		{"roles/core/implementer.md", rolePart(t, "core/implementer.md"), []string{
-			"Merge the base forward only on one of six triggers.",
-			"(in `implementing` and `retro` your own assignment and its completion stand)",
+			"Merge the base forward only on one of five triggers.",
+			"(in `implementing` your own assignment and its completion stand)",
+			"From `accepting` on, the merge with the base is the merger's",
 			"The controller asks you to, because of a conflict.",
 			"The architect's move back names a parent's last round.",
-		}, []string{"one of four triggers"}},
+		}, []string{"one of four triggers", "one of six triggers", "and `retro` your own assignment"}},
 		{"go/implementer.md", goPart(t, "implementer.md"), []string{
 			"Retro commits nothing and pushes nothing of its own:",
 			"A merge forward the daemon asks of you in `retro` is no part of retro's work.",
