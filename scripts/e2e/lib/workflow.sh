@@ -1043,9 +1043,14 @@ role_handoff() {
   db_value "select p.handoff_commit from phases p join issues i on i.key = p.issue
     where p.issue = '$issue' and p.role = '$role' and p.handoff_commit <> ''${phases:+ and i.phase in ($phases)}"
 }
-# review_round ISSUE prints the implementer's review round: 0 before its first return.
+# review_round ISSUE prints the implementer's review round: 0 before its first return. The count is
+# its task's (plan_tasks.rounds) for an issue with plan rows, and its implementer's one phases row's
+# for an issue with none; the implementer has a row for each step it runs and one for the retro, so
+# no read of all its rows names one round.
 review_round() {
-  db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer'), 0)"
+  db_value "select coalesce((select t.rounds from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation
+      where t.issue = '$1'),
+    (select rounds from phases where issue = '$1' and role = 'implementer' and step_task = ''), 0)"
 }
 # handoff_word ROLE prints the word of the Dispatch handoff record ROLE's file-backed phase ends
 # with (the daemon's phase.HandoffFile): plan, implement, test or review.
@@ -1222,8 +1227,15 @@ assert_review_of_head() {
   note "the reviewer's round $2 $3 review names $head, the pull request's head, with nothing pushed above it"
 }
 # retro_reported ISSUE: the daemon applied the implementer's retro completion, the one way out of
-# retro.
-retro_reported() { [ -n "$(role_handoff "$1" implementer merging done)" ]; }
+# retro. Every issue's retro has a row of its own beside the implementer's steps' (place 0 of its
+# task; the one row of no step for an issue with no plan rows), so the commit is read from that row
+# alone, never from an implementing step's row that still holds its own.
+retro_reported() {
+  [ -n "$(db_value "select p.handoff_commit from phases p join issues i on i.key = p.issue
+    where p.issue = '$1' and p.role = 'implementer' and p.step_place = 0 and p.handoff_commit <> ''
+    and i.phase in ('merging', 'done')
+    and (p.step_task = '' or p.step_task in (select t.task from plan_tasks t where t.issue = i.key and t.generation = i.generation))")" ]
+}
 # assert_round_handoff ISSUE ROUND: the issue reached testing on the implementer's own completion
 # of that implementing round (its pushed tip reported beside its record), never on a push alone.
 assert_round_handoff() {
