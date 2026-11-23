@@ -193,6 +193,7 @@ const EVALS_KEYS = allOf<keyof EvalListResponse>()([
   "window",
   "compare",
   "freshness",
+  "delivery_freshness",
 ]);
 /** An evals body's fields sent whole: every one but its list. */
 const EVALS_WHOLE = EVALS_KEYS.filter((key) => key !== "items");

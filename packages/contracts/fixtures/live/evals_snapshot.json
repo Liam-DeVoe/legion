@@ -229,7 +229,8 @@
     "freshness": {
       "rows_updated_at": "2026-10-28T22:00:00Z",
       "refresher_age_seconds": 40
-    }
+    },
+    "delivery_freshness": null
   },
   "revs": {
     "items": {
@@ -243,6 +244,7 @@
     "counts": {},
     "fields": {
       "compare": "ae7a4d6dcdc7266b",
+      "delivery_freshness": "5b9bc4ba528108e4",
       "freshness": "78c90efda5c53cc1",
       "limit": "07eafa07b4ae7c00",
       "offset": "af63ad4c86019caf",
