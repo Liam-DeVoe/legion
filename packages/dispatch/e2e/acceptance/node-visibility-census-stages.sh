@@ -46,7 +46,7 @@ grep -Eq "^census: store kind=frame difference at frame $run_ahead $ahead_frame:
 pass H3 "the census names the terminal frame $ahead_frame of run $run_ahead, a row with no frame value, a difference of the kind frame: its node holds none"
 line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.planted")" ||
   fail H3 "the census reads its total of differences" "no total in: $(<"$work/census.planted")"
-[[ ! "$line" =~ differences=0$ ]] || fail H3 "the census reads differences while the two are planted" "$line"
+[[ ! "$line" =~ differences=0\ read_seq=[0-9]+$ ]] || fail H3 "the census reads differences while the two are planted" "$line"
 pass H3 "the census reads differences while the two are planted, beside its zero readings after the backfill: $line"
 
 backfill H3
@@ -229,7 +229,7 @@ pass C "the census reads the planted frame value as one difference of the kind f
 census_zero C plants interaction_visibility_state
 line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.plants")" ||
   fail C "the census reads its total of differences" "no total in: $(<"$work/census.plants")"
-[[ "$line" =~ differences=2$ ]] ||
+[[ "$line" =~ differences=2\ read_seq=[0-9]+$ ]] ||
   fail C "the census reads the two planted differences and no other" "$line: $(grep -E '^census: store kind=[a-z_]+ difference' "$work/census.plants" | tr '\n' ' ')"
 pass C "the census reads the two planted differences and no other: $line"
 

@@ -258,12 +258,13 @@ wait_ask() {
   done
 }
 
-# census_differences SECTION NAME: the census NAME read zero differences over every kind.
+# census_differences SECTION NAME: the census NAME read zero differences over every kind, on its total line,
+# which ends with the read sequence its snapshot saw (`read_seq=`).
 census_differences() {
   local line
   line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.$2")" ||
     fail "$1" "the census reads zero differences" "no total in: $(<"$work/census.$2")"
-  [[ "$line" =~ differences=0$ ]] ||
+  [[ "$line" =~ differences=0\ read_seq=[0-9]+$ ]] ||
     fail "$1" "the census reads zero differences over every kind" "$line: $(grep -E '^census: store kind=[a-z_]+ difference' "$work/census.$2" | tr '\n' ' ')"
   pass "$1" "the census reads zero differences over every kind ($line)"
 }
