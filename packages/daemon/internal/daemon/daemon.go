@@ -881,12 +881,13 @@ func closeNATS(conn *nats.Conn, log *slog.Logger) {
 	}
 }
 
-// dialNATS dials Envoy's NATS as the user nc authenticates as (natsConnection), logging what the
-// server reports about the connection: every permission it refuses at error, every disconnect at
-// warn and every reconnect at info (natsauth.LogEvents). options follow, so the daemon's own boot
-// passes natsauth.ReconnectForever and `legion probe-boot`, which reads once and exits, does not.
+// dialNATS dials Envoy's NATS as the user nc authenticates as (natsConnection), under a name that
+// ends with this binary's build (natsauth.ConnectionName), logging what the server reports about
+// the connection: every permission it refuses at error, every disconnect at warn and every
+// reconnect at info (natsauth.LogEvents). options follow, so the daemon's own boot passes
+// natsauth.ReconnectForever and `legion probe-boot`, which reads once and exits, does not.
 func dialNATS(cfg config.Config, nc natsConnection, log *slog.Logger, options ...nats.Option) (*nats.Conn, error) {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project,
+	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision),
 		append([]nats.Option{natsauth.LogEvents(log)}, options...)...)
 	if err != nil {
 		return nil, fmt.Errorf("connect Envoy NATS: %w", err)
