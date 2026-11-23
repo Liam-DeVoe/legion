@@ -85,9 +85,10 @@ func partsRule(parts []Part) string {
 // windows compared (0 for the window before the change of the rule), its project, span and parts,
 // the rule its daemon ran ("" where its parts name more than one), its record's scorecard (Score),
 // the recorded stretches inside its span, which its conflict model is fitted on (windowConflicts),
-// with how many ended in a conflict, which say whether a branch of it draws (draws), and each wait
-// on another issue that gave a slot back in its record (waitsGaveBack), which the comparison reads
-// what each rule's grace keeps from (graceKeeps).
+// with how many ended in a conflict, which say whether a branch of it draws (draws), that model
+// itself, whose terms the comparison prints, and each wait on another issue that gave a slot back in
+// its record (waitsGaveBack), which the comparison reads what each rule's grace keeps from
+// (graceKeeps).
 type windowRecord struct {
 	Name          string         `json:"name"`
 	Order         int            `json:"order"`
@@ -99,6 +100,7 @@ type windowRecord struct {
 	Scorecard     Scorecard      `json:"scorecard"`
 	Stretches     int            `json:"stretches"`
 	Conflicted    int            `json:"conflicted"`
+	Conflicts     ConflictModel  `json:"conflicts"`
 	WaitsGaveBack []waitGaveBack `json:"waitsGaveBack"`
 }
 
@@ -136,7 +138,8 @@ func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
 // record is the record of w, whose inputs in are, named name at order (newWindowRecord).
 func (in *windowInputs) record(w Window, name string, order int) windowRecord {
 	return windowRecord{Name: name, Order: order, Project: w.Project, From: w.From, To: w.To, Rule: partsRule(w.Parts), Parts: w.Parts,
-		Scorecard: scoreTrace(in.trace), Stretches: in.conflicts.Stretches, Conflicted: in.conflicts.Conflicts, WaitsGaveBack: waitsGaveBack(in.trace)}
+		Scorecard: scoreTrace(in.trace), Stretches: in.conflicts.Stretches, Conflicted: in.conflicts.Conflicts, Conflicts: in.conflicts,
+		WaitsGaveBack: waitsGaveBack(in.trace)}
 }
 
 // partRun is one branch of a part's plan with the seeds it runs.
@@ -322,15 +325,16 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 
 // windowRecordFor is the record of ws's window w, as record.json under root holds it where a
 // record of the same window (its project and span) is there, at ws's place, and otherwise read from
-// the window's inputs (windowInputs.record), as it is where the record there was written
-// before it held the waits that gave a slot back (WaitsGaveBack nil); either way it is written back
-// with ws's place, where that changes the file.
+// the window's inputs (windowInputs.record), as it is where the record there was written before it
+// held the waits that gave a slot back (WaitsGaveBack nil) or the conflict model with its phases
+// (ConflictModel.Phases nil); either way it is written back with ws's place, where that changes the
+// file.
 func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
 	held, err := os.ReadFile(path)
 	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
-		!rec.To.Equal(w.To) || rec.WaitsGaveBack == nil {
+		!rec.To.Equal(w.To) || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil {
 		in, err := inputs()
 		if err != nil {
 			return windowRecord{}, err

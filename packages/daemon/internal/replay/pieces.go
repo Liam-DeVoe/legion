@@ -503,7 +503,8 @@ func (d *driver) merged(key string, move *Move, to phase.Phase, refuse func(stri
 // base forward and kept its phase (mergedForward): the stretch goes on past the loop the record
 // ran for its conflict, whose work the replay passes over (passOver), with the work the record
 // shows after the loop returned to the phase it left, which opens at once and is not drawn a second
-// time.
+// time. A version or a registration of a root's design in that work keeps its recorded time
+// (keepDesignTimes).
 func (d *driver) stretchEnds(p *piece) error {
 	pieces := d.script.pieces[p.issue]
 	for _, next := range pieces[p.index+1:] {
@@ -512,12 +513,48 @@ func (d *driver) stretchEnds(p *piece) error {
 		}
 		if next.returnsTo(p.phase) {
 			next.stretchDrawn = true
+			d.keepDesignTimes(next)
 			d.openPiece(next, d.clock.Instant(), false)
 			return nil
 		}
 		d.passOver(next)
 	}
 	return nil
+}
+
+// keepDesignTimes takes out of p, a piece of a root's architect that stretchEnds opens before its
+// recorded start, each act on the root's design documents, and places it as no piece places it
+// (assumption 37): each artifact version its session writes, by the event's anchor (placeByAnchor),
+// its recorded time but where it ended a wait, and each registration of a document at its recorded
+// time. Such an act opens or closes the tree's design gate, which holds the first start of every
+// member of the tree and the start of its merger, and the passed-over loop it followed in the
+// record is no work of the root's alone: moved with the work the replay opens early, it would close
+// or open the gate for the whole tree as early. A piece opened at or after its recorded start, and
+// a piece of a child or of another role, keeps its acts.
+func (d *driver) keepDesignTimes(p *piece) {
+	if p.role != claim.RoleArchitect || !d.clock.Instant().Before(p.start) {
+		return
+	}
+	if entry := d.trace.Issues[p.issue].entryAt(p.start); entry == nil || entry.Tree != p.issue {
+		return
+	}
+	p.acts = slices.DeleteFunc(p.acts, func(a act) bool {
+		switch a.kind {
+		case actEvent:
+			event := &d.script.events[a.event]
+			if event.piece != p || event.dispatched || event.env.kind != "artifact.version" {
+				return false
+			}
+			event.piece = nil
+			d.placeByAnchor(a.event)
+			return true
+		case actRegistration:
+			d.push(&item{at: a.rec, class: classAct, rec: a.rec, order: lineOrder + int64(a.order),
+				run: func() error { return d.register(p.issue, d.gateFor(p, a.gate)) }})
+			return true
+		}
+		return false
+	})
 }
 
 // architectRequest is what an architect's request of key carries beside its own words

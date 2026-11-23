@@ -26,21 +26,35 @@ import (
 // Stretch is one stretch of an issue's work in which its head can conflict with its base (spec
 // R2; the fixture windows' README, "Conflicts"): one visit of the issue to the phases from testing
 // to merging, from its move into testing to the move that ends the visit — its merge, a conflict or
-// another move back. Merges is M, the first-parent commits of the issue's base branch (the window's
-// merges) strictly after Start and strictly before End but the issue's own merge — the commit whose
-// pull request (Merge.PR) is the one the issue's Dispatch events link
+// another move back. Phase is the phase of a stretch it ended in, the phase of the last visit of it
+// that a hold did not stand in. Merges is M, the first-parent commits of the issue's base branch
+// (the window's merges) strictly after Start and strictly before End but the issue's own merge —
+// the commit whose pull request (Merge.PR) is the one the issue's Dispatch events link
 // (IssueTrace.LinkedPullRequests) — and Conflict says a recorded conflict move ended it.
 // OwnMergeUnknown says M holds a commit that may be the issue's own merge: the issue links no pull
 // request of its repository, or a commit inside the stretch names none. It is one observation of
 // the conflict model (FitConflicts).
 type Stretch struct {
-	Issue           string    `json:"issue"`
-	Start           time.Time `json:"start"`
-	End             time.Time `json:"end"`
-	Merges          int       `json:"merges"`
-	Conflict        bool      `json:"conflict"`
-	OwnMergeUnknown bool      `json:"ownMergeUnknown"`
+	Issue           string      `json:"issue"`
+	Phase           phase.Phase `json:"phase"`
+	Start           time.Time   `json:"start"`
+	End             time.Time   `json:"end"`
+	Merges          int         `json:"merges"`
+	Conflict        bool        `json:"conflict"`
+	OwnMergeUnknown bool        `json:"ownMergeUnknown"`
 }
+
+// conflictBasePhase is the phase whose stretches the conflict model's base stands for, every other
+// phase a stretch can end in taking a term beside it (conflictPhases): merging, where every stretch
+// that ends in a merge ends, so a window that merges anything gives the base stretches of its own.
+const conflictBasePhase = phase.Merging
+
+// conflictPhases is each phase a stretch can end in (stretchPhase) but the base's
+// (conflictBasePhase), in phase.Order: the phases the conflict model takes a term for beside its
+// base.
+var conflictPhases = slices.DeleteFunc(slices.Clone(phase.Order), func(p phase.Phase) bool {
+	return !stretchPhase(p) || p == conflictBasePhase
+})
 
 // stretchPhase says whether p is a phase of a stretch: a phase in which the issue's pull request
 // stands on a head that can conflict with its base, testing through merging, each after
@@ -147,12 +161,12 @@ func ownPullRequest(iss *IssueTrace) int {
 }
 
 // recordedStretches is every ended stretch of the issues of t's project as the record shows it,
-// by issue and then time, with its M counted from merges. A stretch the record shows open at the
-// window's end, or cut by its issue's leave, has no outcome, and one whose start lies before the
-// inputs reach (Visit.Before) has no known M; neither is an observation of the model, which is
-// fitted on the stretches inside the window alone (windowConflicts). A merge whose close waited
-// for the issues beneath it ends its stretch at the merge (Visit.Merge), not at the close's later
-// move to done, nor open where that move falls after the window's end.
+// by issue and then time, with the phase it ended in and its M counted from merges. A stretch the
+// record shows open at the window's end, or cut by its issue's leave, has no outcome, and one whose
+// start lies before the inputs reach (Visit.Before) has no known M; neither is an observation of
+// the model, which is fitted on the stretches inside the window alone (windowConflicts). A merge
+// whose close waited for the issues beneath it ends its stretch at the merge (Visit.Merge), not at
+// the close's later move to done, nor open where that move falls after the window's end.
 func recordedStretches(t Trace, merges baseMerges) []Stretch {
 	var stretches []Stretch
 	for _, key := range slices.Sorted(maps.Keys(t.Issues)) {
@@ -161,7 +175,7 @@ func recordedStretches(t Trace, merges baseMerges) []Stretch {
 			continue
 		}
 		own := ownPullRequest(iss)
-		open, known := time.Time{}, false
+		open, known, in := time.Time{}, false, phase.Phase("")
 		for i := range iss.Visits {
 			visit := &iss.Visits[i]
 			if open.IsZero() {
@@ -169,6 +183,9 @@ func recordedStretches(t Trace, merges baseMerges) []Stretch {
 					continue
 				}
 				open, known = visit.Enter, !visit.Before
+			}
+			if stretchPhase(visit.Phase) {
+				in = visit.Phase
 			}
 			out := visit.Out
 			if visit.Merge != nil {
@@ -180,7 +197,7 @@ func recordedStretches(t Trace, merges baseMerges) []Stretch {
 			case endsStretch(out):
 				if known {
 					count, unknown := merges.between(iss.Repo, own, open, out.At)
-					stretches = append(stretches, Stretch{Issue: key, Start: open, End: out.At, Merges: count,
+					stretches = append(stretches, Stretch{Issue: key, Phase: in, Start: open, End: out.At, Merges: count,
 						Conflict: out.Trigger == workflow.TriggerConflict, OwnMergeUnknown: unknown})
 				}
 				open = time.Time{}
@@ -247,12 +264,19 @@ const fitRidge = 1e-9
 
 // Coefficient is one coefficient of the conflict model: its maximum-likelihood estimate and its
 // Wald interval at the model's level. An end the stretches leave without one (they separate, or M
-// never varies) is infinite, and its JSON value is null: a low end of null is minus infinity and a
-// high end of null plus infinity.
+// never varies, or no stretch ended in a phase) is infinite, and its JSON value is null: a low end
+// of null is minus infinity and a high end of null plus infinity.
 type Coefficient struct {
 	Estimate float64
 	Low      float64
 	High     float64
+}
+
+// coefficientJSON is a Coefficient as JSON holds it, null for an infinite end.
+type coefficientJSON struct {
+	Estimate *float64 `json:"estimate"`
+	Low      *float64 `json:"low"`
+	High     *float64 `json:"high"`
 }
 
 // MarshalJSON writes c with null for an infinite end, which JSON has no number for.
@@ -263,19 +287,46 @@ func (c Coefficient) MarshalJSON() ([]byte, error) {
 		}
 		return &v
 	}
-	return json.Marshal(struct {
-		Estimate *float64 `json:"estimate"`
-		Low      *float64 `json:"low"`
-		High     *float64 `json:"high"`
-	}{end(c.Estimate), end(c.Low), end(c.High)})
+	return json.Marshal(coefficientJSON{end(c.Estimate), end(c.Low), end(c.High)})
+}
+
+// UnmarshalJSON reads c as MarshalJSON writes it: a low end of null is minus infinity, a high end
+// of null plus infinity, and an estimate of null is not a number.
+func (c *Coefficient) UnmarshalJSON(data []byte) error {
+	var read coefficientJSON
+	if err := json.Unmarshal(data, &read); err != nil {
+		return err
+	}
+	end := func(v *float64, none float64) float64 {
+		if v == nil {
+			return none
+		}
+		return *v
+	}
+	*c = Coefficient{Estimate: end(read.Estimate, math.NaN()), Low: end(read.Low, math.Inf(-1)), High: end(read.High, math.Inf(1))}
+	return nil
+}
+
+// PhaseFit is the conflict model's reading of one phase a stretch can end in: how many of the
+// stretches the model was fitted on ended in it, how many of those in a conflict, and the phase's
+// term beside the base, nil for the base's own phase (conflictBasePhase), for a phase that takes no
+// term (termedPhases) and where no fit was made.
+type PhaseFit struct {
+	Stretches int          `json:"stretches"`
+	Conflicts int          `json:"conflicts"`
+	Term      *Coefficient `json:"term,omitempty"`
 }
 
 // ConflictModel is the chance that a stretch of an issue's work ends in a conflict, fitted on the
 // recorded stretches inside a window (windowConflicts; spec R2; plan D3: only window one records
-// conflict moves, so only it fits a chance above zero): logistic(Base + Term × log2(1 + M)), M the
-// merges into the stretch's base branch during it, the coefficients fitted by maximum likelihood
-// with their intervals. A window that records no conflict fits a chance of 0 for every stretch,
-// and one whose every stretch conflicted a chance of 1, without a fit.
+// conflict moves, so only it fits a chance above zero; plan D7): logistic(Base + P + Term × log2(1 +
+// M)), P the term of the phase the stretch ends in, and M the merges into the stretch's base branch
+// during it, the coefficients fitted together by maximum likelihood with their intervals. The base
+// stands for the stretches that end in merging (conflictBasePhase) and in each phase that takes no
+// term (termedPhases), for which P is zero. A rule moves the chance through the merges term alone,
+// since every stretch ends in the phase the record shows it ending in. A window that records no
+// conflict fits a chance of 0 for every stretch, and one whose every stretch conflicted a chance of
+// 1, without a fit.
 type ConflictModel struct {
 	// From and To are the span of the window the model was fitted on: each of its stretches began
 	// at or after From and ended before To. Both are zero for a fit of stretches no window gave.
@@ -285,12 +336,15 @@ type ConflictModel struct {
 	// conflict.
 	Stretches int `json:"stretches"`
 	Conflicts int `json:"conflicts"`
-	// Base and Term are the coefficients, zero where no fit was made.
-	Base Coefficient `json:"base"`
-	Term Coefficient `json:"term"`
+	// Base and Term are the base and the merges term, zero where no fit was made, and Phases each
+	// phase a stretch can end in (stretchPhase), its stretches, conflicts and term.
+	Base   Coefficient              `json:"base"`
+	Term   Coefficient              `json:"term"`
+	Phases map[phase.Phase]PhaseFit `json:"phases"`
 	// Level is the level of the coefficients' intervals.
 	Level float64 `json:"level"`
-	// TermZero says the merges term is set to zero (the branch's Merges zero), the base kept.
+	// TermZero says the merges term is set to zero (the branch's Merges zero), the base and the
+	// phase terms kept.
 	TermZero bool `json:"termZero"`
 	// OwnMergeUnknown is how many of the stretches the model was fitted on, and DrawnOwnMergeUnknown
 	// how many of the stretches a replay drew by it, counted a commit in M that may be the issue's
@@ -303,8 +357,9 @@ type ConflictModel struct {
 // not.
 func (m ConflictModel) fitted() bool { return m.Conflicts > 0 && m.Conflicts < m.Stretches }
 
-// Chance is the chance that a stretch with merges merges into its base branch ends in a conflict.
-func (m ConflictModel) Chance(merges int) float64 {
+// Chance is the chance that a stretch that ends in in, with merges merges into its base branch,
+// ends in a conflict. A phase the model holds no term of draws at the base.
+func (m ConflictModel) Chance(in phase.Phase, merges int) float64 {
 	switch {
 	case m.Conflicts == 0:
 		return 0
@@ -312,6 +367,9 @@ func (m ConflictModel) Chance(merges int) float64 {
 		return 1
 	}
 	eta := m.Base.Estimate
+	if term := m.Phases[in].Term; term != nil {
+		eta += term.Estimate
+	}
 	if !m.TermZero {
 		eta += m.Term.Estimate * math.Log2(1+float64(merges))
 	}
@@ -319,14 +377,14 @@ func (m ConflictModel) Chance(merges int) float64 {
 }
 
 // WithoutTerm is m with its merges term set to zero (Branch.Merges zero, assumption 3): every
-// stretch draws at the base chance, however many merges its base took.
+// stretch draws at the chance its phase gives, however many merges its base took.
 func (m ConflictModel) WithoutTerm() ConflictModel {
 	m.TermZero = true
 	return m
 }
 
 // String is the model as a run prints it: the span and the stretches and conflicts it was fitted
-// on, each coefficient with its interval, the odds ratio per doubling of 1 + M, and the stretches
+// on, each coefficient with its interval and the stretches of each phase (terms), and the stretches
 // whose M may hold their own merge.
 func (m ConflictModel) String() string {
 	span := fmt.Sprintf("began and ended inside the window from %s to %s", stamp(m.From), stamp(m.To))
@@ -340,16 +398,35 @@ func (m ConflictModel) String() string {
 	case !m.fitted():
 		return fmt.Sprintf("all of the %d stretches that %s conflicted, so every stretch draws a chance of 1", m.Stretches, span) + unknown
 	}
+	text := fmt.Sprintf("fitted on the %d stretches that %s, %d of them conflicts: %s", m.Stretches, span, m.Conflicts, m.terms())
+	if m.TermZero {
+		text += "; the branch sets the merges term to 0 and keeps the phase terms"
+	}
+	return text + unknown
+}
+
+// terms is the fitted coefficients as a run and the comparison print them, each with its interval
+// at the model's level: the base, with its phase and the stretches and conflicts of that phase;
+// each other phase's term, with the stretches and conflicts of that phase; and the merges term,
+// with the odds ratio per doubling of 1 + M.
+func (m ConflictModel) terms() string {
 	interval := func(c Coefficient, scale func(float64) float64) string {
 		return fmt.Sprintf("%.4g [%s, %s]", scale(c.Estimate), endText(scale(c.Low)), endText(scale(c.High)))
 	}
 	same := func(v float64) float64 { return v }
-	text := fmt.Sprintf("fitted on the %d stretches that %s, %d of them conflicts: base %s, merges term %s (%g intervals), odds ratio per doubling of 1 + M %s",
-		m.Stretches, span, m.Conflicts, interval(m.Base, same), interval(m.Term, same), m.Level, interval(m.Term, math.Exp))
-	if m.TermZero {
-		text += "; the branch sets the merges term to 0"
+	var text strings.Builder
+	base := m.Phases[conflictBasePhase]
+	fmt.Fprintf(&text, "base %s (%s: stretches %d, conflicts %d)", interval(m.Base, same), conflictBasePhase, base.Stretches, base.Conflicts)
+	for _, in := range conflictPhases {
+		fit, term := m.Phases[in], "none"
+		if fit.Term != nil {
+			term = interval(*fit.Term, same)
+		}
+		fmt.Fprintf(&text, ", %s term %s (stretches %d, conflicts %d)", in, term, fit.Stretches, fit.Conflicts)
 	}
-	return text + unknown
+	fmt.Fprintf(&text, ", merges term %s, odds ratio per doubling of 1 + M %s (%g intervals)", interval(m.Term, same),
+		interval(m.Term, math.Exp), m.Level)
+	return text.String()
 }
 
 // endText is one end of an interval as String prints it.
@@ -381,17 +458,27 @@ func log1pExp(x float64) float64 {
 }
 
 // FitConflicts fits the conflict model to stretches by maximum likelihood: Newton-Raphson on the
-// two coefficients with step halving, from zero, until a step gains less than 1e-12 of
-// log-likelihood. Where the stretches separate (every conflict at a larger M than every stretch
-// without one) the likelihood rises to its supremum only at infinity, and the fit stops where the
-// fitted chances stand within 1e-9 of 0 and 1. Each coefficient's interval is its Wald interval at
-// 95% from the inverse of the observed information at the estimate.
+// base, the merges term and the term of each phase that takes one (termedPhases), together, with
+// step halving, from zero, until a step gains less than 1e-12 of log-likelihood. Where the
+// stretches separate (every conflict at a larger M, or in another phase, than every stretch without
+// one) the likelihood rises to its supremum only at infinity, and the fit stops where the fitted
+// chances stand within 1e-9 of 0 and 1. Each coefficient's interval is its Wald interval at 95% from
+// the inverse of the observed information at the estimate, with no end for a coefficient the
+// stretches do not identify.
 func FitConflicts(stretches []Stretch) ConflictModel {
-	m := ConflictModel{Stretches: len(stretches), Level: conflictLevel}
-	x := make([]float64, len(stretches))
-	y := make([]bool, len(stretches))
-	for i, stretch := range stretches {
-		x[i], y[i] = math.Log2(1+float64(stretch.Merges)), stretch.Conflict
+	m := ConflictModel{Stretches: len(stretches), Level: conflictLevel, Phases: make(map[phase.Phase]PhaseFit, len(conflictPhases)+1)}
+	m.Phases[conflictBasePhase] = PhaseFit{}
+	for _, in := range conflictPhases {
+		m.Phases[in] = PhaseFit{}
+	}
+	for _, stretch := range stretches {
+		if fit, read := m.Phases[stretch.Phase]; read {
+			fit.Stretches++
+			if stretch.Conflict {
+				fit.Conflicts++
+			}
+			m.Phases[stretch.Phase] = fit
+		}
 		if stretch.Conflict {
 			m.Conflicts++
 		}
@@ -402,20 +489,45 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 	if !m.fitted() {
 		return m
 	}
-	loglik := func(b [2]float64) float64 {
+	// The coefficients are the base (0), the merges term (1) and the term of each phase that takes
+	// one (2 on), and column is the coefficient of each such phase's term.
+	termed := m.termedPhases()
+	column := make(map[phase.Phase]int, len(termed))
+	for j, in := range termed {
+		column[in] = 2 + j
+	}
+	k := 2 + len(termed)
+	x := make([]float64, len(stretches))
+	col := make([]int, len(stretches))
+	y := make([]bool, len(stretches))
+	for i, stretch := range stretches {
+		x[i], col[i], y[i] = math.Log2(1+float64(stretch.Merges)), column[stretch.Phase], stretch.Conflict
+	}
+	eta := func(b []float64, i int) float64 {
+		v := b[0] + b[1]*x[i]
+		if col[i] > 0 {
+			v += b[col[i]]
+		}
+		return v
+	}
+	loglik := func(b []float64) float64 {
 		sum := 0.0
 		for i := range x {
-			eta := b[0] + b[1]*x[i]
+			v := eta(b, i)
 			if y[i] {
-				sum += eta
+				sum += v
 			}
-			sum -= log1pExp(eta)
+			sum -= log1pExp(v)
 		}
 		return sum
 	}
-	information := func(b [2]float64) (g [2]float64, h [3]float64) {
+	// information writes the gradient of the log-likelihood at b into g and its observed
+	// information into h, a symmetric matrix of order k by rows, the ridge on its diagonal.
+	information := func(b, g, h []float64) {
+		clear(g)
+		clear(h)
 		for i := range x {
-			p := logistic(b[0] + b[1]*x[i])
+			p := logistic(eta(b, i))
 			residual := -p
 			if y[i] {
 				residual = 1 - p
@@ -425,21 +537,33 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 			g[1] += residual * x[i]
 			h[0] += w
 			h[1] += w * x[i]
-			h[2] += w * x[i] * x[i]
+			h[k+1] += w * x[i] * x[i]
+			if c := col[i]; c > 0 {
+				g[c] += residual
+				h[c] += w
+				h[k+c] += w * x[i]
+				h[c*k+c] += w
+			}
 		}
-		h[0] += fitRidge
-		h[2] += fitRidge
-		return g, h
+		for i := range k {
+			for j := range i {
+				h[i*k+j] = h[j*k+i]
+			}
+			h[i*k+i] += fitRidge
+		}
 	}
-	b := [2]float64{}
+	b, next, step := make([]float64, k), make([]float64, k), make([]float64, k)
+	g, h, l := make([]float64, k), make([]float64, k*k), make([]float64, k*k)
 	ll := loglik(b)
 	for range 1000 {
-		g, h := information(b)
-		det := h[0]*h[2] - h[1]*h[1]
-		step := [2]float64{(h[2]*g[0] - h[1]*g[1]) / det, (h[0]*g[1] - h[1]*g[0]) / det}
-		next, nextLL, scale := b, ll, 1.0
+		information(b, g, h)
+		cholesky(h, l, k)
+		choleskySolve(l, k, g, step)
+		nextLL, scale := ll, 1.0
 		for range 60 {
-			next = [2]float64{b[0] + scale*step[0], b[1] + scale*step[1]}
+			for j := range b {
+				next[j] = b[j] + scale*step[j]
+			}
 			if nextLL = loglik(next); nextLL >= ll {
 				break
 			}
@@ -449,23 +573,94 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 			break
 		}
 		gain := nextLL - ll
-		b, ll = next, nextLL
+		copy(b, next)
+		ll = nextLL
 		if gain < 1e-12 {
 			break
 		}
 	}
-	_, h := information(b)
-	det := h[0]*h[2] - h[1]*h[1]
-	variance := [2]float64{h[2] / det, h[0] / det}
-	coefficient := func(estimate, variance float64) Coefficient {
-		if variance*fitRidge > 0.5 {
-			return Coefficient{Estimate: estimate, Low: math.Inf(-1), High: math.Inf(1)}
+	information(b, g, h)
+	cholesky(h, l, k)
+	coefficient := func(j int) Coefficient {
+		clear(g)
+		g[j] = 1
+		choleskySolve(l, k, g, step)
+		if variance := step[j]; variance*fitRidge <= 0.5 {
+			half := conflictZ * math.Sqrt(variance)
+			return Coefficient{Estimate: b[j], Low: b[j] - half, High: b[j] + half}
 		}
-		half := conflictZ * math.Sqrt(variance)
-		return Coefficient{Estimate: estimate, Low: estimate - half, High: estimate + half}
+		return Coefficient{Estimate: b[j], Low: math.Inf(-1), High: math.Inf(1)}
 	}
-	m.Base, m.Term = coefficient(b[0], variance[0]), coefficient(b[1], variance[1])
+	m.Base, m.Term = coefficient(0), coefficient(1)
+	for j, in := range termed {
+		fit, term := m.Phases[in], coefficient(2+j)
+		fit.Term = &term
+		m.Phases[in] = fit
+	}
 	return m
+}
+
+// termedPhases is the phases of conflictPhases that take a term of their own in the fit, in their
+// order: each whose stretches hold a conflict and a stretch without one, so its own rate is known
+// apart from the merges, where the stretches no such term reads, which the base stands for, hold
+// both as well. Where they do not, no phase takes a term, since the base would have no stretches of
+// its own to stand for. The stretches of every phase that takes no term draw at the base, as a
+// stretch of no phase a stretch ends in (one built with none) does.
+func (m ConflictModel) termedPhases() []phase.Phase {
+	var termed []phase.Phase
+	stretches, conflicts := m.Stretches, m.Conflicts
+	for _, in := range conflictPhases {
+		if fit := m.Phases[in]; fit.Conflicts > 0 && fit.Conflicts < fit.Stretches {
+			termed = append(termed, in)
+			stretches, conflicts = stretches-fit.Stretches, conflicts-fit.Conflicts
+		}
+	}
+	if conflicts == 0 || conflicts == stretches {
+		return nil
+	}
+	return termed
+}
+
+// cholesky writes into l, by rows, the lower Cholesky factor of h, a symmetric matrix of order k
+// that the fit's ridge keeps positive definite. A pivot at or below zero, which rounding alone can
+// leave on such a matrix, is taken as the ridge.
+func cholesky(h, l []float64, k int) {
+	clear(l)
+	for i := range k {
+		for j := 0; j <= i; j++ {
+			sum := h[i*k+j]
+			for p := range j {
+				sum -= l[i*k+p] * l[j*k+p]
+			}
+			switch {
+			case i != j:
+				l[i*k+j] = sum / l[j*k+j]
+			case sum > 0:
+				l[i*k+i] = math.Sqrt(sum)
+			default:
+				l[i*k+i] = math.Sqrt(fitRidge)
+			}
+		}
+	}
+}
+
+// choleskySolve writes into z the solution of l lᵀ z = g, l a lower Cholesky factor of order k by
+// rows (cholesky).
+func choleskySolve(l []float64, k int, g, z []float64) {
+	for i := range k {
+		sum := g[i]
+		for p := range i {
+			sum -= l[i*k+p] * z[p]
+		}
+		z[i] = sum / l[i*k+i]
+	}
+	for i := k - 1; i >= 0; i-- {
+		sum := z[i]
+		for p := i + 1; p < k; p++ {
+			sum -= l[p*k+i] * z[p]
+		}
+		z[i] = sum / l[i*k+i]
+	}
 }
 
 // conflictLoop is one recorded conflict loop of a window's script: the phase its conflict move
@@ -557,10 +752,11 @@ func (d *driver) drawsAtEnd(p *piece) bool {
 // drawConflict draws, at the replay's end of the stretch p ends, whether its head conflicts with
 // its base (spec R2, assumption 3): with M the merges into the issue's base branch strictly
 // inside the replay's stretch, from its start (stretchFrom) to now, but the issue's own merge, a
-// draw u from the run's seeded source makes a conflict where u is below the model's chance at M; a
-// stretch whose M may hold its own merge is counted (ConflictModel.DrawnOwnMergeUnknown). It
-// answers whether the stretch conflicted and the daemon acted on the conflict (conflictFor), which
-// then plays what the daemon made of it, the recorded move that ends the stretch not entered.
+// draw u from the run's seeded source makes a conflict where u is below the model's chance in p's
+// phase, the phase the record shows the stretch ending in, at M; a stretch whose M may hold its own
+// merge is counted (ConflictModel.DrawnOwnMergeUnknown). It answers whether the stretch conflicted
+// and the daemon acted on the conflict (conflictFor), which then plays what the daemon made of it,
+// the recorded move that ends the stretch not entered.
 func (d *driver) drawConflict(p *piece) (bool, error) {
 	now := d.clock.Instant()
 	start, standing := d.stretchFrom[p.issue]
@@ -575,7 +771,7 @@ func (d *driver) drawConflict(p *piece) (bool, error) {
 	if unknown {
 		d.conflicts.DrawnOwnMergeUnknown++
 	}
-	if d.draws.Float64() >= d.conflicts.Chance(merges) {
+	if d.draws.Float64() >= d.conflicts.Chance(p.phase, merges) {
 		return false, nil
 	}
 	return d.conflictFor(p, false)

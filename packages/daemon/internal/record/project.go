@@ -1340,10 +1340,11 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // issue reads one word (C1). Four of its eighteen skips report nothing: three place the
 // candidate, and one passes over an issue released for a wait, which the first loop has placed
 // already (LineWaitingOnIssue), so such an issue stands in the line and in no held row. The
-// other fourteen report. Two of those fourteen are deferrals — a queued root the second loop may
-// place, and an answered root the first loop places — and a deferral reports a row the other
-// loop may then place: HeldList drops a row for a key the line names, so a deferral that is
-// placed costs one row and no wrong answer.
+// other fourteen report. Seven of those fourteen are the holds of the starting part, which one
+// function reads (FirstPhaseStartsNow) and one site reports. Two of the fourteen are deferrals —
+// a queued root the second loop may place, and an answered root the first loop places — and a
+// deferral reports a row the other loop may then place: HeldList drops a row for a key the line
+// names, so a deferral that is placed costs one row and no wrong answer.
 func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []HeldIssue) {
 	slotted := make(map[string]struct{}, len(slots))
 	for _, slot := range slots {
@@ -1372,17 +1373,6 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	hold := func(issue Issue) {
 		reason, heldBy := HeldReasonOf(issue, heldFacts)
 		heldRows = append(heldRows, HeldIssue{Issue: issue.Key, Reason: reason, HeldBy: heldBy})
-	}
-
-	// The tree of a candidate must be live and must not linger, and the root must be recorded:
-	// the whole line is work the daemon is about to start, and a tree that has left runs nothing.
-	runs := func(issue Issue) bool {
-		root, recorded := byKey[issue.Tree]
-		if !recorded || root.Lingers() {
-			return false
-		}
-		_, running := live[issue.Tree]
-		return running
 	}
 
 	// timed is one entry of the returned part with the moment its work came back (at), the owed
@@ -1517,55 +1507,15 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		if _, waits := releasedForWait[issue.Key]; waits {
 			continue
 		}
-		if !FirstPhaseMayStart(issue) {
-			hold(issue)
-			continue
-		}
-		if _, waitingAsRoot := queuedKeys[issue.Key]; waitingAsRoot || !runs(issue) {
-			hold(issue)
-			continue
-		}
-		// A root that handed work to a person starts nothing of its tree while it waits: its
-		// members start with its resume (admit's promotion of the answered root).
-		if root := byKey[issue.Tree]; root.AwaitingPerson() {
+		// The starting part's holds are one function's (FirstPhaseStartsNow), which reads each
+		// of them over the pass's own facts, so a reader outside the line asks the question the
+		// line asks. Each hold it reads is a skip that reports its row here.
+		_, waitingAsRoot := queuedKeys[issue.Key]
+		if !FirstPhaseStartsNow(issue, waitingAsRoot, heldFacts) {
 			hold(issue)
 			continue
 		}
 		gate := facts.Gates[issue.Tree]
-		if !gate.Open() {
-			hold(issue)
-			continue
-		}
-		// A child an unfinished Dispatch issue holds where it stands waits for that issue, not
-		// for a slot: offered one here it would take it from an issue that can work, and its own
-		// first phase would start on work its blocker has still to land. The architect above it is
-		// told when it starts, and the state names it under admission.blocked meanwhile.
-		if _, blocked := facts.Held[issue.Key]; blocked {
-			hold(issue)
-			continue
-		}
-		// A parent whose own Dispatch children are still open does its work after theirs
-		// (LineFacts.ChildWaits): offered a slot here it would build beside the children whose
-		// merges its own head is meant to carry. The architect that owns it is told once per issue
-		// and run of its tree when the wait begins (admit's tellChildrenFirst): the root's own
-		// architect for a root, and for a child the architect above it, since the child's own
-		// starts only with that first phase. A person's todo on a child that ran or was held starts
-		// and stops nothing (workflow's ReenterChild), so its own architect, if it held its role,
-		// still holds it and is told. The state names it under admission.blocked meanwhile.
-		if _, waits := facts.ChildWaits[issue.Key]; waits {
-			hold(issue)
-			continue
-		}
-		// An issue beneath an ancestor the daemon has already accepted waits while that ancestor
-		// stands in retro or merging (HeldUnderAccepted): starting it would let the ancestor merge work its own
-		// head does not carry. A person's move of such an issue to todo records it here at
-		// admitted and leaves it here; the architect is told why when it enters. The chain is
-		// walked over the records above this pass's own as well, so that a parent already done
-		// does not hide the merging issue above it.
-		if HeldUnderAccepted(issue, chain) {
-			hold(issue)
-			continue
-		}
 		_, holds := slotted[issue.Key]
 		entry := LineEntry{Issue: issue, Kind: LineFirstPhase, Holds: holds}
 		// A tree's own root has held a slot since its architect began the design (KeepsSlot).
@@ -1677,12 +1627,66 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 }
 
 // FirstPhaseMayStart says whether issue stands where its first phase can start: at admitted,
-// waiting on no person and in the workflow by its status. It is the first test Waiting reads of
-// each issue for the line's starting part, before the tree, the gate and the waits it may be held
-// on, so a reader that asks whether an issue can still take its first start asks it here: one
-// finished, past its first phase or out of the workflow cannot.
+// waiting on no person and in the workflow by its status. It is the first test of
+// FirstPhaseStartsNow, the one that reads the issue's own record alone, so a reader holding no
+// facts of a pass asks it here: an issue finished, past its first phase or out of the workflow
+// cannot take its first start.
 func FirstPhaseMayStart(issue Issue) bool {
 	return issue.Phase == phase.Admitted && !issue.AwaitingPerson() && !OutOfWorkflow(issue.Status)
+}
+
+// FirstPhaseStartsNow says whether issue's first phase may start now, by the facts of the pass
+// that builds the waiting line (line, as Waiting builds them over its issues): every hold of the
+// line's starting part, read in Waiting's order. queued says whether issue is a root that waits
+// for its tree to be opened (QueuedRoot over its own gate), which its promotion starts and not
+// this branch. It is the one statement of those holds: Waiting reads it of each issue it may
+// offer a first phase, and a replay of a recorded window reads it of each issue whose recorded
+// first start it has still to make, to rank that issue's tree by a start the daemon would make.
+//
+// The issue must stand where its first phase can start (FirstPhaseMayStart), and its tree must
+// run: its root recorded among the pass's issues, not lingering, and live, since the line is
+// work the daemon is about to start and a tree that has left runs nothing. A root that handed
+// work to a person starts nothing of its tree while it waits: its members start with its resume
+// (admit's promotion of the answered root). The tree's design gate must stand open.
+//
+// A child an unfinished Dispatch issue holds where it stands (LineFacts.Held) waits for that
+// issue, not for a slot: offered one it would take it from an issue that can work, and its own
+// first phase would start on work its blocker has still to land. The architect above it is told
+// when it starts, and the state names it under admission.blocked meanwhile.
+//
+// A parent whose own Dispatch children are still open does its work after theirs
+// (LineFacts.ChildWaits): offered a slot it would build beside the children whose merges its own
+// head is meant to carry. The architect that owns it is told once per issue and run of its tree
+// when the wait begins (admit's tellChildrenFirst): the root's own architect for a root, and for
+// a child the architect above it, since the child's own starts only with that first phase. A
+// person's todo on a child that ran or was held starts and stops nothing (workflow's
+// ReenterChild), so its own architect, if it held its role, still holds it and is told. The state
+// names it under admission.blocked meanwhile.
+//
+// An issue beneath an ancestor the daemon has already accepted waits while that ancestor stands
+// in retro or merging (HeldUnderAccepted): starting it would let the ancestor merge work its own
+// head does not carry. A person's move of such an issue to todo records it at admitted and leaves
+// it there; the architect is told why when it enters. The chain is walked over the records above
+// the pass's own as well (HeldFacts.Chain), so that a parent already done does not hide the
+// merging issue above it.
+func FirstPhaseStartsNow(issue Issue, queued bool, line HeldFacts) bool {
+	if !FirstPhaseMayStart(issue) || queued {
+		return false
+	}
+	root, recorded := line.ByKey[issue.Tree]
+	if _, live := line.Live[issue.Tree]; !recorded || root.Lingers() || !live {
+		return false
+	}
+	if root.AwaitingPerson() || !line.Facts.Gates[issue.Tree].Open() {
+		return false
+	}
+	if _, blocked := line.Facts.Held[issue.Key]; blocked {
+		return false
+	}
+	if _, waits := line.Facts.ChildWaits[issue.Key]; waits {
+		return false
+	}
+	return !HeldUnderAccepted(issue, line.Chain)
 }
 
 // WaitingIssues is the issues of a waiting line, in its order, for a reader that wants the

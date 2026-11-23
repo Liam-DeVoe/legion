@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -540,6 +541,9 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 	before.Stretches = 4
 	after := recorded("window-one", 1, "legion-v20.42.5", "2222222222222222222222222222222222222222")
 	after.Stretches, after.Conflicted = 10, 3
+	after.Conflicts = ConflictModel{Stretches: 10, Conflicts: 3, Base: Coefficient{Estimate: -2, Low: -3, High: -1},
+		Term: Coefficient{Estimate: 0.5, Low: -0.25, High: 1.25}, Level: conflictLevel, Phases: map[phase.Phase]PhaseFit{
+			phase.Merging: {Stretches: 6, Conflicts: 1}, phase.Testing: {Stretches: 4, Conflicts: 2, Term: &Coefficient{Estimate: 1.5, Low: 0.5, High: 2.5}}}}
 	type build struct {
 		commit  string
 		started time.Time
@@ -607,6 +611,9 @@ func TestTheDocumentHasEveryRuleWindowBranchAndMeasure(t *testing.T) {
 		"## The forecast across the change (R5)", "replayed under the rule after it, `legion-v20.42.5`",
 		"The forecast also carries the workflow commits between `1111111111111111111111111111111111111111` and `2222222222222222222222222222222222222222`",
 		"window-two does not measure how a rule changes conflicts", "window-one measures how a rule changes conflicts",
+		"The rate fitted on window-one: base -2 [-3, -1] (merging: stretches 6, conflicts 1), testing term 1.5 [0.5, 2.5] (stretches 4, conflicts 2), "+
+			"reviewing term none (stretches 0, conflicts 0), accepting term none (stretches 0, conflicts 0), retro term none (stretches 0, conflicts 0), "+
+			"merges term 0.5 [-0.25, 1.25]",
 		"## The gap between the snapshot and the line timelines", "## The break-even slowdown factor of each rule against main",
 		"## The assumptions and scenarios each run used", "3. "+Assumptions[2].Text)
 	total := builds[before.Name].runs + builds[after.Name].runs

@@ -42,7 +42,8 @@ const seedSession = "replay-seed"
 // on such a root; the mark that the architect owning an issue was told of its children wait, where
 // the record told it in its tree's current run (childrenToldMarks); the slots the issues hold, the
 // trace's inferred slots among them (assumption 34), and the mark of an issue whose slot went back
-// for a wait on another issue; the tree lifecycle of each tree that runs or lingers; the claims of
+// for a wait on another issue; the tree lifecycle of each tree that runs or lingers, and the closed
+// lifecycle of each other tree the trace shows promoted before the start; the claims of
 // the turns under way of the issues in the workflow, as the outbox's start writes a claim (its
 // given entry and a confirmed delivery), and of the architect of each root that waits on a person
 // between its turns (waitingArchitects), each running the session the record shows running it;
@@ -118,8 +119,8 @@ func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims 
 			return SeedReport{}, err
 		}
 	}
-	for _, fn := range []func() error{s.gates, s.told, s.childrenToldMarks, s.asks, s.slots, s.lifecycles, s.turns, s.waitingArchitects,
-		s.owedStarts, s.pullRequests, s.unclassified} {
+	for _, fn := range []func() error{s.gates, s.told, s.childrenToldMarks, s.asks, s.slots, s.lifecycles, s.closedLifecycles, s.turns,
+		s.waitingArchitects, s.owedStarts, s.pullRequests, s.unclassified} {
 		if err := fn(); err != nil {
 			return SeedReport{}, err
 		}
@@ -759,6 +760,57 @@ func (s *seeder) lifecycles() error {
 		s.epochs[root] = lifecycle.Epoch
 	}
 	return nil
+}
+
+// closedLifecycles writes, under the workflow's authority, the lifecycle of each tree whose root
+// the start state recorded, that runs no lifecycle at the start (lifecycles) and that the trace
+// shows promoted as a tree of its own before it (promotedBefore), with its cleanup reserved and
+// confirmed: the row the daemon leaves of a tree it ran and closed, which it never deletes. A
+// root's later adoption into another tree reads it (workflow's RanAsRoot), so a root that ran as
+// a tree of its own before the window queues as its own tree again in a replay, as it did in the
+// record, rather than joining the tree a person moved it under. The row is opened through the
+// store's own writer, on its clock, and closed as a tree's cleanup closes it.
+func (s *seeder) closedLifecycles() error {
+	for _, root := range s.placedKeys() {
+		if _, opened := s.epochs[root]; opened || s.placed[root].Tree != root || !promotedBefore(s.t, s.t.Issues[root], s.at) {
+			continue
+		}
+		if _, err := s.records.OpenTreeLifecycle(s.ctx, s.tx, s.token, root, treelifecycle.AuthorityWorkflow); err != nil {
+			return fmt.Errorf("replay: seed the closed tree lifecycle of %s: %w", root, err)
+		}
+		reserved, err := treelifecycle.ReserveCleanup(s.ctx, s.tx, s.token, root, treelifecycle.AuthorityWorkflow)
+		if err != nil {
+			return fmt.Errorf("replay: seed the closed tree lifecycle of %s: %w", root, err)
+		}
+		if err := treelifecycle.ConfirmCleanup(s.ctx, s.tx, s.token, root, reserved.Epoch); err != nil {
+			return fmt.Errorf("replay: seed the closed tree lifecycle of %s: %w", root, err)
+		}
+	}
+	return nil
+}
+
+// promotedBefore says whether t shows iss promoted as a tree of its own before at, which opened
+// its tree's lifecycle: a slot it took before at while its entry stood in its own tree (its
+// queued-root slot, or one the trace infers it held there), or a linger of its tree, by a `workflow:
+// tree lingers` line before at or a `workflow: linger closed the tree` line before at whose linger
+// began before the inputs reach (an UnplacedLinger fact). A linger counts where the run it ended
+// had entered the workflow before the inputs reach, where the promotion that opened the run is out
+// of sight: a root that a person took out of the workflow before any slot of its run also lingers,
+// though it opened no lifecycle, and the trace holds that whole run.
+func promotedBefore(t Trace, iss *IssueTrace, at time.Time) bool {
+	for _, span := range iss.Slots {
+		if entry := iss.entryAt(span.Start); span.Start.Before(at) && entry != nil && entry.Tree == iss.Key {
+			return true
+		}
+	}
+	for _, linger := range iss.Lingers {
+		if entry := iss.entryAt(linger.At); linger.At.Before(at) && (entry == nil || entry.At.Before(t.Start)) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(t.Unplaced, func(fact UnplacedFact) bool {
+		return fact.Kind == UnplacedLinger && fact.Issue == iss.Key && fact.At.Before(at)
+	})
 }
 
 // turns writes the claim of each turn under way at the start of a placed issue in the workflow, as

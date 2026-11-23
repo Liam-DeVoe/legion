@@ -958,7 +958,9 @@ func (c comparison) writeGraces(p *printer) {
 	p.line("")
 }
 
-// writeConflicts writes, for each window, whether it measures how a rule changes conflicts.
+// writeConflicts writes, for each window, whether it measures how a rule changes conflicts, and,
+// for a window whose record carries its fitted rate, each term of that rate with its interval
+// (ConflictModel.terms): the base, the term of each phase a stretch can end in and the merges term.
 func (c comparison) writeConflicts(p *printer) {
 	p.line("## Conflicts")
 	p.line("")
@@ -973,6 +975,9 @@ func (c comparison) writeConflicts(p *printer) {
 		default:
 			p.line("%s measures how a rule changes conflicts: %d of its %d stretches ended in a conflict, and each replay draws its conflicts from the rate fitted on them (assumption 3).",
 				w.Name, w.Conflicted, w.Stretches)
+			if w.Conflicts.fitted() {
+				p.line("The rate fitted on %s: %s.", w.Name, w.Conflicts.terms())
+			}
 		}
 	}
 	p.line("")

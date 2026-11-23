@@ -637,24 +637,28 @@ func withRanks(t Trace, ranks map[string]string) Trace {
 // recorded first start among the issues of its tree that can still take theirs in the replay
 // (rootRank): the root itself, and each issue whose entry stood in the root's tree at its first
 // start. The replay moves the root's rank each time one of them takes its first slot
-// (firstStarts.take, driver.rerank), and each time one of them can no longer take it, or can again
-// (firstStarts.bar, driver.reviewFirstStart), so a root in flight at the start ranks by its first
-// child's start, then by its next child's, and a tree's next child takes the place its own recorded
-// start gives it among every tree's work: the replay starts the issues in the order the record
-// started them, across trees, where the rule lets it (assumption 36). An issue the replay has not
-// filed yet, or has finished, moved past its first phase or taken out of the workflow without its
-// first start, pins no tree to its rank, from the window's start on (barAtStart). A tree with no
-// recorded start left to come shows its root at Dispatch's rank, behind every recorded start still
-// to come, as every issue the record did not start in the window is shown: a root that left the
-// workflow before the window and was set back to todo waits at its own rank behind the issues the
-// record started, as it did in the record, rather than at the head of the line with no recorded
-// work left to open; and an issue the record never started waits behind its tree's recorded starts
-// still to come, and once they are all taken behind every other tree's. One order stays out of
-// reach: a tree whose next recorded start waits at admitted for what the line holds it on (a link,
-// its tree's gate) ranks by it all the same, so a later issue of that tree that can start goes
-// ahead of another tree's issue that the record started before it. A recorded change of a rank the
-// replay shows changes nothing it shows (shadow.render), and the measures read the true ranks from
-// the trace. Nil where no issue started in the window or no rank sorts below the window's lowest.
+// (firstStarts.take, driver.rerank), and each time the daemon's own test of the line's starting
+// part answers otherwise of one of them than it did (firstStarts.bar, driver.reviewFirstStarts,
+// record.FirstPhaseStartsNow), so a root in flight at the start ranks by its first child's start,
+// then by its next child's, and a tree's next child takes the place its own recorded start gives it
+// among every tree's work: the replay starts the issues in the order the record started them,
+// across trees, where the rule lets it (assumption 36). An issue whose first phase the replay's
+// daemon would not start now pins no tree to its rank: one the replay has not filed yet, or has
+// finished, moved past its first phase or taken out of the workflow, from the window's start on
+// (barAtStart), and one a hold of the starting part keeps back — its tree not running, its root
+// waiting on a person, its tree's design gate closed, a blocker, its open children or an accepted
+// ancestor — from the pass of the replay's daemon in which the hold begins, which orders its line
+// by the ranks the holds it reads leave. So a tree whose next recorded start a hold keeps back
+// ranks by its next start that can be made, and another tree's later recorded start that can be
+// made goes ahead of it. A tree with no recorded start left that can be made shows its root at
+// Dispatch's rank, behind every recorded start that can be made, as every issue the record did not
+// start in the window is shown: a root that left the workflow before the window and was set back
+// to todo waits at its own rank behind the issues the record started, as it did in the record,
+// rather than at the head of the line with no recorded work left to open; and an issue the record
+// never started waits behind its tree's recorded starts that can be made, and among other trees at
+// its root's rank of the moment. A recorded change of a rank the replay shows changes nothing it
+// shows (shadow.render), and the measures read the true ranks from the trace. Nil where no issue
+// started in the window or no rank sorts below the window's lowest.
 func firstStartRanks(t Trace) *firstStarts {
 	type first struct {
 		key, tree string
@@ -718,6 +722,7 @@ func firstStartRanks(t Trace) *firstStarts {
 			f.trees[issue.key] = append(f.trees[issue.key], issue.key)
 		}
 	}
+	f.order = slices.Sorted(maps.Keys(f.own))
 	f.barAtStart(t, t.From)
 	return f
 }
@@ -761,8 +766,10 @@ func cameBack(kind string) bool {
 // whose earliest rank still to come its root is shown at, which of them have taken their first slot
 // in the replay, and which of the others cannot take it there now.
 type firstStarts struct {
-	// own is the rank of each issue the record started in the window, by its first start.
-	own map[string]string
+	// own is the rank of each issue the record started in the window, by its first start, and
+	// order its issues in key order, the order the replay reads them in.
+	own   map[string]string
+	order []string
 	// trees is each tree root's issues of own, in the order of their first starts: those that
 	// stood in its tree at their first start, and the root itself where it started in another.
 	trees map[string][]string
@@ -771,9 +778,8 @@ type firstStarts struct {
 	tree map[string]string
 	// taken is each issue of own that has taken its first slot in the replay.
 	taken map[string]bool
-	// barred is each issue of own that has not taken its first slot in the replay and cannot take
-	// it there now (driver.reviewFirstStart): the replay has not filed it, or has finished it,
-	// moved it past its first phase or taken it out of the workflow.
+	// barred is each issue of own that has not taken its first slot in the replay and whose first
+	// phase the replay's daemon would not start now (barAtStart, driver.reviewFirstStarts).
 	barred map[string]bool
 }
 
@@ -812,18 +818,41 @@ func (f *firstStarts) rootRank(root string) (string, bool) {
 	return "", false
 }
 
+// with is a copy of f whose barred holds changed in place of f's: each key barred where its value
+// is true and not where it is false. It is how a reading inside a fact's transaction ranks the roots
+// before the fact commits (driver.reviewFirstStarts), f itself taking the change only once it does.
+func (f *firstStarts) with(changed map[string]bool) *firstStarts {
+	next := *f
+	next.barred = maps.Clone(f.barred)
+	for key, barred := range changed {
+		if barred {
+			next.barred[key] = true
+		} else {
+			delete(next.barred, key)
+		}
+	}
+	return &next
+}
+
 // keys is the issues of own in key order, none for no first starts.
 func (f *firstStarts) keys() []string {
 	if f == nil {
 		return nil
 	}
-	return slices.Sorted(maps.Keys(f.own))
+	return f.order
+}
+
+// left says whether an issue of own has still to take its first slot in the replay.
+func (f *firstStarts) left() bool {
+	return f != nil && len(f.taken) < len(f.own)
 }
 
 // barAtStart bars each issue of own whose first phase cannot start where t's start state at at
 // records it (startRecords, record.FirstPhaseMayStart): one the start state does not record yet,
-// or records finished, past its first phase or out of the workflow. The replay reads each again as
-// it goes (driver.reviewFirstStart).
+// or records finished, past its first phase or out of the workflow. It is the reading the start
+// state is written with, before the replay's daemon holds a record to judge the line on; the
+// replay reads each again by the line's whole test before each admission pass of its daemon, from
+// the first fact on (driver.reviewFirstStarts).
 func (f *firstStarts) barAtStart(t Trace, at time.Time) {
 	keys := f.keys()
 	placed := startRecords(t, at, keys)

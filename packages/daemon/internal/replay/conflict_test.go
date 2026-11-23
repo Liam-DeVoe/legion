@@ -93,11 +93,12 @@ func TestConflictRateFit(t *testing.T) {
 				model.OwnMergeUnknown)
 		}
 		t.Logf("the fixture window's conflict model: %s; base %v [%v, %v], merges term %v [%v, %v]; chance at M = 0 %v, at M = 1 %v", model,
-			model.Base.Estimate, model.Base.Low, model.Base.High, model.Term.Estimate, model.Term.Low, model.Term.High, model.Chance(0), model.Chance(1))
-		if chance := model.Chance(0); chance > 1e-6 {
+			model.Base.Estimate, model.Base.Low, model.Base.High, model.Term.Estimate, model.Term.Low, model.Term.High, model.Chance(phase.Merging, 0),
+			model.Chance(phase.Merging, 1))
+		if chance := model.Chance(phase.Merging, 0); chance > 1e-6 {
 			t.Errorf("the fitted chance at M = 0 is %v, want below 1e-6", chance)
 		}
-		if chance := model.Chance(1); chance < 1-1e-6 {
+		if chance := model.Chance(phase.Merging, 1); chance < 1-1e-6 {
 			t.Errorf("the fitted chance at M = 1 is %v, want above 1 - 1e-6", chance)
 		}
 		for name, c := range map[string]Coefficient{"base": model.Base, "merges term": model.Term} {
@@ -652,24 +653,29 @@ func TestALoopFromAnEarlierPhaseTakesTheIssueBackThroughItsOwnWork(t *testing.T)
 	checkACME1Moves(t, earlierLoopWindow(t), 1, want, []time.Time{clock(9, 10), clock(9, 40), clock(10, 0), clock(10, 30), clock(11, 0)})
 }
 
-// The branch Merges zero sets the conflict model's merges term to zero and keeps its base (spec
-// R2, assumption 3): every stretch draws at the base chance whatever M its base took. The test
-// reads a model with a base and a term, and fails where the zero branch's chance at any M from 0
-// to 20 is not the logistic of the base, or where the fitted model's chance at an M above 0 is.
-// It then replays the fixture window conflict-from-fitted-rate under main on the branch
-// main+merges=zero: ACME-1's first stretch, which conflicts at the fitted rate (its M is 1), draws
-// at the base chance, below 10⁻⁶, and does not conflict, so no merge forward is asked, no loop of
-// conflict is counted, and ACME-1 goes on with its last merging segment from 11:00 and is done at
-// 11:15.
+// The branch Merges zero sets the conflict model's merges term to zero and keeps its base and its
+// phase terms (spec R2, assumption 3, plan D7): every stretch draws at the chance its phase gives
+// whatever M its base took. The test reads a model with a base, a term for testing and a merges
+// term, and fails where the zero branch's chance at any M from 0 to 20 is not the logistic of the
+// base in merging and of the base and testing's term in testing, or where the fitted model's chance
+// at an M above 0 is. It then replays the fixture window conflict-from-fitted-rate under main on the
+// branch main+merges=zero: ACME-1's first stretch, which conflicts at the fitted rate (its M is 1),
+// draws at the base chance, below 10⁻⁶, and does not conflict, so no merge forward is asked, no
+// loop of conflict is counted, and ACME-1 goes on with its last merging segment from 11:00 and is
+// done at 11:15.
 func TestTheZeroBranchDrawsWithoutTheMergesTerm(t *testing.T) {
-	fitted := ConflictModel{Stretches: 10, Conflicts: 4, Base: Coefficient{Estimate: -1.5}, Term: Coefficient{Estimate: 0.9}, Level: conflictLevel}
+	base, testingTerm := -1.5, 0.7
+	fitted := ConflictModel{Stretches: 10, Conflicts: 4, Base: Coefficient{Estimate: base}, Term: Coefficient{Estimate: 0.9}, Level: conflictLevel,
+		Phases: map[phase.Phase]PhaseFit{phase.Testing: {Term: &Coefficient{Estimate: testingTerm}}}}
 	zero := fitted.WithoutTerm()
 	for merges := range 21 {
-		if got, want := zero.Chance(merges), logistic(-1.5); got != want {
-			t.Errorf("under the zero branch the chance at M = %d is %v, want the base's %v", merges, got, want)
-		}
-		if merges > 0 && fitted.Chance(merges) == zero.Chance(merges) {
-			t.Errorf("the fitted model's chance at M = %d is the base's %v, and its merges term is 0.9", merges, fitted.Chance(merges))
+		for in, want := range map[phase.Phase]float64{phase.Merging: logistic(base), phase.Testing: logistic(base + testingTerm)} {
+			if got := zero.Chance(in, merges); got != want {
+				t.Errorf("under the zero branch the chance in %s at M = %d is %v, want %v, its base and phase term's", in, merges, got, want)
+			}
+			if merges > 0 && fitted.Chance(in, merges) == zero.Chance(in, merges) {
+				t.Errorf("the fitted model's chance in %s at M = %d is %v, without its merges term of 0.9", in, merges, fitted.Chance(in, merges))
+			}
 		}
 	}
 
@@ -736,19 +742,20 @@ func TestAConflictDependsOnTheWaitOnlyThroughMerges(t *testing.T) {
 		count, _ := merges.between(builtRepository, 0, start, end)
 		return count
 	}
-	short := model.Chance(merged(clock(9, 50), clock(10, 10)))
-	long := model.Chance(merged(clock(8, 0), clock(10, 59)))
+	short := model.Chance(phase.Merging, merged(clock(9, 50), clock(10, 10)))
+	long := model.Chance(phase.Merging, merged(clock(8, 0), clock(10, 59)))
 	if short != long {
 		t.Errorf("a stretch of 20 minutes draws at %v and one of three hours at %v, and both took one merge", short, long)
 	}
 	both := merged(clock(8, 0), clock(11, 30))
-	if model.Chance(both) == long {
+	if model.Chance(phase.Merging, both) == long {
 		t.Errorf("a stretch that took two merges draws at %v, the chance of one that took one, under a merges term of 1.1", long)
 	}
-	if zero := model.WithoutTerm(); zero.Chance(both) != zero.Chance(1) {
-		t.Errorf("under the zero branch a stretch that took two merges draws at %v and one that took one at %v", zero.Chance(both), zero.Chance(1))
+	if zero := model.WithoutTerm(); zero.Chance(phase.Merging, both) != zero.Chance(phase.Merging, 1) {
+		t.Errorf("under the zero branch a stretch that took two merges draws at %v and one that took one at %v", zero.Chance(phase.Merging, both),
+			zero.Chance(phase.Merging, 1))
 	}
-	if got := (ConflictModel{Stretches: 3}).Chance(5); got != 0 {
+	if got := (ConflictModel{Stretches: 3}).Chance(phase.Merging, 5); got != 0 {
 		t.Errorf("a window that records no conflict draws a chance of %v, want 0", got)
 	}
 	if rule := record.MainRule.OrMain(); rule.Conflict != record.ConflictMergeForward {

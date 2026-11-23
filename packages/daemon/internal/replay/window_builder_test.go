@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"slices"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -874,4 +876,593 @@ func (b *windowBuilder) leaves(at time.Time, key, status string) {
 func (b *windowBuilder) lingerCloses(at time.Time, root string, issues int) {
 	b.t.Helper()
 	b.info(at, "workflow: linger closed the tree", "tree", root, "generation", b.generation(root), "issues", issues)
+}
+
+// ranOwnTreeWindow is a window from 10:00 to 12:00 under a cap of 2, its inputs reaching back to
+// the daemon's boot at 05:00. ACME-1, a root at rank a1, holds a slot from its promotion at 05:05
+// while its architect designs its tree to the window's end. ACME-3, a root at rank a3 handed to
+// Legion at 05:10, is promoted at once and runs as a tree of its own: a person sets it back to
+// backlog at 05:40, it leaves the workflow, and its tree lingers until the linger closes it at
+// 07:40. At 10:30 a person sets ACME-3 back to todo under ACME-1. The record's daemon adopts no
+// root that ran as a tree of its own (workflow's RanAsRoot, which reads the tree lifecycle that
+// ACME-3's promotion opened and that its close kept), so ACME-3 queues as its own tree again, at
+// its next generation, and the pass promotes it at once.
+func ranOwnTreeWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.reaches(5 * time.Hour)
+	b.capped(2)
+	b.boot(clock(5, 0))
+	promotedRoot(b, clock(5, 5), "ACME-1", "a1")
+	promotedRoot(b, clock(5, 10), "ACME-3", "a3")
+	b.edit(clock(5, 40), "ACME-3", setStatus("backlog"))
+	b.leaves(clock(5, 40), "ACME-3", "backlog")
+	b.lingerCloses(clock(7, 40), "ACME-3", 1)
+	b.edit(clock(10, 30), "ACME-3", func(issue *builtIssue) { issue.Status, issue.Parent = "todo", "ACME-1" })
+	b.ownTree("ACME-3")
+	b.rootPromoted(clock(10, 30), "ACME-3")
+	return b.build()
+}
+
+// A root that ran as a tree of its own before the window is not adopted into another tree in a
+// replay, as the daemon adopts none: the start state holds the closed lifecycle of each tree the
+// trace shows promoted before the window (seeder.closedLifecycles), the row the daemon never
+// deletes, which workflow's RanAsRoot reads. The test replays ranOwnTreeWindow under main: at
+// 10:30 ACME-3 joins no tree and takes the free slot as a tree of its own, as the record shows.
+// It fails where the start state opens no lifecycle for a tree that is closed at the window's
+// start, for which the replay's daemon finds no run of ACME-3's own, adopts it into ACME-1's tree
+// at 10:30, and holds it there behind ACME-1's design.
+func TestARootThatRanAsATreeOfItsOwnBeforeTheWindowIsNotAdopted(t *testing.T) {
+	_, log := knobRun(t, ranOwnTreeWindow(t), mainRule(t), "main")
+	joined := linesAt(log, func(line replayLine) bool {
+		return line.Msg == "workflow: a queued root joined a live tree" && line.Issue == "ACME-3"
+	})
+	if len(joined) > 0 {
+		t.Errorf("the replay adopted ACME-3 into a live tree at %s, want it kept as a tree of its own: it ran as one before the window",
+			describeTimes(joined))
+	}
+	if given := slotsGiven(log); !slices.Contains(given, "ACME-3 at 10:30") {
+		t.Errorf("the replay gave the slots %v, want ACME-3's at 10:30, its promotion as a tree of its own", given)
+	}
+}
+
+// The issues of each window of TestATreeLosesTheRankOfAStartAHoldKeepsBack, by their part in it:
+// the root that holds a slot until 11:00 in the replay or in the record; tree A's root, its child
+// whose recorded first start the hold keeps back, and a second child of it in backlog, which keeps
+// the root waiting for its children; and tree B's root and the child the record starts after
+// tree A's.
+const (
+	heldHolder = "ACME-1"
+	heldRootA  = "ACME-2"
+	heldChildA = "ACME-3"
+	heldRootB  = "ACME-5"
+	heldChildB = "ACME-6"
+	heldOtherA = "ACME-7"
+)
+
+// heldAsk is the id of the approval request tree A's architect opens in rootAwaitingHeldWindow.
+const heldAsk = "00000000-0000-4000-8000-0000000000b7"
+
+// builtChild is a child of a built tree: its key and its rank.
+type builtChild struct {
+	key, rank string
+}
+
+// waitingTree is root, a root at rank promoted at at, its children filed in backlog under it 5
+// minutes later, and its architect's design 15 minutes in, after which the root waits for those
+// children and gives its slot back. In a deployment that gates the spec its architect writes
+// version 1 at 6 minutes, and a person approves it at 8.
+func waitingTree(b *windowBuilder, at time.Time, root, rank string, children ...builtChild) {
+	b.t.Helper()
+	promotedRoot(b, at, root, rank)
+	for _, child := range children {
+		b.file(at.Add(5*time.Minute), child.key, filing{Title: "Ship the " + child.key + " change", Parent: root, Tree: root,
+			Status: "backlog", Rank: child.rank})
+	}
+	if len(b.window.GateSteps) > 0 {
+		b.specWritten(at.Add(6*time.Minute), root)
+		b.approves(at.Add(8*time.Minute), root, "")
+	}
+	b.rootWaitsForChildren(at.Add(15*time.Minute), root, len(children))
+}
+
+// heldStart starts a window of TestATreeLosesTheRankOfAStartAHoldKeepsBack from 09:00 to 12:00
+// under a cap of limit, its inputs reaching back to the daemon's boot at 06:00, recorded under
+// keep-past-review, in a deployment that gates the spec where gated is set. Its record is written
+// in time order wherever a slot moves (heldTreeB, holderToReview, holderMerges), since each slot
+// line carries the slots in use once it is written.
+func heldStart(t *testing.T, limit int, gated bool) *windowBuilder {
+	t.Helper()
+	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
+	b.window.Parts[0].Rule = "keep-past-review"
+	b.reaches(3 * time.Hour)
+	b.capped(limit)
+	if gated {
+		b.gated(record.DesignStepSpec)
+	}
+	b.boot(clock(6, 0))
+	return b
+}
+
+// heldTreeB is tree B: heldRootB, a root at rank a2, is promoted at 06:30 and waits for its one
+// child, heldChildB at rank b2, which a person releases to todo at 09:10.
+func heldTreeB(b *windowBuilder) {
+	b.t.Helper()
+	waitingTree(b, clock(6, 30), heldRootB, "a2", builtChild{heldChildB, "b2"})
+	b.edit(clock(9, 10), heldChildB, setStatus("todo"))
+}
+
+// holderToReview is heldHolder, a root at rank a0, promoted at 08:00 and working to its review
+// from 09:30; in a deployment that gates the spec, its architect writes version 1 at 08:05 and a
+// person approves it at 08:10.
+func holderToReview(b *windowBuilder) {
+	b.t.Helper()
+	promotedRoot(b, clock(8, 0), heldHolder, "a0")
+	if len(b.window.GateSteps) > 0 {
+		b.specWritten(clock(8, 5), heldHolder)
+		b.approves(clock(8, 10), heldHolder, "")
+	}
+	b.rootDesigned(clock(8, 15), heldHolder)
+	b.through(heldHolder, phase.Planning, moveAt(8, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(9, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(9, 30, phase.Reviewing, workflow.TriggerTesterPassed))
+}
+
+// holderMerges is heldHolder's review approving it into accepting at 10:15, past which it keeps
+// its slot, as keep-past-review does, to its merge at 11:00, where the slot comes free. A replay
+// under main gives the slot back at the accepting at 10:15.
+func holderMerges(b *windowBuilder) {
+	b.t.Helper()
+	b.pastReviewKept(clock(10, 15), heldHolder, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.pastReviewKept(clock(10, 30), heldHolder, phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+	b.pastReviewKept(clock(10, 45), heldHolder, phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	b.turnEnds(clock(11, 0), heldHolder, claim.RoleMerger)
+	b.moved(clock(11, 0), heldHolder, phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.leaves(clock(11, 0), heldHolder, record.DoneStatus)
+}
+
+// mergesPastReview is key, a child, starting at at and working 5 minutes in each phase to its
+// merge, keeping its slot past its review as keep-past-review does: it gives the slot back at its
+// merge 35 minutes in.
+func mergesPastReview(b *windowBuilder, key string, at time.Time) {
+	b.t.Helper()
+	minutes := func(n int) time.Time { return at.Add(time.Duration(n) * time.Minute) }
+	b.childStarts(at, key)
+	b.through(key, phase.Planning, builtMove{minutes(5), phase.Implementing, workflow.TriggerPlannerCompleted},
+		builtMove{minutes(10), phase.Testing, workflow.TriggerImplementationReady}, builtMove{minutes(15), phase.Reviewing, workflow.TriggerTesterPassed})
+	b.pastReviewKept(minutes(20), key, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.pastReviewKept(minutes(25), key, phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+	b.pastReviewKept(minutes(30), key, phase.Retro, phase.Merging, workflow.TriggerRetroCompleted)
+	b.turnEnds(minutes(35), key, claim.RoleMerger)
+	b.moved(minutes(35), key, phase.Merging, phase.Done, workflow.TriggerPullRequestMerged)
+	b.leaves(minutes(35), key, record.DoneStatus)
+}
+
+// waitingTreeHeldWindow is heldStart under a cap of 1 with tree A waiting for its children:
+// heldRootA, a root at rank a1 promoted at 06:05, waits for heldChildA at rank b1 and heldOtherA
+// at rank b7, filed in backlog, and a person releases heldChildA to todo at 09:05; then tree B
+// (heldTreeB) and heldHolder (holderToReview, holderMerges), which holds the one slot from 08:00
+// to 11:00. hold writes a hold on heldChildA from 10:00 to its end at 10:50. At 11:00 heldHolder's
+// slot goes to heldChildA, which merges at 11:35 (mergesPastReview), and its slot then goes to
+// heldChildB. heldOtherA, still in backlog, keeps heldRootA waiting for its children all the while.
+func waitingTreeHeldWindow(t *testing.T, hold func(b *windowBuilder)) Window {
+	t.Helper()
+	b := heldStart(t, 1, false)
+	waitingTree(b, clock(6, 5), heldRootA, "a1", builtChild{heldChildA, "b1"}, builtChild{heldOtherA, "b7"})
+	heldTreeB(b)
+	holderToReview(b)
+	b.edit(clock(9, 5), heldChildA, setStatus("todo"))
+	hold(b)
+	holderMerges(b)
+	mergesPastReview(b, heldChildA, clock(11, 0))
+	b.childStarts(clock(11, 35), heldChildB)
+	return b.build()
+}
+
+// blockerHeldWindow is waitingTreeHeldWindow with a blocker: ACME-4, an issue Legion is not
+// given, stands in backlog from 06:00; at 10:00 a person links heldChildA as blocked by it, and at
+// 10:50 closes it.
+func blockerHeldWindow(t *testing.T) Window {
+	return waitingTreeHeldWindow(t, func(b *windowBuilder) {
+		b.file(clock(6, 0), "ACME-4", filing{Title: "Agree the shelf names with the warehouse", Status: "backlog", Rank: "c4"})
+		b.edit(clock(10, 0), heldChildA, func(issue *builtIssue) { issue.BlockedBy = []string{"ACME-4"} })
+		b.edit(clock(10, 50), "ACME-4", setStatus(record.DoneStatus))
+	})
+}
+
+// openChildrenHeldWindow is waitingTreeHeldWindow with open children: at 10:00 a person files
+// ACME-8 todo under heldChildA, which waits for it (children first), and at 10:50 moves it to
+// icebox, where it leaves the workflow.
+func openChildrenHeldWindow(t *testing.T) Window {
+	return waitingTreeHeldWindow(t, func(b *windowBuilder) {
+		b.file(clock(10, 0), "ACME-8", filing{Title: "Name the header row's columns", Parent: heldChildA, Tree: heldRootA, Status: "todo", Rank: "b8"})
+		b.waitsForChildren(clock(10, 0), heldChildA, 1)
+		b.edit(clock(10, 50), "ACME-8", setStatus("icebox"))
+		b.leaves(clock(10, 50), "ACME-8", "icebox")
+	})
+}
+
+// designGateHeldWindow is heldStart under a cap of 2, in a deployment that gates the spec, with
+// tree A's design gate closed. heldRootA, a root at rank a1, is promoted at 06:05; its architect
+// writes version 1 of the spec at 06:10, a person approves it at 06:15, and the root works its own
+// first phase from 06:20 and implements from 06:50 to the window's end, holding its slot. Then tree
+// B (heldTreeB) and heldHolder (holderToReview), which takes the second slot at 08:00. At 09:05 a
+// person files heldChildA, at rank b1, todo under heldRootA: no slot is free. At 10:00 heldRootA's
+// architect writes version 2 of the spec, which closes the gate, and at 10:50 a person approves it,
+// which opens the gate again. At 11:00 heldHolder's slot (holderMerges) goes to heldChildA, which
+// merges at 11:35 (mergesPastReview), and its slot then goes to heldChildB.
+func designGateHeldWindow(t *testing.T) Window {
+	b := heldStart(t, 2, true)
+	promotedRoot(b, clock(6, 5), heldRootA, "a1")
+	b.specWritten(clock(6, 10), heldRootA)
+	b.approves(clock(6, 15), heldRootA, "")
+	b.rootDesigned(clock(6, 20), heldRootA)
+	b.segmentEnds(clock(6, 50), heldRootA, phase.Planning, phase.Implementing, workflow.TriggerPlannerCompleted)
+	heldTreeB(b)
+	holderToReview(b)
+	b.file(clock(9, 5), heldChildA, filing{Title: "Write the export's header row", Parent: heldRootA, Tree: heldRootA, Status: "todo", Rank: "b1"})
+	b.specRevised(clock(10, 0), heldRootA, 2)
+	b.gateClosed(clock(10, 0), heldRootA, intake.DispatchArtifactVersion, 2)
+	b.approvesVersion(clock(10, 50), heldRootA, "", 2)
+	b.gateOpened(clock(10, 50), heldRootA, intake.DispatchArtifactApproved, 2)
+	holderMerges(b)
+	mergesPastReview(b, heldChildA, clock(11, 0))
+	b.childStarts(clock(11, 35), heldChildB)
+	return b.build()
+}
+
+// rootAwaitingHeldWindow is heldStart under a cap of 2, in a deployment that gates the spec, with
+// tree A's root waiting on a person: tree B (heldTreeB) and heldHolder (holderToReview), which
+// takes the first slot at 08:00. heldRootA, a root at rank a1 handed to Legion at 09:05, is
+// promoted then into the second slot; heldChildA, at rank b1, is filed todo under it at 09:06, and
+// heldOtherA in backlog. Its architect writes version 1 of the spec at 09:17, asks a person to
+// approve it at 09:18 and registers it at 09:20, which hands it to the person: the root waits on
+// them, keeping its slot, from then. At 10:50 the person approves it: the gate opens, the root waits
+// for its children and gives its slot back, and heldChildA takes it. At 11:00 heldHolder's slot
+// (holderMerges) goes to heldChildB.
+func rootAwaitingHeldWindow(t *testing.T) Window {
+	b := heldStart(t, 2, true)
+	heldTreeB(b)
+	holderToReview(b)
+	promotedRoot(b, clock(9, 5), heldRootA, "a1")
+	b.file(clock(9, 6), heldChildA, filing{Title: "Write the export's header row", Parent: heldRootA, Tree: heldRootA, Status: "todo", Rank: "b1"})
+	b.file(clock(9, 6), heldOtherA, filing{Title: "Sort the export by shelf", Parent: heldRootA, Tree: heldRootA, Status: "backlog", Rank: "b7"})
+	b.specWritten(clock(9, 17), heldRootA)
+	b.asksApproval(clock(9, 18), heldRootA, heldAsk)
+	b.turnEnds(clock(9, 20), heldRootA, claim.RoleArchitect)
+	b.registered(clock(9, 20), heldRootA, false)
+	since := b.seq(heldRootA)
+	b.info(clock(9, 20), "workflow: a registration hands a design document to the person", "issue", heldRootA,
+		"step", string(record.DesignStepSpec), "version", 1, "since_seq", since)
+	b.info(clock(9, 20), "workflow: root waits on a person and keeps its admission slot", "issue", heldRootA, "tree", heldRootA,
+		"reason", "spec version 1 is awaiting a person's review", "since_seq", since)
+	b.approves(clock(10, 50), heldRootA, heldAsk)
+	b.waitsForChildren(clock(10, 50), heldRootA, 2)
+	b.gateOpened(clock(10, 50), heldRootA, intake.DispatchArtifactApproved, 1)
+	b.info(clock(10, 50), "workflow: a person's review or a newer spec version answered a root's wait", "issue", heldRootA,
+		"version", 1, "event", "approved", "ask", "", "waited_version", 1)
+	b.slotReleased(clock(10, 50), heldRootA)
+	b.childStarts(clock(10, 50), heldChildA)
+	holderMerges(b)
+	b.childStarts(clock(11, 0), heldChildB)
+	return b.build()
+}
+
+// acceptedAncestorHeldWindow is heldStart under a cap of 2 with tree A's root accepted. heldRootA,
+// a root at rank a1, is promoted at 06:05, works its own phases, keeping its slot past its review,
+// and is signed off into retro at 08:40; then tree B (heldTreeB) and heldHolder (holderToReview),
+// which takes the second slot at 08:00. ACME-8, a root at rank a3, is handed to Legion at 08:50 and
+// waits for a slot all window. At 10:00 a person files heldChildA, at rank b1, todo under heldRootA,
+// which stands accepted, so the child waits beneath it; at 10:50 the root's retro sends it back to
+// implementing, and it stands accepted no longer. At 11:00 heldHolder's slot (holderMerges) goes to
+// heldChildA, which merges at 11:35 (mergesPastReview), and its slot then goes to heldChildB. A
+// replay under main gives heldRootA's slot back at its first pass, in retro, and ACME-8 takes it.
+func acceptedAncestorHeldWindow(t *testing.T) Window {
+	b := heldStart(t, 2, false)
+	promotedRoot(b, clock(6, 5), heldRootA, "a1")
+	b.rootDesigned(clock(6, 20), heldRootA)
+	b.through(heldRootA, phase.Planning, moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(7, 50, phase.Reviewing, workflow.TriggerTesterPassed))
+	b.pastReviewKept(clock(8, 20), heldRootA, phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	b.pastReviewKept(clock(8, 40), heldRootA, phase.Accepting, phase.Retro, workflow.TriggerSignOff)
+	heldTreeB(b)
+	holderToReview(b)
+	b.file(clock(8, 50), "ACME-8", filing{Title: "Archive the old exports", Status: "todo", Rank: "a3", Labels: handedToLegion})
+	b.file(clock(10, 0), heldChildA, filing{Title: "Write the export's header row", Parent: heldRootA, Tree: heldRootA, Status: "todo", Rank: "b1"})
+	b.pastReviewKept(clock(10, 50), heldRootA, phase.Retro, phase.Implementing, workflow.TriggerBackward)
+	holderMerges(b)
+	mergesPastReview(b, heldChildA, clock(11, 0))
+	b.childStarts(clock(11, 35), heldChildB)
+	return b.build()
+}
+
+// treeNotRunningWindow is a window from 09:00 to 12:00 under a cap of 1, its inputs reaching back
+// to the daemon's boot at 06:00, recorded under main, with tree A's tree out of the workflow.
+// heldRootA, a root at rank a1 promoted at 06:05, waits for heldChildA at rank b1 and heldOtherA at
+// rank b7, filed in backlog; heldRootB, at rank a2 and promoted at 06:30, waits for heldChildB at
+// rank b2. heldHolder, a root at rank a0, is promoted at 07:00 and works to its accepting at 10:00,
+// where its slot goes back, and merges at 11:00. A person releases heldChildA to todo at 09:05 and
+// heldChildB at 09:10. heldChildA takes the slot at 10:00 and works 3 minutes in each phase to its
+// merge at 10:21, its slot going back at its accepting at 10:12, where heldChildB takes it. At 10:30
+// a person moves heldRootA to backlog: it leaves the workflow and its tree lingers past the
+// window's end. A replay under keep-past-review keeps heldHolder's slot from its accepting to its
+// merge at 11:00.
+func treeNotRunningWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(6, 0))
+	waitingTree(b, clock(6, 5), heldRootA, "a1", builtChild{heldChildA, "b1"}, builtChild{heldOtherA, "b7"})
+	waitingTree(b, clock(6, 30), heldRootB, "a2", builtChild{heldChildB, "b2"})
+	promotedRoot(b, clock(7, 0), heldHolder, "a0")
+	b.rootDesigned(clock(7, 15), heldHolder)
+	b.through(heldHolder, phase.Planning, moveAt(7, 30, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(8, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 30, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 0, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 20, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 40, phase.Merging, workflow.TriggerRetroCompleted), moveAt(11, 0, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(11, 0), heldHolder, record.DoneStatus)
+	b.edit(clock(9, 5), heldChildA, setStatus("todo"))
+	b.edit(clock(9, 10), heldChildB, setStatus("todo"))
+	b.childStarts(clock(10, 0), heldChildA)
+	b.through(heldChildA, phase.Planning, moveAt(10, 3, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(10, 6, phase.Testing, workflow.TriggerImplementationReady), moveAt(10, 9, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 12, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 15, phase.Retro, workflow.TriggerSignOff),
+		moveAt(10, 18, phase.Merging, workflow.TriggerRetroCompleted), moveAt(10, 21, phase.Done, workflow.TriggerPullRequestMerged))
+	b.leaves(clock(10, 21), heldChildA, record.DoneStatus)
+	b.childStarts(clock(10, 12), heldChildB)
+	b.edit(clock(10, 30), heldRootA, setStatus("backlog"))
+	b.leaves(clock(10, 30), heldRootA, "backlog")
+	return b.build()
+}
+
+// A tree whose recorded next first start a hold keeps back in a replay ranks by that start no
+// longer: the replay bars a recorded first start while the daemon's own test of the line's starting
+// part holds it (record.FirstPhaseStartsNow), and ranks the tree's root again when that answer
+// changes, so another tree's later recorded start takes its place. Each row is one hold that test
+// reads, recorded on heldChildA, tree A's next recorded first start, ahead of heldChildB's of tree
+// B, while a replay frees a slot that the record did not free then: the tree not running, the root
+// waiting on a person, the design gate closed, a blocker, open children and an accepted ancestor.
+// In each the replay's daemon records heldRootA at a rank below heldRootB's at its last settle
+// before that slot comes free (at), the ranks the pass that gives it out orders the line by, and
+// the slot goes to heldChildB. Every row fails where the replay bars a start by the issue's own
+// record alone (record.FirstPhaseMayStart), for which heldRootA keeps heldChildA's rank through the
+// hold, and a later issue of tree A that can start, such as the open child of the row of open
+// children, goes ahead of heldChildB.
+func TestATreeLosesTheRankOfAStartAHoldKeepsBack(t *testing.T) {
+	dsn := replayDSN(t)
+	for _, c := range []struct {
+		hold   string
+		window func(*testing.T) Window
+		rule   string
+		at     time.Time
+	}{
+		{hold: "the tree not running", window: treeNotRunningWindow, rule: "keep-past-review", at: clock(11, 0)},
+		{hold: "the root waiting on a person", window: rootAwaitingHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
+		{hold: "the design gate closed", window: designGateHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
+		{hold: "a blocker", window: blockerHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
+		{hold: "open children", window: openChildrenHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
+		{hold: "an accepted ancestor", window: acceptedAncestorHeldWindow, rule: record.MainRule.Name, at: clock(10, 15)},
+	} {
+		t.Run(c.hold, func(t *testing.T) {
+			ranks := map[string]string{}
+			out := t.TempDir()
+			cfg := RunConfig{Window: c.window(t), Rule: replayedRule(t, c.rule), Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: dsn, Out: out}
+			cfg.atSettled = func(ctx context.Context, st *store.Store, at time.Time) error {
+				if !at.Before(c.at) {
+					return nil
+				}
+				for _, key := range []string{heldRootA, heldRootB} {
+					var rank string
+					if err := st.Pool().QueryRow(ctx, `select coalesce((select rank from issues where key = $1), '')`, key).Scan(&rank); err != nil {
+						return fmt.Errorf("read the rank of %s: %w", key, err)
+					}
+					ranks[key] = rank
+				}
+				return nil
+			}
+			if _, err := Run(context.Background(), cfg); err != nil {
+				t.Fatalf("replay the window under %s: %v", c.rule, err)
+			}
+			rootA, rootB := record.Issue{Key: heldRootA, Rank: ranks[heldRootA]}, record.Issue{Key: heldRootB, Rank: ranks[heldRootB]}
+			if len(ranks) != 2 || !record.RankLess(rootB, rootA) {
+				t.Errorf("before %s the replay's daemon records %s at %q and %s at %q, want %s below %s: %s's recorded first start is held",
+					c.at.Format("15:04"), heldRootA, ranks[heldRootA], heldRootB, ranks[heldRootB], heldRootA, heldRootB, heldChildA)
+			}
+			if given, want := slotsGiven(replayLog(t, out)), heldChildB+" at "+c.at.Format("15:04"); !slices.Contains(given, want) {
+				t.Errorf("the replay gave the slots %v, want %s", given, want)
+			}
+		})
+	}
+}
+
+// acceptingLoopWindow is a window from 10:00 to 13:00 recorded under legion-v20.42.5, its inputs
+// reaching back to the daemon's boot at 07:00. ACME-2, a root promoted at 07:05, whose architect
+// writes version 1 of its spec at 07:15, works 30 minutes in each phase to accepting at 09:20, where
+// it stands at the window's start. At 10:30 a conflict moves it back to implementing; its loop is 30
+// minutes in implementing and 15 in testing and in reviewing, and it is back in accepting at 11:30.
+// Ten minutes into that accepting, at 11:40, its architect writes version 2 of the spec, and it
+// signs ACME-2 off to retro at 12:00, from where it moves to merging at 12:15. No stretch begins and
+// ends inside the window, so the fitted rate draws no conflict.
+func acceptingLoopWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.reaches(3 * time.Hour)
+	b.boot(clock(7, 0))
+	promotedRoot(b, clock(7, 5), "ACME-2", "a2")
+	b.specWritten(clock(7, 15), "ACME-2")
+	b.rootDesigned(clock(7, 20), "ACME-2")
+	b.through("ACME-2", phase.Planning, moveAt(7, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(8, 20, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 50, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(9, 20, phase.Accepting, workflow.TriggerReviewApproved), moveAt(10, 30, phase.Implementing, workflow.TriggerConflict),
+		moveAt(11, 0, phase.Testing, workflow.TriggerImplementationReady), moveAt(11, 15, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(11, 30, phase.Accepting, workflow.TriggerReviewApproved))
+	b.specRevised(clock(11, 40), "ACME-2", 2)
+	b.through("ACME-2", phase.Accepting, moveAt(12, 0, phase.Retro, workflow.TriggerSignOff),
+		moveAt(12, 15, phase.Merging, workflow.TriggerRetroCompleted))
+	return b.build()
+}
+
+// A root architect's design document keeps its recorded time where the replay passes over the
+// conflict loop before the work it falls in (assumption 37): the replay's daemon leaves a conflict
+// in accepting to the merger, the stretch goes on past the recorded loop, and the root's next
+// accepting work opens at once, but a version of its design is no act that moves with that work
+// (driver.keepDesignTimes), since it opens or closes the tree's gate for every member. The test
+// replays acceptingLoopWindow under main: ACME-2's stretch draws no conflict at 10:30, its
+// accepting after the loop opens then and signs it off at 11:00, and the version its architect
+// wrote at 11:40 enters the replay's copy of Dispatch at 11:40. It fails where the version moves
+// with that accepting work, for which it enters at 10:40.
+func TestARootArchitectsDesignVersionPastAPassedOverLoopKeepsItsRecordedTime(t *testing.T) {
+	var copied *shadow
+	out := t.TempDir()
+	cfg := RunConfig{Window: acceptingLoopWindow(t), Rule: mainRule(t), Branch: MainBranch, Seed: 1, Slowdown: 1, PGDSN: replayDSN(t), Out: out}
+	cfg.atStart = func(s *shadow) { copied = s }
+	if _, err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("replay acceptingLoopWindow under main: %v", err)
+	}
+	signedOff := linesAt(replayLog(t, out), func(line replayLine) bool {
+		return line.Msg == phaseChangedLine && line.Issue == "ACME-2" && line.To == string(phase.Retro)
+	})
+	if want := []time.Time{clock(11, 0)}; !slices.EqualFunc(signedOff, want, time.Time.Equal) {
+		t.Errorf("ACME-2 moved into retro at %s, want at %s: its stretch goes on past the recorded loop", describeTimes(signedOff), describeTimes(want))
+	}
+	if applied, want := eventsApplied(t, copied, "ACME-2", "artifact.version"), []time.Time{clock(11, 40)}; !slices.EqualFunc(applied, want, time.Time.Equal) {
+		t.Errorf("the copy of Dispatch holds ACME-2's spec versions applied at %s, want at %s, the recorded time", describeTimes(applied),
+			describeTimes(want))
+	}
+}
+
+// phaseCells is the stretches of phaseStretchesWindow by the phase each ends in and whether the
+// base branch took a merge during it, with how many of them end in a conflict. In each cell the
+// share of conflicts is the chance logistic(base + phase term + merges term × log2(1 + M)) gives,
+// at a base of ln(1/9), a testing term of ln 3, a reviewing term of ln 9 and a merges term of ln 3,
+// so the fit's estimates are those coefficients exactly.
+var phaseCells = []struct {
+	in                   phase.Phase
+	merged               bool
+	stretches, conflicts int
+}{
+	{phase.Merging, false, 10, 1}, {phase.Merging, true, 4, 1},
+	{phase.Testing, false, 4, 1}, {phase.Testing, true, 2, 1},
+	{phase.Reviewing, false, 2, 1}, {phase.Reviewing, true, 4, 3},
+}
+
+// phaseStretchesWindow is a window from 09:00 to 12:00 recorded under legion-v20.42.5 and a cap of
+// 30, its inputs reaching back to the daemon's boot at 08:00, whose roots each end one stretch
+// inside it, as phaseCells lists them. Each root, ACME-1 on, is promoted at 08:00 and designed at
+// 08:10, and implements from 08:20; its stretch runs from 09:10 to 09:40, where the base branch
+// takes no merge, or from 10:10 to 10:40, around the base's one merge at 10:20. A stretch in
+// testing ends in the tester's failure or a conflict; one in reviewing, from 10 minutes in, in the
+// reviewer's rejection or a conflict; and one in merging, from 20 minutes in, after 5 minutes in
+// each phase from reviewing on, in its merge or a conflict.
+func phaseStretchesWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.capped(30)
+	b.boot(clock(8, 0))
+	n := 0
+	for _, cell := range phaseCells {
+		for i := range cell.stretches {
+			n++
+			key, conflict := fmt.Sprintf("ACME-%d", n), i < cell.conflicts
+			start := clock(9, 10)
+			if cell.merged {
+				start = clock(10, 10)
+			}
+			at := func(minutes int) time.Time { return start.Add(time.Duration(minutes) * time.Minute) }
+			promotedRoot(b, clock(8, 0), key, fmt.Sprintf("a%02d", n))
+			b.rootDesigned(clock(8, 10), key)
+			b.through(key, phase.Planning, moveAt(8, 20, phase.Implementing, workflow.TriggerPlannerCompleted),
+				builtMove{start, phase.Testing, workflow.TriggerImplementationReady})
+			end := builtMove{at(30), phase.Implementing, workflow.TriggerConflict}
+			switch cell.in {
+			case phase.Testing:
+				if !conflict {
+					end.trigger = workflow.TriggerTesterFailed
+				}
+				b.through(key, phase.Testing, end)
+			case phase.Reviewing:
+				if !conflict {
+					end.trigger = workflow.TriggerReviewRejected
+				}
+				b.through(key, phase.Testing, builtMove{at(10), phase.Reviewing, workflow.TriggerTesterPassed}, end)
+			case phase.Merging:
+				if !conflict {
+					end = builtMove{at(30), phase.Done, workflow.TriggerPullRequestMerged}
+				}
+				b.through(key, phase.Testing, builtMove{at(5), phase.Reviewing, workflow.TriggerTesterPassed},
+					builtMove{at(10), phase.Accepting, workflow.TriggerReviewApproved}, builtMove{at(15), phase.Retro, workflow.TriggerSignOff},
+					builtMove{at(20), phase.Merging, workflow.TriggerRetroCompleted}, end)
+				if !conflict {
+					b.leaves(at(30), key, record.DoneStatus)
+				}
+			}
+		}
+	}
+	window := b.build()
+	window.Merges = map[string][]Merge{builtRepository: {{SHA: "4e7a1c9b2d5f8036a1b2c3d4e5f60718293a4b5c", At: clock(10, 20), Branch: "main"}}}
+	return window
+}
+
+// writtenCoefficient is a coefficient as a run's run.json writes it: null for an end with none.
+type writtenCoefficient struct {
+	Estimate, Low, High *float64
+}
+
+// The conflict rate takes a term for each phase a stretch can end in, fitted on the window together
+// with its base and its merges term (spec R2, plan D7), and the run's output writes each term with
+// its interval. The test reads the conflict model of phaseStretchesWindow, whose stretches end in
+// merging, testing and reviewing at shares that put the base at ln(1/9), testing's term at ln 3,
+// reviewing's at ln 9 and the merges term at ln 3, as run.json writes it: it holds the 26 stretches
+// and their 8 conflicts, the stretches and conflicts of each of the three phases, and the base,
+// the merges term and the two phase terms each at its true value with an interval that holds it.
+// It fails for a model with no term of a phase, which a rate fitted on the base and the merges term
+// alone is, and for a term recovered elsewhere than its true value.
+func TestAFittedRateRecoversEachPhasesTermFromBuiltStretches(t *testing.T) {
+	window := phaseStretchesWindow(t)
+	trace := placedTrace(t, window)
+	raw, err := json.Marshal(windowConflicts(trace, newBaseMerges(window, trace)))
+	if err != nil {
+		t.Fatalf("write the conflict model: %v", err)
+	}
+	var written struct {
+		Stretches, Conflicts int
+		Base, Term           writtenCoefficient
+		Phases               map[phase.Phase]struct {
+			Stretches, Conflicts int
+			Term                 *writtenCoefficient
+		}
+	}
+	if err := json.Unmarshal(raw, &written); err != nil {
+		t.Fatalf("read the conflict model back: %v", err)
+	}
+	if written.Stretches != 26 || written.Conflicts != 8 {
+		t.Errorf("the model was fitted on %d stretches, %d of them conflicts; want 26 and 8", written.Stretches, written.Conflicts)
+	}
+	for _, want := range []struct {
+		in                   phase.Phase
+		stretches, conflicts int
+	}{{phase.Merging, 14, 2}, {phase.Testing, 6, 2}, {phase.Reviewing, 6, 4}} {
+		if got := written.Phases[want.in]; got.Stretches != want.stretches || got.Conflicts != want.conflicts {
+			t.Errorf("the model counts %d stretches in %s, %d of them conflicts; want %d and %d", got.Stretches, want.in, got.Conflicts,
+				want.stretches, want.conflicts)
+		}
+	}
+	ln3 := math.Log(3)
+	for _, c := range []struct {
+		name  string
+		got   *writtenCoefficient
+		truth float64
+	}{
+		{"the base", &written.Base, -2 * ln3},
+		{"the merges term", &written.Term, ln3},
+		{"testing's term", written.Phases[phase.Testing].Term, ln3},
+		{"reviewing's term", written.Phases[phase.Reviewing].Term, 2 * ln3},
+	} {
+		switch got := c.got; {
+		case got == nil:
+			t.Errorf("the model's JSON holds no %s", c.name)
+		case got.Estimate == nil || got.Low == nil || got.High == nil:
+			t.Errorf("the model's JSON holds %s with no estimate or no end of its interval: %s", c.name, raw)
+		case math.Abs(*got.Estimate-c.truth) > 1e-6 || *got.Low > c.truth || c.truth > *got.High:
+			t.Errorf("%s is %v [%v, %v], want %v inside its interval", c.name, *got.Estimate, *got.Low, *got.High, c.truth)
+		}
+	}
 }

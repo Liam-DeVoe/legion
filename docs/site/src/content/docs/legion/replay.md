@@ -882,7 +882,7 @@ A result that rests on a knob runs under each value of that knob, so that you re
 | `afterSendBack` | `recorded`, `less-slot-wait` | How long the first work after a send-back takes, its recorded length, or that length less its recorded wait for a slot. | 13 |
 | `firstStarts` | `recorded`, `rank` | The order of first starts, the order in which the record started the issues in the window, or the board's rank. | 36 |
 | `neverStarted` | `none`, `drawn`, `drawn-done` | The work of an issue that never started, none, or the work of an issue drawn from those that the record started, or from those that it finished. | 8 |
-| `merges` | `fitted`, `zero` | The merges term of the conflict draw, as fitted on the window, or zero. | 3 |
+| `merges` | `fitted`, `zero` | The merges term of the conflict draw, as fitted on the window, or zero, with the base and the phase terms kept. | 3 |
 
 The slowdown factor f is the seventh knob, with the values 1, 1.2 and 1.6 (assumption 1).
 The main branch is `offset`, `offset`, `recorded`, `recorded`, `none` and `fitted`, at f = 1.
@@ -898,18 +898,25 @@ Nor is a slot that the trace infers (assumption 34).
 Each issue that the record started in the window takes a rank in the order of these first starts, ahead of every rank on the board.
 The line orders issues by the rank of their tree's root first.
 So the root of a tree takes the rank of the earliest recorded first start among the issues of its tree that can still take their first start in the replay, the root's own first start among them.
-An issue can still take its first start while the replay's daemon records it where its first phase can start: at admitted, waiting on no person, and in the workflow by its status.
-An issue that the replay has not filed yet cannot, and neither can an issue that the replay has finished, moved past its first phase, or taken out of the workflow without its first start.
-Each time one of these issues takes its first slot, cannot take it any longer, or can take it again, the replay moves the root's rank to the earliest of those still to come.
-The move reaches the daemon as a change of the root's rank in the replay's copy of Dispatch, at the moment of that slot or that change, through the daemon's mirror, so the daemon's next pass orders the line by it.
+An issue can still take its first start while the daemon's own test of the line's starting part says that its first phase may start now.
+That test asks that the issue stands at admitted, waits on no person, and is in the workflow by its status.
+It also asks that nothing of the starting part holds the issue: its tree is running, its root waits on no person, its tree's design gate is open, and no Dispatch blocker, open child or accepted ancestor holds it.
+An issue that the replay has not filed yet cannot take its first start, and neither can an issue that the replay has finished, moved past its first phase, or taken out of the workflow without its first start.
+The replay reads the test in each fact of its daemon, just before the admission pass of that fact, over the line as that pass reads it.
+Each time one of these issues takes its first slot, cannot take it any longer, or can take it again, the replay moves the root's rank to the earliest of those that can still be taken.
+When the test gives a different answer, the replay writes the new rank of the root into the daemon's record before the pass, so that pass orders the line by it.
+The move also reaches the replay's copy of Dispatch as a change of the root's rank, and then the daemon's mirror.
 No measure counts that change.
 For example, a root that holds its slot at the window's start takes the rank of its first child that starts, and then the rank of its next child.
 So the next child of a tree waits where its own recorded start puts it among the work of every tree, and the replay starts the children of different trees in the order in which the record started them (assumption 36).
 A tree in which no issue can still take its recorded first start shows its root at its board rank, unless the root has not yet taken its own first slot, in which case the root keeps the rank of its own first start, since a tree whose root has not started has no member that can start.
 Each other issue keeps its board rank, and waits after the ranked issues.
-So an issue that the record never started waits behind the recorded starts of its tree that are still to come, and then behind those of every other tree.
+So an issue that the record never started waits behind the recorded starts of its own tree that can still be taken.
+Among the other trees, it waits at the rank of its root at that moment: the rank of the next recorded start of its tree that can still be taken, or the root's board rank when none is left.
 A change of a rank in the record does not move these ranks, and the measures read the board's ranks.
-One order stays out of reach: while the next recorded start of a tree waits at admitted for something that holds it there, such as a link or the tree's design gate, its root still ranks by it, so a later issue of that tree that can start goes ahead of another tree's issue that the record started before it.
+A recorded start that a hold keeps at admitted, such as a link, open children or the tree's design gate, holds no rank.
+So a tree whose next recorded start a hold keeps back ranks by its next start that can be taken, and another tree's issue that the record started later goes ahead of it.
+So the pass in which a hold begins or ends gives its slots by the rank that the hold leaves.
 
 ## The states of a slot holder
 
@@ -1025,13 +1032,21 @@ A window recorded under a rule that keeps slots past the review gives a second r
 Doubtful for conflicts.
 The first replay saw more conflicts after a longer wait for a slot.
 If a longer wait brings more conflicts than the fitted rate gives, the replay favours a rule under which branches wait longer.
-The tool draws conflicts from a rate that it fits on the stretches inside the window, with a branch that sets the merges term of that rate to zero.
+The tool draws conflicts from a rate that it fits on the stretches inside the window.
+The rate has a base, a term for each phase in which a stretch can end, and a merges term, all fitted together.
+The base stands for the stretches that end in merging, and each other phase's term moves the rate of the stretches that end in that phase.
+A phase takes a term only when its stretches in the window hold a conflict and a stretch without one, and the stretches that the base stands for hold both too.
+The stretches of every other phase draw at the base, as the stretches that end in merging do.
+A branch sets the merges term to zero and keeps the base and the phase terms.
+A rule moves conflicts only through the merges term, because each stretch ends in the phase that the record shows.
 It keeps every other send-back loop at its recorded count and length.
 
 **Evidence in a recorded window.** _A conflict rate fitted on the window, and loops kept as recorded._
 The phase lines give each move back with its trigger, and the trace names its cause.
-`run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, each coefficient with its interval, and the odds ratio for each doubling of the merges.
+`run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, the base, the term of each phase with the stretches and conflicts of that phase, the merges term, each with its interval, and the odds ratio for each doubling of the merges.
+`compare` prints the same terms for each window that measures conflicts.
 In the prototype's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
+In one deployment's window, a rate with no phase term gave the stretches that end in merging about twice the share of conflicts that the record shows for them, so the rate takes a term for each phase.
 
 **If it is wrong.**
 If a longer wait brings more conflicts than the fitted rate gives, the replay moves the measures so for a rule under which branches wait longer.
@@ -1048,8 +1063,10 @@ If a longer wait brings more conflicts than the fitted rate gives, the replay mo
 - Slots: Down, because each missed conflict is work, with its turns and its time in flight, that the replay does not run.
 
 **The reading that would test it.** _Conflicts against the wait before each stretch._
-For each stretch of the record, read whether it ended in a conflict, the merges into its base during it, and how long its issue waited for a slot before it.
-At the same number of merges, a higher rate of conflict after a long wait shows the effect that the rate leaves out.
+For each stretch of the record, read whether it ended in a conflict, the phase that it ended in, the merges into its base during it, and how long its issue waited for a slot before it.
+At the same phase and the same number of merges, a higher rate of conflict after a long wait shows the effect that the rate leaves out.
+For each phase, the share of the stretches that end there in a conflict in a window that the rate was not fitted on tests the phase terms.
+A window that records no conflict of its own, such as one of a release that records a conflict as red checks (assumption 22), tests neither the phase terms nor the merges term.
 `validate` and `compare` give the branch `main+merges=zero` beside `main`, which shows how far the merges term moves each measure.
 
 ### Assumption 4: A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start
@@ -2045,8 +2062,11 @@ The line orders the issues whose first phase can start by the rank of their tree
 So the rank of a root decides where each child of its tree waits among the work of every other tree.
 Only the first slot of a run is a first start, so a slot that the record gives to work that came back takes no rank, such as a return after a conflict.
 The replay moves the rank of a root each time an issue of its tree takes its first slot, to the next recorded first start of the tree that can still be taken ([The branches](#the-branches)).
-It moves the rank too where an issue of the tree can no longer take its first start in the replay, because the replay finished it, moved it past its first phase or took it out of the workflow first, and where such an issue can take it again, because the replay filed it or set it back to todo.
-So a start that the replay cannot make holds no root at the rank of that start.
+It moves the rank too where an issue of the tree can no longer take its first start in the replay, and where such an issue can take it again.
+An issue cannot take its first start where the replay has not filed it, has finished it, has moved it past its first phase, or has taken it out of the workflow.
+It cannot either while a hold of the line's starting part keeps it at admitted: its tree not running, its root waiting on a person, its tree's design gate closed, a Dispatch blocker, its open children or an accepted ancestor.
+The replay reads these holds with the daemon's own test of the line's starting part, just before each admission pass of its daemon, over the line as that pass reads it.
+So a start that the replay cannot make holds no root at the rank of that start, and a tree whose next recorded start a hold keeps back ranks by its next start that can be made.
 The next child of a tree then takes the place that its own recorded start gives it among the work of every tree.
 So the branch starts children in the order in which the record started them, ahead of a root's later work where the record did so.
 The branches under `firstStarts=rank` keep the board's ranks, and show how much the choice moves the result.
@@ -2057,6 +2077,9 @@ The replay then gave a slot to a child that the record started much later, ahead
 Once the replay moved a root's rank at each first slot of its tree, a few roots still kept an early rank for the whole window.
 Their first slot in the window was a return after a conflict or after the end of a wait, and the replay never made the return, since it moves no issue back for a conflict past the review (assumption 37).
 Children that the record never started, in the trees of those roots, took slots and held them with no work while issues that the record started waited, so the replay gave fewer slots and finished fewer issues than the record on the window's last days.
+A later replay of the same window showed a root that kept the rank of a child that waited for its own children, which its architect filed at their recorded times.
+That child never started in the replay, and children of its tree that the record never started took slots ahead of the recorded starts of other trees.
+A root now ranks by a start that such a hold keeps back no longer.
 
 **If it is wrong.**
 If the record's daemon started the children of different trees in their order for reasons that the replay does not carry, such as the board's ranks of the moment or a hold, the replay moves the measures so for a rule other than the one that made the record.
@@ -2090,6 +2113,10 @@ In accepting and retro, it records the head as conflicting and asks nobody, unde
 In merging, it asks the merger to merge the base forward under a rule whose conflicting head keeps its phase, and it still moves the issue back to implementing under a rule whose conflicting head moves back.
 A daemon before cybermonklabs/legion#4979 moved the issue back to implementing from accepting, retro and merging under a rule whose conflicting head moves back, and asked the implementer to merge the base forward in each of them under `main`.
 So a replay of such a window under its own rule plays each conflict that it draws or keeps in accepting or retro otherwise than the record: the issue keeps its phase and runs no loop, and its merger merges the base forward when it moves into merging.
+The work that the issue goes on with after the loop then opens at once, earlier than the record shows it.
+A version or a registration of the root's design that its architect made in that work keeps its recorded time and does not move with the work.
+Such an act opens or closes the tree's design gate, which holds the first start of every member of the tree and the start of its merger.
+So the gate of the tree opens and closes at the record's times, and not with the work that the replay runs early.
 Where the record shows no work of the issue after a kept conflict but its loop (assumption 35), the issue stands in its phase with no worker to `--to`.
 `validate` measures that difference as the replay's error under the rule that made the record.
 A window of release 19.57.3 records no `conflict` move, so it draws no conflict (assumption 22), and this assumption does not move it.
@@ -2097,6 +2124,8 @@ A window of release 19.57.3 records no `conflict` move, so it draws no conflict 
 **Evidence in a recorded window.** _The conflict moves past the review, against the run's count._
 A window recorded under `legion-v20.42.5` holds a phase line with the trigger `conflict` for each conflict out of accepting, retro or merging.
 `run` prints the number of conflicts past the review that it left to the merger, and `run.json` counts them as `divergence.conflictsToMerger`.
+In a replay of one deployment's recorded window, a root that stood in accepting at the window's start went past two recorded conflict loops, and its architect's spec versions moved with its next work in accepting.
+A new version closed the tree's design gate 19 hours earlier than in the record, and the gate stayed closed for 56 hours against the record's 37, which held the tree's merger starts and first starts.
 
 **If it is wrong.**
 If the project runs a daemon from before cybermonklabs/legion#4979, the replay moves the measures so for a rule whose conflicting head moves back, such as `legion-v20.42.5`.

@@ -329,17 +329,7 @@ func HeldReasonOf(issue Issue, facts HeldFacts) (HeldReason, []string) {
 // The rows are sorted by issue key, which gives the state's body and the tick's notice a stable
 // order.
 func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssue, facts LineFacts) []HeldIssue {
-	byKey := make(map[string]Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	queued := queuedRoots(issues, facts)
-	held := HeldFacts{
-		ByKey: byKey,
-		Live:  liveRoots(issues, facts, queued),
-		Chain: chainOf(byKey, facts.Parents),
-		Facts: facts,
-	}
+	held := HeldFactsOf(issues, facts)
 	placed := make(map[string]struct{}, len(slots)+len(line))
 	for _, slot := range slots {
 		placed[slot.Issue] = struct{}{}
@@ -370,4 +360,22 @@ func HeldList(issues []Issue, slots []Slot, line []LineEntry, dropped []HeldIssu
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Issue < rows[j].Issue })
 	return rows
+}
+
+// HeldFactsOf is the facts the ladder and the starting part's holds read beside each issue
+// (HeldFacts), built over issues, the whole list a pass gave Waiting, and that pass's facts from
+// the same calls Waiting makes: the records by key, one queuedRoots and one liveRoots, and one
+// chainOf. HeldList builds its facts here, and so does a reader outside the line that asks the
+// line's own question of an issue (FirstPhaseStartsNow), such as a replay of a recorded window.
+func HeldFactsOf(issues []Issue, facts LineFacts) HeldFacts {
+	byKey := make(map[string]Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	return HeldFacts{
+		ByKey: byKey,
+		Live:  liveRoots(issues, facts, queuedRoots(issues, facts)),
+		Chain: chainOf(byKey, facts.Parents),
+		Facts: facts,
+	}
 }

@@ -25,7 +25,8 @@ func listsAssumption(number int) bool {
 
 // specAssumptions is the list a replay's assumptions start from: the eighteen of the tool's spec
 // (its Design, "The assumptions"), each with what it assumes and the direction it moves a result if
-// it is wrong, and the seven its plan adds, 19 to 25.
+// it is wrong, and the seven its plan adds, 19 to 25. Assumption 3 is as the plan's D7 restates it,
+// with a term for each phase a stretch can end in.
 var specAssumptions = []Assumption{
 	{Number: 1,
 		Text:      "A work segment takes its recorded time at any start and at any number in flight.",
@@ -34,8 +35,8 @@ var specAssumptions = []Assumption{
 		Text:      "A stretch past the review keeps its recorded length and its outcome.",
 		Direction: "Doubtful: if architects and mergers are slower with more issues past review, a rule that keeps slots past review is favoured. The tool keeps it, and the comparison says so."},
 	{Number: 3,
-		Text:      "Send-backs keep their count and cause.",
-		Direction: "Doubtful for conflicts: the first replay saw more conflicts after a longer slot wait, so if a longer wait brings more conflicts than the fitted rate gives, a rule under which branches wait longer is favoured. The tool draws conflicts from the fitted rate, with a branch that sets its merges term to zero, and keeps the other loops."},
+		Text:      "Send-backs keep their count and cause, but a conflict, which a stretch draws at the rate fitted on the window for the phase it ends in and the merges into its base.",
+		Direction: "Doubtful for conflicts: the first replay saw more conflicts after a longer slot wait, so if a longer wait brings more conflicts than the fitted rate gives, a rule under which branches wait longer is favoured. The tool fits the rate on the window with a base, a term for each phase a stretch can end in and a merges term, draws conflicts from it, with a branch that sets the merges term to zero and keeps the phase terms, and keeps the other loops; a rule moves conflicts through the merges term alone, since each stretch ends in the phase the record shows."},
 	{Number: 4,
 		Text:      "A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start.",
 		Direction: "Doubtful, and the direction is unknown. The tool runs both as branches."},
