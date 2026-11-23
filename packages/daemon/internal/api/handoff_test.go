@@ -2077,8 +2077,9 @@ func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
 }
 
 // The fallback is only as wide as the state it was written for: the task the claim holds has to
-// be the issue's own current generation and its own current phase. A claim holding no task, one
-// of a run the issue has left, or one of another phase is still refused HANDOFF_NO_RUN with
+// be the issue's own current generation and its own current phase, and at step the running step's
+// role's (record.Issue.StepIsOf). A claim holding no task, one of a run the issue has left, one of
+// another phase, or one of a step its role does not run is still refused HANDOFF_NO_RUN with
 // nothing recorded, and the refusal says what the claim holds — naming the run or the phase of
 // the task when it holds one — that nothing was recorded, and what the worker does next, which is
 // what skills/legion-worker/SKILL.md tells it for this code: never the work again, never a second

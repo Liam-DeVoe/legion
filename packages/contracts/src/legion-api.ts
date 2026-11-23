@@ -1680,9 +1680,9 @@ export const LegionErrorResponse = z.object({
 /** `api.DeliveryView` — the claim's pending task; `deliveredAt` is the latest acknowledgement of
  * this task's prompt, and with it whether the agent may have read the task (a refusal of that
  * prompt clears it, since an agent that refused it never read it), and `confirmedAt` the turn a
- * send started, each absent until it happens. `phase` is the issue phase the task was queued for, which is what
- * says whether it is still the work to do; a task of no phase — an operator's own, an
- * architect's — carries none. */
+ * send started, each absent until it happens. `phase` is the issue phase the task was queued for,
+ * which, with the run and, at `step`, the running step's role (`stepRole`), says whether it is
+ * still the work to do; a task of no phase — an operator's own, an architect's — carries none. */
 const legionDeliveryView = z.object({
   id: nonEmptyString,
   task: nonEmptyString,
