@@ -1142,10 +1142,12 @@ test("no skill holds a code precedence sentence; the role prompts and agent defi
 });
 
 // A decision in a document beside the issue, the task and the handoffs reaches no worker, because
-// no start task names that document. This shows the text ships, never that a role follows it.
+// no start task names that document. A role the deployment defines writes no handoff, so its runs
+// are what a later step reads in their place. This shows the text ships, never that a role
+// follows it.
 test("a worker's first step reads the issue, its task and the handoffs, and no other document for decisions", () => {
   countedOncePerFile(
-    "Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`). Your architect's decisions for you come in your task and your messages: read no other document for them.",
+    "Read the issue, then your task, then each earlier phase's handoff (`dispatch handoff-read --issue <issue> --phase <plan|implement|test|review>`), or, for a deployment's role, which writes none, its runs (`dispatch steps --issue <issue>`). Your architect's decisions for you come in your task and your messages: read no other document for them.",
     ["skills/legion-worker/SKILL.md"]
   );
 });
