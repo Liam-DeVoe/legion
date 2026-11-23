@@ -44,7 +44,6 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet.
      Never wait for, watch or poll it.
      Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on.
-     When CI settles, the daemon tells the architect and any worker of the phase the issue then stands in.
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
      A `no_head` check can never pass: it is a defect, held as *When retro stops* says.
@@ -106,8 +105,4 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 - `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only` lists nothing.
 
-- Each body line you added or changed that says work was done names work this pull request did.
-
 - The comment and the message are posted, and the pull request's head, where there is one, is the head you found.
-
-- Your `handoff_complete` carries `plan_rating` and `plan_reason` as step 6 says.

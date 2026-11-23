@@ -69,8 +69,6 @@ A refused release writes nothing: release the rest again without the child it na
 
 ## Reviewing a child's spec
 
-No person reads a child's spec: review every version of it and of its Verification document, whoever wrote it, before its work goes on with that version.
-
 1. Have a fresh `task(agent="plan-reviewer")`, told the documents are a child's spec and its Verification document, read them against your own spec (a root's at its approved version, a child's at the version its parent approved) with this mandate:
    "Does this version serve each requirement of the parent spec that it names?
    Does it narrow or contradict any?

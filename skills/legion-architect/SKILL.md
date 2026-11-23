@@ -77,7 +77,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own work, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child.
+- Prove every criterion of your issue in its own work, from the evidence its task's steps give, never in a child.
   Never downgrade one.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
