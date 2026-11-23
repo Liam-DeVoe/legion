@@ -816,6 +816,9 @@ test("the worker and retro skills state the exceptions of their rules", () => {
       /The daemon refuses a completion without them where your tool takes them \(`PLAN_RATING_REQUIRED`\)/,
       /The message is posted, and so is step 3's comment where a point qualified\./,
     ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /A role this deployment defines runs where its step stands in your plan, at the phase `step`/,
+    ]),
   ]).toEqual([]);
 });
 

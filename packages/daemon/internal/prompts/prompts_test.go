@@ -68,9 +68,9 @@ func TestADeploymentRoleIsToldHowToReport(t *testing.T) {
 	holdsAndRetires(t, "the composition of a role of the deployment", composed.String(), []string{
 		"Report your step with handoff_complete, with the verdict pass or fail and a `summary` of what you found.",
 		"The tool reports the commit your workspace stands on, `@-`, itself.",
-		"The next step's task carries that summary after your verdict.",
+		"The task of the step that runs next carries that summary after your verdict.",
 		"With fail you may name `return_to`, the place of an earlier step of your task.",
-	}, []string{"and the commit your workspace stands on; with fail", "the verdict pass or fail, the commit your workspace stands on, and a `summary`"})
+	}, []string{"and the commit your workspace stands on; with fail", "the verdict pass or fail, the commit your workspace stands on, and a `summary`", "The next step's task carries that summary"})
 	for _, part := range []struct {
 		name, text    string
 		want, retired []string
@@ -133,9 +133,9 @@ func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
 	}
 	for _, isRoot := range []bool{true, false} {
 		holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot), composedText(t, composer, claim.RoleArchitect, isRoot), []string{
-			"A role of this deployment runs where its step stands in your plan, at the phase `step` whatever its type, and reports pass or fail.",
+			"A role this deployment defines runs where its step stands in your plan, at the phase `step` whatever its type, and reports pass or fail.",
 			`A task that stops with the reason "step <i> names the role <role>, which the deployment no longer defines" goes on in one of two ways: you give a later version of your plan, or the operator defines the role again and a person's todo restarts the task.`,
-		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands in your plan, and reports"})
+		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands"})
 	}
 }
 
