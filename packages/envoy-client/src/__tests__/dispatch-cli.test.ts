@@ -3791,7 +3791,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     });
   };
   /** The session path's refusal of a call that names DISPATCH_URL and no session token. */
-  const NO_SESSION_TOKEN = "dispatch config: DISPATCH_URL is set and no token is";
+  const NO_SESSION_TOKEN_REFUSAL = "dispatch config: DISPATCH_URL is set and no token is";
   const issueRecord = [
     "result",
     "--issue",
@@ -3875,13 +3875,16 @@ describe("dispatch result --project, as a CI job writes it", () => {
     // Set and not empty is the job's: an empty variable, as a step writes for an unset one, is no
     // placeholder, in this process and in the command as its own process.
     const env = { ...issueJobEnvironment(), ...omp, DISPATCH_RESULTS_TOKEN: "" };
-    sessionRefused(await runJob(issueRecord, env), NO_SESSION_TOKEN);
-    sessionRefused(await spawnJob(issueRecord, env), NO_SESSION_TOKEN);
+    sessionRefused(await runJob(issueRecord, env), NO_SESSION_TOKEN_REFUSAL);
+    sessionRefused(await spawnJob(issueRecord, env), NO_SESSION_TOKEN_REFUSAL);
   }, 30_000);
 
   test("without the placeholder, --issue is a session's record and not the job's", async () => {
     const { DISPATCH_RESULTS_TOKEN: _placeholder, ...noPlaceholder } = issueJobEnvironment();
-    sessionRefused(await runJob(issueRecord, { ...noPlaceholder, ...omp }), NO_SESSION_TOKEN);
+    sessionRefused(
+      await runJob(issueRecord, { ...noPlaceholder, ...omp }),
+      NO_SESSION_TOKEN_REFUSAL
+    );
   });
 
   test("under the placeholder, an argument of a role's record is refused on --issue, naming its flag, before any request", async () => {
