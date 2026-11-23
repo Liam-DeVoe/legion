@@ -65,9 +65,10 @@ func TestReworkRoundAdvancesOnlyOnThatRoundsHandoff(t *testing.T) {
 	}
 }
 
-// phase.Handoff's writer of each phase with a handoff is the role the workflow starts on it
-// (phase.RoleFor), so the route reads a record from that role's completion alone, and the task line
-// names each role's word (handoffWord).
+// phase.Handoff's writer of each phase with a handoff is the role phase.RoleFor gives that phase on
+// today's line, so the route reads a record from a completion of that role alone — its worker's,
+// or the owner's report of a step of that role it does itself (api's complete_step, under the
+// owner's session) — and the task line names each role's word (handoffWord).
 func TestTheHandoffWriterOfEachPhaseIsTheRoleTheWorkflowStartsOnIt(t *testing.T) {
 	handoffs := 0
 	for _, p := range phase.All {
