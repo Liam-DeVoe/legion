@@ -31,7 +31,9 @@ import (
 // does a start that finds the claim still running (the outbox's start), as the TypeScript daemon
 // sends the overseer catch-up at every ready of an active root (onTreeReady). A relaunch in the
 // same generation is told again: it may be an architect that died during the turn a catch-up
-// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either.
+// started, resumed idle, or a fresh agent whose workspace was lost, and nothing else wakes either
+// but the owner-step of a step of its own that started and has not ended, which is told again
+// after the catch-up (owedOwnersStep).
 // The ready is one fact per launch (workflowRuntime.applyTerminal keys it by the claim's launch
 // generation), so the boot's replay of a ready already applied tells nothing more, and one never
 // applied tells it once. The catch-up a root architect's ready writes names every decision nobody
@@ -315,8 +317,10 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // owner's place (record.Issue.OwnersPlace): no worker does it, and the notices that told it — the
 // phase-finished that moved an issue into accepting, the owner-step of a step of the key owner,
 // a step acceptance:owner among them — went to an architect that may have failed or lost its
-// session since, so an architect that comes back learns of it from its catch-up alone, which a
-// revived architect reads as its issues already running. The keys, in key order, of the listed
+// session since, so an architect that comes back learns of it from its catch-up, which a revived
+// architect reads as its issues already running, and of a step of its own also from that step's
+// owner-step, told again after the catch-up (claimReady, owedOwnersStep). The keys, in key order,
+// of the listed
 // issues waiting in accepting for this architect's acceptance (awaitingAcceptance): an issue with
 // no plan rows, or a step `acceptance:owner`, whose sign_off an architect above takes as well.
 // And, where issue's own task stands at another step of its owner's or at the owner's retro, which
