@@ -1515,7 +1515,10 @@ puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port 
 proxy password, writes a trust bundle (every trust file the command's own environment named, and
 the system roots where it named none, plus the proxy's own certificate) and a wgetrc naming it,
 and sets `NO_PROXY` so the entry's bound hosts reach the proxy while loopback and the private
-ranges stay direct. The command calls the service as it did before. The value reaches no answer
+ranges stay direct. Where the machine's system trust store already trusts every root the release
+carries, and each trust file or directory the command's own environment names in place of its
+client's roots holds them too, it writes neither file and sets no trust variable: the command
+keeps the trust it has. The command calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
 the entry names, inside the connection it carries to the bound host, and an answer of the proxy's
 own that quotes what a service sent — the `502` for a status line it could not read, a failed

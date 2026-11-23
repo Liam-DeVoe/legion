@@ -1351,9 +1351,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// What each GitHub profile's token leaves out is said before anything runs, and never a token.
 	reportLeftOut(stderr, values.GitHubLeftOut)
 
-	// The airlock's two files are written before anything is said or run: without the trust
-	// bundle the command cannot verify the proxy, and a command that cannot reach its secret is
-	// better refused here than failed halfway through its own work.
+	// The airlock's files, where the command needs them (prepareAirlock), are written before
+	// anything is said or run: without the trust bundle such a command cannot verify the proxy,
+	// and a command that cannot reach its secret is better refused here than failed halfway
+	// through its own work.
 	var files airlockFiles
 	if values.Airlock != nil {
 		if files, err = prepareAirlock(os.Environ(), values.Airlock, *grantID, values.ExpiresAt); err != nil {
@@ -1429,10 +1430,11 @@ var sessionIdentityVars = map[string]bool{
 // trust bundle the command must use.
 //
 // What this CLI sets is every released value, and, for a grant the airlock holds a name of
-// (release, and files, the two files prepareAirlock has written for it), that name's placeholder,
-// the AWS variables its slots fill, the proxy, and the trust bundle (airlockVars). release is nil
-// for every grant the airlock holds no name of, which is every grant of a broker with no rules
-// file, and then nothing of the airlock is in the child's environment at all.
+// (release, and files, what prepareAirlock wrote for it: nothing where the command needs no
+// bundle), that name's placeholder, the AWS variables its slots fill, the proxy, and the trust
+// bundle where prepareAirlock wrote one (airlockVars). release is nil for every grant the airlock
+// holds no name of, which is every grant of a broker with no rules file, and then nothing of the
+// airlock is in the child's environment at all.
 //
 // The set entries are appended in sorted order, so one grant's child environment is one string
 // whatever Go's map iteration gave.
