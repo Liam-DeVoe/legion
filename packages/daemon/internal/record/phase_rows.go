@@ -62,6 +62,20 @@ func OtherStepsEntry(rows []PhaseRow, row PhaseRow) int64 {
 	return entry
 }
 
+// ServedClaim is the claim role's row on entry names among rows: the agent of the run a completion
+// serving entry reports, since no two rows of a role stand on one entry (workflow's enter), and ""
+// where no row of role stands on entry, a run its row was raised past since. The entry fence reads
+// it beside the claim of the row the task stands at, so a turn of another agent of the role is told
+// apart from a turn of the same agent's other run (intake.EntryFence).
+func ServedClaim(rows []PhaseRow, role claim.Role, entry int64) claim.Token {
+	for _, row := range rows {
+		if entry > 0 && row.Role == role && row.Entry == entry {
+			return row.Claim
+		}
+	}
+	return ""
+}
+
 // StartLeft says whether a start of role's phase entry entry, for the claim token, is of work the
 // role has left, read from an issue's phases rows, and answers the entry of the row it weighed the
 // start against: the role's row now (PhaseRowOf), the row of the step the task stands at, or stood

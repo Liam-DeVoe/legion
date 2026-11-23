@@ -2040,10 +2040,10 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // the entry the claim's worker is on (HandoffComplete.Entry), current the entry the role's phases
 // row names (record.PhaseRow.Entry), movedBack whether the move that raised it was a move back
 // (record.PhaseRow.EntryMovedBack), and otherSteps the highest entry another step's row of the role
-// holds (record.OtherStepsEntry), 0 for a role at one step; token is the completing claim
-// (HandoffComplete.Claim) and holder the claim that row names (record.PhaseRow.Claim); issue is the
-// record as the same read holds it, pr the pull request it holds, and pending the claim's queued
-// task, which only the route reads.
+// holds (record.OtherStepsEntry), 0 for a role at one step; served is the claim the role's row on
+// the served entry names (record.ServedClaim) and holder the claim the row on current names
+// (record.PhaseRow.Claim); issue is the record as the same read holds it, pr the pull request it
+// holds, and pending the claim's queued task, which only the route reads.
 //
 // Like a completion of a run that is over (HANDOFF_STALE_GENERATION), a completion of a phase
 // entry the issue's phase has moved past is refused, and for the reason the run alone cannot
@@ -2089,16 +2089,17 @@ func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 // that entry's task, so no delivery can carry an entry the row does not already name, and a row's
 // entry only rises.
 //
-// An entry behind the row's from a claim, token, other than the one the row names, holder, is a
-// turn of another agent of the role (AnotherAgentsStep): two agents of one role keep a row each,
-// as `implementer:a tester:b implementer:b` does once a failed review returns the task to key a's
-// step 1 while key b's turn of step 3 is still open. The entry the row is on is holder's work, and
-// its task goes to holder alone, so StaleEntry's words, which tell the worker that task comes to it,
-// would have it wait for nothing. Either side naming no claim (a row or a completion the release
-// before wrote) is no such turn.
+// An entry behind the row's whose run is another agent's is a turn of that agent
+// (AnotherAgentsStep): two agents of one role keep a row each, as `implementer:a tester:b
+// implementer:b` does once a failed review returns the task to key a's step 1 while key b's turn
+// of step 3 is still open. served, the claim the role's row on the served entry names, is then not
+// holder, the claim of the row the task stands at, whose entry's task goes to holder alone, so
+// StaleEntry's words, which tell the worker that task comes to it, would have it wait for nothing.
+// An entry no row of the role stands on any longer (a run of the same step the role was handed
+// again) and either row naming no claim (one the release before wrote) are no such turn.
 //
 // Every other entry behind the row's is refused (StaleEntry) unless BehindEntryClause takes it.
-func EntryFence(issue record.Issue, role claim.Role, token, holder claim.Token, entry, current int64, movedBack bool, otherSteps int64, commit string,
+func EntryFence(issue record.Issue, role claim.Role, served, holder claim.Token, entry, current int64, movedBack bool, otherSteps int64, commit string,
 	pr *record.PullRequest, pending *supervise.Delivery) *Refusal {
 	if entry == 0 || current == 0 || entry == current {
 		return nil
@@ -2110,7 +2111,7 @@ func EntryFence(issue record.Issue, role claim.Role, token, holder claim.Token, 
 	if entry > current {
 		return &Refusal{Status: 409, Code: StaleEntryCode, Message: unraisedEntry(issue.Key, role, p, current, entry)}
 	}
-	if token != "" && holder != "" && token != holder {
+	if served != "" && holder != "" && served != holder {
 		return AnotherAgentsStep(issue.Key, role, p, current, entry, holder)
 	}
 	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).

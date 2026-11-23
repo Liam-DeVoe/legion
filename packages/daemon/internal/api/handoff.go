@@ -336,7 +336,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// row where the task stands, and otherwise the row of the entry it serves, so a late report of a
 	// role's later step is held to that step's run, whichever place the task returned to since.
 	run := position.run(grant.Role, entry, issue.RoleAt(issue.Phase) == grant.Role)
-	if refusal := intake.EntryFence(*issue, grant.Role, grant.Claim, run.holder, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
+	if refusal := intake.EntryFence(*issue, grant.Role, run.served, run.holder, entry, run.entry, run.entryMovedBack, run.otherStepsEntry, req.Commit,
 		position.pullRequest, c.Pending); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
