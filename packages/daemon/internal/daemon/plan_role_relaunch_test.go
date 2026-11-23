@@ -25,13 +25,20 @@ const relaunchProber claim.Role = "prober"
 
 // seedProberVersion records version v of the plan of stepStartKey at generation 2: one task whose
 // one step is relaunchProber, of type and model and prompt as given, running at that step, with
-// the prober's phases row on entry v, the entry the start of that version's step carries.
+// the prober's phases row on entry v, the entry the start of that version's step carries. The
+// version is given now.
 func seedProberVersion(t *testing.T, pool *store.Pool, records record.Store, v int, typ, model, prompt string) {
+	t.Helper()
+	seedProberVersionAt(t, pool, records, v, typ, model, prompt, time.Now().UTC())
+}
+
+// seedProberVersionAt is seedProberVersion with the version given at givenAt.
+func seedProberVersionAt(t *testing.T, pool *store.Pool, records record.Store, v int, typ, model, prompt string, givenAt time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		version := record.PlanVersion{Issue: stepStartKey, Generation: 2, Version: v, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-			GivenBy: mustClaimToken(t, stepStartKey, claim.RoleArchitect), GivenAt: time.Now().UTC()}
+			GivenBy: mustClaimToken(t, stepStartKey, claim.RoleArchitect), GivenAt: givenAt}
 		task := record.PlanTask{Issue: stepStartKey, Generation: 2, Task: "a", PlanVersion: v, BlockText: "Probe the widget.", State: record.TaskWaiting}
 		steps := []record.PlanStep{{Issue: stepStartKey, Generation: 2, Task: "a", Position: 1, Role: string(relaunchProber), Type: stepplan.Type(typ)}}
 		if err := records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps); err != nil {
@@ -197,4 +204,161 @@ func modelOf(launches []fake.Call) []string {
 		models[i] = launch.Spec.Model
 	}
 	return models
+}
+
+// A daemon that starts while a prober's agent runs has built no launch of that claim, so it does
+// not know which definition of the role the process runs (supervise.Machine.LaunchedDefinition).
+// The earlier daemon launched the prober under version 1 of the plan (type testing, model m-a,
+// prompt P1), and its agent came up an hour ago (supervise.Claim.LastReady, which the store keeps
+// over the restart). The start of the prober's next step after the restart relaunches the process
+// once, on its own session and with the definition of the plan in force, where that plan was
+// given after the agent came up: version 2, given half an hour ago, changes the role block (type
+// implementation, model m-b, prompt P2), and the process may run version 1. The line of the
+// suspension says why, in words of its own. The control is the same restart where the plan in
+// force, version 1, was given before the agent came up and the task enters the prober's step
+// again: nothing is known to have changed since the process started, so the start hands the
+// running process its task and relaunches nothing.
+func TestARestartedDaemonRelaunchesAPlanRolesAgentOnlyForAPlanGivenAfterItCameUp(t *testing.T) {
+	const p1, p2 = "# Prober\n\nProbe the change, first wording.", "# Prober\n\nProbe the change, second wording."
+	const why = "this daemon started after the process of its role prober on LEGION-208 launched, and the plan in force was given after that process came up"
+	for _, tc := range []struct {
+		name       string
+		later      bool
+		relaunched bool
+	}{
+		{"version 2 was given after the agent came up", true, true},
+		{"the control: the plan in force was given before the agent came up", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			base := time.Now().UTC().Truncate(time.Second)
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			putOutboxIssue(t, pool, records, record.Issue{Key: stepStartKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: stepStartKey, Title: "Workflow", Phase: phase.Step, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			openTree(t, pool, "LEGION", stepStartKey)
+			holdSlot(t, pool, stepStartKey)
+			seedProberVersionAt(t, pool, records, 1, "testing", "m-a", p1, base.Add(-2*time.Hour))
+			composer, err := prompts.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			prober := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, planRole: poolPlanRole(pool, records)}
+			provision := func(context.Context, workspace.Request) (workspace.Workspace, error) {
+				return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+			}
+			token := mustClaimToken(t, stepStartKey, relaunchProber)
+
+			// The earlier daemon: it launches the prober under version 1, the agent comes up, and its
+			// turn ends with the process up and idle.
+			earlier, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			earlier.deps.Specs = prober
+			earlier.deps.Conns.(*fake.Conns).Register(token, fake.NewConn())
+			first := mustOutboxRow(t, stepStartKey, record.SuperviseRequest{Op: "start", Tree: stepStartKey, Role: relaunchProber, Generation: 2,
+				Phase: phase.Step, Task: "Probe it. Issue: LEGION-208. Phase: step.", Entry: 1}, time.Now())
+			first.ID = 95
+			if err := (&outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: earlier,
+				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now, provision: provision}).execute(ctx, first); err != nil {
+				t.Fatalf("the earlier daemon's start of the prober: %v", err)
+			}
+			machine, found := earlier.Machine(token)
+			if !found {
+				t.Fatal("the earlier daemon's start of the prober created no claim")
+			}
+			machine.Wait()
+			generation := machine.Claim().Generation
+			for _, ev := range []supervise.Event{
+				supervise.StreamHello{Claim: token, Generation: generation},
+				supervise.RequestRegister{Claim: token, Generation: generation, Session: "ses-prober", SessionFile: "/tmp/prober.jsonl", CapabilityHash: []byte("prober")},
+				supervise.RequestReady{Claim: token, Generation: generation, Session: "ses-prober"},
+			} {
+				if err := machine.Handle(ctx, ev); err != nil {
+					t.Fatalf("bring the prober's agent up: handle %T: %v", ev, err)
+				}
+			}
+			machine.Wait()
+			if pending := machine.Claim().Pending; pending != nil {
+				for _, ev := range []supervise.Event{
+					supervise.StreamTurnStart{Claim: token, DeliveryID: pending.ID},
+					supervise.StreamTurnEnd{Claim: token},
+					supervise.StreamPromptResult{Claim: token, DeliveryID: pending.ID, AgentInvoked: true},
+				} {
+					if err := machine.Handle(ctx, ev); err != nil {
+						t.Fatalf("the prober's turn under the earlier daemon: handle %T: %v", ev, err)
+					}
+				}
+			}
+			machine.Wait()
+			launched := append(rt.CallsOf("Spawn"), rt.CallsOf("Resume")...)
+			if held := machine.Claim(); held.RunsNothing() || held.Pending != nil || held.State == supervise.StateWorking || len(launched) != 1 || launched[0].Spec.Model != "m-a" {
+				t.Fatalf("the prober under the earlier daemon is %s holding %+v after %d launches on %q, want its process up, idle, with no task, launched once on m-a: the case's premise",
+					held.State, held.Pending, len(launched), modelOf(launched))
+			}
+			earlier.stop()
+
+			// The store keeps the claim over the restart, the agent having come up an hour ago.
+			claims := earlier.deps.Store.(*outboxClaimStore)
+			claims.mu.Lock()
+			stored := claims.claims[token]
+			claims.mu.Unlock()
+			stored.LastReady = base.Add(-time.Hour)
+			if err := claims.PutClaim(ctx, stored); err != nil {
+				t.Fatal(err)
+			}
+			if tc.later {
+				seedProberVersionAt(t, pool, records, 2, "implementation", "m-b", p2, base.Add(-30*time.Minute))
+			} else if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				return records.PutPhase(ctx, tx, record.PhaseRow{Issue: stepStartKey, Role: relaunchProber, Entry: 2,
+					EntryTask: "Probe it again. Issue: LEGION-208. Phase: step.", EntryRaisedAt: time.Now()})
+			}); err != nil {
+				t.Fatalf("enter the prober's step again under version 1: %v", err)
+			}
+
+			// This daemon: its supervisor restores the claim over the process the earlier one
+			// launched, which still runs, and has built no launch of it.
+			logs := &syncBuffer{}
+			restarted, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			restarted.deps.Runtime, restarted.deps.Store, restarted.deps.Conns = rt, claims, earlier.deps.Conns
+			restarted.deps.Specs, restarted.deps.Log = prober, jsonLogger(logs)
+			if _, err := restarted.restore(ctx, []supervise.Claim{stored}); err != nil {
+				t.Fatalf("restore the prober's claim: %v", err)
+			}
+			machine, found = restarted.Machine(token)
+			if !found {
+				t.Fatal("the restore made no machine of the prober's claim")
+			}
+			if _, known := machine.LaunchedDefinition(); known || machine.Claim().RunsNothing() {
+				t.Fatalf("the restored prober knows its launch's definition %t and runs nothing %t, want neither: the case's premise", known, machine.Claim().RunsNothing())
+			}
+			second := mustOutboxRow(t, stepStartKey, record.SuperviseRequest{Op: "start", Tree: stepStartKey, Role: relaunchProber, Generation: 2,
+				Phase: phase.Step, Task: "Probe it again. Issue: LEGION-208. Phase: step.", Entry: 2}, time.Now())
+			second.ID = 96
+			if err := (&outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: restarted,
+				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now, provision: provision}).execute(ctx, second); err != nil {
+				t.Fatalf("the restarted daemon's start of the prober's next step: %v", err)
+			}
+			machine.Wait()
+			relaunches := append(rt.CallsOf("Spawn"), rt.CallsOf("Resume")...)[1:]
+			if !tc.relaunched {
+				if len(relaunches) != 0 {
+					t.Fatalf("a restart under a plan given before the agent came up relaunched the prober %d times (on %q), want none", len(relaunches), modelOf(relaunches))
+				}
+				if strings.Contains(logs.String(), why) {
+					t.Fatalf("the restarted daemon logged %q for a plan given before the agent came up", why)
+				}
+				return
+			}
+			if len(relaunches) != 1 {
+				t.Fatalf("the restarted daemon's start relaunched the prober %d times, want once: version 2 was given after its agent came up", len(relaunches))
+			}
+			spec := relaunches[0].Spec
+			if spec.Model != "m-b" || !composedHolds(t, spec, p2) || composedHolds(t, spec, p1) || spec.ResumeSessionFile != "/tmp/prober.jsonl" {
+				t.Fatalf("the prober was relaunched on %q, its prompt holding P2 %t and P1 %t, on the session %q; want m-b with P2 alone, on its own session /tmp/prober.jsonl",
+					spec.Model, composedHolds(t, spec, p2), composedHolds(t, spec, p1), spec.ResumeSessionFile)
+			}
+			if !strings.Contains(logs.String(), why) {
+				t.Fatalf("the restarted daemon's lines do not say %q:\n%s", why, logs.String())
+			}
+		})
+	}
 }
