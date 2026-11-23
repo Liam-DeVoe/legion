@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -262,7 +263,7 @@ func (b *Bundles) build(ctx context.Context, issue string, role claim.Role, repo
 		return ghconfig.Bundle{}, err
 	}
 	key := bundleKey{app: app, repo: strings.ToLower(repo.String())}
-	if _, err := AppRoleFor(role, nil, Planned{}); err != nil {
+	if !plan.IsLegionName(string(role)) {
 		key.role = role
 	}
 	if built, held := b.built[key]; held {
