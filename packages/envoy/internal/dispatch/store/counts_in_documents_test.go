@@ -167,7 +167,7 @@ func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
 }
 
 // sumTerms is one entry per term of the README's connection sum, "opens at most 48 + 6 + 4 + 4 +
-// 26 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 115 connections to Postgres", generated from the pools
+// 27 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 116 connections to Postgres", generated from the pools
 // themselves: the
 // terms in the order the sum writes them, each entry anchored by the terms before it, which are
 // written from the constants too. Nothing of the sum is a literal here, so the day a pool moves
