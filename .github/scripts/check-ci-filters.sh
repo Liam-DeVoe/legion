@@ -428,13 +428,31 @@
 # who deliberately hides a command or a flag where this check does not read is the review's to
 # catch.
 #
-# The go commands run with GOPROXY=off over an empty module cache: nothing is downloaded, no
-# go.work.sum is rewritten, and a cold runner gives the answer a warm machine does. Third-party
+# The engine's go commands, the go list runs every closure above comes from, run with GOPROXY=off
+# over an empty module cache: they download nothing, rewrite no go.sum or go.work.sum, and a cold
+# runner gets from them the answer a warm machine does. Third-party
 # packages then fail to load, which loses no first-party package, since none of them imports
 # one: no module outside this repository requires one of its modules (`go mod graph`), and all
 # but twelve of its 185 packages are main packages or internal/ ones, which nothing outside the
 # repository may import. The first-party sets matched a run over a full module cache file for
 # file when this check was written.
+#
+# Two kinds of go command run under this machine's own GOPROXY and module cache instead. One is
+# `go env GOROOT`, which resolves the toolchain (below) and writes nothing. The other is
+# .github/scripts/go_build_tags.py's: ci_job_reads.py runs its tag_sets as it is imported, to give
+# each darwin vet step one Run per tag set, and rule 20 runs its platforms. Its `go list -find`
+# still resolves every import, so it writes the checksum of each go.mod it needs that the
+# committed files lack: into the workspace's go.work.sum, or into the go.sum of a module outside
+# a workspace. The darwin vet steps of CI run the same script and write the same lines. So a
+# run rewrites a committed checksum file that lacks such a line (packages/envoy/infra/go.work.sum
+# lacked two, and every run passed over the rewrite), and in either mode a run that changes a
+# file of the tree, but the ones the write mode writes (below), fails naming each: for a go.sum
+# or a go.work.sum, commit what the run wrote. The tree is read before the first go command and
+# after the last: each file git lists, tracked or untracked and not ignored (the files the engine
+# reads), by its bytes and execute bit, every file read whole rather than taken as unchanged
+# because git says so (an assume-unchanged mark, a normalized line ending), so a file edited
+# before the run is compared with itself. A tree git cannot list, or in which it lists no file,
+# fails the run saying so, since a reading of nothing would pass any run.
 #
 # One thing that empty cache cannot hold is the Go toolchain itself. Where the installed go is
 # older than the `go` directive of the module being listed, GOTOOLCHAIN=auto satisfies the
@@ -459,7 +477,8 @@
 # filter, and refuses nothing of rule 17, leaving every other refusal as it is, since the blocks
 # it writes are computed from the read sets the rest of this check builds and a run that cannot
 # build them writes nothing worth keeping. Only those two files are written, and only inside
-# those blocks. Any other word, or more than one, fails naming both.
+# those blocks, and a run of this mode that changes any other file fails, as one of `check` that
+# changes any file does (above). Any other word, or more than one, fails naming both.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.sh
 #                    .github/scripts/check-ci-filters.sh write
@@ -506,11 +525,56 @@ export CI_FILTERS_MODE="${1:-check}"
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.
+#
+# Around the engine is the guard the header describes: the tree is read before the imports, since
+# ci_job_reads.py runs go_build_tags.py's go commands as it is imported, and again after main().
+# A run whose imports fail is a failure before the second read has anything to add.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
+import hashlib
+import os
 import secrets
+import stat
+import subprocess
 import sys
 import warnings
 
+
+def held(path):
+    """What a file holds: its bytes and execute bit, the target of a symbolic link, or that it is
+    gone."""
+    try:
+        info = os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return "absent"
+    if stat.S_ISLNK(info.st_mode):
+        return "a link to " + os.readlink(path)
+    if not stat.S_ISREG(info.st_mode):
+        return "no regular file"
+    with open(path, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest() + (" executable" if info.st_mode & 0o111 else "")
+
+
+def tree():
+    """Each file git lists under this directory, tracked or untracked and not ignored (the files
+    the engine reads), mapped to what it holds; or, as a string, why there is no such map. Each
+    is read whole, never taken as unchanged because git says so: git reports no change to a file
+    marked assume-unchanged or skip-worktree, to a line ending it normalizes, or to an execute
+    bit core.filemode tells it to ignore. A file edited before the run is compared with itself."""
+    try:
+        result = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                                capture_output=True)
+    except OSError as failure:
+        return f"git cannot list them: {failure}"
+    if result.returncode != 0:
+        return f"git cannot list them: git ls-files failed: {os.fsdecode(result.stderr).strip()}"
+    try:
+        files = {path: held(path) for path in map(os.fsdecode, result.stdout.split(b"\0")) if path}
+    except OSError as failure:
+        return f"a file git lists cannot be read: {failure}"
+    return files or "git lists none"
+
+
+before = tree()
 token = secrets.token_hex(16)
 print(f"::stop-commands::{token}", flush=True)
 with warnings.catch_warnings(record=True) as caught:
@@ -521,5 +585,35 @@ with warnings.catch_warnings(record=True) as caught:
 print(f"::{token}::", flush=True)
 for import_warning in caught:
     ci_filter_coverage.print_import_warning(import_warning)
-sys.exit(ci_filter_coverage.main())
+status = ci_filter_coverage.main()
+after = tree()
+
+mode = os.environ["CI_FILTERS_MODE"]
+writable = set()
+if mode == "write":
+    writable = {ci_filter_coverage.FILTERS_FILE, *getattr(ci_job_reads, "PUSH_WORKFLOWS", {}).values()}
+problems = []
+unread = next((side for side in (before, after) if isinstance(side, str)), None)
+if unread is not None:
+    problems.append(ci_filter_coverage.error(None, f"this check could not read the files of the tree it checks "
+                                                   f"({unread}), so whether this run changed one is unknown, and a "
+                                                   f"run that cannot see the tree is no pass"))
+else:
+    may = "may change only " + " and ".join(sorted(writable)) if writable else "may change no file of the tree"
+    for path in sorted(before.keys() | after.keys()):
+        if before.get(path) == after.get(path) or path in writable:
+            continue
+        if os.path.basename(path) in ("go.sum", "go.work.sum"):
+            why = ("a go command this check runs recorded module checksums the committed file lacks (the go list "
+                   "commands of .github/scripts/go_build_tags.py, which ci_job_reads.py runs for each darwin vet "
+                   "step, run under the GOPROXY and module cache of this machine and record the checksum of each "
+                   "go.mod they fetch). Commit the file as this run leaves it")
+        else:
+            why = ("something this check runs wrote it, so this run judged a tree it was changing. Restore the "
+                   "file and find what wrote it")
+        problems.append(ci_filter_coverage.error(path, f"{path} changed while this check ran, and a {mode} run "
+                                                       f"{may}: {why}"))
+for problem in problems:
+    ci_filter_coverage.print_annotation(problem)
+sys.exit(1 if problems else status)
 '

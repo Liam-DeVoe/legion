@@ -2090,8 +2090,12 @@ packages/envoy-client/**, so the suite brings no new path into this job's closur
 ## What the ci-filters job holds every filter and every workflow file to
 
 Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
-with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-module cache, so the job needs Go but downloads no module and restores no cache. It also holds
+with go list (.github/scripts/check-ci-filters.sh). That go list runs with GOPROXY=off over an
+empty module cache, so the job needs Go but restores no cache. The tag sets of the darwin vet
+steps come from .github/scripts/go_build_tags.py, whose go list runs under the job's own GOPROXY
+and downloads the go.mod files it needs. Where that writes a checksum a committed go.sum or
+go.work.sum lacks, the check fails naming the file, as it fails on any file a run changes but
+the two its write mode writes. It also holds
 every workflow file to 64,000 bytes and to what GitHub's own parser reads
 (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a
 second time, in a file small enough to start when this one is too large to.

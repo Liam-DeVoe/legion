@@ -359,10 +359,14 @@ reaches by relative path are what the check is told, not what it finds: it prove
 cover them, not that they are complete, and a new file under a glob a filter names only in part
 runs the check only when the change also touches one of its triggers. A Go job's own closure and
 a Bun job's typecheck program are the two halves it does find, from `go list` and from
-`check-ts-filters.sh`. It runs go with
-`GOPROXY=off` over an empty module cache, so it downloads nothing and gives the same answer on a
-cold runner as on a warm machine; third-party packages fail to load, which loses no first-party
-package. Run it locally from anywhere: `.github/scripts/check-ci-filters.sh`.
+`check-ts-filters.sh`. It runs the go list behind each closure with
+`GOPROXY=off` over an empty module cache, so that go list downloads nothing and gives the same
+answer on a cold runner as on a warm machine; third-party packages fail to load, which loses no
+first-party package. The tag sets of the darwin vet steps come from `go_build_tags.py`, whose go
+list runs under the machine's own proxy and module cache and can write a checksum a committed
+`go.sum` or `go.work.sum` lacks. A run that changes a file of the tree, but the two files its
+`write` mode writes, fails naming each: commit the checksum lines it wrote. Run it locally from
+anywhere: `.github/scripts/check-ci-filters.sh`.
 
 ## Caches: no job of the router writes a Go cache
 

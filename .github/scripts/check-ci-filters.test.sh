@@ -36,8 +36,10 @@
 # hand the action exactly .github/ci-filters.yaml as its `filters` input, every output of the
 # changes job must name that step and a filter that file holds, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs. A script's go command is read under every step of each job that may run it, and
-# the header's run recipe runs the check, or says why it stops.
+# job of CI runs. A script's go command is read under every step of each job that may run it, a
+# run that changes a file of the tree, but the two the write mode writes, fails naming each, as one
+# does that cannot read the tree through git, and the header's run recipe runs the check, or says
+# why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
@@ -3829,6 +3831,160 @@ except ValueError as exc:
   check "refuses the directory spelled $spelling, naming the spelling" \
     "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
 done
+
+# A run of either mode may change no file of the tree it checks but those the write mode writes,
+# and fails naming each other file it changed. The go commands of go_build_tags.py run under the
+# machine's own GOPROXY and module cache, so one can record a checksum the committed go.sum or
+# go.work.sum lacks, which the cases plant: a go first on PATH that appends the line this
+# repository's go.work.sum once lacked to the fixture's go.work.sum, then runs the real go.
+# Writing on every command, it writes at the engine's `go env GOROOT`, which comes after the
+# engine has listed the repository's files and before its first go list; writing on `go list`
+# alone, it writes only at go_build_tags.py's go list, which a table can run as it is imported.
+# The controls that a clean run and a write of .github/ci-filters.yaml alone still pass are the
+# green and generated-write cases above, and the ones below that change nothing.
+real_go=$(command -v go)
+planted_sum='golang.org/x/mod v0.42.0/go.mod h1:u5fzIrRInkL8MaO1cbRkUHT64v303YIT5KEqpNr7jRs='
+
+# run_check_planted <commands> <root> [mode]: run_check with that go first on PATH, writing the
+# line when its arguments match <commands>, a shell case pattern.
+run_check_planted() {
+  local saved=$PATH commands=$1
+  shift
+  mkdir -p "$1.bin"
+  printf '#!/bin/sh\ncase "$*" in\n  %s) echo "%s" >> "%s/go.work.sum" ;;\nesac\nexec "%s" "$@"\n' \
+    "$commands" "$planted_sum" "$1" "$real_go" > "$1.bin/go"
+  chmod +x "$1.bin/go"
+  PATH="$1.bin:$PATH"
+  run_check "$@"
+  PATH=$saved
+}
+
+# run_check_writing_sum <root> [mode]: the planted go writing on every command.
+run_check_writing_sum() { run_check_planted '*' "$@"; }
+
+# committed_sum <root>: the fixture with a go.work.sum its filters select, every file committed.
+committed_sum() {
+  printf 'example.com/kept v1.0.0/go.mod h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n' > "$1/go.work.sum"
+  replace "$1/.github/ci-filters.yaml" "  - 'go.work'" $'  - \'go.work\'\n  - \'go.work.sum\''
+  replace "$1/.github/workflows/site.yaml" "      - 'go.work'" $'      - \'go.work\'\n      - \'go.work.sum\''
+  git -C "$1" add -A
+  git -C "$1" -c user.name=fixture -c user.email=fixture@example.com commit -qm fixture
+}
+
+sum_refusal='^::error file=go.work.sum::go.work.sum changed while this check ran, and a check run may change no file of the tree: a go command this check runs recorded module checksums the committed file lacks'
+
+echo "case: a go command of the check records a checksum go.work.sum lacks"
+root=$(fixture sum-written)
+run_check_writing_sum "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and why it changed" "$(contains "$out" "$sum_refusal")"
+check "and says to commit it" "$(contains "$out" 'Commit the file as this run leaves it')"
+check "keeps the rest of its verdict" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+check "the planted go did write the line" "$(contains "$(<"$root/go.work.sum")" 'golang.org/x/mod v0.42.0/go.mod')"
+
+# ci_job_reads.py's darwin vet Runs come from go_build_tags.tag_sets as it is imported, before
+# main() starts, so the tree must be read before the imports: this fixture's table does the same,
+# and the planted go writes at its go list alone.
+echo "case: a go command run as ci_job_reads.py is imported records a checksum"
+root=$(fixture sum-written-at-import)
+cat >> "$root/.github/scripts/ci_job_reads.py" <<'PY'
+from pathlib import Path
+
+from go_build_tags import tag_sets
+
+DARWIN_TAG_SETS = tag_sets(Path("mod"), "darwin", "arm64")
+PY
+committed_sum "$root"
+run_check "$root"
+check "passes while that go list writes nothing" "$(is "$status" 0)"
+run_check_planted 'list*' "$root"
+check "fails once it writes" "$(is "$status" 1)"
+check "names the file" "$(contains "$out" "$sum_refusal")"
+check "the planted go did write the line" "$(contains "$(<"$root/go.work.sum")" 'golang.org/x/mod v0.42.0/go.mod')"
+
+echo "case: a committed tree whose go.work.sum a go command changes"
+root=$(fixture sum-committed)
+committed_sum "$root"
+run_check "$root"
+check "passes while nothing changes it" "$(is "$status" 0)"
+run_check_writing_sum "$root"
+check "fails once a go command does" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
+# git reports no change to a file marked assume-unchanged, so the guard reads every file's bytes.
+echo "case: a go command changes a committed go.work.sum git is told to assume unchanged"
+root=$(fixture sum-assume-unchanged)
+committed_sum "$root"
+git -C "$root" update-index --assume-unchanged go.work.sum
+run_check_writing_sum "$root"
+check "git itself reports no change" "$(is "$(git -C "$root" status --porcelain)" "")"
+check "fails" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
+echo "case: the write mode, while a go command of the check records a checksum"
+root=$(fixture sum-written-write)
+run_check_writing_sum "$root" write
+check "fails" "$(is "$status" 1)"
+check "names the file and the files that mode may change" \
+  "$(contains "$out" '^::error file=go.work.sum::go.work.sum changed while this check ran, and a write run may change only .github/ci-filters.yaml and .github/workflows/site.yaml: a go command this check runs recorded module checksums')"
+
+# The files the write mode may change are the two it writes: .github/ci-filters.yaml, which
+# generated-write above changes alone, and the on.push.paths of a PUSH_WORKFLOWS workflow, which
+# this case pairs with the app filter so that the block lands in both.
+echo "case: the write mode writes the block into the filter and into its push workflow's paths"
+root=$(fixture sum-write-push-workflow)
+unread_package "$root"
+replace "$root/.github/scripts/ci_job_reads.py" 'PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}' \
+  'PUSH_WORKFLOWS = {"app": ".github/workflows/site.yaml"}'
+replace "$root/.github/workflows/site.yaml" "      - 'docs/**'" \
+  $'      - \'.github/workflows/ci.yaml\'\n      - \'mod/cmd/app/*\'\n      - \'mod/lib/**\'\n      - \'fixtures/**\''
+run_check "$root" write
+check "passes" "$(is "$status" 0)"
+check "having written the filter's block" \
+  "$(contains "$(<"$root/.github/ci-filters.yaml")" "^  - '!mod/lib/sub/\*\*/\*_test.go'$")"
+check "and the push workflow's" \
+  "$(contains "$(<"$root/.github/workflows/site.yaml")" "^      - '!mod/lib/sub/\*\*/\*_test.go'$")"
+
+echo "case: a committed tree whose go.work.sum was edited before the run"
+root=$(fixture sum-dirty)
+committed_sum "$root"
+printf 'example.com/edited v1.0.0/go.mod h1:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=\n' >> "$root/go.work.sum"
+run_check "$root"
+check "passes while the run leaves the edit as it found it" "$(is "$status" 0)"
+run_check_writing_sum "$root"
+check "fails once a go command changes it further" "$(is "$status" 1)"
+check "and names it" "$(contains "$out" "$sum_refusal")"
+
+# The guard reads the tree through git, as the engine reads its files, and a tree git cannot list
+# fails saying so rather than passing over an empty reading: with no .git (the ceiling keeps git
+# from finding a repository above the fixture), and with a .git git cannot read.
+unread_refusal='^::error::this check could not read the files of the tree it checks (git cannot list them: git ls-files failed: '
+
+echo "case: a tree with no git"
+root=$(fixture sum-no-git)
+rm -rf "$root/.git"
+GIT_CEILING_DIRECTORIES=$work run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says it could not read the tree, so whether the run changed a file is unknown" \
+  "$(contains "$out" "$unread_refusal")"
+
+echo "case: a tree whose .git git cannot read"
+root=$(fixture sum-unreadable-git)
+rm -rf "$root/.git"
+: > "$root/.git"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says it could not read the tree, so whether the run changed a file is unknown" \
+  "$(contains "$out" "$unread_refusal")"
+
+echo "case: a tree in which git lists no file"
+root=$(fixture sum-nothing-listed)
+mkdir -p "$root/.git/info"
+printf '*\n' > "$root/.git/info/exclude"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says the reading was empty rather than passing over it" \
+  "$(contains "$out" '^::error::this check could not read the files of the tree it checks (git lists none), so whether this run changed one is unknown')"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH
