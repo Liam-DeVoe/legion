@@ -3023,10 +3023,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	}
 	// The deployment's hooks that stand on a move back fire once its start has written the agent of
 	// the round the move opened on its role's row, so each prompt names the claim of the agent that
-	// works its role's step in that round (fireHook), and each prompt names the task whose returns
-	// fired it (taskLabel).
+	// works its role's step in that round (fireHook), and each prompt and the firing's message name
+	// the task whose returns fired it (taskLabel, taskSentence).
 	if backwardMoves != nil {
-		if err := e.fireWorkBackHooks(ctx, tx, issue, taskLabel(w), from, row.To, backwardMoves, pr); err != nil {
+		if err := e.fireWorkBackHooks(ctx, tx, issue, w, from, row.To, backwardMoves, pr); err != nil {
 			return err
 		}
 	}

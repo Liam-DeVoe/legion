@@ -1456,13 +1456,15 @@ These arrive as messages on the Dispatch issue:
   until you change `review_round_cap` or the issue runs again as a new generation. The work goes
   on, and the architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
   let rounds that are converging run, and posts that decision on the issue; it asks you only for a
-  decision that needs your authority.
+  decision that needs your authority. For an issue with a plan, the rounds are one task's, and the
+  line ends with that task: `… not counted. Task: a.`
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
   move back and fired: the daemon wrote the hook's words once for each role the line names, on the
   topic of the claim of the agent that works that role's step, and posted this record of it. Nothing
   is held: the phase the move opened started its worker, and each agent answers in its own turn. No
-  hook writes to an architect: the daemon's own wake to an architect is a notice.
+  hook writes to an architect: the daemon's own wake to an architect is a notice. For an issue with
+  a plan, the moves back are one task's, and the line ends with that task: `… Prompted: implementer, tester, reviewer. Task: a.`
 - **A red check.** Nothing moves for it. The daemon names every check GitHub reported, with the
   conclusion GitHub gave it, in one message to each agent among the architect that owns the issue,
   the worker of the issue's current phase and the implementer, and judges none of them: an agent
