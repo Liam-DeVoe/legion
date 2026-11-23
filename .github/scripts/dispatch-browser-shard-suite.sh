@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over this leg's fifth of their rows, the row count the merge job reads, and
-# the memory and CPU sampler this leg starts and reads back.
+# Playwright run over this leg's fifth of their row time, the row count the merge job reads,
+# and the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
 #
@@ -80,6 +80,13 @@ export DISPATCH_E2E_BROKER_BIN_DIR="$GITHUB_WORKSPACE/packages/envoy/out/dispatc
 # reports keep their own names when the merge job downloads them into one directory.
 export PLAYWRIGHT_BLOB_OUTPUT_DIR="$RUNNER_TEMP/leg-report/blob-report"
 export PLAYWRIGHT_BLOB_OUTPUT_NAME="report-shard-$shard.zip"
+# Where e2e/shard-reporter.ts writes this leg's two row lists, shard-<N>.selection.jsonl and
+# shard-<N>.ran.jsonl: the rows/ directory the upload carries beside the blob report, as it
+# carries the row count written below. The merge job's reading one holds the five legs' lists
+# against each other (packages/dispatch/e2e/tools/leg-rows.ts), which is what sees a row of the
+# selection that no leg ran or that two ran; the row count cannot, since it counts only what the
+# legs ran.
+export DISPATCH_E2E_LEG_ROWS_DIR="$RUNNER_TEMP/leg-report/rows"
 # The lane's projects, named rather than left to the config, and the one place either
 # lane's list is written. An unknown lane ends the step here rather than running the
 # default set under a name nobody meant, and this is the one place that refuses it now
@@ -155,6 +162,24 @@ esac
 # reporter module relative to the working directory below, which is this package's
 # root (lib/cli/testActions.js:204-211).
 #
+# `./e2e/shard-reporter.ts` beside them, named here for the same reason: it is what makes
+# `--shard=$shard/5` this leg's fifth of the lane's row TIME rather than Playwright's fifth of
+# its row count. Each leg places every file of every project the lane selects by the row times
+# main measured (e2e/shard-weights.json) and keeps its own; e2e/shard-split.ts says why the count
+# split left one leg a fifth heavier than the others and how every leg computes one placement.
+# Without it here the legs would split by count again, every row still run once, and nothing red.
+# It prints one line to the log before the first row: this leg's rows, the row time it expects
+# of this leg and of the run, and how many of its rows it placed by an estimate.
+#
+# No row of the six `-alone` projects is in that placement. The reporter places the selection
+# this command makes, which holds none of those projects (the paragraph on why the projects
+# are named, above), and every project it does name leaves their files out: `chromium`,
+# `iphone`, `webkit` and `firefox` ignore every wall-clock file through `clockSpecPattern`,
+# `iphone` ignores the phone half of large-documents-long-build.e2e.ts through
+# `phoneAloneSpecPattern` (both in e2e/configurations.ts), and the rest select files of their
+# own by `testMatch`. So the five legs split only rows they run, and the alone job's rows weigh
+# on none of them.
+#
 # The suite's own status is carried in a file, not in `$?` and not in `${PIPESTATUS[0]}`:
 # the run is piped into `tee`, and without the `||` a failing suite would end this script
 # at once under `set -e` and pipefail, before the row count and the sampler's readings
@@ -162,7 +187,8 @@ esac
 # of a pipeline is its own subshell, so a variable set in the left-hand one does not
 # survive it, which is why the status goes into a file; the script exits on it at the end.
 rm -f "$RUNNER_TEMP/suite-status"
-{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=$shard/5 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
+{ bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=$shard/5 --workers 4 \
+    --reporter=list,blob,./e2e/failure-reporter.ts,./e2e/shard-reporter.ts 2>&1 ||
     echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
 status=0
 [ ! -f "$RUNNER_TEMP/suite-status" ] || status=$(cat "$RUNNER_TEMP/suite-status")
