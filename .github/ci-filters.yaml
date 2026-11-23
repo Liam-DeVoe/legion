@@ -1789,6 +1789,7 @@ envoy_go:
   - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
   # why: .github/ci-notes/ci.md#envoy_go-internaldispatchtextwhitespace_fixture_testgo-holds-unicodeisspace-to-this
   - 'packages/contracts/fixtures/go-unicode-isspace.json'
+  - 'packages/contracts/fixtures/shown-values.json'
   - '.github/actions/pull-test-images/**'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'

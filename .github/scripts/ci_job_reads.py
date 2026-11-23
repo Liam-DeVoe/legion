@@ -976,6 +976,8 @@ RULES = {
          "testlimits.ServerConnections plus Postgres's default superuser reserve")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
+    f"{ENVOY}/going/agent/shown_test.go": reads(
+        (f"{FIX}/shown-values.json", "going/agent/shown_test.go:35 os.ReadFile (../../../contracts/fixtures/shown-values.json): TestTheModelIsGivenEachValueInTheWebsWords holds the agent's shown values to the words the web writes")),
     f"{ENVOY}/natsgrant/session_fixture_test.go": reads(
         (f"{FIX}/session-grant.json", "natsgrant/session_fixture_test.go:63,69 readJSON and os.ReadFile (sessionFixturePath :24, ../../contracts/fixtures): the fixture must be natsgrant.Session of its placeholder id, as the encoder writes it")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -3182,6 +3184,7 @@ GATES = [
                                          f"which holds its server's port through it (run-server.sh:83,92); {at('dispatch-ui', 'Test dispatch dashboard')} runs that file"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
+        ("packages/contracts/fixtures/shown-values.json", f"packages/dispatch/web/src/features/refs/Timestamp.test.tsx:4 imports it, so {at('dispatch-ui', 'Typecheck dispatch dashboard')} compiles it and {at('dispatch-ui', 'Test dispatch dashboard')} runs that test"),
     ) + envoy_client_dep("packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, which the two suites "
                          "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
                          "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
