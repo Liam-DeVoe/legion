@@ -171,3 +171,21 @@ func TestTheOperatorGuidesSayWhichHeadTheOwnersReviewKeepsAndWhatTheDriversProve
 		{"scripts/e2e/README.md", "a step `acceptance` with no key is a fresh agent, and a task with no pull request is done"},
 	})
 }
+
+// A read-only copy is no workspace, the summary reaches the architect in phase-finished, nothing
+// refuses a plan handoff's shape (api's handoffRecord reads no body), the reviewer cannot resolve a
+// thread (the implement App opened the pull request), and a missing surface holds the completion.
+func TestTheWorkerPromptsSayWhatACopyAReportAndAMissingSurfaceAre(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"mechanics/headless.md", "A copy of the head under `$TMPDIR` that you only read or run checks from is no workspace: commit nothing in it."},
+		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself, in its `phase-finished` notice."},
+		{"core/tester.md", "report the missing surface to whoever owns the plan, and hold your completion until it exists."},
+		{"core/planner.md", "nothing refuses a plan handoff without them, so check them yourself before you record it."},
+		{"core/reviewer.md", "Run the thermonuclear pair over that diff as the paragraph above says."},
+		{"go/reviewer.md", "name the threads you accepted to the implementer, which resolves them, as the thread rule above says."},
+	}, [][2]string{
+		{"core/planner.md", "the plan handoff is refused otherwise"},
+		{"go/reviewer.md", "resolve the ones you answered as the thread rule above says"},
+		{"mechanics/headless.md", "Send your evidence-backed report to the architect"},
+	})
+}
