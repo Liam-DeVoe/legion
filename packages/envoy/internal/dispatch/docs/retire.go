@@ -180,7 +180,7 @@ func RetireDocument(ctx context.Context, tx pgx.Tx, artifactID string, actor mod
 // document would tell another reader it is there.
 func retiredPreventions(ctx context.Context, tx pgx.Tx, artifactID, refKey string, at time.Time, actor model.Actor) ([]graphstore.Tuple, error) {
 	retracted, err := refs.PreventionRetractions(ctx, tx, `array(select held.node_id from document_blocks held where held.artifact_id = $1::uuid)`,
-		[]any{artifactID}, at, actor, graphstore.NoEvent)
+		[]any{artifactID}, at, actor)
 	if err != nil {
 		return nil, fmt.Errorf("read the prevented_by tuples at the checks of %s: %w", refKey, err)
 	}

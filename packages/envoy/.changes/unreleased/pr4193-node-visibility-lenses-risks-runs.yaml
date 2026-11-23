@@ -75,8 +75,7 @@ body: |-
   sent again under the `Idempotency-Key` of a write already committed is answered that answer even
   after its run has ended, and the key's comparison includes the run header. A removed document's
   node is marked gone and keeps no `changed_by_run` tuple, so a document made again under the same
-  title is not listed under the old run. The sweep ends the overdue runs whose
-  deadline passed in the last day, and one pass at each boot ends every older overdue run.
+  title is not listed under the old run.
   A gone run reads as one nobody asked at its address and through its stream, and no edge names
   it. The node of a run holds its `source`, `going_requests`. After the rollout, run
   `envoy-dispatch backfill-graph-store`, which gives each run recorded before this release its node.

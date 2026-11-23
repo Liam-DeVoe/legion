@@ -83,10 +83,10 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 // the cause the store holds of it (KeepsCause), marked changed, and at the sentinel (NoEvent), so
 // the write moves the row's state and appends one state tuple at the sentinel, dated at and signed
 // by who. It answers the nodes in the order it read them, each root followed by what stands
-// beneath it, so the first is the first root as written; at a state other than gone those are
-// roots' own elements, set in place. With no node to write it writes nothing and answers none.
+// beneath it, so the first is the first root as written. With no node to write it writes nothing
+// and answers none.
 func WriteState(ctx context.Context, tx pgx.Tx, roots []Node, state string, at time.Time, who model.Actor) ([]Node, error) {
-	nodes := roots
+	nodes := slices.Clone(roots)
 	if state == StateGone {
 		var err error
 		if nodes, err = withBeneath(ctx, tx, roots); err != nil {

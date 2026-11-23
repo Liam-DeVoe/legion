@@ -548,7 +548,7 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 	if len(targets) == 0 {
 		return checks, nil
 	}
-	nodes, err := refs.Nodes(ctx, q, who, true, targets)
+	nodes, err := refs.Nodes(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}

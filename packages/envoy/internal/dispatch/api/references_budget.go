@@ -66,16 +66,17 @@ func (s *server) inClosureRead(ctx context.Context, who model.Actor, issueKey st
 // each of which says by how much: the issue references read (inClosureRead) and the references
 // list read (inReferencesListRead). The setting is the transaction's alone (set local), so the
 // session the pool hands back reads jit as it did before the read. The rollback runs on a context
-// of its own, as the near-copy gate's does (duplicates.go): the read's context can have expired
-// exactly when the rollback matters, as inClosureRead's has at its bound, and pgx answers a
-// rollback on an expired context by destroying the connection instead of returning it to the pool.
+// of its own, as the near-copy gate's does, bounded by the same readRollbackBound: the read's
+// context can have expired exactly when the rollback matters, as inClosureRead's has at its bound,
+// and pgx answers a rollback on an expired context by destroying the connection instead of
+// returning it to the pool.
 func (s *server) inJITOffRead(ctx context.Context, tag string, read func(tx pgx.Tx) error) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
+		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), readRollbackBound)
 		defer cancelRollback()
 		_ = tx.Rollback(rollback)
 	}()

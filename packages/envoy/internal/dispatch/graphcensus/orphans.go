@@ -161,7 +161,7 @@ var staleLenses = `
 	select ` + graphstore.NodeColumnsOf(`stale`) + `, split_part(split_part(placed.to_id, '#', 1), '/', 1)
 	from graph_nodes stale
 	cross join lateral (
-		` + refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `'`+graphstore.KindLens+`'`, `stale.id`, graphstore.TuplePartOf) + `
+		` + refs.CurrentFarEndSQL(`'`+graphstore.KindLens+`'`, `stale.id`, graphstore.TuplePartOf) + `
 	) placed
 	where stale.kind = '` + graphstore.KindLens + `' and stale.state <> '` + graphstore.StateGone + `'
 	  and stale.attributes->>'` + graphstore.AttributeArtifactID + `' is not null

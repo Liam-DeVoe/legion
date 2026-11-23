@@ -274,6 +274,24 @@ func (r *writersRig) awaitTrue(t *testing.T, what, query string, args ...any) {
 	}
 }
 
+// sweepUntil runs api.RunMaintenanceSweep, with a pass every 50 ms rather than a deployment's one
+// a minute, until query answers true (awaitTrue), and then stops it and waits until it has stopped.
+func (r *writersRig) sweepUntil(t *testing.T, what, query string, args ...any) {
+	t.Helper()
+	leases := storetest.Leases(t, r.database.Pool)
+	sweeping, stop := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		api.RunMaintenanceSweep(sweeping, r.database.Pool, 50*time.Millisecond, leases, nil)
+	}()
+	defer func() {
+		stop()
+		<-stopped
+	}()
+	r.awaitTrue(t, what, query, args...)
+}
+
 // settledAttempts waits until no attempt of the comment is pending and one of them is in state.
 func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 	t.Helper()
@@ -297,10 +315,11 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // itself, which writes the comment's node and its tuples under its event, and who wrote it.
 //
 // The drives of a run's writes and of the reasoning kinds run right after the tick's, in this
-// order: a run of the command bar alice asks, a run an older pod recorded that the boot pass ends,
-// a run an hour old the maintenance sweep states gone, the issue's title, the question of an ask
-// alice opens and a comment of alice's each written for a run she asked, a lens with a finding, a
-// finding, a risk and a constraint, a pointer appended and one retargeted, and the lens's state.
+// order: a run of the command bar alice asks, a run an older pod recorded that a pass of the
+// maintenance sweep ends, a run an hour old the maintenance sweep states gone, the issue's title,
+// the question of an ask alice opens and a comment of alice's each written for a run she asked, a
+// lens with a finding, a finding, a risk and a constraint, a pointer appended and one retargeted,
+// and the lens's state.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -638,8 +657,9 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: runNodeCounted,
 	}, {
 		// A run a process of the release before recorded with no node and left past its window
-		// with no terminal frame: the boot pass ends it with the deadline's error, and that frame's
-		// write gives the run its node from its row first (lockGoingRun, graphstore.WriteRun).
+		// with no terminal frame: a pass of the maintenance sweep ends it with the deadline's error,
+		// and that frame's write gives the run its node from its row first (lockGoingRun,
+		// graphstore.WriteRun).
 		Name: "api/going.go#lockGoingRun, a run an older pod recorded", Database: r.database,
 		Sites: []string{"api/going.go#lockGoingRun", "graphstore/interaction.go#WriteRun", "api/going.go#appendGoingEvent"},
 		Ready: func(t *testing.T) {
@@ -651,8 +671,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 		},
 		Drive: func(t *testing.T) {
-			api.EndGoingRunsOverdueAtBoot(ctx, r.database.Pool)
-			r.awaitTrue(t, "the boot pass ending the older pod's run", `
+			r.sweepUntil(t, "the maintenance sweep ending the older pod's run", `
 				select exists (select 1 from going_events e join going_requests q on q.id = e.request_id
 				               where q.words = 'Who answered this?')
 			`)
@@ -674,18 +693,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}
 		},
 		Drive: func(t *testing.T) {
-			leases := storetest.Leases(t, r.database.Pool)
-			sweeping, stop := context.WithCancel(ctx)
-			stopped := make(chan struct{})
-			go func() {
-				defer close(stopped)
-				api.RunMaintenanceSweep(sweeping, r.database.Pool, 50*time.Millisecond, leases, nil)
-			}()
-			defer func() {
-				stop()
-				<-stopped
-			}()
-			r.awaitTrue(t, "the maintenance sweep stating run "+swept+" gone and removing its rows", `
+			r.sweepUntil(t, "the maintenance sweep stating run "+swept+" gone and removing its rows", `
 				select exists (select 1 from graph_nodes where kind = $1 and id = $2 and state = $3)
 				   and not exists (select 1 from going_requests where id = $2::uuid)
 			`, graphstore.KindInteraction, swept, graphstore.StateGone)

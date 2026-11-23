@@ -306,13 +306,6 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store, rule int)
 // absence of the row a node projects, which an older process's delete leaves: the store is never
 // read to decide what a row should say, nor a row to mend the store.
 
-// runRowHeld is true of an interaction node n whose going_requests row stands. Every writer of an
-// interaction keys it by its run's uuid as Postgres writes it, and an id of any other shape is
-// read as a run with no row rather than cast (store.CanonicalUUID), so no node can fail the read.
-var runRowHeld = `exists (
-		select 1 from going_requests r
-		where r.id = ` + store.CanonicalUUID("n.id") + `)`
-
 // runOwed is the from and the where of the runs whose row names no interaction node, which
 // backfillRuns reads in batches and counts once it is done, $1 the interaction kind.
 const runOwed = `
@@ -320,15 +313,13 @@ const runOwed = `
 		where not exists (select 1 from graph_nodes n where n.kind = $1 and n.id = r.id::text)`
 
 // runRowless is the from and the where of the interaction nodes of the source going_requests
-// (graphstore.SourceGoingRequests), not gone, whose row is gone (runRowHeld), which
-// backfillGoneRuns reads in batches and counts once it is done, $1 the interaction kind and $2 the
-// gone state. A node of another source - a turn of a History conversation, whose row is in another
-// table - is no run of the command bar, and neither this pass nor the sweep states it gone.
+// (graphstore.SourceGoingRequests), not gone, whose row is gone (graphstore.RowlessRunSQL), which
+// backfillGoneRuns reads in batches and counts once it is done. A node of another source - a turn
+// of a History conversation, whose row is in another table - is no run of the command bar, and
+// neither this pass nor the sweep states it gone.
 var runRowless = `
 		from graph_nodes n
-		where n.kind = $1 and n.state <> $2
-		  and n.attributes->>'` + graphstore.AttributeSource + `' = '` + graphstore.SourceGoingRequests + `'
-		  and not ` + runRowHeld
+		where ` + graphstore.RowlessRunSQL("n")
 
 // backfillRuns gives every run going_requests holds and the store holds no interaction node of its
 // node, through the one writer of such a node from its row (graphstore.WriteRun): the node, its
@@ -530,7 +521,7 @@ func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill,
 		}
 		after = owed[len(owed)-1]
 	}
-	if err := database.Pool.QueryRow(ctx, `select count(*)`+runRowless, graphstore.KindInteraction, graphstore.StateGone).Scan(&done.Remaining); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*)`+runRowless).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the runs whose row is gone: %w", err)
 	}
 	done.Complete = done.Remaining == 0
@@ -541,10 +532,10 @@ func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill,
 // gone, at most limit of them.
 func readRowlessRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
 	rows, err := database.Pool.Query(ctx, `
-		select n.id`+runRowless+` and n.id > $3
+		select n.id`+runRowless+` and n.id > $1
 		order by n.id
-		limit $4
-	`, graphstore.KindInteraction, graphstore.StateGone, after, limit)
+		limit $2
+	`, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
 	}
@@ -557,11 +548,10 @@ func readRowlessRuns(ctx context.Context, database *store.Store, after string, l
 
 // writeGoneRun states the interaction node id gone where its row is still gone, in a transaction
 // of its own, and answers whether it did. It takes the node's row first, as a frame of the run
-// does, then reads under that lock the node and whether its row stands: the going POST commits a
-// run's node and its row together, so a node it reads has its row whenever the run has one. The
-// write is the node as the store holds it but for its state, a plain write that moves the row and
-// appends the state tuple, made by the run (backfillActor) now, as api's writeNodeState moves a
-// node's state.
+// does, then reads under that lock the node and whether it is still a run whose row is gone
+// (graphstore.RowlessRunSQL): the going POST commits a run's node and its row together, so a node
+// it reads has its row whenever the run has one. The write is graphstore.WriteState of the node,
+// made by the run (backfillActor) now, as api's goRunGone states a run's node gone.
 func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -572,20 +562,18 @@ func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, 
 		return false, err
 	}
 	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
-	if err != nil || !held || node.State == graphstore.StateGone {
+	if err != nil || !held {
 		return false, err
 	}
-	var rowHeld bool
-	if err := tx.QueryRow(ctx, `select `+runRowHeld+` from graph_nodes n where n.kind = $1 and n.id = $2`,
-		graphstore.KindInteraction, id).Scan(&rowHeld); err != nil {
-		return false, fmt.Errorf("read whether run %s holds its row: %w", id, err)
+	var rowless bool
+	if err := tx.QueryRow(ctx, `select `+graphstore.RowlessRunSQL("n")+` from graph_nodes n where n.kind = $1 and n.id = $2`,
+		graphstore.KindInteraction, id).Scan(&rowless); err != nil {
+		return false, fmt.Errorf("read whether run %s is still a run whose row is gone: %w", id, err)
 	}
-	if rowHeld {
+	if !rowless {
 		return false, nil
 	}
-	node.State, node.Restates = graphstore.StateGone, false
-	node.MadeAt, node.MadeBy, node.SourceEvent = time.Now().UTC(), backfillActor, graphstore.NoEvent
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+	if _, err := graphstore.WriteState(ctx, tx, []graphstore.Node{node}, graphstore.StateGone, time.Now().UTC(), backfillActor); err != nil {
 		return false, fmt.Errorf("state run %s gone: %w", id, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -689,7 +677,7 @@ func writeEndedPreventions(ctx context.Context, database *store.Store, documents
 		return 0, err
 	}
 	retracted, err := refs.PreventionRetractions(ctx, tx, endedChecks(`split_part(p.to_id, '#', 1) = any($1)`),
-		[]any{documents}, time.Now().UTC(), backfillActor, graphstore.NoEvent)
+		[]any{documents}, time.Now().UTC(), backfillActor)
 	if err != nil {
 		return 0, fmt.Errorf("read the prevented_by tuples at checks nobody runs: %w", err)
 	}

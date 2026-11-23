@@ -195,7 +195,7 @@ func lensRowsStatement(source, narrow, order, gone, viewer string) string {
 		` + refs.LensKindSQL("held", `kind_node.id, coalesce(kind_node.attributes->>'`+graphstore.AttributeWords+`', '') as words`, viewer) + `
 	) chosen_kind on true
 	left join lateral (
-		` + refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, lens, `held.id`, graphstore.TupleAuthoredBy) + `
+		` + refs.CurrentFarEndSQL(lens, `held.id`, graphstore.TupleAuthoredBy) + `
 	) author on true
 	left join lateral (
 		select array_agg(linked.to_id order by linked.seq) as ids
@@ -237,7 +237,7 @@ var lensesOnNodeQuery = lensRowsStatement(`(
 // being $2 (lensRowsStatement): the lenses a chain reaches that the read holds no row of yet.
 var lensesByIDQuery = lensRowsStatement(`graph_nodes held
 	left join lateral (
-		`+refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `'`+graphstore.KindLens+`'`, `held.id`, graphstore.TuplePartOf)+`
+		`+refs.CurrentFarEndSQL(`'`+graphstore.KindLens+`'`, `held.id`, graphstore.TuplePartOf)+`
 	) placed on true`,
 	`held.kind = '`+graphstore.KindLens+`' and held.id = any($1)`, ``, "$2", "$3")
 
@@ -652,7 +652,7 @@ func readLenses(ctx context.Context, q refs.Queryer, who model.Actor, address st
 	}
 	var resolved map[refs.Target]model.GraphNode
 	if len(targets) > 0 {
-		if resolved, err = refs.Nodes(ctx, q, who, true, targets); err != nil {
+		if resolved, err = refs.Nodes(ctx, q, who, targets); err != nil {
 			return nodeLenses{}, err
 		}
 	}

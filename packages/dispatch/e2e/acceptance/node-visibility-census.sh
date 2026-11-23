@@ -22,8 +22,8 @@
 #       With psql it writes one run row a day ahead that holds no frame, and one run for each row
 #       of the identity table below, each a day ahead too and each form straight into
 #       going_requests.author, since the older server's sign-in stores a login in its canonical
-#       form only; so every run holds a terminal frame or an ends_at a day ahead, and no boot of
-#       either build ends one by itself. It then reads the inventory - each run's id, author,
+#       form only; so every run holds a terminal frame or an ends_at a day ahead, and neither
+#       build's sweep ends one by itself. It then reads the inventory - each run's id, author,
 #       words and frames - out of that database and keeps it as a file.
 #   H1  This head's server (DISPATCH_E2E_SERVER_BIN, stamped with its own commit) boots over the
 #       same database and runs every migration it holds that the database does not record, so the
@@ -363,10 +363,10 @@ readonly carol_recorded="$answer"
 jq -e --arg c "$carol" '.kind == "user" and .id == $c' <<<"$carol_recorded" >/dev/null ||
   fail B1 "the older server's sign-in stored $carol's login in its canonical form" "the record holds $carol_recorded"
 pass B1 "the record of $carol's own run stored the actor $carol_recorded"
-# Each run is written a day ahead, as the run row above is. This head ends, in one pass at each of
-# its boots before the backfill, every run past its ends_at that holds no terminal frame, and so may
-# a build's periodic sweep: a run written by hand that is overdue would gain a frame the inventory
-# lacks. A day ahead, none of these runs is overdue at any boot of this run, whichever build boots.
+# Each run is written a day ahead, as the run row above is. Each build's sweep, once a minute while
+# it serves, ends every run past its ends_at that holds no terminal frame: a run written by hand
+# that is overdue would gain a frame the inventory lacks. A day ahead, none of these runs is overdue
+# at any sweep of this run, whichever build sweeps, until this driver moves its ends_at.
 identity_runs=()
 for row in "${identities[@]}"; do
   IFS='|' read -r what form wanted person <<<"$row"

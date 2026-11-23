@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -276,117 +275,35 @@ func TestTheGoingSweepEndsARunPastItsWindowOnce(t *testing.T) {
 	}
 }
 
-// The sweep reads back goingSweepWindow from now and no further. A run whose ends_at passed inside
-// that window, an hour short of its far end, with no ending stored is ended by one pass with the
-// deadline's error, as every overdue run the sweep reads is. A run whose ends_at passed an hour
-// before the window opens is not read by the sweep: it holds no frame after the pass, still past
-// its deadline with no ending stored, and its reader ends it, since the stream ends a run past its
-// ends_at with no terminal frame stored (streamGoingAnswer) with that same error, and stores it.
-// A run inside its own window is left to run. Each run is dated by its ends_at, its created_at
+// The sweep ends every run past its ends_at with no terminal frame stored, however long ago that
+// deadline passed: going_requests holds about an hour of runs once the sweep runs, so its read
+// takes every overdue run the table holds. A run whose ends_at passed more than a day ago, as one
+// asked before every process of a deployment was down for a day is, is ended by one pass with the
+// deadline's error, as an overdue run of a minute is (TestTheGoingSweepEndsARunPastItsWindowOnce),
+// and a run inside its own window is left to run. The run is dated by its ends_at, its created_at
 // kept inside the hour: the sweep's second step removes a run an hour after its created_at
-// (goRunsPastTheHour), and what this holds is the first step's window, which bounds ends_at alone.
-func TestTheGoingSweepEndsTheRunsOfItsWindowAndLeavesAnOlderOneToItsReader(t *testing.T) {
-	routes := newGoingRoutesRig(t, nil)
-	rig := goingRig{server: routes.server, database: routes.database}
+// (goRunsPastTheHour), and what this holds is the first step, which reads ends_at alone.
+func TestTheGoingSweepEndsARunOverdueByMoreThanADay(t *testing.T) {
+	rig := newGoingRig(t)
 	ctx := context.Background()
-	insideBy, outsideBy := goingSweepWindow-time.Hour, goingSweepWindow+time.Hour
-	inside := rig.record(t, "asked most of a day ago")
-	rig.age(t, inside.ID, 30*time.Minute, insideBy)
+	const overdueBy = 25 * time.Hour
 	older := rig.record(t, "asked more than a day ago")
-	rig.age(t, older.ID, 30*time.Minute, outsideBy)
+	rig.age(t, older.ID, 30*time.Minute, overdueBy)
 	live := rig.record(t, "asked just now")
 
 	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 	deadline := fmt.Sprintf(`1 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
-	if frames := rig.frames(t, inside.ID); len(frames) != 1 || frames[0] != deadline {
-		t.Fatalf("run %s, past its deadline by %v, inside the sweep's window of %v, holds %v after the sweep, want the deadline's ending %s",
-			inside.ID, insideBy, goingSweepWindow, frames, deadline)
+	if frames := rig.frames(t, older.ID); len(frames) != 1 || frames[0] != deadline {
+		t.Fatalf("run %s, past its deadline by %v, holds %v after the sweep, want the deadline's ending %s",
+			older.ID, overdueBy, frames, deadline)
 	}
-	_, state, err := rig.server.readGoingStream(ctx, older.ID, 0)
-	if err != nil || state.Terminal != 0 || !state.PastDeadline {
-		t.Fatalf("run %s, past its deadline by %v, before the sweep's window of %v, reads %+v (%v) after the sweep, want it past its deadline with no ending stored: the sweep reads no run older than its window",
-			older.ID, outsideBy, goingSweepWindow, state, err)
-	}
-	if frames := rig.frames(t, older.ID); len(frames) != 0 {
-		t.Fatalf("run %s, before the sweep's window, holds %v after the sweep, want no frame", older.ID, frames)
+	if _, state, err := rig.server.readGoingStream(ctx, older.ID, 0); err != nil || state.Terminal != 1 || !state.PastDeadline {
+		t.Fatalf("run %s reads %+v (%v) after the sweep, want its ending at sequence 1 and past its deadline", older.ID, state, err)
 	}
 	if frames := rig.frames(t, live.ID); len(frames) != 0 {
 		t.Fatalf("the sweep ended a run still inside its own window: %v", frames)
-	}
-
-	response := routes.stream(t, older.ID, goingAsker.ID, "")
-	want := fmt.Sprintf("id: 1\nevent: %s\ndata: {\"code\":\"%s\"}\n\n", contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
-	if response.Code != http.StatusOK || response.Body.String() != want {
-		t.Fatalf("the stream of run %s, which the sweep left, answers %d %q, want 200 and the deadline's error %q",
-			older.ID, response.Code, response.Body.String(), want)
-	}
-	if frames := rig.frames(t, older.ID); len(frames) != 1 || frames[0] != deadline {
-		t.Fatalf("run %s holds %v once its reader read it, want the ending the reader wrote stored, %s", older.ID, frames, deadline)
-	}
-}
-
-// TestTheOverdueReadsGoThroughTheEndsAtIndex holds each pass's read of the runs it ends to
-// going_requests_ends_at (migration 20261116232634): under the plan Postgres builds for the values
-// the pass sends, and under the generic plan a prepared statement settles on, it reads
-// going_requests through that index alone, never a scan of the table, with its bounds in the
-// index condition. The sweep's read (goingOverdueRuns) carries both bounds of its window - ends_at
-// at or before now, and after now less the window - so it is that index's range for the last day
-// and not every run the table holds: a condition holding the upper bound alone would read the index
-// from its first entry, every run the table holds, which is the cost the window is there to bound
-// where a deployment down for longer than the hour holds more than an hour of runs. The boot pass's
-// read (goingEveryOverdueRun) carries that upper bound alone, every run whose deadline has passed,
-// which is why the pass runs once a boot and not once a maintenance pass.
-func TestTheOverdueReadsGoThroughTheEndsAtIndex(t *testing.T) {
-	rig := newGoingRig(t)
-	ctx := context.Background()
-	const index = "going_requests_ends_at"
-	terminal := "'{" + strings.Join(goingTerminalNames, ",") + "}'"
-	connection, err := rig.database.Pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire a connection for the generic plans: %v", err)
-	}
-	defer connection.Release()
-	firstKeys := explaintest.NewIndexKeys(rig.database.Pool)
-	for _, read := range []struct {
-		name, prepared, statement string
-		args                      []any
-		types, literals           []string
-		bounds                    []string
-	}{
-		{
-			name: "the sweep's read", prepared: "going_overdue_runs", statement: goingOverdueRuns,
-			args:  []any{goingTerminalNames, goingSweepWindow.Seconds()},
-			types: []string{"text[]", "double precision"}, literals: []string{terminal, fmt.Sprint(goingSweepWindow.Seconds())},
-			bounds: []string{"ends_at <=", "ends_at >"},
-		},
-		{
-			name: "the boot pass's read", prepared: "going_every_overdue_run", statement: goingEveryOverdueRun,
-			args: []any{goingTerminalNames}, types: []string{"text[]"}, literals: []string{terminal},
-			bounds: []string{"ends_at <="},
-		},
-	} {
-		custom := planWithoutSeqScans(t, rig.database, read.statement, read.args...)
-		generic := explaintest.GenericPlan(t, ctx, connection, read.prepared, read.statement, read.types, read.literals,
-			"set local enable_seqscan = off")
-		for _, planned := range []struct {
-			name string
-			plan json.RawMessage
-		}{{read.name, custom}, {read.name + " under a generic plan", generic}} {
-			if explaintest.SeqScansRelation(t, planned.plan, "going_requests") {
-				t.Errorf("%s scans going_requests:\n%s", planned.name, planned.plan)
-			}
-			firstKeys.RequireIndexKeyed(t, planned.plan, index, planned.name, explaintest.CondRequired)
-			for _, scan := range explaintest.IndexScans(t, planned.plan) {
-				for _, bound := range read.bounds {
-					if scan.Index == index && !strings.Contains(scan.Cond, bound) {
-						t.Errorf("%s reads %s on `%s`, want its bound `%s` in the index condition:\n%s",
-							planned.name, scan, scan.Cond, bound, planned.plan)
-					}
-				}
-			}
-		}
 	}
 }
 
@@ -435,73 +352,6 @@ func TestTheNextFrameReadsTwoIndexProbes(t *testing.T) {
 				t.Errorf("%s runs %s over the run's frames:\n%s", planned.name, node, planned.plan)
 			}
 		}
-	}
-}
-
-// TestABootEndsARunOverdueByMoreThanADay is the boot pass: a run whose ends_at passed more than a
-// day ago with no terminal frame stored - one whose window passed while every process was down for
-// longer than goingSweepWindow - is read by no periodic pass,
-// and the boot pass ends it with the deadline's error, once. The run holds one frame of its own
-// and is dated by its ends_at an hour past the window, its created_at kept inside the hour, so the
-// periodic pass's second step, which removes a run an hour after its created_at
-// (goRunsPastTheHour), leaves its rows. A periodic pass (sweepGoingRequests, which each tick of
-// RunMaintenanceSweep calls) leaves it holding that frame alone; the boot pass
-// (EndGoingRunsOverdueAtBoot, the function cmd/dispatch calls once at boot before that loop's
-// first tick) stores the deadline's error after it and logs that it ended one run, with how long
-// it took; and a second boot pass, as a second process booting runs it, stores nothing more and
-// logs that it ended none.
-func TestABootEndsARunOverdueByMoreThanADay(t *testing.T) {
-	rig := newGoingRig(t)
-	ctx := context.Background()
-	logs := captureLogs(t)
-	overdueBy := goingSweepWindow + time.Hour
-	run := rig.record(t, "asked before every process went down")
-	if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, going.Text("Half an ")); err != nil {
-		t.Fatalf("append the run's own frame: %v", err)
-	}
-	rig.age(t, run.ID, 30*time.Minute, overdueBy)
-	held := rig.frames(t, run.ID)
-	if len(held) != 1 {
-		t.Fatalf("the run holds %v before any pass, want its one frame", held)
-	}
-	// bootLines is every line the boot pass logged so far, in order.
-	bootLines := func() []string {
-		var lines []string
-		for line := range strings.Lines(logs.String()) {
-			if strings.Contains(line, `msg="dispatch: the boot pass ended the overdue answer runs"`) {
-				lines = append(lines, line)
-			}
-		}
-		return lines
-	}
-
-	if err := sweepGoingRequests(ctx, rig.database.Pool); err != nil {
-		t.Fatalf("periodic pass: %v", err)
-	}
-	if frames := rig.frames(t, run.ID); !equalStrings(frames, held) {
-		t.Fatalf("run %s, past its deadline by %v, holds %v after a periodic pass, want its own frame %v alone: the sweep reads no run older than its window of %v",
-			run.ID, overdueBy, frames, held, goingSweepWindow)
-	}
-
-	EndGoingRunsOverdueAtBoot(ctx, rig.database.Pool)
-	deadline := fmt.Sprintf(`2 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
-	ended := rig.frames(t, run.ID)
-	if len(ended) != 2 || ended[0] != held[0] || ended[1] != deadline {
-		t.Fatalf("run %s holds %v after the boot pass, want its own frame %s and the deadline's ending %s", run.ID, ended, held[0], deadline)
-	}
-	if _, state, err := rig.server.readGoingStream(ctx, run.ID, 0); err != nil || state.Terminal != 2 || !state.PastDeadline {
-		t.Fatalf("run %s reads %+v (%v) after the boot pass, want its ending at sequence 2 and past its deadline", run.ID, state, err)
-	}
-	if lines := bootLines(); len(lines) != 1 || !strings.Contains(lines[0], " ended=1 ") || !strings.Contains(lines[0], " duration=") {
-		t.Fatalf("the boot pass logged %q, want one line saying it ended 1 run and how long it took", lines)
-	}
-
-	EndGoingRunsOverdueAtBoot(ctx, rig.database.Pool)
-	if frames := rig.frames(t, run.ID); !equalStrings(frames, ended) {
-		t.Fatalf("a second boot pass left run %s holding %v, want the one ending %v", run.ID, frames, ended)
-	}
-	if lines := bootLines(); len(lines) != 2 || !strings.Contains(lines[1], " ended=0 ") {
-		t.Fatalf("the two boot passes logged %q, want the second saying it ended 0 runs", lines)
 	}
 }
 

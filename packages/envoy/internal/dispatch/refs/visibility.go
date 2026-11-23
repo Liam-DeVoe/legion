@@ -36,10 +36,11 @@ import (
 // its own. Every kind answers the same rule - the store's row for the node says whether the
 // acting person may see it (visibleWhere) - and an entry states only what its kind's rule
 // compares and the kind the store keys its nodes under (nodeVisibility). The loader and the
-// predicate live in one value so a kind cannot be registered with a loader and no predicate: such
-// an entry does not build, and one written as a literal past the constructors is refused at init,
-// where the kind is named (the three lines nodeKind states). Beside its rule, an artifact differs
-// in how the from side of an edge spells it, which VisibleEnd rewrites (artifactStoreAddress).
+// predicate live in one value so a kind cannot be registered with a loader and no predicate: every
+// constructor states one, and an entry written as a literal past the constructors is refused at
+// init, where the kind is named (the three lines nodeKind states). Beside its rule, an artifact
+// differs in how the from side of an edge spells it, which VisibleEnd rewrites
+// (artifactStoreAddress).
 // TestEveryNodeKindAnswersAVisibilityPredicate holds the registry's keys to the node kinds the
 // store resolves, in both directions, and holds every read's own SQL to predicates this file
 // rendered.
@@ -64,11 +65,11 @@ type nodeLoader func(ctx context.Context, q Queryer, who model.Actor, kind strin
 // Three lines keep a kind from reaching a read unguarded, and each one sees what the others
 // cannot:
 //
-//   - The constructors below state the predicate: resolvedKind and unresolvedKind take it as an
-//     argument, so a kind registered with a loader and no predicate is a call with an argument
-//     missing and the package does not build, and authoredKind and credentialAuthoredKind each
-//     make the one predicate their name says. This is the line a kind added the way every kind
-//     here was added meets.
+//   - The constructors below state the predicate, each the one its name says: resolvedKind and
+//     unresolvedKind the rule most kinds take, the zero value of nodeVisibility, which compares
+//     the author a credential proved and keys the store under the kind's own name, and
+//     authoredKind and credentialAuthoredKind their own. No constructor makes an entry without a
+//     predicate, so this is the line a kind added the way every kind here was added meets.
 //   - init refuses an entry no constructor made: a hand-written literal such as
 //     {load: loadIssueNodes} compiles, and its predicate is the zero value nobody chose
 //     rather than none at all, so the kind would run on a rule no one wrote. The process does
@@ -97,16 +98,18 @@ type nodeKind struct {
 	stated bool
 }
 
-// resolvedKind registers a node kind the graph addresses: the loader that reads its nodes, and
-// the predicate every read of the kind binds. The kind takes no node reserved for its author.
-func resolvedKind(load nodeLoader, visibility nodeVisibility) nodeKind {
-	return nodeKind{load: load, visibility: visibility, stated: true}
+// resolvedKind registers a node kind the graph addresses: the loader that reads its nodes, under
+// the rule most kinds take (the zero value of nodeVisibility), which every read of the kind binds.
+// The kind takes no node reserved for its author.
+func resolvedKind(load nodeLoader) nodeKind {
+	return nodeKind{load: load, stated: true}
 }
 
 // unresolvedKind registers a node kind the store holds rows of that no read of the graph
-// resolves into a node. It answers a predicate like every other kind and carries no loader.
-func unresolvedKind(visibility nodeVisibility) nodeKind {
-	return nodeKind{visibility: visibility, stated: true}
+// resolves into a node. It answers the predicate resolvedKind states, like every other kind, and
+// carries no loader.
+func unresolvedKind() nodeKind {
+	return nodeKind{stated: true}
 }
 
 // authoredKind registers a node kind that may hold a node reserved for its author and whose
@@ -175,23 +178,23 @@ func init() {
 	nodeRegistry = map[string]nodeKind{
 		// The kinds the projection tables hold, whose nodes the graph addresses by the id
 		// their own loader reads.
-		"issue":         resolvedKind(loadIssueNodes, nodeVisibility{}),
-		"artifact":      resolvedKind(loadArtifactNodes, nodeVisibility{}),
-		"ask":           resolvedKind(loadAskNodes, nodeVisibility{}),
-		"comment":       resolvedKind(loadCommentNodes, nodeVisibility{}),
-		"message":       resolvedKind(loadMessageNodes, nodeVisibility{}),
-		"component":     resolvedKind(loadComponentNodes, nodeVisibility{}),
-		"block":         resolvedKind(loadBlockNodes, nodeVisibility{}),
-		"ask_block":     resolvedKind(loadAskBlockNodes, nodeVisibility{}),
-		"comment_block": resolvedKind(loadCommentBlockNodes, nodeVisibility{}),
-		"message_block": resolvedKind(loadMessageBlockNodes, nodeVisibility{}),
+		"issue":         resolvedKind(loadIssueNodes),
+		"artifact":      resolvedKind(loadArtifactNodes),
+		"ask":           resolvedKind(loadAskNodes),
+		"comment":       resolvedKind(loadCommentNodes),
+		"message":       resolvedKind(loadMessageNodes),
+		"component":     resolvedKind(loadComponentNodes),
+		"block":         resolvedKind(loadBlockNodes),
+		"ask_block":     resolvedKind(loadAskBlockNodes),
+		"comment_block": resolvedKind(loadCommentBlockNodes),
+		"message_block": resolvedKind(loadMessageBlockNodes),
 		// The kinds the node and tuple store holds itself (graphstore.KindPerson and its three
 		// siblings, loadStoreNodes). None of them carries a `dispatch://` address, so the
 		// artifact's address rewrite does not reach them.
-		graphstore.KindPerson:  resolvedKind(loadStoreNodes, nodeVisibility{}),
-		graphstore.KindSession: resolvedKind(loadStoreNodes, nodeVisibility{}),
-		graphstore.KindRole:    resolvedKind(loadStoreNodes, nodeVisibility{}),
-		graphstore.KindPage:    resolvedKind(loadStoreNodes, nodeVisibility{}),
+		graphstore.KindPerson:  resolvedKind(loadStoreNodes),
+		graphstore.KindSession: resolvedKind(loadStoreNodes),
+		graphstore.KindRole:    resolvedKind(loadStoreNodes),
+		graphstore.KindPage:    resolvedKind(loadStoreNodes),
 		// The kinds of cybermonklabs/legion#4193 the store holds alone, each registered in the commit
 		// that first writes a node of it (migration 20261116123354 writes the first two, the
 		// reasoning write of api the next three, and the going POST of api the last). A lens kind
@@ -200,14 +203,14 @@ func init() {
 		// for its author, and each one's predicate compares the author a credential proved, as
 		// every kind cybermonklabs/legion#3178 registers does. A finding is stored as a node of kind
 		// block at its own id, `lens/<uuid>#<block id>`, so its entry reads the store under that
-		// kind (storedAs). A lens, a finding and a risk are read by one loader, which takes the
+		// kind (storedAsBlock). A lens, a finding and a risk are read by one loader, which takes the
 		// kind it reads (loadReasoningNodes). An interaction, one run of the command bar, is
 		// always reserved for its author, and its predicate compares the whole credential, as the
 		// going stream compares its reader with the run's author.
-		graphstore.KindLensKind:    resolvedKind(loadLensKindNodes, nodeVisibility{}),
+		graphstore.KindLensKind:    resolvedKind(loadLensKindNodes),
 		graphstore.KindConstraint:  authoredKind(loadConstraintNodes),
 		graphstore.KindLens:        authoredKind(loadReasoningNodes),
-		graphstore.KindLensBlock:   authoredKind(loadReasoningNodes).storedAs(BlockNodeKind),
+		graphstore.KindLensBlock:   authoredKind(loadReasoningNodes).storedAsBlock(),
 		graphstore.KindRisk:        authoredKind(loadReasoningNodes),
 		graphstore.KindInteraction: credentialAuthoredKind(loadInteractionNodes),
 		// The block schema's own nodes, which a type is (migration 20261109051232). Nothing
@@ -216,8 +219,8 @@ func init() {
 		// any other, so the registry answers for them rather than leaving the one read that lists
 		// them (pmdoc/schemanodes, through graphstore.NodesOfKind) with no predicate to bind the
 		// day a type is reserved for whoever drafted it.
-		"supertag":  unresolvedKind(nodeVisibility{}),
-		"attribute": unresolvedKind(nodeVisibility{}),
+		"supertag":  unresolvedKind(),
+		"attribute": unresolvedKind(),
 	}
 	for _, kind := range slices.Sorted(maps.Keys(nodeRegistry)) {
 		if !nodeRegistry[kind].stated {
@@ -301,7 +304,7 @@ type nodeVisibility struct {
 	// the store keys under its own name. Only a finding of a lens differs: graph_edges and every
 	// reference name it lens_block, at its own id `lens/<uuid>#<block id>`, and the store holds
 	// it as a node of kind block at that same id (graphstore.KindLensBlock), so a predicate keyed
-	// on lens_block would find no row and answer the finding to everyone (storedAs).
+	// on lens_block would find no row and answer the finding to everyone (storedAsBlock).
 	storedKind string
 	// compares is what the predicate compares the author of a node reserved for that author
 	// with: the author the acting credential proved, the zero value, which resolvedKind,
@@ -310,12 +313,12 @@ type nodeVisibility struct {
 	compares comparison
 }
 
-// storedAs is the entry k with its nodes keyed in `graph_nodes` under kind rather than under the
-// registry's own key (nodeVisibility.storedKind): a finding of a lens, registered as lens_block
-// and stored as a block. Every predicate the registry renders for the entry reads the store's
-// row under that kind, at the id the kind is addressed by.
-func (k nodeKind) storedAs(kind string) nodeKind {
-	k.visibility.storedKind = kind
+// storedAsBlock is the entry k with its nodes keyed in `graph_nodes` under BlockNodeKind rather
+// than under the registry's own key (nodeVisibility.storedKind): a finding of a lens, registered
+// as lens_block and stored as a block. Every predicate the registry renders for the entry reads
+// the store's row under that kind, at the id the kind is addressed by.
+func (k nodeKind) storedAsBlock() nodeKind {
+	k.visibility.storedKind = BlockNodeKind
 	return k
 }
 
@@ -433,34 +436,9 @@ const StoredState = storedNodeAlias + ".stored_state"
 // of the same row. That is a choice for a loader that answers a handful of nodes. The block
 // loader answers thousands - every block of an 8,001-block document, the 5,000 blocks a list of
 // links points from - where the second probe cost a read of 5,001 blocks a fifth of its time
-// (check c-read-cost), so it reads both from one probe (visibleStoredKind).
+// (check c-read-cost), so it reads both from one probe (loadBlockNodes).
 func storedNode(kind, address string) (join, columns string) {
 	return StoredNodeJoin(`'`+StoredKindOf(kind)+`'`, address)
-}
-
-// visibleStoredKind is VisibleKind and storedNode of the node of kind whose id address names,
-// read in one probe of the node's `graph_nodes` row rather than two, for a loader that answers
-// many nodes at once (loadBlockNodes). It answers the lateral join over that row the loader adds
-// to its from list; the two columns that answer storedNode's state and visibility from it
-// (StoredRowOf), null where the store holds no row; and the predicate over it, VisibleKind's test
-// of the same row under the same key with the same comparison of its author (VisibleKindRow), and
-// true where the store holds no row. So the loader answers the same nodes with the same state and
-// visibility as the pair it replaces, and the join reads `visibility` once under each of the two
-// markers, as that pair does.
-//
-// The join ends in `offset 0`, which keeps it a probe of the primary key per row, as the scalar
-// sub-plan it replaces is (visibleWhere): a lateral subquery Postgres may pull up is a join it may
-// hash from a scan of the whole store. A kind the registry does not hold joins nothing and
-// answers false, as VisibleKind does.
-func visibleStoredKind(kind, address, param string) (join, columns, predicate string) {
-	if _, held := nodeRegistry[kind]; !held {
-		return "", "null::text, null::text", "false"
-	}
-	const alias, row = "stored_visible", "stored_visible_node"
-	join = `left join lateral (select ` + StoredRowOf(row) + `, ` + VisibleKindRow(kind, row, param) + ` as seen
-		from graph_nodes ` + row + ` where ` + row + `.kind = '` + StoredKindOf(kind) + `' and ` + row + `.id = ` + address + `
-		offset 0) ` + alias + ` on true`
-	return join, StoredColumnsOf(alias), `coalesce(` + alias + `.seen, true)`
 }
 
 // StoredNodeJoin is what a statement adds to answer the stored state and visibility of the node
@@ -480,8 +458,8 @@ func StoredNodeJoin(kindExpr, address string) (join, columns string) {
 // StoredRowOf is the stored state and the stored visibility of the `graph_nodes` row a statement
 // holds as alias, as two columns named stored_state and stored_visibility, the visibility opened by
 // StoredNodeMarker. A read that joins the node's row anyway selects these (api's lens read, the
-// constraints of an issue), and so does the join storedNode and visibleStoredKind add, so each
-// reads that row once.
+// constraints of an issue), and so do the join storedNode adds and the one loadBlockNodes adds,
+// so each reads that row once.
 func StoredRowOf(alias string) string {
 	return alias + `.state as stored_state, ` + StoredNodeMarker + alias + `.visibility as stored_visibility`
 }

@@ -267,10 +267,7 @@ func (s *server) goingBodies(ctx context.Context, hits []going.Hit) (map[string]
 // deadline's error, and the stream ends on whatever terminal frame that write answers
 // (endGoingRun settles which one). That is how a stream ends when the pod that took the POST is
 // gone: nothing else stores that run's ending until the sweep reaches it (sweepGoingRequests,
-// once a maintenance pass, over the runs whose ends_at passed within goingSweepWindow, the last
-// day), and a run whose ends_at passed longer ago than that with no terminal frame stored is
-// read by no sweep, so it is ended by this reader, if it reads it first, or by the boot pass at
-// the next boot of any process (EndGoingRunsOverdueAtBoot).
+// once a maintenance pass).
 func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// Resolved once rather than through requireAuthenticated and a second resolution: the actor
 	// is what this route compares the run's author with, and a credential resolves at a cost -

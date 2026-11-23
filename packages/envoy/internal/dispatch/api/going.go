@@ -41,14 +41,12 @@ import (
 //
 // The window a run has belongs to the record: going_requests.ends_at, written by the POST. A pod
 // that dies mid-run stores no terminal frame, so a reader on another pod ends the stream itself
-// once the run is past that moment with nothing terminal stored (readGoingStream),
-// sweepGoingRequests ends the runs nobody reads, each in the day after its deadline
-// (goingSweepWindow), and the boot pass, once at each boot of a process, every older one
-// (EndGoingRunsOverdueAtBoot). At the deadline the running answer, a reader and a pass may each
-// try to end one run, so which of them ends it is settled by the table (the going_events_terminal
-// index of migration 20261105152945) and never by whichever is first: every terminal write is an
-// insert that does nothing on a conflict, and the writer that loses reads the stored terminal
-// frame and reports that one (endGoingRun).
+// once the run is past that moment with nothing terminal stored (readGoingStream), and
+// sweepGoingRequests ends the runs nobody reads. At the deadline the running answer, a reader and
+// the sweep may each try to end one run, so which of them ends it is settled by the table (the
+// going_events_terminal index of migration 20261105152945) and never by whichever is first: every
+// terminal write is an insert that does nothing on a conflict, and the writer that loses reads the
+// stored terminal frame and reports that one (endGoingRun).
 
 // goingRequestColumns is the going_requests select list scanGoingRequest reads, in scan order.
 const goingRequestColumns = `id::text, author, project, words, created_at, ends_at`
@@ -506,59 +504,24 @@ func scanGoingEvent(row pgx.Row) (goingEvent, error) {
 	return event, nil
 }
 
-// goingSweepWindow is how far back from now the sweep reads a run's ends_at (goingOverdueRuns): a
-// run whose deadline passed longer ago than this is not read by it at all. Once the sweep runs,
-// going_requests holds about an hour of runs, since the sweep removes a run's rows an hour after it
-// was asked (contracts.GoingRequestTTL, goRunsPastTheHour), and the window is far wider than that
-// hour: every overdue run the table holds is inside it, and the read is the range of
-// going_requests_ends_at (migration 20261116232634_going_requests_ends_at_index) for the last day.
-// The window bounds that read where the table holds more than an hour. A deployment whose every
-// process was down, or whose every pass failed, for longer holds every run asked since, and the
-// sweep reads the table once a maintenance pass, every minute (MaintenanceSweepInterval): read
-// over every overdue run, each pass would cost that whole backlog. A day is far longer than the
-// sweep needs to reach a run: a run past its ends_at is inside the window for some 1,440 passes,
-// any one of which ends it. A run that leaves the window with no ending is one no pass ended in
-// that day, every process of the deployment down for as long, and what ends it then is the boot
-// pass, at the next boot of any process, before the first pass (EndGoingRunsOverdueAtBoot), or its
-// reader, if one reads it first: the stream ends a run past its ends_at with no terminal frame
-// stored when it reads it (streamGoingAnswer, on readGoingStream's PastDeadline). Such a run is
-// past the hour as well, so the pass after its ending states it gone and removes its rows.
-const goingSweepWindow = 24 * time.Hour
-
-// goingOverdueRead is the read of the runs a pass ends, $1 the terminal frame names: every run
-// whose ends_at has passed, within bound, with no terminal frame stored, oldest deadline first.
-// Each pass's read is named rather than written inline so that its plan is held to
-// going_requests_ends_at (TestTheOverdueReadsGoThroughTheEndsAtIndex).
-func goingOverdueRead(bound string) string {
-	return `
+// goingOverdueRuns is the sweep's read of the runs it ends, $1 the terminal frame names: every run
+// whose ends_at has passed with no terminal frame stored, oldest deadline first. Once the sweep
+// runs, going_requests holds about an hour of runs, since the sweep removes a run's rows an hour
+// after it was asked (contracts.GoingRequestTTL, goRunsPastTheHour), so the read is of that hour.
+const goingOverdueRuns = `
 	select r.id::text
 	from going_requests r
-	where r.ends_at <= now()` + bound + `
+	where r.ends_at <= now()
 	  and not exists (select 1 from going_events e where e.request_id = r.id and e.name = any($1::text[]))
 	order by r.ends_at, r.id`
-}
-
-// goingOverdueRuns is the sweep's read of the runs it ends, $2 goingSweepWindow in seconds: every
-// run whose ends_at passed within that window of now. Both bounds key going_requests_ends_at, so
-// the read is that index's range for the last day and not a scan of every run the table holds; an
-// older run is the boot pass's (goingEveryOverdueRun).
-var goingOverdueRuns = goingOverdueRead(`
-	  and r.ends_at > now() - make_interval(secs => $2)`)
-
-// goingEveryOverdueRun is the boot pass's read of the runs it ends (EndGoingRunsOverdueAtBoot):
-// every run whose ends_at has passed, at any age. It is goingOverdueRuns without the window's
-// lower bound, so it reads going_requests_ends_at from its first entry up to now, every run the
-// table holds whose deadline has passed, which is why it runs once at a boot and never once a pass.
-var goingEveryOverdueRun = goingOverdueRead("")
 
 // sweepGoingRequests is the sweep of the runs of the command bar, once a maintenance pass
 // (RunMaintenanceSweep), in two steps.
 //
-// It first ends every run whose ends_at passed within goingSweepWindow of now with no terminal
-// frame stored, with the deadline's error (contracts.GoingErrorAnswerDidNotArrive), as it always
-// did. Ending those runs is what nothing else does: the pod that was answering one may have died,
-// and nobody may be reading it. An older run is the boot pass's, or its reader's, as
-// goingSweepWindow says.
+// It first ends every run past its ends_at with no terminal frame stored, with the deadline's
+// error (contracts.GoingErrorAnswerDidNotArrive), as it always did (endOverdueGoingRuns). Ending
+// those runs is what nothing else does: the pod that was answering one may have died, and nobody
+// may be reading it.
 //
 // Then it takes the runs past contracts.GoingRequestTTL, an hour by the run's created_at
 // (goRunsPastTheHour): a run is readable for one hour, as the release before kept it, and then the
@@ -572,73 +535,56 @@ var goingEveryOverdueRun = goingOverdueRead("")
 // A failure of either step is answered once both have run, so a run one step could not reach
 // costs the other step nothing.
 func sweepGoingRequests(ctx context.Context, pool *store.Pool) error {
-	_, ended := endOverdueGoingRuns(ctx, pool, goingOverdueRuns, goingTerminalNames, goingSweepWindow.Seconds())
-	return errors.Join(ended, goRunsPastTheHour(ctx, pool))
+	return errors.Join(endOverdueGoingRuns(ctx, pool), goRunsPastTheHour(ctx, pool))
 }
 
-// EndGoingRunsOverdueAtBoot is the boot pass: once at each boot of a process, before the first
-// tick of RunMaintenanceSweep (cmd/dispatch runs the two in that order on one goroutine), it ends
-// every run past its ends_at with no terminal frame stored, at any age (goingEveryOverdueRun),
-// with the deadline's error, through the loop the sweep ends its runs through. The sweep reads the
-// last day alone (goingSweepWindow), so a run whose window passed while every process of the
-// deployment was down for longer is ended here, at the next boot, whether or not anybody reads
-// it. It takes no lease: every process that boots runs it once,
-// and endGoingRun does nothing to a run that already holds a terminal frame, so two processes
-// booting together still end each run once. It logs one line, how many runs it ended and how long
-// it took; a failure is that line at warn, with the error, and stops nothing else: the sweep's
-// ticks still run, and a run the pass could not end is left to its reader.
-func EndGoingRunsOverdueAtBoot(ctx context.Context, pool *store.Pool) {
-	started := time.Now()
-	ended, err := endOverdueGoingRuns(ctx, pool, goingEveryOverdueRun, goingTerminalNames)
-	if err != nil {
-		slog.Warn("dispatch: the boot pass over the overdue answer runs failed",
-			"ended", ended, "duration", time.Since(started), "error", err)
-		return
-	}
-	slog.Info("dispatch: the boot pass ended the overdue answer runs", "ended", ended, "duration", time.Since(started))
+// endOverdueGoingRuns ends every run goingOverdueRuns answers with the deadline's error
+// (contracts.GoingErrorAnswerDidNotArrive), through the sweep's one loop over runs (eachGoingRun).
+// Each overdue run is ended by endGoingRun, the path every other terminal write takes, so the
+// sweep holds no second copy of how a frame is written. A run a reader, the answer itself or
+// another pass ended between the read and the write keeps that frame, which endGoingRun answers.
+// A run whose rows went between the read and the write - an hour after it was asked, by another
+// process's sweep or, during a roll, by a process of the release before - stores nothing
+// (errGoingRunGone) and is passed over.
+func endOverdueGoingRuns(ctx context.Context, pool *store.Pool) error {
+	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
+	_, err := eachGoingRun(ctx, pool, "read the overdue runs", goingOverdueRuns, []any{goingTerminalNames}, func(id string) error {
+		if _, err := endGoingRun(ctx, pool, id, deadline); err != nil && !errors.Is(err, errGoingRunGone) {
+			return err
+		}
+		return nil
+	})
+	return err
 }
 
-// endOverdueGoingRuns ends every run the read overdue answers, run with args, with the
-// deadline's error (contracts.GoingErrorAnswerDidNotArrive), and answers how many of them it
-// ended: the one loop of the sweep (sweepGoingRequests) and the boot pass
-// (EndGoingRunsOverdueAtBoot), which differ only in what they read.
-//
-// Each overdue run is ended by endGoingRun, the path every other terminal write takes, so neither
-// pass holds a second copy of how a frame is written: the ids are read first, oldest deadline
-// first, then each run is ended in a transaction of its own. A run a reader, the answer itself or
-// another pass ended between the read and the write keeps that frame, which endGoingRun answers,
-// and is counted ended. A run whose rows went between the read and the write - an hour after it
-// was asked, by another process's sweep or, during a roll, by a process of the release before -
-// stores nothing (errGoingRunGone) and is passed over, and any other failure of one run's ending
-// is kept and answered once the pass is done, so one run neither fails the pass nor costs the runs
-// read after it their ending. A pass whose context ends - the process shutting down - stops at the
-// next run and answers that once, rather than failing every run left at its first statement.
-func endOverdueGoingRuns(ctx context.Context, pool *store.Pool, overdue string, args ...any) (int, error) {
-	rows, err := pool.Query(ctx, overdue, args...)
+// eachGoingRun is the one loop of the sweep over runs, which both its steps take
+// (endOverdueGoingRuns, goRunsPastTheHour): it reads the ids of the runs statement answers, run
+// with args, and then calls take with each in the order the statement answers them, each run in a
+// transaction of its own, which take begins. A failure of the read is answered alone, named by
+// read. A run's failure is kept and answered once the loop is done, joined with the others, so one
+// run neither fails the loop nor costs the runs read after it their turn. A loop whose context
+// ends - the process shutting down - stops at the next run and answers that once, rather than
+// failing every run left at its first statement, and answers stopped, so a caller with another
+// read to make makes none.
+func eachGoingRun(ctx context.Context, pool *store.Pool, read, statement string, args []any, take func(id string) error) (stopped bool, err error) {
+	rows, err := pool.Query(ctx, statement, args...)
 	if err != nil {
-		return 0, err
+		return false, fmt.Errorf("%s: %w", read, err)
 	}
 	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return 0, err
+		return false, fmt.Errorf("%s: %w", read, err)
 	}
-	deadline := going.Fault(contracts.GoingErrorAnswerDidNotArrive)
-	ended := 0
 	var failed []error
 	for _, id := range ids {
 		if err := ctx.Err(); err != nil {
-			failed = append(failed, err)
-			break
+			return true, errors.Join(append(failed, err)...)
 		}
-		_, err := endGoingRun(ctx, pool, id, deadline)
-		switch {
-		case err == nil:
-			ended++
-		case !errors.Is(err, errGoingRunGone):
+		if err := take(id); err != nil {
 			failed = append(failed, err)
 		}
 	}
-	return ended, errors.Join(failed...)
+	return false, errors.Join(failed...)
 }
 
 // goingGoneBatch bounds how many runs each read of goRunsPastTheHour answers in one pass. Once the
@@ -657,7 +603,11 @@ var goingSweepActor = model.Actor{Kind: "system", ID: "going-sweep"}
 // going_requests row was written longer ago than that, oldest first, at most $2 of them, each
 // with no interaction node or one of the source going_requests (graphstore.SourceGoingRequests).
 // Once the sweep runs, the table holds about an hour of runs, so the read is of that hour and no
-// more; no index keys created_at, and a table that small needs none.
+// more; no index keys created_at, and a table that small needs none. Each run's node is read by a
+// probe of graph_nodes' primary key keyed by the run's id, which ends in an offset 0: without it
+// the planner turns the test into an anti-join over every interaction node the store holds, the
+// gone ones among them, which grow with every run asked, as it did over an empty database
+// (TestTheSweepReadsOfTheRunsPastTheHourAreBounded).
 var goingRunsPastTheHour = `
 	select r.id::text
 	from going_requests r
@@ -665,27 +615,23 @@ var goingRunsPastTheHour = `
 	  and not exists (
 	        select 1 from graph_nodes n
 	        where n.kind = '` + graphstore.KindInteraction + `' and n.id = r.id::text
-	          and n.attributes->>'` + graphstore.AttributeSource + `' is distinct from '` + graphstore.SourceGoingRequests + `')
+	          and n.attributes->>'` + graphstore.AttributeSource + `' is distinct from '` + graphstore.SourceGoingRequests + `'
+	        offset 0)
 	order by r.created_at, r.id
 	limit $2`
 
 // goingRowlessRuns is the sweep's second read, $1 contracts.GoingRequestTTL in seconds and $2
-// goingGoneBatch: the interaction nodes of the source going_requests, not gone, made longer ago
-// than that, whose going_requests row is no longer there, oldest first, at most $2 of them. Such
-// a node is a run whose rows a process of the release before deleted an hour old, during a roll
-// or after a rollback, which leaves the node live. The gone nodes grow with every run asked, so
-// the read names its kind, its state and its source as the literals graph_nodes_interaction_live
-// is partial on (migration 20261122230407), and reads that index's range of made_at, the moment
-// the run was asked, which holds about an hour of runs, and never every interaction ever written
-// (TestTheSweepReadsOfTheRunsPastTheHourAreBounded). A node's id of any shape but the one Postgres
-// writes a uuid in is read as a run with no row rather than cast (store.CanonicalUUID).
+// goingGoneBatch: the runs whose rows a process of the release before deleted, leaving the node
+// live (graphstore.RowlessRunSQL), made longer ago than that, oldest first, at most $2 of them.
+// The gone nodes grow with every run asked, so the read binds the predicate's literals, which
+// graph_nodes_interaction_live is partial on (migration 20261122230407), and reads that index's
+// range of made_at, the moment the run was asked, which holds about an hour of runs, and never
+// every interaction ever written (TestTheSweepReadsOfTheRunsPastTheHourAreBounded).
 var goingRowlessRuns = `
 	select n.id
 	from graph_nodes n
-	where n.kind = '` + graphstore.KindInteraction + `' and n.state <> '` + graphstore.StateGone + `'
-	  and n.attributes->>'` + graphstore.AttributeSource + `' = '` + graphstore.SourceGoingRequests + `'
+	where ` + graphstore.RowlessRunSQL("n") + `
 	  and n.made_at < now() - make_interval(secs => $1)
-	  and not exists (select 1 from going_requests r where r.id = ` + store.CanonicalUUID("n.id") + `)
 	order by n.made_at
 	limit $2`
 
@@ -693,15 +639,13 @@ var goingRowlessRuns = `
 // rows, through two reads, each bounded at goingGoneBatch runs a pass: the runs whose
 // going_requests row is more than an hour old (goingRunsPastTheHour), and then the interaction
 // nodes, not gone and more than an hour old, whose row a process of the release before deleted
-// (goingRowlessRuns). Each run either read answers is taken in a transaction of its own
-// (goRunGone), so one run's failure is kept and answered once the pass is done and costs the runs
-// read after it nothing; a pass whose context ends stops at the next run and answers that once. It
-// logs one line where it did anything: how many runs of the first read and nodes of the second it
-// stated gone, and how many runs' rows it removed.
+// (goingRowlessRuns). Each run either read answers is taken by goRunGone through the sweep's one
+// loop over runs (eachGoingRun), and a loop that stopped because the pass's context ended leaves
+// the second read unmade. It logs one line where it did anything: how many runs of the first read
+// and nodes of the second it stated gone, and how many runs' rows it removed.
 func goRunsPastTheHour(ctx context.Context, pool *store.Pool) error {
 	var runsStated, rowlessStated, removed int
 	var failed []error
-reads:
 	for _, read := range []struct {
 		name      string
 		statement string
@@ -710,32 +654,21 @@ reads:
 		{"read the runs past the hour", goingRunsPastTheHour, &runsStated},
 		{"read the runs past the hour whose rows are gone", goingRowlessRuns, &rowlessStated},
 	} {
-		rows, err := pool.Query(ctx, read.statement, contracts.GoingRequestTTL.Seconds(), goingGoneBatch)
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s: %w", read.name, err))
-			continue
-		}
-		ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s: %w", read.name, err))
-			continue
-		}
-		for _, id := range ids {
-			if err := ctx.Err(); err != nil {
-				failed = append(failed, err)
-				break reads
-			}
+		stopped, err := eachGoingRun(ctx, pool, read.name, read.statement, []any{contracts.GoingRequestTTL.Seconds(), goingGoneBatch}, func(id string) error {
 			done, err := goRunGone(ctx, pool, id)
-			if err != nil {
-				failed = append(failed, err)
-				continue
-			}
 			if done.stated {
 				*read.stated++
 			}
 			if done.removed {
 				removed++
 			}
+			return err
+		})
+		if err != nil {
+			failed = append(failed, err)
+		}
+		if stopped {
+			break
 		}
 	}
 	if runsStated+rowlessStated+removed > 0 {

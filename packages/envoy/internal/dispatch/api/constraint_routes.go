@@ -204,7 +204,7 @@ var issueConstraintsQuery = `
 	) placed
 	join graph_nodes held on held.kind = '` + graphstore.KindConstraint + `' and held.id = placed.from_id
 	left join lateral (
-		` + refs.CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `held.kind`, `held.id`, graphstore.TupleAuthoredBy) + `
+		` + refs.CurrentFarEndSQL(`held.kind`, `held.id`, graphstore.TupleAuthoredBy) + `
 	) author on true
 	where placed.asserted and held.state <> $2 and ` + refs.VisibleKindRow(graphstore.KindConstraint, "held", "$3") + `
 	order by placed.seq`

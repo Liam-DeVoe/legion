@@ -109,7 +109,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 		t.Errorf("the lens %s on %s records the row %s, want %s, the row at the address when it was written",
 			lb.address, first.address, staleLensRowWords(got), first.b.id)
 	}
-	roll.requireAnsweredAsGone(t, first, http.StatusOK, &lb)
+	roll.requireAnsweredAsGone(t, first, &lb)
 	roll.stopEarlierBuilds(t)
 	free()
 	event := roll.awaitThisBuildsTick(t, first)
@@ -144,7 +144,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 	roll.makeB(t, second, roll.base)
 	roll.requireDocumentNode(t, second, graphstore.StateLive, "A's node stands live behind B's row")
 	roll.requireStatedByBsCreate(t, second, true, "cybermonklabs/legion#4173's create writes the document's node for B, stating it gone and then live")
-	roll.requireAnsweredAsGone(t, second, http.StatusOK, nil)
+	roll.requireAnsweredAsGone(t, second, nil)
 	roll.stopEarlierBuilds(t)
 	free()
 	event = roll.awaitThisBuildsTick(t, second)
@@ -162,7 +162,7 @@ func TestALensIsStaleOnceAnotherRowStandsAtItsDocumentsAddress(t *testing.T) {
 		t.Error(third.lensWriteFailure(before, "before", "409 NODE_GONE"))
 		t.Logf("the lens write before the object pass answers %s", before)
 	}
-	roll.requireAnsweredAsGone(t, third, http.StatusOK, nil)
+	roll.requireAnsweredAsGone(t, third, nil)
 	roll.stopEarlierBuilds(t)
 	free()
 	event = roll.awaitThisBuildsTick(t, third)
@@ -509,12 +509,12 @@ func (l staleLensesRead) listed() []string {
 // requireAnsweredAsGone holds this build's reads of LO, FO and LP, with the lease held, to what they
 // answer of gone nodes. GET /api/v1/references?to= and GET /api/v1/lenses?on= of each answer 404
 // NOT_FOUND, byte for byte as an address nobody wrote answers once the id is substituted, to the
-// person, and for LP to the second person too; GET /api/v1/lenses?on= B's address answers want,
-// 200 in each case, its on naming the node at B's address with that node's state (gone in the
-// third case, where B's row stands behind A's gone node), and an answer of 200 lists none of them in
-// its lenses or its chains, and where lb is not nil answers it alone in its lenses; and the person
-// page of each author lists none of them.
-func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, want int, lb *staleLensNode) {
+// person, and for LP to the second person too; GET /api/v1/lenses?on= B's address answers 200,
+// its on naming the node at B's address with that node's state (gone in the third case, where B's
+// row stands behind A's gone node), lists none of them in its lenses or its chains, and where lb
+// is not nil answers it alone in its lenses; and the person page of each author lists none of
+// them.
+func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, lb *staleLensNode) {
 	t.Helper()
 	for _, read := range []struct {
 		login string
@@ -534,10 +534,9 @@ func (r *staleLensRoll) requireAnsweredAsGone(t *testing.T, c *staleLensCase, wa
 
 	read := "GET /api/v1/lenses?on=" + c.address
 	answer := r.current.send(t, http.MethodGet, "/api/v1/lenses?on="+url.QueryEscape(c.address), "", asUser(dispatchTestLogin))
-	switch {
-	case answer.status != want:
-		t.Errorf("%s answers %s to %s, want %d", read, answer, dispatchTestLogin, want)
-	case want == http.StatusOK:
+	if answer.status != http.StatusOK {
+		t.Errorf("%s answers %s to %s, want 200", read, answer, dispatchTestLogin)
+	} else {
 		var lenses staleLensesRead
 		if err := json.Unmarshal(answer.body, &lenses); err != nil {
 			t.Fatalf("decode %s: %v: %s", read, err, answer.body)

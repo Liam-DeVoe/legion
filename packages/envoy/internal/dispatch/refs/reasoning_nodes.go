@@ -114,7 +114,7 @@ func standingWalkSQL(name, kindExpr, idExpr string, carried *walkColumn) string 
 			select placed.to_kind, placed.to_id` + step + `
 			from ` + name + `
 			cross join lateral (
-				` + CurrentFarEndSQL(`newest.to_kind, newest.to_id`, storedKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
+				` + CurrentFarEndSQL(storedKindSQL(name+`.kind`), name+`.id`, graphstore.TuplePartOf) + `
 			) placed
 			where ` + graphstore.AddressKindSQL(name+`.kind`, name+`.id`) + ` in (` + quotedKinds(standingKinds) + `)
 		)`
@@ -198,10 +198,10 @@ func notStaleOfLiteralKind(kind, address string) string {
 // kind and id, as the store keys them, are the SQL fromKind and fromID, for a relation that holds
 // one far end at a time - a node's part_of, its authored_by - as the subquery of a lateral join:
 // the newest tuple to each far end, kept while it asserts (graphstore.CurrentTupleRead), and of
-// those the first by far end where the store holds several. columns is what it answers, written
-// over newest: its to_kind, its to_id and its seq.
-func CurrentFarEndSQL(columns, fromKind, fromID, kind string) string {
-	return `select ` + columns + ` from (
+// those the first by far end where the store holds several. It answers the far end's to_kind and
+// to_id.
+func CurrentFarEndSQL(fromKind, fromID, kind string) string {
+	return `select newest.to_kind, newest.to_id from (
 					` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.seq, t.asserted`,
 		`t.from_kind = `+fromKind+` and t.from_id = `+fromID+` and t.kind = '`+kind+`'
 						and t.to_kind <> '`+graphstore.KindValue+`'`) + `
@@ -578,7 +578,7 @@ func loadReasoningNodes(ctx context.Context, q Queryer, who model.Actor, kind st
 		       `+StandingIssueSQL(`placed.to_kind`, `placed.to_id`)+`, `+pinnedParentColumns("pinned")+`
 		from graph_nodes held
 		left join lateral (
-			`+CurrentFarEndSQL(`newest.to_kind, newest.to_id`, `held.kind`, `held.id`, graphstore.TuplePartOf)+`
+			`+CurrentFarEndSQL(`held.kind`, `held.id`, graphstore.TuplePartOf)+`
 		) placed on true
 		left join lateral (
 			select parent_row.state as state_held from graph_nodes parent_row

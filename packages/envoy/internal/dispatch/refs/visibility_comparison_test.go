@@ -127,8 +127,8 @@ func TestTheKindsThatTakeAuthorAreThisChildsRegisteredKinds(t *testing.T) {
 		flagged  bool
 		compares comparison
 	}{
-		{"resolvedKind", resolvedKind(loadStoreNodes, nodeVisibility{}), false, comparesAuthor},
-		{"unresolvedKind", unresolvedKind(nodeVisibility{}), false, comparesAuthor},
+		{"resolvedKind", resolvedKind(loadStoreNodes), false, comparesAuthor},
+		{"unresolvedKind", unresolvedKind(), false, comparesAuthor},
 		{"authoredKind", authoredKind(loadStoreNodes), true, comparesAuthor},
 		{"credentialAuthoredKind", credentialAuthoredKind(loadStoreNodes), true, comparesCredential},
 	} {

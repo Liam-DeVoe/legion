@@ -305,7 +305,10 @@ func TestARunIsGoneAfterOneHour(t *testing.T) {
 // never by a scan of the table: the gone nodes grow with every run asked, and that index holds the
 // nodes of the source going_requests not gone, about an hour of runs. The read of the runs whose
 // row is past the hour (goingRunsPastTheHour) reads going_requests, which holds about an hour of
-// runs, and probes graph_nodes for each run's node, never a scan of it.
+// runs, and probes graph_nodes for each run's node, never a scan of it: every scan of graph_nodes
+// in its plan carries an index condition keyed by the run's id. Both plans are built with
+// sequential scans off, under which a read of every node is an index scan and not a sequential
+// one, so that condition is what tells a probe from a scan.
 func TestTheSweepReadsOfTheRunsPastTheHourAreBounded(t *testing.T) {
 	rig := newGoingRig(t)
 	ctx := context.Background()
@@ -336,6 +339,20 @@ func TestTheSweepReadsOfTheRunsPastTheHourAreBounded(t *testing.T) {
 				t.Errorf("%s scans graph_nodes:\n%s", planned.name, planned.plan)
 			}
 			if !read.keyed {
+				probed := false
+				for _, scan := range explaintest.IndexScans(t, planned.plan) {
+					if scan.Relation != "graph_nodes" {
+						continue
+					}
+					probed = true
+					if !strings.Contains(scan.Cond, "r.id") {
+						t.Errorf("%s reads %s on `%s`, want a probe of the run's node keyed by the run's id:\n%s",
+							planned.name, scan, scan.Cond, planned.plan)
+					}
+				}
+				if !probed {
+					t.Errorf("%s probes graph_nodes nowhere:\n%s", planned.name, planned.plan)
+				}
 				continue
 			}
 			keys.RequireIndexKeyed(t, planned.plan, index, planned.name, explaintest.CondRequired)

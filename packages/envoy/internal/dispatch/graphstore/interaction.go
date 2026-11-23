@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A run of the command bar (api/going.go) is an interaction node of this store
@@ -35,6 +36,22 @@ const (
 // more than an hour old (api's sweepGoingRequests), and reads the value to leave alone an
 // interaction node of any other source, which a later release writes.
 const SourceGoingRequests = "going_requests"
+
+// RowlessRunSQL is true of the graph_nodes row alias that is an interaction node of the source
+// going_requests (SourceGoingRequests), not gone, whose run's going_requests row is no longer
+// there: a run whose rows a process of the release before deleted an hour old, during a roll or
+// after a rollback, which leaves the node live. It is the one test of such a run: the sweep reads
+// those an hour old (api's goingRowlessRuns) and the backfill every one (graphcensus'
+// backfillGoneRuns), and each states the node gone. The kind, the state and the source are the
+// literals graph_nodes_interaction_live is partial on (migration 20261122230407), so a read bound
+// by it can read that index. Every writer of an interaction keys it by its run's uuid as Postgres
+// writes it, and an id of any other shape is read as a run with no row rather than cast
+// (store.CanonicalUUID), so no node can fail the read.
+func RowlessRunSQL(alias string) string {
+	return alias + `.kind = '` + KindInteraction + `' and ` + alias + `.state <> '` + StateGone + `'
+		  and ` + alias + `.attributes->>'` + AttributeSource + `' = '` + SourceGoingRequests + `'
+		  and not exists (select 1 from going_requests r where r.id = ` + store.CanonicalUUID(alias+".id") + `)`
+}
 
 // Interaction is one run of the command bar as the store holds it: ID, the run's own uuid in the
 // lowercase form Postgres writes it; Author, the whole credential the POST proved, recorded

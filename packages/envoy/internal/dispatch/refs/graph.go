@@ -701,9 +701,11 @@ func Node(ctx context.Context, q Queryer, who model.Actor, kind, id string, byRe
 // one read per kind rather than one per node, and answered under the target it was asked by, as
 // an edge at the node carries it - the whole text and the frames of a run are its own address's
 // alone (Node). A target that names no node, and a node reserved for an author who is not who, is
-// absent from the answer, exactly as Node answers it not found.
-func Nodes(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[Target]model.GraphNode, error) {
-	resolved, err := resolveTargets(ctx, q, who, byRefKey, targets)
+// absent from the answer, exactly as Node answers it not found. The targets are addressed as the
+// to side of an edge addresses them (TargetOf), so an artifact's id is its ref_key, as in
+// TargetNames.
+func Nodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]model.GraphNode, error) {
+	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -727,7 +729,7 @@ type ExcerptedNode struct {
 // targets are addressed as the to side of an edge addresses them (TargetOf), so an artifact's id
 // is its ref_key, as in TargetNames.
 func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]ExcerptedNode, error) {
-	resolved, err := resolveTargets(ctx, q, who, true, targets)
+	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -753,7 +755,7 @@ func ExcerptedNodes(ctx context.Context, q Queryer, who model.Actor, targets []T
 // either as a reference whose target is gone. Each kind is read in one statement whatever the
 // number of targets, so a batch costs a statement per kind, not per target.
 func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
-	resolved, err := resolveTargets(ctx, q, who, true, targets)
+	resolved, err := resolveTargets(ctx, q, who, targets)
 	if err != nil {
 		return nil, err
 	}
@@ -764,13 +766,14 @@ func TargetNames(ctx context.Context, q Queryer, who model.Actor, targets []Targ
 	return names, nil
 }
 
-// resolveTargets resolves each target for who through its kind's loader, as Node resolves one.
-func resolveTargets(ctx context.Context, q Queryer, who model.Actor, byRefKey bool, targets []Target) (map[[2]string]resolvedNode, error) {
+// resolveTargets resolves each target for who through its kind's loader, as Node resolves one,
+// addressed as the to side of an edge addresses it (TargetOf), so an artifact's id is its ref_key.
+func resolveTargets(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[[2]string]resolvedNode, error) {
 	rows := make([]edgeRow, len(targets))
 	for index, target := range targets {
 		rows[index] = edgeRow{otherKind: target.Kind, otherID: target.ID}
 	}
-	return resolveNodes(ctx, q, who, byRefKey, rows)
+	return resolveNodes(ctx, q, who, true, rows)
 }
 
 // resolvedNode is a graph node with the text an excerpt is cut from: a block's is its stored
@@ -1031,18 +1034,26 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 // has no row and resolves to nothing, so every edge at it is omitted until a version holds its
 // id again. A block is made by the authors of the version that first held it, when Dispatch knows
 // that version (blockFirstVersion); its last change is its changed version, by that version's
-// authors. It belongs to its document at its changed version. Its predicate and its stored state
-// and visibility are read in one probe of its `graph_nodes` row (visibleStoredKind), since a read
-// of a document's every block, or of the 5,000 blocks a list of links points from, answers
-// thousands of them at once.
+// authors. It belongs to its document at its changed version.
+//
+// Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
+// row rather than two (VisibleKind and storedNode), since a read of a document's every block, or
+// of the 5,000 blocks a list of links points from, answers thousands of them at once. The lateral
+// join stored_visible over that row answers the two columns of the stored state and visibility
+// (StoredRowOf), null where the store holds no row, and VisibleKind's test of the same row under
+// the same key with the same comparison of its author (VisibleKindRow), which the read takes as
+// true where the store holds no row. So it answers the same nodes with the same state and
+// visibility as that pair, and reads `visibility` once under each of the two markers, as that
+// pair does. The join ends in `offset 0`, which keeps it a probe of the primary key per row, as
+// VisibleKind's scalar sub-plan is (visibleWhere): a lateral subquery Postgres may pull up is a
+// join it may hash from a scan of the whole store.
 //
 // Its joins to artifacts and artifact_versions are lateral probes by key (nodeLoader).
 func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	held, args := blockNodesAddressed(ids, who)
-	storedJoin, storedColumns, seen := visibleStoredKind("block", "d.node_id", "$2")
 	rows, err := q.Query(ctx, `
 		select d.node_id, d.block_id, d.excerpt, d.changed_version, d.changed_at, changed.authors,
-		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+storedColumns+`
+		       `+documentColumns("a")+`, `+blockFirstColumns("first")+`, `+StoredColumnsOf("stored_visible")+`
 		from document_blocks d
 		cross join lateral (
 			select a.id, a.issue_key, a.project_key, a.session_id, a.slug, a.kind, a.is_primary
@@ -1053,8 +1064,13 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 			where changed.artifact_id = d.artifact_id and changed.number = d.changed_version limit 1
 		) changed on true
 		`+blockFirstVersion("first", "d.artifact_id", "d.block_id")+`
-		`+storedJoin+`
-		where `+held+` and `+seen, args...)
+		left join lateral (
+			select `+StoredRowOf("stored_visible_node")+`, `+VisibleKindRow("block", "stored_visible_node", "$2")+` as seen
+			from graph_nodes stored_visible_node
+			where stored_visible_node.kind = '`+StoredKindOf("block")+`' and stored_visible_node.id = d.node_id
+			offset 0
+		) stored_visible on true
+		where `+held+` and coalesce(stored_visible.seen, true)`, args...)
 	if err != nil {
 		return fmt.Errorf("load block nodes: %w", err)
 	}
@@ -1121,7 +1137,7 @@ func loadBlockNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // document's own rows by the primary key, which it does where the ids are thousands of blocks of
 // a few documents, and keep the node_id index where they are few. Held to node_id alone, the
 // 5,001 blocks of a list of links were read by scanning the whole table rather than its index,
-// once the block predicate no longer sat on that scan to deter it (visibleStoredKind): 98 ms
+// once the block predicate no longer sat on that scan to deter it (loadBlockNodes): 98 ms
 // against 75 ms over the read-cost corpus (check c-read-cost). The documents are an array the
 // read computes once (`artifact_id = any(array(...))`), and not a semi-join, whose selectivity the
 // planner multiplies into the ids' own as if the two were unrelated: it then reckoned 36 of 640

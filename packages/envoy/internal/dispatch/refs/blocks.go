@@ -828,23 +828,19 @@ func CurrentPreventionsSQL(columns, blocks string) string {
 }
 
 // PreventionRetractions is the retraction of every prevented_by tuple the store asserts now at a
-// block of the SQL array blocks, whose parameters are args (CurrentPreventionsSQL), read in the
-// writer's transaction tx, before its write phase: each dated at, signed by writer and caused by
-// cause, in the order of its check and then of its risk. It is a writer's read, which answers no
-// reader and so binds no visibility predicate: the one read of the three writers that retract such
-// tuples, each under the owner lock (store.LockOwner) of the checks' document it took first - the
-// index pass at the blocks a version drops (retractGonePointers, through the plan's own reader), a
-// retirement at the blocks of the document it retires (docs' retiredPreventions), and the
+// block of the SQL array blocks, whose parameters are args (CurrentPreventionsSQL), read through
+// q before its writer's write phase: each dated at, signed by writer and caused by no event
+// (graphstore.NoEvent), in the order of its check and then of its risk. A writer that states them
+// under an event causes them by it with the rest of its facts (graphstore.Caused,
+// graphstore.QueueCaused). It is a writer's read, which answers no reader and so binds no
+// visibility predicate: the one read of the three writers that retract such tuples, each under the
+// owner lock (store.LockOwner) of the checks' document it took first - the index pass at the
+// blocks a version drops (retractGonePointers, through the plan's own reader), a retirement at the
+// blocks of the document it retires (docs' retiredPreventions, in its transaction), and the
 // backfill at the checks a process of the release before dropped or retired without retracting
-// them (graphcensus' writeEndedPreventions). Each logs what it retracts in its own words, and
-// appends the retractions in its write phase, after the read.
-func PreventionRetractions(ctx context.Context, tx pgx.Tx, blocks string, args []any, at time.Time, writer model.Actor, cause int64) ([]graphstore.Tuple, error) {
-	return preventionRetractions(ctx, tx, blocks, args, at, writer, cause)
-}
-
-// preventionRetractions is PreventionRetractions read through q, the reader of the plan that calls
-// it (PlanBlocks' retractGonePointers).
-func preventionRetractions(ctx context.Context, q Queryer, blocks string, args []any, at time.Time, writer model.Actor, cause int64) ([]graphstore.Tuple, error) {
+// them (graphcensus' writeEndedPreventions, in its transaction). Each logs what it retracts in its
+// own words, and appends the retractions in its write phase, after the read.
+func PreventionRetractions(ctx context.Context, q Queryer, blocks string, args []any, at time.Time, writer model.Actor) ([]graphstore.Tuple, error) {
 	rows, err := q.Query(ctx, CurrentPreventionsSQL(`checked.from_kind, checked.from_id, checked.to_id`, blocks)+`
 		order by checked.to_id, checked.from_kind, checked.from_id`, args...)
 	if err != nil {
@@ -853,7 +849,7 @@ func preventionRetractions(ctx context.Context, q Queryer, blocks string, args [
 	retracted, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.Tuple, error) {
 		tuple := graphstore.Tuple{
 			Kind: graphstore.TuplePreventedBy, ToKind: BlockNodeKind,
-			At: at, Who: writer, SourceEvent: cause, Asserted: false,
+			At: at, Who: writer, SourceEvent: graphstore.NoEvent, Asserted: false,
 		}
 		err := row.Scan(&tuple.FromKind, &tuple.FromID, &tuple.ToID)
 		return tuple, err
@@ -888,7 +884,7 @@ func retractGonePointers(ctx context.Context, q Queryer, addresses []string, at 
 	if len(addresses) == 0 {
 		return nil, nil
 	}
-	prevented, err := preventionRetractions(ctx, q, `$1`, []any{addresses}, at, writer, graphstore.NoEvent)
+	prevented, err := PreventionRetractions(ctx, q, `$1`, []any{addresses}, at, writer)
 	if err != nil {
 		return nil, err
 	}
