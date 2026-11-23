@@ -76,11 +76,11 @@ RELEASE = {"id": 1, "tag_name": "v1", "name": "the draft's name", "body": "the d
            "tarball_url": "t", "zipball_url": "z"}
 
 # Each request is answered on a thread of its own, and gh release view and edit send two requests
-# at once. A request reads the state and writes what it changes (the log, spent-until,
-# secondary-done) under this lock. Without it, both requests of a spent case could find
-# spent-until absent and both write it, and open(..., "w") empties the file before the write fills
-# it: one request could read it empty, stop on int(''), and close gh's connection with no answer
-# (gh: `Get "...": EOF`), so the helper saw no refusal to wait for.
+# at once. A request reads and writes the files it changes (the log, spent-until, secondary-done)
+# under this lock. Without it, both requests of a spent case could find spent-until absent and both
+# write it, and open(..., "w") empties the file before the write fills it: one request could read it
+# empty, stop on int(''), and close gh's connection with no answer (gh: `Get "...": EOF`), so the
+# helper saw no refusal to wait for.
 lock = threading.Lock()
 
 
