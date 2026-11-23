@@ -563,7 +563,7 @@ test("the header draws the steps of a root whose parent is in another project", 
   const restore = stubHeader({ ...issue, parent: "OTHR-6" });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria", "spec"],
+    gated_steps: ["criteria", "spec"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -579,7 +579,7 @@ test("the header draws the steps of a root whose parent is in another project", 
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria", "spec"]);
+    ).toEqual(["criteria", "spec"]);
   } finally {
     view.unmount();
     listProjects.mockRestore();

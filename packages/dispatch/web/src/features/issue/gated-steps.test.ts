@@ -55,11 +55,11 @@ test("an issue whose parent is in another project is a root of its own project a
   const rootUnderAnotherProject: IssueDetails = { ...root, parent: "OTHR-6" };
 
   expect(
-    gatedStepEntries(gating("decisions", "spec"), rootUnderAnotherProject).map(
+    gatedStepEntries(gating("criteria", "spec"), rootUnderAnotherProject).map(
       (entry) => entry.step
     )
-  ).toEqual(["decisions", "spec"]);
-  expect(gatedStepEntries(gating("decisions", "spec"), { ...root, parent: "CORE-9" })).toEqual([]);
+  ).toEqual(["criteria", "spec"]);
+  expect(gatedStepEntries(gating("criteria", "spec"), { ...root, parent: "CORE-9" })).toEqual([]);
 });
 
 test("neither the unread project nor the unread issue draws a step", () => {
