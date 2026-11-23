@@ -1659,10 +1659,13 @@ the step that queued it has ended. The job's step "Wait for the script harnesses
 them" waits for the last of them and is their verdict: it prints each one's log in a group of
 its own headed by its exit status, wall seconds, CPU seconds and seconds waiting for a slot,
 fails with an `::error` naming each that failed, and writes the same table to the job summary.
-It runs whatever the job's state (`always()`): after a failed step, so a harness queued before
-the failure is still judged; in a job already cancelled or past its timeout, where `--now` judges
-each harness as it is, with its log so far, instead of waiting for it; and a cancel's signal
-during the wait reaches it (the step `exec`s it), which then does the same. A recorder killed
+It runs after a failed step too (`!cancelled()`), so a harness queued before the failure is
+still judged. A cancel or the job's timeout during the wait signals it (the step `exec`s it, and
+the runner signals a running step only when its condition no longer holds, which `always()` would
+always), and it then names each harness still running with its log so far; a job cancelled before
+the wait began runs "Name the script harnesses a cancelled job left" (`wait --now`) instead. A
+recorder killed before its harness ended is a failure, and the pool ends that harness's session
+before its slot goes to another. A recorder killed
 before its harness ended is a failure, and the wait ends the harness's session. `start
 --minutes <n>` bounds one harness as a step's timeout-minutes did and hands it
 HARNESS_POOL_DEADLINE_MS. The runner ends a step's leftover processes only at the job's end, so

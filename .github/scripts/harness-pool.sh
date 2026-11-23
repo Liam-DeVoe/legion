@@ -33,9 +33,9 @@
 #     so far of each harness still running, names each as unfinished with its seconds, names each
 #     still waiting for a slot, and exits 1, so a harness that hung is named in the job's log
 #     rather than lost with the step. --now does the same at once, for a job cancelled before its
-#     wait step began: the step runs `if: always()` and passes --now when job.status is
-#     cancelled. The step runs the wait with `exec`, so a signal reaches it and not only the
-#     step's shell.
+#     wait step began (a step of its own, `if: cancelled()`). The wait step runs the wait with
+#     `exec` under `if: ${{ !cancelled() }}`, so a cancel's signal reaches the wait itself: the
+#     runner signals a running step only when its condition no longer holds.
 #
 # Each harness inherits the starting step's environment, `env:` included, and its working
 # directory, but for the runner's per-step files: the step that queued it has ended by the time
@@ -89,18 +89,35 @@ proc_start() {
 
 # alive <base>: whether the harness of that entry has not ended. It has ended once it wrote its
 # exit status, or once its recorder is gone without writing one (killed), which the wait judges a
-# failure and whose harness's session it then ends; without the second test a killed recorder
-# would hold the wait until the job's timeout.
+# failure; without the second test a killed recorder would hold the wait until the job's timeout.
 # The recorder is the pid the entry holds with the start time it had when it was queued.
 alive() {
   local pid want
   [[ ! -e $1.exit ]] && read -r pid want < "$1.pid" && proc_start "$pid" && [[ $pstart == "$want" ]]
 }
 
+# end_lost <base>: for an entry whose recorder is gone without a status, ends the session its
+# harness runs in, which the recorder left running, once: a harness on a core no slot counts would
+# let one more run than the slots. Forks only the once per such entry.
+end_lost() {
+  [[ -e $1.exit || -e $1.ended ]] && return 0
+  if [[ -e $1.session ]]; then
+    local session tries=0
+    session=$(< "$1.session")
+    pkill -KILL -s "$session" 2> /dev/null || true
+    # Until the kernel has taken them away, at most 5 s, so the slot frees once they are gone.
+    while pgrep -s "$session" > /dev/null && ((tries < 50)); do
+      sleep 0.1
+      tries=$((tries + 1))
+    done
+  fi
+  : > "$1.ended"
+}
+
 # count [<base>]: sets `running` to the number of harnesses that hold a slot (started and not
 # ended), `waiting` to those still queued for one, and `ahead` to those queued before <base> that
-# have not started. It forks nothing, since every queued harness and the wait ask it twice a
-# second.
+# have not started. It forks nothing but to end a lost recorder's harness (end_lost), since every
+# queued harness and the wait ask it twice a second.
 count() {
   local entry other mine=${1:-}
   mine=${mine##*/}
@@ -108,7 +125,10 @@ count() {
   for entry in "$dir"/*.name; do
     [[ -e $entry ]] || continue
     other=${entry%.name}
-    alive "$other" || continue
+    if ! alive "$other"; then
+      end_lost "$other"
+      continue
+    fi
     if [[ -e $other.started ]]; then
       running=$((running + 1))
     else
@@ -308,11 +328,9 @@ wait_all() {
       continue
     fi
     status=$(cat "$base.exit" 2> /dev/null || echo 'none: its recorder ended without writing one')
-    # A recorder killed before its command ended leaves the command running in its own session,
-    # holding a core no slot counts: end that session, the command and all it started.
-    if [[ ! -e $base.exit && -e $base.session ]]; then
-      pkill -KILL -s "$(< "$base.session")" 2> /dev/null || true
-    fi
+    # A recorder killed before its harness ended left the harness running in its own session:
+    # end it, if no count has yet (a --now report counts nothing).
+    end_lost "$base"
     read -r wall cpu waited 2> /dev/null < "$base.seconds" || { wall='?'; cpu='?'; waited='?'; }
     echo "::group::$name: exit $status, $wall s, $cpu s of CPU, after $waited s waiting for a slot"
     cat "$base.log" 2> /dev/null || echo "harness-pool: $name left no log"

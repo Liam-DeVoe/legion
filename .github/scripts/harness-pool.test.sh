@@ -234,6 +234,23 @@ check "the wait fails rather than waiting out the harness" "$(is "$status" 1)"
 check "and says the harness left no status" "$(contains "$out" '^::error title=orphan::exited none: its recorder ended without writing one after ? s')"
 check "and the harness's session, left running by its recorder, is ended" "$(session_gone "$(< "$HARNESS_POOL_DIR/000.session")")"
 
+echo "case: the harness of a recorder killed mid-run is ended before its slot goes to the next"
+fresh orphan-slot
+export HARNESS_POOL_SLOTS=1
+"$pool" start stray bash -c "touch '$m/stray-started'; until [[ -e '$m/never' ]]; do sleep 0.05; done"
+check "the first harness started" "$(appears "$m/stray-started")"
+check "its recorder wrote its session" "$(appears "$HARNESS_POOL_DIR/000.session")"
+stray_session=$(< "$HARNESS_POOL_DIR/000.session")
+# The next harness reads, as it starts, whether any process of the first's session is left.
+"$pool" start next bash -c "if pgrep -s '$stray_session' > /dev/null; then touch '$m/overlap'; fi; touch '$m/next-started'"
+read -r recorder _ < "$HARNESS_POOL_DIR/000.pid"
+kill -KILL "$recorder"
+check "the next harness starts in the freed slot" "$(appears "$m/next-started")"
+check "with no process of the first left running beside it" "$(is "$([[ -e $m/overlap ]] && echo overlap || echo alone)" alone)"
+run_wait
+check "the wait fails, naming the lost one" "$(contains "$out" '^::error title=stray::exited none: its recorder ended ')"
+export HARNESS_POOL_SLOTS=2
+
 echo "case: a recorder killed while its harness waits for a slot frees the queue"
 fresh killed-queued
 export HARNESS_POOL_SLOTS=1
