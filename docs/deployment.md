@@ -438,6 +438,17 @@ with the role's own words and no step: an alias that is no list of strings, a ta
 with `enabled = false`, a cycle of aliases, a `ui.default-command` that is neither a string nor a
 list of strings, a command word that is no bare name where the configuration names an alias by a
 quoted name, and a read that fails or prints what is no name and JSON value.
+That read, and each read of the worker image's wrapper, prints what jj prints on standard error
+but the warnings that jj prints on every command, such as `Cannot define an alias that overrides
+the built-in command`.
+A read of the aliases or of `ui.default-command` that fails leaves out jj's error too, and the
+line after it says that the read failed.
+So a warning that jj prints once, such as `Your repo appears to have been copied`, prints once
+where the read is the command that takes it, and a warning that jj prints on every command prints
+as often as jj alone prints it for the command that runs after the read.
+In a pod, jj itself prints such a warning twice for each command: the wrapper puts its
+`--config` on every line it runs, and jj expands a line with a `--config` or a `-R` twice (its
+`warn_if_args_mismatch`).
 The expansion has four limits.
 An alias that a `[[--scope]]` defines for `jj config` alone is expanded as the worker image's
 wrapper expands it, so its push runs with the step where jj alone refuses it.
@@ -458,8 +469,9 @@ itself carries `--ignore-working-copy`, every jj command of the step runs with
 operation; a role's own `--ignore-working-copy` goes to the real push alone.
 Otherwise it first takes the one snapshot of the working copy that the push would take itself,
 with the push's own `-R` and `--quiet` arguments and the `--config` and `--config-file` arguments
-that jj keeps for the push, and passes on what that snapshot prints, then reads what the push
-sends again and acts on no commit id it read before the snapshot.
+that jj keeps for the push, and passes on what that snapshot prints but the warnings that jj
+prints on every command, which the push prints itself, then reads what the push sends again and
+acts on no commit id it read before the snapshot.
 Each of its other commands runs with `--ignore-working-copy`, and so does the real push, which
 then takes no second snapshot: every id the step reads after its snapshot, `@` and each
 descendant of `@` included, stays valid through the push, a warning that a snapshot prints, such

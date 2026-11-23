@@ -62,6 +62,66 @@ run() {
   exec "$real" "$force" --config-file=/dev/null "$@"
 }
 
+# once_only [error] copies its standard input, what jj printed on standard error for one of this
+# wrapper's own reads, to its standard output, but for the warnings jj prints on every command: the
+# command the wrapper runs after its reads prints those itself, so each prints as often as jj alone
+# prints it for that command. They are, in jj's cli/src/cli_util.rs and cli/src/config.rs of all
+# three versions: an alias that has the name of a built-in command, an alias of an alias table that
+# does not load, a setting jj migrates, aliases that -R, --config or --config-file would define,
+# and a trunk() that does not resolve, with its hint. Each goes with the lines that jj prints as its
+# parts, with no heading: those of a parse error or of jj 0.46's causes, which are blank or start
+# with a space, a digit or `Caused by:`, and trunk()'s second line. Every other line goes through:
+# a warning that jj prints for the first command in its state and never again, such as `Your repo
+# appears to have been copied` (lib/src/secure_config.rs), which a read may be, and a line after a
+# dropped warning that is no part of it, such as a snapshot's `Rebased 1 descendant commits`.
+# Without the argument `error`, jj's error, which jj prints last, and every line after it, its
+# causes and hints, are left out too: the refusal after such a read says that jj's error is not
+# shown. Each read runs with --color=never, which outranks a caller's ui.color, so no line of
+# theirs holds jj's colours.
+once_only() {
+  part=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$part" in
+      error) continue ;;
+      more)
+        case "$line" in
+          '' | [\ 0-9]* | 'Caused by:'* | 'The `trunk()` alias is temporarily set to '*) continue ;;
+        esac
+        ;;
+    esac
+    part=''
+    case "$line" in
+      'Warning: Cannot define an alias that overrides the built-in command '* | \
+        'Warning: Failed to load `aliases.'* | 'Warning: Failed to load `'[a-z]*'-aliases.'* | \
+        'Warning: Deprecated '*' config: '* | \
+        'Warning: Command aliases cannot be loaded from -R/--repository path or --config/--config-file arguments'* | \
+        'Warning: Failed to resolve `revset-aliases.trunk()`: '* | \
+        'Hint: Use `jj config edit --repo` to adjust the `trunk()` alias'*)
+        part=more
+        continue
+        ;;
+      'Error: '* | 'Config error: '* | 'Internal error: '*)
+        if [ "${1-}" != error ]; then
+          part=error
+          continue
+        fi
+        ;;
+    esac
+    printf '%s\n' "$line"
+  done
+}
+
+# read_jj <mode> <argument>… runs the real jj with the arguments as one of this wrapper's reads, in
+# a command substitution: what jj prints on standard output and its exit status are the read's, and
+# what it prints on standard error goes through `once_only <mode>` to this wrapper's. The status
+# comes back by a descriptor of its own, so no file is written.
+read_jj() {
+  mode=$1
+  shift
+  { s=$( { { "$real" "$@" 2>&1 1>&3 3>&- 4>&-; echo $? >&4; } | once_only "$mode" >&2 3>&- 4>&-; } 4>&1); } 3>&1
+  return "$s"
+}
+
 # The commands jj has built in, by clap's own names: each command's name and every other name
 # clap gives it, hidden ones included (`debug`, `op`, `obslog`, `evolution-log`), which are what
 # jj takes for a built-in command. jj ignores an alias that has one of these names ("Cannot define
@@ -210,7 +270,10 @@ fi
 # --config/--config-file arguments"). So these reads run in the working directory with none of the
 # caller's options, and with `--include-defaults`: jj's defaults hold aliases of their own (`st`,
 # `b`, `ci`, `desc` in all three versions), which `jj config list` leaves out without it ("No
-# matching config key"), and which an alias of the same name in a file replaces.
+# matching config key"), and which an alias of the same name in a file replaces. Each read prints
+# on standard error what jj prints there but the warnings jj prints on every command and jj's error
+# (once_only), so a warning jj prints once, such as `Your repo appears to have been copied` where the
+# read is the first command in a copied repository, still reaches the caller once.
 #
 # One read a key, through a template that prints the key's own entry and nothing else: `D`, the
 # number of words and one word a line for a list, or for a table's `definition`; `E` and the value
@@ -279,7 +342,7 @@ while :; do
   fi
 
   template='if(name == "'"$key"'" || name == "'"$key"'.definition", "D\n" ++ value.as_string_list().len() ++ "\n" ++ value.as_string_list().join("\n") ++ "\n", if(name == "'"$key"'.enabled", "E\n" ++ value ++ "\n", ""))'
-  got=$("$real" --ignore-working-copy config list "$key" --include-defaults -T "$template" 2>/dev/null && echo .) ||
+  got=$(read_jj '' --ignore-working-copy --color=never config list "$key" --include-defaults -T "$template" && echo .) ||
     refuse "jj could not read $key (\`jj config list $key\` says why), so this wrapper cannot tell whether this command is a push"
   got=${got%.}
   state='' defs=0 count=0 n=0 words='' disabled=''
@@ -326,7 +389,7 @@ $got
 EOF
   if [ "$state" = notlist ] && [ "$key" = ui.default-command ]; then
     # ui.default-command may be one string, which jj runs as one command word.
-    words=$("$real" --ignore-working-copy config get ui.default-command 2>/dev/null) ||
+    words=$(read_jj '' --ignore-working-copy --color=never config get ui.default-command) ||
       refuse "jj could not read ui.default-command, so this wrapper cannot tell whether this command is a push"
     case "$words" in
       *"$nl"*) refuse "ui.default-command holds a line break, which this wrapper does not read" ;;
@@ -418,6 +481,8 @@ if [ "$final" = push ]; then
   # git.executable-path` prints `git` and exits 0 with no configuration at all. So a read that fails
   # is an error, a `-R` naming no repository for one, and never an unset value. It is refused, after
   # jj's own error, because a read that answered nothing cannot vouch for the git the push would run.
+  # The read prints on standard error what jj prints there, its error included, but the warnings jj
+  # prints on every command (once_only error), which the push prints itself.
   configured=$(
     kept=''
     for entry in $occ; do
@@ -431,7 +496,7 @@ if [ "$final" = push ]; then
       kept="$kept$refs"
     done
     eval "set -- $kept"
-    exec "$real" --ignore-working-copy "$@" config get git.executable-path
+    read_jj error --ignore-working-copy --color=never "$@" config get git.executable-path
   ) || refuse "jj could not read the git.executable-path this push would use, so it cannot be shown to be git or Legion's git wrapper $wrapper, and $how could reach the remote with no leak check"
   case "$configured" in
     git | "$wrapper") ;;

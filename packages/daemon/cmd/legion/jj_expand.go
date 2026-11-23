@@ -115,7 +115,8 @@ var jjAliasRead = []string{"--ignore-working-copy", "--color=never", "config", "
 
 // jjOverridesBuiltin is jj's warning of an alias that has the name of a built-in command, which
 // every jj command prints on standard error, the read included; its group is the name. jj 0.45.1-sami
-// ends the line with a full stop, and jj 0.38.0 does not.
+// ends the line with a full stop, and jj 0.38.0 does not. The read does not print it (jjOnceOnly):
+// the command after the read prints it itself.
 var jjOverridesBuiltin = regexp.MustCompile(`Cannot define an alias that overrides the built-in command '([^']*)'`)
 
 // jjAliases is what the read (jjAliasRead) gives the expansion: values, each value in JSON by its
@@ -136,20 +137,29 @@ type jjUnexpandable struct{ what, why string }
 func (u jjUnexpandable) Error() string { return "could not expand " + u.what + ": " + u.why }
 
 // readJJAliases runs the read (jjAliasRead) as each command of the step runs (runJJCommand): next,
-// in env, in the working directory, as a child in this process's group, and reads what it printed
-// (parseJJAliases). A read that cannot start is jjUnexpandable too.
-func readJJAliases(next string, env []string) (jjAliases, error) {
-	stdout, stderr, code, err := runJJCommand(next, env, jjAliasRead)
+// in env, in the working directory, as a child in this process's group, prints on stderr what it
+// printed on standard error but the warnings jj prints on every command and jj's error
+// (jjOnceOnly), and reads what it printed (parseJJAliases). So a warning that jj prints once, such
+// as `Your repo appears to have been copied`, which the read takes where it is the first command in
+// a copied repository, prints, and one that every command prints prints as often as jj alone
+// prints it for the command that runs after the read. jj's error is named by the line of a read
+// that fails (jjUnexpandable), which runJJ prints next. A read that cannot start prints nothing of
+// its own, and is jjUnexpandable too.
+func readJJAliases(next string, env []string, stderr io.Writer) (jjAliases, error) {
+	stdout, printed, code, err := runJJCommand(next, env, jjAliasRead)
 	var failed jjStepFailure
 	if errors.As(err, &failed) {
-		stderr, code = failed.output, failed.code
+		printed, code = failed.output, failed.code
+	} else {
+		fmt.Fprint(stderr, jjOnceOnly(printed, false))
 	}
-	return parseJJAliases(stdout, stderr, code)
+	return parseJJAliases(stdout, printed, code)
 }
 
 // parseJJAliases reads what the read (jjAliasRead) printed on standard output and standard error,
-// and its exit status, code. A read that exited non-zero, a configuration that does not parse among
-// them, or whose standard output holds what is no name and value in JSON, is jjUnexpandable.
+// the whole of each, and its exit status, code. A read that exited non-zero, a configuration that
+// does not parse among them, or whose standard output holds what is no name and value in JSON, is
+// jjUnexpandable.
 func parseJJAliases(stdout, stderr string, code int) (jjAliases, error) {
 	if code != 0 {
 		return jjAliases{}, jjUnexpandable{"the command", "jj config list failed: " + jjErrorLine(stderr, "jj config list", code)}
@@ -303,7 +313,8 @@ func (a jjAliases) resolveAliases(line []string) ([]string, error) {
 // command, or where legion jj cannot expand args (jjUnexpandable), and the command then runs with
 // the role's own words. A line whose command word is a built-in name (jjBuiltins) is args, and a
 // line with no command word that holds a word of help or version (jjHelpWord) is nil, each with no
-// read. Every other line costs one read through next in env (readJJAliases).
+// read. Every other line costs one read through next in env (readJJAliases), which prints on stderr
+// what jj prints once of it.
 //
 // The expansion is jj 0.45's (expand_args): the aliases of the line (resolveAliases); then, where
 // that leaves no command word, as it does a bare `jj`, a line that starts with an option clap does
@@ -315,7 +326,7 @@ func (a jjAliases) resolveAliases(line []string) ([]string, error) {
 // limit of the expansion under jj 0.38.0. A word that no alias names, and a line that the
 // expansion leaves with no command word, end it with no built-in command: jj refuses the word, or
 // runs no push.
-func expandJJ(args []string, next string, env []string) ([]string, error) {
+func expandJJ(args []string, next string, env []string, stderr io.Writer) ([]string, error) {
 	at := jjCommandWord(args)
 	switch {
 	case at < 0 && slices.ContainsFunc(args, jjHelpWord):
@@ -323,7 +334,7 @@ func expandJJ(args []string, next string, env []string) ([]string, error) {
 	case at >= 0 && slices.Contains(jjBuiltins, args[at]):
 		return args, nil
 	}
-	aliases, err := readJJAliases(next, env)
+	aliases, err := readJJAliases(next, env, stderr)
 	if err != nil {
 		return nil, err
 	}

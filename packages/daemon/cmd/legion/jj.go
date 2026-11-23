@@ -82,7 +82,8 @@ func jjStepped(words []string) string {
 // legion jj read it, run that jj at once, with nothing printed and no other process started. Under
 // --after, every other command is first expanded as jj expands it (expandJJ): a command whose
 // command word is a built-in command, `jj git push` among them, with no read, and any other, a
-// bare `jj` included, after one read of jj's aliases and ui.default-command (readJJAliases). A
+// bare `jj` included, after one read of jj's aliases and ui.default-command (readJJAliases), which
+// prints the warnings jj prints once and drops those it prints on every command (jjOnceOnly). A
 // command that is no push the step runs before (readJJPush), as the role wrote it or as jj expands
 // it, runs that jj at once with the role's own words, byte for byte, which jj then expands itself,
 // and with wrappedJJStepped set to their digest; one that legion jj cannot expand (jjUnexpandable)
@@ -136,7 +137,7 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	line := jjArgs
 	if args[0] == "--after" {
 		var err error
-		if line, err = expandJJ(jjArgs, next, env); err != nil {
+		if line, err = expandJJ(jjArgs, next, env, stderr); err != nil {
 			fmt.Fprintf(stderr, "legion jj: %v; the command runs as written\n", err)
 		}
 	}
@@ -348,11 +349,13 @@ func (s *jjStep) once() error {
 // own (jjPush.quiet), and no --ignore-working-copy, in env, a read of the root commit's id, which
 // needs no working-copy commit, before which jj 0.38 and 0.45 alike snapshot the working copy (`jj
 // util snapshot` exists on 0.45 alone). It prints what that command prints on standard error, as
-// the push's snapshot would print it: jj's warning of a file it refuses to snapshot, or its line
-// of the descendants of @ it rebased, which --quiet silences. A snapshot that finds nothing new
-// adds no operation. Once it has run (snapshotted), the real push runs with --ignore-working-copy
-// (runJJ). A command that cannot start or exits non-zero is a jjStepFailure, with what it printed
-// on standard error (output): the push would fail at the same snapshot.
+// the push's snapshot would print it: jj's warning of a file it refuses to snapshot, its line of
+// the descendants of @ it rebased, which --quiet silences, or a warning jj prints once, such as
+// `Your repo appears to have been copied`; but not the warnings jj prints on every command
+// (jjOnceOnly), which the real push prints itself. A snapshot that finds nothing new adds no
+// operation. Once it has run (snapshotted), the real push runs with --ignore-working-copy (runJJ).
+// A command that cannot start or exits non-zero is a jjStepFailure, with what it printed on
+// standard error (output), which runJJ prints whole: the push would fail at the same snapshot.
 func (s *jjStep) snapshot() error {
 	flags := []string{"--color=never"}
 	if s.push.quiet {
@@ -362,7 +365,7 @@ func (s *jjStep) snapshot() error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(s.stderr, stderr)
+	fmt.Fprint(s.stderr, jjOnceOnly(stderr, true))
 	s.snapshotted = true
 	return nil
 }

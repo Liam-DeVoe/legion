@@ -836,7 +836,7 @@ func TestTheJJWrapperHandsAPushToLegionJJ(t *testing.T) {
 			logged := logging(t, filepath.Join(at, "logged-jj"), realLog)
 			standIn := filepath.Join(at, "stand-in-jj")
 			body := "#!/bin/sh\n" +
-				"[ \"$*\" = '--ignore-working-copy config get git.executable-path' ] && exec '" + jj + "' \"$@\"\n" +
+				"[ \"$*\" = '--ignore-working-copy --color=never config get git.executable-path' ] && exec '" + jj + "' \"$@\"\n" +
 				"exec '" + logged + "' \"$@\"\n"
 			if err := os.WriteFile(standIn, []byte(body), 0o700); err != nil {
 				t.Fatal(err)

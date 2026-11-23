@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -17,8 +18,8 @@ import (
 // readEach) and of commit ids (ids, eachID), each with --ignore-working-copy (jjStep.jj), and the
 // revsets of a list of commit or change ids in as few words as keep each under jjWordBound bytes
 // (jjWords, jjChanges, jjCommitIDs), with the bytes Linux counts against jjArgMax (jjSize); and
-// how the step and the expansion run a jj command and name its failure (jj, output, command,
-// runJJCommand, jjErrorLine).
+// how the step and the expansion run a jj command, name its failure and print what it printed on
+// standard error (jj, output, command, runJJCommand, jjErrorLine, jjOnceOnly).
 
 // jjCommitTemplate prints, for each commit, its change id, its commit id, whether it is hidden,
 // whether it is the working-copy commit of the workspace the command runs in
@@ -269,4 +270,66 @@ func jjErrorLine(output, command string, code int) string {
 		return first
 	}
 	return fmt.Sprintf("%s exited %d and printed nothing", command, code)
+}
+
+// jjEveryCommand is the first line of each warning that jj prints on every command it runs, from
+// cli/src/cli_util.rs and cli/src/config.rs at jj v0.38.0, v0.45.0 and v0.46.0: an alias that has
+// the name of a built-in command (`Cannot define an alias that overrides the built-in command
+// '<name>'`, with a full stop in 0.45 and 0.46 and none in 0.38), an alias of an alias table that
+// does not load (`Failed to load `<table>.<name>`: …`), a setting jj migrates (`Deprecated <source>
+// config: …`), aliases that -R, --config or --config-file would define (`Command aliases cannot be
+// loaded from -R/--repository path or --config/--config-file arguments.`), and a trunk() that does
+// not resolve (`Failed to resolve `revset-aliases.trunk()`: …`), with its hint (`Hint: Use `jj
+// config edit --repo` to adjust the `trunk()` alias.`).
+var jjEveryCommand = regexp.MustCompile("^(?:Warning: (?:" +
+	"Cannot define an alias that overrides the built-in command '" +
+	"|Failed to load `(?:[a-z]+-)?aliases\\." +
+	"|Deprecated [A-Za-z-]+ config: " +
+	"|Command aliases cannot be loaded from -R/--repository path or --config/--config-file arguments" +
+	"|Failed to resolve `revset-aliases\\.trunk\\(\\)`: )" +
+	"|Hint: Use `jj config edit --repo` to adjust the `trunk\\(\\)` alias)")
+
+// jjEveryCommandMore is a line that jj prints after the first line of such a warning
+// (jjEveryCommand) as a part of it, with no heading of its own: a line of the parse error of an
+// alias, which is blank or starts with a space or a digit (`  |`, `1 | foo(`), the causes jj 0.46
+// prints after an alias that does not load (`Caused by:`, `1: …`), and the second line of the
+// warning of trunk() (`The `trunk()` alias is temporarily set to `root()`.`). Any other line after
+// such a warning is no part of it, such as the snapshot's `Rebased 1 descendant commits onto
+// updated working copy`, which jj prints right after the warning of an alias that has the name of
+// a built-in command.
+var jjEveryCommandMore = regexp.MustCompile("^(?:$|[ 0-9]|Caused by:|The `trunk\\(\\)` alias is temporarily set to )")
+
+// jjErrorHeading is the first line of jj's error, which jj prints last, its causes and hints after
+// it: `Error: `, `Config error: ` or `Internal error: ` (cli/src/command_error.rs).
+var jjErrorHeading = regexp.MustCompile(`^(?:Error|Config error|Internal error): `)
+
+// jjSGR is an escape sequence of jj's colours, which a line carries where ui.color is always.
+var jjSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// jjOnceOnly is stderr, what a jj command of legion jj's own printed on standard error, as legion
+// jj prints it: each line but the warnings jj prints on every command, each with the lines jj
+// prints as its parts (jjEveryCommand, jjEveryCommandMore), each line read with its colours left
+// out. The command that legion jj runs after its own prints those warnings itself, so each prints
+// as often as jj alone prints it for that command. A warning that jj prints once and then never
+// again, such as `Your repo appears to have been copied …` (lib/src/secure_config.rs), is printed:
+// the first command in the state that makes jj print it is the one that prints it, and that may be
+// a command of legion jj's own. Where withError is false, jj's error and every line after it
+// (jjErrorHeading) are left out too, for a caller whose own line names that error.
+func jjOnceOnly(stderr string, withError bool) string {
+	var kept strings.Builder
+	part := false
+	for line := range strings.SplitAfterSeq(stderr, "\n") {
+		plain := jjSGR.ReplaceAllString(strings.TrimSuffix(line, "\n"), "")
+		switch {
+		case !withError && jjErrorHeading.MatchString(plain):
+			return kept.String()
+		case jjEveryCommand.MatchString(plain):
+			part = true
+		case part && jjEveryCommandMore.MatchString(plain):
+		default:
+			part = false
+			kept.WriteString(line)
+		}
+	}
+	return kept.String()
 }
