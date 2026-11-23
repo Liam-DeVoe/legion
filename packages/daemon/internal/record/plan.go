@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -89,6 +90,40 @@ func (p TaskPlace) StepPlace(task string) StepPlace {
 // there (StopTask keeps the place), so a task stopped at no act is one whose work never ran.
 func (p TaskPlace) Started() bool {
 	return p != TaskPlace{}
+}
+
+// Rank orders the places of one task's line: no act first, then each step by its place, then the
+// retro, then the merge. It is the one order of a task's places: a move back is a move to a lower
+// rank (workflow's Walk.MovesBack), and the place of a role nearest where a task stands is read by
+// it (NearestPlace).
+func (p TaskPlace) Rank() int {
+	switch p.Kind {
+	case PlaceStep:
+		return p.Position
+	case PlaceRetro:
+		return math.MaxInt - 1
+	case PlaceMerge:
+		return math.MaxInt
+	}
+	return 0
+}
+
+// NearestPlace is the place of places, in line order, nearest at: the latest at or before at
+// (Rank), else the first after it; ok false where places is empty. A role can stand at two places
+// of a task, and the one a reader with no run to go by means is the one the task stands at or left
+// last, or, before the first, the first: where a role's row is read and written (RolePlace) and
+// which acceptance the task stands at (workflow's acceptedRole).
+func NearestPlace(places []TaskPlace, at TaskPlace) (TaskPlace, bool) {
+	if len(places) == 0 {
+		return TaskPlace{}, false
+	}
+	nearest := places[0]
+	for _, place := range places {
+		if place.Rank() <= at.Rank() {
+			nearest = place
+		}
+	}
+	return nearest, true
 }
 
 // valid says whether p is a place a task can stand at.

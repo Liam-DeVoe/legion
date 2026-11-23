@@ -2843,21 +2843,44 @@ func PhaseRowAt(rows []PhaseRow, role claim.Role, task string, at TaskPlace, ste
 	if task == "" {
 		return PhaseRowOf(rows, role)
 	}
-	place := RolePlace(role, at, steps)
+	row, _ := StepRowOf(rows, role, task, RolePlace(role, at, steps))
+	return row
+}
+
+// RowFound is how StepRowOf found a role's row of a step.
+type RowFound int
+
+const (
+	// RowOfTheStep is the row the step's runs wrote.
+	RowOfTheStep RowFound = iota
+	// RowOfNoStep is the role's row of no step (StepTask ""), a row a new generation cleared or the
+	// release before wrote, which was the role's one row and so is the step's.
+	RowOfNoStep
+	// NoRowOfTheStep is neither: the zero row stamped with the role, the task and the place.
+	NoRowOfTheStep
+)
+
+// StepRowOf is role's row among rows of the step at place of task (place 0 for the retro, the
+// merge and a role the task gives no place), and how it was found (RowFound): the row the step's
+// runs wrote; else the role's row of no step; else the zero row stamped with role, task and place.
+// It is the one lookup of a step's row: where a role's row is read (PhaseRowAt) and where a step's
+// entry raises it (workflow's stepRunRow), which moves a row of no step to the step and starts a
+// step's first row from the role's row now.
+func StepRowOf(rows []PhaseRow, role claim.Role, task string, place int) (PhaseRow, RowFound) {
 	var noStep *PhaseRow
 	for i, row := range rows {
 		switch {
 		case row.Role != role:
 		case row.StepTask == task && row.StepPlace == place:
-			return row
+			return row, RowOfTheStep
 		case row.StepTask == "" && noStep == nil:
 			noStep = &rows[i]
 		}
 	}
 	if noStep != nil {
-		return *noStep
+		return *noStep, RowOfNoStep
 	}
-	return PhaseRow{Role: role, StepTask: task, StepPlace: place}
+	return PhaseRow{Role: role, StepTask: task, StepPlace: place}, NoRowOfTheStep
 }
 
 // CompletionRow is role's row among rows of the run a completion of role serving entry reports, on
@@ -2889,45 +2912,26 @@ func CompletionRow(rows []PhaseRow, role claim.Role, entry int64, works bool, ta
 }
 
 // RolePlace is the place (PhaseRow.StepPlace) of the row of role PhaseRowAt reads at at, on a
-// task whose steps are steps: from 1 for a step, 0 for the retro, the merge and a role the task
-// gives no place. It is also the place a completion's key names where the role stands at two
-// steps (StandsTwice; api's completion route).
+// task whose steps are steps: role's place nearest at (NearestPlace) among its steps, the retro,
+// the implementer's (phase.RoleFor), and the merge, the merger's; from 1 for a step, 0 for the
+// retro, the merge and a role the task gives no place. It is also the place a completion's key
+// names where the role stands at two steps and its row is of no step (StandsTwice; api's
+// completion route).
 func RolePlace(role claim.Role, at TaskPlace, steps []PlanStep) int {
-	// Each place of role, by its rank on the task's line: a step's place from 1, then the retro,
-	// then the merge.
-	type stand struct{ rank, place int }
-	var stands []stand
+	var places []TaskPlace
 	for _, step := range steps {
 		if claim.Role(step.Role) == role {
-			stands = append(stands, stand{rank: step.Position, place: step.Position})
+			places = append(places, TaskPlace{Kind: PlaceStep, Position: step.Position})
 		}
 	}
 	if role == phase.RoleFor(phase.Retro) {
-		stands = append(stands, stand{rank: len(steps) + 1})
+		places = append(places, TaskPlace{Kind: PlaceRetro})
 	}
 	if role == phase.RoleFor(phase.Merging) {
-		stands = append(stands, stand{rank: len(steps) + 2})
+		places = append(places, TaskPlace{Kind: PlaceMerge})
 	}
-	if len(stands) == 0 {
-		return 0
-	}
-	rank := at.Position
-	switch at.Kind {
-	case PlaceRetro:
-		rank = len(steps) + 1
-	case PlaceMerge:
-		rank = len(steps) + 2
-	case PlaceStep:
-	default:
-		rank = 0
-	}
-	chosen := stands[0]
-	for _, s := range stands {
-		if s.rank <= rank {
-			chosen = s
-		}
-	}
-	return chosen.place
+	place, _ := NearestPlace(places, at)
+	return place.Position
 }
 
 // StandsTwice says whether steps name role at two places or more: a role that stands at two steps

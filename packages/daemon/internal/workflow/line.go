@@ -217,8 +217,9 @@ func (w Walk) steps() []phase.Phase {
 }
 
 // MovesBack says whether row moves w's task back by the task's own order. A stored walk compares
-// the row's two places (placeRank): an earlier step by its place, every step before the retro, the
-// retro before the merge, so a move from step 3 back to step 2 goes back though both run as step.
+// the row's two places (record.TaskPlace.Rank): an earlier step by its place, every step before the
+// retro, the retro before the merge, so a move from step 3 back to step 2 goes back though both run
+// as step.
 // A run with no plan rows walks today's line, so this is phase.MovesBack of the row's two phases
 // for it. A task in another order than today's so counts its move back from testing to reviewing
 // (the steps `implementer reviewer tester`), and not the review's approval from reviewing to
@@ -227,7 +228,7 @@ func (w Walk) MovesBack(row Row) bool {
 	if !w.Stored {
 		return phase.MovesBack(row.From, row.To)
 	}
-	return row.ToPlace.Kind != "" && placeRank(row.ToPlace) < placeRank(row.FromPlace)
+	return row.ToPlace.Kind != "" && row.ToPlace.Rank() < row.FromPlace.Rank()
 }
 
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in: done
@@ -547,35 +548,6 @@ func (w Walk) endingRole(from phase.Phase) claim.Role {
 	return phase.RoleFor(from)
 }
 
-// placeRunning is the place of w's task that runs as at, and at step the one whose role is role,
-// nearest where the task stands: the latest such place at or before w.Place, else the first after
-// it: the acceptance the task stands at (acceptedRole). A report of a run that ended reads the
-// place of its own run instead (Walk.runPlace). A walk with no plan rows holds each phase once
-// (PlaceOf).
-func (w Walk) placeRunning(at phase.Phase, role claim.Role) (record.TaskPlace, bool) {
-	if !w.Stored {
-		return w.PlaceOf(at)
-	}
-	var first, before record.TaskPlace
-	var hasFirst, hasBefore bool
-	for i, p := range w.Line {
-		if p != at || at == phase.Step && (i >= len(w.Steps) || claim.Role(w.Steps[i].Role) != role) {
-			continue
-		}
-		place := placeAt(w.Line, i)
-		if !hasFirst {
-			first, hasFirst = place, true
-		}
-		if placeRank(place) <= placeRank(w.Place) {
-			before, hasBefore = place, true
-		}
-	}
-	if hasBefore {
-		return before, true
-	}
-	return first, hasFirst
-}
-
 // backwardPlace is the place a move back of w's task to the phase to reaches, ok false where none
 // serves it: for a walk with no plan rows the place of to on today's line, whose phases each stand
 // once (PlaceOf); for a stored walk the place before w.Place whose step, retro or merge runs as to,
@@ -592,7 +564,7 @@ func (w Walk) backwardPlace(to phase.Phase) (record.TaskPlace, bool, []record.Ta
 	}
 	var found []record.TaskPlace
 	for at, p := range w.Line {
-		if place := placeAt(w.Line, at); p == to && placeRank(place) < placeRank(w.Place) {
+		if place := placeAt(w.Line, at); p == to && place.Rank() < w.Place.Rank() {
 			found = append(found, place)
 		}
 	}
