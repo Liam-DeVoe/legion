@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/roleholder"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/redirects"
 )
 
 const requestTimeout = 10 * time.Second
@@ -188,8 +189,11 @@ type HTTPPublisher struct {
 
 // New creates a publisher for one Envoy listener. token is the listener's bearer
 // (`envoy_token_file`), sent on every publish; "" sends none, for a listener that requires none.
+// It follows no redirect (redirects.Refused): the listener answers none, and a followed one would
+// hand the bearer to the host the Location names. A 3xx is the listener's answer, refused by its
+// status, and a request that got no answer names its failure through redact.Unanswered.
 func New(baseURL, token string) *HTTPPublisher {
-	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: requestTimeout}}
+	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: redirects.Refused(&http.Client{Timeout: requestTimeout})}
 }
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
@@ -248,7 +252,7 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/messages/publish", bytes.NewReader(body))
 	if err != nil {
-		return false, fmt.Errorf("build notice publish request for %s: %w", topic, err)
+		return false, fmt.Errorf("build notice publish request for %s: %w", topic, redact.Unanswered(err, nil, ""))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	if p.token != "" {
@@ -256,7 +260,7 @@ func (p *HTTPPublisher) publish(ctx context.Context, topic, message string, payl
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return false, fmt.Errorf("publish notice to %s: %w", topic, err)
+		return false, fmt.Errorf("publish notice to %s: %w", topic, redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusOK {
@@ -392,14 +396,14 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive&view=registration", p.baseURL, url.PathEscape(session))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
+		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, redact.Unanswered(err, nil, ""))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {
@@ -451,14 +455,14 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder oau
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return holder, "", fmt.Errorf("build the role lookup for %s: %w", role, err)
+		return holder, "", fmt.Errorf("build the role lookup for %s: %w", role, redact.Unanswered(err, nil, ""))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return holder, "", fmt.Errorf("look up the holder of role %s: %w", role, err)
+		return holder, "", fmt.Errorf("look up the holder of role %s: %w", role, redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	refused := func(reason string) error {
@@ -639,14 +643,14 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
 	if err != nil {
-		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, err)
+		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, redact.Unanswered(err, nil, ""))
 	}
 	if p.token != "" {
 		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {
-		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, err)
+		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, redact.Unanswered(err, request, ""))
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {
