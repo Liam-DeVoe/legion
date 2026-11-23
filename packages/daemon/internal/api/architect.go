@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
@@ -189,16 +190,13 @@ func (s *server) recordedIssue(ctx context.Context, issue string) (*record.Issue
 	if s.pool == nil {
 		return nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	recorded, err := s.records.Issue(ctx, tx, issue)
-	if err != nil {
-		return nil, err
-	}
-	return recorded, tx.Commit(ctx)
+	var recorded *record.Issue
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		recorded, err = s.records.Issue(ctx, tx, issue)
+		return err
+	})
+	return recorded, err
 }
 
 // ownedIssue reads the issue record and whether architect owns it, an architect of its tree now
@@ -222,26 +220,25 @@ func (s *server) readOwnedIssue(ctx context.Context, issue string, architect cla
 	if s.pool == nil || s.records == nil {
 		return nil, nil, false, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, false, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if recorded, err = s.records.Issue(ctx, tx, issue); err != nil || recorded == nil {
-		return nil, nil, false, err
-	}
-	if tree {
-		if members, err = s.records.TreeIssues(ctx, tx, recorded.Tree); err != nil {
-			return nil, nil, false, err
+	err = store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if recorded, err = s.records.Issue(ctx, tx, issue); err != nil || recorded == nil {
+			return err
 		}
-		owned, err = record.ArchitectOfTreeIn(architect, *recorded, members)
-	} else {
-		owned, err = record.ArchitectOfTree(ctx, s.records, tx, architect, *recorded)
-	}
-	if err != nil {
+		if tree {
+			if members, err = s.records.TreeIssues(ctx, tx, recorded.Tree); err != nil {
+				return err
+			}
+			owned, err = record.ArchitectOfTreeIn(architect, *recorded, members)
+		} else {
+			owned, err = record.ArchitectOfTree(ctx, s.records, tx, architect, *recorded)
+		}
+		return err
+	})
+	if err != nil || recorded == nil {
 		return nil, nil, false, err
 	}
-	return recorded, members, owned, tx.Commit(ctx)
+	return recorded, members, owned, nil
 }
 
 // treeMembers is every record of tree, read in one short read-only transaction: what a handler
@@ -252,16 +249,13 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 	if s.pool == nil || s.records == nil {
 		return nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	members, err := s.records.TreeIssues(ctx, tx, tree)
-	if err != nil {
-		return nil, err
-	}
-	return members, tx.Commit(ctx)
+	var members []record.Issue
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		members, err = s.records.TreeIssues(ctx, tx, tree)
+		return err
+	})
+	return members, err
 }
 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
@@ -812,19 +806,17 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant c
 		return true
 	}
 	// The notice is its own transaction, so it owns the commit hook its write registers (the
-	// daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
-	scoped, committed := intake.WithCommitHooks(r.Context())
-	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
+	// daemon's projectRecords, store.OnCommit), as ApplyFact does for a fact's rows.
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
 		if err != nil {
 			return err
 		}
-		return s.records.Enqueue(scoped, tx, row)
+		return s.records.Enqueue(ctx, tx, row)
 	}); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "NOTICE_UNAVAILABLE", fmt.Sprintf("could not tell the architect that %s waits", child.Key))
 		return false
 	}
-	committed()
 	return true
 }
 
@@ -848,8 +840,8 @@ func pendingAncestor(child dispatch.Issue, byKey map[string]releasedChild, pendi
 }
 
 func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, issue string) bool {
-	if err := pgx.BeginFunc(r.Context(), s.pool, func(tx pgx.Tx) error {
-		return s.records.DeleteReleaseRetry(r.Context(), tx, issue)
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return s.records.DeleteReleaseRetry(ctx, tx, issue)
 	}); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not clear the release retry of %s", issue))
 		return false
@@ -870,10 +862,9 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 	var retry record.ReleaseRetry
 	var exhausted, told, backoff bool
 	// The retry is its own transaction, so it owns the commit hook the stalled notice's write
-	// registers (the daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
-	scoped, committed := intake.WithCommitHooks(r.Context())
-	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
-		current, err := s.records.ReleaseRetry(scoped, tx, child.Key)
+	// registers (the daemon's projectRecords, store.OnCommit), as ApplyFact does for a fact's rows.
+	if err := store.Transact(r.Context(), s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		current, err := s.records.ReleaseRetry(ctx, tx, child.Key)
 		if err != nil {
 			return err
 		}
@@ -898,17 +889,16 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 			if err != nil {
 				return err
 			}
-			if err := s.records.Enqueue(scoped, tx, row); err != nil {
+			if err := s.records.Enqueue(ctx, tx, row); err != nil {
 				return err
 			}
 			exhausted, told = true, true
 		}
-		return s.records.PutReleaseRetry(scoped, tx, retry)
+		return s.records.PutReleaseRetry(ctx, tx, retry)
 	}); err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RETRY_UNAVAILABLE", fmt.Sprintf("could not record the release retry of %s", child.Key))
 		return false
 	}
-	committed()
 	if exhausted {
 		notified := "a child-release-stalled notice was queued when the attempts ran out"
 		if told {
@@ -1182,17 +1172,15 @@ func (s *server) readReleasedBefore(ctx context.Context, children []releasedChil
 	if s.pool == nil {
 		return errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	for i := range children {
-		if children[i].before, err = s.records.Issue(ctx, tx, children[i].view.Key); err != nil {
-			return err
+	return store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		for i := range children {
+			var err error
+			if children[i].before, err = s.records.Issue(ctx, tx, children[i].view.Key); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit(ctx)
+		return nil
+	})
 }
 
 // releaseOrder is the wave in the request's order, except that each child comes after every child
@@ -1277,11 +1265,6 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 	if s.pool == nil {
 		return nil, nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	var waitedOn []string
 	for _, child := range children {
 		waitedOn = append(waitedOn, child.view.BlockedBy...)
@@ -1289,28 +1272,31 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 	// The mirror's rows are keyed by the Dispatch project key the issues are filed under, never
 	// by the claim project token: a read with the token finds nothing wherever the two differ,
 	// which in a deployment is always (Options.Project, Options.DispatchProject).
-	rows, err := blockers.Load(ctx, tx, s.records, s.dispatchProject, waitedOn)
-	if err != nil {
-		return nil, nil, err
-	}
 	started, held := []string{}, []HeldChild{}
-	for _, child := range children {
-		after, err := s.records.Issue(ctx, tx, child.view.Key)
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := blockers.Load(ctx, tx, s.records, s.dispatchProject, waitedOn)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
-		switch {
-		case startedByRelease(child.before, after):
-			started = append(started, child.view.Key)
-		case runsPhase(after):
-		default:
-			// The mirror's rows are keyed as the store keeps the keys (storetext.Strings).
-			if unfinished := blockers.UnfinishedOf(rows, storetext.Strings(child.view.BlockedBy)); len(unfinished) > 0 {
-				held = append(held, HeldChild{Issue: child.view.Key, BlockedBy: unfinished})
+		for _, child := range children {
+			after, err := s.records.Issue(ctx, tx, child.view.Key)
+			if err != nil {
+				return err
+			}
+			switch {
+			case startedByRelease(child.before, after):
+				started = append(started, child.view.Key)
+			case runsPhase(after):
+			default:
+				// The mirror's rows are keyed as the store keeps the keys (storetext.Strings).
+				if unfinished := blockers.UnfinishedOf(rows, storetext.Strings(child.view.BlockedBy)); len(unfinished) > 0 {
+					held = append(held, HeldChild{Issue: child.view.Key, BlockedBy: unfinished})
+				}
 			}
 		}
-	}
-	return started, held, tx.Commit(ctx)
+		return nil
+	})
+	return started, held, err
 }
 
 // startedByRelease says whether the release started a child's first phase: its record after the
@@ -1590,16 +1576,16 @@ func (s *server) owns(ctx context.Context, grant credential.Grant, recorded reco
 	if s.pool == nil || s.records == nil {
 		return false, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	var owns bool
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		owns, err = record.ArchitectAbove(ctx, s.records, tx, grant.Claim, recorded)
+		return err
+	})
 	if err != nil {
 		return false, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	owns, err := record.ArchitectAbove(ctx, s.records, tx, grant.Claim, recorded)
-	if err != nil {
-		return false, err
-	}
-	return owns, tx.Commit(ctx)
+	return owns, nil
 }
 
 // openStep is the run of the step issue stands in (record.Store.OpenStep), read in one read-only
@@ -1611,16 +1597,13 @@ func (s *server) openStep(w http.ResponseWriter, r *http.Request, issue string) 
 		if s.pool == nil || s.records == nil {
 			return record.StepEntry{}, errors.New("record dependencies are unavailable")
 		}
-		tx, err := s.pool.BeginTx(r.Context(), pgx.TxOptions{AccessMode: pgx.ReadOnly})
-		if err != nil {
-			return record.StepEntry{}, err
-		}
-		defer func() { _ = tx.Rollback(r.Context()) }()
-		entry, err := s.records.OpenStep(r.Context(), tx, issue)
-		if err != nil {
-			return record.StepEntry{}, err
-		}
-		return entry, tx.Commit(r.Context())
+		var entry record.StepEntry
+		err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			entry, err = s.records.OpenStep(ctx, tx, issue)
+			return err
+		})
+		return entry, err
 	}()
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read the step the issue stands in")
