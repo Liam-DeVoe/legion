@@ -40,8 +40,9 @@ steps that read the package and the manifest, and `stage`, which fetches about 3
 the real sources while the network is whole and so keeps the pinned ladder (2), the
 jj-primary case, which runs before the fault (1), the fault and its probe, whose two
 requests are bounded at 15 s each (1), the one case that keeps the ladder, the head's own
-`install-crane`, which measured 64 s and which `--retry-max-time 60` bounds at a minute in
-which a new attempt may start plus one last attempt of the row's `max_time` of 60 s (2),
+`install-crane`, which measured 64 s and which `--retry-max-time 60` and the row's `max_time` of
+180 s bound at 272 s, a last attempt started a minute and a back-off of up to 32 s in and run for
+that `max_time` while its source keeps moving (5),
 the other steps whose primary the fault or a dead port holds, each now about a second
 because the stand-in shortens them: job 129874475871 made 65 fetches through the stand-in,
 and 29 of them were shortened — 19 of github.com, 9 of the dead address and 1 of
@@ -51,8 +52,10 @@ honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, n
 which took more than a second (1), the bytes the installs and the sixteen cases move, over
 npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
 readings, the `ladder-report` step, the stop-fault step and the report (1).
-That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
-limit carries ten minutes over the sum.
+That is 15, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+limit carries ten minutes over the sum: 25. Main counts the kept case at two minutes and the limit
+at 22, under the 60 s that bounded every attempt of ci_tools_curl before its bound on a moving
+download became 180 s and its stall cut 30 s (the comment above that function says why).
 This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
 steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
 control costs, because it drives two ladders; the other fourteen of those steps drive one

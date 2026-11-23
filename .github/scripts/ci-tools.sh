@@ -521,42 +521,57 @@ ci_tools__tempfile() {
 # reads them under. A request that carries one goes through ci_tools__curl_held below, this same
 # ladder less `-L`.
 # `--fail` is what keeps a 504's body out of <file>, `--retry 7 --retry-all-errors` rides out a
-# flap of the service, and `--max-time` bounds one attempt, so a hung attempt becomes the exit
-# code that sends the caller to the second source. Exit 23 is the one exit that sends it
-# nowhere: ci_tools__curl_report below reads it as this run's own write error, and the caller
-# refuses where it stands.
+# flap of the service, and a stall ends an attempt, so a hung attempt becomes the exit code that
+# sends the caller to the second source. Exit 23 is the one exit that sends it nowhere:
+# ci_tools__curl_report below reads it as this run's own write error, and the caller refuses
+# where it stands.
+#
+# AN ATTEMPT IS CUT ON A STALL, NOT ON A CLOCK THAT A MOVING DOWNLOAD RUNS INTO. `--speed-limit
+# 10000 --speed-time 30` ends an attempt that moved fewer than 10,000 bytes a second for 30
+# seconds straight (curl exit 28, "Operation too slow"), and `--connect-timeout 30` one that has
+# not connected in 30 s, so a host that accepts and sends nothing, one that sends a byte now and
+# then, one that stops mid-body and one that never answers the connection are each cut 30 s into
+# the stall. `--max-time <max_time>`, the row's own bound, is what is left of the clock: it ends
+# an attempt that keeps moving above the floor and still has not finished, and it is set so that
+# the slowest download that kept moving lands (.github/ci-tools.yaml's `max_time` says how).
+# Until 2026-11-23 the clock was the only cut, at 60 s, and it failed a download that was still
+# moving: in job 137969866080 (run 45253427255) PyPI served uv's 17,211,825-byte wheel at about
+# 257 kB/s, curl had read 15,412,215 bytes of it when the 60 s ended the attempt (`curl: (28)
+# Operation timed out after 59879 milliseconds with 15412215 out of 17211825 bytes received`),
+# and the install failed with `no source served the bytes`.
+# The floor and the window are measured against the fetches that land: every row's bytes, 4 MB
+# to 120 MB, were read in 0.6 s to 3.2 s in jobs 137969866080 and 137995673550 (2026-11-23), at
+# 4 MB/s or more, through the fault proxy too, and the one slow fetch that kept moving read
+# 257 kB/s. 10,000 bytes a second is a twenty-fifth of that slowest moving rate, and 30 s is
+# nine times the longest whole fetch a green run made; a stall reads 0, or 0.2 bytes a second for
+# a host that sends a byte every 5 s, so it is under the floor from its first second.
 #
 # `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
-# may start: an attempt already running when the minute is over still finishes under
-# `--max-time`, and curl starts no attempt after it.
-# What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
-# ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s —
-# which is about ten minutes for one row, while many jobs of .github/workflows/ci.yaml carry
-# `timeout-minutes: 10`.
-# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it buys almost
-# nothing: the back-off alone reaches the minute, so the ladder is one attempt shorter.
-# This issue's tester measured both shapes at the manifest's `max_time` of 60. Against a source
-# that refuses at once, as a 504 does, the bound makes 7 attempts. Their back-off is
-# 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
-# which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
-# against a port that refuses at once took 1m3.064s and exited 7. And in job 129743677408 of
-# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: seven of the
-# eight negative controls each drive two ladders, because their primary meets the fault and
-# their second source is a dead port, and measured 126 to 127 s, while seven of the head's own
-# installs and seven of the second-source cases each drive one and measured 63 to 65 s (73 s
-# and 72 s for jj, which carry mise's own 10 s). So 126 s is two ladders and not one.
-# The eighth of each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not
-# through this function: its negative control drives one ladder, against the dead port, after
-# that action's own failed download, and measured 104 s, while its head install and its
-# second-source case drive none, because npm answers, and measured 23 s and 30 s.
-# The hang is the other shape. It costs 124 s with the bound, where the ladder without the
-# bound costs about ten minutes. So a row's primary costs about one minute before the second
-# source is read against a source that refuses at once, and about two minutes against a host
-# that hangs. Both are inside every ci.yaml budget.
+# may start: an attempt already running when the minute is over still finishes under its own
+# cuts, and curl starts no attempt after it.
+# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, the back-off
+# alone reaches the minute: the bound makes 7 attempts, whose back-off is 1+2+4+8+16+32, so that
+# ladder costs 63 s. This issue's tester measured it twice, and one such ladder against a port
+# that refuses at once took 1m3.064s and exited 7. In job 129743677408 of
+# .github/workflows/ci.yaml seven of the eight negative controls each drove two ladders, because
+# their primary met the fault and their second source was a dead port, and measured 126 to
+# 127 s, while seven of the head's own installs and seven of the second-source cases each drove
+# one and measured 63 to 65 s (73 s and 72 s for jj, which carry mise's own 10 s). The eighth of
+# each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not through this
+# function: its negative control drives one ladder, against the dead port, after that action's
+# own failed download, and measured 104 s, while its head install and its second-source case
+# drive none, because npm answers, and measured 23 s and 30 s.
+# Against a host that hangs, each attempt is cut 30 s into the stall, so the second attempt
+# starts at 31 s and the third would start past the minute: about 61 s.
+# THE WORST CASE A JOB'S LIMIT COUNTS IS 92 s PLUS THE ROW'S `max_time`: an attempt can start up
+# to the minute plus the back-off before it, which is at most 32 s (the 64 s back-off comes after
+# 63 s of back-off already slept, past the minute), and it may then move above the floor for its
+# whole `max_time`. For a row's 180 s that is 272 s.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --connect-timeout 30 \
+    --speed-limit 10000 --speed-time 30 --max-time "$max_time" -o "$file" "$@" "$url"
 }
 
 # ci_tools__curl_held <file> <max_time> <url> [curl argument…]: ci_tools_curl for a request that
@@ -581,7 +596,8 @@ ci_tools_curl() {
 ci_tools__curl_held() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" \
+  curl -q -fsS --retry 7 --retry-all-errors --retry-max-time 60 --connect-timeout 30 \
+    --speed-limit 10000 --speed-time 30 --max-time "$max_time" -o "$file" \
     -w '%{http_code} %{redirect_url}' "$@" "$url"
 }
 

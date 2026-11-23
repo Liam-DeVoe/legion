@@ -41,7 +41,7 @@ its own: the step's limit is its bound.
 Up to the record step's last read, the job waits on the network in these steps, each counted at
 its worst:
 
-- 496 s: `.github/actions/install-crane`, at the worst case `.github/ci-notes/ci.md`'s "The worst
+- 1,088 s: `.github/actions/install-crane`, at the worst case `.github/ci-notes/ci.md`'s "The worst
   case of the tool installs that read .github/scripts/ci-tools.sh" derives.
 - 245 s: the decide step's `crane config`, through network-install.sh's bound for crane (three
   attempts of 60 s, each killed 15 s after its SIGTERM, with two 10 s pauses).
@@ -53,6 +53,6 @@ its worst:
 - 20.4 s: every other step at its slowest, from job 128991520632's 97 s: less the build step's
   65.7 s and the four steps above at their healthy 0.6 s, 0.5 s, 8.0 s and 1.8 s.
 
-780 s + 496 s + 245 s + 240 s + 735 s + 20.4 s = 2,516.4 s, rounded up to 42 minutes. The 3
-minutes the job had would end a stalled read in GitHub's cancellation, which names nothing,
+780 s + 1,088 s + 245 s + 240 s + 735 s + 20.4 s = 3,108.4 s, rounded up to 52 minutes. The 3
+minutes main gives the job would end a stalled read in GitHub's cancellation, which names nothing,
 before the wrapper or curl failed it by name.

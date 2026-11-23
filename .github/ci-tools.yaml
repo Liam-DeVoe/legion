@@ -155,9 +155,19 @@ tools:
     # It is the one word every log line and every refusal of that source says, so a row that
     # moves to another source moves every sentence about it with one edit.
     second_source: ghcr-mirror
-    # The per-attempt bound in seconds the helper gives curl. One attempt that hangs past a minute
-    # is the outage the second source answers, so every row carries 60.
-    max_time: 60
+    # The bound in seconds the helper gives curl for one attempt's whole transfer (--max-time).
+    # A stall ends an attempt long before it: ci_tools_curl (.github/scripts/ci-tools.sh) cuts one
+    # that moves fewer than 10,000 bytes a second for 30 s, or has not connected in 30 s. This
+    # bound ends the attempt that keeps moving and has not finished, and it is set to land the
+    # slowest fetch that kept moving: in job 137969866080 (2026-11-23) PyPI served uv's
+    # 17,211,825-byte wheel at about 257 kB/s, which is 67 s for the whole, and the 60 s this
+    # field held then cut it with 15,412,215 bytes read. Twice those 67 s, rounded up to the
+    # minute, is 180 s, and every row carries it. A row larger than that wheel lands at that rate
+    # where its bytes take under 180 s: mise's 37 MB, jj's 25 MB and the docker plugin's 24 MB
+    # do, Bun's 55 MB npm tarball needs 308 kB/s and the Pulumi CLI's 120 MB 666 kB/s, against
+    # the 24 MB/s and 37 MB/s each was read at in that job. A job's limit counts one fetch at
+    # 92 s more than this bound (the comment above ci_tools_curl says why): 272 s.
+    max_time: 180
     # ghcr-mirror rows only. The URL .github/scripts/mirror-ci-tools.sh fetches the bytes from to
     # fill the copy. It is the row's `primary` wherever the primary is the asset itself.
     mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
@@ -177,7 +187,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz
     mirror_member: ""
 
@@ -192,7 +202,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
     mirror_member: ""
 
@@ -208,7 +218,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_arm64.tar.gz
     mirror_member: ""
 
@@ -225,7 +235,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
     mirror_member: ""
 
@@ -243,7 +253,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-arm64.tar.gz
     mirror_member: ""
 
@@ -267,7 +277,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
@@ -285,7 +295,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-aarch64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
@@ -309,7 +319,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: npm
-    max_time: 60
+    max_time: 180
     # npm rows only. The package the binary is published in, one per platform variant.
     npm_package: "@oven/bun-linux-x64"
     # npm rows only. The member of that package's tarball which is the binary itself.
@@ -327,7 +337,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: npm
-    max_time: 60
+    max_time: 180
     npm_package: "@oven/bun-linux-x64-baseline"
     npm_member: package/bin/bun
 
@@ -342,7 +352,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: npm
-    max_time: 60
+    max_time: 180
     npm_package: "@oven/bun-linux-aarch64"
     npm_member: package/bin/bun
 
@@ -359,7 +369,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
     mirror_member: ""
 
@@ -375,7 +385,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: ghcr-mirror
-    max_time: 60
+    max_time: 180
     mirror_from: https://github.com/leanprover/elan/releases/download/v4.2.4/elan-aarch64-unknown-linux-gnu.tar.gz
     mirror_member: ""
 
@@ -396,7 +406,7 @@ tools:
     primary_digest_of: the release tarball uv-x86_64-unknown-linux-gnu.tar.gz, whole
     primary_member: uv-x86_64-unknown-linux-gnu/uv
     second_source: pypi
-    max_time: 60
+    max_time: 180
     # github-release, pypi and pulumi-releases second sources only. The whole address that
     # service serves this row's bytes at, written out, because such a service has no one prefix
     # every row of it begins with the way a release asset has https://github.com.
@@ -419,7 +429,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: pulumi-releases
-    max_time: 60
+    max_time: 180
     second_url: https://get.pulumi.com/releases/plugins/pulumi-resource-docker-v4.11.0-linux-amd64.tar.gz
     second_member: ""
 
@@ -437,7 +447,7 @@ tools:
     primary_digest_of: ""
     primary_member: ""
     second_source: github-release
-    max_time: 60
+    max_time: 180
     second_url: https://github.com/pulumi/pulumi/releases/download/v3.268.0/pulumi-v3.268.0-linux-x64.tar.gz
     second_member: ""
 

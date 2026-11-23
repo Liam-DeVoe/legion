@@ -13,7 +13,7 @@ The job runs one install through that script, the frozen install, which can take
 registry before the script fails it by name: three attempts of bun's 120 s, each killed 15 s after
 its SIGTERM, with two 10 s pauses. And `.github/actions/install-zsh` fetches each of its two pinned
 files the Actions cache lacks through `ci_tools_curl`, which `.github/ci-notes/ci.md` ("The worst
-case of the tool installs that read .github/scripts/ci-tools.sh") counts at 124 s a fetch against a
-host that hangs. So the limit is 308 s + 425 s + 2 × 124 s = 981 s, rounded up to 17 minutes. The
-15 minutes main gives the job would end a stalled install in GitHub's cancellation, which names
-nothing, before the script failed it by name.
+case of the tool installs that read .github/scripts/ci-tools.sh") counts at 152 s a fetch with that
+action's bound of 60 s. So the limit is 308 s + 425 s + 2 × 152 s = 1,037 s, rounded up to 18
+minutes. The 15 minutes main gives the job would end a stalled install in GitHub's cancellation,
+which names nothing, before the script failed it by name.

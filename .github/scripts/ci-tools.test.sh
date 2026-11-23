@@ -500,11 +500,16 @@ YAML
 # `<status> <location>`, as ghcr.io answers a blob's GET with a 307 to the store that holds it and
 # github.com a release asset with a 302; a file that writes the status alone is answered with no
 # Location. A HEAD is logged and answered the same way as a GET.
+# A file with `<file>.pace` beside it is served whole at the bytes a second that file writes, in
+# a write every quarter second, as a slow source that keeps moving serves it; one with
+# `<file>.stall` beside it sends its headers, the number of bytes that file writes and then
+# nothing more, as a source that stops mid-body does.
 cat > "$work/origin.py" <<'PY'
 import http.server
 import os
 import socketserver
 import sys
+import time
 
 root, portfile, logfile = sys.argv[1:4]
 
@@ -533,9 +538,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         return True
 
+    def paced(self):
+        """Serves the file at the pace `<file>.pace` writes, or stops it where `<file>.stall` says,
+        where there is one, and says whether it did."""
+        path = self.translate_path(self.path)
+        pace, stall = path + ".pace", path + ".stall"
+        if not (os.path.isfile(pace) or os.path.isfile(stall)):
+            return False
+        with open(path, "rb") as handle:
+            body = handle.read()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if os.path.isfile(stall):
+            with open(stall) as handle:
+                self.wfile.write(body[: int(handle.read())])
+            self.wfile.flush()
+            time.sleep(300)
+            return True
+        with open(pace) as handle:
+            step = max(1, int(handle.read()) // 4)
+        for start in range(0, len(body), step):
+            self.wfile.write(body[start : start + step])
+            self.wfile.flush()
+            time.sleep(0.25)
+        return True
+
     def do_GET(self):
         self.record()
-        if not self.redirected():
+        if not self.redirected() and not self.paced():
             super().do_GET()
 
     def do_HEAD(self):
@@ -654,13 +685,13 @@ nothing_at() { [ -e "$1" ] && echo false || echo true; }
 # temporary_files: what the helper left under RUNNER_TEMP, which is nothing on every path.
 temporary_files() { find "$runner_temp" -mindepth 1 | sort; }
 
-# What `recorded_ladder` writes in place of the tenth argument, which is the file this run's own
+# What `recorded_ladder` writes in place of the sixteenth argument, which is the file this run's own
 # mktemp named. That one word is the only word of the record this file cannot write down, since
 # it is another on every run; every other word is pinned by the helper, the manifest or the seam.
 RECORDED_TEMPORARY_FILE='<the temporary file this run named>'
 
 # recorded_ladder: every argument the stand-in curl was handed by the call that ran last, one per
-# line, with the tenth replaced by that placeholder. The whole record is held, and so is its
+# line, with the sixteenth replaced by that placeholder. The whole record is held, and so is its
 # length, which is what catches a word appended anywhere, after the URL included: curl reads the
 # last word on --retry-max-time, so one appended word there takes the bound off every fetch this
 # repository makes. It is read inside `is` and never printed, so a credential that ever reached
@@ -669,19 +700,20 @@ recorded_ladder() {
   local argument number=0
   while IFS= read -r argument; do
     number=$((number + 1))
-    [ "$number" -ne 10 ] || argument=$RECORDED_TEMPORARY_FILE
+    [ "$number" -ne 16 ] || argument=$RECORDED_TEMPORARY_FILE
     printf '%s\n' "$argument"
   done < "$curl_arguments"
 }
 
-# pinned_ladder <max_time>: the nine words ci_tools_curl pins before the file it writes, with
+# pinned_ladder <max_time>: the fifteen words ci_tools_curl pins before the file it writes, with
 # that row's own bound in place.
 pinned_ladder() {
-  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$1" -o
+  printf -- '%s\n' -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --connect-timeout 30 \
+    --speed-limit 10000 --speed-time 30 --max-time "$1" -o
 }
 
-# whole_record <max_time> <url>: the eleven words ci_tools_curl hands curl for a row whose fetch
-# carries no argument of its own — those nine, then the temporary file the placeholder above
+# whole_record <max_time> <url>: the seventeen words ci_tools_curl hands curl for a row whose fetch
+# carries no argument of its own — those fifteen, then the temporary file the placeholder above
 # stands in for, then the URL the seam built.
 whole_record() {
   pinned_ladder "$1"
@@ -713,8 +745,8 @@ ladder=$(recorded_ladder)
 check "the fetch exits 0, so the record is that primary's own call" "$(is "$status" 0)"
 run ci_tools_field tarred max_time
 bound=$out
-# Eleven words, because the tenth is the temporary file a mktemp of this run named and the
-# eleventh is the URL the seam built from the row's own `primary`. The record is held whole, with
+# Seventeen words, because the sixteenth is the temporary file a mktemp of this run named and the
+# seventeenth is the URL the seam built from the row's own `primary`. The record is held whole, with
 # that one unpredictable word standing in for itself, so that a changed flag, a changed bound, a
 # changed URL and a word appended anywhere — after the URL as well — each fail here.
 check "the whole record is the pinned ladder with the row's own bound, this run's temporary file and the URL the seam built" \
@@ -731,6 +763,46 @@ check "that row's bound is another than the first row's" \
 check "and its record carries that bound and that row's own URL, so --max-time follows the row" \
   "$(is "$other_ladder" "$(whole_record "$other_bound" "$base/$PLUGIN_ASSET_PATH")")"
 check "and neither fetch left a temporary file" "$(is "$(temporary_files)" "")"
+
+# The two shapes of a slow source, on ci_tools_curl itself with a bound of 120 s, which is above
+# the time the slow case takes: a source that keeps moving above the speed floor lands whatever
+# the time it takes, and one that stops mid-body is cut by the speed window, not by that bound.
+# 1,300,000 bytes, so that the paced one at 20,000 bytes a second takes 65 s, past the 60 s at
+# which the clock this ladder used to carry cut every attempt, and moves at twice the floor. The
+# two cases cost about 65 s and 30 s, the price of reading a window of 30 s and a clock of 60 s
+# for real rather than through a stand-in.
+head -c 1300000 /dev/urandom > "$work/payloads/slow"
+SLOW=$(digest_of "$work/payloads/slow")
+
+echo "case: a source that keeps moving under the old 60 s clock lands"
+origin paced
+mkdir -p "$root/paced"
+cp "$work/payloads/slow" "$root/paced/payload"
+printf '20000\n' > "$root/paced/payload.pace"
+dest="$work/dest/paced"
+started=$(date +%s)
+run ci_tools_curl "$dest" 120 "$base/paced/payload"
+took=$(($(date +%s) - started))
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the whole body" "$(is "$(digest_of "$dest")" "$SLOW")"
+check "it took longer than the 60 s the clock used to cut every attempt at" \
+  "$(is "$([ "$took" -gt 60 ] && echo yes)" yes)"
+check "asked once" "$(is "$(grep -c '^/paced/payload$' "$log")" 1)"
+
+echo "case: a source that stops mid-body is cut by the speed window, not by the bound"
+origin stalled
+mkdir -p "$root/stalled"
+cp "$work/payloads/slow" "$root/stalled/payload"
+printf '300000\n' > "$root/stalled/payload.stall"
+dest="$work/dest/stalled"
+started=$(date +%s)
+run ci_tools_curl "$dest" 120 "$base/stalled/payload"
+took=$(($(date +%s) - started))
+check "exits 28, curl's own timeout" "$(is "$status" 28)"
+check "says the transfer was too slow, for 30 s under 10,000 bytes a second" \
+  "$(contains "$out" "Operation too slow. Less than 10000 bytes/sec transferred the last 30 seconds")"
+check "after the 30 s window and well before the 120 s bound" \
+  "$(is "$([ "$took" -ge 30 ] && [ "$took" -lt 90 ] && echo yes)" yes)"
 
 echo "case: ghcr-mirror — the primary refuses and the copy serves the bytes"
 origin primary-refuses

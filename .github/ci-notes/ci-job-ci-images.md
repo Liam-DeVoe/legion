@@ -12,7 +12,7 @@ after its SIGTERM, with two 10 s pauses, 245 s before it fails by name. The job'
 after the last of them can fail by name: up to it, the bounds of every step before it and the
 calls themselves. The job has no service and no container, so the runner pulls nothing.
 
-- 496 s: `.github/actions/install-crane`, at the worst case `.github/ci-notes/ci.md`'s "The worst
+- 1,088 s: `.github/actions/install-crane`, at the worst case `.github/ci-notes/ci.md`'s "The worst
   case of the tool installs that read .github/scripts/ci-tools.sh" derives.
 - The copy step, by the rows of `.github/ci-images.yaml` (15 copied rows and 1 built row today).
   A built row makes no call. A copied row the package holds makes one, `crane digest` of its tag;
@@ -26,9 +26,9 @@ calls themselves. The job has no service and no container, so the runner pulls n
   + 1 to (k + 1) × 4 each start by the time k × 4 rows have ended, which is by k × 980 s, and each
   takes at most 980 s. The built row ends at once.)
 
-496 s + 3,920 s = 4,416 s, which 74 minutes (4,440 s) hold. With the rows one after another the
-same rows came to 15 × 735 s + 245 s = 11,270 s, and the limit to 197 minutes. The 25 minutes the
-job had before either end before even 2 × 980 s + 496 s, so a run whose calls each waited out
+1,088 s + 3,920 s = 5,008 s, which 84 minutes (5,040 s) hold. With the rows one after another the
+same rows would come to 15 × 735 s + 245 s = 11,270 s. The 25 minutes main
+gives the job end before even 2 × 980 s + 1,088 s, so a run whose calls each waited out
 most of their attempts could be ended by GitHub's cancellation, which names nothing, before a
 later call failed by name.
 

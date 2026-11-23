@@ -8,14 +8,14 @@ on. A value's own arithmetic stays beside the value.
 
 The job's limit must end after each wait on the network the job makes can fail by name: up to each
 step that installs, the bounds of every step before it (its own limit, or its installs where it
-sets none), the runner's pulls and the step's own installs. For this job that sum is 3,741 s, which
-63 minutes (3,780 s) hold:
+sets none), the runner's pulls and the step's own installs. For this job that sum is 4,777 s, which
+80 minutes (4,800 s) hold:
 
 - 240 s: before the first step the runner pulls the NATS service image with `docker pull`, which
   has no bound of its own and takes none from a workflow, so the job's limit is its one bound; it
   counts at twice the slowest green pull, rounded up to the minute (`.github/ci-notes/ci.md`, "The
   runner's own pulls of a job's service and container images").
-- 1,444 s: `.github/actions/install-jj`, at the worst case `.github/ci-notes/ci.md`'s "The worst
+- 2,480 s: `.github/actions/install-jj`, at the worst case `.github/ci-notes/ci.md`'s "The worst
   case of the tool installs that read .github/scripts/ci-tools.sh" derives.
 - 1,207 s: `.github/actions/install-omp`'s download of the pinned Oh My Pi, `curl --retry 3
   --retry-all-errors --max-time 300`: four attempts of 300 s, with curl's own pauses of 1, 2 and

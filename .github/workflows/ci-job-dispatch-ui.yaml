@@ -24,10 +24,10 @@ jobs:
   dispatch-ui:
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/ci-job-dispatch-ui.md#the-jobs-limit-held-to-the-installs-it-runs
-    # 308 s + 425 s + 2 x 124 s = 981 s -> 17 min.
-    timeout-minutes: 17
+    # 308 s + 425 s + 2 x 152 s = 1,037 s -> 18 min.
+    timeout-minutes: 18
     env:
-      JOB_TIMEOUT_MINUTES: 17 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 18 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

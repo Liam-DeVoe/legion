@@ -27,10 +27,10 @@ jobs:
     # pushes up to four release archives of its own beside the images. It holds the crane calls
     # of the image copy too, each of which fails by name before this limit:
     # why: .github/ci-notes/ci-job-ci-images.md#the-jobs-limit-held-to-the-crane-calls-of-the-image-copy
-    # 496 s + ceil(15 / 4) x 980 s = 4,416 s -> 74 min.
-    timeout-minutes: 74
+    # 1,088 s + ceil(15 / 4) x 980 s = 5,008 s -> 84 min.
+    timeout-minutes: 84
     env:
-      JOB_TIMEOUT_MINUTES: 74 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 84 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
