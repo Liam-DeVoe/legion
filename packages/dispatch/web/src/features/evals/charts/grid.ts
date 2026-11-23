@@ -37,6 +37,7 @@ import {
   specObject,
   specText,
 } from "./kind";
+import { rangesLine } from "./plot";
 import { type Bound, type DeclaredReading, newestByCell } from "./readings";
 
 /** One entry of a chart's `value_states`: the state a value takes from `from` up (the first entry
@@ -207,29 +208,6 @@ export interface Grid {
 export interface GridModel extends ChartModel {
   readonly grid: Grid;
   readonly series: readonly GridSeries[];
-}
-
-/** "Ranges: ..." under a grid whose cells hold a supplied interval, in the words the xy writes it:
- *  the level of each once, then the words `interval_label` gives an interval with no level; the
- *  levels left out where `interval_level_in` names the text that states them. */
-function rangesLine(spec: DeclaredSpec, readings: readonly DeclaredReading[]): string | null {
-  const intervals = readings.filter((reading) => reading.ciLow !== null && reading.ciHigh !== null);
-  if (intervals.length === 0) return null;
-  const label = specText(spec.interval_label);
-  const levelled = spec.interval_level_in === undefined;
-  const levels = levelled
-    ? [
-        ...new Set(
-          intervals.flatMap((reading) =>
-            reading.ciLevel === null ? [] : [`${Math.round(reading.ciLevel * 100)}-in-100`]
-          )
-        ),
-      ]
-    : [];
-  const unlevelled = intervals.some((reading) => reading.ciLevel === null) || !levelled;
-  const tail = unlevelled ? (label ?? (levelled ? "recorded interval" : null)) : null;
-  if (levels.length === 0 && tail === null) return null;
-  return `Ranges: ${[levels.join(", "), tail].filter((part) => part !== null && part !== "").join("; ")}.`;
 }
 
 /** A mock-up's points as readings of the grid's y series at their row and col. */

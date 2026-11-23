@@ -836,10 +836,14 @@ function itemsOf(
   };
 }
 
-/** "Ranges: ..." under a chart that draws a supplied interval: the level of each, once, then the
- *  words `interval_label` gives an interval with no level ("recorded interval" without them); the
- *  levels left out where `interval_level_in` names the text that states them. */
-function rangesLine(spec: DeclaredSpec, readings: readonly DeclaredReading[]): string | null {
+/** "Ranges: ..." under a chart that draws a supplied interval (an xy, a band, a bar, an interval,
+ *  a grid): the level of each, once, then the words `interval_label` gives an interval with no
+ *  level ("recorded interval" without them); the levels left out where `interval_level_in` names
+ *  the text that states them. */
+export function rangesLine(
+  spec: DeclaredSpec,
+  readings: readonly DeclaredReading[]
+): string | null {
   const intervals = readings.filter((reading) => reading.ciLow !== null && reading.ciHigh !== null);
   if (intervals.length === 0) return null;
   const label = specText(spec.interval_label);

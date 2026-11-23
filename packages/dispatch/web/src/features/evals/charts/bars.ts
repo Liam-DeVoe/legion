@@ -31,6 +31,7 @@ import {
   specText,
   type Tone,
 } from "./kind";
+import { rangesLine } from "./plot";
 import { type Bound, type DeclaredReading, newestByCell } from "./readings";
 
 export type BarsKind = "bar" | "interval" | "stacked-bar";
@@ -451,29 +452,6 @@ function referenceOf(value: unknown): BarsReference | null {
   return yEnd === null
     ? { label, state: markState(reference.state), type: "rule", y }
     : { label, type: "band", y, yEnd };
-}
-
-/** "Ranges: ..." under a chart that draws a supplied interval: the level of each, once, then the
- *  words `interval_label` gives an interval with no level ("recorded interval" without them); the
- *  levels left out where `interval_level_in` names the text that states them. */
-function rangesLine(spec: DeclaredSpec, readings: readonly DeclaredReading[]): string | null {
-  const intervals = readings.filter((reading) => reading.ciLow !== null && reading.ciHigh !== null);
-  if (intervals.length === 0) return null;
-  const label = specText(spec.interval_label);
-  const levelled = spec.interval_level_in === undefined;
-  const levels = levelled
-    ? [
-        ...new Set(
-          intervals.flatMap((reading) =>
-            reading.ciLevel === null ? [] : [`${Math.round(reading.ciLevel * 100)}-in-100`]
-          )
-        ),
-      ]
-    : [];
-  const unlevelled = intervals.some((reading) => reading.ciLevel === null) || !levelled;
-  const tail = unlevelled ? (label ?? (levelled ? "recorded interval" : null)) : null;
-  if (levels.length === 0 && tail === null) return null;
-  return `Ranges: ${[levels.join(", "), tail].filter((part) => part !== null && part !== "").join("; ")}.`;
 }
 
 /** What one slot draws: its value (on a facet table, the sum of its parts), its bound and
