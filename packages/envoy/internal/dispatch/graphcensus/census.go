@@ -331,6 +331,13 @@ func (r *StoreReport) Unpopulated() []string {
 // it refuses. Where the caller says the corpus holds both releases (RequireBothReleases), an empty
 // population of a kind that reports two refuses as well (EmptyReleases).
 //
+// The count of unmarked rows (KindReport.Unmarked) refuses nothing of itself; a kind refuses for
+// such rows only where it checked no marked row beside them, as above. During a roll a pod of the
+// release before writes unmarked rows by design, and the block-index tick's catch-up marks them
+// (CatchUpOwedRows), so a census taken then counts them while nothing is wrong. Only the caller
+// knows that the release before has stopped and the backfill has ended, so the caller holds the
+// count to zero: c-census's driver reads every `unmarked_rows=` line at 0 after its backfill.
+//
 // A database the store does not exist in yet (Absent) has nothing to census. The sizing is taken
 // on just such a database (R4 reads before the first migration), and the sizing refuses nothing
 // (SizingReport), so there a census with the sizing passes on the sizing alone, and a census

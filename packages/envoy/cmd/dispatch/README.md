@@ -3579,6 +3579,10 @@ It passes only when it checked more than zero rows of every kind it covers and f
 A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it, but for a tie kind of decisions, readings and asks or a kind of the one inbox that holds no row, no node and no unmarked row.
 A database that is not a store of this build holds no kind to read: where `graph_nodes` does not exist, or a migration this binary embeds is not yet applied (an earlier release's store, before this build migrates it), the census prints `census: store absent (<reason>)` and refuses, since it read nothing; with `--sizing` it runs the growth pass all the same and exits 0.
 
+The unmarked class of a kind, printed on a `census: store kind=<kind> unmarked_rows=<n>` line, refuses nothing of itself: during a roll a pod of the release before writes such rows by design, until the block-index tick's catch-up marks them (`graphcensus.CatchUpOwedRows`), so a census taken then counts them on a healthy database.
+A kind refuses for them only where it checked no marked row beside them.
+`c-census`, which stops the release before ahead of its backfill, reads every such line at 0 after it.
+
 Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, and of a kind held triple by triple each relation the store states now once, never tuple rows.
 
 `envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:

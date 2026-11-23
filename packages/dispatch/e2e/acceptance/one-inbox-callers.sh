@@ -286,8 +286,10 @@ grep_tree() {
 # setup_base: builds the base (once per commit, under a lock, in $base_dir) unless BASELINE_BINARY
 # names it, and boots it on $old_port over the head's database through e2e/run-server.sh, the
 # script dispatch:local boots the head through, so it gets the head's settings and listeners.
+# $base_dir is made first whichever build is booted: it is the server's TMPDIR and holds its log.
 setup_base() {
   local section=setup binary commit="" waited=0 pid
+  mkdir -p "$base_dir" || fail "$section" "make $base_dir" "mkdir failed"
   if [[ -n "${BASELINE_BINARY:-}" ]]; then
     binary="$BASELINE_BINARY"
     [[ "$binary" == /* ]] || binary="$PWD/$binary"
@@ -296,7 +298,6 @@ setup_base() {
   else
     commit="$(git -C "$repo" rev-parse --verify --quiet "${BASELINE_SHA}^{commit}")" ||
       fail "$section" "resolve BASELINE_SHA" "'$BASELINE_SHA' names no commit of $repo"
-    mkdir -p "$base_dir" || fail "$section" "make $base_dir" "mkdir failed"
     binary="$base_dir/dispatch-$commit"
     # The tree is taken with git archive, a read of the repository (no worktree, no checkout),
     # and built stamped with its commit as the image build stamps a server.
