@@ -150,10 +150,9 @@ func requestTokens(r *http.Request) []string {
 	if r == nil {
 		return nil
 	}
-	route := routeOf(r)
 	var tokens []string
 	for name, values := range r.Header {
-		if publicHeader(route, name) {
+		if publicHeader(r, name) {
 			continue
 		}
 		authorization := http.CanonicalHeaderKey(name) == "Authorization" || http.CanonicalHeaderKey(name) == "Proxy-Authorization"
@@ -184,12 +183,12 @@ func requestTokens(r *http.Request) []string {
 			}
 		}
 		for name, values := range r.URL.Query() {
-			if !publicField(route, name) {
+			if !publicField(r, name) {
 				tokens = append(tokens, values...)
 			}
 		}
 	}
-	return append(tokens, requestBodyValues(r, route)...)
+	return append(tokens, requestBodyValues(r)...)
 }
 
 // escapedAndNot is s, and s unescaped where that differs.
@@ -201,10 +200,10 @@ func escapedAndNot(s string) []string {
 }
 
 // requestBodyValues is each value of r's form, or string of its JSON body, under a name no contract
-// declares public on route, r's; read again through GetBody (at most requestBodyLimit); none where
+// declares public on r's route; read again through GetBody (at most requestBodyLimit); none where
 // r carries neither or cannot give its body again. A JSON string's name is the key of the object it
 // is a member of, through any arrays between; an object under a public key is read by its own keys.
-func requestBodyValues(r *http.Request, route requestRoute) []string {
+func requestBodyValues(r *http.Request) []string {
 	if r.GetBody == nil {
 		return nil
 	}
@@ -226,7 +225,7 @@ func requestBodyValues(r *http.Request, route requestRoute) []string {
 	if form {
 		parsed, _ := url.ParseQuery(string(data))
 		for name, v := range parsed {
-			if !publicField(route, name) {
+			if !publicField(r, name) {
 				values = append(values, v...)
 			}
 		}
@@ -249,7 +248,7 @@ func requestBodyValues(r *http.Request, route requestRoute) []string {
 			}
 		case map[string]any:
 			for k, e := range v {
-				walk(e, publicField(route, k))
+				walk(e, publicField(r, k))
 			}
 		}
 	}

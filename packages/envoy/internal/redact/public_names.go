@@ -18,55 +18,41 @@ type publicRequestName struct {
 	Routes              []string
 }
 
-// requestRoute is the method and escaped path of the request a value is carried by, which an
-// entry's Routes are matched against: the method in upper case, an empty one GET, and ok false for
-// a request with no URL, which is on no route.
-type requestRoute struct {
-	method, path string
-	ok           bool
-}
-
-// routeOf is r's requestRoute.
-func routeOf(r *http.Request) requestRoute {
-	if r.URL == nil {
-		return requestRoute{}
-	}
-	return requestRoute{method: strings.ToUpper(cmp.Or(r.Method, http.MethodGet)), path: r.URL.EscapedPath(), ok: true}
-}
-
-// publicHeader reports whether a header named name, on a request at route, carries a value public
-// by its contract, the name compared without case, as HTTP compares it.
-func publicHeader(route requestRoute, name string) bool {
+// publicHeader reports whether a header named name, on r, carries a value public by its contract,
+// the name compared without case, as HTTP compares it.
+func publicHeader(r *http.Request, name string) bool {
 	for _, entry := range publicRequestNames {
-		if entry.Place == "header" && strings.EqualFold(entry.Name, name) && entry.publicOn(route) {
+		if entry.Place == "header" && strings.EqualFold(entry.Name, name) && entry.publicOn(r) {
 			return true
 		}
 	}
 	return false
 }
 
-// publicField reports whether a query, form or JSON body field named name, on a request at route,
-// carries a value public by its contract.
-func publicField(route requestRoute, name string) bool {
+// publicField reports whether a query, form or JSON body field named name, on r, carries a value
+// public by its contract.
+func publicField(r *http.Request, name string) bool {
 	for _, entry := range publicRequestNames {
-		if entry.Place == "field" && entry.Name == name && entry.publicOn(route) {
+		if entry.Place == "field" && entry.Name == name && entry.publicOn(r) {
 			return true
 		}
 	}
 	return false
 }
 
-// publicOn reports whether the entry's value is public on a request at route: on every request
-// where the entry names no Routes, and otherwise only on one that one of them matches.
-func (entry publicRequestName) publicOn(route requestRoute) bool {
+// publicOn reports whether the entry's value is public on r: on every request where the entry
+// names no Routes, and otherwise only on one that one of them matches, read with r's method in
+// upper case (an empty one GET) and its escaped path; a request with no URL is on no route.
+func (entry publicRequestName) publicOn(r *http.Request) bool {
 	if len(entry.Routes) == 0 {
 		return true
 	}
-	if !route.ok {
+	if r == nil || r.URL == nil {
 		return false
 	}
-	for _, r := range entry.Routes {
-		if routeMatches(r, route.method, route.path) {
+	method, path := strings.ToUpper(cmp.Or(r.Method, http.MethodGet)), r.URL.EscapedPath()
+	for _, route := range entry.Routes {
+		if routeMatches(route, method, path) {
 			return true
 		}
 	}
