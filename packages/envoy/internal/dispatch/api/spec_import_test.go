@@ -1146,3 +1146,44 @@ func TestImportLevelRefusesAnIDTheStoreCannotHold(t *testing.T) {
 		})
 	}
 }
+
+// TestImportLevelHoldsAStatementForEachFieldItsNoteLeavesOut: an approved note's About or Supports
+// `none` is an approved relation to nothing, so the statement is written with no about and no
+// serves; a note that leaves About or Supports out supplies no approved value for it, so the
+// statement is held for that field, in one repair issue, and the node read answers 404, rather than
+// written as if the note had said `none` (D9).
+func TestImportLevelHoldsAStatementForEachFieldItsNoteLeavesOut(t *testing.T) {
+	const level = "# Level\n\n## Statements\n\n:::requirement{#a-bill-is-sent}\nA bill is sent.\n:::\n\n## Components\n\n" +
+		"| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n| billing | component | Billing | It bills each order. | none |\n"
+	for _, c := range []struct {
+		name, note, lacks string
+	}{
+		{name: "about and supports none", note: "- Kind: behavior\n- About: none\n- Supports: none\n"},
+		{name: "no about", note: "- Kind: behavior\n- Supports: none\n", lacks: "about"},
+		{name: "no supports", note: "- Kind: behavior\n- About: billing\n", lacks: "supports"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newLevelRig(t, "A level of one statement", level)
+			notes := rig.upload(t, "notes.md", "# Notes\n\n### a-bill-is-sent\n\n"+c.note)
+			rig.approveLevel(t)
+			rig.approveDocument(t, notes.ID)
+			imported := rig.imported(t, "notes.md")
+			written := slices.Sorted(slices.Values(imported.Written))
+			if c.lacks == "" {
+				if !slices.Equal(written, []string{"a-bill-is-sent", "billing"}) || len(imported.Held) != 0 || imported.RepairIssue != nil {
+					t.Errorf("the import writes %v and holds %v, want a-bill-is-sent and billing written and nothing held", written, imported.lacks())
+				}
+				node := rig.requireVersions(t, specRepo, "a-bill-is-sent", `kind="behavior"`)
+				if block := node.Versions[0].Block; strings.Contains(block, "about=") || strings.Contains(block, "serves=") {
+					t.Errorf("a-bill-is-sent is written as %q, want no about and no serves", block)
+				}
+				return
+			}
+			if want := map[string][]string{"a-bill-is-sent": {c.lacks}}; !slices.Equal(written, []string{"billing"}) || !reflect.DeepEqual(imported.lacks(), want) {
+				t.Errorf("the import writes %v and holds %v, want billing written and %v held", written, imported.lacks(), want)
+			}
+			rig.requireAbsent(t, specRepo, "a-bill-is-sent")
+			rig.requireOneRepairChild(t, []string{"a-bill-is-sent"})
+		})
+	}
+}

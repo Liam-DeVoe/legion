@@ -340,3 +340,66 @@ func TestImportRefusesALevelIDTheStoreCannotHold(t *testing.T) {
 		})
 	}
 }
+
+// A note writes each of a statement's fields, and `none` is a value: About or Supports `none` is an
+// approved relation to nothing, and the statement is written. A field its note leaves out, or writes
+// with no value, supplies nothing, so the statement is held for it as for a field the reader cannot
+// place: the level is read and imported, and the import holds the statement lacking that field and
+// writes the rest. A statement no note names is held for its kind alone, as before.
+func TestImportHoldsAStatementForEachFieldItsNoteLeavesOut(t *testing.T) {
+	const level = "# Level\n\n## Statements\n\n:::requirement{#a-bill-is-sent}\nA bill is sent.\n:::\n\n## Components\n\n" +
+		"| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n| billing | component | Billing | It bills each order. | none |\n"
+	for _, c := range []struct {
+		name, note string
+		lacks      []string
+	}{
+		{name: "about and supports none", note: "- Kind: behavior\n- About: none\n- Supports: none\n"},
+		{name: "no about", note: "- Kind: behavior\n- Supports: none\n", lacks: []string{"about"}},
+		{name: "no supports", note: "- Kind: behavior\n- About: billing\n", lacks: []string{"supports"}},
+		{name: "an about with no value", note: "- Kind: behavior\n- About:\n- Supports: none\n", lacks: []string{"about"}},
+		{name: "neither about nor supports", note: "- Kind: behavior\n", lacks: []string{"about", "supports"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			parsed, err := ParseLevel(level, "# Notes\n\n### a-bill-is-sent\n\n"+c.note)
+			if err != nil {
+				t.Fatalf("parse the level: %v", err)
+			}
+			imported, err := importLevel(storetest.Open(t), issue(1), parsed)
+			if err != nil {
+				t.Fatalf("import the level: %v", err)
+			}
+			var written []string
+			for _, node := range imported.Written {
+				written = append(written, node.ID)
+			}
+			slices.Sort(written)
+			held := map[string][]string{}
+			for _, hold := range imported.Held {
+				held[hold.ID] = hold.Lacks
+			}
+			if c.lacks == nil {
+				if !slices.Equal(written, []string{"a-bill-is-sent", "billing"}) || len(held) != 0 {
+					t.Errorf("the import writes %v and holds %v, want a-bill-is-sent and billing written and nothing held", written, held)
+				}
+				return
+			}
+			if want := map[string][]string{"a-bill-is-sent": c.lacks}; !slices.Equal(written, []string{"billing"}) || !reflect.DeepEqual(held, want) {
+				t.Errorf("the import writes %v and holds %v, want billing written and %v held", written, held, want)
+			}
+		})
+	}
+
+	t.Run("no note", func(t *testing.T) {
+		parsed, err := ParseLevel(level, "# Notes\n")
+		if err != nil {
+			t.Fatalf("parse the level: %v", err)
+		}
+		imported, err := importLevel(storetest.Open(t), issue(1), parsed)
+		if err != nil {
+			t.Fatalf("import the level: %v", err)
+		}
+		if len(imported.Held) != 1 || imported.Held[0].ID != "a-bill-is-sent" || !slices.Equal(imported.Held[0].Lacks, []string{"kind"}) {
+			t.Errorf("the import holds %+v, want a-bill-is-sent held for its kind alone", imported.Held)
+		}
+	})
+}
