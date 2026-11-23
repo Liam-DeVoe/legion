@@ -72,14 +72,21 @@ const (
 	StepWaitAgent StepWait = "agent"
 )
 
-// The kinds of act a task stands at (TaskPlace.Kind), which are the kinds the count of starts keys
-// a place by (StepPlace.Kind) and a step record names: a step of the task, from place 1, and the
-// task's retro and its merge, at place 0, which no plan names. Each is the word contracts gives
-// the kind of a step record (steprecord). A task at no act has the kind "" at place 0.
+// The kinds of act a task stands at (TaskPlace.Kind). A step of the task, from place 1, and the
+// task's retro and its merge, at place 0, which no plan names, are the kinds the count of starts
+// keys a place by (StepPlace.Kind) and a step record names: each is the word contracts gives the
+// kind of a step record (steprecord). A task with a sub-owner stands at its parts, then at its
+// report, each at place 0: the act of its sub-owner, which is no step, so no step record names
+// either. A task at no act has the kind "" at place 0.
 const (
 	PlaceStep  = steprecord.KindStep
 	PlaceRetro = steprecord.KindRetro
 	PlaceMerge = steprecord.KindMerge
+	// PlaceParts is where the sub-owner of a task writes, gives and watches the tasks that are its
+	// parts, and PlaceReported is where its sub-owner reported the task and the join of its parts
+	// runs.
+	PlaceParts    = "parts"
+	PlaceReported = "reported"
 )
 
 // PlanVersion is one version of the plan of an issue at one generation. The highest version of a
@@ -97,7 +104,7 @@ type PlanVersion struct {
 }
 
 // TaskPlace is where a task stands: at a step (PlaceStep, Position from 1), at its retro or its
-// merge (Position 0), or at no act (Kind "", Position 0).
+// merge, at its parts or its report (Position 0), or at no act (Kind "", Position 0).
 type TaskPlace struct {
 	Kind     string
 	Position int
@@ -109,9 +116,10 @@ func (p TaskPlace) StepPlace(task string) StepPlace {
 	return StepPlace{Task: task, Kind: p.Kind, Place: p.Position}
 }
 
-// Started says whether a task standing at p has started its work: it stands at a step, its retro
-// or its merge. A task at no act has not: it waits there for its first step, and a stop keeps it
-// there (StopTask keeps the place), so a task stopped at no act is one whose work never ran.
+// Started says whether a task standing at p has started its work: it stands at a step, its retro,
+// its merge, its parts or its report. A task at no act has not: it waits there for its first step,
+// and a stop keeps it there (StopTask keeps the place), so a task stopped at no act is one whose
+// work never ran.
 func (p TaskPlace) Started() bool {
 	return p != TaskPlace{}
 }
@@ -121,7 +129,7 @@ func (p TaskPlace) valid() bool {
 	switch p.Kind {
 	case PlaceStep:
 		return p.Position >= 1
-	case "", PlaceRetro, PlaceMerge:
+	case "", PlaceRetro, PlaceMerge, PlaceParts, PlaceReported:
 		return p.Position == 0
 	}
 	return false
@@ -147,11 +155,13 @@ type ReturnCounts struct {
 // GitHub refused as a conflict, into the branch the join of its needs is made on: its join branch
 // where it has one (StoredPlan.BaseOf), else its branch (SetJoinConflicts). JoinUnmerged says
 // GitHub refused as a conflict the merge of its join branch into its branch, which the task's own
-// work there makes at a start again (SetJoinUnmerged). StartReason is why the step the task stands
-// at was started: a start again at its first step, or a move back to an earlier step
+// work there makes at a start again (SetJoinUnmerged). PartsConflicts is the id of each part of a
+// task with a sub-owner whose join into the task's branch GitHub refused as a conflict, at the last
+// join of its parts: the join of its needs is JoinConflicts' alone. StartReason is why the step the
+// task stands at was started: a start again at its first step, or a move back to an earlier step
 // (SetStartReason), "" for a first start and after any later move: the step that starts after a
-// wait reads it (the workflow's startAfterWait). Needs and JoinConflicts are nil where they hold
-// none.
+// wait reads it (the workflow's startAfterWait). Needs, JoinConflicts and PartsConflicts are nil
+// where they hold none.
 type PlanTask struct {
 	Issue       string
 	Generation  uint64
@@ -173,6 +183,7 @@ type PlanTask struct {
 	Branch         string
 	JoinConflicts  []string
 	JoinUnmerged   bool
+	PartsConflicts []string
 	HoldReason     HoldReason
 	StepWait       StepWait
 	StepWaitSince  *time.Time
@@ -781,8 +792,8 @@ const planTaskColumns = `plan_tasks.issue, plan_tasks.generation, plan_tasks.tas
 	plan_tasks.block_text, plan_tasks.needs, plan_tasks.part_of, plan_tasks.owner_role, plan_tasks.merges, plan_tasks.steps_by_default,
 	plan_tasks.state, plan_tasks.stopped_reason, plan_tasks.running_kind, plan_tasks.position,
 	plan_tasks.pass, plan_tasks.rounds, plan_tasks.conflict_rounds, plan_tasks.backward_moves, plan_tasks.cap_told,
-	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.hold_reason, plan_tasks.step_wait,
-	plan_tasks.step_wait_since, plan_tasks.start_reason`
+	plan_tasks.branch, plan_tasks.join_conflicts, plan_tasks.join_unmerged, plan_tasks.parts_conflicts, plan_tasks.hold_reason,
+	plan_tasks.step_wait, plan_tasks.step_wait_since, plan_tasks.start_reason`
 
 // scanPlanTasks reads every row of a query of planTaskColumns and closes rows.
 func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
@@ -795,12 +806,16 @@ func scanPlanTasks(rows pgx.Rows) ([]PlanTask, error) {
 		if err := rows.Scan(&task.Issue, &generation, &task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf,
 			&task.OwnerRole, &task.Merges, &task.StepsByDefault, &task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
 			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold,
-			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.HoldReason, &task.StepWait, &task.StepWaitSince, &task.StartReason); err != nil {
+			&task.Branch, &task.JoinConflicts, &task.JoinUnmerged, &task.PartsConflicts, &task.HoldReason, &task.StepWait, &task.StepWaitSince,
+			&task.StartReason); err != nil {
 			return nil, err
 		}
 		task.Generation = uint64(generation)
 		if len(task.JoinConflicts) == 0 {
 			task.JoinConflicts = nil
+		}
+		if len(task.PartsConflicts) == 0 {
+			task.PartsConflicts = nil
 		}
 		if len(task.Needs) == 0 {
 			task.Needs = nil
@@ -884,15 +899,16 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 // CarryPlan copies the plan of issue at generation from to generation to: every version, every task
 // and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
 // so each task keeps its state, its hold's reason, its place, its step's wait and since when, its
-// counts, its branch and the needs whose join conflicted, and the generation every name it gave a
-// task (AssignTaskBranch), since the run goes on in those branches. Without carried, the plan
-// starts from its start: each task waits at no act with no hold, no step wait, every count 0 and
-// no branch, and to has given no name yet. The names from gave stay given to the issue
-// (AssignTaskBranch reads them at every generation), so no task of a plan of several takes one of
-// them, the issue's branch among them, while the one task of a plan of one takes the issue's
-// branch, as an issue always did. Neither copies a count of starts, which step_starts keeps by
-// place alone. Where from has no plan rows it writes nothing, so an issue that ran before plans
-// goes on as it did; a generation to that holds a plan already is refused.
+// counts, its branch and the needs and the parts whose join conflicted, and the generation every
+// name it gave a task (AssignTaskBranch), since the run goes on in those branches. Without carried,
+// the plan starts from its start: each task waits at no act with no hold, no step wait, every
+// count 0, no branch and no part whose join conflicted, and to has given no name yet. The names
+// from gave stay given to the issue (AssignTaskBranch reads them at every generation), so no task
+// of a plan of several takes one of them, the issue's branch among them, while the one task of a
+// plan of one takes the issue's branch, as an issue always did. Neither copies a count of starts,
+// which step_starts keeps by place alone. Where from has no plan rows it writes nothing, so an
+// issue that ran before plans goes on as it did; a generation to that holds a plan already is
+// refused.
 func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
 	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
 	if from == to {
@@ -916,10 +932,10 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 	if carried {
 		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason)
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, parts_conflicts, start_reason)
 			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, steps_by_default,
 			state, stopped_reason, hold_reason, running_kind, position, step_wait, step_wait_since, pass, rounds, conflict_rounds,
-			backward_moves, cap_told, branch, join_conflicts, join_unmerged, start_reason
+			backward_moves, cap_told, branch, join_conflicts, join_unmerged, parts_conflicts, start_reason
 			from plan_tasks where issue = $1 and generation = $2`
 		names = []string{`insert into plan_branches (issue, generation, branch)
 			select issue, $3, branch from plan_branches where issue = $1 and generation = $2 on conflict do nothing`}
