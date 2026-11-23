@@ -34,7 +34,14 @@ its default branch as GitHub names it, when it first records the issue, and keep
 change of the issue's repository in Dispatch is not applied, and the daemon says so on the issue.
 A change that sends no event of the issue, as a move of the project's default repository does,
 and that lands between that read and the record, is such a later change, said on the issue at
-its next event or the next boot's listing.
+its next event or the next boot's listing. A change of the issue's own repository sends an event,
+and once the daemon has applied that event, no listing read before it records the issue: when the
+daemon applies the edit's event before it records the issue, the edit is applied, and the issue is
+recorded where Dispatch resolves it at that event or later. The daemon prepares an event, GitHub's
+answers for its repository included, before it applies it, so a listing read before the edit can
+still record the issue while the edit's event is being prepared. Then the issue is recorded on the
+repository that listing showed, and the edit is a later change, said on the issue when its event
+applies.
 An issue whose repository resolves to none, or to one a role App is not installed on, is not
 admitted, and the daemon says why on the issue. A claim an operator starts on an issue the
 workflow does not record works the repository Dispatch resolves for that issue, read at the
@@ -934,6 +941,8 @@ What each part is for:
   runs no ladder leaves the daemon nothing to wait for.
   `LEGION_STALL_CALL_GRACE_MS` is the grace over a deadline a call declared for itself, 300000
   (5 minutes). `LEGION_STALL_STEP_MS` is the gap between the ladder's steps, 120000 (2 minutes).
+  The worker checks its open calls every quarter of that gap, but never more often than once a
+  second and never less often than every 5 seconds, so the default gap gives a check every 5 seconds.
   Four more variables of the same family set the worker's phase reminder rather than its call
   watch: `LEGION_STALL_REMINDER_MS` (300000, how long after a settle that earned a reminder the
   reminder is delivered), `LEGION_STALL_WAITING_MS` (900000, what a WAITING reply buys),
@@ -1285,7 +1294,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
-   or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
+   or a resumed worker, runs the new one. At a release that moves the daemon API contract, the
+   daemon moves its own controller (`controller: daemon`) for you where it knows a plugin pair to
+   install: it relaunches the controller at once onto the release's plugins, and that relaunch
+   replaces the controller's pod when the pod runs another image. `legion config check` prints the
+   gap that leaves it relaunching none. To move a long-running agent over now, suspend and resume
    its claim:
 
    ```sh
@@ -1309,12 +1322,12 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    role of an open issue live and idle between phases and while the root waits on a person. A child
-   that left the workflow and is set back to `todo` gets its own architect and its planner back,
-   on their kept sessions, at its next first phase start, and each other role at the start of its
-   phase. A claim whose session supervise's `forgetSession` has dropped comes back in a new
-   session instead. The daemon suspends or ends claims only when an issue leaves the workflow,
-   when a claim moves to another tree, or for a production check after the issue is done. A phase
-   start gives its task to that live claim. At boot the daemon
+   that left the workflow and is set back to `todo` gets its own architect and the agent of its
+   first step back, on their kept sessions, at its next first phase start, and each other role at
+   the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
+   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
+   workflow, when a claim moves to another tree, or for a production check after the issue is done.
+   A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
    operator-suspended architect waits until the operator resumes it. A notice for a child whose
