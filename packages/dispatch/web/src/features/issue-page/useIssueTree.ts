@@ -216,8 +216,8 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * Each filter's view read (`viewQuery`) is watched here and never sent: `ViewReadProvider`
  * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds,
  * with the decisions read, is set on the issue's node (`TreeNode.views`), which `presetView` and
- * `filterSignals` draw a filter from (R4). The root keeps its identity while neither the tree nor
- * a held view changes.
+ * `filterSignals` draw a filter from, its rows and its count. The root keeps its identity while
+ * neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address its chips name and its
  * words cite is read in one batched request (`referenceTargetsQuery`; a tree holding more
