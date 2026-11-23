@@ -90,15 +90,16 @@ const probeValue = "it's a 'quoted' value"
 // format-patch, whatchanged, blame and annotate that read through the diff machinery, a status, a
 // checkout away and back, a ref update, one that names the planted hooks itself in front of its
 // subcommand, which the reviewer's own settings after it must override, and a configuration read
-// with global options in front of it.
-func reviewCommands(base, head, plantedHooks string, embedded bool) [][]string {
+// with global options in front of it. whatchanged is its words as the git under test runs it
+// (whatchangedWords).
+func reviewCommands(base, head, plantedHooks string, embedded bool, whatchanged []string) [][]string {
 	blamed, at := "notes.txt", head
 	if embedded {
 		blamed, at = "../notes.txt", base
 	}
 	commands := [][]string{
 		{"diff", base, at}, {"diff", base}, {"log", "-p", "-1"}, {"show", at},
-		{"format-patch", "-1", "--stdout", at}, {"whatchanged", "-p", "-1"}, {"blame", blamed},
+		{"format-patch", "-1", "--stdout", at}, whatchanged, {"blame", blamed},
 		{"annotate", blamed}, {"status"},
 	}
 	if !embedded {
@@ -109,6 +110,28 @@ func reviewCommands(base, head, plantedHooks string, embedded bool) [][]string {
 		[]string{"-c", "core.hooksPath=" + plantedHooks, "branch", "--force", "review-probe", at},
 		[]string{"-C", ".", "-c", "legion.probe=" + probeValue, "--no-pager", "config", "legion.probe"},
 	)
+}
+
+// whatchangedRefusal is what a git that deprecates whatchanged answers a run of it that does not
+// name --i-still-use-this (git 2.56.1 does; git 2.43 has no such option and runs it).
+const whatchangedRefusal = "refusing to run without --i-still-use-this"
+
+// whatchangedWords is `whatchanged -p -1` as git runs it in dir: with --i-still-use-this where
+// git refuses it without, and as it is where git runs it. git reads that option wherever it
+// stands, so the reviewer's --no-ext-diff and --no-textconv in front of it take nothing away. It
+// answers too whether this git refuses the bare words.
+func whatchangedWords(t *testing.T, run fixturegit.Runner, dir, git string) ([]string, bool) {
+	t.Helper()
+	bare := []string{"whatchanged", "-p", "-1"}
+	output, err := run.Try(dir, append([]string{git}, bare...)...)
+	switch {
+	case err == nil:
+		return bare, false
+	case strings.Contains(output, whatchangedRefusal):
+		return []string{"whatchanged", "--i-still-use-this", "-p", "-1"}, true
+	}
+	t.Fatalf("git whatchanged -p -1 in %s: %v\n%s", dir, err, output)
+	return nil, false
 }
 
 // envGit is the git first on the PATH env names, which the row runs as the reviewer's own.
@@ -254,6 +277,8 @@ func TestReviewerGitReadsNoRepositoryConfiguration(t *testing.T) {
 	setup.Run(origin, git, "commit", "--quiet", "--message", "head")
 	head := setup.Run(origin, git, "rev-parse", "HEAD")
 	setup.Run(origin, git, "checkout", "--quiet", "main")
+	// The review's whatchanged as this git runs it, read in origin at main, which holds no plant.
+	whatchanged, deprecated := whatchangedWords(t, setup, origin, git)
 
 	// The shared clone every other role works in, and what another role's run of the head leaves
 	// there and in the configuration the machine's roles share.
@@ -368,7 +393,7 @@ func TestReviewerGitReadsNoRepositoryConfiguration(t *testing.T) {
 		{"the review clone", reviewDir, false},
 		{"the repository the head commits", embedded, true},
 	} {
-		outputs := runReview(t, exposed, place.dir, reviewCommands(base, head, sharedHooks, place.embedded))
+		outputs := runReview(t, exposed, place.dir, reviewCommands(base, head, sharedHooks, place.embedded, whatchanged))
 		if ran := markersLeft(t, markers); !slices.Equal(ran, plantedPrograms) {
 			t.Fatalf("in %s a git with none of the reviewer's settings ran the planted %v, want all of %v, so this row could not see one run there: %v",
 				place.name, ran, plantedPrograms, outputs)
@@ -397,7 +422,7 @@ func TestReviewerGitReadsNoRepositoryConfiguration(t *testing.T) {
 	} {
 		t.Run(runtime.name, func(t *testing.T) {
 			env := runtime.env(t)
-			commands := reviewCommands(base, head, sharedHooks, false)
+			commands := reviewCommands(base, head, sharedHooks, false, whatchanged)
 			outputs := runReview(t, env, reviewDir, commands)
 			if diff := outputs["diff "+base+" "+head]; !strings.Contains(diff, "+head") {
 				t.Fatalf("the reviewer's git diff of the change printed no +head line, so it read nothing:\n%s", diff)
@@ -413,7 +438,7 @@ func TestReviewerGitReadsNoRepositoryConfiguration(t *testing.T) {
 			if ran := markersLeft(t, markers); len(ran) > 0 {
 				t.Errorf("the reviewer's git in its clone ran the planted %v: %v", ran, outputs)
 			}
-			outputs = runReview(t, env, embedded, reviewCommands(base, head, sharedHooks, true))
+			outputs = runReview(t, env, embedded, reviewCommands(base, head, sharedHooks, true, whatchanged))
 			if log := outputs["log -p -1"]; !strings.Contains(log, "+base") {
 				t.Fatalf("the reviewer's git log in the repository the head commits printed no +base line, so it read nothing:\n%s", log)
 			}
@@ -430,6 +455,19 @@ func TestReviewerGitReadsNoRepositoryConfiguration(t *testing.T) {
 			}
 			if ran := markersLeft(t, markers); len(ran) > 0 {
 				t.Fatalf("a reviewer's git log that names --textconv or --ext-diff ran the planted %v", ran)
+			}
+			// On a git that runs whatchanged only with --i-still-use-this, the reviewer's git
+			// leaves git's own refusal of the bare words as it is: it adds no option of its own,
+			// so a git with no such option takes its words as they come, and the refusal runs no
+			// planted program either.
+			if deprecated {
+				output, err := (fixturegit.Runner{TB: t, Env: env}).Try(reviewDir, envGit(t, env), "whatchanged", "-p", "-1")
+				if err == nil || !strings.Contains(output, whatchangedRefusal) {
+					t.Errorf("the reviewer's git whatchanged -p -1 on a git that deprecates it = %v, want git's own refusal:\n%s", err, output)
+				}
+				if ran := markersLeft(t, markers); len(ran) > 0 {
+					t.Fatalf("a reviewer's git whatchanged that git refused ran the planted %v", ran)
+				}
 			}
 		})
 	}

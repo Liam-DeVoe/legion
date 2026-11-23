@@ -31,7 +31,10 @@ import (
 // --no-ext-diff and --no-textconv, which no configuration can take back: every one but
 // format-patch runs a driver's command or its text conversion by default (measured with git 2.43:
 // diff runs the command, and log, show, whatchanged, blame and annotate the text conversion), and
-// format-patch takes both flags too. A caller's own --ext-diff or --textconv after them would take
+// format-patch takes both flags too. A git that deprecates whatchanged (git 2.56.1 does) runs it
+// only with --i-still-use-this, which git reads wherever it stands, so a reviewer that passes it
+// keeps both flags in front of it; the reviewer's git adds no such option itself, and a bare
+// whatchanged gets git's own refusal. A caller's own --ext-diff or --textconv after them would take
 // them back, so the reviewer's git refuses a command of those that names either. On the tmux
 // runtime this is the shim InstallReviewGit writes, first on the reviewer's PATH; in a pod the
 // image's git wrapper (packages/daemon/docker/git), first on every role's PATH, for
