@@ -15,7 +15,7 @@ import (
 // start StartFill takes), in a goroutine of its own: its events wake is the test's (Wake), signalled
 // where the listener hub's wake on the events channel would be, its lines are logged at debug level
 // as JSON for the test to read (Log, Lines, Logged, AwaitLine), and it runs until the test stops
-// it (Stop) or ends.
+// it (Stop, or Cancel and a wait of the test's own on Stopped) or ends.
 type Fill struct {
 	events  chan struct{}
 	logs    *logtest.Buffer
@@ -51,19 +51,33 @@ func (f *Fill) Wake() {
 	}
 }
 
-// Stop ends the fill's context, as a serving process's stop does, and waits, through the shared
-// wait, for Run to return. Its failure carries the fill's log.
+// Stop ends the fill's context, as a serving process's stop does (Cancel), and waits, through the
+// shared wait, for Run to return (Stopped). Its failure carries the fill's log.
 func (f *Fill) Stop(t testing.TB) {
 	t.Helper()
-	f.cancel()
+	f.Cancel()
 	testwait.Until(t, "the keyword fill to return after its stop", func() (string, bool) {
-		select {
-		case <-f.stopped:
+		if f.Stopped() {
 			return "", true
-		default:
-			return f.Log(), false
 		}
+		return f.Log(), false
 	})
+}
+
+// Cancel ends the fill's context, as a serving process's stop does, and returns at once, for a
+// test whose wait for Run to return is its own and names what it reads (Stopped).
+func (f *Fill) Cancel() {
+	f.cancel()
+}
+
+// Stopped is whether Run has returned.
+func (f *Fill) Stopped() bool {
+	select {
+	case <-f.stopped:
+		return true
+	default:
+		return false
+	}
 }
 
 // Log is every line the fill has logged, for a failure to show.
