@@ -8,9 +8,9 @@ rests on. A value's own arithmetic stays beside the value.
 
 The slowest green run of this job in the 20 merge-group runs `.github/scripts/network-install.sh`'s
 bounds were measured on (44633135919 to 44668680855) took 217 s, job 136018339483. The job runs
-two installs through that script: Claude Code's `bun add` in `.github/actions/install-claude-code`
-and the frozen install. Each can take 425 s on a stalled registry before the script fails it by
-name: three attempts of bun's 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses.
-So the limit is 217 s + 850 s = 1,067 s, rounded up to 18 minutes. The ten minutes the job had
-would end a stalled install in GitHub's cancellation, which names nothing, before the script
-failed it by name.
+three installs through that script: Claude Code's `bun add` in `.github/actions/install-claude-code`,
+the frozen install, and the pull of the NATS image the reply-grant row starts (docker's bound is
+120 s too). Each can take 425 s on a stalled registry before the script fails it by name: three
+attempts of 120 s, each killed 15 s after its SIGTERM, with two 10 s pauses. So the limit is
+217 s + 1,275 s = 1,492 s, rounded up to 25 minutes. The ten minutes the job had would end a
+stalled install in GitHub's cancellation, which names nothing, before the script failed it by name.

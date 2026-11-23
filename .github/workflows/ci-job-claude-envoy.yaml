@@ -31,10 +31,10 @@ jobs:
   claude-envoy:
     runs-on: ubuntu-24.04-arm
     # why: .github/ci-notes/ci-job-claude-envoy.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
-    # 217 s + 2 x 425 s = 1,067 s -> 18 min.
-    timeout-minutes: 18
+    # 217 s + 3 x 425 s = 1,492 s -> 25 min.
+    timeout-minutes: 25
     env:
-      JOB_TIMEOUT_MINUTES: 18 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 25 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,9 +65,10 @@ jobs:
         # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), as the
         # envoy-client job pulls it: tests/agent-stream-reply-grant.test.ts starts it with an
         # authorization of its own (packages/envoy-client/test/nats-server.ts, NATS_IMAGE). The
-        # registry is this repository's own, so a failed pull is a fault of this repository. Show
-        # it, do not retry it.
-        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        # registry is this repository's own, so a failed pull is a fault of this repository and is
+        # shown: network-install.sh tries again only an attempt that its bound for docker cut, and
+        # fails any other at once, with docker's own error above its own.
+        run: .github/scripts/network-install.sh docker -- docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
       # zsh is missing; the runner image has no zsh. .github/actions/install-zsh installs Ubuntu's
