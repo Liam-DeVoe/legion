@@ -3126,24 +3126,29 @@ func (e *Engine) stopLostRoles(ctx context.Context, tx pgx.Tx) error {
 		if issue.Project != e.cfg.Project || issue.Phase == phase.Done || record.OutOfWorkflow(issue.Status) {
 			continue
 		}
-		w, err := e.walk(ctx, tx, issue)
+		// Each task of the run is read on its own copy (viewsOf): a plan of several tasks has no
+		// one walk, and each task's lost step is stopped where that task stands.
+		views, walks, err := e.viewsOf(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
-		if planHold(issue, w.Stored) {
-			continue
-		}
-		lost, ok := w.lostStep(e.cfg.Deployment)
-		if !ok {
-			continue
-		}
-		refusal, err := e.stopLostRole(ctx, tx, issue, w, lost, stepStopped)
-		if err != nil {
-			return err
-		}
-		if refusal != nil {
-			e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
-				"issue", issue.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
+		for at, view := range views {
+			w := walks[at]
+			if planHold(view, w.Stored) {
+				continue
+			}
+			lost, ok := w.lostStep(e.cfg.Deployment)
+			if !ok {
+				continue
+			}
+			refusal, err := e.stopLostRole(ctx, tx, view, w, lost, stepStopped)
+			if err != nil {
+				return err
+			}
+			if refusal != nil {
+				e.logOnCommit(ctx, "workflow: a task whose step names a role the deployment no longer defines is not stopped where it stands",
+					"issue", view.Key, "task", w.Task, "step", lost.Position, "reason", refusal.Message)
+			}
 		}
 	}
 	return nil

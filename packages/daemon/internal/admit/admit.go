@@ -677,17 +677,19 @@ type phaseWorker struct {
 //
 // An issue whose key yields no claim token has no run to read, so it is passed over rather
 // than failing the whole fact, as the wait reconcile passes over such a root (workflow's
-// ReconcileAwaiting). A claim that works two of the issue's steps is one candidate.
-func (a *Admission) phaseWorkersOf(project string, issue record.Issue, byKey map[string]record.Issue,
+// ReconcileAwaiting). A claim that works two of the issue's steps is one candidate. Each
+// candidate's issue is the copy its step is given its work on (workflow.StepCopy), read in tx, so
+// the start a repair composes for the step of one task of a plan of several is that task's.
+func (a *Admission) phaseWorkersOf(ctx context.Context, tx pgx.Tx, project string, issue record.Issue, byKey map[string]record.Issue,
 	facts record.LineFacts, entries map[record.PhaseRole]record.PhaseEntry,
-) []phaseWorker {
+) ([]phaseWorker, error) {
 	steps := workflow.OpenStepsOf(issue)
 	if len(steps) == 0 || !record.AtWork(issue, facts.Gates[issue.Tree]) {
-		return nil
+		return nil, nil
 	}
 	root, rooted := byKey[issue.Tree]
 	if !rooted || root.Lingers() {
-		return nil
+		return nil, nil
 	}
 	var workers []phaseWorker
 	for _, step := range steps {
@@ -695,15 +697,21 @@ func (a *Admission) phaseWorkersOf(project string, issue record.Issue, byKey map
 		if err != nil || slices.ContainsFunc(workers, func(worker phaseWorker) bool { return worker.token == token }) {
 			continue
 		}
-		workers = append(workers, phaseWorker{issue: workflow.IssueAtStep(issue, step), root: root, role: step.Role, token: token})
+		standing, err := workflow.StepCopy(ctx, a.store, tx, issue, step)
+		if err != nil {
+			return nil, err
+		}
+		workers = append(workers, phaseWorker{issue: standing, root: root, role: step.Role, token: token})
 	}
-	return workers
+	return workers, nil
 }
 
 // phaseWorkers is, of candidates, every one phaseWorkersOf selects, with that role's run: the
 // candidates of the tick's silent list (silentWorkers). The phases rows the claims are read from
 // are one batched read (workerEntries) and the runs one batched record.RoleRuns call, never a
-// call per candidate, because a tick runs over the whole project.
+// call per candidate, because a tick runs over the whole project. The one read made for each
+// selected worker is its step's copy (workflow.StepCopy), the read of its issue's plan rows that
+// names the step's task.
 func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []record.Issue,
 	byKey map[string]record.Issue, facts record.LineFacts,
 ) ([]phaseWorker, map[claim.Token]record.RoleRun, error) {
@@ -718,7 +726,11 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 	var workers []phaseWorker
 	var keys []record.RoleRunKey
 	for _, issue := range candidates {
-		for _, worker := range a.phaseWorkersOf(project, issue, byKey, facts, entries) {
+		selected, err := a.phaseWorkersOf(ctx, tx, project, issue, byKey, facts, entries)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, worker := range selected {
 			workers = append(workers, worker)
 			keys = append(keys, record.RoleRunKey{Token: worker.token, Issue: issue.Key, Role: worker.role, Generation: issue.Generation})
 		}
@@ -3116,7 +3128,11 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 	}
 	for _, c := range candidates {
 		if !c.architectOnly {
-			for _, worker := range a.phaseWorkersOf(project, c.issue, byKey, facts, read.entries) {
+			selected, err := a.phaseWorkersOf(ctx, tx, project, c.issue, byKey, facts, read.entries)
+			if err != nil {
+				return slotReading{}, err
+			}
+			for _, worker := range selected {
 				hold(worker, c.admittedAt)
 			}
 		}
