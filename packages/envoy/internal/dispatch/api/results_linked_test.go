@@ -62,6 +62,7 @@ func recordStored(t *testing.T, handler http.Handler, issue, check, commit strin
 // links were read, and nothing is refused: GitHub proved nothing about the issue's own
 // repository.
 func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
+	t.Parallel()
 	const (
 		// toolsMerge is the commit acme/tools#9 merged into main as, and unheldCommit one no
 		// repository holds.
@@ -120,6 +121,7 @@ func TestAFailedReadOfTheIssuesOwnRepositoryStillReadsTheLinks(t *testing.T) {
 // read would name no pull request for such a commit on any read, and the result would stand at
 // another commit for good.
 func TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository(t *testing.T) {
+	t.Parallel()
 	// pushedCommit is a commit acme/tools holds and acme/widgets does not.
 	const pushedCommit = "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c"
 	linked := &linkedGitHub{
@@ -174,6 +176,7 @@ func TestABeforeMergeResultAtALinkedCommitIsReadThroughThatRepository(t *testing
 // say about a commit of acme/tools, and read through it the result would stand unknown, with the
 // reason that Dispatch cannot read the repository, for good.
 func TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository(t *testing.T) {
+	t.Parallel()
 	// oldCommit is a commit acme/tools holds that no pull request heads any longer.
 	const oldCommit = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
 	linked := &linkedGitHub{
@@ -211,6 +214,7 @@ func TestABeforeMergeResultAtALinkedCommitIsDecidedByThatRepository(t *testing.T
 // and the last left unread: the result is refused, the refusal names the repositories it asked
 // and not the one it left, and says how many linked pull requests the bound left unread.
 func TestARecordReadsAtMostTheBoundOfLinkedPullRequests(t *testing.T) {
+	t.Parallel()
 	const commit = "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d"
 	linked := &linkedGitHub{held: map[string][]string{}, pulls: map[string]string{}}
 	var repos, urls []string
@@ -268,6 +272,7 @@ func TestARecordReadsAtMostTheBoundOfLinkedPullRequests(t *testing.T) {
 // a commit acme/widgets does not hold is stored, taken to be acme/widgets', and no pull request
 // of acme/elsewhere is read past that one answer.
 func TestManyLinksOfARepositoryDispatchCannotReadStoreTheResult(t *testing.T) {
+	t.Parallel()
 	const (
 		commit = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
 		links  = linkedPullRequestReads + 2
@@ -315,6 +320,7 @@ func TestManyLinksOfARepositoryDispatchCannotReadStoreTheResult(t *testing.T) {
 // The negative control is the start before it dropped such a pair: the record called the link's
 // repository `acme/.git`, asked GitHub nothing about it and named it as set aside.
 func TestALinkWhoseRenamePairGitHubCannotHoldIsReadUnderItsOwnName(t *testing.T) {
+	t.Parallel()
 	const commit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	linked := &linkedGitHub{held: map[string][]string{"acme/widgets": {headCommit}}, pulls: map[string]string{}}
 	options := linkedRepositoriesOptions(t, linked)
@@ -382,6 +388,7 @@ func TestALinkWhoseRenamePairGitHubCannotHoldIsReadUnderItsOwnName(t *testing.T)
 // The negative control is a dry run that asks no repository about the commit: it answers 200 in
 // the refused row.
 func TestAResultsDryRunJudgesALinkedCommitAsTheRecordDoes(t *testing.T) {
+	t.Parallel()
 	// linkedCommit is a commit acme/tools holds and acme/widgets does not.
 	const linkedCommit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	for _, row := range []struct {

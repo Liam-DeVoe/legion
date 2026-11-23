@@ -84,6 +84,7 @@ func seedAttributedHead(t *testing.T, attributor *delivery.Attributor, pool *sto
 // and that facet_counts count each facet with every other facet and the search applied and its own
 // selection ignored, while color_counts ignore every facet.
 func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
@@ -207,6 +208,7 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 // to acme/arch's api and one on an issue attached to acme/docs' docs each carry their component,
 // both are counted, and selecting the second source's component selects its pull request.
 func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
@@ -341,6 +343,7 @@ func TestTheTimelineMarksAPullRequestWhoseIssueIsNotKnown(t *testing.T) {
 // value under each colour-by facet, so newDeliveryRow must give each of them one, a placeholder
 // where the pull request has none (no issue, no session).
 func TestNewDeliveryRowGivesEveryColourFacetAValue(t *testing.T) {
+	t.Parallel()
 	bare := newDeliveryRow(delivery.DeliveryPRView{Repo: "acme/widgets", Author: "octocat", Components: []string{}})
 	for _, facet := range deliveryColorFacets {
 		if len(bare.values[facet]) == 0 {
