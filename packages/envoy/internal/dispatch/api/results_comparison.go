@@ -165,13 +165,6 @@ func noBases(reason string) comparison {
 // with is a fact about the work and leaves no pass standing, while a read Dispatch could not
 // make is model.ReasonReadFailed and leaves the gate's question open. One nil for both is how
 // a database hiccup came to read as "this work has moved on" (dispatch://INFRA-1522).
-// It holds what one read of the canonical name of the repository a result's row takes its
-// commit to be of said too (commitRepositoryOf), which names a repository wherever it answered.
-// The row names a repository only where the record route took the commit to be of a repository
-// other than the issue's own (refuseUnknownCommit): that of a pull request of the issue whose
-// head Dispatch holds at the commit, or one GitHub said holds it. A read that did not answer, and
-// a repository Dispatch cannot read, where no repository was shown to hold the commit, store the
-// result under the issue's own repository (R17), and the row names none.
 type repositoryAnswer struct {
 	repo     *string
 	answered bool
