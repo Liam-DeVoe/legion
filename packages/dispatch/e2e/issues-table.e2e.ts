@@ -1666,6 +1666,103 @@ test("a roomy window is filled by the box, which grows when the window does", as
   }
 });
 
+/** How many issues the row below seeds in flight under no priority: enough that the first table
+ *  of `/priorities` holds more rows than its box shows at every size the row reads it at. */
+const IN_FLIGHT_ISSUES = 40;
+
+/** The tallest the row below lets one line of that table's box be, its header or one of its rows,
+ *  each of which holds a one-line title: drawn, a row stands near 55 px, and the virtualizer counts
+ *  one it has not drawn yet at 64 px (`estimateSize`, `web/src/components/DataTable.tsx`). */
+const TABLE_LINE_CEILING_PX = 100;
+
+/** How long the row below reads the box and the document after the last resize, and how often. */
+const STEADY_SPAN_MS = 2_000;
+const STEADY_EVERY_MS = 250;
+
+// A window resize made while the reader stands past the issues table. The box's measure read the
+// pager's place on the screen, so a measure made with the document scrolled past the table took
+// the scroll for room and grew the box; the browser's scroll anchoring then held what the reader
+// looked at, below the table, in place, which held the pager's place on the screen too, so the next
+// measure grew the box again, without end: on the Priorities page at 1600x1000, `scrollHeight`
+// went from 167,444 px to over 2,100,000 px in about 1.5 s. The measure now reads the pager's
+// place in the document (`useTableLayout`, web/src/features/project/issues-table-layout.ts).
+// The Priorities page draws its list in flight under no priority above a second table, so at
+// 1280x800 the end of the document's scroll lies past the first table's pager. From there the
+// window goes to 1920x1080, to 1600x1000 and back, and then, read every 250 ms for 2 s, the first
+// table's box and the document each keep one `scrollHeight`, and the box's stays under what its
+// header and its rows can take.
+// SLOW(>=2s): forty issues seeded and moved into work, three resizes, and readings over two seconds
+// of rest.
+test("a window resize made while scrolled past the issues table keeps the table's box at its size", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  // Each one in progress under no priority, so `/priorities` lists it in its first table. Nothing
+  // reads their order among themselves, so they go out side by side.
+  await Promise.all(
+    Array.from({ length: IN_FLIGHT_ISSUES }, async (_, index) => {
+      const issue = await createIssue({ project: "CORE", title: `In flight number ${index}` });
+      await patchIssue(issue.key, { status: "in_progress" });
+    })
+  );
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto("/priorities");
+    const table = page.getByRole("region", { exact: true, name: "In flight under no priority" });
+    const box = table.getByTestId("issues-table-scroll");
+    const pager = table.getByTestId("issues-table-pager");
+    await expect(pager).toContainText(`of ${IN_FLIGHT_ISSUES}`);
+    await expect(box.locator("[data-issue-row]").first()).toBeVisible();
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await expect
+      .poll(() => pager.evaluate((element) => element.getBoundingClientRect().bottom), {
+        message: "the table's pager above the window at the end of the document's scroll",
+      })
+      .toBeLessThanOrEqual(0);
+    for (const size of [
+      { width: 1920, height: 1080 },
+      { width: 1600, height: 1000 },
+      { width: 1920, height: 1080 },
+    ]) {
+      await page.setViewportSize(size);
+      await nextFrames(page);
+    }
+    const readings = await box.evaluate(
+      async (element, { every, span }) => {
+        const taken: { box: number; page: number }[] = [];
+        const start = performance.now();
+        for (;;) {
+          taken.push({ box: element.scrollHeight, page: document.documentElement.scrollHeight });
+          if (performance.now() - start >= span) return taken;
+          const tick = Promise.withResolvers<void>();
+          setTimeout(tick.resolve, every);
+          await tick.promise;
+        }
+      },
+      { every: STEADY_EVERY_MS, span: STEADY_SPAN_MS }
+    );
+    const boxHeights = readings.map((reading) => reading.box);
+    const pageHeights = readings.map((reading) => reading.page);
+    expect(readings.length, `readings over ${STEADY_SPAN_MS} ms`).toBeGreaterThanOrEqual(5);
+    expect(
+      Math.abs(boxHeights[boxHeights.length - 1] - boxHeights[0]),
+      `the table's box's scrollHeight, read every ${STEADY_EVERY_MS} ms: ${boxHeights.join(", ")}`
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.abs(pageHeights[pageHeights.length - 1] - pageHeights[0]),
+      `the document's scrollHeight, read every ${STEADY_EVERY_MS} ms: ${pageHeights.join(", ")}`
+    ).toBeLessThanOrEqual(1);
+    expect(
+      Math.max(...boxHeights),
+      `the table's box's scrollHeight against its header and ${IN_FLIGHT_ISSUES} rows`
+    ).toBeLessThan((IN_FLIGHT_ISSUES + 1) * TABLE_LINE_CEILING_PX);
+  } finally {
+    await context.close();
+  }
+});
+
 test("phone status labels are readable and closed issues load from the Status filter @phone", async ({
   browser,
 }) => {
