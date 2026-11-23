@@ -21,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes/schemanodestest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -558,10 +557,10 @@ func requireTypeNodeValuesAreTheirTuples(t *testing.T, ctx context.Context, pool
 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,
 // field by field and in both directions: an attribute only in the file, or only in the store,
-// fails, and so does one whose kind, choices, default, server flag, targets, scope or element
-// versions differ.
+// fails, and so does one whose kind, choices, default, server flag, markdown flag, targets, scope
+// or element versions differ.
 // The file names an attribute as a document writes it, and its node is the one
-// schemanodestest.StoreName names, `<type>/<store name>`, so ask's `state` is the node
+// schemanodes.StoreName names, `<type>/<store name>`, so ask's `state` is the node
 // ask/answer_state. Each type and attribute it fails on is recorded in drift.
 func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema, drift *schemaDrift) {
 	t.Helper()
@@ -588,7 +587,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 			tied[tuple.FromID] = struct{}{}
 		}
 		for position, declared := range typ.Attributes {
-			id := typ.Name + "/" + schemanodestest.StoreName(typ.Name, declared.Name)
+			id := typ.Name + "/" + schemanodes.StoreName(typ.Name, declared.Name)
 			wanted[id] = struct{}{}
 			if _, tiedToType := tied[id]; !tiedToType {
 				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.Name)
@@ -616,7 +615,7 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 }
 
 // requireAttributeNodeCarries holds one attribute node of type typeName to what the file says
-// about that attribute: its name and place, the store name schemanodestest.StoreName gives it, and
+// about that attribute: its name and place, the store name schemanodes.StoreName gives it, and
 // each field a BlockAttributeSchema carries. A node that differs is recorded in drift.
 func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName string, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
 	t.Helper()
@@ -625,7 +624,7 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, typeName st
 		t.Errorf("attribute node %q carries name %q, want %q", node.ID, name, declared.Name)
 		drift.add(node.ID)
 	}
-	if held, want := carried["store_name"], schemanodestest.StoreName(typeName, declared.Name); held != want {
+	if held, want := carried["store_name"], schemanodes.StoreName(typeName, declared.Name); held != want {
 		t.Errorf("attribute node %q carries store name %v, want %q", node.ID, held, want)
 		drift.add(node.ID)
 	}
@@ -706,8 +705,8 @@ func (d *schemaDrift) add(name string) {
 
 // compare records what the schema the store's nodes build and the file's differ on beyond their
 // attributes: the version, and each type only one of them declares, or whose content rule,
-// renderer or place among the types differs. The attributes are the attribute nodes' own, which
-// requireAttributeNodesMatchTheFile has recorded field by field.
+// renderer, parents or place among the types differs. The attributes are the attribute nodes'
+// own, which requireAttributeNodesMatchTheFile has recorded field by field.
 func (d *schemaDrift) compare(built, file pmdoc.BlockSchema) {
 	if built.Version != file.Version {
 		d.fileVersion, d.storeVersion = file.Version, built.Version
@@ -720,7 +719,8 @@ func (d *schemaDrift) compare(built, file pmdoc.BlockSchema) {
 	}
 	for _, want := range file.Types {
 		index := slices.IndexFunc(built.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == want.Name })
-		if index < 0 || built.Types[index].Content != want.Content || built.Types[index].Render != want.Render {
+		if index < 0 || built.Types[index].Content != want.Content || built.Types[index].Render != want.Render ||
+			!slices.Equal(built.Types[index].Parents, want.Parents) {
 			d.add(want.Name)
 		}
 	}

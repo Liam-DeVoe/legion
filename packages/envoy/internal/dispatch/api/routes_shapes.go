@@ -1114,6 +1114,7 @@ var routeShapes = map[string]routeShape{
 		OptionalRequest: true,
 	},
 	"GET /api/v1/artifacts/_test/rooms":                          {Status: http.StatusOK, Response: residentRooms{}},
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes":            {Status: http.StatusOK, Response: liveAskAttributes{}},
 	"GET /api/v1/artifacts/{id}/_test/room-counters":             {Status: http.StatusOK, Response: docs.RoomCounters{}},
 	"POST /api/v1/artifacts/{id}/_test/hold-persistence":         {Status: http.StatusNoContent, Request: holdPersistenceInput{}},
 	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Status: http.StatusNoContent},

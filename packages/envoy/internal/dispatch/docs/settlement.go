@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
@@ -582,10 +583,13 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 // version's authors.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
-	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown, st.issueClosed)
+	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.issueClosed)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// What settlement writes of the answers it keeps in step while another build serves is weighed
+	// against the document as settlement read it, before any other repair is planned on it.
+	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -714,6 +718,21 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 	})
 }
 
+// stateReadability plans the readability of the asks whose blocks this settlement read
+// (stateInvalidReasons), in the name the version carries (versionActor) at at, and queues its
+// statements under cause as one step (write): the version's event, which the step follows right
+// after its append (graphstore.LatestEvent), or graphstore.NoEvent for a settlement that writes no
+// version.
+func (st *settlement) stateReadability(ctx context.Context, at time.Time, cause int64) error {
+	readability, err := st.reconciliation.stateInvalidReasons(ctx, st.tx, st.credit.versionActor(), at)
+	if err != nil || readability == nil {
+		return err
+	}
+	return write(ctx, st.tx, func(b *store.WriteBatch) error {
+		return readability(b, cause)
+	})
+}
+
 // commitVersion renders the document the settlement settled, writes its version when the document
 // now reads differently from the latest one, and commits the transaction all of that and the
 // settlement's stored updates are in.
@@ -839,6 +858,9 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.nameVersion(ctx, tx, room, st.owner, settledVersion); err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// The readability of the asks whose blocks this settlement read is stated in the name the
+	// version itself carries (versionActor), at one time (stateReadability).
+	at := time.Now().UTC()
 	if versioning {
 		var keptEditor *model.Actor
 		if st.credit.kept {
@@ -900,15 +922,27 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if err := st.appendEvents(ctx, []model.Event{versionEvent}, map[int][]*graphstore.Uncaused{0: {&result.blocks}}); err != nil {
 			return settleDone, st.abandon(err)
 		}
+		// The readability, once the version's blocks are planned, under that same event, right
+		// after it.
+		if err := st.stateReadability(ctx, at, graphstore.LatestEvent); err != nil {
+			return settleDone, st.abandon(err)
+		}
 	}
-	// The nodes and the follows of the asks this settlement opened wait for those asks' ask.opened
-	// events, each stated right after its own (followsByEvent).
-	follows, err := st.reconciliation.followsByEvent(st.reconciliation.events)
+	// The nodes and the follows of the asks this settlement opened, and what each answer state it
+	// wrote states on its ask's node, wait for the events that record them, each stated right
+	// after its own (causedByEvent).
+	caused, err := st.reconciliation.causedByEvent(st.reconciliation.events)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
-	if err := st.appendEvents(ctx, st.reconciliation.events, follows); err != nil {
+	if err := st.appendEvents(ctx, st.reconciliation.events, caused); err != nil {
 		return settleDone, st.abandon(err)
+	}
+	// A settlement that writes no version states the readability under no event.
+	if !versioning {
+		if err := st.stateReadability(ctx, at, graphstore.NoEvent); err != nil {
+			return settleDone, st.abandon(err)
+		}
 	}
 	// The write phase: every statement this settlement decided on, in the order it made them.
 	if err := ledger.runQueue(ctx, nil); err != nil {

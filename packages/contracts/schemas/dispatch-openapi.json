@@ -14643,6 +14643,12 @@
       },
       "ArtifactText": {
         "properties": {
+          "asks": {
+            "items": {
+              "$ref": "#/components/schemas/TextAsk"
+            },
+            "type": "array"
+          },
           "blocks": {
             "items": {
               "$ref": "#/components/schemas/ArtifactBlock"
@@ -28351,6 +28357,46 @@
         },
         "required": [
           "ok"
+        ],
+        "type": "object"
+      },
+      "TextAsk": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answered_at": {
+            "type": "string"
+          },
+          "answered_by": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "copied_from": {
+            "type": "string"
+          },
+          "copied_from_document": {
+            "type": "string"
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "answered",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "block_id"
         ],
         "type": "object"
       },

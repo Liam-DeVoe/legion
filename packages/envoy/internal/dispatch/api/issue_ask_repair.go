@@ -33,26 +33,36 @@ const issueAskRepairLease = "issue-ask-repair"
 
 // IssueAskRepair counts what one RepairIssueAsks pass changed: the asks it withdrew on closed
 // issues, the asks it restored on reopened ones, and the readable ask blocks with no ask row its
-// sweeps of closed issues' documents marked resolved.
+// sweeps of closed issues' documents marked resolved, which only a sweep while another build
+// serves marks.
 type IssueAskRepair struct {
 	Withdrawn int
 	Restored  int
-	Swept     int
+	// kept for one release: roll-window-attributes
+	Swept int
 }
 
 // Changed reports whether the pass changed anything.
 func (r IssueAskRepair) Changed() bool {
-	return r.Withdrawn > 0 || r.Restored > 0 || r.Swept > 0
+	// kept for one release: roll-window-attributes
+	if r.Swept > 0 {
+		return true
+	}
+	return r.Withdrawn > 0 || r.Restored > 0
 }
 
 // LogArgs are the counts as slog key-value pairs.
 func (r IssueAskRepair) LogArgs() []any {
-	return []any{"withdrawn", r.Withdrawn, "restored", r.Restored, "swept", r.Swept}
+	args := []any{"withdrawn", r.Withdrawn, "restored", r.Restored}
+	// kept for one release: roll-window-attributes
+	args = append(args, "swept", r.Swept)
+	return args
 }
 
 func (r *IssueAskRepair) add(other IssueAskRepair) {
 	r.Withdrawn += other.Withdrawn
 	r.Restored += other.Restored
+	// kept for one release: roll-window-attributes
 	r.Swept += other.Swept
 }
 
@@ -268,7 +278,8 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		// final sweep (sweepClosedIssueAsks) in the same write: the open asks' blocks and copies
 		// written resolved, while their rows still read open, beside the resolved and answered block
 		// asks' blocks and copies from their rows as they stand, and every unindexed block marked
-		// resolved. Every document write comes before the first event.
+		// resolved. Every document write comes before the first event, and each withdrawal is
+		// planned after them, as a close plans it (planWithdrawal).
 		openAsks, withdrawing, err := s.readOpenIssueAsks(documentCtx, tx, issueKey)
 		if err != nil {
 			return repair, err
@@ -277,9 +288,14 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		if err != nil {
 			return repair, err
 		}
+		// kept for one release: roll-window-attributes
 		repair.Swept = len(unindexed)
+		planned, err := planWithdrawal(documentCtx, tx, issueKey, openAsks, closer)
+		if err != nil {
+			return repair, err
+		}
 		var asks []model.Ask
-		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, issueKey, openAsks, closer)
+		asks, events, err = s.recordWithdrawnAsksTx(ledger, issueKey, planned, closer)
 		if err != nil {
 			return repair, err
 		}
@@ -306,7 +322,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restored, reopener); err != nil {
 			return repair, err
 		}
-		repair.Restored = len(restored)
+		repair.Restored = len(restored.asks)
 	default:
 		return repair, nil
 	}

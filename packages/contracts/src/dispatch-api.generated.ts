@@ -3620,6 +3620,7 @@ export interface components {
       place?: "before_first_section" | "after_section";
     };
     ArtifactText: {
+      asks?: components["schemas"]["TextAsk"][];
       blocks?: components["schemas"]["ArtifactBlock"][];
       markdown: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
@@ -6735,6 +6736,17 @@ export interface components {
     };
     TestHookOK: {
       ok: boolean;
+    };
+    TextAsk: {
+      answer?: string;
+      answered_at?: string;
+      answered_by?: string;
+      block_id: string;
+      copied_from?: string;
+      copied_from_document?: string;
+      selected?: string[];
+      /** @enum {string} */
+      state?: "open" | "answered" | "resolved";
     };
     ThreadReadInput: {
       read_through: null | string;
@@ -15382,6 +15394,7 @@ export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGa
 export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
+export type TextAsk = components["schemas"]["TextAsk"];
 export type ThreadReadInput = components["schemas"]["ThreadReadInput"];
 export type TimeToRestore = components["schemas"]["TimeToRestore"];
 export type TmuxPlace = components["schemas"]["TmuxPlace"];
