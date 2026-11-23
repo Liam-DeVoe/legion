@@ -33,6 +33,8 @@ import (
 // pinned Oh My Pi loads neither its natives nor a plugin. cybermonklabs/oh-my-pi#46 fixes the
 // natives; a plugin under such a path still cannot load, and its error then names Bun's limit.
 func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (testbin.OMPDir points
+	// TMPDIR at its directory).
 	omp := testbin.OMP(t)
 	noAgent := "finds no task agent thermonuclear-deep-review (dispatched by dist/skills/legion-worker/SKILL.md)"
 	noRubric := "finds no skill thermonuclear-deep-review (loaded by agents/thermonuclear-deep-review.md)"
@@ -135,6 +137,8 @@ func installPlugins(t *testing.T, omp string, environ []string, roots ...string)
 // the two packages ship between them. Only the real bundles show that the symbol strings the probe
 // reads are the ones the entries write.
 func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (testbin.OMPDir points
+	// TMPDIR at its directory).
 	omp := testbin.OMP(t)
 	// The packed plugins sit outside the checkout as well as off a '?' path, so Oh My Pi resolves
 	// none of their imports from the repository's node_modules: a bundle missing a dependency fails
