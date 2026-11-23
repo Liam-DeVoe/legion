@@ -117,7 +117,10 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { defer close(done); jobs.Run(runCtx) }()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() {
+		cancel()
+		testwait.Receive(t, "the job intake's Run to return once its context ended", done)
+	})
 	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound

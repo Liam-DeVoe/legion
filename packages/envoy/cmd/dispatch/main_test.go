@@ -1009,7 +1009,10 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
 		go func() { publisher.Run(ctx); close(done) }()
-		stop := func() { cancel(); <-done }
+		stop := func() {
+			cancel()
+			testwait.Receive(t, "the outbox publisher's Run to return once its context ended", done)
+		}
 		t.Cleanup(stop)
 		return &process{outbox: publisher, handler: dispatchHandler(http.NewServeMux(), metrics.New(), database, client, publisher, nil, "", nil, issuers{}, nil), stop: stop}
 	}
