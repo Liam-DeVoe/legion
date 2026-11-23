@@ -16,13 +16,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// Sever does not wait for the client's own lock. A caller of Client.Connected holds that lock
-// while it reads nats.go's status, which waits for nats.go's lock: an intake's stop leaves such
+// Sever does not wait for the client's own lock. A caller of Client.Connected on main held that lock
+// while it read nats.go's status, which waits for nats.go's lock: an intake's stop leaves such
 // reads running (its drain wait and mayHandBack) once a write holds nats.go's lock. A Sever that took
 // the client's lock to find the connection waited behind that read for as long as the write held,
 // and once the link moved, the publish that waited behind the write went out before the sever.
-// Two subtests: with no such read (the control), and with one left waiting for nats.go's lock, which
-// the row waits for until the client's lock stays taken. Each requires that Sever returns while the
+// This branch's Connected reads nats.go's status outside the client's lock, so such a read leaves
+// that lock free while it waits; the row requires that too. Two subtests: with no such read (the
+// control), and with one left waiting for nats.go's lock. Each requires that Sever returns while the
 // write still holds the lock, and that the publish that waited behind the write never reaches the
 // server: once the client has a connection of its own again, a second marker published and flushed
 // on it is the first the subscriber receives.
@@ -53,23 +54,23 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 					client.Connected()
 					close(read)
 				}()
-				// The read holds the client's lock while it waits for nats.go's. The row polls until
-				// the lock stays taken across three polls, which no caller that holds it only briefly
-				// does, so Sever runs once the read holds it.
-				taken := 0
-				testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the Connected read holding the client's lock", func() bool {
+				// The read waits for nats.go's lock, which the write holds, without holding the
+				// client's lock (Client.Connected). The row polls until the read has not answered and
+				// the client's lock is free across three polls, so Sever runs while the read waits.
+				free := 0
+				testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the Connected read waiting for nats.go's lock with the client's lock free", func() bool {
 					select {
 					case <-read:
 						t.Fatal("control: Connected answered while a write held nats.go's lock")
 					default:
 					}
-					if client.mu.TryLock() {
-						client.mu.Unlock()
-						taken = 0
+					if !client.mu.TryLock() {
+						free = 0
 						return false
 					}
-					taken++
-					return taken >= 3
+					client.mu.Unlock()
+					free++
+					return free >= 3
 				})
 			}
 			severed := make(chan struct{})
