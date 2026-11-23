@@ -47,8 +47,9 @@ const seedSession = "replay-seed"
 // given entry and a confirmed delivery), and of the architect of each root that waits on a person
 // between its turns (waitingArchitects), each running the session the record shows running it;
 // the owed start of each issue whose work came back while it held no slot, marked to wait for one
-// and created at the moment its work came back; and a synthetic open pull request for each issue
-// the trace has seen one of. records writes the record's tables and claims the claims.
+// and created at the moment its work came back, carrying the resume task engine composes for it
+// (workflow.Engine.ResumeTask); and a synthetic open pull request for each issue the trace has seen
+// one of. records writes the record's tables and claims the claims.
 //
 // It names each issue it cannot place, with the reason: one Dispatch shows no event or no
 // repository of, one in the workflow whose turn stands in a tree the record shows running no
@@ -62,8 +63,10 @@ const seedSession = "replay-seed"
 // of a tree that closed — is a production check's, which changes nothing of a replay (assumption
 // 30): Seed writes no claim of it and names no issue for it, and SeedAndReport counts it. Seed
 // answers the issues it names; SeedAndReport answers its whole report (SeedReport).
-func Seed(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.Store, t Trace, at time.Time) ([]Unplaced, error) {
-	report, err := SeedAndReport(ctx, tx, records, claims, t, at)
+func Seed(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.Store, engine *workflow.Engine, t Trace,
+	at time.Time,
+) ([]Unplaced, error) {
+	report, err := SeedAndReport(ctx, tx, records, claims, engine, t, at)
 	if err != nil {
 		return nil, err
 	}
@@ -92,12 +95,17 @@ type SeedReport struct {
 }
 
 // SeedAndReport writes the start state Seed writes and answers its whole report (SeedReport).
-func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.Store, t Trace, at time.Time) (SeedReport, error) {
+// engine is the engine the replay runs, which composes the resume task of each owed start the
+// state seeds (workflow.Engine.ResumeTask), so that task is the text the daemon's own start of a
+// worker already in its phase carries.
+func SeedAndReport(ctx context.Context, tx pgx.Tx, records record.Store, claims *store.Store, engine *workflow.Engine, t Trace,
+	at time.Time,
+) (SeedReport, error) {
 	token, err := claim.ProjectToken(t.Project)
 	if err != nil {
 		return SeedReport{}, fmt.Errorf("replay: seed the start state of %s: %w", t.Project, err)
 	}
-	s := seeder{ctx: ctx, tx: tx, records: records, claims: claims, t: t, at: at, rule: t.ruleAt(at), token: token,
+	s := seeder{ctx: ctx, tx: tx, records: records, claims: claims, engine: engine, t: t, at: at, rule: t.ruleAt(at), token: token,
 		placed: map[string]record.Issue{}, epochs: map[string]uint64{}, leftOut: map[int]int{}, childrenTold: map[string]time.Time{}}
 	keys := slices.Sorted(maps.Keys(t.Issues))
 	for _, key := range keys {
@@ -162,9 +170,13 @@ type seeder struct {
 	tx      pgx.Tx
 	records record.Store
 	claims  *store.Store
-	t       Trace
-	at      time.Time
-	rule    record.SlotRule
+	// engine is the engine the replay runs, which composes the resume task of each owed start this
+	// state seeds (owedStarts, workflow.Engine.ResumeTask). The one reader that builds a state
+	// without writing it (startRecord's caller) needs none and holds nil.
+	engine *workflow.Engine
+	t      Trace
+	at     time.Time
+	rule   record.SlotRule
 	// token is the project's claim token, which claims and tree lifecycles are keyed by.
 	token string
 	// placed is the record written for each issue, and epochs the epoch of each tree lifecycle
@@ -883,7 +895,14 @@ func (s *seeder) owedStarts() error {
 		}
 		created := visits[first].Enter
 		standing := visits[at].Phase
-		payload := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: phaseRole(standing), Task: workflow.ResumePhaseTask(issue),
+		// The task is the one the daemon's own start of a worker already in its phase carries,
+		// composed by the engine the replay runs (workflow.Engine.ResumeTask) rather than written
+		// here, so a seeded start and a start the replay makes read alike.
+		task, err := s.engine.ResumeTask(s.ctx, s.tx, issue)
+		if err != nil {
+			return fmt.Errorf("replay: seed the owed start of %s: %w", key, err)
+		}
+		payload := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: phaseRole(standing), Task: task,
 			Generation: issue.Generation, Phase: standing, NeedsSlot: true}
 		row, err := record.NewOutboxRow(key, payload, created)
 		if err != nil {

@@ -45,7 +45,10 @@ func placedTrace(t *testing.T, w Window) Trace {
 
 // seedTrace writes trace's start state at at in a transaction of st's with SeedAndReport and hands
 // the transaction to read, which reads back what it wrote; the transaction is then rolled back, so
-// one database serves every case of a test. It answers the start state's report.
+// one database serves every case of a test. The engine it seeds through is the plain one of the
+// trace's project, as the replay's is but for the window's own settings: it composes the resume
+// task of each owed start seeded (workflow.Engine.ResumeTask), which reads neither. It answers the
+// start state's report.
 func seedTrace(t *testing.T, st *store.Store, trace Trace, at time.Time, read func(tx pgx.Tx)) SeedReport {
 	t.Helper()
 	ctx := context.Background()
@@ -54,7 +57,8 @@ func seedTrace(t *testing.T, st *store.Store, trace Trace, at time.Time, read fu
 		t.Fatalf("begin the seed's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	report, err := SeedAndReport(ctx, tx, record.NewStore(), st, trace, at)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: trace.Project}, nil)
+	report, err := SeedAndReport(ctx, tx, record.NewStore(), st, engine, trace, at)
 	if err != nil {
 		t.Fatalf("seed the state at %s: %v", at.Format(time.RFC3339), err)
 	}

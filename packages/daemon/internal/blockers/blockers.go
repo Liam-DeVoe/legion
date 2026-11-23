@@ -316,13 +316,13 @@ func startedIssues(issues []record.Issue, slots []record.Slot, facts record.Line
 // the slot (admit's markSlotWaits), and the first pass at or after that start plus the grace
 // finds both counting and gives the row back.
 //
-// An issue whose phase keeps no slot (record.LineFacts.KeepsSlot: past its review, done, or out
-// of the workflow, under the facts' rule) waits on nothing here, whatever its links say. The wait
-// this answers is the one a started issue gives its row back for, and such an issue holds no row
-// to give back, so the rule that states the wait term states the phase term too: the release for
-// a wait (admit's releaseSlotsForWaits) frees no row of it and marks it with no release, the line
-// places it in no entry of record.LineWaitingOnIssue, and none of that rests on the order the
-// admission pass runs its releases in.
+// An issue whose phase keeps no slot (record.LineFacts.KeepsSlot: accepting, retro or merging,
+// done, or out of the workflow, under the facts' rule) waits on nothing here, whatever its links
+// say. The wait this answers is the one a started issue gives its row back for, and such an issue
+// holds no row to give back, so the rule that states the wait term states the phase term too: the
+// release for a wait (admit's releaseSlotsForWaits) frees no row of it and marks it with no
+// release, the line places it in no entry of record.LineWaitingOnIssue, and none of that rests on
+// the order the admission pass runs its releases in.
 //
 // Three started issues wait on neither, though a rule names them. A root waiting on a person
 // (awaiting_person, answered or not) is waiting on that person and nothing else, and the slot it
@@ -383,9 +383,11 @@ func waitsOf(rows map[string]Row, issue record.Issue, facts record.LineFacts) []
 // CoverWaits is what a started issue waits on as a rule whose start may take a cover reads a wait
 // (record.TakeCover, admit's covers), each once: the Dispatch issues it is blocked by that are not
 // done (Unfinished), the open children its first phase waits for (record.LineFacts.ChildWaits),
-// and, past its review, the issues beneath it its close waits for — a held sign-off, or a merge
-// whose close waits for them (record.LineFacts.BeneathWaits). A blocked_by link of an issue past
-// its review (record.PastReview) is no wait there: it holds no start and gives no cover, as the
+// and, in accepting, retro or merging, the issues beneath it its close waits for — a held sign-off,
+// or a merge whose close waits for them (record.LineFacts.BeneathWaits). A blocked_by link of an
+// issue in one of those phases (record.InSlotlessPhase, the daemon's own rule's complement, which
+// is the phases after the review of the default steps every recorded window ran) is no wait there:
+// it holds no start and gives no cover, as the
 // rule's spec states. A root that waits on a person and a root that arrived carrying the row of
 // the tree it left wait on nothing here, as waitsOf exempts them from the release; a tree's own
 // root whose design gate has never opened is a waiter, so what its design waits on can start on
@@ -395,7 +397,7 @@ func CoverWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts)
 		return nil
 	}
 	var waits []string
-	if !record.PastReview(issue) {
+	if !record.InSlotlessPhase(issue) {
 		waits = Unfinished(rows, issue.Key)
 	}
 	for _, child := range facts.ChildWaits[issue.Key].Open {

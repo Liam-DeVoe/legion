@@ -207,24 +207,31 @@ func statusIn(stands phase.Phase) string {
 // reader, which has one row for each grace a kept rule names (keptWaitGraces), so each kept rule
 // with a grace finds a row whose choice it makes the row's way.
 //
-// record.PastReview is read by four callers, and each one reads either "holds no slot", which is
-// the rule's complement and a row here, or "past the review" in the workflow's sense, which no
-// slot rule decides and which is no row:
+// "Holds no slot because its phase keeps none" is the rule's complement over the working phases
+// (record.SlotRule.InSlotlessPhase), and its two readers are rows here. The questions that sound
+// like it but are the workflow's own are no rows, since no slot rule decides them:
 //
 //   - admit's readSlotHolders reads "holds no slot": the repair of a worker with no task reaches an
-//     issue past its review because such an issue holds no row to be found by, and an issue whose
-//     phase keeps one is reached through its row or waits in the line for one. A row.
-//   - projection's atWorkPastReview (why.go) reads "holds no slot": it finds the issue at work
+//     issue in a phase that keeps none because such an issue holds no row to be found by, and an
+//     issue whose phase keeps one is reached through its row or waits in the line for one. A row.
+//   - projection's atWorkInSlotlessPhase (why.go) reads "holds no slot": it finds the issue at work
 //     that `admission.active` does not name because its phase keeps no slot, and serves it no
 //     answer. A row.
-//   - classify.ConflictNeedsMerge reads "past the review": the next step of such an issue is its
-//     merge, and GitHub merges no head that conflicts with its base, so the merge forward is asked
-//     at once (record.ConflictMergeNext) whatever slot the issue holds. No row.
-//   - workflow's mergeForwardOnEntry and mergeForwardLanded (merge_forward.go) read "past the
-//     review": a move into accepting, retro or merging at a conflicting head asks for the merge
-//     because the merge comes next, and a merge forward that lands under an issue past its review
-//     asks the reviewer to read it because the issue stands on a review of the older head. No
-//     row; the conflict path's own choice is the conflict rows below.
+//   - classify.ConflictNeedsMerge and classify.MergeComesNext read "the merge is the next step on
+//     the task's own line": the line of the issue's plan says it, GitHub merges no head that
+//     conflicts with its base, so the merge forward is asked at once there
+//     (record.ConflictMergeNext) whatever slot the issue holds. No row.
+//   - workflow's mergeForwardOnEntry and mergeForwardLanded (merge_forward.go) read the issue's
+//     own walk (Walk.MovesBack, classify.MergeComesNext): a move to where the merge comes next at
+//     a conflicting head asks for the merge, and a merge forward that lands under an issue whose
+//     reviewer step already ran asks the reviewer to read it, because the issue stands on a review
+//     of the older head. The task's line decides both, and no rule does. No row; the conflict
+//     path's own choice is the conflict rows below.
+//   - workflow's startHeldRetro and beneathRetro (retro_hold.go) read the workflow: whether the
+//     parent is still in the workflow (record.InWorkflow) and whether its task's last step is the
+//     owner's acceptance. The hold before the retro stands in place of a phase that keeps no slot
+//     under the daemon's own rule, and under a rule that keeps one there the parent holds it as
+//     any held issue holding one does (the KeepsSlotIn row of held above). No row.
 func slotRuleReaders() []slotRuleReader {
 	var rows []slotRuleReader
 	for _, stands := range phase.All {
@@ -333,6 +340,27 @@ func slotRuleReaders() []slotRuleReader {
 			why:     "an issue standing in a phase that keeps no slot is at work, and one whose phase keeps a slot it holds none of is no word's",
 		},
 		slotRuleReader{
+			reader:  "record.HeldReasonOf: the word of a stopped task",
+			changes: []string{"KeepsSlotIn"},
+			rule:    keepingSlotIn(phase.Accepting),
+			outcome: func(t *testing.T, rule record.SlotRule) string {
+				t.Helper()
+				pool := migratedPool(t)
+				const key = "ACME-45"
+				acmeRoot(t, pool, key, phase.Held, "needs_review", "a", nil, func(root *record.Issue) {
+					root.Hold = &record.Hold{From: phase.Accepting, Reason: record.HoldTaskStopped}
+				})
+				approvedGate(t, pool, key)
+				tickThrough(t, pool, ruledAdmission(t, 1, rule, silent()), "the pass")
+				_, held, _ := lineUnder(t, pool, rule)
+				return heldWord(held, key)
+			},
+			main:    "ACME-45 is held as task_stopped",
+			changed: "ACME-45 is held as unclassified",
+			why: "a task stopped where its issue keeps no slot reads task_stopped, and one stopped where its phase keeps a slot " +
+				"stands in the active set, so an issue holding none there is no word's",
+		},
+		slotRuleReader{
 			reader:  "admit's slotFor",
 			changes: []string{"KeepsSlotIn"},
 			rule:    keepingSlotIn(phase.Accepting),
@@ -360,7 +388,7 @@ func slotRuleReaders() []slotRuleReader {
 				seedSlottedInPhase(t, pool, acmeProject, holder, "a", phase.Admitted, nil)
 				acmeRoot(t, pool, accepted, phase.Accepting, "needs_review", "b", nil, nil)
 				approvedGate(t, pool, accepted)
-				applyThrough(t, pool, ruledAdmission(t, 1, rule, silent()), "api", "sign-off", intake.SignOff{Issue: accepted})
+				applyThrough(t, pool, ruledAdmission(t, 1, rule, silent()), "api", "sign-off", signOffOf(t, accepted))
 				return phaseWord(t, pool, accepted) + "; " + startsWord(accepted, startsOfForProject(t, pool, acmeProject, accepted)) + "; " +
 					owedWord(t, pool, accepted)
 			},
@@ -605,7 +633,7 @@ func slotRuleReaders() []slotRuleReader {
 				"the issue whose merger has completed its merging gives it back and the one whose merger has not keeps it",
 		},
 		slotRuleReader{
-			reader:  "record.PastReview in readSlotHolders",
+			reader:  "record.LineFacts.InSlotlessPhase in readSlotHolders",
 			changes: []string{"KeepsSlotIn"},
 			rule:    keepingSlotIn(phase.Retro),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
@@ -631,7 +659,7 @@ func slotRuleReaders() []slotRuleReader {
 				"an issue whose phase keeps a slot it does not hold waits in the line for one, and the repair leaves it there",
 		},
 		slotRuleReader{
-			reader:  "record.PastReview in projection's atWorkPastReview",
+			reader:  "record.LineFacts.InSlotlessPhase in projection's atWorkInSlotlessPhase",
 			changes: []string{"KeepsSlotIn"},
 			rule:    keepingSlotIn(phase.Retro),
 			outcome: func(t *testing.T, rule record.SlotRule) string {
@@ -764,6 +792,16 @@ func acmeToken(t *testing.T, key string, role claim.Role) claim.Token {
 		t.Fatalf("the %s token of %s: %v", role, key, err)
 	}
 	return token
+}
+
+// signOffOf is the sign-off of key's own architect, as the route writes it: its claim, the
+// generation these fixtures seed (1) and the run of the step the issue stands in, which is the
+// zero entry for a root no step record of this fixture holds. The workflow judges all three again
+// under the fact lock (intake.ArchitectRequest), so a sign-off that named none of them would be
+// refused as one of an architect outside the tree.
+func signOffOf(t *testing.T, key string) intake.SignOff {
+	t.Helper()
+	return intake.SignOff{Issue: key, By: acmeToken(t, key, claim.RoleArchitect), Generation: 1}
 }
 
 // approvedGate registers root's design gate with a person's approval on its document's current

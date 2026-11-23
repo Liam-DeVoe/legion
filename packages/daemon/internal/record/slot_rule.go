@@ -150,17 +150,19 @@ func (r SlotRule) OrMain() SlotRule {
 // PhaseKeepsSlot says whether an issue standing at at keeps its slot under r (KeepsSlotIn).
 // MainRule's list, the daemon's own, is the phases that hold one of the cap's slots: admitted,
 // where a root's architect writes its design and a started child waits to be entered again;
-// awaiting_person; the four phases a worker works up to the review — planning, implementing,
-// testing and reviewing; and held, which is reached here only where the record names no earlier
-// phase for the hold (StandsAt). Every other phase holds none: accepting, retro and merging each
-// stand past the issue's review, and done has finished.
+// awaiting_person; the four phases a step's worker runs besides the owner's acceptance —
+// planning, implementing, testing and reviewing; and held, which is reached here only where the
+// record names no earlier phase for the hold (StandsAt). Every other phase holds none: accepting,
+// retro and merging (in the default steps, the phases after the review), and done, which has
+// finished. A step after accepting whose phase keeps a slot waits for one again
+// (workflow.StartOrOwe).
 //
 // It is written as one list, in the rule value, so that a later change adds or removes one entry
 // and every reader of the rule moves with it. Two read it, and a phase in one and not the other
 // would be a deadlock: the cap's own half (KeepsSlot) and the mark a start of a phase worker
 // carries for the slot it waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable
-// while the issue holds no slot. PastReview is the complement of the phases a rule refuses, for
-// the repair that must reach an issue holding no row.
+// while the issue holds no slot. InSlotlessPhase is the complement of the working phases a rule
+// refuses, for the repair that must reach an issue holding no row.
 func (r SlotRule) PhaseKeepsSlot(at phase.Phase) bool {
 	return slices.Contains(r.OrMain().KeepsSlotIn, at)
 }
@@ -196,24 +198,22 @@ func (r SlotRule) NeedsSlot(issue, root Issue, live bool) bool {
 	return live && !root.Lingers() && r.KeepsSlot(issue)
 }
 
-// PastReview is r's phase half read the other way round: issue stands, as StandsAt reads it, in
-// a phase short of done that r keeps no slot in, so it holds none of the cap's slots there while
-// its work goes on. Under MainRule those phases are accepting, retro and merging, the three past
-// the review, which is why the method carries the package's name for them (the package's
-// PastReview); under a rule that keeps a slot in one of them, or keeps none in a phase up to the
-// review, it names the phases that rule leaves without one, whatever their place in the
-// workflow.
+// InSlotlessPhase is r's phase half read the other way round over the working phases: issue
+// stands, as StandsAt reads it, in a phase of phase.Order that r keeps no slot in, so it holds
+// none of the cap's slots there while its work goes on. Under MainRule those phases are
+// accepting, retro and merging (the package's InSlotlessPhase); under a rule that keeps a slot in
+// one of them, or keeps none in a working phase before them, it names the working phases that
+// rule leaves without one, whatever their place in the workflow.
 //
 // It is what the two readers of "holds no slot because its phase keeps none" ask: the repair of
 // a worker with no task, whose own domain is the slot holders and which must reach such an issue
 // besides (admit's readSlotHolders), and the state's answer of `why`, which serves such an issue
-// at work no answer (projection's atWorkPastReview). The readers that mean the workflow's own
-// "past the review", where the merge is the next step whatever slot the issue holds, read the
-// package's PastReview, which no rule changes (classify.ConflictNeedsMerge, workflow's merge
-// forward).
-func (r SlotRule) PastReview(issue Issue) bool {
+// at work no answer (projection's atWorkInSlotlessPhase). The readers that mean where the merge
+// comes next on the task's own line, whatever slot the issue holds, read the workflow's walk and
+// no rule (classify.ConflictNeedsMerge and classify.MergeComesNext, workflow's merge forward).
+func (r SlotRule) InSlotlessPhase(issue Issue) bool {
 	at := StandsAt(issue)
-	return at != phase.Done && !r.PhaseKeepsSlot(at)
+	return slices.Contains(phase.Order, at) && !r.PhaseKeepsSlot(at)
 }
 
 // ChildrenFirstCandidates is every issue of issues whose Dispatch children r's children-first

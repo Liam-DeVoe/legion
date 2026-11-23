@@ -224,7 +224,7 @@ func (s *snapshots) settle(at time.Time, claims map[claim.Token]supervise.Claim,
 			state.Holder = s.holderState(issue, slot, byIssue[key])
 		}
 		if recorded && (state.InFlight || holds) {
-			state.PastReview = record.PastReview(issue)
+			state.PastReview = record.InSlotlessPhase(issue)
 		}
 		if entry, member := s.line[key]; member {
 			state.Part, state.Blocked = entry.Part, s.blocked[key]

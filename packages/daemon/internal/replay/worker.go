@@ -82,6 +82,8 @@ var OutboxHandling = map[RowKind]RowHandling{
 		Does: "behind the executor's fences writes the role's claim as the outbox's start writes it, admitted on its first start, with its given entry and a confirmed delivery, logs the launch, and resumes the issue's paused segment or opens its next recorded one; a start queued for news alone, behind the same fences, is finished under assumption 26 where it reaches its claim with news to tell"},
 	{Kind: record.OutboxKindSupervise, Op: "suspend"}: {Way: OutboxExecuted,
 		Does: "suspends the role's claim, its task taken back, and pauses the issue's segment it works, or cancels it where the issue has left the workflow"},
+	{Kind: record.OutboxKindSupervise, Op: "step_stop"}: {Way: OutboxExecuted,
+		Does: "suspends the claim of the step a stopped task ran, as a suspend does and as the daemon's own executor runs it, its session kept and the issue's segment paused"},
 	{Kind: record.OutboxKindSupervise, Op: "issue_close"}: {Way: OutboxExecuted,
 		Does: "retires the role's claim of a closed issue and cancels the segments it works"},
 	{Kind: record.OutboxKindSupervise, Op: "tree_close"}: {Way: OutboxExecuted,
@@ -615,7 +617,10 @@ func (d *driver) superviseRow(row record.OutboxRow, payload record.SuperviseRequ
 	switch payload.Op {
 	case "start":
 		return d.start(row, payload, *issue, token)
-	case "suspend":
+	case "suspend", "step_stop":
+		// A step stop is the suspend of the process of the step a stopped task ran (workflow's
+		// stopTask), which the daemon's own executor runs as a suspend, so the stub runs it as
+		// one too.
 		return d.suspend(row, payload, *issue, token)
 	case "issue_close":
 		c, found := d.claims[token]

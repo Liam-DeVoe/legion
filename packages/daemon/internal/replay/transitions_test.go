@@ -80,8 +80,9 @@ func fold(p phase.Phase) phase.Phase {
 }
 
 // recordedRows is every move a window this tool replays can record: each row of the table of
-// main, of legion-v20.42.5 and of legion-v19.57.3 (workflow.TableFor), and each row of releaseRows,
-// once each.
+// today's line under main, under legion-v20.42.5 and under legion-v19.57.3 (workflow.TableFor,
+// over phase.Order, the line of every issue of a recorded window, which ran before plan rows
+// existed), and each row of releaseRows, once each.
 func recordedRows(t *testing.T) []recordedRow {
 	t.Helper()
 	var rows []recordedRow
@@ -94,7 +95,7 @@ func recordedRows(t *testing.T) []recordedRow {
 		}
 	}
 	for _, name := range []string{record.MainRule.Name, "legion-v20.42.5", "legion-v19.57.3"} {
-		for _, row := range workflow.TableFor(replayedRule(t, name)) {
+		for _, row := range workflow.TableFor(replayedRule(t, name), phase.Order) {
 			add(recordedRow{From: row.From, Trigger: row.Trigger, To: row.To, Source: "the table of " + name})
 		}
 	}
@@ -264,8 +265,9 @@ var wantFacts = map[string]FactWay{
 // intake.Fact names (intakeFactTypes) — the ones Dispatch events decode to and the ones the
 // daemon's other producers apply, its API, ticks, boots, outbox executors, supervision and GitHub
 // intake among them — is injected by the replay from the record, produced by the replay as the
-// daemon's own producer produces it, or left out under a named assumption (FactSources). It fails
-// for a type with no entry, for an entry that names no fact type, for an entry left out under no
+// daemon's own producer produces it, named as the act of a release later than every recorded
+// window (FactUnrecorded), or left out under a named assumption (FactSources). It fails for a
+// type with no entry, for an entry that names no fact type, for an entry left out under no
 // assumption the tool's list holds, and for a way that differs from the design's (wantFacts).
 func TestEveryFactANonDispatchProducerAppliesHasASource(t *testing.T) {
 	facts := intakeFactTypes(t)
@@ -281,7 +283,7 @@ func TestEveryFactANonDispatchProducerAppliesHasASource(t *testing.T) {
 			continue
 		}
 		switch source.Way {
-		case FactInjected, FactProduced:
+		case FactInjected, FactProduced, FactUnrecorded:
 			if source.From == "" {
 				t.Errorf("FactSources %s intake.%s and says from nothing", source.Way, name)
 			}

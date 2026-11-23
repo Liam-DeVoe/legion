@@ -154,10 +154,11 @@ func moveOf(at time.Time, from, to phase.Phase, trigger workflow.TriggerKind, dr
 	return move
 }
 
-// pastReviewPhase says whether p is a phase past the review (record.PastReview): accepting, retro
-// or merging.
+// pastReviewPhase says whether p is a phase past the review of the default steps every recorded
+// window ran (record.InSlotlessPhase, the daemon's own rule's complement): accepting, retro or
+// merging.
 func pastReviewPhase(p phase.Phase) bool {
-	return record.PastReview(record.Issue{Phase: p})
+	return record.InSlotlessPhase(record.Issue{Phase: p})
 }
 
 // upTo is how many of ts, moments in time order, are at or before at: the index of the first one

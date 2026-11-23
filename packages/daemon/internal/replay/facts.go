@@ -136,8 +136,8 @@ func (h replayHandler) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (
 // firstBoot is the store migration of a FirstBoot: each issue of the project in the workflow that
 // the rule keeps a slot for where it stands (record.LineFacts.NeedsSlot), holds none, and that the
 // daemon has started — it carries the mark of a release for a wait (record.Issue.ReleasedForWaitAt),
-// owes its next worker a start (record.LineFacts.Owed), or stands past its review
-// (record.PastReview) — takes a slot, its mark cleared, at the clock's moment. The count may stand
+// owes its next worker a start (record.LineFacts.Owed), or stands in accepting, retro or merging
+// (record.InSlotlessPhase) — takes a slot, its mark cleared, at the clock's moment. The count may stand
 // above the cap after it, R5's second case; the pass that follows starts nothing R4 does not start
 // until it is below.
 func (h replayHandler) firstBoot(ctx context.Context, tx pgx.Tx) error {
@@ -167,7 +167,7 @@ func (h replayHandler) firstBoot(ctx context.Context, tx pgx.Tx) error {
 	for _, issue := range issues {
 		_, running := live[issue.Tree]
 		_, owes := facts.Owed[issue.Key]
-		started := issue.ReleasedForWaitAt != nil || owes || record.PastReview(issue)
+		started := issue.ReleasedForWaitAt != nil || owes || record.InSlotlessPhase(issue)
 		if holds[issue.Key] || !started || !facts.NeedsSlot(issue, byKey[issue.Tree], running) {
 			continue
 		}
@@ -231,6 +231,12 @@ var FactSources = map[string]FactSource{
 	"ClaimFailed":       {Way: FactInjected, From: "each recorded `supervise: claim failed`, at its offset in the segment of the failed claim's issue"},
 	"ProjectResumed":    {Way: FactInjected, From: "each recorded `pause: the project is resumed`, after the replay's own resume of its pause"},
 	"PullRequestMerged": {Way: FactInjected, From: "a recorded move by pull_request_merged, at the end of its merging segment, or, where the close waited for the issues beneath it, the visit's first recorded `workflow: a merged issue's close waits for the issues beneath it`, at the end of its merging segment, which ends there; on the replay's own pull request record of the issue"},
+
+	// The API's facts that no recorded window holds, each with the act that makes it.
+	"PlanGiven": {Way: FactUnrecorded, From: "the API act register_plan, an owner's plan of one task " +
+		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
+	"TaskStopped": {Way: FactUnrecorded, From: "the API act stop_task, an owner's stop of a task " +
+		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
 
 	// The daemon's own producers, made by the replay as the daemon makes them.
 	"ControllerTick":           {Way: FactProduced, From: "the replay's ticks, a minute after each boot and every tick interval, observing from the shadow the keys blockers.WaitedOn selects"},

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -89,6 +90,7 @@ projects:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
     production_check: off
+    default_steps: [implementer, reviewer]
 gates:
   design: root-issues
 github_apps:
@@ -291,7 +293,7 @@ func populatedState(t *testing.T) State {
 	architectTurnStart := time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC)
 	architectTurnEnd := time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)
 	architectReady := time.Date(2026, 9, 22, 9, 15, 44, 0, time.UTC)
-	// What the five slots in use are spent on (contract 232): LEGION-208's implementer is in a
+	// What the five slots in use are spent on (contract 238): LEGION-208's implementer is in a
 	// turn; LEGION-210 is held and LEGION-212's tester is stranded, the two stopped holders, the
 	// older stopped when LEGION-210's implementer failed; and the two reviewing roots are idle.
 	// No returned member of the line is without a slot, and the one issue of the starting part,
@@ -705,7 +707,7 @@ func populatedState(t *testing.T) State {
 				Slot: &SlotView{
 					Index:      2,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
-					// Its retired tester is the stranded claim that stops it (contract 232).
+					// Its retired tester is the stranded claim that stops it (contract 238).
 					State: string(record.HolderStopped),
 					Since: &testerStoppedAt,
 				},
@@ -1791,6 +1793,23 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "signoff.json", SignOffResponse{})
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
+}
+
+// The two routes of the owner's plan (contract 219) each have a fixture, named for its route as
+// the routes above are. register_plan answers the plan it took, each task with the steps its block
+// names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
+// fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
+// there.
+func TestOwnerPlanRouteGoldens(t *testing.T) {
+	golden(t, "plan-register.json", PlanRegisterResponse{Plan: registeredPlan(plan.Plan{
+		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
+		Version:    4,
+		Tasks: []plan.Task{{
+			ID:    "a",
+			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+		}},
+	})})
+	golden(t, "task-stop.json", EmptyResponse{})
 }
 
 // The table of answers a plugin parses (answers.go): one row per response schema, the routes

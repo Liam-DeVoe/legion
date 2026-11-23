@@ -47,6 +47,11 @@ const (
 	// FactLeftOut is a fact a replay never applies, under the assumption FactSource.Assumption
 	// names: one that changes nothing the replay decides or measures.
 	FactLeftOut FactWay = "left_out"
+	// FactUnrecorded is a fact no window this tool has recorded holds: its act arrived after
+	// every recorded window, so no record carries a line of it and the replay injects none.
+	// FactSource.From says which act makes it and when the act arrived. A window recorded after
+	// that release does hold it, and the fact then takes an injected entry of its own.
+	FactUnrecorded FactWay = "unrecorded"
 )
 
 // FactSource is how a replay comes by one kind of fact: its way, what it builds the fact from or
@@ -569,12 +574,16 @@ func (d *driver) reviewFirstStart(key string) error {
 	return nil
 }
 
-// run replays the window: the start state at its start, the replay's copy of Dispatch brought to
-// the record's state there, then every item of the queue in order to its end, the worker stub
-// after each.
+// run replays the window: the chain that runs at its start, the start state at its start, the
+// replay's copy of Dispatch brought to the record's state there, then every item of the queue in
+// order to its end, the worker stub after each.
 func (d *driver) run() error {
 	w, t := d.window, d.trace
 	d.clock.advance(w.From)
+	// The process that runs at the window's start is the newest that started before it; a boot
+	// at the start itself is applied as a boot. It is built before the start state, which asks its
+	// engine for the resume task of each owed start it seeds (seed, SeedAndReport).
+	d.newChain(w.From)
 	if err := d.seed(); err != nil {
 		return err
 	}
@@ -600,9 +609,6 @@ func (d *driver) run() error {
 			d.stretchFrom[key] = start
 		}
 	}
-	// The process that runs at the window's start is the newest that started before it; a boot
-	// at the start itself is applied as a boot.
-	d.newChain(w.From)
 	// Under a rule whose start may take a cover the start state the record's rule left is first
 	// booted onto the rule, as the release that runs it boots (FirstBoot, spec v4 R9): every started
 	// issue holding no slot takes one, and the pass of the same fact works out the covers.
@@ -758,7 +764,7 @@ func (d *driver) down(at time.Time) bool {
 // once the slot went back.
 func (d *driver) seed() error {
 	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
-		report, err := SeedAndReport(ctx, tx, d.records, d.st, withRanks(d.trace, d.shadow.ranks), d.window.From)
+		report, err := SeedAndReport(ctx, tx, d.records, d.st, d.engine, withRanks(d.trace, d.shadow.ranks), d.window.From)
 		if err != nil {
 			return err
 		}

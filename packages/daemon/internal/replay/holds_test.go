@@ -86,9 +86,24 @@ func holdCases() map[string]holdCase {
 	}
 }
 
+// noRecordedWindowHolds is each word of record.HeldReasons that has no window below, with the
+// reason it has none in place of a source: the hold comes only from an API act no recorded window
+// holds, so a window built here could record the act but no release this tool replays ever wrote
+// the hold. A window recorded after the release that added the act does write it, and then the
+// word takes a case of its own above and leaves this map.
+var noRecordedWindowHolds = map[string]string{
+	string(record.HeldChildrenBeforeRetro): "the hold comes only from the API act register_plan, of a plan whose task's last step is not " +
+		"the owner's acceptance (cybermonklabs/legion#4611, workflow's holdBeforeRetro), and every window this tool has " +
+		"recorded was released before that act existed, so no recorded release holds a parent before its retro",
+	string(record.HeldTaskStopped): "the hold comes only from the API act stop_task (cybermonklabs/legion#4611, workflow's " +
+		"taskStopped), and every window this tool has recorded was released before that act existed, so no recorded " +
+		"release stops a task",
+}
+
 // Every hold that can keep an issue from starting applies in a replay at the times the window
 // records it (spec R2, assumption 7): each word of record.HeldReasons, read from the code so a
-// word added there fails here until it has a window below, the phase held, a project's pause and
+// word added there fails here until it has a window below or a reason why no recorded window holds
+// it (noRecordedWindowHolds), the phase held, a project's pause and
 // the two holds of a boot's catch-up. For each, a small window built in Go (windowBuilder) records
 // the hold beginning and ending at known times while nothing else stops the issue, the window is
 // replayed under the rule main with every segment traced, and the issue's next start must come
@@ -104,9 +119,20 @@ func holdCases() map[string]holdCase {
 func TestEveryHoldHasASourceInTheReplay(t *testing.T) {
 	cases := holdCases()
 	for _, word := range record.HeldReasons {
-		if _, covered := cases[string(word)]; !covered {
-			t.Errorf("record.HeldReasons holds the word %q, and this test replays no window for it: write one in which that hold begins and ends at recorded times",
-				word)
+		_, covered := cases[string(word)]
+		why, named := noRecordedWindowHolds[string(word)]
+		switch {
+		case covered && named:
+			t.Errorf("record.HeldReasons' word %q has a window below and a reason why no recorded window holds it (%s): keep the window and take the reason away",
+				word, why)
+		case !covered && !named:
+			t.Errorf("record.HeldReasons holds the word %q, and this test replays no window for it: write one in which that hold begins and ends at recorded times, "+
+				"or name in noRecordedWindowHolds why no recorded window holds it", word)
+		}
+	}
+	for name, why := range noRecordedWindowHolds {
+		if !slices.Contains(record.HeldReasons, record.HeldReason(name)) {
+			t.Errorf("noRecordedWindowHolds names %q (%s), which is no word of record.HeldReasons", name, why)
 		}
 	}
 	others := []string{holdHeldPhase, holdPause, holdPending, holdCatchingUp}

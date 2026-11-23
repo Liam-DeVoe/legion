@@ -414,8 +414,20 @@ func (d *driver) enterRecorded(p *piece) error {
 				d.drops[p.issue] = move.Drop
 				d.queueLeft(p.issue, move, pr)
 			}
-			result, err := d.apply("api", d.factID("backward", p.issue, to), intake.BackwardMove{Issue: p.issue,
-				Requester: phaseRole(move.From), To: to, Reason: fmt.Sprintf("the record's move back from %s to %s", move.From, to)})
+			// A move back the architect asks for is an architect's request, judged again under
+			// the fact lock (intake.ArchitectRequest), so it carries the claim, the generation and
+			// the run the record stands at (architectRequest); a worker's own move back carries
+			// none of them, as the daemon's own route leaves them unset for it.
+			back := intake.BackwardMove{Issue: p.issue, Requester: phaseRole(move.From), To: to,
+				Reason: fmt.Sprintf("the record's move back from %s to %s", move.From, to)}
+			if back.Requester == claim.RoleArchitect {
+				by, generation, entry, err := d.architectRequest(p.issue)
+				if err != nil {
+					return err
+				}
+				back.By, back.Generation, back.Entry = by, generation, entry
+			}
+			result, err := d.apply("api", d.factID("backward", p.issue, to), back)
 			if err != nil {
 				return err
 			}
@@ -508,12 +520,49 @@ func (d *driver) stretchEnds(p *piece) error {
 	return nil
 }
 
+// architectRequest is what an architect's request of key carries beside its own words
+// (intake.ArchitectRequest): the claim of the architect that owns the issue, the issue's
+// generation and the run of the step it stands in. The workflow judges all three again under the
+// fact lock (workflow's requestRefusal), as it judges a live request, and a request that names
+// none of them is refused as one of an architect outside the tree.
+//
+// The architect is the issue's tree root's (record.ArchitectAbove, which takes the root's
+// architect for every issue of the tree): the recorded windows this tool replays ran before a
+// child held an architect of its own, and the record's own authority for each act it replays was
+// judged live when the act happened, so the replay makes each as the architect the record shows
+// owning the tree. The generation and the run are the record's at the moment of the act, so a
+// request of a run the replay has already left is refused here exactly as the daemon refuses it.
+func (d *driver) architectRequest(key string) (claim.Token, uint64, record.StepEntry, error) {
+	issue, err := d.recorded(key)
+	if err != nil || issue == nil {
+		return "", 0, record.StepEntry{}, err
+	}
+	project, err := claim.ProjectToken(d.window.Project)
+	if err != nil {
+		return "", 0, record.StepEntry{}, fmt.Errorf("replay: the architect of %s: %w", key, err)
+	}
+	token, err := claim.NewToken(project, issue.Tree, claim.RoleArchitect)
+	if err != nil {
+		return "", 0, record.StepEntry{}, fmt.Errorf("replay: the architect of %s: %w", key, err)
+	}
+	var entry record.StepEntry
+	err = store.TransactWith(d.ctx, d.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		entry, err = d.records.OpenStep(ctx, tx, key)
+		return err
+	})
+	return token, issue.Generation, entry, err
+}
+
 // signOff applies key's architect's sign-off (intake.SignOff) through the engine's own handler.
 // A sign-off the engine holds while a member beneath is in the workflow is applied again at each
 // leave of a member of its tree (observe), and is no refusal: the record shows the architect
 // signing off again at once.
 func (d *driver) signOff(key string) error {
-	result, err := d.apply("api", d.factID("sign-off", key), intake.SignOff{Issue: key})
+	by, generation, entry, err := d.architectRequest(key)
+	if err != nil {
+		return err
+	}
+	result, err := d.apply("api", d.factID("sign-off", key), intake.SignOff{Issue: key, By: by, Generation: generation, Entry: entry})
 	if err != nil {
 		return err
 	}

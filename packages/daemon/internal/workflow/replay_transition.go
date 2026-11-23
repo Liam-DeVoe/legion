@@ -27,12 +27,12 @@ var completingRole = map[TriggerKind]claim.Role{
 
 // ReplayTransition makes, in tx, one move of a recorded window that a replay of the window
 // (internal/replay) enters at the end of its work segment: key's issue, at generation, moved from
-// from to to by trigger, through the row of the engine's table (TableFor of its slot rule) and the
-// transition the daemon runs for that trigger, so every effect of the move is the daemon's own —
-// the status it writes, the start of the next phase's worker with its slot mark and its entry,
-// the notice, the merge forward on entry, the leave of a move to done. The checks a live
-// completion passes before it reaches the transition (its claim's run, its handoff record, a
-// review's head) are not made: the record shows the completion passed them.
+// from to to by trigger, through the row of the table of the issue's line under the engine's slot
+// rule (Walk.table) and the transition the daemon runs for that trigger, so every effect of the
+// move is the daemon's own — the status it writes, the start of the next phase's worker with its
+// slot mark and its entry, the notice, the merge forward on entry, the leave of a move to done.
+// The checks a live completion passes before it reaches the transition (its claim's run, its
+// handoff record, a review's head) are not made: the record shows the completion passed them.
 //
 // It answers why it refused the move, and "" for a move made. It refuses, writing nothing, unless
 // the issue is recorded, stands in from at generation, a row of the table serves the move with the
@@ -60,7 +60,11 @@ func (e *Engine) ReplayTransition(ctx context.Context, tx pgx.Tx, key string, ge
 	if err != nil {
 		return "", err
 	}
-	if _, served := e.row(from, trigger, to, Snapshot{Phase: from, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}); !served {
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return "", err
+	}
+	if _, served := w.row(from, trigger, to, Snapshot{Phase: from, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}); !served {
 		return fmt.Sprintf("no row of the table moves %s from %s to %s by %s with its pull request as recorded", key, from, to, trigger), nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
