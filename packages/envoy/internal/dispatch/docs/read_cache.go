@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"runtime/debug"
 	"strconv"
 	"sync"
@@ -59,24 +58,13 @@ func readDocumentStamp(ctx context.Context, q Queryer, room string) (DocumentSta
 	return stamp, nil
 }
 
-// documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds in a
-// process that runs with no Go memory limit, where nothing says how much memory it has: 256 MiB.
-// It is also the figure this package's memory arithmetic is calibrated at
-// (MemoryBounds.DocumentReadCache): the task those figures were measured on has 4,096 MiB, and
-// one request may raise the cache by at most 256 MiB (cmd/dispatch/memory_test.go). An entry
-// heavier than an eighth of the budget is never stored.
+// documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds: 256 MiB
+// in every process, whatever its Go memory limit (MemoryBounds.DocumentReadCache, which does not
+// scale), and what boot logs as read_budget_bytes. It is also the figure this package's memory
+// arithmetic is calibrated at: the task those figures were measured on has 4,096 MiB, and one
+// request may raise the cache by at most 256 MiB (cmd/dispatch/memory_test.go). An entry heavier
+// than an eighth of the budget is never stored.
 const documentReadBudget = 256 << 20
-
-// readBudgetFor is the cold reads' cache budget for a process whose Go memory limit is memoryLimit
-// (debug.SetMemoryLimit(-1), math.MaxInt64 when none is set): a sixteenth of the limit, so the
-// cache follows the memory the process is given, at least 64 MiB, so the cache still stores a
-// document of 8 MiB, and at most 1 GiB; documentReadBudget with no limit.
-func readBudgetFor(memoryLimit int64) int64 {
-	if memoryLimit == math.MaxInt64 {
-		return documentReadBudget
-	}
-	return min(max(memoryLimit/16, 64<<20), 1<<30)
-}
 
 // coldReadTimeout bounds a cold read's fold of the stored history (LoadDocument), which belongs to
 // the document rather than to the request that started it, so no request's end cancels it.

@@ -301,8 +301,10 @@ func TestRV9ACatchUpsDrainLandsParkedContentPastTheDocumentBoundAndStoresIt(t *t
 }
 
 // 4,096 frames of one delete range each under one client, each range at clocks of its own so no two
-// merge: the room parks 4,096 ranges, the cap, and is charged 32 bytes each. The live heap they
-// hold, read with the frames freed, must stay within four times that charge plus 1 MiB.
+// merge: the room parks 4,096 ranges, the cap, and is charged bytesOfHeapAParkedRange, 1,000
+// bytes, for each. The live heap they hold, read with the frames freed, must stay within that
+// charge plus 1 MiB: the price's own rule, which its heaviest shape is held to
+// (TestParkedDeleteRangesHoldNoMoreHeapThanTheirChargeAtTheirHeaviestShape).
 func TestRV9ParkedRangesOneAFrameHoldNoMoreHeapThanTheirCharge(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)
@@ -327,8 +329,8 @@ func TestRV9ParkedRangesOneAFrameHoldNoMoreHeapThanTheirCharge(t *testing.T) {
 	charge := applies.parkedRangeCount() * bytesOfHeapAParkedRange
 	t.Logf("%d one-range frames: the room parks %d ranges, charged %d bytes for them; the live heap grew %d bytes (%.1f bytes a range)",
 		maxParkedDeleteRanges, room.PendingStats().DeleteRanges, charge, held, float64(held)/float64(maxParkedDeleteRanges))
-	if held > 4*charge+(1<<20) {
-		t.Errorf("the room's parked ranges hold %d bytes of heap, past four times the %d it is charged plus 1 MiB", held, charge)
+	if held > charge+(1<<20) {
+		t.Errorf("the room's parked ranges hold %d bytes of heap, past the %d it is charged plus 1 MiB", held, charge)
 	}
 }
 

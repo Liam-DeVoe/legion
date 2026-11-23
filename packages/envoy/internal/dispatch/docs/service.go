@@ -526,8 +526,8 @@ type Service struct {
 	instances sync.Map
 	roomLoads sync.Map
 	// reads holds the renderings of the documents cold reads served, each under the stored state
-	// it was rendered from (coldRead), within the budget New gives it from the Go memory limit
-	// (readBudgetFor).
+	// it was rendered from (coldRead), within the fixed budget New gives it
+	// (MemoryBounds.DocumentReadCache, documentReadBudget).
 	reads *documentReads
 	// roomCap and connectionCap are the most room places and browser connections a document socket
 	// may find before it is refused (reserveRoom, reserveConnection): Deps.MaxLiveRooms and

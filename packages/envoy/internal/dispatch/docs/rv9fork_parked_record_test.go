@@ -18,11 +18,12 @@ func rv9DeleteFrame(client uint64, ranges []crdt.DeleteRange) []byte {
 }
 
 // Review 8's finding 3 with the record of cybermonklabs/ygo at 382ed018: the room parks one delete
-// range and is charged 32 bytes for it (bytesOfHeapAParkedRange) while the record of who parked what
-// (crdt.Doc.parkedDsBy, leaveParkedOut) keeps every range each pair of frames newly parked. A
-// frame of 4,095 one-clock ranges with gaps parks within maxParkedDeleteRanges; one frame of one
-// range over them and their gaps compacts the pending deletes to one range and records 4,096
-// pieces. Each pair records 8,191 ranges; none is pruned, since each overlaps the one range.
+// range and is charged 1,000 bytes for it (bytesOfHeapAParkedRange) while the record of who
+// parked what (crdt.Doc.parkedDsBy, leaveParkedOut) keeps every range each pair of frames newly
+// parked. A frame of 4,095 one-clock ranges with gaps parks within maxParkedDeleteRanges; one
+// frame of one range over them and their gaps compacts the pending deletes to one range and
+// records 4,096 pieces. Each pair records 8,191 ranges; none is pruned, since each overlaps the
+// one range.
 func TestRV9ForkParkedDeleteRecordIsHeapTheRoomBudgetDoesNotCharge(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)

@@ -179,7 +179,7 @@ Each item below names a variable, then its purpose.
   the room cap counts the rooms held and the rooms sockets being admitted reserved, each room once, and the connection cap the browsers connected and the sockets being admitted.
   The caps are counts kept as rooms load and unload and as sockets come and go, so admission walks no rooms.
   Boot logs both with the cold reads' cache budget, `dispatch: document rooms' limits` with `max_live_rooms`, `max_doc_connections` and `read_budget_bytes`;
-  that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
+  that budget is no setting and does not follow the Go memory limit: it is a fixed 256 MiB in every process.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
 A project's default repository belongs to the project, and no setting holds it:
