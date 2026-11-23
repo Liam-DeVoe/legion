@@ -29,6 +29,8 @@ e2e scripts/e2e/check-states.sh dispatch-tells scripts/e2e/check-states.sh packa
 # v-state-at-each-open-head: Dispatch has no settler and no state event (checkStatesSchedule and
 # the rest), so the test does not build. So for each envoy line below.
 go packages/envoy/internal/dispatch/api ^TestAStateEventIsPublishedForEachCheckAtEachOpenHead$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+# v-a-former-head-keeps-its-states
+go packages/envoy/internal/dispatch/api ^TestAFormerHeadOfAnOpenPullRequestKeepsItsStates$ packages/envoy/internal/dispatch/api/check_states_former_heads_test.go packages/envoy/internal/dispatch/api/check_states_test.go packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json
 # v-one-event-for-a-change
 go packages/envoy/internal/dispatch/api ^TestAChangeOfStatePublishesOneCheckStateChangedEvent$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
 # v-a-lost-start-is-settled
@@ -65,6 +67,9 @@ e2e scripts/e2e/check-states.sh fail-sends-back scripts/e2e/check-states.sh pack
 # builds.
 go packages/daemon/internal/workflow ^TestJudgeStates$ packages/daemon/internal/workflow/check_states_judge_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 go packages/daemon/internal/workflow ^TestTheTestingMoveStateTable$ packages/daemon/internal/workflow/check_states_judge_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-a-ci-failure-reaches-the-implementer: no state event and no completion with no verdict, so the
+# test does not build.
+go packages/daemon/internal/workflow ^TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks$ packages/daemon/internal/workflow/check_states_ci_failure_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
 
 # v-the-move-waits: the daemon refuses the tester's completion with no verdict.
 e2e scripts/e2e/check-states.sh completion-before-event scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go
