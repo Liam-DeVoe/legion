@@ -3278,7 +3278,7 @@ func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
 			t.Errorf("prepare of a Claude claim resuming %s (%s) = %v, want a refusal naming it and the backend change", name, file, err)
 		}
 	}
-	named := claudeConfigDir(claim.RoleTester) + "/projects/--cwd--/2026-09-23T12-00-00-000Z_0198.jsonl"
+	named := claudeConfigDir(claim.Agent(claim.RoleTester)) + "/projects/--cwd--/2026-09-23T12-00-00-000Z_0198.jsonl"
 	if _, err := resuming(named); err == nil ||
 		!strings.Contains(err.Error(), "not named for a Claude Code session id") {
 		t.Errorf("prepare of a Claude claim resuming %s = %v, want it refused as no session id", named, err)

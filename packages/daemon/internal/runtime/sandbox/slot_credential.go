@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -25,29 +26,49 @@ var _ runtime.SlotCredentials = (*Runtime)(nil)
 // judged on each read of the slot's Secret, so a step that began or ended since the read makes the
 // write a conflict judged again), minted on the issue the slot's Secret records (claimBundle), so a
 // role a plan defines holds the App of its type. The Secret is rewritten only where it does not
-// hold that render already. A runtime with no credential function wrote no slot any gh files, and
-// an issue with no live pod has no slot to write: the claim's next launch writes the App
-// runtime.SlotRole answers then, judged the same way.
+// hold that render already. While a launch into the slot is in flight (markSlotLaunch) the write is
+// refused, as a refresh's is (refreshUpdate): the launch's start waits for the very token the
+// launch wrote, so no other write may change it until the start ends. The write then waits for the
+// end of that launch, its start answered, failed or cut short (slotLaunchEnd), never for a clock,
+// and is made again on a fresh read of the pod and the stored claims, for the App judged then. Where
+// ctx ends first it answers runtime.ErrSlotCredentialPending, a wait, and writes nothing. It holds
+// no lock and no transaction while it waits, so the launch it waits for needs nothing of it. A
+// runtime with no credential function wrote no slot any gh files, and an issue with no live pod
+// has no slot to write: the claim's next launch writes the App runtime.SlotRole answers then,
+// judged the same way.
 func (r *Runtime) WriteSlotCredential(ctx context.Context, token claim.Token) error {
 	if r.gitHubCredential == nil {
 		return nil
 	}
-	pod, uid, live := r.slotPod(token)
-	if !live {
-		return nil
+	slot, ok := token.Slot()
+	if !ok {
+		return fmt.Errorf("write the slot of %s: the token names no slot", token)
 	}
-	held, err := r.slotHolders(ctx)
-	if err != nil {
-		return fmt.Errorf("write the slot of %s: the stored claims: %w", token, err)
+	for {
+		pod, uid, live := r.slotPod(token)
+		if !live {
+			return nil
+		}
+		held, err := r.slotHolders(ctx)
+		if err != nil {
+			return fmt.Errorf("write the slot of %s: the stored claims: %w", token, err)
+		}
+		repo, _ := fetchRepository(pod)
+		_, err = r.writeSlotCredential(ctx, pod, uid, slot, repo, r.claimBundle, slotWrite{role: r.judgeSlot(held, pod.Name, slot)})
+		if !errors.Is(err, errSlotLaunching) {
+			if err != nil {
+				return fmt.Errorf("write the slot of %s: %w", token, err)
+			}
+			return nil
+		}
+		if ended := r.slotLaunchEnd(slotKey{sandbox: pod.Name, slot: slot}); ended != nil {
+			select {
+			case <-ended:
+			case <-ctx.Done():
+				return fmt.Errorf("write the slot of %s: %w: %w", token, err, runtime.ErrSlotCredentialPending)
+			}
+		}
 	}
-	slot := slotOf(token)
-	repo, _ := fetchRepository(pod)
-	if _, err := r.writeSlotCredential(ctx, pod, uid, slot, repo, r.claimBundle, slotWrite{
-		role: r.judgeSlot(held, pod.Name, slot),
-	}); err != nil {
-		return fmt.Errorf("write the slot of %s: %w", token, err)
-	}
-	return nil
 }
 
 // SlotHoldsCredential satisfies runtime.SlotCredentials: it renders what the slot of token holds
@@ -74,9 +95,12 @@ func (r *Runtime) SlotHoldsCredential(ctx context.Context, token claim.Token, ro
 	if !checks {
 		return fmt.Errorf("the launcher of %s in the pod %s cannot say what its slot's gh files hold: %w", token, pod.UID, runtime.ErrAwaitsPodUpdate)
 	}
-	slot := slotOf(token)
+	slot, ok := token.Slot()
+	if !ok {
+		return fmt.Errorf("read the slot of %s: the token names no slot", token)
+	}
 	reading, cancel := call(ctx)
-	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(reading, roleSecretName(pod.Name, slot), metav1.GetOptions{})
+	secret, err := r.kube.CoreV1().Secrets(r.namespace).Get(reading, roleSecretName(pod.Name, launcherOf(slot)), metav1.GetOptions{})
 	cancel()
 	if err != nil {
 		return fmt.Errorf("read the slot of %s: %w", token, err)

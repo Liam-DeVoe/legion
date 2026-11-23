@@ -35,7 +35,6 @@ import (
 func TestAKeyKeepsTheNameWhoseClaimHoldsItsSessionAfterItsRowsAreGone(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
-	tickingClock(engine)
 	apply := applyFacts(t, pool, engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	key, gen := root.Key, root.Generation

@@ -48,7 +48,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.session_agent, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
-	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work, c.launched_definition, c.launched_generation,
+	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work, c.role_change,
+	c.launched_definition, c.launched_generation,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -400,6 +401,17 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		}
 		endedWork = encoded
 	}
+	// Null is a claim that never took another role; one that did records the role it held before
+	// and whether its agent has been told, for the first prompt in the new role to tell
+	// (supervise's RoleChange, roleChangedTask).
+	var roleChange []byte
+	if c.RoleChange.From != "" {
+		encoded, err := json.Marshal(c.RoleChange)
+		if err != nil {
+			return fmt.Errorf("put claim %s: encode the other role it took: %w", c.Token, err)
+		}
+		roleChange = encoded
+	}
 	var enrollmentID, enrollmentIncarnation *string
 	if c.Enrollment != nil {
 		enrollmentID = &c.Enrollment.ID
@@ -423,12 +435,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
-		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
+		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work, role_change,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
 		launched_definition, launched_generation, retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59, $60, $61, $62,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -474,6 +486,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		pending_cause = excluded.pending_cause,
 		leak_check_cause = excluded.leak_check_cause,
 		ended_work = excluded.ended_work,
+		role_change = excluded.role_change,
 		handshake_entry = excluded.handshake_entry,
 		handshake_generation = excluded.handshake_generation,
 		handshake_queued_at = excluded.handshake_queued_at,
@@ -517,7 +530,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
-		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
+		c.PodEnd, string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork, roleChange,
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 		c.LaunchedDefinition, int64(c.LaunchedGeneration),
 	)
@@ -892,6 +905,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		outcomes                    []byte
 		abandoned                   []byte
 		endedWork                   []byte
+		roleChange                  []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept                        []byte
@@ -913,7 +927,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &sessionAgent, &c.DeliveredRows,
 		&turnStart, &turnEnd,
-		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork, &c.LaunchedDefinition, &launchedGeneration,
+		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork, &roleChange,
+		&c.LaunchedDefinition, &launchedGeneration,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -966,6 +981,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	if endedWork != nil {
 		if err := json.Unmarshal(endedWork, &c.EndedWork); err != nil {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode what its last let-go ended: %w", token, err)
+		}
+	}
+	// Null is a claim that never took another role (putClaim).
+	if roleChange != nil {
+		if err := json.Unmarshal(roleChange, &c.RoleChange); err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: decode the other role it took: %w", token, err)
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)

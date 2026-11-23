@@ -285,7 +285,7 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if queuedRowCovers(run, *root, issue.Phase) {
 		return nil
 	}
-	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	row, err := e.phaseRow(ctx, tx, *issue, role)
 	if err != nil {
 		return err
 	}

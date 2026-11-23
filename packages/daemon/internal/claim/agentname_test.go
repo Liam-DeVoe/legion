@@ -7,7 +7,8 @@ import (
 )
 
 // The name of a role's numbered agent (NumberedAgentName, from FirstAgentNumber, the role cut so
-// that the name holds at most 32 bytes) is a name of the agent grammar and reads back to its role
+// that the name holds at most 32 bytes) is a name of the role grammar, which an agent's name takes,
+// and reads back to its role
 // (NumberedAgentRole), and only such a name does: a role's own name, a number below
 // FirstAgentNumber or one NumberedAgentName never spells, a role cut otherwise, a name of no role
 // and the controller's read back to none.
@@ -17,8 +18,8 @@ func TestANumberedAgentsNameReadsBackToItsRole(t *testing.T) {
 	for _, role := range []Role{RoleImplementer, RoleTester, long} {
 		for _, n := range []int{FirstAgentNumber, 10, 123} {
 			name := NumberedAgentName(role, n)
-			if !agentName.MatchString(string(name)) {
-				t.Errorf("NumberedAgentName(%s, %d) = %q, which is no name of the agent grammar", role, n, name)
+			if !roleName.MatchString(string(name)) {
+				t.Errorf("NumberedAgentName(%s, %d) = %q, which is no name of the role grammar", role, n, name)
 			}
 			if got, ok := NumberedAgentRole(string(name), roles); !ok || got != role {
 				t.Errorf("NumberedAgentRole(%q) = %q, %t; want %s", name, got, ok, role)

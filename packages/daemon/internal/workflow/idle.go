@@ -6,6 +6,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -189,14 +190,13 @@ func (h IdleHold) String() string {
 
 // IdleDecision is what one of the two pod-release rules, IdleRelease or UnownedPodRelease,
 // decided about one pod: whether it is released, the hold that kept it when it is not, and the
-// live claims a release suspends, each by its token (Claims) beside its stored role (Roles), in
-// the order the view read them. A pod no claim owns has no such claim, so UnownedPodRelease names
-// none.
+// live claims a release suspends, each by its token beside its stored role (store.ReleasedClaim),
+// in the order the view read them. A pod no claim owns has no such claim, so UnownedPodRelease
+// names none.
 type IdleDecision struct {
 	Release bool
 	Hold    IdleHold
-	Claims  []claim.Token
-	Roles   []claim.Role
+	Claims  []store.ReleasedClaim
 	// HoldKinds names the hold more closely for the one hold that has more to say:
 	// IdleHoldBackgroundWork carries the kinds the held session reported (`subagent`,
 	// `async-job`, `claude-background-task`), which is what tells an operator reading the hold
@@ -287,13 +287,12 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.IsRoot() && view.Root.AwaitingPerson && !view.Root.Answered {
 		return IdleDecision{Hold: IdleHoldAwaitingPerson}
 	}
-	var claims []claim.Token
-	var roles []claim.Role
+	var claims []store.ReleasedClaim
 	for _, c := range view.Claims {
 		if !c.Live() {
 			continue
 		}
-		claims, roles = append(claims, c.Token), append(roles, c.Role)
+		claims = append(claims, store.ReleasedClaim{Token: c.Token, Role: c.Role})
 	}
 	if len(claims) == 0 {
 		return IdleDecision{Hold: IdleHoldNoLiveClaim}
@@ -342,7 +341,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldNotIdle}
 	}
-	return IdleDecision{Release: true, Claims: claims, Roles: roles}
+	return IdleDecision{Release: true, Claims: claims}
 }
 
 // UnownedPodRelease decides whether an issue's pod may be released because no claim of the issue
@@ -482,7 +481,18 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 // answers the role of the claim that works the task's place, pods.IdleView.PlaceRole, where the
 // view reads one, none at a place the owner does, and at step the role of the running step,
 // pods.IdleView.StepRole), serving the current generation: the one shape of claim a phase reminder
-// is armed in.
+// is armed in. Two claims of one issue can hold that role — the agent of a key on its step, beside
+// the role's own claim of an earlier version of the plan — and only the claim the record gives the
+// role's step works the phase (record.WorkerClaim over the role's phases row,
+// pods.IdleView.Phases): the claim the row names while it runs a step, and the role's own token
+// otherwise. A reminder due on the other holds no pod.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
-	return OpenRoleAt(view.Phase, view.StepRole, view.PlaceRole) == c.Role && c.ServingGeneration == view.Generation
+	role := OpenRoleAt(view.Phase, view.StepRole, view.PlaceRole)
+	if role == "" || role != c.Role || c.ServingGeneration != view.Generation {
+		return false
+	}
+	row := view.Phases[role]
+	worker, err := record.WorkerClaim(view.Project, view.Issue, role,
+		[]record.PhaseRow{{Issue: view.Issue, Role: role, Claim: row.Claim, StepTask: row.StepTask}})
+	return err == nil && worker == c.Token
 }

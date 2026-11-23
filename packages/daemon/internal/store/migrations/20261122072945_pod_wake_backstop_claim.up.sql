@@ -11,30 +11,32 @@
 -- second arm was dropped on this table's one open backstop per role.
 --
 -- The open backstop is now one per claim: pod_wake_backstops_open_claim is unique on (project,
--- issue, claim) for a backstop not fired that names a claim, and the wake, the stop and the read
--- that name a claim act on that claim's backstop alone. A backstop the release before armed names
--- none, the empty string this column takes by default, and it is each claim of its role's, as that
--- release meant it: it stays one per role among the rows that name no claim
--- (pod_wake_backstops_open, kept under its name for those rows), a wake or a stop of any claim of
--- its role drops it, and when it comes due it wakes the claim of the worker on its role's step, as
--- it did. Every row the table holds takes the default, so the upgrade changes nothing of a
--- backstop already armed.
+-- issue, claim) for a backstop not fired, in place of the one open backstop per role
+-- (pod_wake_backstops_open), and the wake, the stop and the read that name a claim act on that
+-- claim's backstop alone. The update below names a claim on every row the table already holds. The
+-- release before armed a backstop for the worker of a role, the claim whose token it builds from
+-- the role, so a backstop it armed is that claim's: claim.NewToken's `legion-<project>-<issue,
+-- lowercased>-<role>`, where pod_wake_backstops.project is the project token. Every backstop then
+-- names a claim, and the column keeps no default and refuses the empty string, so no reader meets
+-- a backstop of no claim.
 --
 -- The release before names each column it reads and writes (armPodBackstop, DuePodBackstops,
--- CancelPodBackstops, OpenPodBackstop), so it neither reads nor writes this one, and every row it
--- inserts takes the default, which this release reads as before; its `on conflict do nothing` meets
--- the index of the rows that name no claim, as it met the one index before.
+-- CancelPodBackstops, OpenPodBackstop), so it never reads this one, and an arm of it would fail on
+-- the column, which takes no default. Every daemon on the database moves together, and the way
+-- back below drops the column before that release starts.
 --
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
--- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
--- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The release before allows one
--- open backstop per role, so the way back first deletes every open backstop of a role but the
--- newest, the one the latest release or stop armed; then it puts that one index back over every row
--- and drops the column. The drop and the delete of this migration's row go together: the delete is
--- what makes the version the store reports that release's own again, and both are owed to the
--- roll-forward, which then runs this file again. What the way back costs is the claim of each open
--- backstop and every older open backstop of a role, which a release arms again.
+-- paragraph (migrations.WayBack), run with every daemon on that database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The release before
+-- allows one open backstop per role, so the way back first deletes every open backstop of a role
+-- but the newest, the one the latest release or stop armed; then it puts that one index back over
+-- every row and drops the column. The drop and the delete of this migration's row go together: the
+-- delete is what makes the version the store reports that release's own again, and both are owed
+-- to the roll-forward, which then runs this file again, adds the column and names each backstop
+-- again. What the way back costs is every older open backstop of a role, which a release arms
+-- again, and the claim of each open backstop armed for another claim of its role, such as a key's
+-- agent on its step, on which the roll-forward names the role's own claim.
 --
 -- begin;
 -- delete from pod_wake_backstops b where not b.fired and exists (select 1 from pod_wake_backstops n where not n.fired and n.project = b.project and n.issue = b.issue and n.role = b.role and n.id > b.id);
@@ -45,6 +47,7 @@
 -- delete from schema_version where version = 20261122072945;
 -- commit;
 alter table pod_wake_backstops add column claim text not null default '';
+update pod_wake_backstops set claim = 'legion-' || project || '-' || lower(issue) || '-' || role;
+alter table pod_wake_backstops alter column claim drop default, add constraint pod_wake_backstops_claim_check check (claim <> '');
 drop index pod_wake_backstops_open;
-create unique index pod_wake_backstops_open on pod_wake_backstops (project, issue, role) where not fired and claim = '';
-create unique index pod_wake_backstops_open_claim on pod_wake_backstops (project, issue, claim) where not fired and claim <> '';
+create unique index pod_wake_backstops_open_claim on pod_wake_backstops (project, issue, claim) where not fired;

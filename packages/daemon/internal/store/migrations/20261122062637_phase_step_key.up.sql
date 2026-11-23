@@ -35,7 +35,10 @@
 -- each step the agent of the first place that runs as its phase, so `implementer:a reviewer:b
 -- implementer:b`'s step 3 would go to key a's agent, and serves no move back to a phase that runs
 -- at two earlier places, so the tester's move back in `implementer:a reviewer implementer:a tester`
--- would be refused. A rollback past 20261117034837_issue_plans, which drops step_task and
+-- would be refused. This release lets a project's default_steps name a role at two steps, and the
+-- release before refuses such a list when it loads legion.yaml (config/roles.go), so before the
+-- earlier image is pinned, remove from every project's default_steps each role it names at two
+-- steps. A rollback past 20261117034837_issue_plans, which drops step_task and
 -- step_place and this key with them, runs this way back first, and so does a rollback past the
 -- release that records each step, whose way back reads one row of each role (step_run_witness,
 -- 20261117004117_step_starts).

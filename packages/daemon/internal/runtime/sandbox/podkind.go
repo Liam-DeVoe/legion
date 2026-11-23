@@ -34,9 +34,10 @@ type podKind interface {
 	// the controller's pod. An issue pod's slots are these and its plan's agent names beside them
 	// (issueSlots).
 	roles(r *Runtime) []claim.Role
-	// claimToken is the claim of the launcher of slot, one of the pod's slots, on a pod of this kind
-	// of project, issue being the issue key its Secrets carry (secretAnnotations).
-	claimToken(project, issue string, slot claim.Role) (claim.Token, error)
+	// claimToken is the claim of the launcher of slot, one of the pod's slots (a launcher serves the
+	// slot of its name), on a pod of this kind of project, issue being the issue key its Secrets
+	// carry (secretAnnotations).
+	claimToken(project, issue string, slot claim.Agent) (claim.Token, error)
 	// prepare resolves what the kind decides of a launch, its working directory above all,
 	// refusing a spec it cannot honour.
 	prepare(l *launch) error
@@ -163,8 +164,8 @@ func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.res
 
 // claimToken is the claim of the agent slot is named for: an issue pod's slot runs the one agent
 // whose name it carries, a role's or a plan's (issueSlots).
-func (issuePod) claimToken(project, issue string, slot claim.Role) (claim.Token, error) {
-	return claim.AgentToken(project, issue, claim.Agent(slot))
+func (issuePod) claimToken(project, issue string, slot claim.Agent) (claim.Token, error) {
+	return claim.AgentToken(project, issue, slot)
 }
 
 // issueSlots adds to the slots of the pod l launches into (l.roles, the kind's roles) where that
@@ -180,7 +181,7 @@ func (issuePod) claimToken(project, issue string, slot claim.Role) (claim.Token,
 // gitHubBundles: the pod gets the slots of the kind's roles and of l's own claim, and the launch
 // is not charged to the claim's launch budget for an outage of the store. Such a pod lacks any
 // other agent's slot that the plan names, and its update round adds that slot once the plan reads
-// again (slotsDrift); a start of that agent waits for the round (templateLacks).
+// again (slotsDrift); a start of that agent waits for the round (runtime.PodLacks).
 func (r *Runtime) issueSlots(ctx context.Context, l *launch) {
 	if _, issue := l.kind.(issuePod); !issue {
 		return
@@ -197,8 +198,8 @@ func (r *Runtime) issueSlots(ctx context.Context, l *launch) {
 		l.roles = append(l.roles, slot)
 		l.agentRoles[slot] = agents[claim.Agent(slot)]
 	}
-	if own := slotOf(l.spec.Claim); own != "" && !slices.Contains(l.roles, own) {
-		l.roles = append(l.roles, own)
+	if own, ok := l.spec.Claim.Slot(); ok && !slices.Contains(l.roles, launcherOf(own)) {
+		l.roles = append(l.roles, launcherOf(own))
 	}
 }
 
@@ -614,7 +615,7 @@ func (controllerPod) container() string { return runtime.ControllerPodContainer 
 // resources is the controller's pod's reservation.
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
 
-func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
+func (controllerPod) claimToken(project, _ string, _ claim.Agent) (claim.Token, error) {
 	return claim.ControllerToken(project), nil
 }
 

@@ -8,18 +8,18 @@ Where it says to ask a person, a child's own architect sends the question to the
 A step `acceptance:owner` enters `accepting` as yours, and `acceptance` with no key as a fresh agent's, which ends it by its own verdict.
 Read, against the goal, every check and every requirement:
 
-1. where the task has a tester step before yours, the tester's handoff: `dispatch handoff-read --issue <issue> --phase test`;
+1. where the task has a tester step before yours, the handoff of each: `dispatch handoff-read --issue <issue> --phase test` reads the newest, `--version <n>` an earlier one;
 
 2. `dispatch results --issue <issue> --at <head>`: whether a pass stands for each check at the head the steps before yours passed;
 
-3. where the task has a reviewer step before yours, its approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), or its verdict with no pull request or at `reviewer:owner`, and each claim of its prose against the code at that head;
+3. where the task has a reviewer step before yours, each one's approval of the head its Legion footer names, never its `commit_id` (`skill://legion-worker/references/merge-gate.md`), or its verdict with no pull request or at `reviewer:owner`, and each claim of its prose against the code at that head;
 
 4. where the issue has a pull request, `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI (*A conflicting head*, below).
 
 - `sign_off`, or `complete_step` with `pass`, works only in `accepting`, where the Dispatch status reads `needs_review`;
   your `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
 
-- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: the `phase-finished` may never have reached you.
+- A `catch-up` whose `reason` names an issue waiting for your acceptance is its wake: its `phase-finished` may not have reached you.
 
 - `SIGNOFF_CHILD_IN_WORKFLOW` names each issue beneath still in the workflow: run each to done, or park it under the rule, and sign off again.
   Ask the person about one that can do neither, and hold the acceptance until they answer.
@@ -29,7 +29,7 @@ Read, against the goal, every check and every requirement:
   Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://`, `Handed dispatch://` or `Not filed:`):
   a closed issue hides its open questions from the controller.
 
-- No `after_merge` result is asked here; the production check records it after a merged issue's close.
+- No `after_merge` result is asked here; the production check records it after a merge.
 
 ## The last round
 
@@ -88,7 +88,7 @@ A head that conflicts with its base keeps the issue in its phase.
 The daemon asks for the merge forward only when the next step needs a mergeable head (*The daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`).
 A conflict it does not act on yet is recorded:
 the task's steps go on at that head, a reviewer step's approval of it (your verdict, at `reviewer:owner`) ends its review round, and the daemon acts on the move into `accepting`, `retro` or `merging`.
-When it asks away from the task's implementation step, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; at that step itself (`implementing`, or the `step` of a role of the type implementation) no notice comes.
+When it asks away from the task's implementation step, it tells you once by `checks-red`, naming the phase the issue stays in, the head, the base and why; at that step no notice comes.
 You start nothing for the merge.
 
 Where a reviewer step already ran, the daemon asks its agent (you, where it was `reviewer:owner`) to read the merge and approve the new head by its SHA, or request changes;
@@ -98,8 +98,8 @@ A task with no reviewer step has no review to await.
 
 ## A review thread GitHub will not resolve
 
-Only the pull request author's App resolves a thread, so the agent of the step that opened it resolves them all.
-When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's message for a person to resolve, with the options resolved and could not.
+Only the pull request author's App resolves a thread, so the step that opened it resolves them all.
+When GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's message, options resolved and could not.
 The merger does not complete while it is open.
 
 ## The close
@@ -112,8 +112,8 @@ A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger
 
-A root a person closed that stays `done` through its linger hands each child still in the workflow, a child that never started included, to Legion as a root of its own;
-only a finished, parked or never-released child stays.
+A root a person closed that stays `done` through its linger hands each child still in the workflow, one that never started included, to Legion as a root of its own;
+only a finished, parked or unreleased child stays.
 Ask the person whether a child's work must end with the root.
 A parked root hands over only a child in `merging` whose pull request is open.
 Your role prompt says what a `handed_over` catch-up asks of you.

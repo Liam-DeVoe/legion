@@ -270,11 +270,14 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
-/** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
- * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
- * until a session of the claim reports on `claims/ready` (the controller's never does), and
- * `failure` is absent for a claim the daemon holds no cause and sentence for. */
+/** `api.ClaimView` — `token` names the claim (contract 222: two claims of one issue can hold one
+ * role, so the issue and the role do not name a claim), `session` is empty until the claim's
+ * agent registers one, `locator` is absent while no process runs (queued, suspended, failed,
+ * retired), `capabilities` is absent until a session of the claim reports on `claims/ready` (the
+ * controller's never does), and `failure` is absent for a claim the daemon holds no cause and
+ * sentence for. */
 const legionClaimView = z.object({
+  token: nonEmptyString.optional(),
   session: z.string().optional(),
   state: z.enum(LEGION_CLAIM_STATES),
   locator: legionLocator.optional(),
@@ -807,6 +810,10 @@ const legionIssue = z.object({
   ancestry: z.array(issueKey).optional(),
   architect: legionClaimView.optional(),
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
+  /** `api.Issue.OtherClaims` — each claim of the issue that neither `architect` nor `workers`
+   * shows, with the role it holds (contract 222): the other claim of a role a keyed agent works the
+   * step of, found by its token. */
+  otherClaims: z.array(z.object({ role: stepRole, claim: legionClaimView })).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
   /** The deployment's design gate as this issue stands in it, one entry for each step the
@@ -1548,11 +1555,14 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
-/** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
- * claims it suspended (sorted, as the store holds them), when the release completed, and the size
- * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
- * required because `read_release_records` reads it: the empty list is the whole mark of a
- * release no wake can reach, which that report counts and measures nowhere, and the daemon
+/** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles of the
+ * claims it suspended (each once, sorted, as the store holds them), the tokens of those claims
+ * (`claims`, sorted; contract 222), when the release completed, and the size of the git bundle of
+ * unpushed work it saved, zero when the workspace held none. Two claims of one issue can hold one
+ * role, a keyed agent's on another role's step among them, so `claims` names what `roles` cannot;
+ * it is absent on a release that suspended no claim and on one recorded before contract 222.
+ * `roles` is required because `read_release_records` reads it: the empty list is the whole mark
+ * of a release no wake can reach, which that report counts and measures nowhere, and the daemon
  * writes the list on every release, empty rather than null. `issue` is required because that
  * report reads it too: a wake a project pause held names no release, and ends the releases of its
  * issue instead. */
@@ -1561,12 +1571,15 @@ const legionReleaseRecord = z.object({
   issue: issueKey,
   generation: z.number().int().nonnegative().optional(),
   roles: z.array(nonEmptyString),
+  claims: z.array(nonEmptyString).optional(),
   at: timestamp,
   bundleBytes: z.number().int().nonnegative().optional(),
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
- * no release row is recorded for it), the role of the claim it brought back, what woke it, when
+ * no release row is recorded for it), the role of the claim it brought back, that claim's token
+ * (`claim`, contract 222; absent on a wake recorded before it, which stands for each claim of its
+ * role: two claims of one issue can hold one role and each can be woken), what woke it, when
  * the wake reached the daemon, and `podReadyAt` and `firstTurnAt`, the first turn of that claim,
  * each absent until it is observed. `stuck` is a wake that went ten minutes with no turn of the
  * claim it brought back. `pause` is the project pause that held
@@ -1580,6 +1593,7 @@ const legionResumeRecord = z.object({
   release: z.number().int().nonnegative(),
   issue: issueKey,
   role: nonEmptyString.optional(),
+  claim: nonEmptyString.optional(),
   kind: nonEmptyString,
   at: timestamp,
   podReadyAt: timestamp.optional(),
@@ -2255,10 +2269,13 @@ export const LegionTaskStopRequest = z.strictObject({
 });
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
  * issue's phase and its open check for `handoff_complete`, `phase-reminder.ts` reads the phase
- * and, at `step`, the issue's `stepRole`, `phase-reminder.ts` and
+ * and, at `step`, the issue's `stepRole`, and the token of the claim that works its role's step
+ * (`workers{}.claim.token`, contract 222; a claim view's token sits under `otherClaims[].claim` as
+ * well), `phase-reminder.ts` and
  * `pi-legion/src/stall-evidence.ts` read the architect's claim state, and the controller's
  * `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold reason, slot,
- * design gate, and the state and both turn times of the architect's claim and of every worker's.
+ * design gate, and the state and both turn times of the architect's claim, of every worker's and
+ * of each other claim of the issue with its role and its token (`otherClaims`, contract 222).
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
@@ -2281,6 +2298,14 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
+  "workers{}.claim.token",
+  "otherClaims",
+  "otherClaims[].role",
+  "otherClaims[].claim",
+  "otherClaims[].claim.state",
+  "otherClaims[].claim.lastTurnStart",
+  "otherClaims[].claim.lastTurnEnd",
+  "otherClaims[].claim.token",
   "check",
   "check.role",
   "check.looks",

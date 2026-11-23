@@ -937,9 +937,10 @@ The state names the same claims on every read, after a restart or not, each with
 legion state --config legion.yaml --json | jq '.strandedClaims'
 ```
 
-Act only on the claims this list names, and leave out any you suspended on purpose. A claim's token
-is `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows: it ends in the
-name of the claim's agent, the role of that agent's first step, whatever role its step is on now.
+Act only on the claims this list names, and leave out any you suspended on purpose. A claim of an
+issue has the token `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows:
+it ends in the name of the claim's agent, the role of that agent's first step, whatever role its
+step is on now; the project's controller claim is `legion-<project>-controller`.
 The line and `legion state` name a role's own claim by its issue and role, and the claim of an agent
 named for another role by its token beside them (`WIDGETS-12 tester (claim
 legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue read apart.
@@ -953,8 +954,9 @@ legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue
 
 - **`suspendedWorkers`** (a suspended phase worker): the move depends on who suspended it, which
   `legion claims list --json` shows as `suspendedBy`, and `legion state` points there too.
-  Only an architect is sent a catch-up; a worker resumed behind the entry its role's phases row
-  names is sent that entry's work, which the daemon does on every admission pass and on a sweep
+  Only an architect is sent a catch-up; a worker resumed behind the entry its role's newest phases
+  row names (the row of the step it works now, or worked last) is sent that entry's work, which the
+  daemon does on every admission pass and on a sweep
   each minute, and one already at that entry relaunches with nothing to do. Once it runs the list
   stops naming it.
 
@@ -1479,12 +1481,12 @@ These arrive as messages on the Dispatch issue:
 - **`Legion hook work-back fired at 5 moves back: testing to implementing. Prompted: implementer, tester, reviewer.`**
   A hook of your `legion.yaml` ([hooks](/legion/legion/running-legion/#legionyaml)) counted that
   move back and fired: the daemon wrote the hook's words once for each role the line names, on the
-  topic of the claim of the agent that works that role's step (the architect's, for a step it does
-  itself). For `planner`, `implementer`, `tester` and `reviewer` that is the agent of the task's
-  step of the role's type, whether that step's role is the role itself or a role your deployment or
-  the issue's plan defines (a `checker` of the type testing, for `tester`), never the acceptance
-  for `reviewer`, and nobody where the task has no such step. The daemon then
-  posted this record of it. Nothing is held: the move started the agent of the step it
+  topic of the claim of the agent that works that role's step that started last (the architect's,
+  for a step it does itself). For `planner`, `implementer`, `tester` and `reviewer` that is the
+  agent of the task's step of the role's type, whether that step's role is the role itself or a
+  role your deployment or the issue's plan defines (a `checker` of the type testing, for
+  `tester`), never the acceptance for `reviewer`, and nobody where the task has no such step. The
+  daemon then posted this record of it. Nothing is held: the move started the agent of the step it
   opened, or told the architect that step in an `owner-step` where the step is its own, and each
   agent answers in its own turn. A hook names no architect role: the daemon's own wake to an
   architect is a notice.
@@ -1513,7 +1515,8 @@ These arrive as messages on the Dispatch issue:
   the review's own word for the code it read. A review-App review whose footer names another head,
   or none, is set aside and decides nothing, logged at warn as `workflow: a review decides nothing:
   footer names <sha>, not the head <sha>` or `… footer names no head`, with `footer_head` and
-  `head`; the reason is kept on the reviewer's row and named in the stuck notice the architect
+  `head`; the reason is kept on the phases row of the reviewer step whose round it is and named in
+  the stuck notice the architect
   gets, and the remedy is the reviewer submitting again at the head it read, which it takes from
   `gh pr view <n> --json headRefOid`. A person's review decides by its webhook on the `commit_id`
   that event carried; read from GitHub's list, where that id has moved, it decides nothing, logged
@@ -1557,9 +1560,11 @@ These arrive as messages on the Dispatch issue:
   reports that head one the issue may advance on.
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
-  commit to the head. On an issue with a pull request, a review moves that commit only when it is
-  the reviewer's own (its Legion footer names the session the reviewer's claim records), the
-  reviewer's phase row holds the task of an entry, and the footer's `entry` is the entry on that
+  commit to the head. Each reviewer step of a task keeps its own commit on its phases row, and the
+  first round of a later reviewer step names the commit of the reviewer step before it. On an
+  issue with a pull request, a review moves that commit only when it is the reviewer's own (its
+  Legion footer names the session the reviewer's claim records), the phases row of the reviewer
+  step whose round it is holds the task of an entry, and the footer's `entry` is the entry on that
   row. A review step that ends by its verdict, the reviewer's on an issue with no pull request or
   one the architect does itself, moves it instead to the commit its report names, where the report
   is of the entry the reviewer's row stands on. Each task the reviewer gets in its
@@ -1571,10 +1576,10 @@ These arrive as messages on the Dispatch issue:
   since the footer's session and head are still read. A review whose footer names no entry, or
   another one, such as a review of a round before a new generation or a carried hand-over's
   promotion entered the reviewer again, decides its round as any other and leaves the commit where
-  it stands; so does a person's review. The next round then reads from an older commit, or the
-  whole change where none stands, and a new generation clears the commit, so its first round reads
-  the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
-  holds.
+  it stands; so does a person's review. The next round of that step then reads from an older commit,
+  or the whole change where none stands, and a new generation clears the commit, so its first round
+  reads the whole change. The footer of the newest deciding review of that step on GitHub shows
+  which case holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon asks the agent of the task's
   last step of the type implementation (the implementer, on the default steps, or the architect
@@ -1613,17 +1618,21 @@ These arrive as messages on the Dispatch issue:
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, as when a request for changes ended a review round the
   reviewer had not completed. The daemon ends no turn, so the turn reporting the completion is of
-  an entry behind the one the role's phases row names, and nothing is recorded. The refusal
-  names the issue, the role and the phase, the entry the completion is of and the entry the
-  role's phases row is on, and then what decided it, which is one of four readings: the
+  an entry behind the one the phases row of the step the task stands at names, and nothing is
+  recorded. The refusal names the issue, the role and the phase, the entry the completion is of
+  and the entry that row is on, and then what decided it, which is one of five readings: the
   completion is at another commit than the head the record holds, or the record holds no pull
   request for the issue; it names no commit at all, so it says nothing about any head; the phase
   ends with no handoff record this role writes — retro and merging — so nothing the completion
-  names says which entry's work it is, and no head it reports on answers for it; or the move
+  names says which entry's work it is, and no head it reports on answers for it; the move
   that handed the phase out again moved the issue back, which asks for this phase's work to be
-  done again whatever head the completion names. When the task of that entry already waits on
-  the claim, the refusal says the turn began before it reached the session. It then tells the
-  worker what to do in the same words the `legion` tool's description gives for the code
+  done again whatever head the completion names; or the entry the completion serves is of
+  another of the role's steps or its retro, or of a run of this step that the task left for one of
+  them, such as step 1 of `implementer:a reviewer implementer:a` once step 3 runs, whose work is
+  not the work the task stands at.
+  When the task of that entry already waits on the claim, the refusal says the turn began
+  before it reached the session. It then tells the worker what to do in the same words the
+  `legion` tool's description gives for the code
   (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
   without completing; the task of the entry the phase is on is owed to the claim and the daemon
   sends it by itself, which it does on every admission pass and on a sweep each minute; and that
@@ -1633,17 +1642,26 @@ These arrive as messages on the Dispatch issue:
   A completion at the head the record holds is taken rather than refused, where the phase ends
   with a handoff record this role writes and no move back raised the entry it is behind: the
   phase was handed out again at that same head, so the work the new entry's task asks for is the
-  work that turn did. The same code on a completion of an entry above the one the phases row
-  names is one the record never produces, since the daemon raises the row in the transaction
+  work that turn did. The same code on a completion of an entry above the one the row of the step
+  the task stands at names is one the record never produces, since the daemon raises the row in
+  the transaction
   that composes the entry's task; that refusal tells the worker to end the turn and tell the
   architect. Either refusal comes only while the role works the phase the issue stands in. A
-  completion of another entry than the role's phases row names, from a role that no longer
+  completion of an entry that no phases row of the role stands on, from a role that no longer
   works the issue's phase — a taken completion sent again once it has moved the issue on, or one
   naming a newer record — is answered `HANDOFF_NOT_CURRENT_PHASE` instead, in the words the
   workflow answers that code with, `the <role> does not run phase <phase> of <KEY>; this
-  completion changed nothing`, and nothing is recorded: the task of that role's entry was
+  completion changed nothing`, and nothing is recorded: the task of that entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
-  none.
+  none. Where two agents of one role run its steps, as `implementer:a tester:b implementer:b`
+  does, a turn of one agent's step that completes while the task stands at the other agent's
+  step of that role is answered `HANDOFF_NOT_CURRENT_PHASE` too, with these words: `the <role>
+  step of <KEY> that the task stands at, in phase <phase>, is the work of another agent's claim,
+  <claim>, on entry <n>; this completion is of entry <m>, a step this claim ran that the task has
+  left, so no task of that step comes to this claim: do not wait for one and do not complete
+  again; this completion changed nothing`. The task of the entry the phase is on goes to the
+  claim it names, so this refusal, unlike `HANDOFF_STALE_ENTRY`, promises the completing agent
+  nothing.
 
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon

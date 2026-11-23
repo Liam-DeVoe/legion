@@ -257,9 +257,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * the record's `placeRole` where it names one (contract 236: the fresh agent of acceptance at
    * `accepting`, the retro's agent at `retro`, and the architect at a step of its own, where no
    * worker is reminded), and otherwise the phase's role, or at `step`, which no role's phase names,
-   * the issue's `stepRole`, a role of the deployment or of the plan — and when
-   * the daemon has failed this role's claim, which is the daemon's own word that this process is
-   * finished: a claim the daemon failed runs no further turn in this process — its retry
+   * the issue's `stepRole`, a role of the deployment or of the plan — when another claim of this
+   * role works the role's step, and when the daemon has failed this claim, which is the daemon's own
+   * word that this process is finished. Two claims of one issue can hold one role — the agent of a
+   * key on a step of another role, beside that role's own claim of an earlier version of the plan —
+   * and only the worker on the step, the claim the record names by its token under `workers`
+   * (contract 222), works the phase: the other claim is not reminded, so it never reaches the
+   * architect as that role's worker. A record that names no token, from a daemon below 222, keeps
+   * the role's rule. A claim the daemon failed runs no further turn in this process — its retry
    * relaunches this session in a new process, or starts a new session once the daemon's
    * `forgetSession` (its supervise package) has dropped this one — and a reminder written now
    * reaches nobody who can act on it. That is what stops Claude Code's reminder, which has no
@@ -296,7 +301,17 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: false, record };
     }
-    const state = record.workers?.[claim.role]?.claim?.state;
+    const worker = record.workers?.[claim.role]?.claim;
+    if (worker?.token !== undefined && worker.token !== claim.claimToken) {
+      deps.log.debug("legion: another claim works this role's step; no reminder is sent", {
+        issue: claim.issue,
+        role: claim.role,
+        claim: claim.claimToken,
+        worker: worker.token,
+      });
+      return { reminds: false, record };
+    }
+    const state = worker?.state;
     if (state === "failed") {
       deps.log.debug("legion: the daemon has failed this claim; no reminder is sent", {
         issue: claim.issue,

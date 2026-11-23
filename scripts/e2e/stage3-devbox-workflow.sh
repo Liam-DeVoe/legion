@@ -903,9 +903,9 @@ primary_issue() {
   wait_for_worker "$root_issue" reviewer
   pass
 
-  # Three real GitHub changes-requested reviews, each posted by the reviewer pane and ended by its
-  # completion, exercise the round counter, the return to implementing, and the third `pr-blocked`
-  # publication. Every recovery repeats the real workers.
+  # Three real GitHub changes-requested reviews, each posted by the reviewer pane, which then
+  # records its handoff and completes, exercise the round counter, the return to implementing,
+  # and the third `pr-blocked` publication. Every recovery repeats the real workers.
   for round in 1 2 3; do
     begin "review-round-$round-changes-requested"
     # A review that names no correction leaves the implementer nothing it may change under a spec
@@ -919,8 +919,11 @@ primary_issue() {
       review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
-    # The round ends when the reviewer completes it: its review, its handoff record, its completion.
+    # The request for changes ends the round whether or not the reviewer has completed
+    # (workflow's roundRejected), so the proof waits for the reviewer's handoff record, within a
+    # turn's budget, before it checks it.
     wait_for_phase "$root_issue" implementing 1200
+    until_true "$phase_seconds" "the reviewer's round $round handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer
     assert_handoff_record "$root_issue" reviewer reviewing "$round"
     assert_review_of_head "$root_issue" "$round" CHANGES_REQUESTED
     until_true 180 "round $round to write in_progress on the Dispatch board" dispatch_status_is "$root_issue" in_progress
@@ -1006,6 +1009,7 @@ primary_issue() {
     fail "a status write is pending for $root_issue at accepting, which writes none: $(jq -c --arg issue "$root_issue" '[.pendingStatusWrites[]? | select(.issue == $issue)]' "$evidence/accepting.json")"
   dispatch_status_is "$root_issue" needs_review >/dev/null ||
     fail "the board shows $root_issue $(dispatch_get "issues/$root_issue" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
+  until_true "$phase_seconds" "the reviewer's round 3 handoff record on $root_issue" role_handoff_recorded "$root_issue" reviewer
   assert_handoff_record "$root_issue" reviewer reviewing 3
   assert_review_of_head "$root_issue" 3 APPROVED
   note "the reviewer's approval moved $root_issue to accepting: no worker started (the implementer's claim holds ${pending_phase:+a $pending_phase task, }no retro task), the board still needs_review with no status write pending, and the architect holds the reviewer's phase-finished notice"

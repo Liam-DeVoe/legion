@@ -250,8 +250,9 @@ func seedRelease(t *testing.T, pool *pgxpool.Pool, roles string, at time.Time) i
 	return id
 }
 
-// seedOpenResume records a wake of role that no first turn ever stamped, against release: the row
-// that says a pod is coming back for that role, which the role's next wake is refused by.
+// seedOpenResume records a wake of role's own claim that no first turn ever stamped, against
+// release: the row that says a pod is coming back for that claim, which the claim's next wake is
+// refused by.
 //
 // seen_release is read here as the take reads it (store's newestPodRelease): the issue's newest
 // release of whatever kind at this moment. So a resume seeded before a release is one the heal
@@ -259,10 +260,10 @@ func seedRelease(t *testing.T, pool *pgxpool.Pool, roles string, at time.Time) i
 // the difference the cases below turn on.
 func seedOpenResume(t *testing.T, pool *pgxpool.Pool, release int64, role claim.Role, kind string, at time.Time) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `insert into pod_resumes (release_id, project, issue, role, kind, at, seen_release)
-		values ($1, $2, 'LEGION-208', $3, $4, $5,
+	if _, err := pool.Exec(context.Background(), `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, seen_release)
+		values ($1, $2, 'LEGION-208', $3, $6, $4, $5,
 			coalesce((select max(id) from pod_releases where project = $2 and issue = 'LEGION-208'), 0))`,
-		release, wakeProjectToken(t), string(role), kind, at); err != nil {
+		release, wakeProjectToken(t), string(role), kind, at, string(wakeToken(t, role))); err != nil {
 		t.Fatalf("seed the open resume of the %s: %v", role, err)
 	}
 }
@@ -310,8 +311,7 @@ func TestAWakeTakesOverAResumeOfAPodSinceReleased(t *testing.T) {
 		{
 			name: "the backstop",
 			wake: func(rig wakeRig) {
-				id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
-				rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+				rig.apply("backstop", armBackstop(t, rig.pool, wakeToken(t, claim.RoleImplementer), claim.RoleImplementer, wakeAt.Add(-time.Minute)))
 			},
 			kind: pods.WakeBackstop,
 			task: "backstop",
@@ -466,23 +466,24 @@ func TestAListenerReadyReportIsRecordedAndWakesNothing(t *testing.T) {
 	}
 }
 
-// armBackstop arms one backstop of LEGION-208's role, due at due, and answers its row id.
-func armBackstop(t *testing.T, pool *pgxpool.Pool, role claim.Role, due time.Time) int64 {
+// armBackstop arms one backstop of LEGION-208's claim token, which holds role, due at due, and
+// answers the fact of it coming due as the daemon's pass reads it off the row (internal/daemon's
+// fireDueBackstops).
+func armBackstop(t *testing.T, pool *pgxpool.Pool, token claim.Token, role claim.Role, due time.Time) intake.PodBackstopDue {
 	t.Helper()
 	var id int64
-	if err := pool.QueryRow(context.Background(), `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
-		values ($3, 'LEGION-208', $1, 0, $2) returning id`, string(role), due, wakeProjectToken(t)).Scan(&id); err != nil {
-		t.Fatalf("arm the %s backstop: %v", role, err)
+	if err := pool.QueryRow(context.Background(), `insert into pod_wake_backstops (project, issue, claim, role, release_id, due_at)
+		values ($4, 'LEGION-208', $1, $2, 0, $3) returning id`, string(token), string(role), due, wakeProjectToken(t)).Scan(&id); err != nil {
+		t.Fatalf("arm the %s backstop of %s: %v", role, token, err)
 	}
-	return id
+	return intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Claim: token, Role: role}
 }
 
 // R5: the backstop wakes the phase worker it was armed for, and its task says the backstop ran
 // out.
 func TestTheBackstopWakesThePhaseWorker(t *testing.T) {
 	rig := newWakeRig(t)
-	id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
-	rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+	rig.apply("backstop", armBackstop(t, rig.pool, wakeToken(t, claim.RoleImplementer), claim.RoleImplementer, wakeAt.Add(-time.Minute)))
 	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeBackstop, "backstop")
 }
 
@@ -490,13 +491,12 @@ func TestTheBackstopWakesThePhaseWorker(t *testing.T) {
 // the second fact changes nothing even under a different event id.
 func TestABackstopReadTwiceFiresOnce(t *testing.T) {
 	rig := newWakeRig(t)
-	id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
-	fact := intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer}
+	fact := armBackstop(t, rig.pool, wakeToken(t, claim.RoleImplementer), claim.RoleImplementer, wakeAt.Add(-time.Minute))
 	rig.apply("backstop", fact)
 	rig.apply("backstop-again", fact)
 	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeBackstop, "backstop")
 	var fired bool
-	if err := rig.pool.QueryRow(context.Background(), `select fired from pod_wake_backstops where id = $1`, id).Scan(&fired); err != nil {
+	if err := rig.pool.QueryRow(context.Background(), `select fired from pod_wake_backstops where id = $1`, fact.ID).Scan(&fired); err != nil {
 		t.Fatalf("read the backstop: %v", err)
 	}
 	if !fired {
@@ -555,8 +555,7 @@ func TestAWakeDoesNothingOnceTheIssueHasLeftTheWorkflow(t *testing.T) {
 			token := wakeToken(t, claim.RoleImplementer)
 			rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(token), At: wakeAt, Report: "report-1"})
 			rig.apply("agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-2"})
-			id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
-			rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+			rig.apply("backstop", armBackstop(t, rig.pool, token, claim.RoleImplementer, wakeAt.Add(-time.Minute)))
 			if starts := wakeStarts(t, rig.pool); len(starts) != 0 {
 				t.Fatalf("supervise start rows after %s = %+v, want none", tc.name, starts)
 			}

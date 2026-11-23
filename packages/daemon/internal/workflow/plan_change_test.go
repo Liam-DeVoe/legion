@@ -543,7 +543,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 			AgentKey: step.Key, Type: builtinDeployment.Roles[step.Role].Type}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, steps)
+		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
 	})
 }
 

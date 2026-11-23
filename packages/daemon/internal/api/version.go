@@ -3112,7 +3112,32 @@ package api
 // each takes the move its own suspender calls for. A caller whose contract is below 222 is served
 // each stranded claim without the key (one band of shaping.go at `strandedTokenContract`): a
 // plugin before INFRA-1048 reads a stranded claim as a strict object and would refuse the whole
-// state over it. From this entry the last number of answers.go's SupportedContracts is
+// state over it. A release of `POST /legion/v1/claims/release-records` names the tokens of the
+// claims it suspended in a new key, `releases.*.claims` (api.ReleaseRecord), absent on a release
+// that suspended none and on one recorded before this release: a release's mark matches the claims
+// it suspended by their tokens, so two claims of one role are two claims, and `roles` names each
+// role once. A resume of the same answer names the token of the claim its wake brought back in a
+// new key, `resumes.*.claim` (api.ResumeRecord), absent on a wake recorded before 20261121183336:
+// each claim of a role can be woken, and the stranded report reads a wake by that claim. A caller
+// below 222 is served each release and each resume without these keys (withoutRecordClaims). A
+// claim view of the state and of the issue record names its claim's token, `token`
+// (api.ClaimView), and an issue lists each claim neither its `architect` nor its `workers` shows,
+// with its role, in `otherClaims` (api.Issue.OtherClaims): `workers` holds one entry per role, so
+// the other claim of a role a keyed agent works the step of was absent from the state. A caller
+// below 222 is served the issues without either (withoutClaimTokens). A row a pause holds
+// (api.PauseHeldView) that names no claim, a merge-queue message or a row the release before
+// wrote, names in `claim` the worker on its role's step, the claim its executor reaches, where it
+// named the role's own token; the key and its shape are unchanged, so every contract is served
+// it. The controller's `POST /legion/v1/claims/fresh-session` and `POST /legion/v1/claims/compact`
+// take a claim's token in a new member, `claim` (api.ClaimRequest), a claim of the issue that
+// holds the role the body names: the issue and the role reach the claim that works the role's
+// step, and the other claim of that role a notice can name was out of the controller's reach. A
+// plugin sends it only when it names one, since a daemon below 222 refuses an unknown member.
+// `POST /legion/v1/handoff/complete` refuses, at every contract, a completion from a claim of the
+// role that does not work the role's step the record names, `HANDOFF_NOT_THE_STEPS_WORKER`, and
+// the same report from two claims of one role is two completions, so neither is answered
+// `HANDOFF_ALREADY_RECORDED` for the other's. From this entry the last number of answers.go's
+// SupportedContracts is
 // `api.strandedTokenContract`, and `deploymentRolesContract` stays 221.
 // (This entry takes 222, the lowest number above the base's 221 (the entry above) that no other
 // open pull request declared: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head, by the

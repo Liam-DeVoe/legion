@@ -2007,7 +2007,7 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		// never produced an agent (Claim.LastDeathCause, Claim.LastStartFailure), and the pod end
 		// its process was last observed to have died of (Claim.PodEnd), so a notice written after
 		// a daemon restart still names the cause the role never chose — an eviction above all.
-		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure, PodEnd: c.PodEnd,
+		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Claim: c.Token, Reason: c.Failure, PodEnd: c.PodEnd,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
 			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits}
 	default:
@@ -2506,6 +2506,17 @@ func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.Session
 func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-store-fault:%s:%d", c.Token, time.Now().UnixNano()),
 		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a session store fault")
+}
+
+// podRefused applies the fact that a claim's launch was refused because its issue pod cannot run
+// it until that pod's update round or its release replaces it (supervise's Deps.PodRefused): the
+// workflow tells the issue and the controller, and queues a start of the claim where queue says no
+// outbox start stood behind the launch, so whatever replaces the pod resumes it. The machine
+// decides how often this is called — at the first refusal, then hourly — so each call is a
+// report, and the event id names the moment.
+func (w *workflowRuntime) podRefused(c supervise.Claim, pod, detail string, queue bool) {
+	w.applySessionFact(c, fmt.Sprintf("pod-refused:%s:%d", c.Token, time.Now().UnixNano()),
+		intake.PodRefusedLaunch{Issue: c.Issue, Role: c.Role, Claim: c.Token, Pod: pod, Detail: detail, Queue: queue}, "apply a launch its issue's pod refused")
 }
 
 // applySessionFact applies one of the two session facts on a goroutine of its own, bounded by

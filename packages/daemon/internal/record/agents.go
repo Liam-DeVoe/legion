@@ -68,12 +68,9 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 //     no agent of steps and no key holds (claim.NumberedAgentName), so two agents never share a
 //     name, and so a claim and a session.
 //
-// The steps of one key are one agent (plan.AgentOf), so they share one name in every task.
+// The steps of one key are one agent (PlanStep.PlanAgent), so they share one name in every task.
 func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []PlanStep {
 	named := slices.Clone(steps)
-	agentOf := func(s PlanStep) plan.Agent {
-		return plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey})
-	}
 	keyNames := map[string]claim.Agent{}
 	// lastHolder is the key that holds each name a key holds: the key whose latest earlier row held
 	// it, else the key whose agent's session the name's claim holds.
@@ -83,7 +80,7 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		return ok
 	}
 	for _, row := range earlier {
-		if agent := agentOf(row); agent.Key != "" && !agent.Owner() && row.AgentName() != "" {
+		if agent := row.PlanAgent(); agent.Key != "" && !agent.Owner() && row.AgentName() != "" {
 			keyNames[agent.Key] = row.AgentName()
 			lastHolder[row.AgentName()] = agent.Key
 		}
@@ -106,14 +103,18 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		}
 	}
 	for _, step := range named {
-		if agent := agentOf(step); agent.Owner() {
+		agent := step.PlanAgent()
+		if _, done := names[agent]; done {
+			continue
+		}
+		if agent.Owner() {
 			give(agent, "")
 		} else if name, ok := keyNames[agent.Key]; ok && agent.Key != "" && lastHolder[name] == agent.Key {
 			give(agent, name)
 		}
 	}
 	for _, step := range named {
-		agent := agentOf(step)
+		agent := step.PlanAgent()
 		if agent.Key != "" {
 			continue
 		}
@@ -122,7 +123,7 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		}
 	}
 	for _, step := range named {
-		agent := agentOf(step)
+		agent := step.PlanAgent()
 		if _, ok := names[agent]; ok {
 			continue
 		}
@@ -135,7 +136,7 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		give(agent, name)
 	}
 	for i := range named {
-		named[i].Agent = names[agentOf(named[i])]
+		named[i].Agent = names[named[i].PlanAgent()]
 	}
 	return named
 }

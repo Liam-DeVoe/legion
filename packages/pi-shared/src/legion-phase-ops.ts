@@ -400,8 +400,9 @@ export function legionToolDescription(host: {
     "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
     "The daemon refuses HANDOFF_SESSION_MISMATCH (another session wrote the record). It refuses HANDOFF_NOT_NEW (the record is " +
-    "the one you named for your previous phase: write this phase's handoff). " +
-    "It refuses HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names. That is because " +
+    "the one you named for your previous phase: write this phase's handoff). It refuses HANDOFF_NOT_THE_STEPS_WORKER (another claim " +
+    "of your role works the step: end this turn without completing). " +
+    "It refuses HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row of the step the task stands at names. That is because " +
     `the phase was entered again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}). The daemon refuses the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded merged " +
     "(HANDOFF_NO_PULL_REQUEST: open it). A HANDOFF_NO_PULL_REQUEST naming a closed pull request is the architect's to decide. " +

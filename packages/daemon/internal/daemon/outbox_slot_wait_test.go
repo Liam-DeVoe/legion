@@ -19,21 +19,21 @@ import (
 )
 
 // slotsRuntime is the fake runtime with an issue pod that holds every role of the deployment and
-// lacks the slot of each claim lacks names, with the uid of the pod (runtime.IssuePodRoles): the
-// runtime picks a claim's slot from its token, so the fake answers by token.
+// lacks each slot lacks names, with the uid of the pod (runtime.IssuePodRoles): a claim's slot is
+// the agent its token ends in (claim.Token.Slot), which the outbox asks as a name of the pod.
 type slotsRuntime struct {
 	*fake.Runtime
-	lacks map[claim.Token]string
+	lacks map[claim.Role]string
 }
 
-func (r slotsRuntime) PodLacksSlot(_ string, token claim.Token) (string, bool) {
-	pod, lacks := r.lacks[token]
+func (r slotsRuntime) PodLacksRole(_ string, name claim.Role) (string, bool) {
+	pod, lacks := r.lacks[name]
 	return pod, lacks
 }
 
-func (slotsRuntime) PodLacksRole(string, claim.Role) (string, bool) { return "", false }
-
-func (slotsRuntime) SlotWaitsForCredential(claim.Token) (string, bool) { return "", true }
+func (slotsRuntime) SlotWaitsForCredential(string, claim.Agent) (string, bool, error) {
+	return "", true, nil
+}
 
 // The start of a second agent of one role, `…-implementer-2` on step 3 of `implementer reviewer
 // implementer`, waits on its row where the issue's pod lacks the slot of that agent's name, though
@@ -51,7 +51,7 @@ func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slots := slotsRuntime{Runtime: rt, lacks: map[claim.Token]string{second: "pod-1"}}
+	slots := slotsRuntime{Runtime: rt, lacks: map[claim.Role]string{"implementer-2": "pod-1"}}
 	sup.deps.Runtime = slots
 	start := func(id int64, token claim.Token) error {
 		row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Claim: token, Task: "Build it.", Generation: issue.Generation}, time.Now())
@@ -80,7 +80,7 @@ func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
 		t.Errorf("the claim %s is gone, want it running beside the wait", implementer)
 	}
 
-	delete(slots.lacks, second)
+	delete(slots.lacks, "implementer-2")
 	if err := start(98, second); err != nil {
 		t.Fatalf("the start of %s once its pod holds its slot = %v, want it to create its claim", second, err)
 	}
@@ -143,7 +143,7 @@ func TestAStartWithNoTaskOfAnAgentThePlanNoLongerNamesFinishesWithoutAWait(t *te
 			if err != nil {
 				t.Fatal(err)
 			}
-			sup.deps.Runtime = slotsRuntime{Runtime: rt, lacks: map[claim.Token]string{second: "pod-1"}}
+			sup.deps.Runtime = slotsRuntime{Runtime: rt, lacks: map[claim.Role]string{"implementer-2": "pod-1"}}
 			seedSlotWaitPlan(t, runner, issue, tc.second)
 			row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Claim: second,
 				Task: tc.task, Generation: issue.Generation}, time.Now())

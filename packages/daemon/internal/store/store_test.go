@@ -1101,7 +1101,7 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261122062637 writes the key of phases over the two columns 20261117034837 adds, and
 // 20261123042513 and 20261123072537 add columns to 20261117004117's step_starts: left out, each
 // is applied as main's, before that table or those columns exist; and one that replaces an index a
-// version of the list creates, as 20261122074350 replaces 20261105183200's
+// version of the list creates, as 20261121183336 replaces 20261105183200's
 // pod_resumes_one_open_per_role. Any other version left out makes the cases below weaker, never
 // red, which is why the comment says where the list comes from.
 var thisRelease = map[int]bool{
@@ -1113,7 +1113,7 @@ var thisRelease = map[int]bool{
 	20261113082214: true, 20261113110610: true, 20261114031356: true, 20261116144907: true,
 	20261116165926: true, 20261117000528: true, 20261117004117: true, 20261117023932: true,
 	20261117034837: true, 20261117064152: true, 20261117201743: true, 20261117213545: true,
-	20261119003157: true, 20261122062637: true, 20261122074350: true, 20261123042513: true,
+	20261119003157: true, 20261121183336: true, 20261122062637: true, 20261123042513: true,
 	20261123060645: true, 20261123072537: true, 20261123092755: true,
 }
 

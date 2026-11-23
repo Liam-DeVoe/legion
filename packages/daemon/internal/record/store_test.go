@@ -1184,30 +1184,29 @@ func TestATreesNewGenerationKeepsTheStepsOfAMemberWhoseGenerationStands(t *testi
 }
 
 // A pass over many issues reads each role's row as PhaseRowOf reads it from one issue's rows: the
-// row whose entry was raised last. After a return to step 1 of `implementer:a reviewer:b
-// implementer:b` that is step 1's row, whose entry is lower than step 3's, and the claim of the
-// role's worker is step 1's agent's (WorkerClaimOf), whichever row the statement reads last.
+// row with the highest entry. After a return to step 1 of `implementer:a reviewer:b
+// implementer:b` that is step 1's row, whose entry the return raised above step 3's, and the claim
+// of the role's worker is step 1's agent's (WorkerClaimOf), whichever row the statement reads last.
 func TestPhaseEntriesReadARolesRowNow(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
 	issue := issueFixture("LEGION-295")
-	at := func(minute int) time.Time { return time.Date(2026, 11, 22, 7, minute, 0, 0, time.UTC) }
 	const first, second claim.Token = "legion-legion-legion-295-implementer", "legion-legion-legion-295-reviewer"
 	for _, order := range [][]int{{1, 3}, {3, 1}} {
 		inTx(t, st, func(tx pgx.Tx) {
 			must(t, records.PutIssue(ctx, tx, issue))
 			for _, place := range order {
-				row := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: first, StepTask: "t", StepPlace: 1, Entry: 2, EntryRaisedAt: at(4)}
+				row := PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: first, StepTask: "t", StepPlace: 1, Entry: 4}
 				if place == 3 {
-					row = PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: second, StepTask: "t", StepPlace: 3, Entry: 3, EntryRaisedAt: at(3)}
+					row = PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: second, StepTask: "t", StepPlace: 3, Entry: 3}
 				}
 				must(t, records.PutPhase(ctx, tx, row))
 			}
 			entries, err := records.PhaseEntries(ctx, tx, []string{issue.Key})
 			must(t, err)
-			if got := entries[PhaseRole{Issue: issue.Key, Role: claim.RoleImplementer}]; got.Entry != 2 || got.Claim != first {
-				t.Fatalf("written in place order %v, PhaseEntries(implementer) = %+v, want step 1's row at entry 2", order, got)
+			if got := entries[PhaseRole{Issue: issue.Key, Role: claim.RoleImplementer}]; got.Entry != 4 || got.Claim != first {
+				t.Fatalf("written in place order %v, PhaseEntries(implementer) = %+v, want step 1's row at entry 4", order, got)
 			}
 			if got, err := WorkerClaimOf("legion", issue.Key, claim.RoleImplementer, entries); err != nil || got != first {
 				t.Fatalf("written in place order %v, WorkerClaimOf(implementer) = %q, %v, want %q", order, got, err, first)
@@ -1336,6 +1335,52 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 				t.Fatalf("after the clear the reviewer's row reads the reviewed commit %q, want none: it was the generation's that ended", got)
 			}
 		})
+	}
+}
+
+// A tree's new generation raises its root's generation alone (the re-admission), so a member keeps
+// its generation, its plan and its task's place, and the clear leaves its rows on the steps they
+// ran. Here the member is held at step 2 of `implementer:a tester:a reviewer`: its tester row names
+// key a's agent, `…-implementer`, on step 2, and after the clear it still does, so the claim of the
+// tester's worker is key a's (WorkerClaim) and a retry of the step sends key a its work. Only the
+// reports go, with the rest of the generation. The root beside it clears its step as before.
+// Before, the clear cleared the member's step too, so the tester's worker read as the tester's own
+// token, a fresh agent, while the step was key a's.
+func TestATreesNewGenerationKeepsTheStepOfAMemberWhoseGenerationStands(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-296")
+	member := issueFixture("LEGION-297")
+	member.Tree = root.Key
+	const keyA claim.Token = "legion-legion-legion-297-implementer"
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, records.PutIssue(ctx, tx, member))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: root.Key, Role: claim.RoleTester, Claim: "legion-legion-legion-296-implementer",
+			StepTask: "a", StepPlace: 2, HandoffRecord: "test-1", Entry: 2}))
+		must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: member.Key, Role: claim.RoleTester, Claim: keyA,
+			StepTask: "a", StepPlace: 2, HandoffRecord: "test-1", Entry: 2}))
+		must(t, records.ClearTreeGeneration(ctx, tx, root.Tree, time.Now().UTC()))
+	})
+	rowsOf := func(issue string) []PhaseRow {
+		var rows []PhaseRow
+		inTx(t, st, func(tx pgx.Tx) {
+			var err error
+			rows, err = records.Phases(ctx, tx, issue)
+			must(t, err)
+		})
+		return rows
+	}
+	rows := rowsOf(member.Key)
+	if row := PhaseRowOf(rows, claim.RoleTester); row.StepTask != "a" || row.StepPlace != 2 || row.Claim != keyA || row.Entry != 2 || row.HandoffRecord != "" {
+		t.Fatalf("the member's tester row after its tree's new generation = %+v, want it on step 2 of task a naming %s at entry 2, its report gone", row, keyA)
+	}
+	if worker, err := WorkerClaim("legion", member.Key, claim.RoleTester, rows); err != nil || worker != keyA {
+		t.Fatalf("the member's tester after its tree's new generation is %q, %v; want step 2's agent, key a %q", worker, err, keyA)
+	}
+	if row := PhaseRowOf(rowsOf(root.Key), claim.RoleTester); row.StepTask != "" || row.StepPlace != 0 || row.Entry != 2 {
+		t.Fatalf("the root's tester row after its new generation = %+v, want it on no step at entry 2", row)
 	}
 }
 

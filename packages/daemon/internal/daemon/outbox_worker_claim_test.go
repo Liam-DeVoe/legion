@@ -219,3 +219,60 @@ func TestAReRolesStartWaitsForTheTurnsEnd(t *testing.T) {
 		t.Fatalf("the relaunches after the tester's start = %+v, want one as the tester resuming /tmp/a.jsonl", calls[resumes:])
 	}
 }
+
+// LEGION-208 has left tree LEGION-207 for a tree of its own, and two claims of its tester's role
+// still stand in the old tree: key a's agent, which the tester's phases row names on the step, and
+// the tester's own claim of an earlier version of the plan. A suspend of the old tree
+// (stopInLeftTree) stops the claim it names, and a suspend the release before wrote, which names
+// none, stops the claim the record gives the role's step; the tester's own claim runs on either way.
+// Read by the role's own token, the stop would reach the tester's own claim and leave key a's
+// agent running in the old tree.
+func TestASuspendOfALeftTreeStopsTheClaimItReaches(t *testing.T) {
+	const oldTree = "LEGION-207"
+	for _, tc := range []struct {
+		name string
+		// names is whether the suspend row names key a's claim.
+		names bool
+	}{
+		{name: "a row naming the claim", names: true},
+		{name: "a row the release before wrote", names: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 2, Status: "testing"}
+			putOutboxIssue(t, pool, records, record.Issue{Key: oldTree, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: oldTree, Title: "Root", Phase: phase.Done, Generation: 1, Status: "done"})
+			putOutboxIssue(t, pool, records, issue)
+			keyed := mustClaimToken(t, issue.Key, claim.RoleImplementer)
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
+			}); err != nil {
+				t.Fatalf("name key a's claim on the tester's step: %v", err)
+			}
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			launchedClaimAs(t, sup, oldTree, issue.Key, claim.RoleImplementer, "ses-a")
+			own := launchedClaimAs(t, sup, oldTree, issue.Key, claim.RoleTester, "ses-tester")
+			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
+				trees: outboxTreeStore(t, pool, oldTree, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+				now: time.Now}
+
+			request := record.SuperviseRequest{Op: "suspend", Tree: oldTree, Role: claim.RoleTester, Generation: 1,
+				Reason: "the tree of LEGION-207 lingers"}
+			if tc.names {
+				request.Claim = keyed
+			}
+			if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, request, time.Now())); err != nil {
+				t.Fatalf("the old tree's suspend of the tester: %v", err)
+			}
+			for token, want := range map[claim.Token]supervise.ClaimState{keyed: supervise.StateSuspended, own: supervise.StateReady} {
+				machine, _ := sup.Machine(token)
+				if got := machine.Claim().State; got != want {
+					t.Fatalf("%s after the old tree's suspend of the tester = %s, want %s: the suspend reaches key a's agent alone", token, got, want)
+				}
+			}
+		})
+	}
+}

@@ -34,8 +34,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue> --at <head>`, the pull request where there is one, and the implementer's handoff where it has an implementer step.
-   Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
+1. **Read the evidence**: the issue, `dispatch results --issue <issue> --at <head>`, the pull request where there is one, and the handoff of each implementer step (`--phase implement`) where it has one.
+   Also read the handoff of each tester step where it has one (`dispatch handoff-read --issue <issue> --phase test` reads the newest, `--version <n>` an earlier one, and `dispatch steps --issue <issue>` gives when each step ran), and the review of each reviewer step where it has one: the one at the version your task's `Handoff:` line names (`--phase review --version <n>`), and an earlier step's at an earlier version.
    A pass must stand at the head the last step passed for every `before_merge` check.
    With a pull request, the body's `Checks` block carries each.
 
@@ -68,7 +68,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 4. **Update the PR body**, where the issue has a pull request, per `skill://legion-retro/references/pr-body-content.md`:
    the lines the repository derives from changed paths, where it derives any.
-   With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the tester's handoff where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
+   With no reviewer step, also record step 1's bot threads in `Threads` at the head you found, and bring `Not proven / risk` up to date from the handoff of each tester step where the task has one, naming each check whose run has not concluded (`skill://legion-worker/references/pr-body.md`, "The brief for the human").
 
 5. **Post one Dispatch message on the issue**, at most 32,000 characters (never a `gh issue` write):
 

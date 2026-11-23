@@ -56,7 +56,6 @@ func TestARetryAndAnOwedEntryNameTheAgentOfTheStepWhereTheIssueStands(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			engine := textEngine()
-			tickingClock(engine)
 			root := stepRoot(t, pool, phase.Admitted)
 			seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer", "implementer")
 			move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})

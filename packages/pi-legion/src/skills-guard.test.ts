@@ -809,12 +809,12 @@ test("the controller reads every held reason, and a stopped task's phase in its 
 test("retro reads only the handoffs its task has, and answers bot threads with no reviewer step", () => {
   const missing = [
     ...lacks("legion-retro/SKILL.md", [
-      /Read the evidence[^.;]*the implementer's handoff/,
-      /tester's handoff[^.;]*has a tester step/,
-      /--phase review[^.;]*has a reviewer step/,
+      /Read the evidence[^.;]*the handoff of each implementer step/,
+      /handoff of each tester step where it has one/,
+      /review of each reviewer step where it has one[^.;]*--phase review/,
       /no reviewer step[^.;]*unresolved bot threads/,
       /no reviewer step[^.;]*review-thread replies and resolutions/,
-      /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*tester's handoff/,
+      /no reviewer step[^.;]*`Not proven \/ risk`[^.;]*handoff of each tester step/,
       /no reviewer step[^.;]*bot threads in `Threads` at the head you found/,
     ]),
     // The body step that changes only path-derived lines leaves room for those updates, and
@@ -1092,4 +1092,25 @@ test("every file of the Legion role skills fits the skill budget", () => {
       : [];
   });
   expect(over).toEqual([]);
+});
+
+// A worker copies the `dispatch handoff-read` command a role skill gives, and the command takes
+// the issue and the phase it reads (`dispatch_handoff_read` in packages/contracts'
+// dispatch-tools.ts: `issue` and `phase`, `version` optional), so each such command names both: one
+// without `--issue` answers a usage error before it reads the report. The worker skill gives the
+// command for each earlier step's report once, in that form.
+test("every dispatch handoff-read a Legion role skill gives names the issue and the phase", () => {
+  const skillFiles = files(staged).filter((file) =>
+    /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
+  );
+  const commands = skillFiles.flatMap((file) =>
+    [...readFileSync(file, "utf8").matchAll(/`(dispatch handoff-read\b[^`]*)`/g)].map(
+      (match) => `${path.relative(staged, file)}: ${match[1]}`
+    )
+  );
+  expect(commands.length).toBeGreaterThan(4);
+  expect(commands.filter((command) => !/ --issue <[^>]+> --phase \S/.test(command))).toEqual([]);
+  countedOncePerFile("`dispatch handoff-read --issue <issue> --phase <word> [--version <v>]`", [
+    "skills/legion-worker/SKILL.md",
+  ]);
 });

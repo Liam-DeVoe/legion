@@ -1237,6 +1237,7 @@
     "contract": 222,
     "route": "POST /legion/v1/claims/compact",
     "fieldPaths": [
+      "claim",
       "grantId",
       "issue",
       "role"
@@ -1257,6 +1258,7 @@
     "contract": 222,
     "route": "POST /legion/v1/claims/fresh-session",
     "fieldPaths": [
+      "claim",
       "grantId",
       "issue",
       "role"

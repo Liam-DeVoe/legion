@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -11,12 +12,13 @@ import (
 const podWakeBackstopClaimVersion = 20261122072945
 
 // 20261122072945 keys an open backstop by the claim it wakes (pod_wake_backstops.claim). A
-// backstop the release before armed names no claim and reads back as it was, and a second one of
-// its role is still refused, as that release's one open backstop per role refused it; two claims of
-// one role each hold an open backstop of their own; and one claim holds one. The way back the
-// header gives keeps the newest open backstop of each role, puts the one index per role back over
-// every row and drops the column, so the release before's second arm of a role is refused again,
-// and the roll-forward then runs the migration again.
+// backstop the release before armed was armed for its role's worker, the claim whose token that
+// release builds from the role, so the migration names that token on it, and the column then
+// refuses a backstop that names no claim. Two claims of one role each hold an open backstop of
+// their own, and one claim holds one. The way back the header gives keeps the newest open backstop
+// of each role, puts the one index per role back over every row and drops the column, so the
+// release before's second arm of a role is refused again, and the roll-forward then runs the
+// migration again, which names each backstop's role's own claim on it.
 func TestThePodWakeBackstopClaimMigrationKeysAnOpenBackstopByItsClaim(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -41,14 +43,14 @@ func TestThePodWakeBackstopClaimMigrationKeysAnOpenBackstopByItsClaim(t *testing
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the claim of each backstop: %v", err)
 	}
-	var legacy string
-	if err := store.Pool().QueryRow(ctx, `select claim from pod_wake_backstops where role = 'tester'`).Scan(&legacy); err != nil || legacy != "" {
-		t.Fatalf("the backstop the release before armed names %q, %v; want no claim", legacy, err)
+	var filled string
+	if err := store.Pool().QueryRow(ctx, `select claim from pod_wake_backstops where role = 'tester'`).Scan(&filled); err != nil || filled != "legion-legion-legion-208-tester" {
+		t.Fatalf("the backstop the release before armed names %q, %v; want legion-legion-legion-208-tester, its role's own claim", filled, err)
 	}
-	if n := inserted(releaseBefore); n != 0 {
-		t.Fatalf("the release before's second arm of the tester = %d rows, want none: one open backstop per role among rows that name no claim", n)
+	if _, err := store.Pool().Exec(ctx, releaseBefore); err == nil || !strings.Contains(err.Error(), "claim") {
+		t.Fatalf("an arm that names no claim after the migration = %v, want it refused", err)
 	}
-	for _, token := range []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"} {
+	for _, token := range []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-reviewer"} {
 		arm := `insert into pod_wake_backstops (project, issue, role, claim, due_at)
 			values ('legion', 'LEGION-208', 'reviewer', '` + token + `', now()) on conflict do nothing`
 		if n := inserted(arm); n != 1 {
@@ -80,7 +82,8 @@ func TestThePodWakeBackstopClaimMigrationKeysAnOpenBackstopByItsClaim(t *testing
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)
 	}
-	if got := rowsAsText(t, store, `select claim from pod_wake_backstops where not fired order by role`); len(got) != 2 || got[0] != "" || got[1] != "" {
-		t.Fatalf("the open backstops' claims after the roll-forward = %q, want both naming none", got)
+	if got, want := rowsAsText(t, store, `select claim from pod_wake_backstops where not fired order by role`),
+		[]string{"legion-legion-legion-208-reviewer", "legion-legion-legion-208-tester"}; !slices.Equal(got, want) {
+		t.Fatalf("the open backstops' claims after the roll-forward = %q, want %q: each its role's own claim", got, want)
 	}
 }

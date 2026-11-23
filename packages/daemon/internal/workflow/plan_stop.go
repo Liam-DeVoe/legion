@@ -283,7 +283,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	// that role again, a role the deployment defines among them, or tells the owner where the owner
 	// does that step (start, startOwnersStep).
 	role := w.RoleAt(record.TaskPlace{Kind: record.PlaceStep, Position: 1})
-	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue, role); err != nil {
 		return err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)

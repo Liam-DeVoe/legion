@@ -197,7 +197,9 @@ with a `--summary` of one sentence naming what changed since the earlier approva
 sentence with both reviews' results. A to-do only a human can do is a `dispatch ask`.
 
 The merge is the close of an issue with a pull request: once it merges while its issue awaits the
-merge, the daemon writes `done`, and the tester's production check follows in its own session, on
+merge, the daemon writes `done`, unless an issue beneath it is still in the workflow, a state a
+deploy can leave, where it holds the issue in `merging` until the last such issue leaves (a
+`pr-merged` notice says so), and the tester's production check follows in its own session, on
 the pull request, asking nothing of you. An issue with no pull request closes when its retro ends,
 with no merge and no production check. Your acceptance comes before the close where the issue's task
 holds your step `acceptance:owner`: the pass of the step before it, or the start of the task where
@@ -206,7 +208,7 @@ the acceptance is its first step, moves the issue to `accepting`, and Legion tel
 for another issue when neither its own architect nor an architect between it and the root holds its
 role. You then read `dispatch results --issue <issue> --at <head>` at the head the step before
 yours passed, or at the work's current head where your acceptance is the task's first step, the
-tester's handoff where a tester step stands before yours, and, where a reviewer step stands before
+handoff of each tester step that stands before yours, and, where a reviewer step stands before
 yours, the reviewer's approval of the head by SHA, or its verdict where the issue has no pull
 request or that step was your own (the daemon refuses a sign-off while an issue beneath it is still in the
 workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,

@@ -453,7 +453,6 @@ func TestAHeldRetroAfterTheImplementersLastStepGetsItsReport(t *testing.T) {
 				t.Helper()
 				pool := migratedPool(t)
 				engine := textEngine()
-				tickingClock(engine)
 				root := stepRoot(t, pool, phase.Admitted)
 				seedStepsPlan(t, pool, root.Key, root.Generation, tc.steps...)
 				if child {
@@ -504,13 +503,13 @@ func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *tes
 	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
-	seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
+	seedClaimSession(t, pool, workerOr(t, pool, root.Key, claim.RoleReviewer, "reviewer-claim"), "ses-reviewer")
 	// The review event approves the round before the reviewer reports: its row has no report yet.
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer))
 	if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
 		t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
 	}
-	report := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Summary: "approved",
+	report := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleReviewer, Claim: workerOr(t, pool, root.Key, claim.RoleReviewer, "reviewer-claim"), Summary: "approved",
 		Commit: "c0ffee", HandoffRecord: "review-late", HandoffVersion: 1}
 	apply := applyFacts(t, pool, engine)
 

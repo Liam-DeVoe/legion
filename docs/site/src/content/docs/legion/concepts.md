@@ -16,9 +16,9 @@ section can use the words without stopping to explain them.
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
-  runtime the agents of one issue all run in that issue's one pod, from one published worker
-  image. Each talks to the daemon over a connection its pod dials back, and a controller the daemon
-  launches runs in a pod of its own. Under either runtime a phase
+  runtime the agents of one issue all run in that issue's one pod, each in a slot of its own, from
+  one published worker image. Each talks to the daemon over a connection its slot's launcher dials
+  back, and a controller the daemon launches runs in a pod of its own. Under either runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
   work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
@@ -59,8 +59,8 @@ The bundle holds one directory per owner the App is installed on, one more per o
 configured rename moved a repository away from while the project serves the name it moved to, and
 one for the issue's recorded owner.
 An issue pod shows its roles the directories that both Apps' bundles hold.
-No directory holds a read-only token, so a role writes in every repository its App reaches,
-whichever owner holds it.
+No directory holds a read-only token, so a role writes in every repository its App reaches of
+each owner whose directory it is shown, whichever owner holds it.
 The repository an issue names decides only which directory `GH_CONFIG_DIR` names: its owner's,
 or, for a repository a configured rename moved, the directory of the owner it moved to.
 The controller's bundle is the one bundle of read-only tokens.
@@ -169,9 +169,10 @@ The daemon starts each step's worker itself, one step at a time, in the order of
 [plan](#the-plan-of-an-issue) (the order below in the default steps), and runs only the phases of
 the steps the plan names. A step whose key is `owner` starts no worker: the issue's architect does
 that step's work itself, acts on GitHub as that worker's App while it does, and reports it with
-the `legion` tool's `complete_step` ([below](#the-plan-of-an-issue)). Each agent keeps
-its session between its assignments until its issue leaves the workflow, so its next task reaches
-the same session. Under the Kubernetes runtime the pod is shorter-lived than the session: the
+the `legion` tool's `complete_step` ([below](#the-plan-of-an-issue)). An agent keeps its session
+between its assignments, across the roles of its steps, while its issue runs and after it leaves
+the workflow, so its next task reaches the same session. Under the Kubernetes runtime the pod is
+shorter-lived than the session: the
 daemon releases an issue's pod once no role of it has a turn in progress or a turn due for ten
 minutes, after saving the workspace's unpushed work, and the next wake for one of its roles — a
 task, a notice, a message to the role or to its session, or a CI settlement on the pull request's
@@ -184,7 +185,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. On an issue with no pull request it reviews the work its task text names and reports `pass` or `fail`, with the commit it read, instead. | review App |
-| `accepting` | the architect at the step `acceptance:owner`; at any other `acceptance` step its own agent, a fresh agent of the role `acceptance` where the step has no key | The step `acceptance:owner` is the architect's own acceptance, and any other `acceptance` step its agent's, which ends it by reporting `pass` or `fail`. Either reads each check of the issue's Verification document with its latest result, the tester's handoff and the reviewer's approval of the head where the plan has those steps before it, and accepts the issue (on to its next step, or to retro where the acceptance is the task's last step) or sends it back to an earlier step: by default the task's first step of the type implementation before it. A pass is refused while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`). Another agent's refused pass is taken when it sends it again once they have left. The architect's `sign_off` takes only its own acceptance, and is refused at another agent's step (`SIGNOFF_NOT_THE_OWNERS`). No worker runs for the architect's acceptance; the issue's Dispatch status stays `needs_review`. | review App |
+| `accepting` | the architect at the step `acceptance:owner`; at any other `acceptance` step its own agent, a fresh agent of the role `acceptance` where the step has no key | The step `acceptance:owner` is the architect's own acceptance, and any other `acceptance` step its agent's, which ends it by reporting `pass` or `fail`. Either reads each check of the issue's Verification document with its latest result, the handoff of each tester step and the reviewer's approval of the head where the plan has those steps before it, and accepts the issue (on to its next step, or to retro where the acceptance is the task's last step) or sends it back to an earlier step: by default the task's first step of the type implementation before it. A pass is refused while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`). Another agent's refused pass is taken when it sends it again once they have left. The architect's `sign_off` takes only its own acceptance, and is refused at another agent's step (`SIGNOFF_NOT_THE_OWNERS`). No worker runs for the architect's acceptance; the issue's Dispatch status stays `needs_review`. | review App |
 | `retro` | the agent of the task's last step of the type implementation (in the default steps, the implementer), or the architect where that step was its own or the task has none | Writes down what the work taught, as one comment on the issue where a point qualifies, and, where the issue has a pull request, brings up to date whatever the repository's instructions require the pull request description to say about the paths it changes. It commits nothing. | the App of that step's role (the implement App for the implementer); the architect keeps its own |
 | `merging` | merger | Reads the pull request and merges it itself, at the head it read and under a message it writes, which GitHub completes under the base branch's own rules. The merge closes the issue; a root whose tree still runs records the merge and stays here until the last other issue of its tree is done or parked. | implement App |
 
@@ -196,7 +197,9 @@ step before it and names none stops its task, and its architect is told (`task-s
 that starts conflicting with its base moves no phase (below). Red CI sends nothing
 back from anywhere: the review round and CI are two rules, each read on its own, and the
 reviewer's approval of the head ends the round whatever the CI verdict at that commit, once
-GitHub reports that head one the issue may advance on, since the reviewer reads the code commit's checks on GitHub before it approves
+GitHub reports that head one the issue may advance on (a head GitHub holds blocked, on a check the
+repository requires, stays in `reviewing`), since the reviewer reads the code commit's checks on
+GitHub before it approves
 ([review signalling](#review-signalling)); a review step that no review on GitHub decides, on an
 issue with no pull request or the architect's own, ends by its reported verdict. What a red check
 does is reach the architect that owns
@@ -533,8 +536,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   that phase gave it. The daemon records that completion on the role's row and moves nothing, and
   its handoff is the report of the ended step. A second completion of that phase is refused
   `HANDOFF_NOT_CURRENT_PHASE`. `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
-  while the issue stands in that phase. A completion of another entry than the role's phases row
-  names, from a role whose phase the issue is no longer in, is answered
+  while the issue stands in that phase. A completion of an entry that no phases row of the role
+  stands on now (a run of its step that a later run raised past), from a role whose phase the
+  issue is no longer in, is answered
   `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim none.
   One completion behind its entry goes on all the same: a verdict on the head the record holds,

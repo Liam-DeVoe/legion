@@ -96,8 +96,9 @@ type launcherSession struct {
 	resumesBySession bool
 	// credentialWait is whether this launcher's hello said it starts a child only once its slot's
 	// gh files hold the credential the start names (shimwire.LauncherHello.CredentialWait). A
-	// launcher of an image before that wait says nothing, and a re-role into its slot waits for
-	// the pod's update round (Runtime.SlotWaitsForCredential).
+	// launcher of an image before that wait says nothing: a re-role into its slot waits for the
+	// pod's update round (Runtime.SlotWaitsForCredential), and relaunch refuses a start of another
+	// App into it (slotAppChanges).
 	credentialWait bool
 	// credentialCheck is whether this launcher's hello said it answers a check of its slot's gh
 	// files (shimwire.LauncherHello.CredentialCheck). A launcher of an image before that frame
@@ -283,9 +284,10 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 
 // credentialWaits is the uid of the pod the launcher of token, a slot's token, connected from, and
 // whether its hello said it starts a child only once the slot's gh files hold the start's
-// credential (launcherSession.credentialWait). It answers "" and true where no launcher of the slot
-// is connected: the launch then builds or waits for a pod, and a pod this release builds runs
-// launchers that wait.
+// credential (launcherSession.credentialWait). It answers "" and true where no launcher of the
+// slot is connected, as for every slot right after a daemon restart, though a pod the release
+// before built may still stand: the launch itself then judges the launcher it reaches, and
+// refuses a start of another App into one that does not wait (relaunch, slotAppChanges).
 func (d *launchers) credentialWaits(token claim.Token) (string, bool) {
 	d.mu.Lock()
 	session := d.sessions[token]
@@ -1058,9 +1060,10 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	files[bootTokenKey] = l.spec.BootToken
 	files[runtime.SystemPromptFile] = l.prompt
-	claudeDir, stateHome := "", roleStateHome(slotOf(l.spec.Claim))
+	slot, _ := l.spec.Claim.Slot()
+	claudeDir, stateHome := "", roleStateHome(slot)
 	if l.runsClaude() {
-		claudeDir = claudeConfigDir(slotOf(l.spec.Claim))
+		claudeDir = claudeConfigDir(slot)
 		files[claudeMCPFile] = l.claude.mcp
 	}
 	agent := l.agentArgv(r.agent)

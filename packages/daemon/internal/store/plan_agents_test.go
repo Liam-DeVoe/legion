@@ -17,9 +17,10 @@ import (
 // The agents of an issue's plan the sandbox runtime builds its pod's slots from are the agents of
 // the plan in force, each named by the one rule of a stored step (plan.StoredAgentName): the plan in
 // force is the issue's generation's, so a step of an earlier generation names no agent; a step of
-// the key owner names none; a step written before the column held the name reads as its role; and
-// each agent carries the role of its first step. An issue of another project's record, and one with
-// no plan rows, have none.
+// the key owner names none, whatever it holds; every other step holds its name, which
+// 20261117213545 wrote on each step a release before the column wrote; and each agent carries the
+// role of its first step. An issue of another project's record, and one with no plan rows, have
+// none.
 func TestThePlanAgentsAreTheAgentsOfThePlanInForce(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -57,10 +58,10 @@ func TestThePlanAgentsAreTheAgentsOfThePlanInForce(t *testing.T) {
 		}
 		if err := put(tx, "LEGION-208", 2, []record.PlanStep{
 			{Role: "implementer", Type: plan.TypeImplementation, Agent: "implementer"},
-			{Role: "reviewer", Type: plan.TypeReview},
+			{Role: "reviewer", Type: plan.TypeReview, Agent: "reviewer"},
 			{Role: "tester", Type: plan.TypeTesting, AgentKey: "a", Agent: "implementer"},
 			{Role: "implementer", Type: plan.TypeImplementation, Agent: "implementer-2"},
-			{Role: "acceptance", Type: plan.TypeReview, AgentKey: "owner"},
+			{Role: "acceptance", Type: plan.TypeReview, AgentKey: "owner", Agent: "acceptance"},
 		}); err != nil {
 			return err
 		}

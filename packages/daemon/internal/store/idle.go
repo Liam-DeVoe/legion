@@ -533,7 +533,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 	}
 	for _, r := range roles {
-		_, _, owed, err := openPodResume(ctx, tx, project, issue, r.role, r.token)
+		_, _, owed, err := openPodResume(ctx, tx, project, issue, r.token)
 		if err != nil {
 			return err
 		}
@@ -613,16 +613,17 @@ type releasedRole struct {
 	serving    uint64
 }
 
-// stillReleasedClaims are the claims of the roles in suspended that are still suspended as
-// `released`, each by its token, in token order. Two claims can hold one role — a keyed agent on a
-// step of another role, beside that role's own claim from an earlier version of the plan — and
-// each is a claim of its own to resume.
+// stillReleasedClaims are the claims among suspended, the tokens of the claims a release's own
+// stops suspended (issue_releases.suspended), that are still suspended as `released`, in token
+// order. Two claims can hold one role — a keyed agent on a step of another role, beside that
+// role's own claim from an earlier version of the plan — and only the ones the release suspended
+// are its to resume: another claim of the role an earlier release left released is not.
 func stillReleasedClaims(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string) ([]releasedRole, error) {
 	if len(suspended) == 0 {
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `select token, tree, role, generation, serving_generation from claims where project = $1 and issue = $2
-		and role = any($3) and state = 'suspended' and suspended_by = 'released' order by token`,
+		and token = any($3) and state = 'suspended' and suspended_by = 'released' order by token`,
 		project, issue, suspended)
 	if err != nil {
 		return nil, err
@@ -680,7 +681,7 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 // alias i (plansql): the role of the step the task of the issue's generation stands at, and the role
 // of the claim that works the task's place, which a test holds equal to the issue's read.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
-	view := pods.IdleView{Issue: issue}
+	view := pods.IdleView{Issue: issue, Project: project}
 	var issueGeneration, rootGeneration int64
 	var issuePhase, rootPhase, stepRole, placeRole string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation, i.linger_until,
@@ -734,6 +735,29 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	}
 	if err := claims.Err(); err != nil {
 		return pods.IdleView{}, fmt.Errorf("read the claims of %s for its idle view: %w", issue, err)
+	}
+	// A role that stands at two steps of a task keeps a row for each, and the view holds one row of
+	// a role, the row now (record.PhaseRowOf): read in the ascending order of that rule, the row now
+	// of each role is the last one the loop writes.
+	phases, err := tx.Query(ctx, `select role, claim, step_task from phases where issue = $1
+		order by entry, step_task, step_place`, issue)
+	if err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
+	}
+	for phases.Next() {
+		var role, token, stepTask string
+		if err := phases.Scan(&role, &token, &stepTask); err != nil {
+			phases.Close()
+			return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
+		}
+		if view.Phases == nil {
+			view.Phases = map[claim.Role]pods.IdlePhase{}
+		}
+		view.Phases[claim.Role(role)] = pods.IdlePhase{Claim: claim.Token(token), StepTask: stepTask}
+	}
+	phases.Close()
+	if err := phases.Err(); err != nil {
+		return pods.IdleView{}, fmt.Errorf("read the phases rows of %s for its idle view: %w", issue, err)
 	}
 
 	if err := tx.QueryRow(ctx, fmt.Sprintf(`select exists (

@@ -76,7 +76,7 @@ func ownersText(text string) string {
 // task after the continue line (Standing). Every start names its working copy (WorkingCopy). An
 // issue with no plan rows names nothing else, so it is told today's task with that one line, and
 // the prompts read a task with no `Task:` line as such an issue's. An issue with plan rows
-// names its one task: a step's worker is told ` Task: <id>. Step <i> of <n>: <role>.`, the task's
+// names its one task: a step's worker is told ` Task: <id>. Step <i> of <n>: <step>.`, the task's
 // steps (stepsLine) and the report of each step before its own (reportsBefore), and, last of its
 // task, the text of the task's block inside a fence (ownersText). The retro and the merge run no
 // step of the task, so their worker is told ` Task: <id>.` and the task's steps alone: the merger
@@ -120,7 +120,7 @@ func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, row
 	return Standing{lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
 }
 
-// stepsLine is ` Steps: 1 <role>, 2 <role>, … then Legion's retro, and its merge where the issue
+// stepsLine is ` Steps: 1 <step>, 2 <step>, … then Legion's retro, and its merge where the issue
 // has a pull request.`: each step of a task by its place, words, the steps as its plan writes them
 // (plan.Words), in the order they run, each at its place from 1 (Walk.Steps), then the retro Legion
 // runs after them, and the merge, which a task whose issue has no pull request does not have.
@@ -132,16 +132,21 @@ func stepsLine(words []string) string {
 	return fmt.Sprintf(" %s: %s then Legion's retro, and its merge where the issue has a pull request.", stepsLabel, strings.Join(named, ", "))
 }
 
-// reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
+// reportsBefore is one ` Step <j> (<step>) reported: <word> version <v>.` for each step of w's
 // task before the step at place whose row holds a handoff record: the record that role's
-// completion of that step named, which `dispatch handoff-read --phase <word> --version <v>` reads.
-// Each step is named as its plan writes it, its word of words (plan.Words). Each step's run keeps
-// a row of its own, the row of its role at its task and place (record.PhaseRowAt, which reads a
-// role's row of no step, one that ran before the plan's rows, as its step's until the step's own
-// row stands), so a role that stands at two steps names the report of each under its own place,
-// and each step before a running one completed in the run that led to it: a step that runs again
-// after a return writes its new record on its row before the step after it starts. A step whose
-// role writes no handoff (the owner's acceptance) has no line.
+// completion of that step named, which `dispatch handoff-read --issue <issue> --phase <word>
+// --version <v>` reads. Each step is named as its plan writes it, its word of words (plan.Words).
+// Each step's run keeps a row of its own, the row of its role at its task and place
+// (record.PhaseRowAt, which reads a role's row of no step, one that ran before the plan's rows,
+// as its step's until the step's own row stands), so a role that stands at two steps names the
+// report of each under its own place, and each step before a running one completed in the run
+// that led to it: a step that runs again after a return writes its new record on its row before
+// the step after it starts. A step whose role writes no handoff has no line: the owner's
+// acceptance, whose row holds no record, and a step of a role the deployment defines, which runs
+// as step, a phase phase.RoleFor names no role for. Step ends with no handoff record
+// (phase.Handoff), the completion route refuses a completion of it that names one (api's
+// HANDOFF_RECORD_MISMATCH), and the engine writes onto a row only the record the completion names
+// (handoff), so no row of such a step holds a record for this to name.
 func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
 	var text strings.Builder
 	for j := 1; j < place; j++ {

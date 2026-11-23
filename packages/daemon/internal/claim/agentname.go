@@ -5,7 +5,8 @@ import (
 	"strings"
 )
 
-// maxAgentName is the longest name of an agent, in bytes: the bound of agentGrammar.
+// maxAgentName is the longest name of an agent, in bytes: the bound of roleGrammar, which an
+// agent's name takes.
 const maxAgentName = 32
 
 // FirstAgentNumber is the number of the first agent of a role that takes a numbered name

@@ -124,10 +124,10 @@ func TestAnOwedStartCarriesTheClaimItNames(t *testing.T) {
 // the release before wrote names none and is listed under its role's own token, as before.
 func TestAPauseHeldStartIsListedUnderTheClaimItNames(t *testing.T) {
 	row := OutboxRow{Kind: OutboxKindSupervise, Issue: "LEGION-208"}
-	if got := pauseHeldClaim("legion", row, string(claim.RoleImplementer), keyBToken); got != keyBToken {
+	if got := pauseHeldClaim("legion", row, string(claim.RoleImplementer), keyBToken, nil); got != keyBToken {
 		t.Errorf("the held start naming key b is listed under %q, want %q", got, keyBToken)
 	}
-	if got := pauseHeldClaim("legion", row, string(claim.RoleImplementer), ""); got != keyAToken {
+	if got := pauseHeldClaim("legion", row, string(claim.RoleImplementer), "", nil); got != keyAToken {
 		t.Errorf("the held start naming no claim is listed under %q, want the implementer's own token %q", got, keyAToken)
 	}
 }

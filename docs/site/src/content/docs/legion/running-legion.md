@@ -216,7 +216,8 @@ the next of them:
 
 Each fact the read applies carries an id built from what GitHub showed, never from the time, so
 one observation is applied once however many reads see it, and the webhook arriving after it
-changes nothing. These reads share the implement App's hourly limit with every pane's `gh`: a
+changes nothing. These reads share the implement App's hourly limit with everything else that acts
+as that App, the `gh` of each pane on an implementer's or a merger's step among them: a
 rate-limit answer ends the start's reads there, and each issue's next handoff reads it. The
 implementer's completion of implementing reads its branch's open pull request with the implement
 App too, and is refused `HANDOFF_NO_PULL_REQUEST` when there is none and the record holds none
@@ -462,11 +463,11 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session. A child's
-  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
-  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
-  every claim of the child and releases its pod, and a root's close suspends every claim of its
-  tree for the linger. The loader refuses any other value,
+  With `tester`, the merge hands the check's first look to the claim that works the tester's step
+  that started last, in its session, and every other claim of a child is retired. A root's are suspended with the
+  rest of its tree for the linger, and retired when the linger ends. With `off`, no check opens
+  at all: a child's close retires every claim of the child and releases its pod, and a root's
+  close suspends every claim of its tree for the linger. The loader refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.
@@ -1196,8 +1197,9 @@ To hand the controller back to a person, set `controller: operator`, drop
 and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
-Switching to `controller: daemon` again relaunches that claim on the session it recorded, after a
-one-minute wait, in a new pod whose `/legion` is empty.
+Switching to `controller: daemon` again relaunches the retired claim after the keeper's first
+one-minute wait, on fresh budgets and on the session it recorded, which the session database
+keeps: the controller comes back on its old conversation, in a pod with a new, empty volume.
 
 A daemon built before LEGION-592 cannot run against a database a `controller: daemon` daemon used:
 it lists the controller's claim as an issue keyed `""`, which every agent's plugin refuses. So to
@@ -1311,9 +1313,12 @@ Closing the terminal leaves the project without one, and the daemon logs
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
-   pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
-   or a resumed worker, runs the new one. To move a long-running agent over now, suspend and resume
-   its claim:
+   pod keeps the image it started with until it is replaced. An issue pod on another image has
+   drifted, so an update round asks each of its roles to push its work and answer, and the daemon
+   replaces the pod once each has answered, or at the round's bound (`pod_update_grace_minutes`);
+   each role then comes back on the new pod in its own session. The controller's pod, which no
+   round covers, takes the new image at its next launch, so to move the controller over now,
+   suspend and resume its claim:
 
    ```sh
    legion claims list    --config legion.yaml --operator-token-file operator-token
@@ -1330,25 +1335,38 @@ Closing the terminal leaves the project without one, and the daemon logs
    began under its own deadlines. Until the stop lands the hold lives only in the daemon's memory,
    so before restarting
    the daemon wait until `legion claims list` shows the claim `suspended`, not merely
-   `suspensionHeld`. The resumed agent continues the same conversation in a new pod — and that
-   pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
-   and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
+   `suspensionHeld`. The resumed agent continues the same conversation. An issue's agent starts
+   again in the pod that is still there, with the workspace as the issue's roles left it: no idle
+   rule releases an issue pod while an operator's suspension holds one of its claims and no other
+   claim is live, and an update round replaces it only after the operator's resume. Where another
+   claim of the issue stayed live and the pod went idle, the idle release replaced the pod before
+   the resume, and the next pod gets back only what the release saved, the unpushed commits, the
+   working-copy change and the bookmarks on them (all of the workspace on a kept volume). Let the
+   agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    claim of an open issue live and idle between phases and while the root waits on a person. A child
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other agent at
    the start of its step. A claim whose session supervise's `forgetSession` has dropped comes back
-   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
-   workflow, when a claim moves to another tree, for a production check after the issue is done,
-   or when an agent's next step is of another role than the one its claim holds: the start of that
-   step suspends the claim at the end of its turn, keeping its session, gives it the step's role
-   and resumes it on the same session. A phase start gives its task to that live claim. A step
-   the architect does itself (a step whose key is `owner`) starts no worker and gives no claim
-   another role: the architect keeps its role and its session, and is told the step in an
-   `owner-step` notice. At
-   boot the daemon resumes by rule a suspended worker that still owns its issue's phase, but never
-   a claim an
+   in a new session instead. Besides an operator's suspension, a project pause
+   (`legion project pause`), the stop of a task (an owner's `stop_task`, or the daemon's for a
+   failed step no step takes back), which suspends the claim of the task's running step and keeps
+   its session, a root agent's report of its own exit and the release of an idle
+   issue pod (`runtime.kubernetes.idle_release`), the daemon suspends or ends claims only when an
+   issue leaves the workflow, when a claim moves to another tree, for a production check after the
+   issue is done, or when an agent's next step is of another role than the one its claim holds:
+   the start of that step suspends the claim at the end of its turn, keeping its session, gives
+   it the step's role and resumes it on the same session. That session can hold a GitHub token of
+   the earlier role's App that the agent printed, which GitHub accepts until it expires, so the
+   first prompt the agent takes in the new role tells it that any GitHub token it saw in an
+   earlier role is no longer its to use and that its `gh` and `git` now act as the new role's App;
+   a claim that comes back holding no task is sent that sentence alone. A phase start gives its
+   task to that live claim. A step the architect does itself (a step whose key is `owner`) starts
+   no worker and gives no claim another role: the architect keeps its role and its session, and is
+   told the step in an `owner-step` notice. At boot
+   the daemon resumes by rule a suspended worker that still owns its issue's phase, but never a
+   claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
    operator-suspended architect waits until the operator resumes it. A notice for a child whose
    own architect an operator suspended goes to the architect above that child, except an

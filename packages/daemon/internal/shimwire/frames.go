@@ -643,10 +643,15 @@ type LauncherStart struct {
 
 // LauncherGitHubCredential names the credential a start's slot gh files must hold: HostsFile is
 // the default owner's hosts.yml, relative to the slot's gh directory, and TokenDigest the hex
-// SHA-256 of the token the daemon wrote into it.
+// SHA-256 of the token the daemon wrote into it. WaitMs bounds the launcher's wait for the files
+// to hold it, counted from the moment the start reaches the launcher: the daemon sets it to what
+// remains of its own wait on the start before the stop grace (runtime/sandbox's relaunch), so the
+// launcher answers its refusal before the daemon gives up on the start. Validate refuses a
+// credential with no bound.
 type LauncherGitHubCredential struct {
 	HostsFile   string `json:"hostsFile"`
 	TokenDigest string `json:"tokenDigest"`
+	WaitMs      int    `json:"waitMs"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -1630,9 +1635,11 @@ func (f LauncherHello) Validate() error {
 // sessions to resume, when the id is not a single path element (it holds `/` or NUL), which no
 // session file name ends in, or when its argv does not hold exactly one element
 // `--resume=<ResumeSession>`: the launcher resumes the file it finds for the id by replacing that
-// one element with the file's path, and with none or two there is nothing certain to replace. The
-// daemon is the frame's only sender, so each of these is a bug of the daemon's, which the refusal
-// names.
+// one element with the file's path, and with none or two there is nothing certain to replace. A
+// start that names a credential its slot's gh files must hold is refused when the credential
+// names no bound for that wait (WaitMs), which would hold the slot's launcher past the daemon's
+// own wait on the start for as long as the files never hold it. The daemon is the frame's only
+// sender, so each of these is a bug of the daemon's, which the refusal names.
 func (f LauncherStart) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1646,6 +1653,9 @@ func (f LauncherStart) Validate() error {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			return fmt.Errorf("%w: launcher_start file name %q is not a plain file name", ErrMalformedFrame, name)
 		}
+	}
+	if f.GitHubCredential != nil && f.GitHubCredential.WaitMs <= 0 {
+		return fmt.Errorf("%w: launcher_start gitHubCredential waitMs is %d", ErrMalformedFrame, f.GitHubCredential.WaitMs)
 	}
 	if f.ResumeSession != "" {
 		if f.ResumeFile != "" {

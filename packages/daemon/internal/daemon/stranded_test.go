@@ -496,3 +496,86 @@ func TestStateSnapshotKeepsStrandedClaimsConsistentWithWorkerStates(t *testing.T
 			worker.State, tester.State, state.StrandedClaims, wantStranded)
 	}
 }
+
+// A released claim is stranded by a wake of its own that ran out, never by a wake of another claim
+// of its role. Two claims hold the tester's role of one issue here, both released: the agent of a
+// key (the claim it started as the implementer), which the tester's phases row names on the
+// tester's step, as the entry of a keyed agent's step writes it, and the role's own claim of an
+// earlier version of the plan. A wake of the keyed agent's claim ran out two hours ago with no
+// turn: that claim is stranded, and the role's own claim, which nothing woke, waits for a delivery
+// as a released claim is meant to.
+func TestAReleasedClaimIsStrandedByItsOwnWakeAlone(t *testing.T) {
+	cfg := testConfig(t)
+	issue := cfg.Project + "-1"
+	released := func(c supervise.Claim) supervise.Claim {
+		c.Role, c.SuspendedBy = claim.RoleTester, supervise.SuspendedByReleased
+		return c
+	}
+	own := released(previousClaim(t, cfg, issue, issue, claim.RoleTester, supervise.StateSuspended))
+	keyed := released(previousClaim(t, cfg, issue, issue, claim.RoleImplementer, supervise.StateSuspended))
+	putPreviousRun(t, cfg, previousRun{
+		issues: []record.Issue{runningRoot(issue, phase.Testing)},
+		slots:  []string{issue},
+		claims: []supervise.Claim{own, keyed},
+	})
+	ctx := context.Background()
+	st, err := store.Open(ctx, cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	project, err := claim.ProjectToken(cfg.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The tester's one row takes the keyed agent's claim and its step, or is written where none
+	// stands: the primary key of phases holds the step (20261122062637), so an upsert keyed on it
+	// would add a second tester row beside one of no step rather than move that one to the step.
+	if _, err := st.Pool().Exec(ctx, `with moved as (update phases set claim = $2, step_task = 'a', step_place = 2
+		where issue = $1 and role = 'tester' returning 1)
+		insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary, step_task, step_place)
+		select $1, 'tester', $2, '', 0, 0, '', '', 'a', 2 where not exists (select 1 from moved)`,
+		issue, string(keyed.Token)); err != nil {
+		t.Fatalf("name the keyed agent on the tester's step: %v", err)
+	}
+	woke := time.Now().UTC().Add(-2 * time.Hour)
+	if _, err := st.Pool().Exec(ctx, `insert into pod_releases (project, issue, generation, roles, at) values ($1, $2, 1, 'tester', $3)`,
+		project, issue, woke.Add(-time.Hour)); err != nil {
+		t.Fatalf("record the release: %v", err)
+	}
+	wake := func(token claim.Token) {
+		t.Helper()
+		if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at)
+			values ((select max(id) from pod_releases where project = $1 and issue = $2), $1, $2, 'tester', $3, 'delivery', $4, $4)`,
+			project, issue, string(token), woke); err != nil {
+			t.Fatalf("record the wake of %q: %v", token, err)
+		}
+	}
+	stranded := func() []claim.Token {
+		t.Helper()
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			t.Fatalf("begin the state snapshot: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		view := &source{
+			store: st, records: record.NewStore(), project: cfg.Project, projectToken: project, runtime: "tmux", admissionCap: cfg.AdmissionCap,
+			startedAt: time.Now(), deployment: func() capabilities.Deployment { return capabilities.Deployment{} },
+			reports: func() map[claim.Token]capabilities.Report { return nil },
+		}
+		state, _, err := view.State(ctx, tx)
+		if err != nil {
+			t.Fatalf("State: %v", err)
+		}
+		var tokens []claim.Token
+		for _, c := range state.StrandedClaims {
+			tokens = append(tokens, c.Token)
+		}
+		return tokens
+	}
+
+	wake(keyed.Token)
+	if got := stranded(); !reflect.DeepEqual(got, []claim.Token{keyed.Token}) {
+		t.Fatalf("stranded after the keyed agent's wake ran out = %v, want %s alone: the role's own claim was never woken", got, keyed.Token)
+	}
+}

@@ -55,9 +55,9 @@ A refused release writes nothing: release the rest again without the child it na
 
 - Pass no `--assignee` unless a person names one: the default keeps the tree's questions in one Inbox.
 
-- As a child's own architect, in the turn you file its children, send one `envoy_publish` to the agent that holds its plan: its planner where its task names one, else its first step's agent unless that step is yours, at `notifications.role.<token>`.
+- As a child's own architect, in the turn you file its children, send one `envoy_publish` to each agent that holds its plan: the agent of each planner step where its task names one, else its first step's agent unless that step is yours, at `notifications.role.<token>` (below).
   The message names each child you filed, with its key and repository, and says that the plan now covers only this issue's own part and the join with those children's work.
-  Send it even when you also stop the task or give a later plan: that agent keeps what it read of the whole issue.
+  Send it even when you also stop the task or give a later plan: each such agent keeps what it read of the whole issue.
 
 - Every child names the running system its criteria are proven on (the command, service or page its implementation step proves them on and a tester step drives, where it has them) and the repository skill that drives it;
   building a missing path is this tree's work.
@@ -65,6 +65,7 @@ A refused release writes nothing: release the rest again without the child it na
 - Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
 
 - A role token is `legion-<project>-<key>-<agent>`, project and key lower-cased, the agent named by its first step's role (`<role>-2` for a second): `legion-acme-legion-41-architect`.
+  `dispatch steps --issue <KEY>` gives each step run's `agent` token.
 
 ## Reviewing a child's spec
 
