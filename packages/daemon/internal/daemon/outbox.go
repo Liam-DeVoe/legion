@@ -2109,8 +2109,8 @@ func (r *outbox) ownerSlotHolds(ctx context.Context, row record.OutboxRow, paylo
 		return false, nil
 	}
 	if !r.sameApp(ctx, row.Issue, slot, step) {
-		return false, fmt.Errorf("%w: %s's notice row %d waits for the merge forward asked of it to end: its slot acts as %s, and its %s is done as %s",
-			errNoticeWaits, owner, row.ID, slot, payload.OwnerStep.StepPlace().Kind, step)
+		return false, fmt.Errorf("%w: %s's notice row %d waits for the merge forward asked of it to end: its slot acts as %s, and the step or retro it tells is done as %s",
+			errNoticeWaits, owner, row.ID, slot, step)
 	}
 	return r.slotHoldsApp(ctx, row, owner, step, errNoticeWaits, "notice row")
 }
