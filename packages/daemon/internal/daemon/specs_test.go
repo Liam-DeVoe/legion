@@ -290,7 +290,7 @@ func TestARoleOfAPlanShadowedByADeploymentRoleOnClaudeCodeRunsOnOhMyPi(t *testin
 // older contract and is refused all the same: no role of a plan can move it off Oh My Pi.
 func TestTheStalePluginRuleReadsThePlanOnlyForAClaimItsContractFindsStale(t *testing.T) {
 	cfg := config.Config{Runtime: config.Runtime{Name: "kubernetes"},
-		Roles: []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}, {Name: "checker", Type: "testing", GitHubApp: config.RoleAppReview}},
+		Roles:          []config.Role{{Name: "prober", Type: "testing", GitHubApp: config.RoleAppReview}, {Name: "checker", Type: "testing", GitHubApp: config.RoleAppReview}},
 		WorkerBackends: map[claim.Role]runtime.Backend{"prober": runtime.BackendClaude}}
 	type callKey struct{}
 	call := context.WithValue(context.Background(), callKey{}, "the call's")
