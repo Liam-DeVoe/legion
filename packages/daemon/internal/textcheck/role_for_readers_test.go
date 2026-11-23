@@ -48,7 +48,9 @@ type roleForReader struct {
 // architect's completion there, as its reader took the issue's phase while RoleFor named no role
 // (phase.Of), or reads only the phases of a plan's steps, which admitted never is (reportsBefore,
 // and Engine.restartTask, which reads its task's first step: a planner's or an implementer's, as
-// plan.Supported holds every task's steps to today's order with an implementer among them),
+// plan.Supported holds every task's steps to today's order with an implementer among them, and
+// record.StoredPlan.Running, which reads the phase of the step, the retro or the merge a running
+// task stands at, and a task that stands at no act does not run),
 // or reads the retro's own phase and the phase of the last step of a parent's task, neither of
 // which is admitted (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held
 // before its retro for the issues beneath it), or never reads admitted at all because a check
@@ -67,6 +69,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/phase/phase.go", fn: "Of"}:                                   {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                       {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                        {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
+	{file: "internal/record/plan.go", fn: "StoredPlan.Running"}:                   {calls: 1, test: "TestALaterVersionChangesAWaitingOrStoppedTaskAndARunningTasksText"},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}:       {calls: 1, test: "TestTheArchitectTaskOfEachShape"},
 	{file: "internal/workflow/catch_up.go", fn: "Engine.readyWorkerTask"}:         {calls: 1, test: "TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted"},
 	{file: "internal/workflow/design_news.go", fn: "memberWords"}:                 {calls: 1, test: "TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"},

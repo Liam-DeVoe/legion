@@ -1120,6 +1120,23 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				if shaped, _ := shapeAnswer(AnswerRefusal, refused, ServingFloor, ServingFloor); shaped != any(refused.Failure) {
 					t.Errorf("a PauseFailure was shaped to %+v at the floor, want its Failure alone", shaped)
 				}
+			case AnswerPlanRegister:
+				// A task that runs carries `running` from runningStepContract on, and a caller
+				// below it is served the task without it, on a copy: the body the route built
+				// keeps it.
+				taken := PlanRegisterResponse{Plan: RegisteredPlan{Version: 2, Tasks: []RegisteredTask{
+					{ID: "a", Steps: []string{"implementer"}, Running: &RunningStep{Kind: "step", Place: 1, Role: "implementer"}}}}}
+				below, _ := shapeAnswer(AnswerPlanRegister, taken, runningStepContract-1, runningStepContract-1)
+				if shaped, isTaken := below.(PlanRegisterResponse); !isTaken || shaped.Plan.Tasks[0].Running != nil {
+					t.Errorf("register_plan's answer served below runningStepContract = %+v, want its task without `running`", below)
+				}
+				if taken.Plan.Tasks[0].Running == nil {
+					t.Error("the shaping wrote the task of the body the route built: the tasks are copied before one is written")
+				}
+				at, _ := shapeAnswer(AnswerPlanRegister, taken, runningStepContract, runningStepContract)
+				if shaped, isTaken := at.(PlanRegisterResponse); !isTaken || shaped.Plan.Tasks[0].Running == nil {
+					t.Errorf("register_plan's answer served at runningStepContract = %+v, want its task with `running`", at)
+				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
 				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
