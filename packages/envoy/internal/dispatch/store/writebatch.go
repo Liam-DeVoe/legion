@@ -81,7 +81,14 @@ type Queued struct {
 // comes back from Send wrapped as what failed ("what: err"); an empty what returns it unchanged,
 // as a statement run on its own would.
 func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
-	queued := Queued{query: b.batch.Queue(sql, args...), what: what}
+	return b.queue(what, nil, sql, args...)
+}
+
+// queue is Queue with the bounded wait the statement runs in (QueueWithinBound), nil for a
+// statement queued bare. It sets the bound before Exec copies the Queued into the statement's
+// callback, which reads the bound when the statement fails (failed).
+func (b *WriteBatch) queue(what string, bound *batchBound, sql string, args ...any) Queued {
+	queued := Queued{query: b.batch.Queue(sql, args...), what: what, bound: bound}
 	b.builds = append(b.builds, nil)
 	queued.Exec(nil)
 	return queued
@@ -135,9 +142,7 @@ func (b *WriteBatch) QueueWithinBound(what, sql string, args ...any) Queued {
 	}
 	b.Queue("", boundedWaitKeep)
 	b.Queue("", boundedWaitBound, &b.bound.wait)
-	queued := Queued{query: b.batch.Queue(sql, args...), what: what, bound: b.bound}
-	b.builds = append(b.builds, nil)
-	queued.Exec(nil)
+	queued := b.queue(what, b.bound, sql, args...)
 	b.Queue("", boundedWaitRestore)
 	return queued
 }
@@ -241,12 +246,13 @@ func (b *WriteBatch) Send(ctx context.Context, q BatchSender) error {
 	}
 	queued, builds := b.batch.QueuedQueries, b.builds
 	b.batch, b.builds, b.bound = pgx.Batch{}, nil, nil
-	bound := sendBound
+	partBytes := sendBound
 	if _, inTransaction := q.(pgx.Tx); !inTransaction {
-		bound = math.MaxInt
+		partBytes = math.MaxInt
 	}
 	// measured is each statement's argument bytes once its arguments are built, -1 before: partEnd
-	// asks the size of the statement that starts the next part as well.
+	// asks the size of the statement that starts the next part as well. On a pool, which cuts no
+	// part, a statement's arguments are built and not counted, and its size is 0.
 	measured := make([]int, len(queued))
 	for index := range measured {
 		measured[index] = -1
@@ -262,6 +268,10 @@ func (b *WriteBatch) Send(ctx context.Context, q BatchSender) error {
 			}
 			queued[index].Arguments = arguments
 		}
+		if partBytes == math.MaxInt {
+			measured[index] = 0
+			return 0, nil
+		}
 		bytes := 0
 		for _, argument := range queued[index].Arguments {
 			bytes += argumentBytes(argument)
@@ -270,7 +280,7 @@ func (b *WriteBatch) Send(ctx context.Context, q BatchSender) error {
 		return bytes, nil
 	}
 	for start := 0; start < len(queued); {
-		end, buildErr := partEnd(start, len(queued), bound, size)
+		end, buildErr := partEnd(start, len(queued), partBytes, size)
 		if end > start {
 			batch := pgx.Batch{QueuedQueries: queued[start:end]}
 			if err := q.SendBatch(ctx, &batch).Close(); err != nil {

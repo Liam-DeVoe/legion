@@ -5912,6 +5912,17 @@ func gated(t testing.TB, service *Service, ctx context.Context, artifactIDs ...s
 	return ctx
 }
 
+// testBackgroundPool is service's background pool (backgroundPool), for a test that runs a
+// background step itself; the test fails where the pool cannot open.
+func testBackgroundPool(t testing.TB, service *Service) *store.Pool {
+	t.Helper()
+	background, err := service.backgroundPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return background
+}
+
 // beneathTheGate is ctx carrying artifactIDs' writer-gate mark without having queued for the gate,
 // for the tests that pin the writer slot and the lock order beneath the gate: what a second write
 // to a document does once it is inside its transaction while a first holds the slot. The gate

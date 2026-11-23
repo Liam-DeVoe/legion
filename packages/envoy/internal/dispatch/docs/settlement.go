@@ -886,6 +886,17 @@ func (p *settlementPass) appendEvents(ctx context.Context, events []model.Event,
 	})
 }
 
+// appendReconciliationEvents appends the events this pass's reconciliation decided on
+// (appendEvents), each with what it is the cause of: the follow of an ask the pass opened waits
+// for that ask's ask.opened event and is stated right after it (followsByEvent).
+func (p *settlementPass) appendReconciliationEvents(ctx context.Context) error {
+	follows, err := p.reconciliation.followsByEvent(p.reconciliation.events)
+	if err != nil {
+		return err
+	}
+	return p.appendEvents(ctx, p.reconciliation.events, follows)
+}
+
 // committed ends a pass whose transaction committed: its writes reach the room's persistence, and
 // its events are published. The ask blocks it indexed forgot their recorded authors under the
 // commit's own hold of the room's state (consumeAskAuthorsLocked).
@@ -1170,13 +1181,9 @@ func (p *settlementPass) commitRepairs(ctx context.Context) (settleStep, settleO
 	if err := p.reconciliation.nameVersion(ctx, p.tx, room, p.owner, settledVersion); err != nil {
 		return settleDone, p.abandon(err)
 	}
-	// The follows of the asks this pass opened wait for those asks' ask.opened events, each
-	// stated right after its own (followsByEvent), as a version's do (commitVersion).
-	follows, err := p.reconciliation.followsByEvent(p.reconciliation.events)
-	if err != nil {
-		return settleDone, p.abandon(err)
-	}
-	if err := p.appendEvents(ctx, p.reconciliation.events, follows); err != nil {
+	// The reconciliation's events, the follows of the asks this pass opened each stated right
+	// after its own ask.opened (appendReconciliationEvents).
+	if err := p.appendReconciliationEvents(ctx); err != nil {
 		return settleDone, p.abandon(err)
 	}
 	// The write phase: every statement this pass decided on, in the order it made them.
@@ -1412,13 +1419,9 @@ func (p *settlementPass) commitVersion(ctx context.Context) (settleStep, settleO
 			return settleDone, p.abandon(err)
 		}
 	}
-	// The follows of the asks this settlement opened wait for those asks' ask.opened events, each
-	// stated right after its own (followsByEvent).
-	follows, err := p.reconciliation.followsByEvent(p.reconciliation.events)
-	if err != nil {
-		return settleDone, p.abandon(err)
-	}
-	if err := p.appendEvents(ctx, p.reconciliation.events, follows); err != nil {
+	// The reconciliation's events, the follows of the asks this pass opened each stated right
+	// after its own ask.opened (appendReconciliationEvents).
+	if err := p.appendReconciliationEvents(ctx); err != nil {
 		return settleDone, p.abandon(err)
 	}
 	// The write phase: every statement this pass decided on, in the order it made them.

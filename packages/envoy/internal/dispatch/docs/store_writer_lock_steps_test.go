@@ -253,10 +253,7 @@ func (r *docsWriterRig) tick() docsWriter {
 			settle(t, r.database, document)
 			r.recordEvent(t, ctx, "artifact.created", map[string]any{"artifact": map[string]any{"id": document}})
 			r.awaitDurable(t, document)
-			background, err := r.service.backgroundPool()
-			if err != nil {
-				t.Fatalf("the background pool: %v", err)
-			}
+			background := testBackgroundPool(t, r.service)
 			return docsRun{document: document, write: func() error {
 				indexed, liveAhead, err := r.service.indexOwedDocument(ctx, background, owedDocument{id: document, version: 1})
 				if err != nil {
@@ -334,10 +331,7 @@ func (r *docsWriterRig) tickEvents() docsWriter {
 		},
 		ready: func(t *testing.T, ctx context.Context) docsRun {
 			awaitHorizon(t, ctx)
-			background, err := r.service.backgroundPool()
-			if err != nil {
-				t.Fatalf("the background pool: %v", err)
-			}
+			background := testBackgroundPool(t, r.service)
 			if _, err := r.service.readEventsAfterCursor(ctx, background, &BlockIndexTick{}); err != nil {
 				t.Fatalf("read the events before the run's: %v", err)
 			}

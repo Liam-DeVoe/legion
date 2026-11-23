@@ -57,10 +57,7 @@ func TestATickLocksNoOwnerOfACommentThatNamesANode(t *testing.T) {
 	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
 		t.Fatalf("hold issue CORE-1's owner lock: %v", err)
 	}
-	background, err := service.backgroundPool()
-	if err != nil {
-		t.Fatalf("the background pool: %v", err)
-	}
+	background := testBackgroundPool(t, service)
 
 	type answer struct {
 		tick BlockIndexTick

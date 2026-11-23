@@ -193,10 +193,12 @@ var markVersionedDocuments = `
 // document's row would hold what the settlement waits for, while the settlement held what the
 // tick waits for. A tick that fails moves nothing and the next reads the same events again; a
 // document already marked keeps its mark and its time. A document marked here is listed by the
-// owed documents this same tick reads next, and drained by it when its batch has room. Its
-// statements run on pool, the tick's background pool (ReconcileBlockIndex), as every other
-// statement of a tick does: no request waits on them, and that pool's idle-in-transaction bound
-// covers the transaction, which waits on nothing outside the database between its statements.
+// owed documents this same tick reads next, and drained by it when its batch has room. Its first
+// read, the event log's safe horizon (blockIndexHorizon().Safe), observes on the horizon pool, or
+// on the request pool where the horizon pool cannot open. Every statement after it runs on pool,
+// the tick's background pool (ReconcileBlockIndex), as every other statement of a tick does: no
+// request waits on them, and that pool's idle-in-transaction bound covers the transaction, which
+// waits on nothing outside the database between its statements.
 func (s *Service) readEventsAfterCursor(ctx context.Context, pool *store.Pool, tick *BlockIndexTick) (full bool, err error) {
 	safe, err := s.blockIndexHorizon().Safe(ctx)
 	if err != nil {
