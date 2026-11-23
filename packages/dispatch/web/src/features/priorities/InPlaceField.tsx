@@ -116,9 +116,11 @@ export function InPlaceField({
   const listId = options === undefined ? undefined : `${label.replace(/\W+/g, "-")}-options`;
   return (
     <>
+      {/* A title longer than its box ends in an ellipsis while the reader is not in it, rather
+          than being cut at the box's edge with no sign; in the field the whole text scrolls. */}
       <input
         {...common}
-        className={className}
+        className={`${className} text-ellipsis`}
         list={listId}
         onKeyDown={(event) => {
           if (event.key !== "Enter") return;
