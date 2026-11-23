@@ -43,14 +43,7 @@ func (slotsRuntime) SlotWaitsForCredential(string, claim.Agent) (string, bool, e
 // slot (its update round replaced it), the same row creates the claim and spawns it.
 func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
 	runner, sup, rt, issue := podWaitRunner(t, nil)
-	implementer, err := claim.AgentToken("legion", issue.Key, "implementer")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := claim.AgentToken("legion", issue.Key, "implementer-2")
-	if err != nil {
-		t.Fatal(err)
-	}
+	implementer, second := agentClaimToken(t, issue.Key, "implementer"), agentClaimToken(t, issue.Key, "implementer-2")
 	slots := slotsRuntime{Runtime: rt, lacks: map[claim.Role]string{"implementer-2": "pod-1"}}
 	sup.deps.Runtime = slots
 	start := func(id int64, token claim.Token) error {
@@ -63,7 +56,7 @@ func TestAStartOfAnAgentWhosePodLacksItsSlotWaits(t *testing.T) {
 	}
 	testwait.WithinPolling(t, 5*time.Second, 10*time.Millisecond, "the implementer's spawn", func() bool { return len(rt.CallsOf("Spawn")) == 1 })
 
-	err = start(98, second)
+	err := start(98, second)
 	if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
 		t.Errorf("the start of %s = %v, want a wait that is runtime.ErrAwaitsPodUpdate", second, err)
 	}
@@ -139,17 +132,14 @@ func TestAStartWithNoTaskOfAnAgentThePlanNoLongerNamesFinishesWithoutAWait(t *te
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runner, sup, rt, issue := podWaitRunner(t, nil)
-			second, err := claim.AgentToken("legion", issue.Key, "implementer-2")
-			if err != nil {
-				t.Fatal(err)
-			}
+			second := agentClaimToken(t, issue.Key, "implementer-2")
 			sup.deps.Runtime = slotsRuntime{Runtime: rt, lacks: map[claim.Role]string{"implementer-2": "pod-1"}}
 			seedSlotWaitPlan(t, runner, issue, tc.second)
 			row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleImplementer, Claim: second,
 				Task: tc.task, Generation: issue.Generation}, time.Now())
 			row.ID = 99
 
-			err = runner.execute(context.Background(), row)
+			err := runner.execute(context.Background(), row)
 			if tc.waits {
 				if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
 					t.Fatalf("the start of %s = %v, want a wait for its pod's update round", second, err)
