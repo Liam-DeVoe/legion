@@ -1043,12 +1043,10 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	worker := role != claim.RoleArchitect
 	at := record.StandsAt(issue)
 	var agent claim.Token
-	if worker && recordsSteps(issue) {
+	if worker {
 		if agent, err = e.startClaim(issue, *w, role); err != nil {
 			return entered{}, err
 		}
-	}
-	if worker {
 		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
 			var moves bool
 			if row, moves = stepRunRow(rows, row, role, w.Task, place.Place, agent); moves {
