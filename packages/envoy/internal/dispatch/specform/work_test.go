@@ -168,8 +168,10 @@ func workRows(race bool) []workRow {
 // the third fail no other of the three rows. The third walk read from a copy of the sentences'
 // records kept in a field of wholeText (the acceptance's fieldcopy-runs), which costs less for each
 // sentence, passed the row at 128 (28.5 to 31.3) and first passed the bound at 256 (40.5; 31.5 at
-// 181, on the machine of 288 cores at a load average of about 230), so the row's n is 512, where it
-// grows 16.4 times unbroken. A walk that the types cannot hold, a look at each sentence of the text
+// 181, on the machine of 288 cores at a load average of about 230), so the row's n is 512. At 512
+// that walk failed the row in 5 of 5 runs, 54.1 times or more, and the same walk from a copy of each
+// sentence's counts of words and whether it is open in 3 of 3, 54.4 times or more; the row grew
+// 15.8 to 17.0 times unbroken. A walk that the types cannot hold, a look at each sentence of the text
 // through its charge for each finding that holding looks for, costs a step for each sentence also
 // after the charge refuses it, a few nanoseconds, so its row needs many sentences that cost little
 // else: many findings, each beside ten sentences that hold none. Its n was found in the same way,
@@ -191,8 +193,9 @@ func workRows(race bool) []workRow {
 // row grew 16.3 to 17.9 times unbroken; the same walk through the charge passes it (17.4), and with
 // the charge taken out the row fails (235.6). The walk of every word of every sentence from such a
 // copy for each finding (the acceptance's sb-holding-fields) passes this row (22.7 to 25.8 in 5
-// runs) and fails the row of many findings beside ten sentences each (140.5 times) and the row of
-// runs at its n of 128 (33.0).
+// runs), and fails the row of many findings beside ten sentences each (142.1 to 147.1 in 3 runs) and
+// the row of runs at 512 (61.4 to 66.2 in 3 runs); at the row of runs' n of 128 it sat at the bound
+// (29.7 to 34.5 in 6 runs).
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"

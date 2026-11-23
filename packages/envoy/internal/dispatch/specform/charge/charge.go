@@ -4,24 +4,32 @@
 // judgment names it by its Unit, an index, in each map, each key and each walk. Its bytes, and what
 // the judgment keeps of each place of it in the judged text, are in Texts, outside the judge's
 // package, and the one way to read them is Read, which charges the reading first and gives the text
-// only where the charge lets it. The judge's fields and keys hold no text but the words of each
-// finding and of its ways out, which a rule hands the judge with the finding, and the detail of
-// each finding that a reading gives (the key of the findings that the judge compares), which quotes
-// the finding's words, or for a finding of the rule ste100-dangling-conjunction the last line of its
-// list item. For a finding of the rule instructions the words are its whole sentence: the judge
-// hashes them in each map keyed by the finding a fixed number of times for that finding, and reads
-// them only as the words that a way out changes, once for each place where it writes the way out,
-// as it reads any finding's words. A detail it keeps as a reading gives it, so each comes from one
-// charged reading of a text or from one text that a way out writes. So the judgment reads each text
-// a bounded number of times, however many findings read it, and its work stays in proportion to the
-// judged text.
+// only where the charge lets it. The judge's fields and keys hold no text of a sentence but the
+// words of each finding and of its ways out, which a rule hands the judge with the finding; the
+// detail of each finding that a reading gives (the key of the findings that the judge compares),
+// which quotes the finding's words, or for a finding of the rule ste100-dangling-conjunction the
+// last line of its list item; and the words of the first place of each member of a synonym group,
+// one for each member of rules.json at most. Beside them it holds what the judgment is told of the
+// system and its people. For a finding of the rule instructions the words are its whole sentence:
+// the judge hashes them in each map keyed by the finding a fixed number of times for that finding,
+// and reads them only as the words that a way out changes, once for each place where it writes the
+// way out, as it reads any finding's words. A detail it keeps as a reading gives it, so each comes
+// from one charged reading of a text or from one text that a way out writes. So the judgment reads
+// each text a bounded number of times, however many findings read it, and its work stays in
+// proportion to the judged text.
 //
 // What Read gives can be kept in a variable of the code that read it, as any value of Go can; a
 // copy of a text in a field of the judge's own, read again later, would be read outside the charge.
-// The judge keeps no such copy. No type can stop a new field from keeping one, as the judge's code
-// is handed the judged text whole, so a review of a new field reads that, and the work table of
-// package specform catches a walk of such a copy for each finding (its row of many findings of one
-// claim whose words one sentence after them holds in code font).
+// The judge keeps no such copy, and the tests of package specform refuse a field of the judge that
+// can hold text but those above, wherever the walk that would read it sits: they walk the type of
+// each field of the judge (TestTheJudgeKeepsNoTextOfASentenceInAField). No type can tell a copy of
+// what a reading gave as counts or flags, such as whether each sentence runs on into the next, from
+// what the judge keeps of the split of its text, nor show what a function value holds. For a copy
+// read in the look for the sentences where a finding's words stand (holding) or in the walk of the
+// sentences between two that a way out changes (changedRuns), the work table of package specform
+// catches its walk for each finding: its row of many findings of one claim whose words one sentence
+// after them holds in code font, and its row of many findings whose two places a run of open quoted
+// sentences joins.
 package charge
 
 import "fmt"
