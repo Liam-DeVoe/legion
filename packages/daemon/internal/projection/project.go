@@ -267,13 +267,10 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 		// reviewer's row now is the round's: its decision is read from it, and so is what the round
 		// waits on from GitHub (mergeWaitView). The zero row is an issue whose reviewer has never
 		// had one.
-		var reviewer record.PhaseRow
+		reviewer := record.PhaseRowOf(phases, claim.RoleReviewer)
 		for _, item := range phases {
 			if now := record.PhaseRowOf(phases, item.Role); now.StepTask != item.StepTask || now.StepPlace != item.StepPlace {
 				continue
-			}
-			if item.Role == claim.RoleReviewer {
-				reviewer = item
 			}
 			claimView, live := claimViews[item.Claim]
 			if !live {
