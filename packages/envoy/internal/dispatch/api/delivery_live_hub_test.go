@@ -894,7 +894,7 @@ func applyLiveDelta(t *testing.T, kind string, held json.RawMessage, delta Deliv
 	return raw
 }
 
-// truncateChanges empties the delivery change log and restarts its numbering, as e2e/seed.ts:150's
+// truncateChanges empties the delivery change log and restarts its numbering, as e2e/seed.ts:285's
 // reset does.
 func truncateChanges(t *testing.T, database *store.Store) {
 	t.Helper()
@@ -1638,7 +1638,7 @@ func TestAResetEventLogIsCaughtAndEveryViewRecomputed(t *testing.T) {
 	// waits on the event horizon; each reset below is of a feed it holds.
 	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 
-	// The event log restarts at id 1, as e2e/seed.ts:20 and :150 reset it; then a title the view
+	// The event log restarts at id 1, as e2e/seed.ts:43 and :285 reset it; then a title the view
 	// names changes, its event (id 1) below the relay's cursor.
 	firstReset := rig.mark()
 	if _, err := rig.database.Pool.Exec(t.Context(), `truncate events restart identity cascade`); err != nil {

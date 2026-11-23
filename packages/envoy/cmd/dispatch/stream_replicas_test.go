@@ -265,7 +265,7 @@ func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testi
 	t.Cleanup(conn.Close)
 	// The earlier sweep's own start creates the bucket, through a context bounded by the ten
 	// seconds every production caller opens its own with (bus.RequestTimeout,
-	// cmd/listener/brokerauth.go:149). That bound is a per-send hang guard and not a budget for
+	// cmd/listener/brokerauth.go:152). That bound is a per-send hang guard and not a budget for
 	// one request: a create or a lookup the server leaves unanswered is sent again rather than
 	// waited out (bus.EnsureKeyValue), so a clustered create that is merely slow is answered on
 	// the send it is answered on, and what a step that draws no answer at all costs is counted in

@@ -63,7 +63,7 @@ const embeddingProjectKeyFillRetry = 5 * time.Minute
 // through duty_passes (duty/exclusive.go, readPeriod), and a pass made once in the life of a
 // release serves no interval, which is why the period here is zero: a lease and no period, the
 // pairing the delivery consumers' bind takes for its own non-periodic work
-// (delivery/intake.go:660). So what duty gives this file is the gate (Exclusive) and the jitter
+// (delivery/held_durable.go:397). So what duty gives this file is the gate (Exclusive) and the jitter
 // (Jittered), and the stop is the one thing written here.
 //
 // A duty.Hold is the other primitive and is still the wrong one: a hold is for a duty one

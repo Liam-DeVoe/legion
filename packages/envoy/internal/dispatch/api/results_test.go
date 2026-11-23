@@ -1898,7 +1898,7 @@ func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 // is the whole of what the answer needs (delivery.Branches.CommitOnBranch). The branch the
 // check compares with is named from the default branch this process resolved before the App
 // lost the repository, which delivery keeps across a read that can say nothing exactly so
-// that this answer survives (delivery/branch.go:261-273).
+// that this answer survives (delivery/branch.go:263-275).
 //
 // This pins the reviewer's finding on pull request #3530 (dispatch://INFRA-1522):
 // branchBases compared with nothing as soon as the repository read answered unreadable, so

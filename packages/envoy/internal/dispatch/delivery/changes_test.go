@@ -208,7 +208,7 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 	}
 	after := latestChange(t, ctx, pool)
 
-	// reconcile.go:335 writes what the search returned, Partial true, for both rows.
+	// reconcile.go:514 writes what the search returned, Partial true, for both rows.
 	for _, pr := range []DeliveryPullRequest{complete, partial} {
 		searched := changeTestPR(pr.Number, merged, pr.Title)
 		searched.Partial = true

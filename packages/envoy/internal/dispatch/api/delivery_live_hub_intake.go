@@ -174,9 +174,9 @@ func (h *deliveryHub) catchUp(g *hubGeneration) {
 
 // catchUpChanges reads every delivery change after the cursor, marking the views each can touch.
 // Before each read it checks for a reset log: one holding no row as far as the cursor, or one whose
-// row at the cursor was recorded at another time than the hub read (a TRUNCATE ... RESTART IDENTITY
-// refilled past it, e2e/seed.ts:150). A reset moves the cursor to the newest row and marks every
-// view dirty.
+// row at the cursor was recorded at another time than the hub read (a reseed that deleted the rows
+// and restarted each emptied table's sequences refilled past it, e2e/seed.ts:285). A reset moves
+// the cursor to the newest row and marks every view dirty.
 func (h *deliveryHub) catchUpChanges(g *hubGeneration) error {
 	ctx, pool := g.readContext(), h.server.deps.Store.Pool
 	for {
