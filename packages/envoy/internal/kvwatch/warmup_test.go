@@ -1,7 +1,6 @@
 package kvwatch_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,9 +87,7 @@ func TestAWarmUpLogsWhatItStreamedAndThatItCompleted(t *testing.T) {
 	w := kvwatch.New("interest registry", kv, into, kvwatch.WithLogger(logger))
 	t.Cleanup(w.Stop)
 	w.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testContext(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
@@ -141,9 +138,7 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 	}
 	now.advance(kvwatch.ScanIdleTimeout)
 	arm.fireIdle(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := w.WaitReady(ctx); err != nil {
+	if err := w.WaitReady(testContext(t)); err != nil {
 		t.Fatalf("WaitReady: %v", err)
 	}
 
@@ -158,7 +153,7 @@ func TestATimedOutWarmUpSaysSoAndIsReadAgainByTheWatcher(t *testing.T) {
 		t.Fatalf("after the timed-out warm-up: Servable %v, %d reads completed; want %v and none", err, len(into.completions()), kvwatch.ErrRefilling)
 	}
 	// The watcher is live: a key written after the timeout still reaches the cache.
-	if _, err := kv.Put(ctx, "after-the-timeout", []byte("1")); err != nil {
+	if _, err := kv.Put(t.Context(), "after-the-timeout", []byte("1")); err != nil {
 		t.Fatalf("put after-the-timeout: %v", err)
 	}
 	eventually(t, "a key written after the timed-out scan", func() bool { return into.has("after-the-timeout") })
