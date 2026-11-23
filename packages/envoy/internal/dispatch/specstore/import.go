@@ -190,7 +190,8 @@ func statementText(block *pmdoc.Node) (string, error) {
 // read as the cells' text; the name and the purpose as each cell's own markdown, as a document
 // holding the cell's paragraph alone renders it, so a code span keeps its backticks and a pipe
 // reads as a pipe. A row that reads as no component - of another number of cells, with an empty id,
-// or of another kind - is a problem (bad-component) naming the row, never left out.
+// of another kind, or with a last cell that names no id and not `none` - is a problem
+// (bad-component) naming the row, never left out, and never read as a component with no parent.
 func componentsOf(table *pmdoc.Node) ([]specgraph.Component, []specgraph.Problem, error) {
 	var components []specgraph.Component
 	var problems []specgraph.Problem
@@ -210,6 +211,8 @@ func componentsOf(table *pmdoc.Node) ([]specgraph.Component, []specgraph.Problem
 			why = "names no id"
 		case text[1] != "component" && text[1] != "interface":
 			why = fmt.Sprintf("is of the kind %q, want component or interface", text[1])
+		case len(idTokens(text[4])) == 0:
+			why = "names neither its parent nor the components it joins: write none where it has neither"
 		}
 		if why != "" {
 			node := "-"
@@ -264,10 +267,10 @@ var (
 // depth, each from the item's first paragraph, read whole. Two headings of one id are one note. A
 // field the note writes where no such item holds it - a paragraph of its own, an item's later
 // paragraph, an item in a quote or in a table - or writes twice is unread (LevelStatement.Unread),
-// with no value; a field the note leaves out, or writes with nothing after its colon, is missing
-// (LevelStatement.Missing), and `none` is a value, the relation to nothing. The import holds the
-// statement for each unread and each missing field, so no field is left out of a statement the
-// import writes. A code block is an example, and none of its lines is a field.
+// with no value; a field the note leaves out, or writes with a value that supplies nothing
+// (supplies), is missing (LevelStatement.Missing), and `none` is a value, the relation to nothing.
+// The import holds the statement for each unread and each missing field, so no field is left out
+// of a statement the import writes. A code block is an example, and none of its lines is a field.
 func notesOf(notes string) (map[string]LevelStatement, error) {
 	doc, err := pmdoc.ParseRendering(notes)
 	if err != nil {
@@ -351,7 +354,7 @@ func (n *noteReading) field(paragraph *pmdoc.Node, placed bool) {
 		n.set(field, "")
 		return
 	}
-	n.read[field] = strings.TrimSpace(value) != ""
+	n.read[field] = supplies(field, value)
 	n.set(field, value)
 }
 
@@ -367,20 +370,41 @@ func (n *noteReading) set(field, value string) {
 	}
 }
 
+// supplies is whether a note's value gives its field a value: a kind that is not blank, or an about
+// or a supports that names an id or `none`. A value that names neither supplies nothing, as a field
+// left out does.
+func supplies(field, value string) bool {
+	if field == "kind" {
+		return strings.TrimSpace(value) != ""
+	}
+	return len(idTokens(value)) > 0
+}
+
 // isList is whether node is a list.
 func isList(node *pmdoc.Node) bool {
 	return node.Type == "bullet_list" || node.Type == "ordered_list"
 }
 
-// splitIDs is the ids a list names, separated by commas or spaces; "none" names none.
+// splitIDs is the ids a list names, separated by commas or spaces; "none" names none, and a list
+// that names none is nil.
 func splitIDs(list string) []string {
-	var ids []string
-	for _, id := range strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
-		if id = strings.Trim(id, "`."); id != "" && id != "none" {
-			ids = append(ids, id)
-		}
+	ids := slices.DeleteFunc(idTokens(list), func(id string) bool { return id == "none" })
+	if len(ids) == 0 {
+		return nil
 	}
 	return ids
+}
+
+// idTokens is each word a list of ids writes, separated by commas or spaces, without the backticks
+// and dots around it: an id, or "none".
+func idTokens(list string) []string {
+	var tokens []string
+	for _, token := range strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' }) {
+		if token = strings.Trim(token, "`."); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
 // Hold is one statement an import could not resolve, as its node keeps it: its id, its text, the
