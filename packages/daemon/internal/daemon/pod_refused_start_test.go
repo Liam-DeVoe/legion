@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -263,9 +267,24 @@ func TestARefusalsFactTheWorkflowCannotApplyStopsTheWorkflow(t *testing.T) {
 // owed entry). The interleaving is driven here: the row's attempt runs (execute) and its finish
 // (settle) waits until the wake's turn has been refused and its fact has committed.
 func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnds(t *testing.T) {
-	r := newPodRefusalRig(t, engineAnswers, func(d *supervise.Deps) {
-		d.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
-	})
+	r := newPodRefusalRig(t, engineAnswers, pacedTurn)
+	row := r.refusedWhileItsRowFinishes()
+	r.runner.settle(context.Background(), row, nil)
+	r.owedEntryQueued()
+}
+
+// pacedTurn is the wake pacing that gives every launch its turn parkedTurn on.
+func pacedTurn(d *supervise.Deps) {
+	d.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
+}
+
+// refusedWhileItsRowFinishes drives the rig, under pacedTurn, to the moment a start row's attempt
+// has run and its finish has not: the row's resume is parked by the pacing, the wake's turn is
+// refused by pod-1, and the refusal's fact has committed while the row still stands, reading it as
+// the claim's start. It answers the row, for the test to settle.
+func (r *podRefusalRig) refusedWhileItsRowFinishes() record.OutboxRow {
+	t := r.t
+	t.Helper()
 	r.queueTheTestersStart()
 	var id int64
 	if err := r.pool.QueryRow(context.Background(), `select id from outbox where kind = 'supervise'`).Scan(&id); err != nil {
@@ -280,7 +299,6 @@ func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnd
 	if held := r.machine.View(); held.State != supervise.StateLaunching || held.WakeWaiting == nil {
 		t.Fatalf("after the start row's attempt the tester is %s with wake %+v, want it launching under the resume the pacing parked", held.State, held.WakeWaiting)
 	}
-
 	r.refuseOnPod1()
 	if fired := r.clock.fire(parkedTurn); fired != 1 {
 		t.Fatalf("fired %d timers for the wake's turn, want the one the pacing armed", fired)
@@ -289,20 +307,110 @@ func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnd
 	if got := r.starts(); len(got) != 1 {
 		t.Fatalf("while the row still stands the outbox holds the starts %+v, want the row's own alone: the refusal read it as the claim's start", got)
 	}
+	return row
+}
 
-	r.runner.settle(context.Background(), row, nil)
+// owedEntryQueued waits, bounded, for the outbox to hold one start, the tester's owed entry 2 of
+// testing, its stored task, marked as a resend of that entry, and fails if it holds anything else.
+func (r *podRefusalRig) owedEntryQueued() {
+	r.t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		got := r.starts()
 		if len(got) == 1 && got[0].ResendEntry {
 			if s := got[0]; s.Role != claim.RoleTester || s.Phase != phase.Testing || s.Entry != 2 || !strings.HasPrefix(s.Task, "Test it.") {
-				t.Fatalf("the queued start is %+v, want the tester's owed entry 2 of testing, its stored task, marked as a resend of that entry", s)
+				r.t.Fatalf("the queued start is %+v, want the tester's owed entry 2 of testing, its stored task, marked as a resend of that entry", s)
 			}
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("20 s after the row's finish the outbox holds the starts %+v, want the tester's owed entry queued: nothing else brings it back", got)
+			r.t.Fatalf("20 s after the row's finish the outbox holds the starts %+v, want the tester's owed entry queued: nothing else brings it back", got)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// failingEnded fails every apply of a RefusedStartEnded fact while fails is above zero, counting
+// down, and every one for ever where fails is negative; it passes every other fact. It stands
+// before the engine in a runner's handlers, so a failure rolls the engine's writes back with it.
+type failingEnded struct {
+	mu     sync.Mutex
+	fails  int
+	failed int
+}
+
+func (f *failingEnded) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
+	if _, ok := fact.(intake.RefusedStartEnded); !ok {
+		return intake.Result{}, nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fails == 0 {
+		return intake.Result{}, nil
+	}
+	f.fails--
+	f.failed++
+	return intake.Result{}, errors.New("the store did not take the fact")
+}
+
+func (f *failingEnded) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.failed
+}
+
+// refusedStartEndedLine is the line the outbox logs at ERROR at each failed apply of a
+// RefusedStartEnded fact.
+const refusedStartEndedLine = "apply the end of a start row of a claim its pod refused"
+
+// A RefusedStartEnded fact the store does not take is tried again on a backoff until it is
+// applied, each failure logged at ERROR, so a claim refused while its start row was finishing
+// gets its start once the store answers, with no boot. Failing once and then passing, the claim
+// gets exactly one start. Failing for ever, the line is logged at each try; the backoff doubles up
+// to an hour (refusedStartRetryMost), so an operator sees it hourly. The stop ends the tries.
+func TestARefusedStartEndedTheStoreDidNotTakeIsTriedAgainUntilApplied(t *testing.T) {
+	t.Run("failing once, then applied", func(t *testing.T) {
+		r := newPodRefusalRig(t, engineAnswers, pacedTurn)
+		failing := &failingEnded{fails: 1}
+		r.runner.handlers = append([]intake.Handler{failing}, r.runner.handlers...)
+		row := r.refusedWhileItsRowFinishes()
+		r.runner.settle(context.Background(), row, nil)
+		r.owedEntryQueued()
+		if n := failing.count(); n != 1 {
+			t.Fatalf("the fact failed %d times, want the one failure before it was applied", n)
+		}
+	})
+	t.Run("failing for ever", func(t *testing.T) {
+		r := newPodRefusalRig(t, engineAnswers, pacedTurn)
+		logs := &syncBuffer{}
+		r.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
+		failing := &failingEnded{fails: -1}
+		r.runner.handlers = append([]intake.Handler{failing}, r.runner.handlers...)
+		row := r.refusedWhileItsRowFinishes()
+		ctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		r.runner.settle(ctx, row, nil)
+		deadline := time.Now().Add(20 * time.Second)
+		for len(loggedLines(t, logs.String(), refusedStartEndedLine)) < 3 {
+			if time.Now().After(deadline) {
+				t.Fatalf("20 s after the row's finish the log holds %d lines %q, want at least three: the fact is tried again on its backoff",
+					len(loggedLines(t, logs.String(), refusedStartEndedLine)), refusedStartEndedLine)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		for _, line := range loggedLines(t, logs.String(), refusedStartEndedLine) {
+			if line["level"] != "ERROR" {
+				t.Fatalf("the line %v is not at ERROR", line)
+			}
+		}
+		if got := r.starts(); len(got) != 0 {
+			t.Fatalf("with the fact never applied the outbox holds the starts %+v, want none", got)
+		}
+		stop()
+		ended := failing.count()
+		time.Sleep(5 * time.Second)
+		if n := failing.count(); n > ended+1 {
+			t.Fatalf("after the stop the fact was tried %d more times, want the tries ended", n-ended)
+		}
+	})
 }
