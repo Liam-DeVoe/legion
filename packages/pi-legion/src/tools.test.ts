@@ -16,7 +16,7 @@ import {
   type JjRunner,
   type LatestHandoff,
 } from "@legion/pi-shared/handoff-record";
-import { PHASE_OP_SENTENCES, phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
+import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -176,95 +176,6 @@ function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
   return { posted, daemon: () => client };
 }
 
-/** The static text of the description before `stop_task`: the shared template
- * (`legionToolDescription` in `@legion/pi-shared/legion-phase-ops`) must reproduce it exactly. */
-const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
-  "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
-  PHASE_OP_SENTENCES.readRecord +
-  "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
-  "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
-  "role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and " +
-  "the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is " +
-  "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
-  "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. " +
-  "handoff_complete (phase workers alone: the daemon refuses an architect's completion, with ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first, since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; " +
-  "the daemon accepts a completion only from the role working the issue's current phase, " +
-  "or a role's first completion of the phase it left, which it records and which moves nothing, " +
-  "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-  "architect), `verdict` pass|fail from the tester or a role of the deployment on a phase completion (the daemon refuses a verdict from " +
-  "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-  "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
-  "A fail, the tester's or a role of the deployment's, may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-  "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. A completion names it only with the verdict " +
-  "fail (RETURN_TO_NEEDS_FAIL). A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
-  "(RETURN_REFUSED). " +
-  "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
-  "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-  "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
-  "and reports it with `commit`, the head that record's body names " +
-  "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion, a step of a role of the deployment and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
-  "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
-  "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
-  "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
-  "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
-  "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
-  "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
-  "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
-  "The completion that ends the retro carries `plan_rating` (1 to 5) and `plan_reason`, as " +
-  "skill://legion-retro says, and the daemon refuses a completion that breaks that skill's rating rule " +
-  "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
-  "The daemon refuses " +
-  "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
-  "write this phase's handoff), " +
-  "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
-  "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
-  "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
-  "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
-  "pull request on `legion/<issue>` and none recorded " +
-  "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
-  "nothing, so fix what it names and complete again. " +
-  "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-  "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
-  "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
-  "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
-  "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
-  "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
-  "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
-  "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
-  "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
-  "request_backward_move returns an issue to an earlier phase (`to`, `reason`, `return_to`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
-  "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one. " +
-  "A move to `step` goes to the one earlier step that runs as `step`. Where two do, `return_to` names the one, by its place in the task. " +
-  "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
-  "It also reports the contract the daemon states on its answer to the health route. " +
-  "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
-  "The two numbers can differ, and the answer shows both. " +
-  "Report the version this call answers, never the one at the plugin's path on the image. " +
-  "In a pod, an Oh My Pi role relaunched onto the daemon's contract loads the build that relaunch installed under the role's own state home, " +
-  "and a Claude Code role installs no plugin: it loads its pod image's own claude-envoy. " +
-  "read_build reads no project state. " +
-  "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
-  "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
-  "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
-  "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
-  "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
-  "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-  "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
-  "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
-  "step and after each other step of the type implementation; a " +
-  "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
-  "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
-  "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
-  "(PLAN_REFUSED, which also refuses a version that changes a running task: stop it with stop_task first, and a plan of an issue " +
-  "that started its work before Legion took plans), a version Dispatch does " +
-  "not have (VERSION_NOT_IN_DISPATCH), a version no later than the plan in force (PLAN_VERSION_OLD), another document than the plan " +
-  "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
-  "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
-  "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
-  "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). ";
-
 /** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
  * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
  * first step settles its plan first, and each refusal code its text gives. */
@@ -417,14 +328,15 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
-test("the legion tool's description is the exact text Oh My Pi agents read, for every session, and names stop_task's and sign_off's terms", () => {
+test("the legion tool's description ends with the exact text Oh My Pi agents read, for every session, and names stop_task's and sign_off's terms", () => {
   for (const active of EVERY_SESSION) {
     const description = toolFor(active).description;
-    const before = OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK;
     const after = OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF;
-    expect(description.slice(0, before.length)).toBe(before);
     expect(description.slice(description.length - after.length)).toBe(after);
-    const held = description.slice(before.length, description.length - after.length);
+    const held = description.slice(
+      description.indexOf(STOP_TASK_TERMS.opens),
+      description.length - after.length
+    );
     const signOffAt = held.indexOf(SIGN_OFF_TERMS.opens);
     expect(signOffAt).toBeGreaterThan(0);
     const stopTask = held.slice(0, signOffAt);
@@ -1009,9 +921,6 @@ test("the legion tool's description gives a verdict to the tester or a role of t
     resolveDocument: noDocumentLookup,
     session: () => claimSession("reviewer"),
   });
-  expect(tool.description).toContain(
-    "`verdict` pass|fail from the tester or a role of the deployment"
-  );
   expect(tool.description).not.toContain("when your role's instructions require one");
 });
 

@@ -752,7 +752,7 @@ What each part is for:
   Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store of
   earlier releases, are refused with the same line and its reason: an issue pod's disk is deleted
   with the pod, so a conversation kept as a file on it dies with the pod and the next launch's
-  resume fails on the missing file, retiring the claim after three failures. A kept volume does
+  resume fails on the missing file, and three such failures fail the claim. A kept volume does
   not change this: a reset or a suspension of the issue deletes that volume. Name the store and
   its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
@@ -1093,8 +1093,9 @@ Legion names no provider, and no model but the `model` a role of `roles` names: 
 [configuration reference](/legion/legion/reference/config/):
 
 - `models.yml`, an Oh My Pi provider file whose API key is a command reading a mounted credential;
-- `overlay.yml`, an Oh My Pi settings overlay that sets each role's model (`modelRoles`), holds
-  every session to the route's models, and disables every provider the route does not use;
+- `overlay.yml`, an Oh My Pi settings overlay that sets each role's model where `legion.yaml`
+  names none (`modelRoles`), holds every session to the route's models, and disables every
+  provider the route does not use;
 - `pod.yml`, the `runtime.kubernetes.pod` block that mounts both, and the credential, into every pod.
 
 To stand it up:
@@ -1126,8 +1127,8 @@ Nothing refuses a missing `default`: an Oh My Pi session whose role names no mod
 silently, on one of Oh My Pi's built-in models.
 Set every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
 
-To change a role's model later, edit its line under `modelRoles` in your `overlay.yml` and run the
-same `apply.sh` command.
+To change a role's model later, where `legion.yaml` names none for it, edit its line under
+`modelRoles` in your `overlay.yml` and run `apply.sh` again.
 Pods started after that use it; a running pod keeps its files until it is relaunched.
 A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under
 `modelRoles` applies to it.
@@ -1352,19 +1353,20 @@ Closing the terminal leaves the project without one, and the daemon logs
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other role at
    the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
-   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
+   in a new session instead. The daemon suspends or ends claims when an issue leaves the
    workflow, when a claim moves to another tree, or for a production check after the issue is done.
-   A phase start gives its task to that live claim. At boot the daemon
+   A phase start gives its task to that live claim. The daemon also suspends each live claim of an
+   issue pod it releases as idle, and the next wake for that role resumes it. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
    operator-suspended architect waits until the operator resumes it. A notice for a child whose
    own architect an operator suspended goes to the architect above that child. A drain therefore
    ends with the operator resuming every claim they suspended, one `legion claims resume` each;
-   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`, or
-   `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
-   left the workflow waits for its current turn to finish, with no stop timeout: a child parked
-   in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,
-   and a lingering tree's claims stay suspended until the tree is re-admitted.
+   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`,
+   `released`, or `unknown` for one suspended before this release). A daemon suspension of a
+   claim whose issue left the workflow waits for its current turn to finish, with no stop timeout:
+   a child parked in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's
+   current turn ends, and a lingering tree's claims stay suspended until the tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
    suspended reads `unknown`. The next phase start, re-admission and the controller keeper
