@@ -213,9 +213,12 @@ func TestAFailStateBeforeTheTesterCompletesStartsNothing(t *testing.T) {
 	}
 }
 
-// Each step of the type testing among the steps the issue runs passes when each check reads yes
-// at its head, and its run ends passed; a check that reads no ends it failed, returning the work
-// to the step a failed step returns to. Today every issue runs the default steps.
+// Each step of the type testing among the steps the issue runs passes when each check that no CI
+// job runs reads yes at its head, and its run ends passed; a check that reads no ends it failed,
+// returning the work to the step a failed step returns to. A check that a CI job runs, k3 here,
+// whose state names its job's case, fails no testing step: its failure is the implementer's at
+// once, and the task is done only when it passes at the task's head. Today every issue runs the
+// default steps.
 func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
 	steps := DefaultSteps()
 	implementing, _, _, _ := stepIn(steps, phase.Implementing)
@@ -237,6 +240,8 @@ func TestATestingStepPassesWhenItsChecksPass(t *testing.T) {
 			back   *int
 		}{
 			{"each check reads yes", []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester")}, phase.Reviewing, string(ResultPassed), nil},
+			{"a check that a CI job runs reads no", []intake.DispatchCheckState{passOf("k1", "tester"), passOf("k2", "tester"),
+				inCI(stateOf("k3", "no", "fail", "ci"), "failure")}, phase.Reviewing, string(ResultPassed), nil},
 			{"a check reads no", []intake.DispatchCheckState{passOf("k1", "tester"), stateOf("k2", "no", "fail")}, phase.Implementing, string(ResultFailed), &implementing.Place},
 		} {
 			t.Run(fmt.Sprintf("step %d (%s): %s", place.Place, p, tc.name), func(t *testing.T) {
