@@ -322,7 +322,7 @@ const ENTRIES_STATES_READ: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
-    has: "each needs a pass standing at that head, which `dispatch results --issue <issue>` shows",
+    has: "each must read yes at each open head of the issue, a check carrying `ci_check` among them, which `dispatch results --issue <issue>` shows",
     cut: "Delete the acceptance's gate on each check's pass at the head.",
   },
   {
