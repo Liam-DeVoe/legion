@@ -275,11 +275,13 @@ func stallStop(stop supervise.StallBackstopStop) string {
 // the type: TestTheNoticeHasWordsForEveryEndThatTellsItsOwner walks supervise.ProcessEnds() and
 // fails until a new end has a row here. Only the relaunch the pacing parked keeps the process:
 // the claim records it and runs it until the queued launch comes due (supervise's reserveWake,
-// parkWake).
+// parkWake). The relaunch that waits at its issue pod's start gate lets it go: the machine stops
+// the process where that launch parks (supervise's askPod).
 var stallBackstopEnds = map[supervise.ProcessEnd]bool{
-	supervise.EndRelaunched:      true,
-	supervise.EndRelaunchParked:  false,
-	supervise.EndRelaunchPending: true,
-	supervise.EndSuspended:       true,
-	supervise.EndFailed:          true,
+	supervise.EndRelaunched:          true,
+	supervise.EndRelaunchParked:      false,
+	supervise.EndRelaunchWaitsForPod: true,
+	supervise.EndRelaunchPending:     true,
+	supervise.EndSuspended:           true,
+	supervise.EndFailed:              true,
 }

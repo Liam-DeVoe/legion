@@ -79,6 +79,7 @@ type PhaseFinishedRecord struct {
 // off the pod. Death is the first line of the runtime's account of the process's death, where the
 // notice carries no failure record, the claim failed because its process died, and no pod end
 // was read: cut where it is longer than the same bound, which DeathCut marks.
+// Its builder is workflow's WorkerDied.
 type WorkerDiedRecord struct {
 	NoticeHead
 	Role        claim.Role     `json:"role,omitempty"`
@@ -134,6 +135,7 @@ const (
 // repairSilence): the role, the phase, when its agent last stepped and for how long it has been
 // silent, the bound (worker_silence_minutes), the start the daemon wrote (one of the Sent words),
 // the phase entry the phase row names and the entry the claim was last given.
+// Its builder is workflow's WorkerSilentNotice.
 type WorkerSilentRecord struct {
 	NoticeHead
 	Role      claim.Role  `json:"role,omitempty"`
@@ -150,6 +152,7 @@ type WorkerSilentRecord struct {
 // its own past its bound (workflow's workerBackgroundStalled): the role, the phase, each kind of
 // work its session reported, when it reported it, how long the report has stood, and the bound
 // (worker_background_hours).
+// Its builder is workflow's WorkerBackgroundNotice.
 type WorkerBackgroundStalledRecord struct {
 	NoticeHead
 	Role       claim.Role  `json:"role,omitempty"`
@@ -164,6 +167,7 @@ type WorkerBackgroundStalledRecord struct {
 // HeldNotice): the role, the phase the hold came from, what held it (a Hold word, which the
 // urgency rule reads), the hold's reason word (escalated for an escalation, which both agents'
 // texts branch on), the architect's own words for its escalation, and why the claim failed.
+// Its builders are workflow's HeldFailureNotice and HeldEscalationNotice.
 type HeldRecord struct {
 	NoticeHead
 	Role       claim.Role           `json:"role,omitempty"`
@@ -179,6 +183,7 @@ type HeldRecord struct {
 // recordRound): the cap, the rounds counted and the conflict rounds not counted, 0 included, since
 // dispatch://INFRA-1442's R5 has the notice name how many conflict rounds were not counted, as
 // main's cap message did on every cap ("%d conflict rounds not counted").
+// Its builder is workflow's PRBlockedNotice.
 type PRBlockedRecord struct {
 	NoticeHead
 	Cap            int `json:"cap"`
@@ -194,6 +199,7 @@ type PRBlockedRecord struct {
 // record.StatusNotTakenYet (StatusNotTakenYet) and the eight things of record.EndChildRule
 // (EndChildRule). A notice of a merge that closed the issue or found it out of merging tells the
 // architect to end nothing and carries neither.
+// Its builder is workflow's PRMergedNotice.
 type PRMergedRecord struct {
 	NoticeHead
 	PullRequest       string      `json:"pull_request"`
@@ -205,6 +211,7 @@ type PRMergedRecord struct {
 
 // PRClosedUnmergedRecord is the notice that an issue's pull request closed without merging
 // (workflow's closed): the pull request and the issue's phase.
+// Its builder is workflow's PRClosedUnmergedNotice.
 type PRClosedUnmergedRecord struct {
 	NoticeHead
 	PullRequest string      `json:"pull_request"`
@@ -214,6 +221,7 @@ type PRClosedUnmergedRecord struct {
 // PullRequestMissingRecord is the notice that the implementer completed and GitHub shows no open
 // pull request on its branch (workflow's pullRequestMissing): the handoff commit, the repository
 // and the branch.
+// Its builder is workflow's PullRequestMissingNotice.
 type PullRequestMissingRecord struct {
 	NoticeHead
 	HandoffCommit string `json:"handoff_commit,omitempty"`
@@ -293,6 +301,7 @@ type GateDecision struct {
 
 // DesignApprovedRecord is the notice that a design-gate step opened (workflow's gateRegistered
 // and applyArtifact).
+// Its builder is workflow's DesignApprovedNotice.
 type DesignApprovedRecord struct {
 	NoticeHead
 	GateDecision
@@ -300,6 +309,7 @@ type DesignApprovedRecord struct {
 
 // DesignChangesRequestedRecord is the notice of a person's changes request on a design-gate step
 // (workflow's tellChanges): the decision, and the person's reason (words, bounded at OneAct).
+// Its builder is workflow's ChangesRequestedNotice.
 type DesignChangesRequestedRecord struct {
 	NoticeHead
 	GateDecision
@@ -310,6 +320,7 @@ type DesignChangesRequestedRecord struct {
 // CarriedGateOpenedRecord is the notice that a person's approval opened the gate a carried root
 // brought with it (workflow's applyArtifact): the decision, whose reference names the issue whose
 // document the person approved.
+// Its builder is workflow's CarriedGateOpenedNotice.
 type CarriedGateOpenedRecord struct {
 	NoticeHead
 	GateDecision
@@ -319,6 +330,7 @@ type CarriedGateOpenedRecord struct {
 // issue is the child. A child that left the workflow done (leave) names what it leaves behind
 // (LeftBehind); a child of a lingering tree that closed at its merge (closeMerged) names nothing
 // more.
+// Its builder is workflow's ChildClosedNotice.
 type ChildClosedRecord struct {
 	NoticeHead
 	LeftBehind
@@ -360,6 +372,7 @@ const (
 // queue), the status it left with and what that move leaves behind (LeftBehind), the ancestor
 // whose reviewed head the daemon accepted, and, for a reparented root, the root, its new Dispatch
 // parent and why it stays a tree of its own (a StaysOwn word).
+// The notice of a child that left the workflow is built by workflow's ChildLeftNotice.
 type ChildStatusRecord struct {
 	NoticeHead
 	Change   string      `json:"change"`
@@ -455,6 +468,7 @@ type LetGoChild struct {
 
 // ChildNotRecordedRecord is the notice that a child was not recorded under the tree (workflow's
 // refuseChild): the child, the repository it resolved to, and the refusal.
+// Its builder is workflow's ChildNotRecordedNotice.
 type ChildNotRecordedRecord struct {
 	NoticeHead
 	Child    string `json:"child"`
@@ -573,6 +587,7 @@ type DecisionMark struct {
 // cybermonklabs/legion#4979). A held issue stays in the phase its hold came from, and no worker
 // holds that phase (checksRedUrgency). The base is absent where the daemon has not recorded it, as
 // for a pull request recorded before the daemon kept the base (record.PullRequest.Base).
+// Its builder is workflow's ChecksRedNotice.
 type ChecksRedRecord struct {
 	NoticeHead
 	Phase         phase.Phase `json:"phase,omitempty"`
@@ -612,6 +627,7 @@ const (
 // (skipped) with the field that says once that a skipped check ran nothing on the head
 // (each_skipped_check, CheckConclusion), the count of the checks and statuses that passed and the
 // command that lists them.
+// Its builder is workflow's ReviewStuckNotice.
 type ReviewStuckRecord struct {
 	NoticeHead
 	Role              claim.Role        `json:"role,omitempty"`
@@ -647,6 +663,7 @@ type StatusReassertedRecord struct {
 // its low mark, or that the pod's cache trimmer switched itself off (workflow's volumeNearFull):
 // the sweep as the pod's launcher reported it, with the pod it was of (VolumeSweep). Its readers'
 // prompt says how to read the sweep's fields.
+// Its builder is workflow's VolumeNearFullNotice.
 type VolumeNearFullRecord struct {
 	NoticeHead
 	Volume *VolumeSweep `json:"volume,omitempty"`
@@ -720,6 +737,7 @@ type VolumeMissing struct {
 
 // SessionLostRecord is the notice that a worker's recorded session is in no session store
 // (workflow's sessionLost): the role, the phase and the runtime's account of the failed resume.
+// Its builder is workflow's SessionLostNotice.
 type SessionLostRecord struct {
 	NoticeHead
 	Role   claim.Role  `json:"role,omitempty"`
@@ -740,6 +758,7 @@ const LookupFailed = "failed"
 // one-line message and that session was not lost: nothing of it was deleted, and a store may hold
 // it still. No earlier release decodes the kind, so the way back of migration 20261120042902
 // deletes its unsent rows.
+// Its builder is workflow's SessionForgottenNotice.
 type SessionForgottenRecord struct {
 	NoticeHead
 	Role           claim.Role  `json:"role,omitempty"`
@@ -752,6 +771,7 @@ type SessionForgottenRecord struct {
 // SessionStoreFaultRecord is the notice that no worker of the issue can start because the session
 // store cannot be asked (workflow's sessionStoreFault): the role, the phase, the runtime's account,
 // and how often the daemon tries again.
+// Its builder is workflow's SessionStoreFaultNotice.
 type SessionStoreFaultRecord struct {
 	NoticeHead
 	Role       claim.Role  `json:"role,omitempty"`
@@ -776,6 +796,7 @@ const (
 // publishes it only where the architect the issue's notices reach is another claim, since the call
 // answers its own caller. A stop by a failed step names that step by its place in the task (Step),
 // its role being Role. stop_task carries no words of its caller, so the notice carries none.
+// Its builders are workflow's StopUnreturnedNotice and OwnerStoppedNotice.
 type TaskStoppedRecord struct {
 	NoticeHead
 	Role      claim.Role  `json:"role,omitempty"`
@@ -794,18 +815,48 @@ const (
 	PlanRunsDefault = "default"
 )
 
-// PlanNotTakenRecord is the notice that the first step of the issue took no plan an earlier owner
-// gave for it (workflow's tellPassedOver): each version of such a plan, whose giver is no
-// architect of the issue's tree now, and the plan the first step runs instead (Runs, a PlanRuns
-// word), with its version, its artifact and its giver where it is an owner's. The first step tells
-// the architect that owns the issue once, whatever number of versions it passed over.
+// The words of why the first step of an issue took no plan given for it, which a plan-not-taken
+// notice names (PlanNotTakenRecord.Why): the plan was an earlier owner's, whose giver is no
+// architect of the issue's tree now (workflow's tellPassedOver), or the issue's experiment drew
+// it into a group whose issues run the project's default steps, which takes no plan from the
+// issue's owner (workflow's tellNotTaken, takesNoPlan).
+const (
+	PlanNotTakenEarlierOwner = "earlier_owner"
+	PlanNotTakenGroup        = "group"
+)
+
+// PlanNotTakenRecord is the notice that the first step of the issue took no plan given for it, in
+// one of two meanings, which Why names (a PlanNotTaken word). Either way the first step deletes
+// the rows of each plan it passed over and tells the architect that owns the issue once, whatever
+// number of versions it passed over, and it names each version once (workflow's namedOnce): a
+// rerun carries a plan to its new generation, so the plans it passed over can hold a copy of one
+// version for each generation that version ran. Each such version is named with its document's
+// artifact and its giver (NotTaken), and the plan the first step runs instead is named too (Runs,
+// a PlanRuns word), with its version, its artifact and its giver where it is an owner's.
+//
+// PlanNotTakenEarlierOwner is a plan an earlier owner gave (workflow's passOverEarlierOwners,
+// tellPassedOver, PlanNotTakenNotice): its giver is no architect of the issue's tree now
+// (record.ArchitectOfTree), as after an orphan is admitted again as a root of its own or an
+// adoption moves a member to another tree, and the plan the first step runs is an owner's, of the
+// issue's generation or carried to it, or the default steps. The architect may give such a plan
+// again with register_plan as its own, which its prompt says.
+//
+// PlanNotTakenGroup is every plan its owner or an earlier owner gave for an issue whose
+// experiment's group takes no plan from its owner (workflow's passOverOwners, tellNotTaken,
+// GroupPlanNotTakenNotice): the experiment and the variant the issue was drawn into, which name
+// that group (intake's GroupClause), and the run takes the project's default steps, so Runs is
+// PlanRunsDefault. No plan given for such an issue is taken: register_plan on it is answered
+// PLAN_NOT_TAKEN, and the architect's prompt says to give it none.
 type PlanNotTakenRecord struct {
 	NoticeHead
+	Why          string             `json:"why"`
 	NotTaken     []PlanVersionFacts `json:"not_taken"`
 	Runs         string             `json:"runs"`
 	RunsVersion  int                `json:"runs_version,omitempty"`
 	RunsArtifact string             `json:"runs_artifact,omitempty"`
 	RunsGivenBy  string             `json:"runs_given_by,omitempty"`
+	Experiment   string             `json:"experiment,omitempty"`
+	Variant      string             `json:"variant,omitempty"`
 }
 
 // PlanVersionFacts is one version of an owner's plan as a notice names it: its version, the

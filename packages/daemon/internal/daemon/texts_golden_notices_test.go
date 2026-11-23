@@ -104,7 +104,8 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		"failure.death", oneLine(lines.Death), "failure.startFailure", oneLine(lines.StartFailure))
 	b.notice(r, "failure-lines", claim.RoleController, workflow.WorkerDied(issue.Key, claim.RoleTester, phase.Testing, &lines), linesWant)
 
-	// worker-stalled: the stall backstop's record, with the last call and with none.
+	// worker-stalled: the stall backstop's record, with the last call and with none, and a
+	// replacement whose launch waits at its issue pod's start gate (supervise.EndRelaunchWaitsForPod).
 	{
 		claimed := supervise.Claim{Issue: issue.Key, Tree: issue.Tree, Role: claim.RoleImplementer}
 		stop := supervise.StallBackstopStop{LastStep: r.at(-200), Bound: time.Duration(2+r.n) * time.Hour, End: supervise.EndRelaunched,
@@ -118,6 +119,11 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		b.notice(r, "no-call", arch, stallBackstopRecord(claimed, quiet, 300*time.Minute),
 			goldenWant("issue", issue.Key, "role", claim.RoleImplementer, "last_step", r.at(-200), "end", string(supervise.EndRelaunchParked),
 				"stop", texts.StopNotMade))
+		gated := quiet
+		gated.End, gated.WakeDue = supervise.EndRelaunchWaitsForPod, time.Time{}
+		b.notice(r, "waits-for-pod", arch, stallBackstopRecord(claimed, gated, 300*time.Minute),
+			goldenWant("issue", issue.Key, "role", claim.RoleImplementer, "last_step", r.at(-200), "end", string(supervise.EndRelaunchWaitsForPod),
+				"stop", texts.StopStopped, "launch_failures", r.n))
 	}
 
 	// worker-silent and worker-background-stalled.
@@ -278,14 +284,16 @@ func (b *goldenBuild) notices(r goldenRendering) {
 	}
 
 	// plan-not-taken: the first step passed over the plans of earlier owners (workflow's
-	// tellPassedOver), and runs an owner's version of its own or the project's default steps.
+	// tellPassedOver), and runs an owner's version of its own or the project's default steps; and
+	// the first step of an issue whose experiment's group runs the default steps passed over every
+	// plan given for it (tellNotTaken), a version carried to a second generation named once.
 	{
 		earlier := make([]record.PlanVersion, r.n)
 		for i := range earlier {
 			earlier[i] = record.PlanVersion{Issue: issue.Key, Generation: uint64(r.n), Version: 2 + i + r.n, ArtifactID: "plan-" + r.id(fmt.Sprintf("plan/earlier/%d", i)),
 				Source: record.PlanSourceOwner, GivenBy: r.token(t, r.key(120+i), arch)}
 		}
-		want := goldenWant("issue", issue.Key, "not_taken#", len(earlier))
+		want := goldenWant("issue", issue.Key, "why", texts.PlanNotTakenEarlierOwner, "not_taken#", len(earlier))
 		for i, version := range earlier {
 			want[fmt.Sprintf("not_taken[%d].version", i)] = strconv.Itoa(version.Version)
 			want[fmt.Sprintf("not_taken[%d].artifact", i)] = version.ArtifactID
@@ -299,6 +307,21 @@ func (b *goldenBuild) notices(r goldenRendering) {
 		b.notice(r, "owner", arch, workflow.PlanNotTakenNotice(issue.Key, earlier, runs), owner)
 		want["runs"] = texts.PlanRunsDefault
 		b.notice(r, "default", arch, workflow.PlanNotTakenNotice(issue.Key, earlier, record.PlanVersion{Issue: issue.Key, Source: record.PlanSourceDefault}), want)
+		own := runs
+		own.GivenBy = r.token(t, issue.Key, arch)
+		carried := own
+		carried.Generation++
+		passed := append(slices.Clone(earlier), own, carried)
+		group := record.Assignment{Experiment: []string{"planning", "how-each-issue-is-done"}[r.n-1], Unit: "issue",
+			Variant: []string{"b", "default-steps"}[r.n-1], Plan: "default"}
+		grouped := goldenWant("issue", issue.Key, "why", texts.PlanNotTakenGroup, "not_taken#", len(earlier)+1, "runs", texts.PlanRunsDefault,
+			"experiment", group.Experiment, "variant", group.Variant)
+		for i, version := range append(slices.Clone(earlier), own) {
+			grouped[fmt.Sprintf("not_taken[%d].version", i)] = strconv.Itoa(version.Version)
+			grouped[fmt.Sprintf("not_taken[%d].artifact", i)] = version.ArtifactID
+			grouped[fmt.Sprintf("not_taken[%d].given_by", i)] = string(version.GivenBy)
+		}
+		b.notice(r, "group", arch, workflow.GroupPlanNotTakenNotice(issue.Key, group, passed), grouped)
 	}
 
 	// retro-held: a parent past its last step, held before its retro while issues beneath it are

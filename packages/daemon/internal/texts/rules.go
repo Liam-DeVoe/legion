@@ -83,10 +83,12 @@ func childStatusUrgency(reader claim.Role, v Variant) Urgency {
 }
 
 // lowToArchitect is Low for the architect and Med for every other reader. It is the rule of three
-// kinds. pr-merged. plan-not-taken: the first step already runs the plan it took, so no work waits
-// on the architect, and a plan it gives again with register_plan can wait for its next turn.
-// retro-held: the daemon starts the retro by itself when the last issue beneath the parent leaves
-// the workflow, as a merged pull request's close waits for the issues it names.
+// kinds. pr-merged. plan-not-taken, in both its meanings: the first step already runs the plan it
+// took, so no work waits on the architect; a plan of an earlier owner it gives again with
+// register_plan can wait for its next turn, and an issue whose experiment's group runs the default
+// steps takes no plan from it at all. retro-held: the daemon starts the retro by itself when the
+// last issue beneath the parent leaves the workflow, as a merged pull request's close waits for
+// the issues it names.
 func lowToArchitect(reader claim.Role, _ Variant) Urgency {
 	if reader == claim.RoleArchitect {
 		return Low

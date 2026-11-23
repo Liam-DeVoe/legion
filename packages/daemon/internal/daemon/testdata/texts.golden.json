@@ -2841,6 +2841,50 @@
       }
     },
     {
+      "kind": "worker-stalled",
+      "variant": "waits-for-pod",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "ALPHA-1100",
+      "summary": "worker-stalled on ALPHA-1100",
+      "payload": {
+        "kind": "worker-stalled",
+        "role": "implementer",
+        "issue": "ALPHA-1100",
+        "last_step": "2026-11-18T06:10:00Z",
+        "silent_for": "5h0m0s",
+        "bound": "3h0m0s",
+        "turn_started": "2026-11-18T05:10:00Z",
+        "end": "relaunch waits for its pod",
+        "stop": "stopped",
+        "launch_failures": 1
+      }
+    },
+    {
+      "kind": "worker-stalled",
+      "variant": "waits-for-pod",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "med",
+      "issue": "BRAVO-2100",
+      "summary": "worker-stalled on BRAVO-2100",
+      "payload": {
+        "kind": "worker-stalled",
+        "role": "implementer",
+        "issue": "BRAVO-2100",
+        "last_step": "2027-04-07T13:25:00Z",
+        "silent_for": "5h0m0s",
+        "bound": "4h0m0s",
+        "turn_started": "2027-04-07T12:25:00Z",
+        "end": "relaunch waits for its pod",
+        "stop": "stopped",
+        "launch_failures": 2
+      }
+    },
+    {
       "kind": "worker-silent",
       "variant": "silent",
       "sample": 1,
@@ -6779,6 +6823,7 @@
       "payload": {
         "kind": "plan-not-taken",
         "issue": "ALPHA-1100",
+        "why": "earlier_owner",
         "not_taken": [
           {
             "version": 3,
@@ -6801,6 +6846,7 @@
       "payload": {
         "kind": "plan-not-taken",
         "issue": "BRAVO-2100",
+        "why": "earlier_owner",
         "not_taken": [
           {
             "version": 4,
@@ -6818,6 +6864,71 @@
     },
     {
       "kind": "plan-not-taken",
+      "variant": "group",
+      "sample": 1,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "ALPHA-1100",
+      "summary": "plan-not-taken on ALPHA-1100",
+      "payload": {
+        "kind": "plan-not-taken",
+        "issue": "ALPHA-1100",
+        "why": "group",
+        "not_taken": [
+          {
+            "version": 3,
+            "artifact": "plan-771ab26f-0ff6-c62a-e320-76c3ee7b4309",
+            "given_by": "legion-alpha-alpha-1120-architect"
+          },
+          {
+            "version": 6,
+            "artifact": "plan-23c1f480-d7a5-5d75-29d3-7dc7085c6c11",
+            "given_by": "legion-alpha-alpha-1100-architect"
+          }
+        ],
+        "runs": "default",
+        "experiment": "planning",
+        "variant": "b"
+      }
+    },
+    {
+      "kind": "plan-not-taken",
+      "variant": "group",
+      "sample": 2,
+      "reader": "architect",
+      "form": "notice",
+      "urgency": "low",
+      "issue": "BRAVO-2100",
+      "summary": "plan-not-taken on BRAVO-2100",
+      "payload": {
+        "kind": "plan-not-taken",
+        "issue": "BRAVO-2100",
+        "why": "group",
+        "not_taken": [
+          {
+            "version": 4,
+            "artifact": "plan-53b0be62-69b0-21a9-daab-a76a9483bc3a",
+            "given_by": "legion-bravo-bravo-2120-architect"
+          },
+          {
+            "version": 5,
+            "artifact": "plan-db0c8f1c-01bc-9466-90ac-ae8b04e683d5",
+            "given_by": "legion-bravo-bravo-2121-architect"
+          },
+          {
+            "version": 7,
+            "artifact": "plan-8eb2b3c2-be3f-0036-480f-66e625705b5e",
+            "given_by": "legion-bravo-bravo-2100-architect"
+          }
+        ],
+        "runs": "default",
+        "experiment": "how-each-issue-is-done",
+        "variant": "default-steps"
+      }
+    },
+    {
+      "kind": "plan-not-taken",
       "variant": "owner",
       "sample": 1,
       "reader": "architect",
@@ -6828,6 +6939,7 @@
       "payload": {
         "kind": "plan-not-taken",
         "issue": "ALPHA-1100",
+        "why": "earlier_owner",
         "not_taken": [
           {
             "version": 3,
@@ -6853,6 +6965,7 @@
       "payload": {
         "kind": "plan-not-taken",
         "issue": "BRAVO-2100",
+        "why": "earlier_owner",
         "not_taken": [
           {
             "version": 4,

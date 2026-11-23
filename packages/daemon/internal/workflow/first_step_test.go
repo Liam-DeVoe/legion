@@ -210,7 +210,7 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 		if line := `msg="` + notTaken + `" issue=LEGION-209 generation=1 version=1 document=` + planArtifact + " giver=" + string(earlier) + ` runs="` + runs + `"`; strings.Count(logged.String(), notTaken) != 1 || !strings.Contains(logged.String(), line) {
 			t.Fatalf("the log =\n%s\nwant the one line %s", logged.String(), line)
 		}
-		want := []record.Notice{{Kind: texts.PlanNotTaken, Issue: "LEGION-209",
+		want := []record.Notice{{Kind: texts.PlanNotTaken, Issue: "LEGION-209", Why: texts.PlanNotTakenEarlierOwner,
 			NotTaken: []texts.PlanVersionFacts{{Version: 1, Artifact: planArtifact, GivenBy: string(earlier)}},
 			Runs:     texts.PlanRunsOwner, RunsVersion: 2, RunsArtifact: planArtifact, RunsGivenBy: string(owner)}}
 		if got := noticesOf(t, pool, "LEGION-209", "plan-not-taken"); !reflect.DeepEqual(got, want) {

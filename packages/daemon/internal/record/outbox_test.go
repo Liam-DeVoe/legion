@@ -1298,7 +1298,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		mustNotice(t, texts.StatusReassertedRecord{NoticeHead: head(texts.StatusReasserted), Session: "ses_1", Wrote: "todo", Status: "in_progress"}),
 		mustNotice(t, texts.TaskStoppedRecord{NoticeHead: head(texts.TaskStopped), Role: claim.RoleReviewer, Phase: phase.Reviewing,
 			Task: "a", Cause: texts.TaskStoppedByOwner, StoppedBy: "legion-legion-legion-208-architect"}),
-		mustNotice(t, texts.PlanNotTakenRecord{NoticeHead: texts.NoticeHead{Kind: texts.PlanNotTaken, Issue: "LEGION-209"},
+		mustNotice(t, texts.PlanNotTakenRecord{NoticeHead: texts.NoticeHead{Kind: texts.PlanNotTaken, Issue: "LEGION-209"}, Why: texts.PlanNotTakenEarlierOwner,
 			NotTaken: []texts.PlanVersionFacts{{Version: 1, Artifact: "6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80", GivenBy: "legion-legion-legion-208-architect"}},
 			Runs:     texts.PlanRunsOwner, RunsVersion: 2, RunsArtifact: "7b2e1d4f-3c8e-4f6b-8d92-4e5f6a7b8c91", RunsGivenBy: "legion-legion-legion-209-architect"}),
 		mustNotice(t, texts.RetroHeldRecord{NoticeHead: head(texts.RetroHeld), Role: claim.RoleImplementer, Phase: phase.Retro,

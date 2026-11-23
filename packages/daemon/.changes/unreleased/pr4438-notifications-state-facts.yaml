@@ -160,10 +160,13 @@ body: |-
   version of the plan, at the time it gave it; a stopped task started again names what started it
   (`restarted: todo` or `plan`, with `plan_version` and `stopped_tasks`). The `task-stopped` notice
   (`med`) names the task, what stopped it (`cause: owner` or `no_return`) and the failed `step`;
-  `plan-not-taken` (`low`) names each version of a plan the first step did not take (`not_taken`)
-  and the plan it runs (`runs`); `retro-held` (`low`) names each issue the retro waits for
-  (`waiting_for`) and keeps the two texts on ending a child word for word. The merger's
-  merge-forward landed message names the head whose approval it waits for, where its task has a
-  reviewer step (`approval_owed`). A
+  `plan-not-taken` (`low`) names why the first step took no plan (`why: earlier_owner`, a plan of
+  an earlier owner, or `why: group`, an issue whose experiment's group runs the default steps, with
+  that group's `experiment` and `variant`), each version it did not take, once (`not_taken`), and
+  the plan it runs (`runs`); `retro-held` (`low`) names each issue the retro waits for
+  (`waiting_for`) and keeps the two texts on ending a child word for word. A `worker-stalled`
+  notice whose replacement waits at its issue pod's start gate names `end: relaunch waits for its
+  pod`. The merger's merge-forward landed message names the head whose approval it waits for,
+  where its task has a reviewer step (`approval_owed`). A
   rollback past this release is a roll forward (docs/kubernetes.md, "Rolling back the release that
   carries a person's words in the daemon's texts").

@@ -16,7 +16,7 @@ import (
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
 // kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
 // c7e1cbd5, 3d2dddd0, 6d50ef31, a4cd4949, 5f2bf9af, d46ec4e0, c03d3afe, b537812f, 2f7ee6dc,
-// 054cd5ca, 74cb6855 or 7cb1f229 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// 054cd5ca, 74cb6855, 7cb1f229 or 7df64124 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
 // stand for any text), the readers, and the passage of the readers' prompt
 // (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
 // word for word from the one line of the file that holds it.
@@ -493,6 +493,12 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "`end: failed` is every try at the replacement refused, which ran the claim's launch budget out: the claim is failed with nothing queued for it, and it waits on a retry, on a later start of its role (a child's next phase start starts that child's failed architect again), or on a close that retires it."},
 	{texts.WorkerStalled, "every try at the replacement was refused, which ran the claim's launch budget out, so the claim is failed and nothing is queued for it: what it waits on is a retry, a later start of its role (a child's next phase start starts that child's failed architect again), or a close that retires it (…)", "architect",
 		goPrompts + "architect-common.md", "`end: failed` is every try at the replacement refused, which ran the claim's launch budget out: the claim is failed with nothing queued for it, and it waits on a retry, on a later start of its role (a child's next phase start starts that child's failed architect again), or on a close that retires it."},
+	{texts.WorkerStalled, "and queued the replacement launch at its issue's start gate", "architect",
+		goPrompts + "architect-common.md", "`end: relaunch waits for its pod` is the replacement's launch queued at its issue's start gate"},
+	{texts.WorkerStalled, "the launch that replaces it waits at its issue's start gate behind the roles of the issue that start or load their sessions before it, one load at a time, and the replacement starts when the gate grants it its start.", "architect",
+		goPrompts + "architect-common.md", "behind the roles of the issue that start or load their sessions before it, one load at a time, and the replacement starts when the gate grants it its start"},
+	{texts.WorkerStalled, "A suspension of this claim, a close that retires it, or the daemon's own shutdown, which the daemon's next start takes up, can come before that start, and a start refused until the claim's launch budget runs out leaves it failed with nothing started for it", "architect",
+		goPrompts + "architect-common.md", "A suspension of the claim, a close that retires it, or the daemon's own shutdown, which the daemon's next start takes up, can come before that start, and a start refused until the claim's launch budget runs out leaves the claim failed with nothing started for it."},
 	{texts.WorkerStalled, "The arguments of a call are never recorded, so they are in no part of this notice.", "controller",
 		rolePrompts + "controller-root.md", "never a call's arguments, which the daemon does not record."},
 	{texts.WorkerStalled, "The task it was serving is still owed to it", "controller",
@@ -541,6 +547,12 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "controller-root.md", "`end: failed` is every try at the replacement refused, which ran the claim's launch budget out: the claim is failed with nothing queued for it, and it waits on a retry, on a later start of its role (a child's next phase start starts that child's failed architect again), or on a close that retires it."},
 	{texts.WorkerStalled, "every try at the replacement was refused, which ran the claim's launch budget out, so the claim is failed and nothing is queued for it: what it waits on is a retry, a later start of its role (a child's next phase start starts that child's failed architect again), or a close that retires it (…)", "controller",
 		rolePrompts + "controller-root.md", "`end: failed` is every try at the replacement refused, which ran the claim's launch budget out: the claim is failed with nothing queued for it, and it waits on a retry, on a later start of its role (a child's next phase start starts that child's failed architect again), or on a close that retires it."},
+	{texts.WorkerStalled, "and queued the replacement launch at its issue's start gate", "controller",
+		rolePrompts + "controller-root.md", "`end: relaunch waits for its pod` is the replacement's launch queued at its issue's start gate"},
+	{texts.WorkerStalled, "the launch that replaces it waits at its issue's start gate behind the roles of the issue that start or load their sessions before it, one load at a time, and the replacement starts when the gate grants it its start.", "controller",
+		rolePrompts + "controller-root.md", "behind the roles of the issue that start or load their sessions before it, one load at a time, and the replacement starts when the gate grants it its start"},
+	{texts.WorkerStalled, "A suspension of this claim, a close that retires it, or the daemon's own shutdown, which the daemon's next start takes up, can come before that start, and a start refused until the claim's launch budget runs out leaves it failed with nothing started for it", "controller",
+		rolePrompts + "controller-root.md", "A suspension of the claim, a close that retires it, or the daemon's own shutdown, which the daemon's next start takes up, can come before that start, and a start refused until the claim's launch budget runs out leaves the claim failed with nothing started for it."},
 	{texts.WorkerSilent, ". A suspension an operator holds over the claim refuses that start when the outbox runs it", "architect",
 		goPrompts + "architect-common.md", "only a suspension an operator holds over the claim still refuses that start, and ask the operator to resume such a claim."},
 	{texts.WorkerSilent, " is a phase worker nothing will prompt: its process is up and between turns, it holds no task of %s", "architect",
@@ -1037,6 +1049,8 @@ var goldenSteps = []goldenStep{
 		goPrompts + "worker-common.md", "A message with no `push_to` is the reviewer's: you create no commit, so you push nothing."},
 	{texts.PlanNotTaken, " To run a plan it did not take, give it again with register_plan as your own.", "architect",
 		goPrompts + "architect-common.md", "To run the earlier plan, give it again with `register_plan` as your own, after `stop_task` on the task that runs now."},
+	{texts.PlanNotTaken, "%s is in the variant %s of the experiment %s, whose issues run the project's default steps.", "architect",
+		goPrompts + "architect-common.md", "Give that issue no plan with `register_plan`, since it takes no plan from you (`PLAN_NOT_TAKEN`)."},
 	{texts.RetroHeld, "A parent is accepted only once no issue beneath it is still in the workflow.", "architect",
 		goPrompts + "architect-common.md", "A parent is accepted only once no issue beneath it is still in the workflow."},
 	{texts.RetroHeld, "Run each one to done, or end it; Legion starts the retro when the last one leaves.", "architect",

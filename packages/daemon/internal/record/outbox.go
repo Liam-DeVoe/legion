@@ -636,7 +636,8 @@ type Notice struct {
 	// The head that conflicts with its base, why the daemon asked for its merge forward and the
 	// role it asked (checks-red, MergeForwardAsker), and a stuck review round (review-stuck) with the
 	// checks and the commit statuses of its head, the checks GitHub skipped among them, beside the
-	// field that says once that a skipped check ran nothing on the head.
+	// field that says once that a skipped check ran nothing on the head. Why is also why the first
+	// step of an issue took no plan (plan-not-taken).
 	ConflictsWith     string                  `json:"conflicts_with,omitempty"`
 	Head              string                  `json:"head,omitempty"`
 	Why               string                  `json:"why,omitempty"`
@@ -712,14 +713,18 @@ type Notice struct {
 	// (texts.TaskStoppedRecord); what stopped it is in Cause above (a texts.TaskStopped word).
 	Task string `json:"task,omitempty"`
 	Step int    `json:"step,omitempty"`
-	// The versions of earlier owners' plans that the first step did not take, and the plan it runs
-	// instead: a texts.PlanRuns word, with an owner's version, its artifact and its giver
-	// (plan-not-taken, texts.PlanNotTakenRecord).
+	// The versions of plans that the first step did not take, and the plan it runs instead: a
+	// texts.PlanRuns word, with an owner's version, its artifact and its giver; why it took none is
+	// in Why above (a texts.PlanNotTaken word), and, for an issue whose experiment's group runs the
+	// project's default steps, the experiment and the variant name that group (plan-not-taken,
+	// texts.PlanNotTakenRecord).
 	NotTaken     []texts.PlanVersionFacts `json:"not_taken,omitempty"`
 	Runs         string                   `json:"runs,omitempty"`
 	RunsVersion  int                      `json:"runs_version,omitempty"`
 	RunsArtifact string                   `json:"runs_artifact,omitempty"`
 	RunsGivenBy  string                   `json:"runs_given_by,omitempty"`
+	Experiment   string                   `json:"experiment,omitempty"`
+	Variant      string                   `json:"variant,omitempty"`
 	// Words names each field of the notice that holds another author's words, by its path
 	// (texts.WordsPaths), with that author and the time.
 	Words map[string]texts.WordsMeta `json:"words,omitempty"`

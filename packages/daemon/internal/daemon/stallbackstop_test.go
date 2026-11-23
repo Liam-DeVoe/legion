@@ -673,7 +673,7 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 
 // A turn the daemon ended whose replacement the store would not write reaches its owner all the
 // same, and the notice says what is true of it: the worker's process was stopped and the launch
-// that replaces it is pending (supervise's launchNow, relaunchLater). It is the store's
+// that replaces it is pending (supervise's launchTries, relaunchLater). It is the store's
 // transient refusal that this exists for — the one a sweep sees often enough to have been
 // measured — so a stall that falls in it is a worker stopped and an owner who would otherwise
 // hear nothing at all.
@@ -770,7 +770,7 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 
 // The charge over the common shape of all: one start the runtime refused inside the
 // replacement, and the next one taken. The end is the relaunch that worked, and the claim was
-// charged the launch failure all the same (supervise's launchNow), so the notice counts it.
+// charged the launch failure all the same (supervise's launchTries), so the notice counts it.
 func TestTheStallBackstopCountsALaunchFailureChargedOnTheWayToARelaunch(t *testing.T) {
 	t.Parallel()
 	rig := newBackstopRig(t)
@@ -796,7 +796,7 @@ func TestTheStallBackstopCountsALaunchFailureChargedOnTheWayToARelaunch(t *testi
 
 // The same charge where the replacement never started: one start the runtime refused, and then
 // a write the store would not take, which leaves the launch still to make (supervise's
-// launchNow, relaunchLater). The end is the relaunch pending, and the failure charged on the
+// launchTries, relaunchLater). The end is the relaunch pending, and the failure charged on the
 // way to it is charged whatever the end was.
 func TestTheStallBackstopCountsALaunchFailureChargedBeforeAPendingRelaunch(t *testing.T) {
 	t.Parallel()
@@ -866,6 +866,62 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	if notice := notices[0]; notice.End != string(supervise.EndRelaunchParked) || notice.Stop != texts.StopNotMade ||
 		!notice.WakeDue.Equal(parked.At) || notice.LaunchFailures != 0 {
 		t.Errorf("the notice = %+v, want the relaunch parked, no stop made, the launch due at %s, and nothing charged", notice, parked.At)
+	}
+}
+
+// A replacement whose launch waits at its issue pod's gate, while another role of the issue's
+// pod loads its session, is told as that (supervise.EndRelaunchWaitsForPod): the stalled turn
+// ended and its process stopped where the launch parked (supervise's askPod), the task still
+// owed, and the replacement starting when the gate grants it its start, behind whichever roles
+// of the issue start or load before it, one load at a time. The claim alone —
+// launching, with no process — reads as the relaunch still to make, and an owner told that no
+// replacement was started would wait for a retry nobody makes. The notice names that end, the
+// process stopped, and nothing charged; what the end means is the reader's prompt's.
+func TestTheStallBackstopTellsAReplacementWaitingForItsIssuePod(t *testing.T) {
+	rig := newBackstopRig(t)
+	podGated(rig.sup)
+	const issue = "LEGION-227"
+	stalled := rig.claim(claim.RoleImplementer, issue, backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	// The issue's tester starts its process and loads its session, which holds the pod's start
+	// for as long as the test runs: the rig's clock fires no timer, so that load ends neither at
+	// its settle nor at its bound.
+	ctx := context.Background()
+	tester := mustClaimToken(t, issue, claim.RoleTester)
+	loading, _, err := rig.sup.Create(ctx, supervise.Claim{Token: tester, Project: "legion", Tree: issue, Issue: issue,
+		Role: claim.RoleTester, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create the tester: %v", err)
+	}
+	if err := loading.Handle(ctx, supervise.RequestSpawn{Claim: tester}); err != nil {
+		t.Fatalf("start the tester: %v", err)
+	}
+
+	rig.sweep(claims)
+
+	notices := rig.awaitNotices(issue, 1)
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the one end the backstop made", told)
+	}
+	if resumes := rig.resumes(stalled.Token); len(resumes) != 0 {
+		t.Fatalf("resumes = %d, want none: the replacement waits for the tester's load", len(resumes))
+	}
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if c := m.Claim(); c.State != supervise.StateLaunching || c.Locator != nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching with no process while its replacement waits at the gate", c.State, c.Locator)
+	}
+	var stopped bool
+	for _, call := range rig.rt.CallsOf("Suspend") {
+		stopped = stopped || call.Locator == *stalled.Locator
+	}
+	if !stopped {
+		t.Fatalf("the runtime's stops = %+v, want the stalled process stopped where its replacement parked", rig.rt.CallsOf("Suspend"))
+	}
+	if notice := notices[0]; notice.End != string(supervise.EndRelaunchWaitsForPod) || notice.Stop != texts.StopStopped || notice.LaunchFailures != 0 {
+		t.Errorf("the notice = %+v, want the relaunch waiting for its pod, its process stopped, and nothing charged", notice)
 	}
 }
 

@@ -1273,7 +1273,7 @@ async function noRequestFor(session: CardSession, ms: number, expected: number):
     await session.until("omp to be running", () => true);
     const extra = session.turns[expected];
     if (extra !== undefined) {
-      throw new Error(`Messages request ${expected} came, on ${lastMessage(extra.request)}`);
+      throw new Error(`Messages request ${expected} came, on ${newestMessage(extra.request.body)}`);
     }
     await Bun.sleep(200);
   }
@@ -1342,7 +1342,7 @@ test.skipIf(skip)(
     const task = `TASK-${randomUUID().slice(0, 8)}`;
     await session.command({ type: "prompt", message: task });
     const first = await session.nextTurn("the task's first model request");
-    expect(lastMessage(first.request)).toContain(task);
+    expect(newestMessage(first.request.body)).toContain(task);
     expectBefore(first.request, notice.text, task);
     first.reply([text("Did the task.")]);
     await session.settled();
@@ -1563,7 +1563,7 @@ export default function startTurnMark(pi) {
     const start = `START-${randomUUID().slice(0, 8)}`;
     await withMark.command({ type: "prompt", message: start });
     const startTurn = await withMark.nextTurn("the start turn's model request");
-    expect(lastMessage(startTurn.request)).toContain(start);
+    expect(newestMessage(startTurn.request.body)).toContain(start);
     startTurn.reply([text("Started.")]);
     await withMark.settled();
     await noRequestFor(withMark, QUIET_MS, startTurn.index + 1);
@@ -1596,7 +1596,7 @@ test.skipIf(skip)(
     const typed = `TYPED-${randomUUID().slice(0, 8)}`;
     await session.type(typed);
     const turn = await session.nextTurn("the typed message's model request");
-    expect(lastMessage(turn.request)).toContain(typed);
+    expect(newestMessage(turn.request.body)).toContain(typed);
     expectBefore(turn.request, low.text, typed);
     turn.reply([text("Read the card and the message.")]);
     await answeredDone(session, low.text, lowWords);
