@@ -20,7 +20,7 @@ func TestDefaultStepsWhoseKeyRunsOnTwoModelsOrHarnessesAreWarned(t *testing.T) {
 	steps := func(project string) string {
 		return strings.Replace(minimalFile, "projects:\n  DEMO: {}\n", "projects:\n  DEMO: {default_steps: "+project+"}\n", 1)
 	}
-	const refuses = "; one agent runs on one %s: this release runs step %d as an agent of its own, and the next release refuses it; give that step another key, or none, in legion.yaml"
+	const refuses = " This release runs step %d as an agent of its own, and the next release refuses it; give that step another key, or none, in legion.yaml"
 	for _, tc := range []struct {
 		name, file string
 		want       []plan.Step
@@ -28,12 +28,12 @@ func TestDefaultStepsWhoseKeyRunsOnTwoModelsOrHarnessesAreWarned(t *testing.T) {
 	}{
 		{name: "two models", file: steps("[implementer:a, checker:a]") + checkerRole,
 			want: []plan.Step{{Role: "implementer", Key: "a"}, {Role: "checker"}},
-			warnings: []string{"projects.DEMO.default_steps[1] is checker:a, and the key a names one agent for implementer at step 1 and checker at step 2, whose roles run on two models (the default model, checker-model)" +
-				fmt.Sprintf(refuses, "model", 2)}},
+			warnings: []string{"projects.DEMO.default_steps[1] is checker:a: the key a names one agent for implementer at step 1 of task default and checker at step 2 of task default, " +
+				"whose roles run on two models (the default model, checker-model); one agent runs on one model." + fmt.Sprintf(refuses, 2)}},
 		{name: "two harnesses", file: steps("[implementer:a, reviewer:a, tester:a]") + "worker_backends: {reviewer: claude}\n",
 			want: []plan.Step{{Role: "implementer", Key: "a"}, {Role: "reviewer"}, {Role: "tester", Key: "a"}},
-			warnings: []string{"projects.DEMO.default_steps[1] is reviewer:a, and the key a names one agent for implementer at step 1 and reviewer at step 2, whose roles run on two harnesses (omp, claude)" +
-				fmt.Sprintf(refuses, "harness", 2)}},
+			warnings: []string{"projects.DEMO.default_steps[1] is reviewer:a: the key a names one agent for implementer at step 1 of task default and reviewer at step 2 of task default, " +
+				"whose roles run on two harnesses (omp, claude); one agent runs on one harness." + fmt.Sprintf(refuses, 2)}},
 		{name: "one model and one harness", file: steps("[implementer:a, reviewer:a]"),
 			want: []plan.Step{{Role: "implementer", Key: "a"}, {Role: "reviewer", Key: "a"}}},
 	} {
