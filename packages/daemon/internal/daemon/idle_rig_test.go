@@ -278,7 +278,8 @@ func newIdleRigWith(t *testing.T, options idleRigOptions, seeds ...idleRigSeed) 
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), kubeconfigs: map[*issueSandboxAPI]string{}, agents: newIdleRigAgents(t, pool),
 		listener: listener, records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}, options: options}
-	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
+	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
+		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, sessionproxy.Signer) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})
@@ -557,7 +558,7 @@ func (r *idleWakeRig) podReady(cluster *issueSandboxAPI, pod, uid string, roles 
 			return ready(ctx)
 		}
 	}
-	r.pods.podReady(cluster.prefix, pod, uid, wanted, prepare, func(role, dir string) { r.agents.setPrivate(key, role, dir) })
+	r.pods.podReady(cluster.prefix, pod, uid, wanted, prepare, func(role, dir string, _ *idleRigPodProcesses) { r.agents.setPrivate(key, role, dir) })
 }
 
 // podGone stops the launchers of the cluster's pod, and its workspace is no live pod's any more.

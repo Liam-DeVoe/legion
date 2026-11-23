@@ -40,8 +40,10 @@ import (
 // upstream dialer is a plain TCP dial of the test database.
 type idleRigPods struct {
 	t *testing.T
-	// address is the worker stream every launcher dials, tcp://host:port.
-	address func() string
+	// launch is how the launchers of a pod run, asked when the pod is Ready: the worker stream
+	// they dial and whether they run as a microVM pod's (launcher.Config's Connect and MicroVM),
+	// or ok false where none of them may start.
+	launch func(pod, podUID string) (connect string, microVM, ok bool)
 	// session is the Cloud SQL session database the launchers proxy to, and dial is its upstream.
 	session ompsessions.Database
 	dial    func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)
@@ -64,15 +66,29 @@ type idleRigPods struct {
 	dirNext int
 }
 
-// idleRigPodProcesses is one pod's launchers: the context that stops them and the wait that their
-// goroutines have ended.
+// idleRigPodProcesses is one pod's launchers and what runs beside them (run): the worker stream
+// the launchers dial, the context that stops them all and the wait that their goroutines have
+// ended.
 type idleRigPodProcesses struct {
-	cancel context.CancelFunc
-	done   sync.WaitGroup
-	dirs   []string
+	connect string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    sync.WaitGroup
+	dirs    []string
 }
 
-func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)) *idleRigPods {
+// run runs f on a goroutine of the pod's: f's context ends when the pod is gone, and podGone
+// waits for f to return before it removes the pod's directories. f may call run itself, since
+// the goroutine it runs on is counted until it returns, so the wait cannot end in between.
+func (processes *idleRigPodProcesses) run(f func(ctx context.Context)) {
+	processes.done.Add(1)
+	go func() {
+		defer processes.done.Done()
+		f(processes.ctx)
+	}()
+}
+
+func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, signer sessionproxy.Signer) (sessionproxy.Dialer, error)) *idleRigPods {
 	t.Helper()
 	// Each launcher's private directory is a numbered subdirectory of this root, and the unix
 	// socket of a generation's session database proxy is `<dir>/g<n>/.s.PGSQL.5432`. A unix
@@ -85,7 +101,7 @@ func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Dat
 	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
 	// that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
-	p := &idleRigPods{t: t, address: address, session: session, dial: dial,
+	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
 		dirRoot: root}
 	t.Cleanup(p.stopAll)
@@ -96,28 +112,34 @@ func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Dat
 // prefix of that cluster's Kubernetes stand-in (issueSandboxAPI.prefix), and its name.
 func idleRigPodKey(cluster, pod string) string { return cluster + "/" + pod }
 
-// podReady starts a launcher for each role of the pod, with that role's own launcher token, once
-// prepare has readied the pod's disk, as the pod's init containers ready it before its main
-// container starts; a nil prepare readies nothing. Both run on a goroutine of the pod's own, so
-// one pod's preparation holds back no other pod, and a pod gone before its preparation ended
-// starts no launcher.
+// podReady starts a launcher for each role of the pod, with that role's own launcher token and
+// the stream and MicroVM launch answers for the pod, once prepare has readied the pod's disk, as
+// the pod's init containers ready it before its main container starts; a nil prepare readies
+// nothing. A pod launch refuses gets no launcher and counts no start. The preparation runs on a
+// goroutine of the pod's own (idleRigPodProcesses.run), which then starts the launchers, so one
+// pod's preparation holds back no other pod, and a pod gone before its preparation ended starts
+// no launcher. Before each launcher starts, record is handed its role, its private directory and
+// the pod's processes, beside which record may run its own (idleRigPodProcesses.run).
 func (p *idleRigPods) podReady(cluster, pod, podUID string, roles map[string]string, prepare func(context.Context) error,
-	record func(role, dir string),
+	record func(role, dir string, processes *idleRigPodProcesses),
 ) {
+	connect, microVM, ok := p.launch(pod, podUID)
+	if !ok {
+		return
+	}
 	key := idleRigPodKey(cluster, pod)
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if _, live := p.running[key]; live {
-		p.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	processes := &idleRigPodProcesses{cancel: cancel}
+	processes := &idleRigPodProcesses{connect: connect, ctx: ctx, cancel: cancel}
 	p.running[key] = processes
 	p.started[pod]++
-	processes.done.Add(1)
-	p.mu.Unlock()
-	go func() {
-		defer processes.done.Done()
+	// The pod's goroutine is counted while p.mu is held, so a podGone that finds the pod waits
+	// for it too.
+	processes.run(func(ctx context.Context) {
 		if prepare != nil {
 			if err := prepare(ctx); err != nil {
 				if ctx.Err() == nil {
@@ -133,21 +155,19 @@ func (p *idleRigPods) podReady(cluster, pod, podUID string, roles map[string]str
 				continue
 			}
 			processes.dirs = append(processes.dirs, dir)
-			record(role, dir)
+			record(role, dir, processes)
 			cfg := launcher.Config{
-				Connect: p.address(), Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
+				Connect: connect, MicroVM: microVM, Token: token, Sandbox: pod, Role: role, PodUID: podUID, PrivateDir: dir,
 				Stdout: p.logs, Stderr: p.logs, StopGrace: 10 * time.Second,
 				SessionDatabase: p.session, SessionDialer: p.dial,
 			}
-			processes.done.Add(1)
-			go func() {
-				defer processes.done.Done()
+			processes.run(func(ctx context.Context) {
 				if err := launcher.Run(ctx, cfg); err != nil && ctx.Err() == nil {
 					fmt.Fprintf(p.logs, "launcher %s/%s: %v\n", pod, role, err)
 				}
-			}()
+			})
 		}
-	}()
+	})
 }
 
 // privateDir is one launcher's private directory, where its generations' credentials and the unix

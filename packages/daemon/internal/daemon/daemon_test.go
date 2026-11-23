@@ -202,15 +202,17 @@ var heldPorts = struct {
 // holdPort listens on port of host, a free one when port is 0, and returns the port it holds,
 // failing t when it cannot bind. The listener is held until a daemon takes it through heldListen,
 // or owner ends: owner is t itself but for a rig's step, whose failure is the step's while what
-// it starts outlives it (idleWakeRig.owner). It is held under net.JoinHostPort(host, port), the
-// address the daemon builds from bind, not the listener's Addr(): Go reports a 0.0.0.0 listener as
-// [::]:<port>, the dual-stack wildcard. A port a stopped daemon served binds again at once, since
-// that daemon closed its listener.
+// it starts outlives it (idleWakeRig.owner). Owner's cleanup drops the listener from heldPorts
+// only while it is still the one held for its address, so it never drops a later hold of the same
+// port. It is held under net.JoinHostPort(host, port), the address the daemon builds from bind,
+// not the listener's Addr(): Go reports a 0.0.0.0 listener as [::]:<port>, the dual-stack
+// wildcard. A port a stopped daemon served binds again at once, since that daemon closed its
+// listener.
 func holdPort(t, owner *testing.T, host string, port int) int {
 	t.Helper()
 	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
-		t.Fatalf("hold port %d on %s: %v", port, host, err)
+		t.Fatalf("hold the port %d (0 for a free one) on %s: %v", port, host, err)
 	}
 	port = listener.Addr().(*net.TCPAddr).Port
 	address := net.JoinHostPort(host, strconv.Itoa(port))
