@@ -201,3 +201,19 @@ func TestTheAcceptancePromptSaysReturnToIsOptionalAndWhatItsDiffIs(t *testing.T)
 		{"acceptance.md", "has no pull request body and no diff to read"},
 	})
 }
+
+// An approval ends a round once GitHub reports the head mergeable (review.go reviewRound), the
+// owner's GitHub review is the base's or the merge forward's, and in retro or merging the phase's
+// agent holds request_backward_move (workflow's backwardRefusal).
+func TestTheArchitectPromptsSayWhatEndsARoundAndWhoMovesAfterAMergeForward(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"architect-root.md", "Each round after a push records every check of a large pull request again"},
+		{"architect.md", "and the retro holds or sends the issue back for one with no pass standing (`skill://legion-retro`)."},
+		{"go/architect-common.md", "Its approval of the head ends the round whatever the CI verdict, once GitHub reports that head one the issue may advance on"},
+		{"go/architect-common.md", "Submit one where the base requires an approving review, approving the head you passed, and where the daemon asks for it after a merge forward (below)."},
+		{"go/architect-common.md", "In `retro` or `merging` the agent of that phase holds `request_backward_move`, so a request for changes there, yours included, is its to act on."},
+	}, [][2]string{
+		{"architect-root.md", "Each round tests a large pull request whole again"},
+		{"go/architect-common.md", "ends the round whatever CI says there"},
+	})
+}
