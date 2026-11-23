@@ -200,4 +200,4 @@ role — yours with the trailing `-<role>` replaced, or one the `roleToken` help
 `@legion/contracts` computes (`legion-<project>-<key>-<role>` with the issue key lower-cased; for
 example, project `acme`, issue `LEGION-41`, role `architect` encodes to
 `legion-acme-legion-41-architect`) — reaches the agent named for that role, which need not be the
-one that works that role's step.
+one that works the step of that role you mean: write to that step's agent on its own topic.
