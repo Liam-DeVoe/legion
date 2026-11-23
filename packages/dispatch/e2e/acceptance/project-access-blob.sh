@@ -215,14 +215,15 @@ fi
 require_jq() { command -v jq >/dev/null || fail "jq is not on PATH"; }
 
 # Main's changes after the commit the base is pinned to, each a member main added to an answer on
-# the fixed list (access-lib.sh's main_additions, which says how an entry is written and held):
-#   - b537812fb5 (#3995) gives each entry of an issue's design_gates a `holds` member, written with
-#     no omitempty (api/issue_design_gates.go, issueDesignGate.Holds), and null for a gate published
-#     without it, as the seed's design gate is (seed_lists). A base from before it, such as #3178's
-#     head 5d01144423, which holds main at 7a56b1c7ee, answers the gate without the member.
-readonly main_additions=(
-  $'b537812fb53d1e42b5cfe629404aeeb38a708218\tGET /api/v1/issues/{key}\t.design_gates[].holds\tnull'
-)
+# the fixed list (access-lib.sh's main_additions, which says how an entry is written and held). The
+# list is empty: the base the checks name, #3178's head, holds main's changes up to the main it
+# merged, and every answer then is the same at both builds. An entry is added only for a member
+# main adds after that base, and is removed once the base holds its commit, where it would admit
+# nothing. An entry written as
+#   $'<40-hex commit>\tGET /api/v1/issues/{key}\t.design_gates[].holds\tnull'
+# admits each answer to an issue whose design gates differ from the base's only by a `holds`
+# member, null at this build.
+readonly main_additions=()
 
 begin prerequisites
 two_builds_prerequisites "--base-commit names the merge base" require_jq
