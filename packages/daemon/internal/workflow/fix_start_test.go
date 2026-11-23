@@ -247,7 +247,7 @@ func TestTheStartLineRefusesAFixsStart(t *testing.T) {
 		return StartOrOwe(t.Context(), tx, engine.store, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleImplementer,
 			Task: "Fix k-ci.", Generation: 1, Phase: phase.Implementing, Entry: 2, Fix: 1, FixFrom: fixHead}, stepClock)
 	})
-	if err == nil || !strings.Contains(err.Error(), "fix") {
-		t.Fatalf("StartOrOwe of a fix's start = %v, want it refused", err)
+	if err == nil || !strings.Contains(err.Error(), "is written beside the line of starts that wait for a slot, never through it") {
+		t.Fatalf("StartOrOwe of a fix's start = %v, want it refused as a start that is written beside the line", err)
 	}
 }
