@@ -498,10 +498,11 @@ func (i Issue) Answered() bool { return i.AwaitingPerson() && i.Awaiting.Answere
 
 // WorkingPhase is the phase the agent of the issue's place works: the phase its hold left while it
 // is held — the one whose agent's claim failed — and the phase it stands in otherwise. It is the
-// one rule: i.RoleAt(i.WorkingPhase()) is the role whose failure holds the issue, the role the
-// stranded report names, and the role the operator's retry of a phase worker acts for (api's
-// retryClaim): the role of the claim that works the task's place, the architect at a step or a
-// retro the owner does. Each reads it here rather than keeping a copy to drift from.
+// one rule: i.RoleAt(i.WorkingPhase()) is the role whose failure holds the issue where a phase
+// worker works the place, the role the stranded report names of a phase worker, and the role the
+// operator's retry starts that phase again for (api's restartWorkedPhase), the owner's at a place
+// of its own among them: the role of the claim that works the task's place, the architect at a
+// step or a retro the owner does. Each reads it here rather than keeping a copy to drift from.
 func (i Issue) WorkingPhase() phase.Phase {
 	if i.Hold != nil {
 		return i.Hold.From

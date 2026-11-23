@@ -2642,11 +2642,11 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 // since a start of a phase past its review carries none (PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — a root's architect's
-// (admit's promotion), a child's own architect's plain start (workflow's gateOpened and
-// reviveArchitect), the roles brought back beside a member's phase worker (admit's
-// startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled idle
-// release — and each of them is a start of its own that must still run. None of them is ever
-// taken out here.
+// (admit's promotion), a child's own architect's plain start (workflow's gateOpened,
+// reviveArchitect and restartFailedOwner), the roles brought back beside a member's phase worker
+// (admit's startMidPhaseMembers), a production check's look, a pod wake and the resume of a
+// cancelled idle release — and each of them is a start of its own that must still run. None of
+// them is ever taken out here.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
 

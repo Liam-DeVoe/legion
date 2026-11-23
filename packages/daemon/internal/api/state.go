@@ -1769,7 +1769,11 @@ func StrandedMoves() []StrandedMove {
 //     relaunches its session with fresh budgets, or a new one once supervise's
 //     Machine.forgetSession has dropped it, and a catch-up follows; an architect whose own issue
 //     stands at a step or a retro it does as the owner is also told that step again, one more
-//     owner-step, and a failed child's own architect at such a step is listed here too.
+//     owner-step. A failed child's own architect whose child stands at a place only it ends, a
+//     step of the key owner but an acceptance or the owner's retro, is listed here too once no
+//     start of it is queued: the daemon starts it again itself at its failure, at most three times
+//     in the step's run (workflow.OwnerRestarts), and the operator's retry gives the run those
+//     restarts again.
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.

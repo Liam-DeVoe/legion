@@ -1179,8 +1179,9 @@ type SuperviseRequest struct {
 	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
 	// that no other comment need list them: the promotion's architect start of a root the
 	// derivation serves no task (admit's promotion), a child's own architect's plain start
-	// (workflow's gateOpened, which a child's first phase start runs, and reviveArchitect, which
-	// each phase start of a child runs), the roles admission brings back beside a re-admitted
+	// (workflow's gateOpened, which a child's first phase start runs, reviveArchitect, which each
+	// phase start of a child runs, and restartFailedOwner, which the failure of that architect runs
+	// where only it ends its child's place), the roles admission brings back beside a re-admitted
 	// member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
 	// (workflow's booted), the boot's one-time start of a merger the `awaiting_merge` cutover left
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
