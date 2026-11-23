@@ -37,11 +37,11 @@ import (
 // own result says it wrote (xidAssigned). It runs to the end of its COMMIT. A transaction the
 // poller never saw - a write phase that is one batch can hold its xid for less than a poll
 // interval - is judged from its statements alone; one that wrote nothing by either source holds
-// no xid to judge (MayHoldNoXid). Inside the window the rig checks two things. Its shape, in
-// every build: the window holds at most the statements the measurement declared (XidShape), and
-// nothing else. And, where the build judges a window's time at all (XidJudgesGaps), D6 of the
-// INFRA-636 plan: every statement-free gap is at most XidMaxGap, and the gaps together take no
-// longer than the statements do.
+// no xid to judge, and an operation none of whose transactions held one is a rig problem. Inside
+// the window the rig checks two things. Its shape, in every build: the window holds at most the
+// statements the measurement declared (XidShape), and nothing else. And, where the build judges
+// a window's time at all (XidJudgesGaps), D6 of the INFRA-636 plan: every statement-free gap is at
+// most XidMaxGap, and the gaps together take no longer than the statements do.
 //
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
 // the context its operation runs under (MarkXid) and the tracer marks every statement whose
@@ -435,13 +435,8 @@ type XidReport struct {
 	// Problems are the reasons the rig cannot judge the operation: its verdict would be about the
 	// rig, not the code under test.
 	Problems []string
-	// MayHoldNoXid lets an operation that may write nothing - a read under an advisory lock, a
-	// write whose statements all matched no row - pass with no window at all. Unset, a report with
-	// no window is a rig problem: the operation wrote nothing a statement's result showed and no
-	// poll saw it hold an xid, so either it made no write or the wrong transaction was marked.
-	MayHoldNoXid bool
-	Duration     time.Duration
-	Polls        int
+	Duration time.Duration
+	Polls    int
 	// LongestPoll is the longest time between two polls' sends, how blind the poller was at its
 	// worst.
 	LongestPoll time.Duration
@@ -557,8 +552,8 @@ func analyzeXidWindows(statements []XidStatement, polls []xidPoll, duration time
 			transaction.Unseen = sample.sent
 		}
 		// A transaction whose statements show no write of their own and that no poll saw took no
-		// xid to judge: an operation that may write nothing passes on MayHoldNoXid, and one that
-		// was to write is the report's own rig problem (problems).
+		// xid to judge: an operation with no window at all is the report's own rig problem
+		// (problems).
 		if transaction.Sighted.IsZero() && xidFirstWrote(transaction) < 0 {
 			report.Unsighted = append(report.Unsighted, transaction)
 			continue
@@ -658,11 +653,13 @@ func XidMillis(d time.Duration) string {
 	return fmt.Sprintf("%.3f ms", float64(d)/float64(time.Millisecond))
 }
 
-// problems are the report's rig problems: Problems, and a report that judged no window when the
-// operation was to hold an xid.
+// problems are the report's rig problems: Problems, and a report that judged no window, since
+// every operation the rig measures holds an xid: none that judged none wrote a row a statement's
+// result showed, and no poll saw one hold an xid, so either it made no write or the wrong
+// transaction was marked.
 func (r *XidReport) problems() []string {
 	problems := r.Problems
-	if len(r.Windows) == 0 && !r.MayHoldNoXid {
+	if len(r.Windows) == 0 {
 		problems = append(slices.Clone(problems), fmt.Sprintf(
 			"no transaction of the operation held an xid: none wrote a row a statement's result showed and no poll saw one hold an xid (%d polls, %d unsighted, %d unjudged transactions); the rig judged nothing",
 			r.Polls, len(r.Unsighted), len(r.Unjudged)))
@@ -670,9 +667,8 @@ func (r *XidReport) problems() []string {
 	return problems
 }
 
-// Err is the report's verdict: nil when every window keeps D6 and the rig judged one (or the
-// operation MayHoldNoXid). A rig problem comes first, worded so a red run cannot be mistaken for a
-// finding.
+// Err is the report's verdict: nil when every window keeps D6 and the rig judged one. A rig
+// problem comes first, worded so a red run cannot be mistaken for a finding.
 func (r *XidReport) Err() error {
 	if problems := r.problems(); len(problems) > 0 {
 		return fmt.Errorf("XID RIG PROBLEM (not a finding about the code): %s", strings.Join(problems, "; "))

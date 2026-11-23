@@ -376,8 +376,8 @@ func asksCitingTheDocument(param, seen string) string {
 			select r.kind, r.ask_id, r.created_at, r.source_seq, r.to_id
 			from ` + itemBlockLinks(ItemAsk) + `
 			where ` + itemBlockCurrent + visibleAsk + ` and r.to_kind = 'block' and r.to_id = k.node_id
-			  and ` + VisibleKind("block", "r.to_id", seen) + `
 		) r
+		where ` + VisibleKind("block", "k.node_id", seen) + `
 		group by r.kind, r.ask_id, r.to_id`
 }
 

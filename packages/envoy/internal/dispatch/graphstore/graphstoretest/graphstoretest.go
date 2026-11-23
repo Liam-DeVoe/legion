@@ -28,17 +28,16 @@ func BaseAttributes() []string { return []string{"visibility", "state", "project
 // ToPerson, QueueToPerson and ToPersonArms, the one writer of a delivered_to, a mentions or a
 // participates_in that names a person; FromPerson, QueueFromPerson, QueueMarksEnded and MarkArm,
 // the one writer of a mark from a person (read_through, dismissed, cleared, reply_read and
-// snoozed); EraseNode, the erase's delete of a node and its tuples; and FillScopes, the
-// backfill's fill of the project of a node stored with none. Each is a function of the package,
-// never a method, so a call of one is named by the package wherever it is made. It is the one
-// list the source scans that hold the store's writers read: graphstore's register of their call
-// sites (TestEveryStoreWriteCallSiteIsListed) and api's scan of the writers of the projected
-// tables (TestNoProjectionRowIsWrittenWithoutTheStore).
+// snoozed); and FillScopes, the backfill's fill of the project of a node stored with none. Each
+// is a function of the package, never a method, so a call of one is named by the package wherever
+// it is made. It is the one list the source scans that hold the store's writers read:
+// graphstore's register of their call sites (TestEveryStoreWriteCallSiteIsListed) and api's scan
+// of the writers of the projected tables (TestNoProjectionRowIsWrittenWithoutTheStore).
 func WriteFunctions() []string {
 	return []string{"Write", "WriteArms", "WriteArmsUncaused", "Caused",
 		"QueueWrite", "QueueNodes", "QueueCaused",
 		"QueueAuthored", "QueueReached", "QueueSessionRecorded",
 		"QueueAttempted", "ToPerson", "QueueToPerson", "ToPersonArms",
 		"FromPerson", "QueueFromPerson", "QueueMarksEnded", "MarkArm",
-		"EraseNode", "FillScopes"}
+		"FillScopes"}
 }

@@ -685,20 +685,6 @@ DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=902
   DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
 ```
 
-`e2e/acceptance/graph-erase.sh` drives `envoy-dispatch erase`, the one statement in Dispatch that
-removes bytes: the refusal until it has listed what it would remove, the erase itself, the
-version and the review it ends, the `graph_erasures` row that holds no erased text, and the 404
-the route that does not exist answers. It takes the first three inputs, `DATABASE_URL`, the built
-`envoy-dispatch` on `PATH` (the command takes a database credential and no bearer), and
-`DEV_SIGNIN_LOGIN` optional, the person who approves the version it then erases. It refuses a
-`DATABASE_URL` whose host is not loopback, and erases only the comment it wrote itself:
-
-```bash
-DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
-  DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
-  bash packages/dispatch/e2e/acceptance/graph-erase.sh
-```
-
 `e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
 by kind, every table this branch's migrations touch, where the two store tables reach in a year,
 two runs printing one report, and the block-index backlog, with the reconciliation's own drain

@@ -234,7 +234,11 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, indexBlocks, stated, won, err := planBlockIndex(ctx, tx, s.markingRule, artifactID, record, version, versionAt, markdown, blocks, located, pointers, facts, removalsOf(ctx, artifactID), s.serverURL)
+	moved, indexBlocks, stated, won, err := planBlockIndex(ctx, tx, s.markingRule, refs.VersionBlocks{
+		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
+		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
+		Typed: facts, Beside: removalsOf(ctx, artifactID), ServerURL: s.serverURL,
+	})
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -334,35 +338,21 @@ func replaceVersionRefs(ctx context.Context, tx pgx.Tx, artifactID string, versi
 	})
 }
 
-// planBlockIndex plans version's block index of artifactID, its block pointers and its typed
-// nodes included (refs.PlanBlocks, over facts, the typed-node pass's facts read from record), at
-// the marking rule rule of the build planning it, with record what the version's own row says of
-// it (indexedVersionOf), and with beside, a write planned for the same event that no index pass of
-// its own carries - the removals of answered asks' blocks a person's own write made (removalsOf) -
-// planned into it. It returns the targets it moves, the cited blocks it changes included
-// (refs.BlockIndexing.Cited), the step that writes it, what it states in the node and tuple store,
-// held for the event the caller appends for the version (refs.BlockIndexing.Stated), and whether
-// it won the revision fence, without which it writes no block (refs.BlockIndexing.Won). It plans
-// against what the index holds (heldBlockIndex), and records what this one leaves for a later
-// indexing of the same document (recordBlockIndex). Each block's excerpt is cut in the plan,
-// around the dashboard URLs of the deployment at serverURL.
-func planBlockIndex(
-	ctx context.Context,
-	tx pgx.Tx,
-	rule int,
-	artifactID string,
-	record refs.IndexedVersion,
-	version int,
-	versionAt time.Time,
-	markdown string,
-	blocks []model.ArtifactBlock,
-	located []text.Located,
-	pointers []refs.Pointer,
-	facts refs.TypedFacts,
-	beside graphstore.Uncaused,
-	serverURL string,
-) ([]refs.Target, WriteStep, graphstore.Uncaused, bool, error) {
-	index, err := heldBlockIndex(ctx, tx, artifactID)
+// planBlockIndex plans the block index of version, one version of a document with its block
+// pointers and its typed nodes (refs.PlanBlocks, over version.Typed, the typed-node pass's facts
+// read from version.Record, what the version's own row says of it: indexedVersionOf), at the
+// marking rule rule of the build planning it, with version.Beside, a write planned for the same
+// event that no index pass of its own carries - the removals of answered asks' blocks a person's
+// own write made (removalsOf) - planned into it. It returns the targets it moves, the cited blocks
+// it changes included (refs.BlockIndexing.Cited), the step that writes it, what it states in the
+// node and tuple store, held for the event the caller appends for the version
+// (refs.BlockIndexing.Stated), and whether it won the revision fence, without which it writes no
+// block (refs.BlockIndexing.Won). It plans against what the index holds (heldBlockIndex), and
+// records what this one leaves for a later indexing of the same document (recordBlockIndex). Each
+// block's excerpt is cut in the plan, around the dashboard URLs of the deployment at
+// version.ServerURL.
+func planBlockIndex(ctx context.Context, tx pgx.Tx, rule int, version refs.VersionBlocks) ([]refs.Target, WriteStep, graphstore.Uncaused, bool, error) {
+	index, err := heldBlockIndex(ctx, tx, version.ArtifactID)
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, false, err
 	}
@@ -370,11 +360,7 @@ func planBlockIndex(
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, false, err
 	}
-	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, refs.VersionBlocks{
-		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
-		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
-		Typed: facts, Beside: beside, ServerURL: serverURL,
-	})
+	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, version)
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, false, err
 	}
@@ -382,7 +368,7 @@ func planBlockIndex(
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, false, err
 	}
-	recordBlockIndex(ctx, tx, artifactID, indexing.Held())
+	recordBlockIndex(ctx, tx, version.ArtifactID, indexing.Held())
 	indexBlocks := func(b *store.WriteBatch) error {
 		indexing.Queue(b)
 		return nil

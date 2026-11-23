@@ -1923,15 +1923,15 @@ func loadFallbackEvents(ctx context.Context, deps Deps, copies []fallbackCopy) (
 	return events, nil
 }
 
-// fallbackRecordQuery is recordFallbackCopies's one statement, named as fallbackClaimQuery is,
-// as a pass that published no copy sends it. A pass that published one sends the store's arms of
-// what the copies delivered between its recorded clause and its select (fallbackRecordHead,
-// fallbackRecordTail), so with no arms the statement is this one byte for byte.
-const fallbackRecordQuery = fallbackRecordHead + fallbackRecordTail
+// fallbackRecordQuery is recordFallbackCopies's one statement as a pass that published no copy
+// sends it, named as fallbackClaimQuery is. A pass whose copies delivered something sends the
+// store's arms of those deliveries between its writes and its answer (fallbackRecordWrites,
+// fallbackRecordAnswer).
+const fallbackRecordQuery = fallbackRecordWrites + fallbackRecordAnswer
 
-// fallbackRecordHead is fallbackRecordQuery up to its recorded clause, which the store's arms
-// follow (recordFallbackCopies).
-const fallbackRecordHead = `
+// fallbackRecordWrites is the part of fallbackRecordQuery before its answer: the publisher hold's
+// read and the rows' writes, after which recordFallbackCopies puts the store's arms.
+const fallbackRecordWrites = `
 		with hold as (
 			select exists (
 				select 1 from duty_holds where name = $9 and holder = $8 and expires_at > now()
@@ -1951,8 +1951,8 @@ const fallbackRecordHead = `
 				and c.next_attempt_at = o.claim and h.mine
 		)`
 
-// fallbackRecordTail is fallbackRecordQuery after its recorded clause and the store's arms.
-const fallbackRecordTail = `
+// fallbackRecordAnswer is the end of fallbackRecordQuery: whether the hold was this process's.
+const fallbackRecordAnswer = `
 		select mine from hold
 	`
 
@@ -2026,7 +2026,7 @@ func recordFallbackCopies(ctx context.Context, deps Deps, instance uuid.UUID, re
 	}
 	args = append(args, stored...)
 	var holds bool
-	if err := deps.Store.Pool.QueryRow(ctx, fallbackRecordHead+arms+fallbackRecordTail, args...).Scan(&holds); err != nil {
+	if err := deps.Store.Pool.QueryRow(ctx, fallbackRecordWrites+arms+fallbackRecordAnswer, args...).Scan(&holds); err != nil {
 		return false, err
 	}
 	return holds, nil
