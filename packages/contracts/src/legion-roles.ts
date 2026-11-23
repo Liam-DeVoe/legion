@@ -89,8 +89,9 @@ export function isStepRole(role: string): role is LegionStepRole {
  * that table. The agent that works a place of an issue's task can be another, which the issue's
  * `placeRole` names: the fresh agent of acceptance at `accepting`, and at `retro` the agent of the
  * task's last step of the type implementation, or the architect where it has none or that step is
- * its own. The one reader here, the phase reminder, runs for a phase worker alone, so the
- * architect's two phases never remind anyone.
+ * its own. The one reader here, the phase reminder, reads it only where the issue's record names no
+ * `placeRole`, and runs for a phase worker alone, so `admitted` reminds no one, and `accepting`
+ * only a fresh agent of acceptance, which `placeRole` names.
  */
 export function roleForPhase(phase: string): LegionRole | undefined {
   switch (phase) {

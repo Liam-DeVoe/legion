@@ -527,9 +527,10 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
 });
 
 // Contract 221: a role of the deployment works the phase `step`, which no role's phase names, so
-// the record check reads the issue's `stepRole`: the checker is reminded while its own step runs,
-// and not while the step of another role of the deployment runs.
-test("a role of the deployment is reminded at step while the issue's stepRole is its own", async () => {
+// where the record names no `placeRole` the record check reads the issue's `stepRole`: the checker
+// is reminded while its own step runs, and not while the step of another role of the deployment
+// runs.
+test("a role of the deployment is reminded at step while the issue's stepRole is its own and no placeRole is named", async () => {
   const checker = {
     ...implementer,
     role: "checker",
