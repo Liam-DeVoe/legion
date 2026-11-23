@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -73,10 +72,7 @@ func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceW
 	if err != nil {
 		return "", false, nil, fmt.Errorf("launcher: jj is not on PATH (%s); no jj to read the workspace with", os.Getenv("PATH"))
 	}
-	start := procgroup.NoReaper
-	if m.guard != nil {
-		start = m.guard.starter()
-	}
+	start := m.guard.starter()
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond
 	bounded, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
