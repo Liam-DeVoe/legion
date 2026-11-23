@@ -189,6 +189,68 @@ test("ci-pass-and-fail takes the three roles and no other case", () => {
   ]);
 });
 
+// Catches: a CI-check world with one kind of check alone (a refusal then shows no rule: with no
+// check that no CI job runs reading yes, nothing tempts a role to approve over the failed job), a
+// job that did not fail where the case says, a role's result of the check only CI records, k1 left
+// with no pass at #703 where only k2 is to fail, and records that do not match the role's task.
+test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at #702 or at #703 alone", async () => {
+  // The ports the hook above sets, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
+  const failed = (head: string) => ({
+    [head]: [{ name: "usage-test", status: "completed", conclusion: "failure" }],
+  });
+  for (const [scenario, which, pulls, runs, results, records] of [
+    ["reviewer-own-head", "ci-check-fail", ["702", "703"], failed("a".repeat(40)), ["702", "702"], ["test"]],
+    [
+      "reviewer-own-head",
+      "ci-check-fail-other-head",
+      ["702", "703"],
+      {
+        ["a".repeat(40)]: [{ name: "usage-test", status: "completed", conclusion: "success" }],
+        ...failed("b".repeat(40)),
+      },
+      ["702", "702", "703", "703"],
+      ["test"],
+    ],
+    ["architect-pass-and-fail", "ci-check-fail", ["702"], failed("a".repeat(40)), ["702", "702"], ["test", "review"]],
+    [
+      "architect-pass-and-fail",
+      "ci-check-fail-other-head",
+      ["702", "703"],
+      {
+        ["a".repeat(40)]: [{ name: "usage-test", status: "completed", conclusion: "success" }],
+        ...failed("b".repeat(40)),
+      },
+      ["702", "702", "703", "703"],
+      ["test", "review"],
+    ],
+  ] as const) {
+    const { calls } = await world(which, scenario);
+    const content = String(calls.find((call) => call.path.endsWith("/artifacts"))?.body.content);
+    expect(content).toContain(':::check{#k1 surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" run="');
+    expect(content).toContain(
+      ':::check{#k2 surface="cli" serves="dispatch://LWEVAL-7/spec#b-r1" ci_check="usage-test" when="before_merge"'
+    );
+    const seed = calls.filter((call) => call.path === "/__fixture/repos").at(-1)?.body["example/widgets"] as Record<string, unknown>;
+    expect(Object.keys(seed.pulls as object)).toEqual([...pulls]);
+    expect(seed.check_runs).toMatchObject(runs);
+    expect(Object.keys(seed.check_runs as object)).toEqual(Object.keys(runs));
+    // At each pull request's head, the implementer's pass of k1 and then the tester's.
+    expect(
+      calls
+        .filter((call) => call.path.endsWith("/results"))
+        .map((call) => `${String(call.body.check)}@${String(call.body.commit).slice(0, 1)} ${String(call.body.role)} ${String(call.body.verdict)}`)
+    ).toEqual(
+      results.map((pr, at) => `k1@${pr === "702" ? "a" : "b"} ${at % 2 === 0 ? "implementer" : "tester"} pass`)
+    );
+    expect(
+      calls.filter((call) => call.path.includes("/handoffs/")).map((call) => call.path.split("/").at(-1))
+    ).toEqual([...records]);
+  }
+});
+
 // Catches: a world heads-scenarios.txt lists that heads-events records nothing of its own for,
 // which then got reviewer-pass-and-fail's results and no review record, so its agent judged a
 // world no case defined.
@@ -226,7 +288,7 @@ test("every run and reading of k1 the heads worlds record holds only words the p
   process.env.FAKE_GITHUB_PORT = "18778";
   process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
   const worlds: [string | undefined, string][] = [
-    ...["sibling-fails", "ci-only", "no-implementer", "no-tester"].map(
+    ...["sibling-fails", "ci-only", "no-implementer", "no-tester", "ci-check-fail", "ci-check-fail-other-head"].map(
       (which): [string, string] => [which, "reviewer-own-head"]
     ),
     [undefined, "reviewer-pass-and-fail"],
