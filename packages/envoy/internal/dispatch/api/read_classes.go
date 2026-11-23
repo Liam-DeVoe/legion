@@ -147,7 +147,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}":                         reads("one issue with its asks, documents and children, rows of its project, and its progress read through refs", byIssue, readclass.Project, readclass.Graph),
 	"GET /api/v1/issues/{key}/summary":                 reads("what a reference to one issue shows", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/events":                  reads("one issue's event log", byIssue, readclass.Project),
-	"GET /api/v1/issues/{key}/references":              reads("the closure of documents one issue's content references, through refs", byIssue, readclass.Graph),
+	"GET /api/v1/issues/{key}/references":              reads("the documents one issue's content references, one hop, through refs", byIssue, readclass.Graph),
 	"GET /api/v1/issues/{key}/collaborators":           reads("everyone who worked one issue: its people and its agent sessions", byIssue, readclass.Project, readclass.People, readclass.Agents),
 	"GET /api/v1/issues/{key}/subscribers":             reads("the sessions subscribed to one issue's topics", byIssue, readclass.Project, readclass.Agents),
 	"GET /api/v1/issues/{key}/role-holders":            reads("the sessions that hold one issue's Legion roles", byIssue, readclass.Project, readclass.Agents),
