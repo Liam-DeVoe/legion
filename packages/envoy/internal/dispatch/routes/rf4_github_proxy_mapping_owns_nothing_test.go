@@ -2,17 +2,18 @@ package routes
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
 // TestARepositoryMappingNeitherShowsNorHidesARepository: a repository mapping gives no project a
 // repository, so it shows nothing to a restricted member and hides nothing from an open viewer;
 // only issues own repositories. Every project public first: PUB-3 names acme/pubonly, and bob, a
-// restricted member PRIV's list names, reads it as one the App is not installed on, before and after
-// a full member maps acme/pubonly to PRIV, and GitHub is asked nothing. Then with PRIV private: PRIV
-// maps acme/privonlymapped, which no issue resolves to, and alice, an open viewer who does not see
-// PRIV, reads it as GitHub answers it; carol reads it too.
+// restricted member PRIV's list names, is answered that the App is not installed on it by the
+// App-installation route, which holds him to the proxy's gate (the proxy itself refuses a
+// restricted member), before and after a full member maps acme/pubonly to PRIV, and GitHub is asked
+// nothing. Then with PRIV private: PRIV maps acme/privonlymapped, which no issue resolves to, and
+// alice, an open viewer who does not see PRIV, reads it through the proxy as GitHub answers it;
+// carol reads it too.
 func TestARepositoryMappingNeitherShowsNorHidesARepository(t *testing.T) {
 	database := seedProxyGate(t)
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -24,15 +25,14 @@ func TestARepositoryMappingNeitherShowsNorHidesARepository(t *testing.T) {
 	}
 	fake := &gateGitHub{installed: append([]string{"acme/pubonly", "acme/privonlymapped"}, proxiedRepositories...)}
 	handler := gateRouter(t, database, fake)
-	uninstalled := proxyAnswer(t, handler, "bob@example.com", uninstalledRepository, "pulls/1")
-	if !strings.HasPrefix(uninstalled, `503 "" `) || !strings.Contains(uninstalled, "is not installed on <repo>") {
-		t.Fatalf("bob's read of %s, which the App is not installed on, answered %s: the comparison proves nothing", uninstalledRepository, uninstalled)
+	if shown := installationAnswer(t, handler, "bob@example.com", "acme/priv"); shown != `200 {"installed":true}` {
+		t.Fatalf("bob asks about acme/priv, which PRIV-1 names, and is answered %s: the comparison proves nothing", shown)
 	}
 	read := func(state string) {
 		before := len(fake.requests())
-		if got := proxyAnswer(t, handler, "bob@example.com", "acme/pubonly", "pulls/1"); got != uninstalled || len(fake.requests()) != before {
-			t.Errorf("%s, bob reads acme/pubonly, which only PUB-3 names, as\n\t%s\nGitHub asked %q\nwant what %s answers, with GitHub asked nothing:\n\t%s",
-				state, got, fake.requests()[before:], uninstalledRepository, uninstalled)
+		if got := installationAnswer(t, handler, "bob@example.com", "acme/pubonly"); got != `200 {"installed":false}` || len(fake.requests()) != before {
+			t.Errorf("%s, bob asks whether the App is installed on acme/pubonly, which only PUB-3 names, and is answered %s, GitHub asked %q; want not installed, with GitHub asked nothing",
+				state, got, fake.requests()[before:])
 		}
 	}
 	read("before any mapping")

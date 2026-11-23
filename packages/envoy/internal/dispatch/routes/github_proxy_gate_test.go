@@ -73,26 +73,30 @@ var proxiedRepositories = []string{
 // repository's answer must equal.
 const uninstalledRepository = "acme/uninstalled"
 
-// TestTheGitHubProxyShowsARepositoryByItsIssues (c-proxy-by-issue): the proxy shows a person a
+// TestTheGitHubProxyShowsARepositoryByItsIssues (c-proxy-by-issue): the proxy shows a full member a
 // repository that an issue of a project the person sees resolves to, and an open viewer also one
 // that no project the person does not see owns; it answers every other repository, in status and
 // bytes, as one the App is not installed on, reading nothing of it from GitHub. An issue resolves
 // through its own repository, its parent's and its project's default, a done issue counts as an
-// open one does, and no rename a mapping records is read.
+// open one does, and no rename a mapping records is read. A restricted member reads nothing
+// through the proxy (R9's exception), so the same rule is read for bob and dave through the
+// App-installation route, which holds every caller to the proxy's gate (repositoriesHidden).
 //
 // alice, a full member no private list names, reads acme/pub, acme/none, acme/both, which PUB-2
-// names beside PRIV-5, and acme/newname, which no issue names; bob, a restricted member PRIV's list
-// names, reads every acme/priv* repository, acme/privparent among them through PRIV-3's parent, and
-// acme/both and acme/oldname; carol, on PRIV's and PRIV2's lists, reads all nine. With every project
-// public, dave, a restricted member no list names, reads none of them (R2/R3 in every state). The
-// rename row shows the rule reads no rename: alice reads acme/newname and not acme/oldname, and bob
-// reads acme/oldname and not acme/newname. Each readable repository is read through a pull request path
-// and a check path, and each hidden one through both too.
+// names beside PRIV-5, and acme/newname, which no issue names; carol, on PRIV's and PRIV2's lists,
+// reads all nine. bob, a restricted member PRIV's list names, is 403 RESTRICTED_MEMBER on every
+// proxy read, GitHub asked nothing, and the App-installation route shows him every acme/priv*
+// repository, acme/privparent among them through PRIV-3's parent, and acme/both and acme/oldname,
+// and answers every other one not installed, GitHub asked nothing. With every project public, dave,
+// a restricted member no list names, is refused alike and shown none of them (R2/R3 in every
+// state). The rename row shows the rule reads no rename: alice reads acme/newname and not
+// acme/oldname, and bob is shown acme/oldname and not acme/newname. Each proxy read is made through
+// a pull request path and a check path.
 //
 // Four controls, each run on its own, and each time the test fails naming the repository: show
 // every repository to an open viewer (alice reads acme/priv); count open issues only (alice reads
 // acme/privdone); resolve an issue's own repository only (alice reads acme/privdefault and bob loses
-// acme/privparent); compare names through refs.CanonicalRepoSQL (bob reads acme/newname and alice
+// acme/privparent); compare names through refs.CanonicalRepoSQL (bob is shown acme/newname and alice
 // loses it).
 func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 	database := seedProxyGate(t)
@@ -103,7 +107,6 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 		reads []string
 	}{
 		{"alice@example.com", []string{"acme/pub", "acme/none", "acme/both", "acme/newname"}},
-		{"bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/both", "acme/oldname"}},
 		{"carol@example.com", proxiedRepositories},
 	} {
 		for _, path := range []struct{ name, suffix string }{
@@ -132,22 +135,53 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 			}
 		}
 	}
+	restrictedReads(t, handler, fake, "bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privparent", "acme/privdefault", "acme/both", "acme/oldname"})
 
-	// With every project public, a restricted member still reads only the repositories an issue of
-	// a project whose list names them resolves to: dave, on no list, reads none of the nine, each
-	// answered as acme/uninstalled is, with nothing read from GitHub.
+	// With every project public, a restricted member still sees only the repositories an issue of
+	// a project whose list names them resolves to: dave, on no list, is shown none of the nine.
 	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'public'`); err != nil {
 		t.Fatalf("make every project public: %v", err)
 	}
-	uninstalled := proxyAnswer(t, handler, "dave@example.com", uninstalledRepository, "pulls/1")
+	restrictedReads(t, handler, fake, "dave@example.com", nil)
+}
+
+// restrictedReads holds login, a restricted member, to the proxy's refusal and to the proxy's gate:
+// every proxy read of the nine repositories is 403 RESTRICTED_MEMBER with GitHub asked nothing, and
+// the App-installation route, which holds the caller to that gate, answers each of shown as
+// installed and every other one not installed with GitHub asked nothing.
+func restrictedReads(t *testing.T, handler http.Handler, fake *gateGitHub, login string, shown []string) {
+	t.Helper()
 	for _, repository := range proxiedRepositories {
-		before := len(fake.repositoryReads())
-		got := proxyAnswer(t, handler, "dave@example.com", repository, "pulls/1")
-		if read := len(fake.repositoryReads()) > before; got != uninstalled || read {
-			t.Errorf("with every project public, dave, a restricted member no list names, reads %s as\n\t%s (GitHub read: %t)\nwant what %s answers:\n\t%s",
-				repository, got, read, uninstalledRepository, uninstalled)
+		before := len(fake.requests())
+		if got := proxyAnswer(t, handler, login, repository, "pulls/1"); !strings.HasPrefix(got, `403 "" `) ||
+			!strings.Contains(got, `"code":"RESTRICTED_MEMBER"`) || len(fake.requests()) != before {
+			t.Errorf("%s, a restricted member, reads %s through the proxy as %s (GitHub asked %q), want 403 RESTRICTED_MEMBER with GitHub asked nothing",
+				login, repository, got, fake.requests()[before:])
+		}
+		before = len(fake.requests())
+		got := installationAnswer(t, handler, login, repository)
+		asked := len(fake.requests()) > before
+		switch {
+		case slices.Contains(shown, repository):
+			if got != `200 {"installed":true}` || !asked {
+				t.Errorf("%s asks whether the App is installed on %s and is answered %s (GitHub asked: %t), want it installed, read from GitHub", login, repository, got, asked)
+			}
+		case got != `200 {"installed":false}` || asked:
+			t.Errorf("%s asks whether the App is installed on %s, which the person may not see, and is answered %s (GitHub asked: %t), want not installed with GitHub asked nothing",
+				login, repository, got, asked)
 		}
 	}
+}
+
+// installationAnswer is GET /api/v1/github/app-installation/<repository> as login at the browser,
+// answered as "<status> <body>".
+func installationAnswer(t *testing.T, handler http.Handler, login, repository string) string {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/api/v1/github/app-installation/"+repository, nil)
+	request.Header.Set("X-Dispatch-User", login)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return fmt.Sprintf("%d %s", response.Code, strings.TrimSpace(response.Body.String()))
 }
 
 // seedProxyGate writes the people, projects and issues the proxy gate test reads through: alice and
@@ -473,13 +507,18 @@ func proxyPath(repository, shape string) string {
 // Every other credential is refused before GitHub is asked anything, reading acme/pub, which alice
 // reads: no credential 401 NO_IDENTITY; 403 OAUTH_SCOPE_REQUIRED naming person for alice's token
 // holding no scope, the shared agent token, a pod's service-account token, a token an operator's
-// entry mapped to PUB, bob's personal token holding no scope (the shape R16 gives a restricted
-// member's token) and bob's broker token acting as him (brokerTokenActor gives a restricted
-// member's none); and 403 READ_ONLY_TOKEN for a read-only token.
+// entry mapped to PUB, bob's personal token holding no scope and bob's broker token acting as him
+// (brokerTokenActor gives a restricted member's none); and 403 READ_ONLY_TOKEN for a read-only
+// token.
 //
-// Three controls, each run on its own: drop the gate's scope check, and the shared token reads
+// A restricted member's credential of any kind is 403 RESTRICTED_MEMBER, whatever scopes it holds,
+// reading acme/priv, which PRIV's list gives bob's viewer: bob mints a token at his browser (201,
+// person and approve, the mint's default), and that token is refused, and so is bob at his browser.
+//
+// Four controls, each run on its own: drop the gate's scope check, and the shared token reads
 // acme/pub; hand the proxy a gate that hides nothing, and alice's token reads acme/priv; read the
-// cookie alone, as the proxy did before, and alice's tokens are 401 NO_IDENTITY.
+// cookie alone, as the proxy did before, and alice's tokens are 401 NO_IDENTITY; drop the
+// restricted member's refusal, and bob's token and bob at his browser read acme/priv from GitHub.
 func TestTheGitHubProxyReadsForACredentialThatHoldsThePersonScope(t *testing.T) {
 	rig := newCredentialRig(t)
 	const alice, bob, carol = "alice@example.com", "bob@example.com", "carol@example.com"
@@ -543,12 +582,40 @@ func TestTheGitHubProxyReadsForACredentialThatHoldsThePersonScope(t *testing.T) 
 		{"a read-only token", rig.brokerToken(ciphertoken.Introspection{
 			Service: "example-reader", ProjectScope: ciphertoken.ProjectScopeNone, Scope: ciphertoken.ScopeRead,
 		}), http.StatusForbidden, "READ_ONLY_TOKEN", ""},
-		{"bob's personal token holding no scope, as R16 gives a restricted member's", rig.personalToken(t, bob, nil, nil), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
+		{"bob's personal token holding no scope", rig.personalToken(t, bob, nil, nil), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
 		{"bob's broker token acting as him", rig.brokerToken(personScoped(bob)), http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", scopeChallenge},
 	} {
 		got := rig.read(t, refused.who, proxyPath("acme/pub", "pulls/1"), "acme/pub")
 		if got.status != refused.status || got.code != refused.code || got.challenge != refused.challenge || got.asked != 0 {
 			t.Errorf("%s reads acme/pub as %+v, want %d %s (challenge %q) with GitHub asked nothing", refused.name, got, refused.status, refused.code, refused.challenge)
+		}
+	}
+
+	mint := httptest.NewRequest(http.MethodPost, proxyOrigin+"/api/v1/me/agent-tokens", strings.NewReader(`{"name":"bob's agent","projects":["PRIV"]}`))
+	mint.Header.Set("Content-Type", "application/json")
+	mint.Header.Set("X-Dispatch-User", bob)
+	minted := httptest.NewRecorder()
+	rig.handler.ServeHTTP(minted, mint)
+	var token struct {
+		Token  string   `json:"token"`
+		Scopes []string `json:"scopes"`
+	}
+	if err := json.Unmarshal(minted.Body.Bytes(), &token); err != nil || minted.Code != http.StatusCreated || token.Token == "" ||
+		!slices.Contains(token.Scopes, "person") {
+		t.Fatalf("bob's mint at his browser answered %d %s, want 201 and a token holding person: the rows below would prove nothing",
+			minted.Code, minted.Body.String())
+	}
+	for _, restricted := range []struct {
+		name string
+		who  credential
+	}{
+		{fmt.Sprintf("bob's personal token minted at his browser, holding %v", token.Scopes), bearer(token.Token)},
+		{"bob at his browser", cookieOf(bob)},
+	} {
+		got := rig.read(t, restricted.who, proxyPath("acme/priv", "pulls/1"), "acme/priv")
+		if got.status != http.StatusForbidden || got.code != "RESTRICTED_MEMBER" || got.challenge != "" || got.asked != 0 {
+			t.Errorf("%s reads acme/priv, which PRIV's list gives his viewer, as %+v, want 403 RESTRICTED_MEMBER with GitHub asked nothing",
+				restricted.name, got)
 		}
 	}
 }

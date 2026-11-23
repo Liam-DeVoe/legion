@@ -136,15 +136,21 @@ type RepositoryGate func(repository string) (hidden, held bool, err error)
 // list does not name answers it (refuseReadOnlyToken); and a credential that does not hold the
 // person scope is 403 OAUTH_SCOPE_REQUIRED naming it, as gateRouteScopes answers: the deployment's
 // shared token, a service account's, a token an operator's entry mapped to one project, a
-// machine's that names no person and a restricted member's broker token hold none. So the proxy
-// reads GitHub for a person alone, at their browser or through a token acting as them.
+// machine's that names no person and a restricted member's broker token hold none.
 //
-// The gate is the App-installation route's (repositoriesHidden): hidden is whether the caller's
-// viewer, its credential's list applied (access.Resolve), fails refs.RepositoryClause, and held is
-// that viewer's private flag, the one the clause's R9 arm reads. The viewer is resolved when the
-// proxy first asks, after the method, the path and the App key, so a read refused for any of those
-// reads nothing, and without the listener refresh readerFor makes first, since the clause reads no
-// session's content. A server with no store has no viewer to resolve: every repository is hidden
+// Then the caller's viewer is resolved (access.Resolve, its credential's list applied), and a
+// restricted member's credential of any kind is 403 RESTRICTED_MEMBER, whatever scopes it holds:
+// their browser session, a personal token of theirs (which their browser's mint gives person and
+// approve) and any token acting for them. The test is the one every write of the API reads for a
+// restricted member (model.Viewer.Restricted, withinProjectScope, refuseRepoOfRestrictedMember),
+// so an outside person and their agents read nothing through the proxy (R9's exception). So the
+// proxy reads GitHub for a full member alone, at their browser or through a token acting as them.
+// Each refusal comes before the method and the path are read, and GitHub is asked nothing.
+//
+// The gate is the App-installation route's (repositoriesHidden) for that viewer: hidden is whether
+// it fails refs.RepositoryClause, and held is its private flag, the one the clause's R9 arm reads.
+// The viewer is resolved without the listener refresh readerFor makes first, since the clause reads
+// no session's content. A server with no store has no viewer to resolve: every repository is hidden
 // and every read held, as the closed viewer reads.
 func (s *server) githubGate(w http.ResponseWriter, r *http.Request) (RepositoryGate, bool) {
 	actor, _, err := s.optionalActor(r)
@@ -161,16 +167,22 @@ func (s *server) githubGate(w http.ResponseWriter, r *http.Request) (RepositoryG
 			"this request's credential does not hold the %s scope, which the GitHub proxy requires", model.ScopePerson))
 		return nil, false
 	}
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return func(string) (bool, bool, error) { return true, true, nil }, true
+	}
+	viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, actor)
+	if err != nil {
+		s.writeHandlerError(w, fmt.Errorf("resolve what the GitHub proxy's caller sees: %w", err))
+		return nil, false
+	}
+	if viewer.Restricted {
+		writeError(w, codeRestrictedMember, http.StatusForbidden,
+			"a restricted member reads nothing through the GitHub proxy, at a browser or through any token")
+		return nil, false
+	}
+	reader := actor.Reader()
+	reader.Viewer = &viewer
 	return func(repository string) (bool, bool, error) {
-		if s.deps.Store == nil || s.deps.Store.Pool == nil {
-			return true, true, nil
-		}
-		viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, actor)
-		if err != nil {
-			return false, false, fmt.Errorf("resolve what the caller sees: %w", err)
-		}
-		reader := actor.Reader()
-		reader.Viewer = &viewer
 		hidden, err := s.repositoriesHidden(r.Context(), reader, []string{repository})
 		if err != nil {
 			return false, false, err
