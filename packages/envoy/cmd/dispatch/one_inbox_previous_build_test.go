@@ -272,6 +272,15 @@ func TestAReassignmentThePreviousBuildWritesMovesTheAsksDeliveryAndParticipation
 // result the base release's write is held to. The document writes the person's address as a
 // link's target: an upload renders a bare one with its email part linked (`person-[2@...]
 // (mailto:...)`), in either release, which then names nobody.
+//
+// A version of a document the base writes over one this head indexed is held to the same: this
+// head writes version 1 of a document whose one paragraph names the person and states the
+// paragraph's mention of them, and the base then edits that paragraph to name a second person
+// beside the first - a replace continues the paragraph it lands in, under its id, so the block
+// and its node are the ones version 1 stated - and indexes version 2, as it indexes every
+// version, with no mention. Once the roll ends the block mentions the second person too, and
+// still the first: the block identity pass marks a document by what its blocks' text names, not
+// by what their nodes mention already (graphcensus' blockNamesIdentity).
 func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 	ctx := context.Background()
 	previous, current, database, head, databaseURL := startRoll(t, ctx)
@@ -314,6 +323,35 @@ func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 		documents[by] = censusProjectDocument(t, server, "MENT", "notes-from-the-"+by+".md",
 			"# Notes\n\nOver to [the copy owner](dispatch://person/"+named+") for the notes, from the "+by+".\n")
 	}
+	// The paragraph the base names a second person in, beside the one this head's version 1
+	// names. The base edits it once no settlement of version 1 is owed, so the settlement that
+	// writes and indexes version 2 is the base's own, two seconds after its edit, and not one
+	// this head queued with the upload.
+	const added = "person-3@example.com"
+	revised := censusProjectDocument(t, current, "MENT", "notes-the-base-revises.md",
+		"# Notes\n\nOver to [the copy owner](dispatch://person/"+named+") for the review.\n")
+	var revisedBlock string
+	statedByThisHead := func() bool {
+		revisedBlock = blockNaming(t, ctx, database, revised, named)
+		return revisedBlock != "" && !settlementPending(t, ctx, database, revised) &&
+			heldTuple(t, ctx, database, graphstore.KindBlock, revisedBlock, graphstore.TupleMentions, graphstore.KindPerson, named)
+	}
+	for until := time.Now().Add(rollCatchUpWait); time.Now().Before(until) && !statedByThisHead(); {
+		time.Sleep(time.Second)
+	}
+	if !statedByThisHead() {
+		logDocumentBlocks(t, ctx, database, revised)
+		t.Fatalf("this head's version 1 of the document %s holds no block whose mention of %s it stated, or still owes a settlement, after %s: this test proves nothing", revised, named, rollCatchUpWait)
+	}
+	previous.call(t, http.MethodPost, "/api/v1/artifacts/"+revised+"/edits",
+		`{"ops":[{"op":"replace","find":"for the review","with":"and [the reviewer](dispatch://person/`+added+`) for the review"}]}`, http.StatusOK)
+	for until := time.Now().Add(rollCatchUpWait); time.Now().Before(until) && blockNaming(t, ctx, database, revised, added) == ""; {
+		time.Sleep(time.Second)
+	}
+	if block := blockNaming(t, ctx, database, revised, added); block != revisedBlock {
+		logDocumentBlocks(t, ctx, database, revised)
+		t.Fatalf("the base's version 2 of the document %s names %s in the block %q, want %s, the block whose mention of %s this head stated: this test proves nothing", revised, added, block, revisedBlock, named)
+	}
 	endRoll(t, previous, head, databaseURL)
 
 	deadline := time.Now().Add(rollCatchUpWait)
@@ -336,7 +374,8 @@ func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 	deadline = time.Now().Add(rollCatchUpWait)
 	for time.Now().Before(deadline) &&
 		(!heldTuple(t, ctx, database, "message", messaged["base"], graphstore.TupleMentions, graphstore.KindPerson, named) ||
-			!heldTuple(t, ctx, database, graphstore.KindBlock, blockNaming(t, ctx, database, documents["base"], named), graphstore.TupleMentions, graphstore.KindPerson, named)) {
+			!heldTuple(t, ctx, database, graphstore.KindBlock, blockNaming(t, ctx, database, documents["base"], named), graphstore.TupleMentions, graphstore.KindPerson, named) ||
+			!heldTuple(t, ctx, database, graphstore.KindBlock, revisedBlock, graphstore.TupleMentions, graphstore.KindPerson, added)) {
 		time.Sleep(time.Second)
 	}
 	for _, by := range []string{"head", "base"} {
@@ -361,6 +400,14 @@ func TestAPersonMentionThePreviousBuildWritesReachesThatPerson(t *testing.T) {
 			logDocumentBlocks(t, ctx, database, documents[by])
 		}
 	}
+	if !heldTuple(t, ctx, database, graphstore.KindBlock, revisedBlock, graphstore.TupleMentions, graphstore.KindPerson, added) {
+		t.Errorf("the block %s of the document %s, whose version 2 the base wrote naming dispatch://person/%s beside dispatch://person/%s, holds no mentions tuple to %s after the roll ended and the backfill ran", revisedBlock, revised, added, named, added)
+		logDocumentBlocks(t, ctx, database, revised)
+	}
+	if !heldTuple(t, ctx, database, graphstore.KindBlock, revisedBlock, graphstore.TupleMentions, graphstore.KindPerson, named) {
+		t.Errorf("the block %s of the document %s, whose version 2 the base wrote, no longer holds the mentions tuple to %s this head stated of version 1", revisedBlock, revised, named)
+		logDocumentBlocks(t, ctx, database, revised)
+	}
 }
 
 // blockNaming is the node address (refs' block address, <ref_key>#<block id>) of the block of the
@@ -377,6 +424,20 @@ func blockNaming(t *testing.T, ctx context.Context, database *pgx.Conn, document
 		t.Fatalf("read the block of document %s that names %s: %v", documentID, login, err)
 	}
 	return block
+}
+
+// settlementPending is whether the document documentID owes a settlement (doc_settlements_pending):
+// a write of its live text no settlement has read into a version yet, which the process that made
+// the write settles two seconds after it.
+func settlementPending(t *testing.T, ctx context.Context, database *pgx.Conn, documentID string) bool {
+	t.Helper()
+	var pending bool
+	if err := database.QueryRow(ctx, `
+		select exists (select 1 from doc_settlements_pending where artifact_id = $1::uuid)
+	`, documentID).Scan(&pending); err != nil {
+		t.Fatalf("read whether document %s owes a settlement: %v", documentID, err)
+	}
+	return pending
 }
 
 // logDocumentBlocks logs what the store holds of the document documentID's block index: its row

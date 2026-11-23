@@ -297,8 +297,9 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 			}
 		}},
 		// The block identity pass marks a document whose blocks a build of a lower rule stated
-		// without the identity mentions they name (identities_stated false), so each run first
-		// makes the document one: a block naming dave, no mention of him, and the row false.
+		// without the identity mentions they name (identities_stated false) and that holds a block
+		// whose text names an identity, so each run first makes the document one: a block naming
+		// dave and the row false.
 		{"the block identity pass's mark", false, func(t *testing.T, database *store.Store, document string, rule int) {
 			owesBlockIdentities(t, database, document)
 			if _, err := database.Pool.Exec(ctx, graphcensus.BlockIdentitiesMarkStatement, []string{document}, rule); err != nil {
@@ -405,15 +406,16 @@ func TestEveryMarkingStatementKeepsOrRaisesTheRuleAsR13States(t *testing.T) {
 //
 // Rule 2 is the rule of the release that states a block's mentions of the people, agents'
 // sessions and roles it names: its block identity pass marks owed each document a build of rule 1
-// stated the blocks of without them (graphcensus.BlockIdentitiesMarkStatement, migration
-// 20261122100124), a document no statement of rule 1 marks. That moves documents into what a pass
-// owes, so the rule is raised and rule 1's digest kept: a build of rule 1 lists such a mark only
-// where the store last stated the document below its version and clears none of it, so it neither
-// drains it at the version the document stands at nor reads it as its own, and the pass that
-// drains it is the one that states the mentions.
+// stated the blocks of without them that holds a block whose text names one
+// (graphcensus.BlockIdentitiesMarkStatement, migration 20261122100124), a document no statement
+// of rule 1 marks. That moves documents into what a pass owes, so the rule is raised and rule 1's
+// digest kept: a build of rule 1 lists such a mark only where the store last stated the document
+// below its version and clears none of it, so it neither drains it at the version the document
+// stands at nor reads it as its own, and the pass that drains it is the one that states the
+// mentions.
 var markingStatementDigests = map[int]string{
 	1: "62acb9e403b4ee1c6df6a6612723f37403a8eb94040d669e5d58b35946ff3954",
-	2: "be0f8b205fa030eca5a23925f859fc56257996760b1b14d22a47b294f39eed1a",
+	2: "23bd13f3603018371d0ca156980c0d030e18a196907626c7df578d65e9db8322",
 }
 
 // The marking rule is held to the statements whose results decide which documents a build marks
@@ -593,10 +595,10 @@ func markableDocument(t *testing.T, database *store.Store, slug string) string {
 }
 
 // owesBlockIdentities makes document one the block identity pass marks
-// (graphcensus.BlockIdentitiesMarkStatement): a block of it whose node the store holds, whose text
-// at the version the store stands at names dave and whose node mentions nobody, and its
-// document_block_versions row holding identities_stated false, as a build of a lower rule leaves a
-// document it stated. A document with no block takes one.
+// (graphcensus.BlockIdentitiesMarkStatement): a block of it whose node the store holds and whose
+// text at the version the store stands at names dave, and its document_block_versions row holding
+// identities_stated false, as a build of a lower rule leaves a document it stated. A document with
+// no block takes one.
 func owesBlockIdentities(t *testing.T, database *store.Store, document string) {
 	t.Helper()
 	ctx := context.Background()
