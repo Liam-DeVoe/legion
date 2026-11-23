@@ -2194,7 +2194,7 @@ check_k15() {
 	control "$(grep -E '^(PASS|FAIL|UNKNOWN):' "$WORK_DIR/mutants.log" | tr '\n' ' ')"
 	judge "$([ "$mutants_status" = 0 ] && [ -z "$missing" ] && echo 0 || echo 1)" \
 		"negative control: each of the six mutants is caught, and every other mutant of the tree ran and was caught" \
-		"airlock-mutants.sh exited $mutants_status ($([ "$mutants_status" = 3 ] && echo 'UNKNOWN: a mutant did not run' || echo 'not 0')) with $caught caught${missing:+; of the six missing:$missing}"
+		"airlock-mutants.sh exited $mutants_status$(case "$mutants_status" in 0) ;; 3) echo ' (UNKNOWN: a mutant did not run)' ;; *) echo ' (a mutant was not caught)' ;; esac) with $caught caught${missing:+; of the six missing:$missing}"
 }
 
 ###############################################################################################
