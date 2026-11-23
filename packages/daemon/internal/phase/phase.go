@@ -47,9 +47,14 @@ var All = []Phase{
 // out of it is a move back: an issue put on held, or closed as done, went nowhere backward, and
 // MovesBack answers false for it.
 //
-// Both internal/config and internal/workflow read this set: the loader refuses a hook written for
-// a move pair the daemon never counts, and the engine counts the rounds. It lives here, not in
-// internal/workflow, because internal/config cannot import internal/workflow. Measured with
+// Both internal/config and internal/workflow read this set. The loader takes a hook's move as any
+// pair of two different workflow phases (MovePairs, all 42 ordered pairs of the seven), since it
+// reads the file with no plan, and a plan can place any step before any other. Eleven of the 42
+// are never a move back, because retro and merging end every line: each step phase to retro or to
+// merging, and retro to merging. A hook that names one of them loads and never fires. The engine
+// counts the pair of each move back the task's own line reads (Walk.MovesBack), and a pass. It
+// lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
+// Measured with
 // `go list`: every test file of package workflow is `package workflow`, and 42 of its 57 test
 // files import internal/config (`go list -f '{{.TestImports}}' ./internal/workflow/` names
 // internal/config), so an edge from internal/config to internal/workflow would close a cycle in
