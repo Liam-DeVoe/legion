@@ -579,16 +579,19 @@ test("a tester's fail sends return_to as returnTo", async () => {
 });
 
 // The description is where the tester reads what its fail may carry and what the daemon refuses.
+// The refusal limits a completion alone (api's returnToRefusal): request_backward_move takes its
+// own `return_to`, so no sentence says that only a completion names one.
 test("the description tells the tester its fail may name the step its task returns to", () => {
   const description = legionToolDescription({ envoyPublish: "envoy_publish" });
   for (const words of [
     "`return_to`, the place of a step of the task its issue runs, 1 for its first",
-    "RETURN_TO_NEEDS_FAIL",
+    "A completion names it only with the verdict fail (RETURN_TO_NEEDS_FAIL).",
     "INVALID_RETURN_TO",
     "RETURN_REFUSED",
   ]) {
     expect(description).toContain(words);
   }
+  expect(description).not.toContain("Only a completion with the verdict fail names it");
 });
 
 /** The claim of a role of the deployment, `checker`, on LEGION-208 (contract 221). */

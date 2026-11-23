@@ -195,8 +195,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
   "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
   "A fail, the tester's or a role of the deployment's, may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-  "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. Only a completion with the verdict " +
-  "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
+  "to; without it, the task goes back to the first implementation step before the step that failed, and stops where there is none. A completion names it only with the verdict " +
+  "fail (RETURN_TO_NEEDS_FAIL). A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
   "(RETURN_REFUSED). " +
   "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
