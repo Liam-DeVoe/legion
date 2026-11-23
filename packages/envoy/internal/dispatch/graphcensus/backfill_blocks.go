@@ -113,11 +113,13 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // growing with the square of the rows (TestTheBackfillsWalksReadOnlyTheirBatch).
 //
 // The event is resolved once per (document, changed version) of the batch and joined back to
-// the rows, not once per row: every block of one version of one document shares that pair. Each
-// such lookup probes events_artifact_version_number (migration 20261119020700) by the document
-// and the version, whose expressions it compares as that index writes them, and whose predicate
-// its own type clause proves: with no index to serve it, each one read the whole of events, so a
-// run took time growing with the square of the data
+// the rows, not once per row: every block of one version of one document shares that pair. The
+// pairs' lookups are a materialized CTE, so the plan runs them once per batch: inlined, the
+// generic plan a prepared statement settles on reran them for each row of the batch, 7,200
+// lookups for a batch of 120 rows and 60 pairs. Each lookup probes events_artifact_version_number
+// (migration 20261119020700) by the document and the version, whose expressions it compares as
+// that index writes them, and whose predicate its own type clause proves: with no index to serve
+// it, each one read the whole of events, so a run took time growing with the square of the data
 // (TestTheBackfillsEventReadsProbeTheirIndexes).
 var BlockRowsStatement = `
 		with batch as (
@@ -130,7 +132,7 @@ var BlockRowsStatement = `
 			order by d.node_id
 			limit $2
 		),
-		caused as (
+		caused as materialized (
 			select version.artifact_id, version.changed_version, found.id
 			from (
 				select distinct artifact_id, issue_key, project_key, changed_version

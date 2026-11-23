@@ -2,6 +2,7 @@ package graphcensus
 
 import (
 	"context"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -113,6 +114,51 @@ func TestTheBackfillsWalksReadOnlyTheirBatch(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestTheBackfillAnalyzesTheColumnsItsWalksReadBy holds Backfill to giving the planner statistics
+// of node_kind on the three tables it walks (walkedColumnsAnalysis) before its passes: the deploy
+// adds those columns after any analysis, and with no statistics of them the planner reads every
+// row still naming no node for each batch. The tables each hold a row naming no node, and before
+// the run no statistics of the column exist, which is the database as the deploy leaves it; after
+// it, each table's node_kind has its statistics. The precondition is the control: a run that does
+// not analyze leaves the count at zero.
+func TestTheBackfillAnalyzesTheColumnsItsWalksReadBy(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	document := seedPreStoreDocument(t, database, "only")
+	if _, err := database.Pool.Exec(ctx, `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
+		values ($1::uuid, 'only', $2, 'issue', 'CORE-' || 1, 'mentions', 1)
+	`, document.artifactID, document.refKey+"#only"); err != nil {
+		t.Fatalf("write a block reference naming no node: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into comments (issue_key, author, body)
+		select key, '{"kind":"user","id":"alice"}', 'A remark.' from issues where project_key = 'CORE'
+	`); err != nil {
+		t.Fatalf("write a comment naming no node: %v", err)
+	}
+	analyzed := func() int {
+		var count int
+		if err := database.Pool.QueryRow(ctx, `
+			select count(*) from pg_stats
+			where schemaname = current_schema() and attname = 'node_kind'
+			  and tablename in ('document_blocks', 'block_refs', 'comments')
+		`).Scan(&count); err != nil {
+			t.Fatalf("read the statistics of node_kind: %v", err)
+		}
+		return count
+	}
+	if before := analyzed(); before != 0 {
+		t.Fatalf("node_kind has statistics on %d of the three tables before the backfill, so this test cannot tell the backfill's analysis from another's", before)
+	}
+	if _, err := Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if after := analyzed(); after != 3 {
+		t.Errorf("node_kind has statistics on %d of the three tables after the backfill, want 3", after)
 	}
 }
 
