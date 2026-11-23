@@ -24,9 +24,10 @@ const anotherEntryDigest = "4444444444444444444444444444444444444444444444444444
 // results entry the grant was made under. A grant of another entry is answered ErrGrantNotLive,
 // saying it was made under another results profile or private destination, by the proxy's read
 // of the connection and by its read of the values, and nothing is minted for it; so is every grant
-// on a broker with no results entry. The grant is refused, not ended: a pod of its own entry
-// serves it afterwards. The pod's own grant, in the same database, opens its connection and is
-// minted its token.
+// on a broker with no results entry. The refusal says the grant is refused by this broker, and
+// none of ErrGrantNotLive's own words, since the grant has not expired, been revoked or lost its
+// session. The grant is refused, not ended: a pod of its own entry serves it afterwards. The pod's
+// own grant, in the same database, opens its connection and is minted its token.
 func TestAResultGrantOfAnotherEntryIsNotLive(t *testing.T) {
 	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{})
 	tokens := &mintedTokens{}
@@ -38,14 +39,17 @@ func TestAResultGrantOfAnotherEntryIsNotLive(t *testing.T) {
 	}
 	refused := func(what, held string, grant oauthstore.ResultGrant) {
 		t.Helper()
-		const why = "another results profile or private destination"
+		const why = "the result grant is refused by this broker: it was made under another results profile or private destination"
+		untrue := func(err error) bool {
+			return strings.Contains(err.Error(), "expired") || strings.Contains(err.Error(), "revoked") || strings.Contains(err.Error(), "session ended")
+		}
 		conn, err := m.AirlockConnection(t.Context(), held)
-		if !errors.Is(err, ErrGrantNotLive) || !strings.Contains(err.Error(), why) || conn.GrantID != "" {
-			t.Errorf("AirlockConnection(%s) = %+v, %v; want ErrGrantNotLive saying %q, and no grant", what, conn, err, why)
+		if !errors.Is(err, ErrGrantNotLive) || !strings.Contains(err.Error(), why) || untrue(err) || conn.GrantID != "" {
+			t.Errorf("AirlockConnection(%s) = %+v, %v; want ErrGrantNotLive saying %q and not that the grant ended, and no grant", what, conn, err, why)
 		}
 		values, version, err := m.AirlockValues(t.Context(), oauthwire.ResultGrantIDPrefix+grant.ID)
-		if !errors.Is(err, ErrGrantNotLive) || !strings.Contains(err.Error(), why) || values != nil || version != "" {
-			t.Errorf("AirlockValues(%s) = %v, %q, %v; want ErrGrantNotLive saying %q, and no values", what, values, version, err, why)
+		if !errors.Is(err, ErrGrantNotLive) || !strings.Contains(err.Error(), why) || untrue(err) || values != nil || version != "" {
+			t.Errorf("AirlockValues(%s) = %v, %q, %v; want ErrGrantNotLive saying %q and not that the grant ended, and no values", what, values, version, err, why)
 		}
 	}
 	refused("a grant of another entry", otherHeld, other)

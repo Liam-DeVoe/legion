@@ -26,8 +26,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 )
 
-// entryRefusal is the words of the refusal a broker gives a result grant of another entry.
-const entryRefusal = "another results profile or private destination"
+// entryRefusal is the words of the refusal a broker gives a result grant of another entry, and
+// entryRefusalUntrue the words of an ended grant, which that refusal must not say: the grant is
+// live, and a broker of its own entry serves it.
+const (
+	entryRefusal       = "the result grant is refused by this broker: it was made under another results profile or private destination"
+	entryRefusalUntrue = "expired"
+)
 
 // startEntryBroker starts binary with env, a broker with an airlock, and answers its proxy port and
 // the thumbprint of the pod key it logged.
@@ -109,9 +114,10 @@ func tokensBoundTo(t *testing.T, databaseURL, thumbprint string) int {
 //
 //   - B holds the profile DISPATCH_RESULTS_TOKEN bound to evil.ci-results.test and the private
 //     destination of that host: A's placeholder through B to that host is answered 407
-//     GRANT_NOT_LIVE with Airlock-Forwarded: false, in words that name another results profile or
-//     private destination; the command's write gets no answer from a service, the stand-in of
-//     evil.ci-results.test receives nothing, and no access-token session carries B's key.
+//     GRANT_NOT_LIVE with Airlock-Forwarded: false, in words that say the grant is refused by this
+//     broker for another results profile or private destination, and not that it expired; the
+//     command's write gets no answer from a service, the stand-in of evil.ci-results.test receives
+//     nothing, and no access-token session carries B's key.
 //   - C holds A's profile and a destination of another URL, another loopback address and port: it
 //     is refused the same way, and the stand-in at that URL receives nothing.
 //   - Control: D, of A's profile and destination, stores A's write at Dispatch's stand-in (201),
@@ -164,9 +170,9 @@ func TestABrokerOfAnotherResultsEntryServesNoGrant(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			answer, body := connectAt(t, row.broker, row.host, g.placeholder)
 			if answer.StatusCode != http.StatusProxyAuthRequired || answer.Header.Get("Airlock-Forwarded") != "false" ||
-				answer.Header.Get("Airlock-Code") != "GRANT_NOT_LIVE" || !strings.Contains(body, entryRefusal) {
-				t.Errorf("A's placeholder in a CONNECT to %s = %d, Airlock-Forwarded %q, Airlock-Code %q (%q); want 407, false, GRANT_NOT_LIVE, saying %q",
-					row.host, answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, entryRefusal)
+				answer.Header.Get("Airlock-Code") != "GRANT_NOT_LIVE" || !strings.Contains(body, entryRefusal) || strings.Contains(body, entryRefusalUntrue) {
+				t.Errorf("A's placeholder in a CONNECT to %s = %d, Airlock-Forwarded %q, Airlock-Code %q (%q); want 407, false, GRANT_NOT_LIVE, saying %q and not %q",
+					row.host, answer.StatusCode, answer.Header.Get("Airlock-Forwarded"), answer.Header.Get("Airlock-Code"), body, entryRefusal, entryRefusalUntrue)
 			}
 			status, said := tryWrite(t, g, row.broker, row.host)
 			seen := row.standIn.Requests()

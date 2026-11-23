@@ -3,7 +3,6 @@ package requests
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthstore"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -85,12 +84,13 @@ func (m *Machine) resultValues(ctx context.Context, id string) (map[string]Airlo
 	return map[string]AirlockSecret{oauthwire.AirlockResultsName: {Slots: map[string]string{SlotValue: token}}}, m.PolicyVersion(), nil
 }
 
-// resultEntryRefusal is ErrGrantNotLive, saying why, for a result grant made under another
-// results entry than this broker's (oauthstore.ResultGrant.EntryDigest against
-// ResultEntryDigest): another profile DISPATCH_RESULTS_TOKEN or another private destination,
-// which would send the run's token somewhere the broker that granted it would not; and for every
-// grant on a broker with no results entry. The proxy answers it 407 GRANT_NOT_LIVE, with nothing
-// forwarded, as it answers an ended grant.
+// resultEntryRefusal is the refusal of a result grant made under another results entry than this
+// broker's (oauthstore.ResultGrant.EntryDigest against ResultEntryDigest): another profile
+// DISPATCH_RESULTS_TOKEN or another private destination, which would send the run's token
+// somewhere the broker that granted it would not; and of every grant on a broker with no results
+// entry. It is ErrGrantNotLive to errors.Is, so the proxy answers it 407 GRANT_NOT_LIVE, with
+// nothing forwarded, as it answers an ended grant, but in words of its own (grantOfAnotherEntry):
+// the grant has not expired, been revoked or lost its session.
 //
 // The grant is refused, not ended: its row stays, and a pod whose entry is the grant's still
 // serves it. A run's token is spent once, so ending the grant here would end the run's writes on
@@ -100,9 +100,26 @@ func (m *Machine) resultValues(ctx context.Context, id string) (map[string]Airlo
 // attempt is granted under the entry of the pod it asks.
 func (m *Machine) resultEntryRefusal(grant oauthstore.ResultGrant) error {
 	if m.ResultEntryDigest == "" || grant.EntryDigest != m.ResultEntryDigest {
-		return fmt.Errorf("%w: the result grant was made under another results profile or private destination than this broker's", ErrGrantNotLive)
+		return grantOfAnotherEntry{}
 	}
 	return nil
+}
+
+// grantOfAnotherEntry is resultEntryRefusal's error. Its words are the reason alone:
+// ErrGrantNotLive's words, "grant is expired, revoked, or its session ended", say nothing true of
+// a live grant this broker will not serve, and the command and a CI step's public log read the
+// answer whole. It names no digest, profile or destination.
+type grantOfAnotherEntry struct{}
+
+func (grantOfAnotherEntry) Error() string {
+	return "the result grant is refused by this broker: it was made under another results profile or private destination than this broker's, and it stays live for a broker of its own"
+}
+
+// Is makes the refusal ErrGrantNotLive to errors.Is, which every reader of a grant's refusal
+// answers by: the proxy's 407 GRANT_NOT_LIVE with Airlock-Forwarded: false, and the command's
+// reading of that as final.
+func (grantOfAnotherEntry) Is(target error) bool {
+	return target == ErrGrantNotLive
 }
 
 // checkRunOf is the check run of the job a result grant was made for, read from the run the grant
