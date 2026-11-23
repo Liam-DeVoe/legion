@@ -806,12 +806,14 @@ type ClaimView struct {
 	// claimInTurn, supervise's Deps.IssueInTurn): two roles of one issue that each read the other
 	// as idle would otherwise adopt it at the same moment (dispatch://INFRA-314).
 	SendInFlight bool
-	// Copy is the working copy of the delivery the claim serves, pending or confirmed and not yet
-	// retired, CopyIssue where it serves none (servedCopy): the one a turn of the claim may be
-	// writing in. A reader deciding who may adopt a working copy counts only a claim in the same
-	// copy (the daemon's claimInTurn, supervise's Deps.IssueInTurn): a fix works a copy of its own,
-	// so a fix's turn holds no adoption of the shared copy, and a turn there holds no fix's.
-	Copy WorkingCopy
+	// Copies is each working copy the delivery the claim serves touches, pending or confirmed and
+	// not yet retired, and CopyIssue where it serves none (servedCopies): the copies its send in
+	// flight may be rewriting and its turn may be writing in. A reader deciding who may adopt a
+	// working copy counts only a claim that touches a copy the adoption rewrites (the daemon's
+	// claimInTurn, supervise's Deps.IssueInTurn): a fix's task that rewrites only the fix's own copy
+	// holds no adoption of the shared copy, and a turn there holds no such fix's; a task that moves
+	// the shared copy touches it, whatever else it does.
+	Copies WorkingCopies
 	// WakeWaiting is the wake the pacing holds over this claim until its turn (reserveWake), nil
 	// while none waits. It travels on the published view rather than behind the machine's lock
 	// because none of its readers may wait on the decision in flight, which is the whole reason
@@ -975,18 +977,18 @@ type Deps struct {
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
 	// nothing.
 	Identity func(ctx context.Context, role claim.Role, issue string) (runtime.GitIdentity, error)
-	// IssueInTurn names a claim of issue other than except whose agent is in a turn in the working
-	// copy workingCopy now, or is about to be, and reports whether there is one. The roles of an
-	// issue work one jj workspace, so the adoption a phase task makes of its working copy is not a
-	// private act: one run while another role is in a turn moves that role's worker onto a commit
+	// IssueInTurn names a claim of issue other than except whose agent is in a turn in one of the
+	// working copies copies now, or is about to be, and reports whether there is one. The roles of
+	// an issue work one jj workspace, so the adoption a phase task makes of its working copy is not
+	// a private act: one run while another role is in a turn moves that role's worker onto a commit
 	// of this role's (dispatch://INFRA-714), and a task that would adopt waits instead
 	// (sendPending). A fix works a working copy of its own beside that workspace (CopyFix), so only
-	// a claim serving a task of the same copy counts (ClaimView.Copy). The daemon answers it from
-	// the state its machines publish — a claim is StateWorking from its turn's start to its turn's
-	// end, and carries a send in flight from the moment its own prompt and that prompt's adoption
-	// go out (ClaimView.SendInFlight) — which is read without waiting on any decision in flight
-	// (Machine.View). nil holds no delivery back.
-	IssueInTurn func(issue string, except claim.Token, workingCopy WorkingCopy) (claim.Token, bool)
+	// a claim serving a task that touches a copy the adoption rewrites counts (ClaimView.Copies).
+	// The daemon answers it from the state its machines publish — a claim is StateWorking from its
+	// turn's start to its turn's end, and carries a send in flight from the moment its own prompt
+	// and that prompt's adoption go out (ClaimView.SendInFlight) — which is read without waiting on
+	// any decision in flight (Machine.View). nil holds no delivery back.
+	IssueInTurn func(issue string, except claim.Token, copies WorkingCopies) (claim.Token, bool)
 	// PhaseHolds says whether a task queued for phase p on run generation, of fix fix (0 for a
 	// task of no fix), is still the work of issue: the workflow enqueues a task for the phase and
 	// run its issue was in, and the outbox refuses to start a role for a phase the issue has left
@@ -2394,12 +2396,12 @@ func (m *Machine) current() Claim {
 }
 
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
-// pacing holds over it, if any, and the working copy of the delivery it serves: a fresh value each
-// time, since the view is read without mu. A launch the project pause's gate holds is no such wake:
-// it has no moment to run and waits in no pacing (wake.pause), so it is published as none. The
-// caller holds mu.
+// pacing holds over it, if any, and the working copies the delivery it serves touches: a fresh
+// value each time, since the view is read without mu. A launch the project pause's gate holds is no
+// such wake: it has no moment to run and waits in no pacing (wake.pause), so it is published as
+// none. The caller holds mu.
 func (m *Machine) publish() {
-	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil, Copy: servedCopy(m.claim.Pending)}
+	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil, Copies: servedCopies(m.claim.Pending)}
 	if m.wake != nil && m.wake.pause == 0 {
 		view.WakeWaiting = &WakeWaiting{Kind: m.wake.kind, At: m.wake.at}
 	}
