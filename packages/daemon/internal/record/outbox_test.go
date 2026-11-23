@@ -1246,15 +1246,19 @@ func TestTheReviewAsksForTheVerdictWhateverMovedTheHead(t *testing.T) {
 	const asked = " Then send your verdict on the new head with review_verdict: verdict approve or changes, commit d00d." +
 		" Post your findings as a COMMENT review. Write no handoff and make no completion for this verdict." +
 		" Then tell the architect and the implementer, each on its own role topic, what you decided."
+	// How to read what changed is main's readMerge (cybermonklabs/legion#4979): the merge's
+	// resolution first, and for any other new head the diff between the two.
+	const read = "for a merge of the base, `git show --remerge-diff d00d` shows how the merge resolved the conflict," +
+		" and `git diff --stat d00d^1 d00d` lists the files the base brought in; for any other new head, run `git diff c0de d00d`."
 	for _, tc := range []struct {
 		name    string
 		message MergeForwardMessage
 		opens   string
 	}{
 		{"a push past review", push, "LEGION-208: a push moved the head of pull request acme/widgets#42, and the issue stands in retro." +
-			" The old head is c0de, and the new head is d00d. Read what changed since the old head: run `git diff c0de d00d`."},
+			" The old head is c0de, and the new head is d00d. Read what changed since the old head: " + read},
 		{"a merge forward's landing", landing, "LEGION-208: the merge of main forward landed on pull request acme/widgets#42, and the issue stands in retro." +
-			" The old head is c0de, and the new head is d00d. Read what the merge changed since the old head: run `git diff c0de d00d`."},
+			" The old head is c0de, and the new head is d00d. Read what the merge changed since the old head: " + read},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.message.Message("LEGION-208", PullRequest{Repo: "acme/widgets"})
