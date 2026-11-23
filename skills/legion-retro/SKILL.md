@@ -50,7 +50,7 @@ Run every step, even on a mechanical change.
    | A `ci_check` run that has not concluded, or one GitHub could not be read for | It is neither a pass nor a fail yet: never wait for, watch or poll it. Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on. When CI settles, the daemon tells the architect and the worker of the phase the issue then stands in |
    | A `ci_check` name that no run answers (`absent`), and a check whose `run` is a whole test suite | Send it to the architect as a finding, since the check's words are wrong |
    | A `ci_check` check whose derived result is a fail | It is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it. Name it in your retro message and complete |
-   | Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite | `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result; name the check's block id in the reason |
+   | Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite | `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result. Name the check's block id in the reason |
 
    Neither a run still going nor that finding moves the issue back.
    - **With no reviewer step, list the unresolved bot threads and answer the ones you find**, as `skill://legion-worker/references/review-threads.md` says.

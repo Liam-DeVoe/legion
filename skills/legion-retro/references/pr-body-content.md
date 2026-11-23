@@ -8,7 +8,8 @@ The merger reports a stale body rather than rewriting it.
 `<owner>/<repo>` and `<n>` are the pull request's repository and number.
 
 1. **Find the lines required.** Read your deployment instructions, the repository's agent guide (`AGENTS.md`, `CLAUDE.md`), its pull request template where it has one (`.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/`) and the workflow under `.github/workflows/` that reads the body, for lines they require per changed path.
-   When they require none, skip step 2, and stop here unless the task has no reviewer step (step 4 of `skill://legion-retro`).
+   When they require none, skip step 2.
+   When they require none, also stop here unless the task has no reviewer step (step 4 of `skill://legion-retro`).
 
 2. **List the changed paths.** List the paths the pull request changes at `<head>`, the head the task's last step passed (step 1 of `skill://legion-retro`):
 
