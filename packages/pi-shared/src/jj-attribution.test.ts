@@ -620,7 +620,9 @@ describe("userConfigChain", () => {
     pidFiles.push(pidFile);
     return pidFile;
   }
-  /** Advanced by the afterEach below, so a poll a row started stops once that row has ended. */
+  /** Advanced by the afterEach below. Each row that polls takes it at its first line, before any
+   *  await, and hands it to `polled`, so a poll stops once that row has ended: a poll that a body
+   *  its limit abandoned starts only after that, inside the next row, stops there at once. */
   let rowGeneration = 0;
   /** The pid in `pidFile`, or undefined while the wrapper has not written one. */
   async function pidIn(pidFile: string): Promise<number | undefined> {
@@ -658,20 +660,24 @@ describe("userConfigChain", () => {
   // its own, so what decides a row that waits here is that row's own per-test limit, which names
   // it: a pidfile that is never written, or a child the kill misses, ends the row there, and the
   // afterEach above kills the fake jj's `sleep 300` either way instead of leaving it for five
-  // minutes. Once the row has ended, the afterEach advances `rowGeneration` and the poll stops. At
-  // the base these polls gave up at 3 s, below the file's 5 s per-test limit, and two of them ran
-  // in series in one row; a give-up on real time inside the row's own limit is a bound on real
-  // time deciding the row, which a wrapper's fork costing 33478 ms at 240 busy loops shows.
+  // minutes. Once the row has ended, the afterEach advances `rowGeneration` and the poll stops,
+  // since the generation it checks is the one its row took at its first line. At the base these
+  // polls gave up at 3 s, below the file's 5 s per-test limit, and two of them ran in series in
+  // one row; a give-up on real time inside the row's own limit is a bound on real time deciding
+  // the row, which a wrapper's fork costing 33478 ms at 240 busy loops shows.
   /** Polls `read` until it answers, warning once at 2 s, which names what it waits for and decides
    *  nothing. */
-  async function polled<T>(what: string, read: () => Promise<T | undefined>): Promise<T> {
-    const generation = rowGeneration;
+  async function polled<T>(
+    row: number,
+    what: string,
+    read: () => Promise<T | undefined>
+  ): Promise<T> {
     const start = performance.now();
     let warned = false;
     for (;;) {
       const value = await read();
       if (value !== undefined) return value;
-      if (generation !== rowGeneration) {
+      if (row !== rowGeneration) {
         throw new Error(`stopped waiting for ${what}: the row ended`);
       }
       if (!warned && performance.now() - start > 2_000) {
@@ -684,8 +690,8 @@ describe("userConfigChain", () => {
 
   /** Returns once signal 0 says the kernel has reaped `pid`, and drops `pidFile` from the
    *  afterEach's list, since nothing it names is left to kill. */
-  async function reaped(pidFile: string, pid: number): Promise<void> {
-    await polled(`the kernel to reap pid ${pid}`, async () => {
+  async function reaped(row: number, pidFile: string, pid: number): Promise<void> {
+    await polled(row, `the kernel to reap pid ${pid}`, async () => {
       try {
         process.kill(pid, 0);
         return undefined;
@@ -713,6 +719,7 @@ describe("userConfigChain", () => {
   // the clock — is what tells a correct run from the defect. The bound each row passes
   // `userConfigChain` is named at its own call below.
   it("gives up on a jj that never answers, so attribution never holds bootstrap", async () => {
+    const row = rowGeneration;
     const pidFile = await childPidFile();
     const env = await withJj(`echo $$ > ${JSON.stringify(pidFile)} && exec sleep 300`);
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
@@ -727,12 +734,13 @@ describe("userConfigChain", () => {
     // is waited out here, which drops its pidfile; a jj killed before it wrote one is gone and left
     // nothing to collect, so this row never waits on a pidfile that may not come.
     const pid = await pidIn(pidFile);
-    if (pid !== undefined) await reaped(pidFile, pid);
+    if (pid !== undefined) await reaped(row, pidFile, pid);
     // A hang guard, not a measurement: a resolve that waits the whole 300 s sleep out hangs the
     // row, and a real jj subprocess leaves a loaded machine far more room than bun's 5 s default.
   }, 60_000);
 
   it("kills a wrapper's forked child when jj times out", async () => {
+    const row = rowGeneration;
     const pidFile = await childPidFile();
     // The child records itself: `sh -c` writes its own pid and only then becomes the `sleep`, so a
     // kill that reaches the wrapper at any moment leaves no `sleep` unrecorded. A wrapper that
@@ -753,11 +761,11 @@ describe("userConfigChain", () => {
     // and exports nothing. Undefined is the bound firing rather than jj answering, which is this
     // row's premise.
     expect(await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env)).toBeUndefined();
-    const pid = await polled(`the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
+    const pid = await polled(row, `the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
     // The check: this returns only once the child is gone, and the child's own sleep outlives the
     // row, so a kill that never reached it ends the row at the limit below, and the afterEach above
     // collects the child.
-    await reaped(pidFile, pid);
+    await reaped(row, pidFile, pid);
     // A hang guard: what can hang is an unbounded wait on the wrapper, a pidfile that is never
     // written, or a forked child the kill misses. 60_000. Worst measured cost, with the earlier
     // script in which the wrapper wrote `$!`: 12515.71 ms at 96 busy loops (48 per CPU), this row's
@@ -765,6 +773,7 @@ describe("userConfigChain", () => {
   }, 60_000);
 
   it("kills a wrapper's detached child after jj returns a config path", async () => {
+    const row = rowGeneration;
     const pidFile = await childPidFile();
     // Here the wrapper writes `$!` after forking, and that leaves no window: the group is killed
     // only once the wrapper exits, after it has written the pid and answered, and `&&` keeps it
@@ -781,10 +790,10 @@ describe("userConfigChain", () => {
     // `jj` that never prints. The row above keeps the production default because there the bound
     // firing is the subject.
     const paths = await userConfigChain(120_000, env);
-    const pid = await polled(`the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
+    const pid = await polled(row, `the jj wrapper to write ${pidFile}`, () => pidIn(pidFile));
     expect(paths).toBe("/u/a.toml");
     // The check, as above: the detached child's 300 s sleep outlives the row unless it is killed.
-    await reaped(pidFile, pid);
+    await reaped(row, pidFile, pid);
     // A hang guard, not a measurement: a pidfile that is never written, or a detached child the
     // kill misses, hangs the row rather than passing it.
   }, 60_000);

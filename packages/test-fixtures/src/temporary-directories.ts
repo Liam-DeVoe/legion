@@ -154,8 +154,10 @@ export function temporaryDirectories(
   // 11035.86 ms and 15887.94 ms — charges, not bodies, since a starved host charges a hook for
   // the time it is not scheduled. 60_000 is 39 times the worst body measured here and 3.8 times
   // the worst of those charges, and sits well inside every consumer job's `timeout-minutes`, 10
-  // for the tightest (.github/workflows/ci.yaml, 600 s), so a removal that never returns reddens
-  // with its test named instead of cancelling the job, which names nothing.
+  // for the tightest (600 s: `ci-job-broker-client.yaml`, `ci-job-claude-envoy.yaml`,
+  // `ci-job-envoy-client.yaml` and `ci-job-test-fixtures.yaml` in .github/workflows), so a
+  // removal that never returns reddens with its test named instead of cancelling the job, which
+  // names nothing.
   afterEach(() => {
     removeEvery(made.splice(0));
   }, 60_000);
@@ -216,10 +218,11 @@ export function temporaryDirectory(
   // failed correct runs of these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms — charges,
   // not bodies, since a starved host charges a hook for the time it is not scheduled. 60_000 is
   // 56 times the worst body measured here and 3.8 times the worst of those charges, and sits
-  // well inside every consumer job's `timeout-minutes`, 10 for the tightest
-  // (.github/workflows/ci.yaml, 600 s), so a making that never returns reddens with this file
-  // named instead of cancelling the job, which names nothing. Bun reports a timed-out
-  // `beforeAll` as `(unnamed)`, so the file is as far as that naming goes.
+  // well inside every consumer job's `timeout-minutes`, 10 for the tightest (600 s:
+  // `ci-job-claude-envoy.yaml`, `ci-job-envoy-client.yaml` and `ci-job-test-fixtures.yaml` in
+  // .github/workflows), so a making that never returns reddens with this file named instead of
+  // cancelling the job, which names nothing. Bun reports a timed-out `beforeAll` as `(unnamed)`,
+  // so the file is as far as that naming goes.
   beforeAll(() => {
     mkdirSync(directory, { mode: 0o700 });
   }, 60_000);
@@ -234,17 +237,19 @@ export function temporaryDirectory(
   // loops (48 per CPU). Bun's unwritten 5 s default for a hook is what failed correct runs of
   // these suites at 5015.84 ms, 11035.86 ms and 15887.94 ms, and it failed this hook in 10 of
   // those 10 askgate runs. Three times the worst, 212.5 s, is 637 s, past the 600 s the
-  // tightest consumer job's timeout-minutes: 10 allows (.github/workflows/ci.yaml), so that
+  // tightest consumer jobs' `timeout-minutes: 10` allows (`ci-job-claude-envoy.yaml`,
+  // `ci-job-envoy-client.yaml` and `ci-job-test-fixtures.yaml` in .github/workflows), so that
   // ceiling rules and 300_000 is half of it, 1.4 times that worst. Half, not more, because the
-  // 600 s is the whole
-  // job and this guard is one removal inside it: the tightest consumer is the `pi-envoy` job
-  // (.github/workflows/ci.yaml), whose suite is minutes of its own — `envoy.test.ts` alone is
-  // 58 s idle — so a removal that spends the whole 300 s there still leaves the job room to
-  // redden rather than to be cancelled, and anything larger would not. Plainly: at 120 busy
-  // loops per CPU, a load far past anything CI applies, removing a large tree can cost minutes,
-  // so this guard catches a removal that never returns and nothing smaller, and leaves the job
-  // room to redden with this file named rather than cancelling, which names nothing. Bun reports
-  // a timed-out `afterAll` as `(unnamed)`, so the row itself is not named.
+  // 600 s is the whole job and this guard is one removal inside it: the `claude-envoy` job, one
+  // of those, spent 82 s on its other steps and 193 s on its test step at 919ee888, so a removal
+  // that spends the whole 300 s there still leaves that job room to redden rather than to be
+  // cancelled. The `pi-envoy` job, whose askgate.test.ts points TMPDIR at this directory, has
+  // `timeout-minutes: 15` (`ci-job-pi-envoy.yaml`), and its suite is minutes of its own:
+  // `envoy.test.ts` alone is 58 s idle. Plainly: at 120 busy loops per CPU, a load far past
+  // anything CI applies, removing a large tree can cost minutes, so this guard catches a removal
+  // that never returns and nothing smaller, and leaves the job room to redden with this file
+  // named rather than cancelling, which names nothing. Bun reports a timed-out `afterAll` as
+  // `(unnamed)`, so the row itself is not named.
   afterAll(() => {
     removeTree(directory);
   }, 300_000);

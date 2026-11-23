@@ -615,13 +615,17 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
   }
   // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
   // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. Worst measured
-  // cost: 49 399.33 ms over 20 runs at the 96 rung in the Job infra-1580-krows-so-rzw2c of the
-  // cluster's `builds` namespace, two CPUs and 8 GiB (109 busy loops, at which row A's runs took
-  // 36.0 s against the calibration's 31.2 s), 2026-11-22T22:08Z to 22:34Z, where main's form of
-  // this row cost up to 36 303.31 ms; 36 723.83 ms at 16 busy loops (the 96 rung) on a two-CPU,
-  // 8 GiB pod. 300_000 is 6.1 times the worst, and a hang of it fits the `dispatch-ui` job's
-  // `timeout-minutes: 15` beside its test step's 342 s and its other steps' 162 s at a61f3fc7.
-}, 300_000);
+  // cost: 67 802.22 ms over 20 runs at the 96 rung in the Job infra-1580-t24-j12-wh2d8 of the
+  // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A took
+  // 31.3 s), at 919ee888, where main 2f7ee6dc's form of this row cost up to 32 001.27 ms;
+  // 49 399.33 ms over 20 runs at that rung in the Job infra-1580-krows-so-rzw2c (109 busy loops,
+  // at which row A's runs took 36.0 s against the calibration's 31.2 s), 2026-11-22T22:08Z to
+  // 22:34Z, where main's form of this row cost up to 36 303.31 ms; 36 723.83 ms at 16 busy loops
+  // (the 96 rung) on a two-CPU, 8 GiB pod. Six times the worst is 407 s, past what the
+  // `dispatch-ui` job leaves a hang, so the job decides: its `timeout-minutes: 15` less its test
+  // step's 342 s and its other steps' 162 s at a61f3fc7 leaves 396 s (310 s and 145 s at
+  // 919ee888 leave more), and this 390_000 is 5.75 times the worst.
+}, 390_000);
 
 // W53. The sign-out question names each change once, by key: a tab duplicated from this one, or
 // from another, copied its kept writes and resumed them under the same keys, so its copies are the
@@ -693,14 +697,17 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
   }
   // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
   // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. Worst measured
-  // cost: 54 396.97 ms over 20 runs at the 96 rung in the Job infra-1580-krows-so-rzw2c of the
-  // cluster's `builds` namespace, two CPUs and 8 GiB (109 busy loops, at which row A's runs took
-  // 36.0 s against the calibration's 31.2 s), 2026-11-22T21:40Z to 22:07Z, where main's form of
-  // this row cost up to 59 506.81 ms against the suite's 60 s flag; 33 673.56 ms at 16 busy loops
-  // (the 96 rung) on a two-CPU, 8 GiB pod. The row's rung is 96: at 240 one run cost 56 679.57 ms.
-  // 330_000 is 6.1 times the worst, and a hang of it fits the `dispatch-ui` job's
-  // `timeout-minutes: 15` beside its test step's 342 s and its other steps' 162 s at a61f3fc7.
-}, 330_000);
+  // cost: 60 902.00 ms over 20 runs at the 96 rung in the Job infra-1580-t24-j12-wh2d8 of the
+  // cluster's `builds` namespace, two CPUs and 8 GiB (140 busy loops, at which row A took
+  // 31.3 s), at 919ee888, where main 2f7ee6dc's form of this row cost up to 47 003.49 ms;
+  // 54 396.97 ms over 20 runs at that rung in the Job infra-1580-krows-so-rzw2c (109 busy loops,
+  // at which row A's runs took 36.0 s against the calibration's 31.2 s), 2026-11-22T21:40Z to
+  // 22:07Z, where main's form of this row cost up to 59 506.81 ms against the suite's 60 s flag;
+  // 33 673.56 ms at 16 busy loops (the 96 rung) on a two-CPU, 8 GiB pod. The row's rung is 96: at
+  // 240 one run cost 56 679.57 ms. 390_000 is 6.4 times the worst, and a hang of it fits the 396 s
+  // the `dispatch-ui` job's `timeout-minutes: 15` leaves beside its test step's 342 s and its
+  // other steps' 162 s at a61f3fc7 (310 s and 145 s at 919ee888).
+}, 390_000);
 
 // W43. A lapsed tab shows the writes it keeps: the sign-in page lists the lapsed person's kept
 // writes by name, so they see what waits for them, and a refused one offers Discard there.

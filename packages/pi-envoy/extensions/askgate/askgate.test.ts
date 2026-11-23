@@ -1,4 +1,5 @@
-import { afterEach, beforeAll, describe, expect, jest, mock, test } from "bun:test";
+import { afterEach, beforeAll, test as bunTest, describe, expect, jest, mock } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
@@ -53,18 +54,24 @@ import { createDecisionRecorder, RECORD_CUT_DELAY_MS, type RecordClient } from "
 import type { RuleMatch } from "./rules-check";
 import { renderTemplate } from "./text";
 
-// Every hang guard in this file, a row's or a hook's, is one of 30_000, 60_000 or 120_000. Where
-// its comment gives a measured worst, the guard is at least six times that worst, at the load the
-// comment names, and 120_000 is this file's ceiling: a hang costs its limit once, so one that
-// reaches 120_000 still leaves the pi-envoy job's `timeout-minutes: 15`
-// (.github/workflows/ci-job-pi-envoy.yaml) room to redden with the row named. A guard whose six
-// times passes the ceiling takes the ceiling and says how many times its worst that is; a row whose
-// loaded worst the ceiling cannot cover moves to a lower rung instead, and its comment says so. A
-// row whose model call only the call's stop or the gate's own 90 s default deadline
-// (`GATE_TIMEOUT_MS`) ends keeps its guard below that deadline, at 60_000, whatever six times its
-// worst is, so the runner's limit ends a call that never returns before that deadline can decide
-// the row. The rows that carry 120_000 run on that deadline too, but `bind`'s default answers their
-// model calls at once, so none of their calls waits on it.
+// The hang guards this file's own rows and hooks set are 30_000, 60_000, 80_000 and 120_000. A row
+// or hook that sets none takes the 250 s that `bun run test` gives it (`bun test --timeout
+// 250000`, package.json); the hooks that `temporaryTmpdir` and `temporaryDirectory` register here
+// carry limits of their own. Where a guard's comment gives a measured worst, the guard is at least
+// six times that worst, at the load the comment names, and 120_000 is this file's ceiling for the
+// guards it sets: a hang costs its limit once, so one that reaches 120_000 still leaves the
+// pi-envoy job's `timeout-minutes: 15` (.github/workflows/ci-job-pi-envoy.yaml) room to redden with
+// the row named. A guard whose six times passes the ceiling takes the ceiling and says how many
+// times its worst that is; a row whose loaded worst the ceiling cannot cover moves to a lower rung
+// instead, and its comment says so. A row that sets a guard, and whose model call only the call's
+// stop or the gate's own 90 s default deadline (`GATE_TIMEOUT_MS`) ends, keeps that guard below the
+// deadline, whatever six times its worst is, so the runner's limit ends a call that never returns
+// before that deadline can decide the row. Eight rows on the real clock hold such a call and set
+// no guard: six in "deadline and abandonment", and the two, one per mode, of the loop "a rules
+// call given up after the charter allowed". They take the 250 s, so the runner's limit decides
+// none of them: a stop one of them misses fails it on an assertion, at once or when the gate's
+// 90 s deadline ends the call. The rows that carry 120_000 run on that deadline too, but `bind`'s
+// default answers their model calls at once, so none of their calls waits on it.
 
 // A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
 // its loads, and where `envoy.test.ts`'s row "session_shutdown resolves within its budget when
@@ -109,6 +116,41 @@ const childPidFiles: string[] = [];
  * the marker each one took: a test that never ends its call would otherwise leave it behind.
  */
 const callEnders: Array<() => Promise<void>> = [];
+/**
+ * The row whose body runs now, as its `rowGeneration`. Every row of this file is registered
+ * through `test` below, which runs its body in this scope, so what the body reaches after an
+ * await still names its row once bun has abandoned the row at its limit and started the next.
+ */
+const rowBody = new AsyncLocalStorage<number>();
+/**
+ * Advanced by the file's `afterEach` below and by the entry's (`askgate.ts, the entry`), each
+ * before it puts anything back.
+ */
+let rowGeneration = 0;
+/**
+ * A check of the caller's row: true while that row still runs, false once a hook has advanced
+ * `rowGeneration` past it. The row is the one whose body the caller runs in (`rowBody`), so a
+ * check first taken by a body its limit abandoned is false already; outside a row's body it is
+ * the row running now. A `finally` that puts back shared state its row set does so only while
+ * the check holds: once the row has ended, a hook has put that state back, and the row after it
+ * may have set its own.
+ */
+function rowCheck(): () => boolean {
+  const generation = rowBody.getStore() ?? rowGeneration;
+  return () => generation === rowGeneration;
+}
+/**
+ * Throws once the row `ownRow` checks has ended, saying what the caller was at. A row or a helper
+ * calls it before each write to shared state, and each move of the test's clock, that follows an
+ * await, so a body its limit abandoned stops there rather than write into the row after it.
+ */
+function stillOn(ownRow: () => boolean, what: string): void {
+  if (!ownRow()) throw new Error(`stopped ${what}: the row ended`);
+}
+/** Registers a row, as bun's `test` does, with its body run in its row's scope (`rowBody`). */
+function test(name: string, body: () => unknown, timeout?: number): void {
+  bunTest(name, () => Promise.resolve(rowBody.run(rowGeneration, body)), timeout);
+}
 // A hang guard, not a bound on the work: what can hang is one call's end, which releases the marker
 // that call took. Measured on this two-CPU pod with a timer round the call ends: 0.00 ms to 1.57 ms
 // over the 25 invocations of 5 idle runs, and 0.00 ms to 3.07 ms over the 1377 of 3 idle runs of
@@ -120,13 +162,19 @@ const callEnders: Array<() => Promise<void>> = [];
 // (the rule above `DryRunner`): 7.6 times that worst, and well inside the pi-envoy job's
 // timeout-minutes: 15 (.github/workflows/ci-job-pi-envoy.yaml), so a call end that never returns
 // still reddens with this file named instead of cancelling the job, which names nothing. The kills
-// run first and in this same hook. A limit does not interrupt a body: bun fails a hook whose body
-// ran past it, after the fact, and skips the same scope's hooks registered after it, so a kill in a
-// hook of its own would carry the run's default hook limit (bun's 5 s when this file runs alone
-// with `bun test`, the 250 s `bun run test` gives it, package.json) and could be failed there or
-// skipped behind the call ends. Its own work is a file read and a signal for each pidfile a row
-// registered.
+// run before the call ends, and in this same hook. A limit does not interrupt a body: bun fails a
+// hook whose body ran past it, after the fact, and skips the same scope's hooks registered after
+// it, so a kill in a hook of its own would carry the run's default hook limit (bun's 5 s when this
+// file runs alone with `bun test`, the 250 s `bun run test` gives it, package.json) and could be
+// failed there or skipped behind the call ends. Its own work, beside the two lines it starts with,
+// is a file read and a signal for each pidfile a row registered.
 afterEach(async () => {
+  // First, before anything this hook awaits: from here on a body its limit abandoned stops at its
+  // next row check (`stillOn`) rather than write into the row after it.
+  rowGeneration += 1;
+  // A row abandoned while it held the test's clock would leave fake timers on for every row after
+  // it: its own `finally` puts the real clock back only while its row runs.
+  jest.useRealTimers();
   for (const pidFile of childPidFiles.splice(0)) {
     let pid = 0;
     try {
@@ -203,9 +251,12 @@ const untilAborted = (req: CompleteRequest): Promise<Completion> => {
  * then fire in the order of their lengths whatever the host's load, where on the real clock a
  * starved host can run the wait out before the grace's entry is written. The clock stops at
  * 5_000, past both, so a handler that never returns answers undefined and fails the row's
- * assertions on what this answers.
+ * assertions on what this answers. A body its limit abandoned that calls this after its row ended
+ * throws before it turns the test's clock on, and before each move of it (`stillOn`).
  */
 async function shutdownOnTestClock(g: BoundGate): Promise<number | undefined> {
+  const ownRow = rowCheck();
+  stillOn(ownRow, "the shutdown on the test's clock");
   jest.useFakeTimers();
   try {
     let clock = 0;
@@ -223,12 +274,13 @@ async function shutdownOnTestClock(g: BoundGate): Promise<number | undefined> {
       for (let i = 0; i < 50; i++) await Promise.resolve();
       if (returnedAt !== undefined || failure !== undefined) break;
       clock += 50;
+      stillOn(ownRow, "the shutdown on the test's clock");
       jest.advanceTimersByTime(50);
     }
     if (failure !== undefined) throw failure.reason;
     return returnedAt;
   } finally {
-    jest.useRealTimers();
+    if (ownRow()) jest.useRealTimers();
   }
 }
 
@@ -1228,10 +1280,12 @@ describe("fail-open", () => {
     expect(timedOut?.additionalContext).toContain("The call ran unreviewed.");
     expect(signals[0].aborted).toBe(true);
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "timeout", usage: PARTIAL }]);
-    // The row's own bound is a hang guard, the file's convention: a gated call whose model call
-    // never answers and whose deadline never fires would hang here. Its work is one 50 ms
-    // deadline, far below this.
-  }, 30_000);
+    // A hang guard: what can hang is a gated call whose model call never answers and whose 50 ms
+    // deadline never fires. Its own work is that one deadline. Worst measured cost: 9 294.76 ms
+    // at the 240 rung in the Job infra-1580-t24-j8-fqfck of the cluster's `builds` namespace, two
+    // CPUs and 8 GiB (475 busy loops, 2.5 times the 190 at which row A took 36.4 s at the 96
+    // rung), at 919ee888. 60_000 is 6.5 times the worst.
+  }, 60_000);
   test("three consecutive failures halt the gate for the session with one notice", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
     for (const id of ["a", "b", "c", "d", "e"]) await g.device(id, "dispatch_comment", COMMENT);
@@ -1819,10 +1873,13 @@ describe("deadline and abandonment", () => {
     await gated;
     // A hang guard: what can hang is a gate that never asks its model, which `started` waits for,
     // or a call the grace ended whose promise never settles, which `gated` waits for; a grace that
-    // does not end the call fails the row at `g.entries` once the handler's wait runs out. 60_000,
+    // does not end the call fails the row at `g.entries` once the handler's wait runs out. 80_000,
     // below the gate's 90 s deadline by the rule above `DryRunner`. Worst measured cost:
-    // 4 412.72 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
-  }, 60_000);
+    // 11 001.13 ms at the 240 rung in the Job infra-1580-t24-j8-fqfck of the cluster's `builds`
+    // namespace, two CPUs and 8 GiB (475 busy loops, 2.5 times the 190 at which row A took 36.4 s
+    // at the 96 rung), at 919ee888; 4 412.72 ms at 75 busy loops (the 240 rung) on a two-CPU,
+    // 8 GiB pod. 80_000 is 7.3 times the worst.
+  }, 80_000);
 });
 
 describe("the switch is not in the gate (test 10)", () => {
@@ -5482,6 +5539,9 @@ describe("askgate.ts, the entry", () => {
       _context: unknown,
       options: Record<string, unknown> & { onAttempt?: (m: unknown) => void }
     ) => {
+      // A gate of a row its limit abandoned asks no model once that row has ended, so its call
+      // lands in no later row's `completions`.
+      stillOn(rowCheck(), "the stubbed model call");
       completions.push({ ...options, modelId: model.id });
       if (notFound.has(model.id))
         return {
@@ -5536,6 +5596,8 @@ describe("askgate.ts, the entry", () => {
         : projectSharedAccountSetting,
     grantAuthority: () => operatorSettings,
   };
+  /** The operator-only view, which a row deletes and the `afterEach` below puts back. */
+  const operatorAuthority = mergedSettings.grantAuthority;
   mock.module("@oh-my-pi/pi-coding-agent/config/settings", () => ({ settings: mergedSettings }));
   /** extensionHandlers.toolCallTimeoutMs as the stubbed settings answer it. */
   let toolCallCeilingMs = 120_000;
@@ -5585,15 +5647,32 @@ describe("askgate.ts, the entry", () => {
       model: { provider: string; id: string },
       roleHint?: string
     ) => {
+      // As the model call above: no later row's `roleHints` takes an ended row's lookup.
+      stillOn(rowCheck(), "the stubbed chain lookup");
       roleHints.push(roleHint);
       return CHAINS[`${model.provider}/${model.id}`] ? `${model.provider}/${model.id}` : undefined;
     },
     findRetryFallbackCandidates: (_context: unknown, key: string) =>
       CHAINS[key].map((raw) => ({ raw })),
   }));
-  const saved = { ...process.env };
+  /**
+   * The environment this describe's rows start with, which the `afterEach` puts back. It is taken
+   * in a `beforeAll`, after the file's `temporaryTmpdir` has pointed TMPDIR at the suite's
+   * directory in its own (bun runs the file's `beforeAll` hooks before a describe's), so putting
+   * it back leaves TMPDIR there rather than at the value the process started with.
+   */
+  let saved: Record<string, string | undefined> = {};
+  beforeAll(() => {
+    saved = { ...process.env };
+  });
+  /** The fetch and the umask this describe's rows start with, which the `afterEach` puts back. */
+  const startFetch = globalThis.fetch;
+  const startUmask = process.umask();
   const dirs: string[] = [];
   afterEach(() => {
+    // First: this hook runs before the file's own, and from here on a body its limit abandoned
+    // stops at its next row check (`stillOn`) rather than undo what this hook puts back.
+    rowGeneration += 1;
     completions.length = 0;
     roleHints.length = 0;
     attempts = [answer(ALLOW, 5, 7, 0.25)];
@@ -5602,6 +5681,12 @@ describe("askgate.ts, the entry", () => {
     modelFallback = true;
     sharedAccountSetting = undefined;
     projectSharedAccountSetting = undefined;
+    // What a row its limit abandoned set and only its own `finally` put back: that `finally`
+    // puts it back only while its row runs.
+    toolCallCeilingMs = 120_000;
+    mergedSettings.grantAuthority = operatorAuthority;
+    globalThis.fetch = startFetch;
+    process.umask(startUmask);
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
@@ -5629,10 +5714,15 @@ describe("askgate.ts, the entry", () => {
       primary?: GateModel;
     } = {}
   ) {
+    // Rows call this after an await of their own, so a body its limit abandoned can reach it late.
+    stillOn(rowCheck(), "gateOnce's environment");
     delete process.env.OMP_ASKGATE;
     Object.assign(process.env, { PI_CODING_AGENT_DIR: scratch("askgate-entry-") }, env);
     // Imported after mock.module so the entry binds the stubs; a static import would load it first.
     const { registerAskGate } = await import("./askgate");
+    // The registration reads the environment and, on the entry's first load in the process,
+    // registers its setting id, so a body its limit abandoned in the import stops here.
+    stillOn(rowCheck(), "gateOnce's registration");
     const handlers = new Map<string, Handler>();
     const entries: GateEntry[] = [];
     const warnings: string[] = [];
@@ -5667,6 +5757,7 @@ describe("askgate.ts, the entry", () => {
       },
       cwd: "/work",
     };
+    stillOn(rowCheck(), "gateOnce's call");
     if (opts.text !== undefined) attempts = [answer(opts.text, 5, 7, 0.25)];
     const result = await handlers.get("tool_call")?.(
       { type: "tool_call", toolName: "dispatch_comment", toolCallId: "t1", input: COMMENT },
@@ -5688,6 +5779,7 @@ describe("askgate.ts, the entry", () => {
   test("a session reviewed only because omp's config declares the two providers one account", async () => {
     const unset = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(unset.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    stillOn(rowCheck(), "the shared-account setting");
     sharedAccountSetting = ["anthropic", "model-gateway"];
     const declared = await gateOnce(
       {},
@@ -5699,6 +5791,7 @@ describe("askgate.ts, the entry", () => {
     const bound = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(bound.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
     // No new binding: the same handler, after the machine's config changed under it.
+    stillOn(rowCheck(), "the shared-account setting");
     sharedAccountSetting = ["anthropic", "model-gateway"];
     await bound.again("t2");
     expect(bound.entries[1]).toMatchObject({ decision: "allow", outcome: "verdict" });
@@ -5706,6 +5799,7 @@ describe("askgate.ts, the entry", () => {
   // A host build that offers no operator-only view offers nothing safe to read: the merged
   // settings carry the repository's own layer, which the agent under review can write.
   test("a host with no grant authority declares nothing, whatever the merged settings hold", async () => {
+    const ownRow = rowCheck();
     const authority = mergedSettings.grantAuthority;
     try {
       Reflect.deleteProperty(mergedSettings, "grantAuthority");
@@ -5713,13 +5807,14 @@ describe("askgate.ts, the entry", () => {
       const none = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
       expect(none.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
     } finally {
-      mergedSettings.grantAuthority = authority;
+      if (ownRow()) mergedSettings.grantAuthority = authority;
     }
   });
   test("a value that is not a list of provider ids declares nothing, a list with a non-string in it too", async () => {
     sharedAccountSetting = "anthropic,model-gateway";
     const text = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(text.entries).toMatchObject([{ outcome: "skipped" }]);
+    stillOn(rowCheck(), "the shared-account setting");
     sharedAccountSetting = ["anthropic", "model-gateway", 42];
     const mixed = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
     expect(mixed.entries).toMatchObject([{ outcome: "skipped" }]);
@@ -5779,9 +5874,13 @@ describe("askgate.ts, the entry", () => {
 
   /** Calls the entry's registration without awaiting it: what the factory does. */
   async function registerOnly(env: Record<string, string> = {}) {
+    // Rows call this after an await of their own, so a body its limit abandoned can reach it late.
+    stillOn(rowCheck(), "registerOnly's environment");
     delete process.env.OMP_ASKGATE;
     Object.assign(process.env, env);
     const { registerAskGate } = await import("./askgate");
+    // As in `gateOnce`: the registration reads the environment and registers the setting id.
+    stillOn(rowCheck(), "registerOnly's registration");
     const handlers = new Map<string, Handler>();
     /** Every handler an event has, in order: the entry's own run before the core's, as on a host. */
     const registered = new Map<string, Handler[]>();
@@ -5902,6 +6001,7 @@ describe("askgate.ts, the entry", () => {
   // and its delay on both paths; this is the path where the load failed, and the loaded one is
   // in the core's own suite.
   test("a gate that does not load gives its records the cut delay when the session shuts down", async () => {
+    const ownRow = rowCheck();
     const hangs = Promise.withResolvers<Response>();
     const otherFetch = globalThis.fetch;
     // A `fetch` that never answers: the whole of it, since Bun's carries `preconnect` too.
@@ -5934,6 +6034,7 @@ describe("askgate.ts, the entry", () => {
         id: "t1#0",
       });
       for (let i = 0; i < 50; i++) await Promise.resolve();
+      stillOn(ownRow, "the cut on the test's clock");
       jest.useFakeTimers();
       try {
         const shutdown = handlers.get("session_shutdown")?.(
@@ -5943,21 +6044,23 @@ describe("askgate.ts, the entry", () => {
         // Up to the delay the record is still running; the handler holds the session for it.
         for (let i = 0; i < 50; i++) await Promise.resolve();
         expect(await Promise.race([recorded, "still writing"])).toBe("still writing");
+        stillOn(ownRow, "the cut on the test's clock");
         jest.advanceTimersByTime(RECORD_CUT_DELAY_MS);
         await shutdown;
       } finally {
-        jest.useRealTimers();
+        if (ownRow()) jest.useRealTimers();
       }
       expect(await recorded).toBe("the session shut down before Dispatch answered the record");
       hangs.resolve(Response.json({}));
     } finally {
-      globalThis.fetch = otherFetch;
+      if (ownRow()) globalThis.fetch = otherFetch;
     }
   });
   // The other half of the one owner: a gate that loaded binds the core's own `session_shutdown`
   // after this one, and the core waits on the records rather than cutting them, so the cut and
   // its delay are the same on both paths.
   test("a gate that loaded takes the cut from that same handler, the core waiting for the records", async () => {
+    const ownRow = rowCheck();
     const hangs = Promise.withResolvers<Response>();
     const otherFetch = globalThis.fetch;
     globalThis.fetch = Object.assign(async () => await hangs.promise, {
@@ -5987,6 +6090,7 @@ describe("askgate.ts, the entry", () => {
         id: "t1#0",
       });
       for (let i = 0; i < 50; i++) await Promise.resolve();
+      stillOn(ownRow, "the cut on the test's clock");
       jest.useFakeTimers();
       try {
         const shutdown = handlers.get("session_shutdown")?.(
@@ -5995,18 +6099,20 @@ describe("askgate.ts, the entry", () => {
         );
         for (let i = 0; i < 50; i++) await Promise.resolve();
         expect(await Promise.race([recorded, "still writing"])).toBe("still writing");
+        stillOn(ownRow, "the cut on the test's clock");
         jest.advanceTimersByTime(RECORD_CUT_DELAY_MS);
         await shutdown;
       } finally {
-        jest.useRealTimers();
+        if (ownRow()) jest.useRealTimers();
       }
       expect(await recorded).toBe("the session shut down before Dispatch answered the record");
       hangs.resolve(Response.json({}));
     } finally {
-      globalThis.fetch = otherFetch;
+      if (ownRow()) globalThis.fetch = otherFetch;
     }
   });
   test("a handler ceiling too short for a verdict is a load failure too: the write is refused, naming why", async () => {
+    const ownRow = rowCheck();
     toolCallCeilingMs = 8_000;
     try {
       const { loaded, handlers, entries } = await registerOnly();
@@ -6019,10 +6125,11 @@ describe("askgate.ts, the entry", () => {
       expect(result?.reason).toContain("extensionHandlers.toolCallTimeoutMs is 8000 ms");
       expect(entries).toMatchObject([{ outcome: "load-failed", decision: "revise" }]);
     } finally {
-      toolCallCeilingMs = 120_000;
+      if (ownRow()) toolCallCeilingMs = 120_000;
     }
   });
   test("the default handler ceiling binds the gate, and its warning reaches the host's logger once", async () => {
+    const ownRow = rowCheck();
     toolCallCeilingMs = 30_000;
     try {
       const { result, entries, warnings } = await gateOnce();
@@ -6032,7 +6139,7 @@ describe("askgate.ts, the entry", () => {
         expect.stringContaining("extensionHandlers.toolCallTimeoutMs is 30000 ms"),
       ]);
     } finally {
-      toolCallCeilingMs = 120_000;
+      if (ownRow()) toolCallCeilingMs = 120_000;
     }
   });
 
@@ -6112,12 +6219,13 @@ describe("askgate.ts, the entry", () => {
     expect(entries).toMatchObject([{ outcome: "error", model: "anthropic/claude-fable-5-1" }]);
   });
   test("the prompt dump is created readable by its owner only, whatever the umask", async () => {
+    const ownRow = rowCheck();
     const dump = path.join(scratch("askgate-dump-"), "dump.txt");
     const umask = process.umask(0o022);
     try {
       await gateOnce({ OMP_ASKGATE_DUMP: dump });
     } finally {
-      process.umask(umask);
+      if (ownRow()) process.umask(umask);
     }
     expect(fs.readFileSync(dump, "utf8")).toContain("### Gate request");
     expect(fs.statSync(dump).mode & 0o777).toBe(0o600);
@@ -7169,6 +7277,7 @@ describe("rules check", () => {
   test("at shutdown a decision record started as the handler returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown grace and wait run their full
     // length without the test waiting for them.
+    const ownRow = rowCheck();
     jest.useFakeTimers();
     try {
       let clock = 0;
@@ -7220,6 +7329,7 @@ describe("rules check", () => {
         for (let i = 0; i < 50; i++) await Promise.resolve();
         if (returnedAt !== undefined) break;
         clock += 50;
+        stillOn(ownRow, "the shutdown's clock");
         jest.advanceTimersByTime(50);
       }
       await shutdown;
@@ -7245,12 +7355,13 @@ describe("rules check", () => {
       expect((await gated)?.block).toBeUndefined();
       expect(g.entries).toHaveLength(1);
     } finally {
-      jest.useRealTimers();
+      if (ownRow()) jest.useRealTimers();
     }
   });
   test("at shutdown a record pending from a call that already returned is cut short, and its follow-up entry lands before the handler returns", async () => {
     // Fake timers, and a clock that moves with them: the shutdown's cut and wait run their full
     // length without the test waiting for them.
+    const ownRow = rowCheck();
     jest.useFakeTimers();
     try {
       let clock = 0;
@@ -7305,6 +7416,7 @@ describe("rules check", () => {
         for (let i = 0; i < 50; i++) await Promise.resolve();
         if (returnedAt !== undefined) break;
         clock += 50;
+        stillOn(ownRow, "the shutdown's clock");
         jest.advanceTimersByTime(50);
       }
       await shutdown;
@@ -7320,7 +7432,7 @@ describe("rules check", () => {
       expect(recordSignal?.aborted).toBe(true);
       expect(g.entries).toHaveLength(1);
     } finally {
-      jest.useRealTimers();
+      if (ownRow()) jest.useRealTimers();
     }
   });
   for (const [mode, blocked] of [
@@ -8129,6 +8241,7 @@ describe("the Dispatch decision record (A5)", () => {
   test("a call whose model calls hang to the deadline returns inside the handler ceiling, and its record waits for Dispatch until the session shuts down", async () => {
     // Fake timers, and a clock that moves with them: the deadline, the abort grace and the
     // shutdown's cut all run their full length without the test waiting 30 s.
+    const ownRow = rowCheck();
     jest.useFakeTimers();
     try {
       let clock = 0;
@@ -8150,6 +8263,7 @@ describe("the Dispatch decision record (A5)", () => {
           for (let i = 0; i < 50; i++) await Promise.resolve();
           if (until()) break;
           clock += 100;
+          stillOn(ownRow, "the deadline's clock");
           jest.advanceTimersByTime(100);
         }
       };
@@ -8188,7 +8302,7 @@ describe("the Dispatch decision record (A5)", () => {
         },
       ]);
     } finally {
-      jest.useRealTimers();
+      if (ownRow()) jest.useRealTimers();
     }
   });
 

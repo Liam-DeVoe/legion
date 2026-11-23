@@ -624,15 +624,20 @@ async function jjDirectory(scratch: string, body: string): Promise<string> {
 }
 
 /** A `jjDirectory` whose jj never answers: it writes its pid to a pidfile, in a directory of its
- * own the afterEach above kills it from, and only then sleeps 300 s in that same process. 300 s,
- * not 30: a hook that stopped bounding its wait for jj would have returned behind a 30 s sleep
- * well inside a row's 180 s limit and left the row green while broken. Nothing returns inside
- * 300 s, so the row's limit is what tells a bounded wait from an unbounded one. */
+ * own the afterEach above kills it from, and only then sleeps 600 s in that same process. 600 s
+ * is twice the longer limit of the two rows that use this (300_000; the other's is 210_000), and
+ * the sleep starts after its row has started, so a hook that stopped bounding its wait for jj
+ * returns at least 300 s past either row's limit, and that limit is what tells a bounded wait from
+ * an unbounded one. A 30 s sleep would have let such a hook return inside either limit and left
+ * the row green while broken. The sleep leaves no process behind: the hook's own bound kills the
+ * jj's group, and the afterEach above kills the pid the jj wrote before it slept, a jj whose hook
+ * that afterEach killed first included; a jj that had not written its pid when the afterEach
+ * removed its directory cannot write it, so it does not sleep. */
 async function hangingJjDirectory(scratch: string): Promise<string> {
   const pidDirectory = mkdtempSync(join(tmpdir(), "claude-envoy-hook-jj-pid-"))
   hangingJjPidDirectories.push(pidDirectory)
   const pidFile = join(pidDirectory, "pid")
-  return jjDirectory(scratch, `echo $$ > ${JSON.stringify(pidFile)} && exec sleep 300`)
+  return jjDirectory(scratch, `echo $$ > ${JSON.stringify(pidFile)} && exec sleep 600`)
 }
 
 /** A Dispatch answering one empty open-asks snapshot, so a test can see the summary the hook
@@ -975,7 +980,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     await rm(scratch, { recursive: true, force: true })
   }
   // A hang guard, not a budget: the only thing that reaches this limit is a hook that waits for a
-  // jj that never answers, which costs the full 300 s `hangingJjDirectory` sleeps. Written here
+  // jj that never answers, which costs the full 600 s `hangingJjDirectory` sleeps. Written here
   // rather than left to the package's `bun test --timeout=60000`, so a run of this file without
   // that flag gets the same guard. What the limit does not guard is load reaching the assertions
   // below it:
@@ -990,9 +995,12 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   // authored-ask summary unavailable: The operation timed out.` where the summary belongs, which is
   // that 3 s read and no limit of this row's. So the budget stays, by the architect's decision,
   // and this row's acceptance rung is 80 busy loops, 40 per CPU, the rung its sibling below takes:
-  // there it is 20 of 20, charged 10169.40 / 15338.93 / 26831.90 ms (min/median/max), so this
-  // 180_000 is 6.7 times that worst.
-}, 180_000)
+  // there it is 20 of 20, charged 10169.40 / 15338.93 / 26831.90 ms (min/median/max), and
+  // 34 500.28 ms at worst over 20 runs at that rung in the Job infra-1580-t24-j11-blmmh of the
+  // cluster's `builds` namespace, two CPUs and 8 GiB (138 busy loops for the 80 rung, scaled from
+  // the 165 at which row A took 37.6 s at the 96 rung), at 919ee888. So this 210_000 is 6.1 times
+  // that worst.
+}, 210_000)
 
 // `CLAUDE_ENV_FILE` is one file per session id
 // (`<config>/session-env/<session id>/sessionstart-hook-<n>.sh` on the pinned Claude Code
@@ -1044,21 +1052,28 @@ test("keeps the session's own export when a later run of the same id has no jj t
     await rm(scratch, { recursive: true, force: true })
   }
   // A hang guard, not a bound on the work: the only thing that reaches this limit is a hook that
-  // waits for a jj that never answers, which costs the full 300 s `hangingJjDirectory` sleeps.
+  // waits for a jj that never answers, which costs the full 600 s `hangingJjDirectory` sleeps.
+  // That sleep starts only once the row's first run of the hook has returned, so a hook that
+  // waits it out ends at least 300 s past this 300_000, and the limit tells it from one that
+  // gives up.
   // The row's own cost, read from bun's junit reporter on this two-CPU pod: 3.5 s idle (3.55 /
   // 3.58 / 3.62 s min / median / max over 5 runs), and 11195.06 / 26057.49 / 38409.39 ms over 20
   // runs under 80 busy loops, 40 per CPU, this row's acceptance rung; 37 499.75 ms over 20 runs at
   // that rung in the Job infra-1580-krows-ko-b5pvr of the cluster's `builds` namespace, two CPUs
   // and 8 GiB (101 busy loops, at which row A's runs took 31.7 s against the calibration's
-  // 31.2 s), 2026-11-22T20:27Z to 20:39Z. So this 240_000 is 6.2 times the worst. The rung is 80
-  // and not the 160 this file was calibrated at: there the same 20 runs cost 15480.51 to
-  // 147320.91 ms under a 600_000 provisional, 20 of 20 green, so the row is correct at that load
-  // and merely slow; at that load, under the 180_000 it had then, it failed a correct run twice in
-  // 20 at the limit itself, charged 180003.42 ms and 180001.83 ms, and twice more on the hook's
-  // own 3 s `JJ_BASE_CHAIN_TIMEOUT_MS`, which left the env file without its `export JJ_CONFIG=`
-  // line, a production budget no per-test limit guards. It sits inside the `claude-envoy` job's
-  // `timeout-minutes: 10`: its other steps took 56 s and its test step 194 s at b202d173, so a
-  // hang reddens with this test named instead of cancelling the job. It is written here rather
-  // than left to the package's `bun test --timeout=60000`, so a run of this file without that flag
-  // gets the same guard.
-}, 240_000)
+  // 31.2 s), 2026-11-22T20:27Z to 20:39Z; 99 799.70 ms over 20 runs at that rung in the Job
+  // infra-1580-t24-j11-blmmh (138 busy loops for the 80 rung, scaled from the 165 at which row A
+  // took 37.6 s at the 96 rung), at 919ee888. Six times that worst is 599 s, past what the
+  // `claude-envoy` job leaves a hang, so the job decides: its `timeout-minutes: 10` less its other
+  // steps (82 s) and its test step (193 s) at 919ee888 (run 45084614308) leaves 325 s for one
+  // row's hang, and this 300_000 is 3.0 times that worst. At b202d173 its other steps took 56 s
+  // and its test step 194 s. The rung is 80 and not the 160 this file was calibrated at: there
+  // the same 20 runs cost 15480.51 to 147320.91 ms under a 600_000 provisional, 20 of 20 green, so
+  // the row is correct at that load and merely slow; at that load, under the 180_000 it had then,
+  // it failed a correct run twice in 20 at the limit itself, charged 180003.42 ms and
+  // 180001.83 ms, and twice more on the hook's own 3 s `JJ_BASE_CHAIN_TIMEOUT_MS`, which left the
+  // env file without its `export JJ_CONFIG=` line, a production budget no per-test limit guards.
+  // A hang of this row reddens with this test named instead of cancelling the job. It is written
+  // here rather than left to the package's `bun test --timeout=60000`, so a run of this file
+  // without that flag gets the same guard.
+}, 300_000)
