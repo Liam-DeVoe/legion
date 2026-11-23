@@ -33,6 +33,7 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
   It tells it again at a launch only where your session has not had it, as a fresh session after a lost one has not; a launch that resumes the session that had it is told nothing more.
 
 - A retry of your claim at your step (`legion claims retry`) relaunches your session, and Legion tells you the step again; it starts no worker.
+  While an `owner-step` of that run is still on its way to you, the retry tells you nothing more.
 
 ## Reporting it
 

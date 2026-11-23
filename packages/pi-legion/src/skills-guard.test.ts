@@ -969,6 +969,7 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
     ...lacks("legion-architect/references/own-steps.md", [
       /The tool sends that record's `head` as the commit you read, so you pass no commit\./,
       /A merger that enters `merging` while that approval is owed waits for it\./,
+      /While an `owner-step` of that run is still on its way to you, the retry tells you nothing more\./,
     ]),
     ...lacks("legion-architect/references/wake-routing.md", [
       /An `owner-step` goes to the issue's own architect alone, never to one above it\./,
