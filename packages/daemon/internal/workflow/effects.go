@@ -965,13 +965,13 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
 // The number counts the entries handed on this role's row of the issue, numbered across the rows
-// that name the step's claim (the higher of the row's own entry plus one and one above the highest
-// entry of each row of the issue that names that claim), which is why it is raised here: this is
-// the one place a claim is handed work it was not on. It needs to be unique among the entries of
-// that claim and no more, since it is only ever compared with a value the daemon itself wrote,
-// never read from a request — a completion carries no identity at all
-// (api.HandoffCompleteRequest). Nothing else at hand counts them: the issue's generation is one
-// run's whole life, and the round counts only returns to implementing.
+// of the step's claim and of its role and above what that claim was given (the last paragraph
+// says how), which is why it is raised here: this is the one place a claim is handed work it was
+// not on. It is only ever compared with a value the daemon itself wrote, never read from a
+// request — a completion carries no identity at all (api.HandoffCompleteRequest) — so it needs
+// to stand above every entry that claim and that role were handed, and no more. Nothing else at
+// hand counts them: the issue's generation is one run's whole life, and the round counts only
+// returns to implementing.
 //
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the

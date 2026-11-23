@@ -113,10 +113,10 @@ var stepRows = []struct {
 // (merge_forward.go). A return goes back to implementing where implementing stands before the step
 // that fails, and a step with no implementing before it has none. Each row carries the places of
 // its two positions (placeAt), so a line that holds a phase at two places, two steps of roles the
-// deployment defines, has a row for each. A row into accepting starts nobody, because accepting's
-// role is the tree's architect; every other row into a phase of the line starts its role. No row
-// carries a status of its own: every status a row writes is its target phase's, which PhaseStatus
-// holds.
+// deployment defines or two steps of one role, has a row for each. A row into accepting starts
+// nobody, because accepting's role is the tree's architect; every other row into a phase of the
+// line starts its role. No row carries a status of its own: every status a row writes is its
+// target phase's, which PhaseStatus holds.
 func TableOf(line []phase.Phase) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], ToPlace: placeAt(line, 0),
 		Effects: effectsInto(line[0])}}

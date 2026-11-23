@@ -1048,8 +1048,9 @@ type BackwardMove struct {
 	// ReturnTo is the step of the issue's running task the move names as the one it returns to:
 	// its place in the task, 1 for its first. A move that names one goes to that place, judged as
 	// a failed step's returnTo is (workflow's returnStep), and its To must be the phase that step
-	// runs as. 0 names none, and the move goes to the one earlier place of its task that runs as
-	// To.
+	// runs as. 0 names none, and the move goes to the nearest earlier place of its task that runs
+	// as To (workflow's backwardPlace); where To is step and two earlier places run as step, it is
+	// refused, since it does not say which.
 	ReturnTo int
 	// PhaseEntry is, for a phase worker's move, the entry of the requester's phases row its claim
 	// serves (supervise.Claim.ServingEntry, the entry of the task its turn is on), which the route
