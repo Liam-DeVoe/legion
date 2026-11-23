@@ -76,8 +76,8 @@ func TestReceiveReturnsASentValueAndAClose(t *testing.T) {
 func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	deadline, bounded := t.Deadline()
 	end, ok := giveUpAt(t)
-	if ok != bounded || ok && !end.Equal(deadline.Add(-margin)) {
-		t.Fatalf("a wait in a test whose deadline is %v (%t) gives up at %v (%t), want %s before it", deadline, bounded, end, ok, margin)
+	if ok != bounded || ok && !end.Equal(deadline.Add(-Margin)) {
+		t.Fatalf("a wait in a test whose deadline is %v (%t) gives up at %v (%t), want %s before it", deadline, bounded, end, ok, Margin)
 	}
 }
 

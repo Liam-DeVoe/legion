@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
@@ -32,7 +34,7 @@ import (
 // This function reads no environment variable and starts no container, so its failures can name
 // neither.
 // Every connect to adminURL here, and to the URL it returns, waits until the test binary's deadline
-// (WithConnectDeadline), whatever connect_timeout adminURL names.
+// less testwait.Margin (WithConnectDeadline), whatever connect_timeout adminURL names.
 func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	t.Helper()
 	adminURL = WithConnectDeadline(t, adminURL)
@@ -67,17 +69,19 @@ func databaseURL(server url.URL, database string) string {
 }
 
 // WithConnectDeadline returns databaseURL with connect_timeout set to the whole seconds left until
-// t's deadline, the test binary's own (go test's -timeout), rounded up and at least 1, in place of
-// any connect_timeout the URL names. pgx bounds the whole of a new connection (the dial, the
-// authentication and the server's startup answer) by connect_timeout, through pgx.Connect and every
-// pool; a URL that names none gets two minutes. On a loaded machine Postgres can take longer than
-// that to answer a new connection, and a test then failed on its connect, whatever it checked
-// (rows-md:101: TestAMachineExchangeOfAnEndedCredentialIsRefused failed after 120.68 s). With the
-// binary's deadline as the bound, a slow server only slows a test, and one that never answers ends
-// it at that deadline. A shorter connect_timeout in the URL would make the test depend on load
-// again, so it is replaced. Where t names no deadline (-timeout 0, or a testing.TB with no Deadline
-// method) it is the longest connect_timeout pgx holds. A failure prints only what url.Parse wraps,
-// since the URL carries a credential.
+// t's deadline, the test binary's own (go test's -timeout), less testwait.Margin, rounded down and
+// at least 1, in place of any connect_timeout the URL names. pgx bounds the whole of a new
+// connection (the dial, the authentication and the server's startup answer) by connect_timeout,
+// through pgx.Connect and every pool; a URL that names none gets two minutes. On a loaded machine
+// Postgres can take longer than that to answer a new connection, and a test then failed on its
+// connect, whatever it checked (rows-md:101: TestAMachineExchangeOfAnEndedCredentialIsRefused
+// failed after 120.68 s). With the binary's deadline less the margin as the bound, a slow server
+// only slows a test, and one that never answers fails it on pgx's own error with the margin left
+// for the failure and the test's cleanups, as a testwait wait gives up, before go test's alarm
+// would end the binary with neither. A shorter connect_timeout in the URL would make the test
+// depend on load again, so it is replaced. Where t names no deadline (-timeout 0, or a testing.TB
+// with no Deadline method) it is the longest connect_timeout pgx holds. A failure prints only what
+// url.Parse wraps, since the URL carries a credential.
 func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	t.Helper()
 	parsed, err := url.Parse(databaseURL)
@@ -90,7 +94,9 @@ func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	return parsed.String()
 }
 
-// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds.
+// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds: the time
+// left until t's deadline less testwait.Margin, rounded down, and 1 where that is under a second
+// (pgx reads 0 as no bound at all).
 func connectTimeout(t testing.TB) string {
 	unbounded := strconv.FormatInt(math.MaxInt64/int64(time.Second), 10)
 	named, ok := t.(interface{ Deadline() (time.Time, bool) })
@@ -101,7 +107,7 @@ func connectTimeout(t testing.TB) string {
 	if !bounded {
 		return unbounded
 	}
-	return strconv.FormatInt(max(1, int64((time.Until(deadline)+time.Second-1)/time.Second)), 10)
+	return strconv.FormatInt(max(1, int64((time.Until(deadline)-testwait.Margin)/time.Second)), 10)
 }
 
 // adminExec runs one statement over a connection of its own to adminURL: neither create database
