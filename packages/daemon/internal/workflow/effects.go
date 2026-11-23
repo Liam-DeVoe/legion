@@ -462,6 +462,13 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
+	// A step's start beside a fix, and an implementation step's start while checks of a CI job
+	// fail at the head, say so in the daemon's lines (fixLines).
+	beside, err := e.fixLines(ctx, tx, issue, w)
+	if err != nil {
+		return err
+	}
+	at.lines += beside
 	entry, sent, err := e.enter(ctx, tx, issue, &w, role, told(at), movedBack, false)
 	if err != nil {
 		return err
@@ -728,6 +735,14 @@ type startMarks struct {
 	// raising the entry it hands (enter), and the held phase's retry, which an architect's or an
 	// operator's own request brings (restart).
 	reasserts bool
+	// fix is the number of the fix the start is of (record.SuperviseRequest.Fix), 0 for a start of
+	// the phase's own step, and fixFrom the head the fix's working copy is made at. A fix's start
+	// is written beside the line of starts that wait for a slot (record.Store.EnqueueFixStart),
+	// never through it (startOrOwe): it runs beside the step of the phase, whose own start keeps
+	// its place in that line. moveTo is the head the task's working copy moves to before the task
+	// (record.SuperviseRequest.MoveTo), "" for none.
+	fix             int
+	fixFrom, moveTo string
 }
 
 // started enqueues the start each of its six callers makes, each of which has held role to one
@@ -760,9 +775,38 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if marks.reasserts {
 		move = reassertion
 	}
-	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
+	start := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now(), move)
+		RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
+		Fix: marks.fix, FixFrom: marks.fixFrom, MoveTo: marks.moveTo}
+	if start.Fix > 0 {
+		if e.fixStartInLine {
+			start.Fix, start.FixFrom = 0, ""
+			return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
+		}
+		return enqueueFixStart(ctx, tx, e.store, issue.Key, start, e.now())
+	}
+	return startOrOwe(ctx, tx, e.store, issue.Key, start, e.now(), move)
+}
+
+// enqueueFixStart writes the start of a fix's task as one outbox row in the caller's own
+// transaction, beside the line of starts that wait for a slot (record.Store.EnqueueFixStart): it
+// carries no slot mark, so neither that line nor admission's repair of it reads it, and no start
+// of the phase the issue stands in takes it out, nor it that start. The fix's start puts a worker
+// to work on new work, so it is news of its issue and marks the issue moved, as startOrOwe marks a
+// transition's start.
+func enqueueFixStart(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
+	if payload.Task == "" || payload.Phase == "" {
+		return fmt.Errorf("the start of fix %d of %s requires a task and a phase", payload.Fix, issue)
+	}
+	row, err := queuedRow(ctx, tx, store, issue, payload, at)
+	if err != nil {
+		return err
+	}
+	if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
+		return err
+	}
+	return store.EnqueueFixStart(ctx, tx, row)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -888,6 +932,9 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	if payload.Task == "" || payload.Phase == "" {
 		return fmt.Errorf("the start of a phase worker on %s requires a task and a phase", issue)
 	}
+	if payload.Fix > 0 {
+		return fmt.Errorf("the start of fix %d of %s is written beside the line of starts that wait for a slot, never through it (enqueueFixStart)", payload.Fix, issue)
+	}
 	payload.NeedsSlot = record.PhaseKeepsSlot(payload.Phase)
 	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
@@ -1001,6 +1048,17 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // task. w is the walk of issue's run as the caller read it, which only a phase worker's raise
 // reads; EnterArchitect gives none.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
+	return e.enterAt(ctx, tx, issue, w, role, record.StandsAt(issue), task, movedBack, verbatim, "")
+}
+
+// enterAt is enter at the step that runs as at, the phase the issue stands in for every start
+// but a fix's, whose step is the task's first implementation step while the issue stands at
+// another (startFix): the row names that step, and its start writes the start of that step's run.
+// fixCheck is the check a fix's start is of, which that run's record names (record.StepRecord's
+// FixCheck), "" for any other start.
+func (e *Engine) enterAt(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Walk, role claim.Role, at phase.Phase, task string,
+	movedBack, verbatim bool, fixCheck string,
+) (int64, string, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, "", err
@@ -1015,7 +1073,7 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	row.EntryTask = namingTheReviewRound(task, role, issue.Phase, raised)
 	worker := role != claim.RoleArchitect
 	if worker {
-		if place, _, _, ok := placeOnWalk(*w, record.StandsAt(issue)); w.Stored && ok {
+		if place, _, _, ok := placeOnWalk(*w, at); w.Stored && ok {
 			row.StepTask, row.StepPlace = w.Task, place.Place
 		}
 	}
@@ -1031,12 +1089,12 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
 	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
 	// entry, which answered above, is no step of the issue's task.
-	if step, ok := standingStep(*w, issue); ok {
+	if step, ok := stepAt(*w, issue, at); ok && !planHold(issue, w.Stored) {
 		agent, err := stepClaim(issue, issue.Key, role)
 		if err != nil {
 			return 0, "", err
 		}
-		if err := e.startStep(ctx, tx, issue, step, agent); err != nil {
+		if err := e.startStep(ctx, tx, issue, step, agent, fixCheck); err != nil {
 			return 0, "", err
 		}
 	}
