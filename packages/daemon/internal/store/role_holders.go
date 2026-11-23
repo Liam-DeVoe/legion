@@ -123,3 +123,12 @@ func (s *Store) PublishRoleHolders(woken func(issue string)) {
 func (s *Store) queuesRoleHolders(c supervise.Claim) bool {
 	return s.roleHoldersQueued.Load() != nil && holdsIssueRole(c) && claim.KeyOfProject(c.Project, c.Issue)
 }
+
+// wakeRoleHolders tells the daemon's wake (PublishRoleHolders) issue, whose publication a claim
+// write queued, once that write's transaction has committed: the hook putClaim registers, the one
+// wake of that publication.
+func (s *Store) wakeRoleHolders(issue string) {
+	if woken := s.roleHoldersQueued.Load(); woken != nil {
+		(*woken)(issue)
+	}
+}

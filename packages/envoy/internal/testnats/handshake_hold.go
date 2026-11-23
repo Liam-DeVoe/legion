@@ -2,25 +2,17 @@ package testnats
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"net/url"
-	"os"
-	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testport"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // lockHeldWait is how long a read of a connection's status may take before RequireLockHeld and
@@ -55,35 +47,11 @@ type HandshakeHold struct {
 	// attempts counts the CONNECTs that have reached the server under a hold: each is one handshake
 	// attempt whose answer the hold keeps.
 	attempts atomic.Int64
-	// observe, when set, is called with each chunk of a client's stream the relay has written to
-	// the server (Observe). It is nil by default.
-	observe atomic.Pointer[func(at time.Time, chunk []byte)]
-	// chunks, when set, keeps back each chunk of a client's stream it matches before the relay
-	// writes it to the server (HoldChunks). It is nil by default.
-	chunks atomic.Pointer[chunkHold]
-}
-
-// chunkHold is what HoldChunks keeps back: each chunk match reports true for, until release
-// closes or ended, which the test's end closes.
-type chunkHold struct {
-	match   func(chunk []byte) bool
-	release <-chan struct{}
-	ended   chan struct{}
-}
-
-// wait returns once release or ended has closed.
-func (c *chunkHold) wait() {
-	select {
-	case <-c.release:
-	case <-c.ended:
-	}
 }
 
 // StartHandshakeHold relays to the NATS server at target, a client URL such as Start returns,
 // through a proxy and the hold's own relay, each on a loopback address and port of its own
-// (testport.LoopbackIP), until the test ends. URL is the same server through both. The proxy gives
-// each client connection a receive buffer of holdSocketBuffer (ProxyReceiveBuffer), so a frozen
-// proxy takes little of a client's stream (ParkAWrite).
+// (testport.LoopbackIP), until the test ends. URL is the same server through both.
 func StartHandshakeHold(t testing.TB, target string) *HandshakeHold {
 	t.Helper()
 	server, err := url.Parse(target)
@@ -99,13 +67,9 @@ func StartHandshakeHold(t testing.TB, target string) *HandshakeHold {
 	go h.serve()
 	relayed := *server
 	relayed.Host = listener.Addr().String()
-	h.Proxy = StartProxy(t, relayed.String(), ProxyReceiveBuffer(holdSocketBuffer))
+	h.Proxy = StartProxy(t, relayed.String())
 	return h
 }
-
-// holdSocketBuffer is the receive buffer of each client connection the hold's proxy accepts, and
-// the send buffer ParkAWrite gives the client's own socket.
-const holdSocketBuffer = 16 << 10
 
 // Hold drops every connection the proxy relays (Cut, then Restore) and holds the answer to the
 // CONNECT of each connection made from now until Release. The channel it returns is closed once a
@@ -121,34 +85,6 @@ func (h *HandshakeHold) Hold() <-chan struct{} {
 	h.Cut()
 	h.Restore()
 	return held
-}
-
-// Observe has the hold's relay call observe with each chunk of a client's stream that it writes to
-// the server, and the time that write ended, from now on. The relay of each connection calls it
-// from a goroutine of its own, so observe must be safe to call from more than one goroutine at a
-// time. The chunk is the relay's own buffer, which its next read writes over, so observe copies
-// what it keeps.
-func (h *HandshakeHold) Observe(observe func(at time.Time, chunk []byte)) {
-	h.observe.Store(&observe)
-}
-
-// HoldChunks has the hold's relay keep back each chunk of a client's stream that match reports
-// true for, from now on, until release closes or the test ends. The relay of the chunk's
-// connection waits with it on its own goroutine, before it writes the chunk to the server, so
-// nothing the client sends on that connection after the chunk reaches the server until then
-// either. Each connection's relay calls match on its own goroutine with each chunk it read, before
-// the write, so match must be safe to call from more than one goroutine at a time. The chunk is
-// the relay's own buffer, which its next read writes over, so match keeps no part of it. A chunk
-// boundary falls where the relay's read ended, so a match that looks for bytes in the stream reads
-// across the boundaries itself.
-func (h *HandshakeHold) HoldChunks(t testing.TB, match func(chunk []byte) bool, release <-chan struct{}) {
-	t.Helper()
-	hold := &chunkHold{match: match, release: release, ended: make(chan struct{})}
-	h.chunks.Store(hold)
-	t.Cleanup(func() {
-		h.chunks.CompareAndSwap(hold, nil)
-		close(hold.ended)
-	})
 }
 
 // HoldReconnect holds (Hold) and waits until conn's reconnect handshake is held: a client's
@@ -197,7 +133,9 @@ func (h *HandshakeHold) Release() {
 // close, a read of the status - waits until the func it returns thaws the proxy (Restore) and lets
 // the lock go. The test's end calls that func too. When it cannot take the lock it fails the test by
 // name without ending its goroutine, which may be a hook's rather than the test's (takeConnLock),
-// and returns a func that only thaws the proxy.
+// and returns a func that only thaws the proxy. Since the lock is the row's own, no reset or close
+// of the connection's socket lets it go: a row that measures what such a reset ends holds the lock
+// with a write of nats.go's own (HoldStalledWrite).
 func (h *HandshakeHold) HoldWriteLock(t *testing.T, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	h.Freeze()
@@ -214,247 +152,75 @@ func (h *HandshakeHold) HoldWriteLock(t *testing.T, conn *natsgo.Conn) (release 
 	return release
 }
 
-// ParkAWrite parks one real write of conn's in its socket, on a connection through the hold that
-// stays connected, and that write holds conn's nats.go connection lock: it makes one write that the
-// frozen proxy's network stack cannot take whole, so the write, and with it the lock, lasts until
-// Restore or until the connection's write deadline ends the write (FlusherTimeout: nats.go's
-// default of a minute, shorter with bus.WithWriteDeadline), after which nats.go closes the socket
-// and reconnects. A row that tests a write deadline needs such a write: HoldWriteLock takes the
-// lock with no write, and no write deadline ends that. A row that needs the write parked longer
-// than its client's write deadline uses a client with the default.
-//
-// nats.go v1.55.0 holds its connection lock from the Lock in (*Conn).publish to its Unlock. A
-// publish whose message passes its buffer's limit writes it to the socket inside that, in
-// (*natsWriter).flush, which returns only once the socket has taken every byte. A frozen proxy
-// (Freeze) reads the client's socket at most once more, the read in flight as it froze, of up to
-// proxyReadBuffer: Proxy.relay calls pass before each read. So the network stack can take no more
-// of a write than the client socket's send buffer, the proxy's receive buffer for the connection
-// and that one read. A write seen parked is not proof by itself: on gVisor on a loaded host the
-// stack handles the segments it was sent late, so a write parks before those buffers are full and
-// goes on once the stack has handled them, after the proxy has stopped reading. A loop of 64 KiB
-// publishes, with the stack's own buffer sizes, seen parked in its write at its 19th publish had
-// made 56 a second later: its publishes ended, and the lock was let go between two of them.
-//
-// So both buffers are small and the one write is far bigger than both. The hold's proxy gives each
-// client connection a receive buffer of holdSocketBuffer from its accept (ProxyReceiveBuffer).
-// Before it freezes the proxy, ParkAWrite gives conn's own socket a send buffer of
-// holdSocketBuffer (clientSocket finds that socket: testnats does not hold nats.go's net.Conn). It
-// reads both sizes back, and fails the test, naming the three sizes, unless the payload, conn's
-// MaxPayload less 4 KiB, is more than twice what the stack can take. It then freezes the proxy and
-// makes the one publish, on a goroutine of its own, and returns once the runtime's record of that
-// goroutine (runtime.Stack) shows it inside (*natsWriter).flush under (*Conn).publish, in any state:
-// from then on the lock is held until Restore or the write deadline, and no read of the
-// connection's status decides it. It reads that record about every 10 ms, and fails the test, with
-// the goroutine's stack, when the publish has not reached its flush by connLockSpare before the
-// test binary's deadline (testwait.Left). It returns the func that ends the hold, which thaws the
-// proxy (Restore); the test's end calls it too.
-//
-// It never ends its goroutine, which may be a hook's rather than the test's, where t.Fatal would
-// end the hook rather than the test. So when it cannot park the write - conn is not connected, a
-// socket or its buffer cannot be found, set or read, the payload is too small to prove the hold,
-// the test binary's deadline is already no more than connLockSpare away, the publish returns
-// before it is seen in its write, or the bound passes - it fails the test by name with Errorf and
-// returns a func that only thaws the proxy. It returns that func too, failing nothing, when the
-// test ends first.
-func (h *HandshakeHold) ParkAWrite(t *testing.T, conn *natsgo.Conn) (release func()) {
+// HoldStalledWrite holds conn's nats.go connection lock with a write of nats.go's own, on a
+// connection through the hold that stays connected: it freezes the proxy (Freeze) and publishes to
+// conn until a write to the socket blocks under the lock, as a write to a socket whose peer has
+// stopped reading blocks. HoldWriteLock takes the lock itself, so only its release lets the lock go;
+// here the lock is the write's, so a reset or a close of the write's socket (bus.Client.Sever) fails
+// the write and lets the lock go, as it does in production. It returns once one publish has stayed in
+// nats.go for lockHeldWait while every try to take the lock for reading failed (connLock), so neither
+// a slow read nor a slow publish alone decides it. The func it returns thaws the proxy (Restore) and
+// stops the publishes; the test's end calls it too. When no write holds the lock within 30 s it fails
+// the test by name without ending its goroutine, which may be a hook's rather than the test's, and
+// returns that func.
+func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (release func()) {
 	t.Helper()
-	local := conn.LocalAddr()
-	if local == "" {
-		t.Error("control: the connection to hold a write on is not connected")
-		return h.Restore
-	}
-	payload := int(conn.MaxPayload()) - 4<<10
-	client, err := h.clientSocket(local)
-	if err != nil {
-		t.Error(err)
-		return h.Restore
-	}
-	if err := syscall.SetsockoptInt(client, syscall.SOL_SOCKET, syscall.SO_SNDBUF, holdSocketBuffer); err != nil {
-		t.Errorf("set the send buffer of the socket at %s: %v", local, err)
-		return h.Restore
-	}
-	send, err := syscall.GetsockoptInt(client, syscall.SOL_SOCKET, syscall.SO_SNDBUF)
-	if err != nil {
-		t.Errorf("read the send buffer of the socket at %s: %v", local, err)
-		return h.Restore
-	}
-	receive, err := h.receiveBuffer(local)
-	if err != nil {
-		t.Error(err)
-		return h.Restore
-	}
-	if payload <= 2*(send+receive+proxyReadBuffer) {
-		t.Errorf("the hold cannot be proven on this host: a payload of %d bytes is not more than twice what the stack can take of it, a send buffer of %d bytes, a receive buffer of %d bytes and a read in flight of %d bytes",
-			payload, send, receive, proxyReadBuffer)
-		return h.Restore
-	}
-	bound, err := testwait.Left(t, connLockSpare)
-	if err != nil {
-		t.Error(err)
-		return h.Restore
-	}
 	h.Freeze()
-	release = sync.OnceFunc(h.Restore)
+	stop := make(chan struct{})
+	release = sync.OnceFunc(func() {
+		close(stop)
+		h.Restore()
+	})
 	t.Cleanup(release)
-	publisher := make(chan string, 1)
-	published := make(chan error, 1)
+	lock, found := connLock(t, conn)
+	if !found {
+		return release
+	}
+	// begun counts the publishes begun and returned those that returned, so returned below begun
+	// means the publish numbered begun is still inside nats.go.
+	var begun, returned atomic.Uint64
 	go func() {
-		publisher <- goroutineID()
-		published <- conn.Publish("testnats.write-lock", make([]byte, payload))
+		payload := make([]byte, 64<<10)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			begun.Add(1)
+			err := conn.Publish("testnats.stalled-write", payload)
+			returned.Add(1)
+			if err != nil {
+				return
+			}
+		}
 	}()
-	id := <-publisher
-	dump := make([]byte, 1<<20)
-	deadline := time.Now().Add(bound)
-	for {
-		publishing := goroutineStack(goroutineDump(&dump), id)
-		if strings.Contains(publishing, natsWriterFlushFrame) && strings.Contains(publishing, connPublishFrame) {
+	var watched uint64
+	var since time.Time
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		publish := begun.Load()
+		inside := returned.Load() < publish
+		free := lock.TryRLock()
+		if free {
+			lock.RUnlock()
+		}
+		switch {
+		case !inside || free:
+			watched = 0
+		case publish != watched:
+			watched, since = publish, time.Now()
+		case time.Since(since) >= lockHeldWait:
 			return release
 		}
-		select {
-		case err := <-published:
-			if err != nil {
-				t.Errorf("the publish of %d bytes failed while the proxy was frozen, before it was seen in its write: %v", payload, err)
-				return h.Restore
-			}
-			t.Errorf("the publish of %d bytes returned while the proxy was frozen, before it was seen in its write: the stack took more of it than its send buffer of %d bytes, its receive buffer of %d bytes and the read in flight allow",
-				payload, send, receive)
-			return h.Restore
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Errorf("the publish of %d bytes did not reach its write to the socket within %s of the proxy's freeze, %s before the test binary's deadline, so no write holds nats.go's lock. The publishing goroutine:\n%s",
-				payload, bound.Round(time.Millisecond), connLockSpare, publishing)
-			return h.Restore
-		}
-		select {
-		case <-t.Context().Done():
-			return h.Restore
-		case <-time.After(10 * time.Millisecond):
-		}
 	}
-}
-
-// The frames ParkAWrite looks for, as runtime.Stack prints them: a dot in the last element of a
-// package's path is escaped (nats%2ego).
-const (
-	natsWriterFlushFrame = "github.com/nats-io/nats%2ego.(*natsWriter).flush("
-	connPublishFrame     = "github.com/nats-io/nats%2ego.(*Conn).publish("
-)
-
-// clientSocket is the descriptor of the socket conn writes to, the client side of the connection
-// the hold's proxy accepted for it: the one descriptor of the process whose local address is local,
-// conn's, and whose peer is the proxy's listener. It reads every open descriptor (/proc/self/fd, or
-// /dev/fd where there is no /proc) with getsockname and getpeername, and returns an error, naming
-// the address, unless exactly one matches.
-func (h *HandshakeHold) clientSocket(local string) (int, error) {
-	peer := h.Proxy.listener.Addr().String()
-	descriptors, err := os.ReadDir("/proc/self/fd")
-	if err != nil {
-		descriptors, err = os.ReadDir("/dev/fd")
-	}
-	if err != nil {
-		return 0, fmt.Errorf("list the process's descriptors to find the socket at %s: %w", local, err)
-	}
-	var found []int
-	for _, descriptor := range descriptors {
-		fd, err := strconv.Atoi(descriptor.Name())
-		if err != nil {
-			continue
-		}
-		if name, err := syscall.Getsockname(fd); err != nil || sockaddrString(name) != local {
-			continue
-		}
-		if remote, err := syscall.Getpeername(fd); err != nil || sockaddrString(remote) != peer {
-			continue
-		}
-		found = append(found, fd)
-	}
-	if len(found) != 1 {
-		return 0, fmt.Errorf("control: %d descriptors of the process are a socket at %s connected to the proxy at %s, want 1", len(found), local, peer)
-	}
-	return found[0], nil
-}
-
-// receiveBuffer is the receive buffer (SO_RCVBUF) the stack reports for the connection the hold's
-// proxy accepted from local, or an error, naming the address, when it cannot read it.
-func (h *HandshakeHold) receiveBuffer(local string) (int, error) {
-	var accepted syscall.Conn
-	h.Proxy.mu.Lock()
-	for relayed := range h.Proxy.conns {
-		if relayed.RemoteAddr().String() == local {
-			accepted, _ = relayed.(syscall.Conn)
-		}
-	}
-	h.Proxy.mu.Unlock()
-	if accepted == nil {
-		return 0, fmt.Errorf("control: the proxy relays no connection from %s", local)
-	}
-	raw, err := accepted.SyscallConn()
-	if err != nil {
-		return 0, fmt.Errorf("reach the socket the proxy accepted from %s: %w", local, err)
-	}
-	var size int
-	var read error
-	if err := raw.Control(func(fd uintptr) {
-		size, read = syscall.GetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
-	}); err != nil {
-		return 0, fmt.Errorf("reach the socket the proxy accepted from %s: %w", local, err)
-	}
-	if read != nil {
-		return 0, fmt.Errorf("read the receive buffer of the socket the proxy accepted from %s: %w", local, read)
-	}
-	return size, nil
-}
-
-// sockaddrString is address as net.TCPAddr.String writes it, or "" for an address that is not an
-// IPv4 or IPv6 one.
-func sockaddrString(address syscall.Sockaddr) string {
-	switch address := address.(type) {
-	case *syscall.SockaddrInet4:
-		return netip.AddrPortFrom(netip.AddrFrom4(address.Addr), uint16(address.Port)).String()
-	case *syscall.SockaddrInet6:
-		return netip.AddrPortFrom(netip.AddrFrom16(address.Addr), uint16(address.Port)).String()
-	}
-	return ""
-}
-
-// goroutineStack is the stack of goroutine id in dump, every goroutine's stack (goroutineDump), or
-// "" when the goroutine has ended.
-func goroutineStack(dump, id string) string {
-	for _, stack := range strings.Split(dump, "\n\n") {
-		if strings.HasPrefix(stack, "goroutine "+id+" ") {
-			return stack
-		}
-	}
-	return ""
-}
-
-// goroutineID is the calling goroutine's id, the number on the first line of its stack, such as
-// "goroutine 7 [running]:".
-func goroutineID() string {
-	buffer := make([]byte, 64)
-	header := strings.TrimPrefix(string(buffer[:runtime.Stack(buffer, false)]), "goroutine ")
-	id, _, _ := strings.Cut(header, " ")
-	return id
-}
-
-// goroutineDump is every goroutine's stack (runtime.Stack), read into *buffer, which it grows until
-// the dump fits.
-func goroutineDump(buffer *[]byte) string {
-	for {
-		n := runtime.Stack(*buffer, true)
-		if n < len(*buffer) {
-			return string((*buffer)[:n])
-		}
-		*buffer = make([]byte, 2*len(*buffer))
-	}
+	t.Errorf("no write held nats.go's connection lock 30 s after the proxy froze and the publishes began")
+	return release
 }
 
 // RequireLockHeld fails the test when nats.go answers a read of conn's status within lockHeldWait:
-// its connection lock is not held, so the handshake, the HoldWriteLock or the ParkAWrite the row
-// holds it with is not. A row calls it once the calls it measures have answered, so their answers
-// are known to have come while the lock was held. The read left waiting ends when the lock is let
-// go.
+// its connection lock is not held, so the handshake, HoldWriteLock or HoldStalledWrite the row holds
+// it with is not. A row calls it once the calls it measures have answered, so their answers are known
+// to have come while the lock was held. The read left waiting ends when the lock is let go.
 func RequireLockHeld(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
 	if lockFree(conn) {
@@ -462,27 +228,17 @@ func RequireLockHeld(t testing.TB, conn *natsgo.Conn) {
 	}
 }
 
-// lockFree reports whether nats.go answers a read of conn's status within lockHeldWait. Once the
-// wait's timer has fired it reads the answer again without waiting, so a process that was not
-// scheduled for the whole wait, when the answer and the timer are both ready, reads the lock as
-// free when the read has answered.
+// lockFree reports whether nats.go answers a read of conn's status within lockHeldWait.
 func lockFree(conn *natsgo.Conn) bool {
 	read := make(chan struct{})
 	go func() {
 		conn.Status()
 		close(read)
 	}()
-	timer := time.NewTimer(lockHeldWait)
-	defer timer.Stop()
 	select {
 	case <-read:
 		return true
-	case <-timer.C:
-	}
-	select {
-	case <-read:
-		return true
-	default:
+	case <-time.After(lockHeldWait):
 		return false
 	}
 }
@@ -563,9 +319,7 @@ func (h *HandshakeHold) serve() {
 // join relays client, a connection the proxy made for one of its clients, to the server, under the
 // hold when one is in force as client arrives, until either side ends; then it closes both. The
 // client's stream is read as NATS protocol (protocolStream) to find its CONNECT, which may come in
-// pieces. A chunk of the client's stream that a chunk hold matches waits until that hold lets it go
-// (HoldChunks), and only then is it written to the server. Each chunk that it writes to the server
-// goes to the observer, when one is set (Observe).
+// pieces.
 func (h *HandshakeHold) join(client net.Conn) {
 	defer client.Close()
 	server, err := net.DialTimeout("tcp", h.target, dialTimeout)
@@ -603,14 +357,8 @@ func (h *HandshakeHold) join(client net.Conn) {
 	for {
 		read, err := client.Read(buffer)
 		if read > 0 {
-			if hold := h.chunks.Load(); hold != nil && hold.match(buffer[:read]) {
-				hold.wait()
-			}
 			if _, err := server.Write(buffer[:read]); err != nil {
 				return
-			}
-			if observe := h.observe.Load(); observe != nil {
-				(*observe)(time.Now(), buffer[:read])
 			}
 			if release != nil && !stream.connected {
 				stream.wrote(buffer[:read])

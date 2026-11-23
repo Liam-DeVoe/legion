@@ -25,12 +25,16 @@ const (
 // connects with it. A write to a socket that takes no byte holds nats.go's connection lock until
 // its deadline (timeoutWriter, nats.go v1.55.0), and the client's Close and nats.go's ping timer
 // wait for that lock, so at nats.go's default of a minute a frozen link would hold the stop of the
-// process, and the standby with it, for that minute. With 5 s, a frozen write holds the close for
-// less than a reconnect attempt through a frozen link can (2 * bus.ConnectTimeout). How long the
-// close can wait, and what that costs the standby and the stop of the process, is worked out on
-// intakeFinalizerConfirmWait. nats.go's ping timer, which notices a silent cut, stalls at most 5 s
-// behind a frozen write. The intakes' clients publish only acknowledgements and hand-backs, a few
-// hundred bytes each, so a link that takes none of them for 5 s is not one that is merely slow.
+// process, and the standby with it, for that minute. With 5 s, a frozen write holds the close that
+// StartIntakes' stop makes, and so the release of a pending hand-back's hold that waits for it
+// (stopIntakes), at most 5 s; a reconnect attempt through a frozen link holds the lock through its
+// dial and its handshake, each bounded by the bus's connect timeout. A write the deadline ends has
+// failed on its socket, which the bus resets rather than closes, as it resets one that carries a
+// hand-back no flush has confirmed (bus.Client.MarkUnconfirmed), so what the kernel still holds of
+// it is discarded rather than sent after the hold is released. nats.go's ping timer, which notices
+// a silent cut, stalls at most 5 s behind a frozen write. The intakes' clients publish only
+// acknowledgements and hand-backs, a few hundred bytes each, so a link that takes none of them for
+// 5 s is not one that is merely slow.
 const IntakeWriteDeadline = 5 * time.Second
 
 // IntakeLeases is the lease-pool reservation of each intake's callers (ReserveIntakeLeases),
@@ -97,22 +101,19 @@ func ReserveDurableLeases(callers *store.LeaseCallers, durable string) (DurableL
 // each pull request and keys its head row with it.
 //
 // The returned stop, called once ctx is cancelled, waits for both intakes' Runs and the cache's,
-// then stops both durables (stopDurables): it closes both clients, and waits for a hand-back
-// finalizer each Run left behind. A Run can return at its stop deadline with a hand-back still
-// waiting for NATS. Its finalizer releases the hold once a flush confirms that hand-back reached
-// the server, and stop closes the clients only once each finalizer has done so or has had
-// intakeFinalizerConfirmWait from its start to do so. A flush on another socket confirms nothing: a
-// hand-back written at a close, or before a reconnect, may still be on its way to the server, so a
-// stop or a finalizer whose hand-back's socket went before a flush on it confirmed the hand-back
-// leaves the hold to lapse at its expiry, and the next process takes the durable over only then. A
-// message in its handler finishes and is acknowledged before the Run returns; messages behind it
-// are handed back while the hold covers them, and the next process takes the durable over at once
-// rather than at the hold's lapse. Each Run's stop has one deadline, intakeStopBudget after ctx
-// ends (stopContext), which a take-over under way at that moment spends rather than extends: the
-// handlers still running then are given up and their messages handed back too. Every handler of
-// Intake's has returned by the time stop does, and each finalizer has released its hold or left it
-// to lapse, so a caller that closes the pool after stop returns, as cmd/dispatch's shutdown does,
-// closes it under neither's writes. A second call returns once the first has.
+// closes both clients, then waits for a hand-back finalizer each Run left behind. A Run can return
+// at its stop deadline with a hand-back still waiting for NATS, or written and not confirmed; close
+// settles that hand-back, which reaches the server before the close or is dropped with the socket
+// the close resets (bus.Client.MarkUnconfirmed), so none of its bytes is sent after the release, and
+// its finalizer releases the hold through the still-open pool before stop returns. A message in its
+// handler finishes and is acknowledged before the Run returns; messages behind it are handed back
+// while the hold
+// covers them, and the next process takes the durable over at once rather than at the
+// hold's lapse. Each Run's stop has one deadline, intakeStopBudget after ctx ends (stopContext), which a take-over under way at that
+// moment spends rather than extends: the handlers still running then are given up and their
+// messages handed back too. Every handler of Intake's has returned by the time stop does, and each
+// finalizer released its hold, so a caller that closes the pool after stop returns, as cmd/dispatch's
+// shutdown does, closes it under neither's writes. A second call returns once the first has.
 //
 // The intakes cannot share a client: a bus.Client holds one JetStream subscription, and refuses the
 // second intake's subscribe with bus.ErrSubscriptionHeld.
@@ -146,7 +147,21 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 	running.Go(func() { intake.Run(ctx) })
 	running.Go(func() { job.Run(ctx) })
 	return sync.OnceFunc(func() {
-		running.Wait()
-		stopDurables(&intake.heldDurable, &job.heldDurable)
+		stopIntakes(&running, &intake.heldDurable, &job.heldDurable)
 	}), nil
+}
+
+// stopIntakes waits for their Runs, closes their NATS clients through each durable, then waits for
+// any hand-back finalizer each Run left behind. A closed client makes such a finalizer settle: its
+// close reset each socket that carried an unconfirmed hand-back (bus.Client.MarkUnconfirmed), so the
+// finalizer releases its hold through the still-open database pool before this stop returns, with
+// none of that hand-back's bytes left to send (StartIntakes).
+func stopIntakes(running *sync.WaitGroup, durables ...*heldDurable) {
+	running.Wait()
+	for _, durable := range durables {
+		durable.nats.Close()
+	}
+	for _, durable := range durables {
+		durable.waitFinalizers()
+	}
 }

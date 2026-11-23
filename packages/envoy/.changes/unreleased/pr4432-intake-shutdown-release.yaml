@@ -1,24 +1,9 @@
 kind: Fixed
 body: |-
-  At shutdown, an intake whose hand-back was still pending at its stop's deadline keeps the
-  delivery durable's hold until a flush of its NATS connection confirms that the hand-back reached
-  the server. Only a flush on the socket that the hand-back went out on counts: not one on a
-  connection that replaced it, and not one after the connection reconnected. The shutdown waits up
-  to 5 s from the start of that wait for the flush before it closes the intake's client. When the
-  socket goes first, the hold is not released: it stops renewing, and the standby takes the durable
-  over when the hold expires, at most 17 s later. Before, the close of the client counted as a
-  confirmation and the hold was released at once. A hand-back that the close had written to the
-  socket could then reach the durable that the standby had created again, and that message was
-  delivered a second time. A hand-back that an intake makes while it runs is confirmed by a flush
-  as soon as its publish ends, so a reconnect does not make a later stop leave the hold to lapse.
-  A hand-back that NATS refuses before it sends a byte, as it refuses every publish while the
-  connection reconnects, is not counted, so a clean stop after it releases the hold at once.
-  Each intake's NATS client now gives a write 5 s, not nats.go's default of a minute. The close of
-  the client waits for the connection's lock: at most 5 s behind a frozen write, and at most 10 s
-  behind a reconnect attempt through a frozen link, whose dial and handshake take up to 5 s each.
-  So the standby takes the durable over at most 27 s after the close began, not up to 77 s. An
-  intake's stop that waits out its 5 s for the flush and then releases the hold ends by 26 s after
-  the signal when the close does not wait. A close that waits its full 10 s can reach the 30 s kill,
-  which cuts the release short; the hold then lapses, and the 27 s bound still holds.
+  Each intake's NATS client now gives a write 5 s, not nats.go's default of a minute. At shutdown
+  the close of the client waits for the connection's lock, and the release of a pending
+  hand-back's hold waits for that close: a write to a frozen link now holds the close at most 5 s,
+  not a minute. A reconnect attempt through a frozen link holds the lock too, for up to 5 s for its
+  dial and 5 s for its handshake.
 custom:
   Issue: pr4432

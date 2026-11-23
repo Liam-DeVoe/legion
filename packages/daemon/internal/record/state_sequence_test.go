@@ -110,7 +110,7 @@ func TestStateEventsTakeTheirSequenceInCommitOrder(t *testing.T) {
 	// begin opens a transaction on a connection of its own, which the test commits or rolls back.
 	begin := func() pgx.Tx {
 		t.Helper()
-		tx, err := st.Pool().Begin(ctx)
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		must(t, err)
 		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
 		return tx

@@ -324,12 +324,12 @@ func (w *window) pinToSend() error {
 // ConnLockWait is how long a caller that holds a lock of its own, or that something holding one
 // waits for, waits for a call to NATS before it takes nats.go's connection lock as held by a
 // reconnect. nats.go holds that lock for microseconds to write or read a frame, and for a whole
-// reconnect attempt, the dial and the handshake (v1.55.0 doReconnect, nats.go:3554-3581), each up to
-// the attempt's connect timeout (ConnectTimeout), so up to twice it in all, or the hub's
-// authorization timeout while its auth service holds the CONNECT. A call kept waiting longer is
-// answered as a reconnect in progress: an intake's stop goes on without it
-// (internal/dispatch/delivery). On a box loaded enough to keep such a call waiting this long, the
-// caller answers a loss it need not have, which costs it what a loss costs and holds it no longer.
+// reconnect attempt, the dial and the handshake (v1.53.1 doReconnect, nats.go:3458-3485), up to the
+// attempt's connect timeout (connectTimeout), or the hub's authorization timeout while its auth
+// service holds the CONNECT. A call kept waiting longer is answered as a reconnect in progress: an
+// intake's stop goes on without it (internal/dispatch/delivery). On a box loaded enough to keep such
+// a call waiting this long, the caller answers a loss it need not have, which costs it what a loss
+// costs and holds it no longer.
 const ConnLockWait = 100 * time.Millisecond
 
 // current reports whether the window's connection is still in the life the window pinned: nats.go

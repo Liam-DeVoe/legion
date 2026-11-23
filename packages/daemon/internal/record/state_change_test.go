@@ -73,7 +73,7 @@ func (r *changeRig) run(t *testing.T, key string, write func(ctx context.Context
 	t.Helper()
 	ctx := context.Background()
 	before, queued := r.view(t, key), len(r.changesOf(t, key))
-	tx, err := r.st.Pool().Begin(ctx)
+	tx, err := r.st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
@@ -417,8 +417,8 @@ func TestASlotWriteQueuesOneStateEventNamingTheSlotItMoved(t *testing.T) {
 	admitted := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 	recordIssue := func(t *testing.T, key string) {
 		t.Helper()
-		if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
-			return record.NewStore().PutIssue(context.Background(), tx, changeIssue(key, phase.Implementing))
+		if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			return record.NewStore().PutIssue(ctx, tx, changeIssue(key, phase.Implementing))
 		}); err != nil {
 			t.Fatalf("record %s: %v", key, err)
 		}
@@ -492,8 +492,8 @@ func TestASlotWriteQueuesOneStateEventNamingTheSlotItMoved(t *testing.T) {
 		r.commit(t, key, grant(t, key, 50))
 		slotMoved(t, key, r.commit(t, key, releaseForWait(t, key)), "50", "null")
 		// The mark is written with the release, in the same statement.
-		if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
-			issue, err := record.NewStore().Issue(context.Background(), tx, key)
+		if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			issue, err := record.NewStore().Issue(ctx, tx, key)
 			if err != nil {
 				return err
 			}

@@ -281,7 +281,7 @@ func (r *observedRig) seedObserved(t *testing.T) {
 func (r *observedRig) readOnly(t *testing.T, read func(ctx context.Context, tx pgx.Tx)) {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := r.claims.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := r.claims.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		t.Fatalf("begin the state's snapshot: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestTheObservedViewIsOneSnapshot(t *testing.T) {
 	}
 	before := move(phase.Testing)
 
-	tx, err := r.claims.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	tx, err := r.claims.Pool().BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		t.Fatalf("begin the state's snapshot: %v", err)
 	}

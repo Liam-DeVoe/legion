@@ -11,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -196,40 +195,14 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	})
 }
 
-// captureLogs sends every slog record from here on, at INFO and above, to a buffer, as JSON, until
-// the test ends, and answers the records written so far. Intake logs from NATS's delivery
-// goroutine, so the buffer is locked. Call it before startIntake, so the default logger is restored
-// only once intake stops. A test that reads DEBUG records, the stop's trace lines, calls traceStops
-// first, which lowers the capture's level to DEBUG (captureOf): with the level at INFO, tracing
-// answers false, and the code under test makes none of its trace lines.
-//
-// A second call in the same test answers the reader of the first and installs nothing: a row helper
-// that records a trace (traceStops) and the test that calls the helper read one capture. A second
-// handler would replace the first, which then reads nothing more.
+// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
+// answers the records written so far. Intake logs from NATS's delivery goroutine, so the buffer is
+// locked. Call it before startIntake, so the default logger is restored only once intake stops.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
-	return captureOf(t).logs
-}
-
-// logCapture is one test's capture (captureLogs): the reader of its records, and the level of its
-// handler, which starts at INFO.
-type logCapture struct {
-	logs  func() []map[string]any
-	level *slog.LevelVar
-}
-
-// captureOf is t's capture, which it installs on its first call (captureLogs).
-func captureOf(t *testing.T) logCapture {
-	t.Helper()
-	captures.mu.Lock()
-	defer captures.mu.Unlock()
-	if capture, ok := captures.of[t]; ok {
-		return capture
-	}
 	var buffer lockedBuffer
-	level := new(slog.LevelVar)
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: level}))
-	capture := logCapture{level: level, logs: func() []map[string]any {
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
+	return func() []map[string]any {
 		var records []map[string]any
 		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {
 			var record map[string]any
@@ -238,21 +211,8 @@ func captureOf(t *testing.T) logCapture {
 			}
 		}
 		return records
-	}}
-	captures.of[t] = capture
-	t.Cleanup(func() {
-		captures.mu.Lock()
-		defer captures.mu.Unlock()
-		delete(captures.of, t)
-	})
-	return capture
+	}
 }
-
-// captures is the capture of each test that has one (captureOf), by its test.
-var captures = struct {
-	mu sync.Mutex
-	of map[*testing.T]logCapture
-}{of: map[*testing.T]logCapture{}}
 
 // lockedBuffer is a buffer safe to write from one goroutine while another reads it.
 type lockedBuffer = logtest.Buffer

@@ -90,22 +90,25 @@ func TestALaterTestStartsTheSharedServerAnEarlierStartFailedToStart(t *testing.T
 
 // A server that logged a fatal error fails its start even once its client listener is up: nats-server
 // v2.15.1 logs a profiler port it cannot bind as fatal and goes on starting (StartProfiler), and
-// ReadyForConnections does not look at the profiler. The row holds the profiler's port on the one
-// address the server binds it on, its Host, waits until the server both logged the fatal error and
-// accepts connections, and only then asks awaitReady, so a wait that read the flag only while the
-// server was not ready would pass it. It holds that exact address and port rather than the port on
-// the wildcard address: Linux refuses a bind of a loopback address on a port a wildcard listener
-// holds, but gVisor, which runs the tests of Legion's issue pods and build Jobs, lets the bind take
-// it, and the profiler then starts with no fatal error. Both refuse a second bind of the same address
-// and port.
+// ReadyForConnections does not look at the profiler. The row holds the profiler's port at the address
+// the profiler listens on, the server's own host (StartProfiler binds Options.Host), waits until the
+// server both logged the fatal error and accepts connections, and only then asks awaitReady, so a wait
+// that read the flag only while the server was not ready would pass it.
+//
+// The hold is a listener at that address, not on every address: whether a wildcard listener (0.0.0.0
+// or [::]) keeps one address's bind off its port is the kernel's choice. Linux refuses that bind;
+// gVisor's netstack takes it when both sockets set SO_REUSEADDR, as every net.Listen does, so under
+// gVisor a wildcard hold let the profiler take the port, the server logged no fatal error, and the
+// row failed on every run before it asked awaitReady. Linux and gVisor alike refuse a second listener
+// on one address and port when neither sets SO_REUSEPORT, which net.Listen does not.
 func TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady(t *testing.T) {
 	held, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("hold a port for the server's profiler: %v", err)
 	}
 	defer held.Close()
-	address := held.Addr().(*net.TCPAddr)
-	srv, err := natsserver.NewServer(&natsserver.Options{Host: address.IP.String(), Port: -1, ProfPort: address.Port, NoSigs: true})
+	at := held.Addr().(*net.TCPAddr)
+	srv, err := natsserver.NewServer(&natsserver.Options{Host: at.IP.String(), Port: -1, ProfPort: at.Port, NoSigs: true})
 	if err != nil {
 		t.Fatalf("create the NATS server: %v", err)
 	}

@@ -139,9 +139,9 @@ func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise
 // under its lease.
 func leasedOutboxRow(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) record.OutboxRow {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		row.ID, err = records.EnqueueID(context.Background(), tx, row)
+		row.ID, err = records.EnqueueID(ctx, tx, row)
 		return err
 	}); err != nil {
 		t.Fatalf("enqueue the row: %v", err)
@@ -774,7 +774,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	clock := time.Now()
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-1", catchUp(1), clock))
 	var leased record.OutboxRow
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		due, err := records.DueRows(ctx, tx, "LEGION", "LEGION-1", nil, clock)
 		if err != nil {
 			return err
@@ -791,7 +791,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("lease the first catch-up: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
 			return err
 		}

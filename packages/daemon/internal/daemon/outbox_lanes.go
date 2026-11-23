@@ -22,7 +22,7 @@ import (
 // by the bare Dispatch project key that every state row carries as its issue, so a wake of that key
 // and any state kind, the sweep and the timer start and run it as they do an issue's: its rows run
 // one message at a time, in sequence order (stateEvents). A lane is woken by the write that commits
-// one of its rows (projectRecords, through intake.OnCommit), by the timer it arms for its next row
+// one of its rows (projectRecords, through store.OnCommit), by the timer it arms for its next row
 // due later, and by the sweep, which every outboxLease lists the lanes with a row still in the outbox
 // (record.Store.UnfinishedLanes) and wakes each: a row whose run ended without its finish or retry
 // recorded — a lost database connection, a daemon that died mid-row — keeps its lease until it
@@ -111,7 +111,7 @@ func (r *outbox) sweep(ctx context.Context) {
 // lane a resume lets its held rows out on (decision 22).
 func (r *outbox) wakeUnfinished(ctx context.Context) {
 	var lanes []record.LaneKey
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		lanes, err = r.records.UnfinishedLanes(ctx, tx, r.dispatchProject)
 		return err
@@ -262,7 +262,7 @@ func (r *outbox) drain(ctx context.Context, issue string, kinds []record.OutboxK
 // issue "" is every issue of the project, kinds nil every kind.
 func (r *outbox) listDue(ctx context.Context, issue string, kinds []record.OutboxKind, now time.Time) ([]record.OutboxRow, error) {
 	var rows []record.OutboxRow
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		rows, err = r.records.DueRows(ctx, tx, r.dispatchProject, issue, kinds, now)
 		return err
@@ -276,7 +276,7 @@ func (r *outbox) listDue(ctx context.Context, issue string, kinds []record.Outbo
 func (r *outbox) nextDue(ctx context.Context, issue string, kinds []record.OutboxKind, now time.Time) (time.Time, bool, error) {
 	var at time.Time
 	var ok bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		at, ok, err = r.records.NextDue(ctx, tx, issue, kinds, now)
 		return err
@@ -299,7 +299,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	now := r.now().UTC()
 	var row record.OutboxRow
 	var claimed bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		row, claimed, err = r.records.ClaimRow(ctx, tx, listed.ID, now, outboxLease)
 		return err
@@ -444,7 +444,7 @@ func (r *outbox) renewLease(ctx context.Context, row record.OutboxRow, began tim
 // found nothing is reported only while the run is still on.
 func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		held, err = r.records.RenewOutboxLease(ctx, tx, row.ID, row.LeaseToken, now.Add(outboxLease))
 		return err
@@ -467,7 +467,7 @@ func (r *outbox) renewOnce(ctx context.Context, row record.OutboxRow, renewal *l
 // resume lets it run, and the time before this row began is no wait behind it.
 func (r *outbox) warnHeld(ctx context.Context, row record.OutboxRow, renewal *leaseRenewal, now time.Time) {
 	var held []record.HeldRow
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		held, err = r.records.HeldRows(ctx, tx, r.dispatchProject, row.Issue, now)
 		return err

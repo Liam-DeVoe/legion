@@ -289,18 +289,13 @@ var intakeMessageTimeout = time.Minute
 // client's pending buffer until that buffer drops them. A var so a test can shrink it.
 var intakeMaxAckPending = 4
 
-// intakeAckLanding is the part of intakeAckWait that lets the last outstanding message's
-// acknowledgement itself reach the server once its handling has ended. A var so a test can shrink
-// it.
-var intakeAckLanding = time.Minute
-
 // intakeAckWait is how long NATS waits for an acknowledgement before redelivering. Derived from
-// the values above rather than chosen: when every outstanding message is one key's, the last of
-// intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
-// plus intakeAckLanding for the acknowledgement itself to land. A function rather than a value so a
-// test that shrinks any input gets an ack wait derived from it.
+// the two values above rather than chosen: when every outstanding message is one key's, the last
+// of intakeMaxAckPending waits for the ones before it, so the bound is their total handling time,
+// plus a minute for the acknowledgement itself to land. A function rather than a value so a test
+// that shrinks either input gets an ack wait derived from it.
 func intakeAckWait() time.Duration {
-	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + intakeAckLanding
+	return time.Duration(intakeMaxAckPending)*intakeMessageTimeout + time.Minute
 }
 
 // deliveryConsumerConfig is the policy a take-over creates the durable with
@@ -376,7 +371,7 @@ func consumerGenerationMetadata() map[string]string {
 // the same pair again.
 //
 // That hand-back is this process's own answer to the durable, and it is made only while the
-// hold still covers it (intakeDelivery.handBackOwn): a hand-back a process makes after its hold
+// hold still covers it (intakeDelivery.mayAnswer): a hand-back a process makes after its hold
 // has lapsed reaches the durable a take-over recreated under the same name, where it would move
 // the new holder's pending entry for that message and have it delivered a second time. Withheld,
 // the message is not lost: it stays outstanding, and the take-over's recreate at the durable's

@@ -73,8 +73,8 @@ func newStateRig(t *testing.T) *stateRig {
 // is published is what the writes after it change.
 func (r *stateRig) seed(t *testing.T, write func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		return write(context.Background(), tx, record.NewStore())
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return write(ctx, tx, record.NewStore())
 	}); err != nil {
 		t.Fatalf("seed the records: %v", err)
 	}
@@ -94,7 +94,7 @@ func (r *stateRig) serveState(t *testing.T, view source) *store.Store {
 	view.store, view.records, view.project, view.projectToken = st, r.records, "LEGION", "legion"
 	view.deployment = func([]sandbox.CacheStatus) capabilities.Deployment { return capabilities.Deployment{} }
 	view.reports = func() map[claim.Token]capabilities.Report { return nil }
-	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{State: &view, StateTransactions: st, Log: quietLogger()}).Handler)
+	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{State: &view, StateTransactions: st.Pool(), Log: quietLogger()}).Handler)
 	t.Cleanup(server.Close)
 	r.stateURL = server.URL
 	return st
@@ -119,18 +119,17 @@ func (r *stateRig) getState(t *testing.T) []byte {
 type stateWrite func(ctx context.Context, tx pgx.Tx, records record.Store) error
 
 // commit runs write through records in a transaction of its own, under the commit scope the
-// daemon's facts run in (intake.WithCommitHooks), and answers the ids of the state rows it queued,
-// read inside the transaction while they still carry no sequence: every committed state row has
-// one (record.OutboxRow.StateSeq).
+// daemon's facts run in (store.Transact, whose hooks run once it commits), and answers the ids of
+// the state rows it queued, read inside the transaction while they still carry no sequence: every
+// committed state row has one (record.OutboxRow.StateSeq).
 func (r *stateRig) commit(t *testing.T, records record.Store, write stateWrite) []int64 {
 	t.Helper()
-	scoped, committed := intake.WithCommitHooks(context.Background())
 	var ids []int64
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		if err := write(scoped, tx, records); err != nil {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := write(ctx, tx, records); err != nil {
 			return err
 		}
-		rows, err := tx.Query(scoped, `select id from outbox where kind = any($1) and state_seq is null order by id`, stateKindNames())
+		rows, err := tx.Query(ctx, `select id from outbox where kind = any($1) and state_seq is null order by id`, stateKindNames())
 		if err != nil {
 			return err
 		}
@@ -139,7 +138,6 @@ func (r *stateRig) commit(t *testing.T, records record.Store, write stateWrite) 
 	}); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
-	committed()
 	return ids
 }
 

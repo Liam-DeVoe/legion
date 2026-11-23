@@ -37,28 +37,16 @@ type stopRow struct {
 	// decided takes one value each time a given-up handler's hand-back has returned
 	// (startGivenUpRow), whether it published or withheld.
 	decided chan struct{}
-	// entries counts the given-up handler's entries (startGivenUpRow): one for each message whose
-	// handler started.
-	entries *atomic.Int32
-	// trace is the row's trace (startGivenUpRow), and nil for a row that records none.
-	trace *stopTrace
 }
 
 // startStopRow subscribes a delivery keyed by key and handled by handle at the durable's deliver
 // subject, creating the durable first when createDurable says so, and waits until the server counts
-// its subscriber. Its client keeps nats.go's default write deadline of a minute, not production's
-// IntakeWriteDeadline. The rows that hold nats.go's lock for writing (HoldWriteLock) take the lock
-// themselves, with no write in the socket, so no write deadline ends that hold; a held handshake
-// (HoldReconnect) ends at the bus's connect timeout with either write deadline. Each row logs its
-// client's reconnect count as it ends, passing or failing (logReconnects); it has no standby.
+// its subscriber.
 func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage), createDurable bool) *stopRow {
 	t.Helper()
 	server, uri := testnats.Start(t)
 	hold := testnats.StartHandshakeHold(t, uri)
 	client := reconnectTestClient(t, hold.URL())
-	// Registered before the hold's cleanups, so it runs after them, once nothing holds nats.go's
-	// lock: the count it reads takes that lock.
-	logReconnects(t, client, nil)
 	// Registered after the client's close, so they run before it: nats.go's Close waits for its
 	// connection lock, which a held handshake or a held write holds.
 	t.Cleanup(hold.Restore)
@@ -176,33 +164,15 @@ func watchHandBacks(t *testing.T, uri string) func() int64 {
 	}
 }
 
-// publishBegins has delivery close the channel it returns the first time a hand-back of it reaches
-// its publish, the rule having let it through (beforeHandBackPublish, publishHandBack). A row sets
-// it before the hand-back it waits for is taken.
-func publishBegins(delivery *intakeDelivery) <-chan struct{} {
-	begun := make(chan struct{})
-	var once sync.Once
-	hook := func() { once.Do(func() { close(begun) }) }
-	delivery.beforeHandBackPublish.Store(&hook)
-	return begun
-}
-
 // startGivenUpRow starts a row whose handler does what Intake.deliver does with a message whose
 // handling the stop gave up -- it waits for the give-up and hands the message back (handBack) --
 // and publishes two messages of one pull request, so the first is in its handler and the second
-// waits behind its key, held by the stop. The row counts each entry into the handler (entries).
-//
-// The row records a trace (traceStops), which the test prints only when it fails: the row's client
-// is named holder, the hold's relay reports each chunk with a -NAK or a +ACK, and at the failure
-// the trace reads the row's delivery.
+// waits behind its key, held by the stop.
 func startGivenUpRow(t *testing.T) *stopRow {
 	t.Helper()
-	trace := traceStops(t)
 	handling := make(chan struct{}, 2)
 	decided := make(chan struct{}, 2)
-	entries := new(atomic.Int32)
 	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
-		entries.Add(1)
 		handling <- struct{}{}
 		<-delivery.handling.Done()
 		delivery.handBack(message.msg)
@@ -212,13 +182,6 @@ func startGivenUpRow(t *testing.T) *stopRow {
 		}
 	}, true)
 	row.decided = decided
-	row.entries = entries
-	row.trace = trace
-	trace.name(row.client, "holder")
-	trace.name(row.conn, "holder")
-	trace.name(row.delivery(), "holder")
-	trace.watchLink(row.hold, "holder")
-	trace.dump("holder delivery", func() string { return namedDeliveryState(trace, row.delivery(), "holder") })
 	row.publishPullRequestSeven(t)
 	select {
 	case <-handling:
@@ -228,10 +191,6 @@ func startGivenUpRow(t *testing.T) *stopRow {
 	waitFor(t, 30*time.Second, func() bool { return queuedBehindKeys(row.delivery()) == 1 }, func() string {
 		return fmt.Sprintf("control: %d message(s) wait behind their key's handler, want the second message", queuedBehindKeys(row.delivery()))
 	})
-	// Registered after every cleanup of the row's own, so a failure is read before they release the
-	// hold or close the client. A subtest that registers cleanups of its own after this calls
-	// printAtFailure again.
-	trace.printAtFailure(t)
 	return row
 }
 
@@ -242,7 +201,7 @@ func startGivenUpRow(t *testing.T) *stopRow {
 func (r *stopRow) requireNoHandBack(t *testing.T, delivery *intakeDelivery, naks func() int64) {
 	t.Helper()
 	select {
-	case <-delivery.handBacks.handBacksLanded():
+	case <-delivery.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("a hand-back publish was still waiting for NATS 30 s after the link came back")
 	}
@@ -298,11 +257,8 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - an unsubscribe while a write holds the lock: the stop drained on a moving link and its drain
 //     did not end, and the unsubscribe that ends it, once the stop's context ends, meets the lock;
 //   - a hand-back while a write holds the lock: the connected read before the first hand-back the
-//     rule lets through answers, and that hand-back then waits before its publish
-//     (beforeHandBackPublish) until a write holds nats.go's lock. The subtest's own goroutine takes
-//     the lock, so the hand-back reaching its publish and the write taking the lock each have a
-//     bound of their own. Once the stop has returned, the durable still holds both messages for
-//     redelivery: neither is acknowledged, and both are still outstanding with it;
+//     rule lets through answers, and a write then takes nats.go's lock before that hand-back's
+//     publish, from inside the hand-back (beforeHandBackPublish);
 //   - a drain the lock holds: the stop drained on a moving link and waits for its drain to end, with
 //     a message still buffered, under a context that never ends; a write then holds nats.go's lock,
 //     under which nats.go ends no drain, and the stop and a second StopDelivering return while it is
@@ -310,23 +266,16 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - a given-up handler woken as the give-up is armed: as the second, with one stop, whose
 //     give-up runs at once under its ended context; the stop waits, once its give-up is armed
 //     (stopGiveUpArmed), for the handler it woke to decide its hand-back, and the server is sent
-//     no hand-back of either message;
-//   - a queued message's handler does not start once the stop has begun: as the eleventh, on a
-//     moving link with no hold; once the woken handler has decided and returned, the keyed runner
-//     runs no handler and has started none other, so the second message's handler never started.
-//     The stop then goes on and hands that message back: the server is sent its hand-back, and the
-//     durable still holds both messages for redelivery, neither acknowledged.
+//     no hand-back of either message.
 //
 // The negative control is the stop as it was (DrainSubscription, the hand-backs and Unsubscribe
 // inside the once with no bound): no StopDelivering answers within the attempt or while the write is
 // held. So is a hand-back that skips the stop's rule (handBack), the given-up handler's in the second
 // and third subtests; a stop that withholds only when its drain did not answer, in the fourth; an
 // answer begun before the stop with no bound, in the fifth to seventh; a hand-back published inline,
-// in the ninth; a wait for the drain that reads nothing of the connection, in the tenth; a stop
+// in the ninth; a wait for the drain that reads nothing of the connection, in the tenth; and a stop
 // that sets stopping only after its give-up is armed, in the eleventh, whose woken handler publishes
-// the hand-back the stop withholds; and a stop that takes the messages waiting behind their keys
-// only after its give-up is armed, in the twelfth, whose keyed runner starts the queued message's
-// handler under the ended context, so that message's hand-back is withheld rather than held.
+// the hand-back the stop withholds.
 func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Run("a drain NATS has not taken", func(t *testing.T) {
 		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
@@ -449,50 +398,23 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 
 	t.Run("a hand-back while a write holds the lock", func(t *testing.T) {
 		row := startGivenUpRow(t)
-		publisher := row.outsideHold(t)
-		// The link moves until the subtest holds the write, so the stop's drain and its read of the
-		// connection before the hand-back answer; the 30 s wait is only a guard, so that a call
-		// slower than callNATS's wait on a loaded runner does not withhold the hand-back the row
-		// reads. The subtest puts callNATS's own wait back before it holds the write, and the
-		// hand-back's publish, which starts after the hook, waits only that long for the held lock.
-		// Registered after startGivenUpRow, so the wait is restored before the row's teardown runs.
-		wait := callNATSWait.Swap(int64(30 * time.Second))
-		t.Cleanup(func() { callNATSWait.Store(wait) })
-		// The hand-back waits in its hook, before its publish, until the subtest holds the write
-		// lock. Every wait and every failure is on the subtest's goroutine, not the handler's, so
-		// the hand-back reaching its publish and the write taking the lock each have a bound and a
-		// message of their own. ended, closed by a cleanup that runs before the row's own, lets a
-		// hand-back still held there go on when the subtest ends early.
-		reached := make(chan struct{})
-		held := make(chan struct{})
-		ended := make(chan struct{})
-		t.Cleanup(func() { close(ended) })
-		var reaching sync.Once
+		var holding sync.Once
+		published := make(chan struct{})
 		hook := func() {
-			reaching.Do(func() { close(reached) })
-			select {
-			case <-held:
-			case <-ended:
-			}
+			holding.Do(func() {
+				row.hold.HoldWriteLock(t, row.conn)
+				close(published)
+			})
 		}
 		row.delivery().beforeHandBackPublish.Store(&hook)
-		// The stop gives the handler up at its start. The handler's hand-back comes before the
-		// drain has answered and is withheld; once the drain has answered, the stop hands back the
-		// message it took from behind the key, and that hand-back waits in the hook.
+		// The stop gives the handler up at its start, and the handler hands its message back.
 		stopped := row.stopUnder(cancelled())
 		select {
-		case <-reached:
+		case <-published:
 		case <-time.After(30 * time.Second):
 			t.Fatal("control: no hand-back reached its publish within 30 s")
 		}
-		callNATSWait.Store(wait)
-		row.hold.HoldWriteLock(t, row.conn)
-		// Registered after the cleanups above, so a failure is read before they let the write or a
-		// held hand-back go on.
-		row.trace.printAtFailure(t)
-		close(held)
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped)
-		requireBothOutstanding(t, publisher, "once the stop returned while a write held nats.go's lock")
 	})
 
 	t.Run("a drain the lock holds", func(t *testing.T) {
@@ -553,74 +475,6 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		row.reconnect(t)
 		row.requireNoHandBack(t, delivery, naks)
 	})
-
-	t.Run("a queued message's handler does not start once the stop has begun", func(t *testing.T) {
-		row := startGivenUpRow(t)
-		naks := watchHandBacks(t, row.uri)
-		publisher := row.outsideHold(t)
-		delivery := row.delivery()
-		// The link moves, so every call of the stop's answers; the 30 s wait is only a guard, so
-		// that a drain or a connected read slower than callNATS's wait on a loaded runner does not
-		// withhold the hand-back the row reads. Registered after startGivenUpRow, so the wait is
-		// restored before the row's teardown runs.
-		wait := callNATSWait.Swap(int64(30 * time.Second))
-		t.Cleanup(func() { callNATSWait.Store(wait) })
-		// As in the subtest before: the stop waits in its hook, every wait and every failure is on
-		// the subtest's goroutine, and ended, closed by a cleanup that runs before the row's own,
-		// lets a stop still held there go on when the subtest ends early.
-		reached := make(chan struct{})
-		proceed := make(chan struct{})
-		ended := make(chan struct{})
-		t.Cleanup(func() { close(ended) })
-		var arming sync.Once
-		armed := func() {
-			arming.Do(func() { close(reached) })
-			select {
-			case <-proceed:
-			case <-ended:
-			}
-		}
-		stopGiveUpArmed.Store(&armed)
-		t.Cleanup(func() { stopGiveUpArmed.Store(nil) })
-		// Registered after the cleanups above, so a failure is read before they let a held stop go
-		// on.
-		row.trace.printAtFailure(t)
-		stopped := row.stopUnder(cancelled())
-		select {
-		case <-reached:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the stop did not arm its give-up within 30 s")
-		}
-		select {
-		case <-row.decided:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the given-up handler did not decide its hand-back within 30 s of the give-up")
-		}
-		// The keyed runner keeps the key while a run of it is in its handler. Once the first
-		// handler returns, the runner starts the message still queued on the key, if the stop left
-		// one there, and lets the key go only once that handler has returned too.
-		waitFor(t, 30*time.Second, func() bool { return runningKeys(delivery) == 0 }, func() string {
-			return fmt.Sprintf("control: %d key(s) still had a handler running 30 s after the given-up handler decided", runningKeys(delivery))
-		})
-		if entries := row.entries.Load(); entries != 1 {
-			t.Fatalf("%d handlers started, want 1: the queued message's handler started during the stop, under a context already ended, so its hand-back was withheld rather than held", entries)
-		}
-		close(proceed)
-		testnats.AnswersWithin(t, 30*time.Second, "StopDelivering", stopped)
-		stopGiveUpArmed.Store(nil)
-		select {
-		case <-delivery.handBacks.handBacksLanded():
-		case <-time.After(30 * time.Second):
-			t.Fatal("the stop's hand-back was still waiting for NATS 30 s after the stop returned")
-		}
-		if err := row.conn.Flush(); err != nil {
-			t.Fatalf("flush the intake's client once the stop returned: %v", err)
-		}
-		if n := naks(); n != 1 {
-			t.Fatalf("the server was sent %d hand-back(s), want 1: the queued message's, which the stop held and handed back", n)
-		}
-		requireBothOutstanding(t, publisher, "once the stop handed the queued message back")
-	})
 }
 
 // A hand-back outside any stop is sent and reaches the server, even while a write holds nats.go's
@@ -640,8 +494,6 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 		<-writeHeld
 		delivery.handBack(message.msg)
 	}, true)
-	delivery := row.delivery()
-	publishing := publishBegins(delivery)
 	nakCount := watchHandBacks(t, row.uri)
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
@@ -653,15 +505,14 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 	}
 	releaseWrite := row.hold.HoldWriteLock(t, row.conn)
 	close(writeHeld)
-	select {
-	case <-publishing:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hand-back was withheld while a write held nats.go's lock: a connected read outside any stop blocked it")
-	}
+	delivery := row.delivery()
+	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
+		return "the hand-back was withheld while a write held nats.go's lock: a connected read outside any stop blocked it"
+	})
 	testnats.RequireLockHeld(t, row.conn)
 	releaseWrite()
 	select {
-	case <-delivery.handBacks.handBacksLanded():
+	case <-delivery.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("the hand-back did not land within 30 s of the lock's release")
 	}
@@ -709,7 +560,7 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 	close(linkCut)
 	delivery := row.delivery()
 	select {
-	case <-delivery.handBacks.handBacksLanded():
+	case <-delivery.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("the hand-back did not land within 30 s on the reconnecting link")
 	}
@@ -758,18 +609,15 @@ func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) 
 	// Registered after startStopRow, so the wait is restored before the row's teardown runs.
 	saved := callNATSWait.Swap(0)
 	t.Cleanup(func() { callNATSWait.Store(saved) })
-	delivery := row.delivery()
-	publishing := publishBegins(delivery)
 	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
+	delivery := row.delivery()
+	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
+		return "the hand-back was never published"
+	})
 	select {
-	case <-publishing:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the hand-back was never published")
-	}
-	select {
-	case <-delivery.handBacks.handBacksLanded():
+	case <-delivery.handBacksLanded():
 	case <-time.After(30 * time.Second):
 		t.Fatal("handBacksLanded never closed: the publish count was lost because callNATS skipped the call")
 	}
@@ -820,51 +668,6 @@ func queuedBehindKeys(delivery *intakeDelivery) int {
 		queued += len(items)
 	}
 	return queued
-}
-
-// runningKeys is how many keys of delivery have a run in its handler: the keyed runner keeps a key
-// in queued from the start of its first run until its queue is empty as a run of it returns.
-func runningKeys(delivery *intakeDelivery) int {
-	delivery.keys.mu.Lock()
-	defer delivery.keys.mu.Unlock()
-	return len(delivery.keys.queued)
-}
-
-// outsideHold connects a client of the test's own to the row's server, outside the hold, so a read
-// on it, such as the delivery durable's consumer info, is answered while the row's link is frozen.
-// A row with a trace names it publisher there.
-func (r *stopRow) outsideHold(t *testing.T) *bus.Client {
-	t.Helper()
-	client, err := bus.Connect([]string{r.uri})
-	if err != nil {
-		t.Fatalf("connect NATS at %s outside the hold: %v", r.uri, err)
-	}
-	t.Cleanup(client.Close)
-	if r.trace != nil {
-		r.trace.name(client, "publisher")
-	}
-	return client
-}
-
-// requireBothOutstanding fails the test, naming when, unless the delivery durable still holds both
-// of the row's messages for redelivery: neither is acknowledged, so the durable's ack floor is
-// below the first of them, the first message of the row's stream, and both are still outstanding
-// with it (NumAckPending). It reads the durable on publisher, a client outside the hold
-// (outsideHold).
-func requireBothOutstanding(t *testing.T, publisher *bus.Client, when string) {
-	t.Helper()
-	stream, err := publisher.JS().StreamInfo(bus.Stream)
-	if err != nil {
-		t.Fatalf("read the stream %s: %v", when, err)
-	}
-	info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-	if err != nil {
-		t.Fatalf("read the delivery durable %s: %v", when, err)
-	}
-	if info.AckFloor.Stream >= stream.State.FirstSeq || info.NumAckPending != 2 {
-		t.Fatalf("%s, the durable does not hold both messages for redelivery: want its ack floor below stream sequence %d and 2 messages outstanding, a message was acknowledged or lost: %s",
-			when, stream.State.FirstSeq, consumerState(publisher))
-	}
 }
 
 // stopReleased reports whether delivery's stop has dealt with the messages it held, so it is past

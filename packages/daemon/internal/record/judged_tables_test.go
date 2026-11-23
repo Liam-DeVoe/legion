@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -54,7 +55,7 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 		return seeded
 	}
 	approved := 1
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range []record.Issue{
 			issue(root, root, "", phase.Implementing, "in_progress"),
 			issue(child, root, root, phase.Admitted, "todo"),
@@ -99,7 +100,7 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 		t.Fatalf("open the tree of %s: %v", root, err)
 	}
 
-	tx, err := st.Pool().Begin(ctx)
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}

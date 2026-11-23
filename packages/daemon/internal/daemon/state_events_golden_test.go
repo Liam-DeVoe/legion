@@ -173,7 +173,7 @@ func (r *stateGoldenRig) stamped(t *testing.T, live time.Time) time.Time {
 func (r *stateGoldenRig) pass(t *testing.T, write func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := write(ctx, tx); err != nil {
 			return err
 		}

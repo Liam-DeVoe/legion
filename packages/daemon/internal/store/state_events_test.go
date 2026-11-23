@@ -280,14 +280,15 @@ func TestAClaimWriteThatChangesItsStateQueuesOneStateEvent(t *testing.T) {
 		} {
 			queues(t, traced, wakes, "the controller's "+step.name, step.write, "")
 		}
-		// It can queue nothing, so PutClaim writes it as one statement on the pool, with no
-		// transaction around it; a worker's claim on the same store can, and takes one.
+		// It can queue nothing, and PutClaim still writes it in one transaction of its own, as it
+		// writes every claim (TestEveryClaimWriteOpensOneTransaction); a worker's claim on the same
+		// store takes one too, with the row it queues.
 		before := begun.begun.Load()
 		if err := traced.PutClaim(ctx, controllerClaim(supervise.StateSuspended)); err != nil {
 			t.Fatalf("the controller's suspension: %v", err)
 		}
-		if got := begun.begun.Load() - before; got != 0 {
-			t.Errorf("the controller's PutClaim began %d transactions, want none", got)
+		if got := begun.begun.Load() - before; got != 1 {
+			t.Errorf("the controller's PutClaim began %d transactions, want one", got)
 		}
 		recordIssue(t, s, issue, stateProject)
 		before = begun.begun.Load()

@@ -48,19 +48,14 @@ const readHeaderTimeout = 10 * time.Second
 // today's healthy read.
 const stateReadBound = 60 * time.Second
 
-// stateRollbackBound is what the state route gives the rollback that ends its transaction once
-// the read is over, on a context of its own (stateRoute). Five seconds: the rollback is one
-// round trip to a server that just answered, so the only thing this waits out is a server that
-// has stopped answering altogether, and waiting longer on one of those would hold the very
-// connection the rollback is there to give back.
-const stateRollbackBound = 5 * time.Second
-
 // Options are what the routes answer from.
 type Options struct {
 	// State answers GET /legion/v1/state.
 	State StateSource
-	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
-	StateTransactions StateTransactions
+	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses:
+	// the daemon's store pool, which the daemon's serve sets. A test sets a fake that opens no
+	// database transaction. Unset, the state route answers a failure.
+	StateTransactions store.TxPool
 	// StateReadBound is how long the state route's read may take before it answers a failure and
 	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
 	// test sets a smaller one so it need not wait out a minute.
@@ -318,7 +313,7 @@ type ClaimActivityStore interface {
 
 type server struct {
 	state             StateSource
-	stateTransactions StateTransactions
+	stateTransactions store.TxPool
 	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
 	stateBound  time.Duration
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
@@ -805,8 +800,8 @@ func (s *server) projectState(w http.ResponseWriter, r *http.Request) (State, []
 	defer cancel()
 	var state State
 	var claims []supervise.Claim
-	read := func(tx pgx.Tx) (err error) {
-		state, claims, err = s.state.State(reading, tx)
+	read := func(ctx context.Context, tx pgx.Tx) (err error) {
+		state, claims, err = s.state.State(ctx, tx)
 		return err
 	}
 	if !s.readSnapshot(w, r, reading, "api: state source failed", read) {
@@ -834,8 +829,8 @@ func (s *server) observedState(w http.ResponseWriter, r *http.Request) (State, [
 	defer cancel()
 	var observed State
 	var claims []supervise.Claim
-	read := func(tx pgx.Tx) (err error) {
-		observed, claims, err = s.state.ObservedState(reading, tx)
+	read := func(ctx context.Context, tx pgx.Tx) (err error) {
+		observed, claims, err = s.state.ObservedState(ctx, tx)
 		return err
 	}
 	if !s.readSnapshot(w, r, reading, "api: observed state source failed", read) {
@@ -844,10 +839,11 @@ func (s *server) observedState(w http.ResponseWriter, r *http.Request) (State, [
 	return observed, claims, true
 }
 
-// readSnapshot runs read in one repeatable-read read-only transaction and commits it, which is
-// how both views of the state read the source (projectState, observedState). It writes its own
-// refusal and answers false where it wrote one; failed is the line it logs when read fails.
-// reading is the caller's context, under the read's bound.
+// readSnapshot runs read in one repeatable-read read-only transaction (store.TransactWith) and
+// commits it, which is how both views of the state read the source (projectState,
+// observedState). It writes its own refusal and answers false where it wrote one; failed is the
+// line it logs when read fails. reading is the caller's context, under the read's bound; read runs
+// on the transaction's own context.
 //
 // The read runs under a bound of the daemon's own (stateReadBound, Options.StateReadBound).
 // Before INFRA-3169 the only thing that ended this read was the client giving up, so a read that
@@ -869,43 +865,32 @@ func (s *server) observedState(w http.ResponseWriter, r *http.Request) (State, [
 // a byte is written — so the handler would hold a second full copy of a body that measured
 // 4,055,424 bytes on the production deployment on 2026-11-12. One such copy per concurrent read
 // is a second resource failure inside the first one this bounds.
-func (s *server) readSnapshot(w http.ResponseWriter, r *http.Request, reading context.Context, failed string, read func(pgx.Tx) error) bool {
+func (s *server) readSnapshot(w http.ResponseWriter, r *http.Request, reading context.Context, failed string, read func(ctx context.Context, tx pgx.Tx) error) bool {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
 		return false
 	}
-	tx, err := s.stateTransactions.BeginTx(reading, pgx.TxOptions{
+	// The step that failed names the log line, as each did before the read ran through
+	// store.TransactWith: the begin, until the body runs; the statement bound; the read, which
+	// failed names; and the commit, for a failure after a body that succeeded.
+	failure := "api: begin state transaction failed"
+	err := store.TransactWith(reading, s.stateTransactions, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
+	}, func(ctx context.Context, tx pgx.Tx) error {
+		failure = "api: commit state transaction failed"
+		if _, err := tx.Exec(ctx, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
+			failure = "api: bound the state transaction's statements failed"
+			return err
+		}
+		err := read(ctx, tx)
+		if err != nil {
+			failure = failed
+		}
+		return err
 	})
 	if err != nil {
-		s.logRequestFailure(r, err, "api: begin state transaction failed")
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return false
-	}
-	defer func() {
-		// The rollback runs on a context detached from the read's, with a little budget of its
-		// own: the moment the read's deadline passes is exactly the moment this has to reach the
-		// server, and a rollback asked for on the context that just expired is never sent at all,
-		// which gives the pool back a connection to throw away rather than one with its
-		// transaction ended.
-		ending, endRollback := context.WithTimeout(context.WithoutCancel(r.Context()), stateRollbackBound)
-		defer endRollback()
-		_ = tx.Rollback(ending)
-	}()
-
-	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
-		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return false
-	}
-	if err := read(tx); err != nil {
-		s.logRequestFailure(r, err, failed)
-		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
-		return false
-	}
-	if err := tx.Commit(reading); err != nil {
-		s.logRequestFailure(r, err, "api: commit state transaction failed")
+		s.logRequestFailure(r, err, failure)
 		s.refuse(w, r, http.StatusInternalServerError, "state unavailable")
 		return false
 	}
