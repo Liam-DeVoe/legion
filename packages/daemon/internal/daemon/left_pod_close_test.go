@@ -20,6 +20,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -502,6 +504,65 @@ func TestALeftPodCloseCheckWhoseLeaseWasLostWritesNothing(t *testing.T) {
 			t.Error("the check whose lease was lost forgot the decline on record")
 		}
 	})
+}
+
+// Two runs of a close's check overlap after a lease lapsed: this run, whose lease another lane
+// took, reads nothing, while the lane that holds the row now writes the decline row under the
+// lifecycle serializer, as every writer of the issue's lifecycle does (store.DeclineLeftPodClose).
+// The check takes the serializer before it touches a row of the issue: one that deleted the decline
+// row first would hold that row while waiting for the serializer the lane holds, and the lane would
+// wait for that row, a deadlock PostgreSQL ends by failing one of the two (40P01). Here the lane's
+// transaction takes the serializer, the run starts and waits on a lock, and the lane writes the
+// decline row and commits; then the run goes on, finds its lease lost and writes nothing.
+func TestTwoRunsOfALeftPodCloseCheckAfterALostLeaseDoNotDeadlock(t *testing.T) {
+	ctx := context.Background()
+	rig := newLeftPodRig(t, false)
+	row, check := queuedLeftPodCheck(t, rig)
+	if _, err := rig.st.DeclineLeftPodClose(ctx, "legion", rig.issue.Key, store.IdleReleaseDecline{
+		At: time.Now().UTC(), Role: claim.RolePlanner, Reason: pods.DeclineWorkspaceUnread}); err != nil {
+		t.Fatalf("record the decline the clean read forgets: %v", err)
+	}
+	row.LeaseToken = "this-run"
+	if _, err := rig.pool.Exec(ctx, `update outbox set lease_token = 'another-lane',
+		lease_until = now() + interval '5 minutes' where id = $1`, row.ID); err != nil {
+		t.Fatalf("hand the check's lease to another lane: %v", err)
+	}
+
+	lane, err := rig.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatalf("begin the lane's transaction: %v", err)
+	}
+	defer func() { _ = lane.Rollback(context.Background()) }()
+	if err := treelifecycle.Serialize(ctx, lane); err != nil {
+		t.Fatalf("take the lifecycle serializer: %v", err)
+	}
+	ran := make(chan error, 1)
+	go func() { ran <- rig.runner.checkIssueWorkspace(context.Background(), row, check) }()
+	testwait.Eventually(t, "the run to wait on a lock the lane holds", func() bool {
+		var waiting int
+		if err := rig.pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").Scan(&waiting); err != nil {
+			t.Fatalf("count the backends waiting on a lock: %v", err)
+		}
+		return waiting == 1
+	})
+	if _, err := lane.Exec(ctx, `update idle_release_declines set checked_at = now() where project = $1 and issue = $2`,
+		"legion", rig.issue.Key); err != nil {
+		t.Errorf("the lane's write of the decline row = %v, want it written beside the waiting run", err)
+	}
+	if err := lane.Commit(ctx); err != nil {
+		t.Errorf("the lane's commit = %v, want it committed", err)
+	}
+	select {
+	case err := <-ran:
+		if !errors.Is(err, record.ErrOutboxLeaseLost) {
+			t.Errorf("the run whose lease was lost = %v, want %v", err, record.ErrOutboxLeaseLost)
+		}
+	case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+		t.Fatal("the run whose lease was lost did not end once the lane committed")
+	}
+	if !rig.declined(t) {
+		t.Error("the run whose lease was lost forgot the decline the lane wrote")
+	}
 }
 
 // turnedBeforeQuiet runs a turn of the rig's planner through its machine, started and ended forty

@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -88,44 +89,87 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	testwait.Eventually(t, "the row finished once the lock went", func() bool { return outboxRows(t, pool) == 0 })
 }
 
-// A renewal tick that finds its row gone logs no lost lease. A row's own effect may finish the row
-// inside its run: a left pod's clean close finishes its check row in the close's transaction
-// (checkLeftPodWorkspace), and a tick that waited on that transaction's lock finds the row gone
-// once it commits, a row no other lane holds. A tick that finds the row under another lane's lease
-// logs the loss.
-func TestALeaseRenewalThatFindsItsRowGoneLogsNoLostLease(t *testing.T) {
+// A renewal tick that finds its row gone says so by the row's kind. A left pod's check finishes its
+// own row inside its run, in the transaction that records what it decided (checkLeftPodWorkspace),
+// so an issue_bundle row found finished is logged as that, at Info, and as no lost lease. No other
+// kind finishes itself, so another row found finished, like one found under another lane's lease,
+// is logged as a lost lease at Warn. Each finish here runs as a run's own does: in a transaction
+// that holds the row while the tick's renewal waits on its lock, and commits under it, so the tick
+// reads the row gone only by the statement after its update (record's RenewOutboxLease).
+func TestALeaseRenewalThatFindsItsRowGoneLogsByItsKind(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	now := time.Now().UTC()
-	row := mustOutboxRow(t, "LEGION-208", record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), now)
-	enqueueOutbox(t, pool, records, row)
-	row.ID, row.LeaseToken = outboxIDs(t, pool)[0], "this-run"
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), now))
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-209", record.IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 3,
+		TreeGeneration: 7, Role: claim.RolePlanner, CloseRoles: []claim.Role{claim.RolePlanner}}, now))
+	ids := outboxIDs(t, pool)
+	status := record.OutboxRow{ID: ids[0], Kind: record.OutboxKindDispatchStatus, Issue: "LEGION-208", LeaseToken: "this-run"}
+	check := record.OutboxRow{ID: ids[1], Kind: record.OutboxKindIssueBundle, Issue: "LEGION-209", LeaseToken: "this-run"}
 	logs, log := watchedLog()
 	runner := &outbox{pool: pool, records: records, log: log}
-	lease := func(token string) {
+	lease := func(row record.OutboxRow, token string) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `update outbox set lease_token = $2, lease_until = now() + interval '5 minutes'
 			where id = $1`, row.ID, token); err != nil {
-			t.Fatalf("lease the row to %s: %v", token, err)
+			t.Fatalf("lease row %d to %s: %v", row.ID, token, err)
+		}
+	}
+	tick := func(row record.OutboxRow) {
+		runner.renewOnce(ctx, row, &leaseRenewal{warned: map[int64]bool{}}, now)
+	}
+	// finishedUnderTick finishes row in a transaction of its own and runs one tick while that
+	// transaction holds the row, committing it once the tick's renewal waits on its lock.
+	finishedUnderTick := func(row record.OutboxRow) {
+		t.Helper()
+		lease(row, row.LeaseToken)
+		finish, err := pool.BeginTx(ctx, pgx.TxOptions{})
+		if err != nil {
+			t.Fatalf("begin the finish: %v", err)
+		}
+		defer func() { _ = finish.Rollback(context.Background()) }()
+		if err := records.FinishLeasedOutbox(ctx, finish, row.ID, row.LeaseToken); err != nil {
+			t.Fatalf("finish row %d: %v", row.ID, err)
+		}
+		ticked := make(chan struct{})
+		go func() {
+			tick(row)
+			close(ticked)
+		}()
+		testwait.Eventually(t, "the tick's renewal to wait on the finish's lock", func() bool {
+			var waiting int
+			if err := pool.QueryRow(ctx, "select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'").Scan(&waiting); err != nil {
+				t.Fatalf("count the backends waiting on a lock: %v", err)
+			}
+			return waiting == 1
+		})
+		if err := finish.Commit(ctx); err != nil {
+			t.Fatalf("commit the finish of row %d: %v", row.ID, err)
+		}
+		select {
+		case <-ticked:
+		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+			t.Fatalf("the tick over row %d did not end once the finish committed", row.ID)
 		}
 	}
 	const lostLine = "outbox row lease lost"
-
-	lease("another-lane")
-	runner.renewOnce(ctx, row, &leaseRenewal{warned: map[int64]bool{}}, now)
-	if got := count(logs, lostLine); got != 1 {
-		t.Fatalf("lost-lease lines after a tick that found another lane's lease = %d, want 1: %s", got, logs.String())
+	const finishedLine = "outbox row finished while its run goes on"
+	want := func(when string, lost, finished int) {
+		t.Helper()
+		if got := count(logs, lostLine); got != lost {
+			t.Errorf("%s: lost-lease lines = %d, want %d: %s", when, got, lost, logs.String())
+		}
+		if got := count(logs, finishedLine); got != finished {
+			t.Errorf("%s: finished-row lines = %d, want %d: %s", when, got, finished, logs.String())
+		}
 	}
 
-	lease(row.LeaseToken)
-	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		return records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken)
-	}); err != nil {
-		t.Fatalf("finish the row as its own effect does: %v", err)
-	}
-	runner.renewOnce(ctx, row, &leaseRenewal{warned: map[int64]bool{}}, now)
-	if got := count(logs, lostLine); got != 1 {
-		t.Errorf("lost-lease lines after a tick that found its row finished = %d, want still 1: %s", got, logs.String())
-	}
+	lease(status, "another-lane")
+	tick(status)
+	want("after a tick that found another lane's lease", 1, 0)
+	finishedUnderTick(check)
+	want("after a tick that found the check finished", 1, 1)
+	finishedUnderTick(status)
+	want("after a tick that found the status write finished", 2, 1)
 }
