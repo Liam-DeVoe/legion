@@ -71,7 +71,8 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of SupportedContracts.
+// only with its own entry's number; 238, the entry of register_plan's PLAN_CHECK_STOPPED, follows
+// it in SupportedContracts.
 const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
@@ -244,10 +245,14 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 
 // planCheckStopped answers a register_plan whose request ended while the plan was read
 // (plan.FromBlocks) or checked (plan.Validate), each before the fact lock and on the request's
-// context: nothing was recorded.
+// context: 503 PLAN_CHECK_STOPPED (version.go's 238). The request ended before the check of the
+// plan was done, Legion decided nothing and recorded nothing, and the same call can be sent
+// again. The code is what tells a client this is the daemon's answer and not a proxy's dropped
+// attempt, which pi-shared's daemonUnreachable reads a 503 with no code as.
 func (s *server) planCheckStopped(w http.ResponseWriter, r *http.Request, err error, issue, artifactID string, version int) {
 	s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", issue, "artifact", artifactID, "version", version)
-	s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
+	s.writeFailure(w, r, http.StatusServiceUnavailable, "PLAN_CHECK_STOPPED",
+		"register_plan stopped before it finished reading and checking the plan, because its request ended: Legion decided nothing and recorded nothing, and the same call can be sent again")
 }
 
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held

@@ -3362,4 +3362,21 @@ package api
 // 219, and a reading of all 533 open heads between 2026-11-23T01:59:53Z and 02:00:28Z found 219
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
-const DaemonAPIVersion = 219
+//
+// 238: register_plan reads each need of the plan it is given and checks the plan before the fact
+// lock, on the request's own context, and a request that ends during either is answered
+// `503 PLAN_CHECK_STOPPED` (`api.Failure`: `code` and `error`), where 219 answered the end of the
+// check with a 503 that carried no code. The code means: the request ended before the check of
+// the plan was done, Legion decided nothing and recorded nothing, and the same call can be sent
+// again. A client tells the daemon's own 502 or 503 from a proxy's by its code (pi-shared's
+// `daemonUnreachable` reads one with no code as an attempt a proxy dropped, which may have been
+// applied), so with the code the answer is read as the daemon's: handed back with its sentence,
+// never retried as a dropped attempt, and never marked as one that may have been applied.
+// `PLAN_CHECK_STOPPED` is a value of the refusal's `code`, which no reader enumerates, so the
+// answers and the requests of 238 are 219's and no caller below it is served anything else.
+// (This entry took 238, the lowest number above main's 219 that no open pull request declared:
+// a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 126 of the 501
+// open pull requests whose files include this one or are cut short, made between
+// 2026-11-23T20:57:56Z and 21:01:20Z, found 220 to 237 each declared by at least one. Read main's
+// own number and every open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 238

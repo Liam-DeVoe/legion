@@ -256,13 +256,17 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 
 // register_plan reads and checks the plan on the request's own context, before the fact lock:
 // once the request has ended, the read of the needs (plan.FromBlocks) or the check (plan.Validate)
-// stops, the route answers 503 and records nothing. Here the request ends as Dispatch answers
-// the read of the plan: a cycle of two tasks, which the check's first read of the context stops,
-// and a task whose block writes 2,048 needs, which the read of the needs stops at its read of the
-// context after 1,024 words. The fault is a read or a check that runs on after its request has
-// gone; the control is the route calling both on the daemon's own context (s.stopping), under
-// which each plan is refused 409 PLAN_REFUSED, and the route answering the read's stop as a block
-// it cannot read, under which the second is refused 409 PLAN_REFUSED naming the context's end.
+// stops, the route answers 503 PLAN_CHECK_STOPPED and records nothing. Here the request ends as
+// Dispatch answers the read of the plan: a cycle of two tasks, which the check's first read of
+// the context stops, and a task whose block writes 2,048 needs, which the read of the needs stops
+// at its read of the context after 1,024 words. Both answers are the one the golden
+// plan-check-stopped.json holds, which the clients read (pi-legion's tools-daemon-restart.test.ts).
+// The fault is a read or a check that runs on after its request has gone, or a stop answered
+// with no code, which a client reads as a proxy's dropped attempt; the control is the route
+// calling both on the daemon's own context (s.stopping), under which each plan is refused 409
+// PLAN_REFUSED, the route answering the read's stop as a block it cannot read, under which the
+// second is refused 409 PLAN_REFUSED naming the context's end, and the stop written with no code
+// (s.refuse), whose answer carries no code.
 func TestRegisterPlanStopsItsCheckWhenTheRequestEnds(t *testing.T) {
 	words := make([]string, 2_048)
 	for i := range words {
@@ -290,9 +294,17 @@ func TestRegisterPlanStopsItsCheckWhenTheRequestEnds(t *testing.T) {
 			}
 			answer := httptest.NewRecorder()
 			h.handler.ServeHTTP(answer, httptest.NewRequestWithContext(ctx, http.MethodPost, "/legion/v1/plans/register", strings.NewReader(string(body))))
-			if answer.Code != http.StatusServiceUnavailable || !strings.Contains(answer.Body.String(), "because its request ended; nothing was recorded") {
-				t.Fatalf("register_plan whose request ended = %d %s, want 503 saying its request ended", answer.Code, answer.Body)
+			if answer.Code != http.StatusServiceUnavailable {
+				t.Fatalf("register_plan whose request ended = %d %s, want 503", answer.Code, answer.Body)
 			}
+			var stopped Failure
+			decodeInto(t, answer, &stopped)
+			want := Failure{Code: "PLAN_CHECK_STOPPED", Error: "register_plan stopped before it finished reading and checking the plan, because its request ended: " +
+				"Legion decided nothing and recorded nothing, and the same call can be sent again"}
+			if stopped != want {
+				t.Fatalf("register_plan whose request ended answered %+v, want %+v", stopped, want)
+			}
+			golden(t, "plan-check-stopped.json", stopped)
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("a registration whose request ended recorded %#v, want nothing", got)
 			}

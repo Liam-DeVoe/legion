@@ -1,0 +1,4 @@
+{
+  "code": "PLAN_CHECK_STOPPED",
+  "error": "register_plan stopped before it finished reading and checking the plan, because its request ended: Legion decided nothing and recorded nothing, and the same call can be sent again"
+}

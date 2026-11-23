@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    The daemon API fixtures are at contract 238, and `plan-check-stopped.json` holds
+    `register_plan`'s `503 PLAN_CHECK_STOPPED`, its answer to a request that ended while the daemon
+    read or checked the plan. No schema changes.
+time: 2026-11-23T22:20:03Z
+custom:
+    Issue: pr4948

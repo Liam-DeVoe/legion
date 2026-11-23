@@ -173,6 +173,10 @@ const schemas: Record<string, z.ZodType> = {
   // The owner's plan (contract 219): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
+  // register_plan's answer to a request that ended while the daemon read or checked the plan
+  // (contract 238): the refusal with its code, PLAN_CHECK_STOPPED, which tells a client it is the
+  // daemon's own answer and no proxy's dropped attempt.
+  "plan-check-stopped.json": LegionErrorResponse,
   // The project pause (contract 178), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
