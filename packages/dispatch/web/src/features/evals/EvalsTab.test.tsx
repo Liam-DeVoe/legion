@@ -289,6 +289,143 @@ function rowsEnd(): Element {
   return end;
 }
 
+/** The evals the facets narrow (plan D7a), each with the series its card and chart draw, that
+ *  series' first headline statistic, and its unit. */
+const PR_EVALS = [
+  { series: "minutes", slug: "merge-to-production", statistic: "median", unit: "minutes" },
+  { series: "minutes", slug: "first-commit-to-production", statistic: "median", unit: "minutes" },
+  { series: "minutes", slug: "open-to-production", statistic: "median", unit: "minutes" },
+  { series: "minutes", slug: "pr-open-to-merge", statistic: "median", unit: "minutes" },
+  { series: "prs", slug: "rework-share", statistic: "rate", unit: "ratio" },
+] as const;
+
+/** A delivery view's answer: the deploys and the deploy runs as stored, and each pull-request
+ *  eval at `value` (minutes, or a share of `value` in a hundred), its series narrowed by
+ *  `narrowed`, as Dispatch names the facets it applied. */
+function deliveryAnswer(value: number, narrowed: string[] | null = null): EvalListResponse {
+  return answer([
+    charted(evalItem("deploy-frequency", "delivery"), "deploys", "deploys", {
+      deploys: 3,
+      per_day: 3,
+    }),
+    charted(evalItem("deploy-run-success", "delivery"), "runs", "runs", {
+      concluded: 4,
+      rate: 0.75,
+      reached_production: 3,
+    }),
+    ...PR_EVALS.map(({ series, slug, statistic, unit }) => {
+      const item = charted(evalItem(slug, "delivery"), series, unit, {
+        [statistic]: unit === "ratio" ? value / 100 : value,
+      });
+      return { ...item, series: (item.series ?? []).map((each) => ({ ...each, narrowed })) };
+    }),
+  ]);
+}
+
+/** The Deploys and lead time section's chart of `slug`. */
+function chartOf(slug: string): Element {
+  const found = region("Deploys and lead time").querySelector(`[data-eval="${slug}"]`);
+  if (found === null) throw new Error(`no ${slug} chart`);
+  return found;
+}
+
+/** What a card or a chart says of the facets: its mark's kind and words; null for no mark. */
+function markOf(element: Element): [string | null, string | null] | null {
+  const mark = element.querySelector("[data-narrowing]");
+  return mark === null ? null : [mark.getAttribute("data-narrowing"), mark.textContent];
+}
+
+const LOADING: [string, string] = ["loading", "narrowing to the facets set\u2026"];
+const WINDOW_ONLY: [string, string] = ["window-only", "window and repository only"];
+
+/** Each pull-request eval's chart, and its card where it has one, draws `value` (as
+ *  `deliveryAnswer` holds it) under `mark`, and, while loading, marked busy. */
+function expectPullRequestEvals(value: number, mark: [string, string] | null): void {
+  for (const { slug, statistic, unit } of PR_EVALS) {
+    const drawn = region("Target cards").querySelector(`[data-card="${slug}"]`);
+    for (const element of drawn === null ? [chartOf(slug)] : [chartOf(slug), drawn]) {
+      expect(element.querySelector(`[data-window-statistic="${statistic}"]`)?.textContent).toBe(
+        unit === "ratio" ? `${value.toFixed(1)}%` : `${value}m`
+      );
+      expect(markOf(element)).toEqual(mark);
+      expect(element.querySelector('[aria-busy="true"]') !== null).toBe(mark === LOADING);
+    }
+  }
+}
+
+/** Every card and chart of an eval no facet narrows, and the CI and Legion sections, say "window
+ *  and repository only". */
+function expectWindowOnly(): void {
+  const narrowed = new Set<string>(PR_EVALS.map(({ slug }) => slug));
+  const unnarrowed = (name: string, attribute: string) =>
+    [...region(name).querySelectorAll(`[${attribute}]`)].filter(
+      (element) => !narrowed.has(element.getAttribute(attribute) ?? "")
+    );
+  const cards = unnarrowed("Target cards", "data-card");
+  const charts = unnarrowed("Deploys and lead time", "data-eval");
+  expect(cards.map((card) => card.getAttribute("data-card"))).toEqual([
+    "deploy-frequency",
+    "change-fail-rate",
+    "deploy-run-success",
+    "unowned-p0",
+    "failed-deploy-recovery",
+    "deployment-rework-rate",
+    "legion-work-time",
+    "legion-rework",
+  ]);
+  expect(charts.map((chart) => chart.getAttribute("data-eval"))).toEqual([
+    "deploy-frequency",
+    "deploy-run-success",
+  ]);
+  for (const element of [...cards, ...charts]) expect(markOf(element)).toEqual(WINDOW_ONLY);
+  for (const name of ["CI health", "Legion measures"]) {
+    expect(markOf(region(name))).toEqual(WINDOW_ONLY);
+  }
+}
+
+/** The delivery views the page holds now: the unnarrowed one, and the one whose query sets
+ *  `key`. */
+function deliveryViews(socket: FakeLiveSocket, key: string) {
+  const frames = heldViews(socket).filter((frame) => queryOf(frame).get("kind") === "delivery");
+  return {
+    narrowed: frames.filter((frame) => queryOf(frame).has(key)),
+    plain: frames.filter((frame) => !queryOf(frame).has(key)),
+  };
+}
+
+/** A tab opened from an address that sets the author facet, with its unnarrowed views painted,
+ *  and the narrowed delivery view it reads beside them, which has not answered. */
+async function paintedWithAuthor(): Promise<{
+  narrowed: LiveSubscribe;
+  plain: LiveSubscribe;
+  socket: FakeLiveSocket;
+}> {
+  renderTab(DAEMON, "?window=28d&author=alice");
+  const socket = await openSocket();
+  const { narrowed, plain } = await waitFor(() => {
+    const views = deliveryViews(socket, "author");
+    expect([views.plain.length, views.narrowed.length]).toEqual([1, 1]);
+    return { narrowed: views.narrowed[0], plain: views.plain[0] };
+  });
+  expect(queryOf(narrowed).getAll("author")).toEqual(["alice"]);
+  serve(socket, snapshotFrame(plain.sub, deliveryAnswer(12)));
+  for (const kind of ["legion", "ci", "experiment"] as const) {
+    const { sub, view } = await subscription(socket, kind);
+    // No facet narrows a view of another kind: it is the one view the tab opens without one.
+    expect(view.kind === "evals" && new URLSearchParams(view.query).has("author")).toBe(false);
+    serve(socket, snapshotFrame(sub, ANSWERS[kind]));
+  }
+  // Every section paints from the unnarrowed views, and the Logged evals' detail reads settle.
+  await waitFor(() =>
+    expect(
+      [...document.querySelectorAll("[data-section]")].map((section) =>
+        section.getAttribute("data-state")
+      )
+    ).toEqual(["painted", "painted", "painted", "painted", "closed", "painted"])
+  );
+  return { narrowed, plain, socket };
+}
+
 const stateRows: [string, () => Promise<void>][] = [
   [
     "subscribed | own snapshot | painted: the section's numbers",
@@ -674,6 +811,76 @@ const stateRows: [string, () => Promise<void>][] = [
       expect(heldViews(socket).filter((frame) => frame.sub === sub)).toHaveLength(1);
     },
   ],
+  [
+    'painted | a facet or the search set (header or timeline) | subscribed: the delivery view again with the facets; the cards and the Deploys and lead time section\'s five pull-request charts draw its narrowed values; the other delivery charts and the window-only cards show the "window and repository only" mark',
+    async () => {
+      const user = userEvent.setup();
+      standInChart();
+      renderTab();
+      const socket = await openSocket();
+      const plain = await answerView(socket, "delivery", deliveryAnswer(12));
+      const others: string[] = [];
+      for (const kind of ["legion", "ci", "experiment"] as const) {
+        others.push(await answerView(socket, kind));
+      }
+      expectPullRequestEvals(12, null);
+      expect(document.querySelector("[data-narrowing]")).toBeNull();
+
+      // The timeline's search, once it holds still, narrows the delivery view.
+      const opened = await openTimeline(socket);
+      serve(socket, timelineSnapshot(opened.sub, timelineAnswer(timelineRows(0, 20), 20)));
+      await user.type(within(region("Merge timeline")).getByLabelText("Search"), "fix");
+      const narrowed = await waitFor(() => {
+        const frame = socket.subscribed("evals");
+        expect(queryOf(frame).get("q")).toBe("fix");
+        return frame;
+      });
+      expect(queryOf(narrowed).get("kind")).toBe("delivery");
+      // Until it answers, the delivery view drawn stays, under the loading mark.
+      expect(deliveryViews(socket, "q").plain.map((frame) => frame.sub)).toEqual([plain]);
+      expectPullRequestEvals(12, LOADING);
+      expectWindowOnly();
+
+      serve(socket, snapshotFrame(narrowed.sub, deliveryAnswer(7, ["q"])));
+      expectPullRequestEvals(7, ["narrowed", "narrowed by Search"]);
+      expectWindowOnly();
+      await waitFor(() => expect(socket.unsubscribes().map((frame) => frame.sub)).toContain(plain));
+      // No view of another kind was subscribed again: no facet narrows it.
+      expect(
+        heldViews(socket)
+          .map((frame) => frame.sub)
+          .sort()
+      ).toEqual([narrowed.sub, ...others].sort());
+    },
+  ],
+  [
+    "opened from an address with a facet | the unnarrowed snapshots land | painted: every section; the narrowed cards and the Deploys and lead time section's five pull-request charts show a loading mark over their unnarrowed values",
+    async () => {
+      const { narrowed, plain, socket } = await paintedWithAuthor();
+      // The narrowed delivery view has not answered: both are held.
+      expect(deliveryViews(socket, "author")).toEqual({ narrowed: [narrowed], plain: [plain] });
+      expectPullRequestEvals(12, LOADING);
+      expectWindowOnly();
+    },
+  ],
+  [
+    "painted, the narrowed cards and charts loading | the narrowed delivery view's snapshot | painted: those cards and charts draw the narrowed values and name the facets applied; the unnarrowed delivery view is unsubscribed",
+    async () => {
+      const { narrowed, plain, socket } = await paintedWithAuthor();
+      serve(socket, snapshotFrame(narrowed.sub, deliveryAnswer(7, ["author"])));
+      expectPullRequestEvals(7, ["narrowed", "narrowed by Author"]);
+      expectWindowOnly();
+      await waitFor(() =>
+        expect(socket.unsubscribes().map((frame) => frame.sub)).toContain(plain.sub)
+      );
+      expect(deliveryViews(socket, "author")).toEqual({ narrowed: [narrowed], plain: [] });
+      expect(
+        [...document.querySelectorAll("[data-section]")].map((section) =>
+          section.getAttribute("data-state")
+        )
+      ).toEqual(["painted", "painted", "painted", "painted", "closed", "painted"]);
+    },
+  ],
 ];
 
 bunTest.each(stateRows)("%s", async (_row, run) => {
@@ -688,24 +895,12 @@ bunTest.each(stateRows)("%s", async (_row, run) => {
  *  only under `bun test --todo`, where each says which task it waits for. */
 const laterRows: [string, string][] = [
   [
-    "painted | a facet or the search set (header or timeline) | subscribed: the delivery view again with the facets; the narrowed cards and charts, and the window-and-repository-only mark",
-    "T30",
-  ],
-  [
     'subscribed | sources answer "delivery off" | hidden (delivery, CI)',
     "T24, the per-project delivery settings read",
   ],
   [
     'subscribed | sources answer "no settings row" | hidden (delivery, CI); the header\'s "Delivery: not set up" line with its link',
     "T24",
-  ],
-  [
-    "opened from an address with a facet | the unnarrowed snapshots land | painted: every section; the narrowed cards and charts show a loading mark over their unnarrowed values",
-    "T30",
-  ],
-  [
-    "painted, the narrowed cards and charts loading | the narrowed delivery view's snapshot | painted: the narrowed values and the facets named; the unnarrowed delivery view unsubscribed",
-    "T30",
   ],
   [
     "painted, a declared eval | the evals view's delta carries a new definition.version | re-reading: the detail read again; then the new charts and answer (D11a)",

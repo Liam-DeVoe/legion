@@ -1,13 +1,16 @@
 import { afterEach, test as bunTest, expect, spyOn } from "bun:test";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
+import { installFakeLiveSockets, snapshotFrame } from "../../__tests__/live-socket-harness";
 import { api } from "../../api/client";
-import type { EvalListItem, EvalListResponse } from "../../api/types";
+import type { EvalListItem, EvalListResponse, LiveSubscribe } from "../../api/types";
 import type { EvalSeriesValues } from "./chart-model";
+import { EvalsSection } from "./EvalsSection";
 import { TargetCards } from "./TargetCards";
-import type { EvalsViewState } from "./useEvalsViews";
+import type { EvalsScope, EvalsViewFacets, EvalsViewState } from "./useEvalsViews";
 
 // The target cards' rows (dispatch://INFRA-2918/artifact/plan-md, T8), and the P0 link's rows of
 // "The state table of the drill-down's controls and the P0 link", each read answered by a fake
@@ -94,9 +97,9 @@ function evalItem(
   };
 }
 
-/** A view of `kind` that answered `items`. */
-function view(kind: "delivery" | "legion", items: EvalListItem[]): EvalsViewState {
-  const answer: EvalListResponse = {
+/** The answer of a view that holds `items`. */
+function answerOf(items: EvalListItem[]): EvalListResponse {
+  return {
     compare: COMPARE,
     freshness: { refresher_age_seconds: null, rows_updated_at: null },
     items,
@@ -105,7 +108,22 @@ function view(kind: "delivery" | "legion", items: EvalListItem[]): EvalsViewStat
     total: items.length,
     window: WINDOW,
   };
-  return { answer, items, kind, retry: () => undefined, status: "painted" };
+}
+
+/** A view of `kind` that answered `items`, the facets standing as `facets` (none where absent). */
+function view(
+  kind: "delivery" | "legion",
+  items: EvalListItem[],
+  facets?: EvalsViewFacets
+): EvalsViewState {
+  return {
+    answer: answerOf(items),
+    facets,
+    items,
+    kind,
+    retry: () => undefined,
+    status: "painted",
+  };
 }
 
 /** unowned-p0 counting `count` issues now. */
@@ -324,6 +342,146 @@ test("a delivery card is not drawn when the tab passes it delivery off, though i
     [...document.querySelectorAll("[data-card]")].map((drawn) => drawn.getAttribute("data-card"))
   ).toEqual(["legion-work-time", "legion-rework"]);
   expect(figure("legion-work-time", "median")).toBe("5.0 h");
+});
+
+// The narrowed cards' rows (dispatch://INFRA-2918/artifact/plan-md, T30, D3): the cards of a
+// section's views, subscribed on a fake live socket, and of views handed in.
+
+const SCOPE: EvalsScope = { compare: null, project: "ACME", repos: [], window: { preset: 28 } };
+
+/** The two lead-time cards' evals at `median` minutes, their series narrowed by `narrowed`. */
+function leadTimes(median: number, narrowed: string[] | null = null): EvalListItem[] {
+  return ["merge-to-production", "pr-open-to-merge"].map((slug) =>
+    evalItem(
+      slug,
+      "delivery",
+      series("minutes", "minutes", {
+        narrowed,
+        window: { max: median * 2, median, n: 4, p90: median * 2 },
+      })
+    )
+  );
+}
+
+/** The cards of the section reading the delivery and the Legion views over `scope`, as the tab
+ *  draws them; the function returned draws them over another scope, as the tab does when a facet
+ *  is set. */
+function renderSubscribedCards(scope: EvalsScope): (next: EvalsScope) => void {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tree = (current: EvalsScope) => (
+    <MemoryRouter initialEntries={["/projects/ACME/evals"]}>
+      <QueryClientProvider client={client}>
+        <EvalsSection
+          id="cards"
+          kinds={["delivery", "legion"]}
+          scope={current}
+          title="Target cards"
+        >
+          {(views) => <TargetCards delivery project="ACME" views={views} />}
+        </EvalsSection>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const { rerender } = render(tree(scope));
+  return (next) => rerender(tree(next));
+}
+
+/** The query of an evals view's subscribe frame. */
+function queryOf(frame: LiveSubscribe): URLSearchParams {
+  return new URLSearchParams(frame.view.kind === "evals" ? frame.view.query : "");
+}
+
+/** What a card says of the facets: its mark's kind and words; null for no mark. */
+function markOf(slug: string): [string | null, string | null] | null {
+  const mark = card(slug).querySelector("[data-narrowing]");
+  return mark === null ? null : [mark.getAttribute("data-narrowing"), mark.textContent];
+}
+
+test("a facet set re-subscribes the delivery view with the facets, and the narrowed cards draw its values", async () => {
+  const sockets = installFakeLiveSockets();
+  spies.push({ mockRestore: sockets.restore });
+  const rescope = renderSubscribedCards(SCOPE);
+  await waitFor(() => expect(sockets.sockets.length).toBeGreaterThan(0));
+  const socket = sockets.latest();
+  act(() => socket.open());
+  const [plain, legion] = await waitFor(() =>
+    ["delivery", "legion"].map((kind) => {
+      const frame = socket.subscribes().find((sent) => queryOf(sent).get("kind") === kind);
+      if (frame === undefined) throw new Error(`no ${kind} view was subscribed`);
+      return frame;
+    })
+  );
+  act(() => socket.receive(snapshotFrame(plain.sub, answerOf(leadTimes(45)))));
+  act(() => socket.receive(snapshotFrame(legion.sub, answerOf([]))));
+  expect(figure("merge-to-production", "median")).toBe("45m");
+  expect(document.querySelector("[data-narrowing]")).toBeNull();
+
+  // The author facet set: the tab reads the delivery view with it, holding the view it drew.
+  const narrowing = "author=alice";
+  act(() => rescope({ ...SCOPE, held: "", narrowing }));
+  const narrowed = await waitFor(() => {
+    const frame = socket.subscribed("evals");
+    expect(queryOf(frame).getAll("author")).toEqual(["alice"]);
+    return frame;
+  });
+  expect(queryOf(narrowed).get("kind")).toBe("delivery");
+  // No facet narrows the Legion view: it is not subscribed again.
+  expect(socket.subscribes().filter((frame) => queryOf(frame).get("kind") === "legion")).toEqual([
+    legion,
+  ]);
+  expect(socket.unsubscribes()).toEqual([]);
+  // Until the narrowed view answers, the narrowed cards keep the values drawn, marked loading.
+  for (const slug of ["merge-to-production", "pr-open-to-merge"]) {
+    expect(figure(slug, "median")).toBe("45m");
+    expect(markOf(slug)).toEqual(["loading", "narrowing to the facets set\u2026"]);
+    expect(card(slug).querySelector('[aria-busy="true"]')).not.toBeNull();
+  }
+
+  act(() => socket.receive(snapshotFrame(narrowed.sub, answerOf(leadTimes(20, ["author"])))));
+  for (const slug of ["merge-to-production", "pr-open-to-merge"]) {
+    expect(figure(slug, "median")).toBe("20m");
+    expect(markOf(slug)).toEqual(["narrowed", "narrowed by Author"]);
+    expect(card(slug).querySelector('[aria-busy="true"]')).toBeNull();
+  }
+
+  // Once the tab holds the narrowed view, the view it drew before is unsubscribed.
+  act(() => rescope({ ...SCOPE, held: narrowing, narrowing }));
+  await waitFor(() => expect(socket.unsubscribes().map((frame) => frame.sub)).toEqual([plain.sub]));
+  expect(figure("merge-to-production", "median")).toBe("20m");
+});
+
+test('a window-only card says "window and repository only" while a facet is set, and nothing with none', async () => {
+  const delivery = [
+    evalItem(
+      "deploy-frequency",
+      "delivery",
+      series("deploys", "deploys", { agg: "sum", window: { deploys: 6, per_day: 0.2 } })
+    ),
+    unowned(2),
+    ...leadTimes(20, ["author", "q"]),
+  ];
+  const legion = [
+    evalItem("legion-work-time", "legion", series("hours", "hours", { window: { median: 5 } })),
+  ];
+  const facets = { loading: false, set: true };
+  renderCards([view("delivery", delivery, facets), view("legion", legion, facets)]);
+  const cards = [...document.querySelectorAll("[data-card]")].map(
+    (drawn) => drawn.getAttribute("data-card") ?? ""
+  );
+  for (const slug of cards) {
+    expect(markOf(slug)).toEqual(
+      slug === "merge-to-production" || slug === "pr-open-to-merge"
+        ? ["narrowed", "narrowed by Author, Search"]
+        : ["window-only", "window and repository only"]
+    );
+  }
+  // Their stored values, as the view answers them.
+  expect(figure("legion-work-time", "median")).toBe("5.0 h");
+  expect(figure("unowned-p0", "value")).toBe("2");
+  cleanup();
+
+  renderCards([view("delivery", delivery), view("legion", legion)]);
+  expect(document.querySelector("[data-narrowing]")).toBeNull();
 });
 
 test("the P0 link opens only= with the items' keys", async () => {

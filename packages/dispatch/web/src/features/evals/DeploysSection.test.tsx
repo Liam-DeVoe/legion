@@ -7,6 +7,8 @@ import { evalItem, evalSeries, evalsView, WINDOW } from "../../__tests__/evals-f
 import { api } from "../../api/client";
 import type { EvalListItem } from "../../api/types";
 import { DEPLOY_CHARTS, DeploysSection } from "./DeploysSection";
+import { NARROWED_EVALS } from "./narrowing";
+import type { EvalsViewState } from "./useEvalsViews";
 
 // The Deploys and lead time section's rows (dispatch://INFRA-2918/artifact/plan-md, T12), over a
 // delivery view as the evals view answers it, and the method each eval's detail read answers.
@@ -181,4 +183,85 @@ test("a series with via_repository 2 shows the note with 2 beside its value, and
   );
   expect(chart("pr-open-to-merge").querySelector('[data-note="repository"]')).toBeNull();
   expect(within(chart("pr-open-to-merge")).queryByText(/by default repository/)).toBeNull();
+});
+
+/** The chart of `slug`'s values of its first statistic on each day of the window, as its table
+ *  holds them. */
+function dayValues(slug: string): (string | null)[] {
+  const statistic =
+    DEPLOY_CHARTS.find((candidate) => candidate.slug === slug)?.spec.statistics[0]?.id ?? "";
+  return [...within(chart(slug)).getByRole("table").querySelectorAll("[data-row]")].map(
+    (row) =>
+      row
+        .querySelector(`[data-range="window"][data-statistic="${statistic}"]`)
+        ?.getAttribute("data-value") ?? null
+  );
+}
+
+/** What the chart of `slug` says of the facets: its mark's kind and words; null for no mark. */
+function markOf(slug: string): [string | null, string | null] | null {
+  const mark = chart(slug).querySelector("[data-narrowing]");
+  return mark === null ? null : [mark.getAttribute("data-narrowing"), mark.textContent];
+}
+
+test('a facet set moves the five pull-request charts to the narrowed view\'s values, each naming the facets applied, and leaves the deploy and run charts on their stored values with the "window and repository only" mark', async () => {
+  const user = userEvent.setup();
+  // Each chart's eval as the stored day rows answer it, and as the view narrowed by the author
+  // facet answers it: the pull-request evals ten times over, every other eval as stored.
+  const stored = DEPLOY_CHARTS.map((spec, index) => charted(spec.slug, index + 1, index + 2));
+  const narrowed = DEPLOY_CHARTS.map((spec, index) =>
+    NARROWED_EVALS[spec.slug] === true
+      ? charted(spec.slug, (index + 1) * 10, (index + 2) * 10, { narrowed: ["author"] })
+      : stored[index]
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const tree = (view: EvalsViewState) => (
+    <QueryClientProvider client={client}>
+      <DeploysSection project="ACME" views={[view]} />
+    </QueryClientProvider>
+  );
+  const { rerender } = render(tree(evalsView("delivery", stored)));
+  for (const spec of DEPLOY_CHARTS) {
+    await user.click(within(chart(spec.slug)).getByRole("button", { name: "Table" }));
+  }
+  expect(document.querySelector("[data-narrowing]")).toBeNull();
+  const pullRequests = DEPLOY_CHARTS.filter((spec) => NARROWED_EVALS[spec.slug] === true);
+  expect(pullRequests.map((spec) => spec.slug)).toEqual([
+    "merge-to-production",
+    "first-commit-to-production",
+    "open-to-production",
+    "pr-open-to-merge",
+    "rework-share",
+  ]);
+  const storedValues = (index: number) => [String(index + 1), String(index + 2), null];
+
+  // The facet set, its narrowed view not yet answered: the stored values, the five under the
+  // loading mark.
+  rerender(tree({ ...evalsView("delivery", stored), facets: { loading: true, set: true } }));
+  DEPLOY_CHARTS.forEach((spec, index) => {
+    expect(dayValues(spec.slug)).toEqual(storedValues(index));
+    expect(markOf(spec.slug)).toEqual(
+      NARROWED_EVALS[spec.slug] === true
+        ? ["loading", "narrowing to the facets set\u2026"]
+        : ["window-only", "window and repository only"]
+    );
+  });
+
+  // The narrowed view answered: the five draw its values and name the facet; the others keep
+  // theirs. Each chart keeps the table the reader chose.
+  rerender(tree({ ...evalsView("delivery", narrowed), facets: { loading: false, set: true } }));
+  DEPLOY_CHARTS.forEach((spec, index) => {
+    if (NARROWED_EVALS[spec.slug] === true) {
+      expect(dayValues(spec.slug)).toEqual([
+        String((index + 1) * 10),
+        String((index + 2) * 10),
+        null,
+      ]);
+      expect(markOf(spec.slug)).toEqual(["narrowed", "narrowed by Author"]);
+      expect(chart(spec.slug).querySelector('[aria-busy="true"]')).toBeNull();
+    } else {
+      expect(dayValues(spec.slug)).toEqual(storedValues(index));
+      expect(markOf(spec.slug)).toEqual(["window-only", "window and repository only"]);
+    }
+  });
 });
