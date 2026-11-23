@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -38,7 +39,7 @@ func TestForwardsQueuedBehindAHoldersWorkerAtShutdownAreKeptAfterTheDrain(t *tes
 	release := make(chan struct{})
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		if forwards.Add(1) == 1 {
 			<-release
 		}
@@ -102,10 +103,10 @@ func TestForwardsQueuedBehindAHoldersWorkerAtShutdownAreKeptAfterTheDrain(t *tes
 // client's stream, except that the first forward's acknowledgement is lost: the stream stores that
 // forward, then after runs, and the forward reports the error a forward whose acknowledgement never
 // came reports, which leaves the stream's copy unknown (roleForwardEnded holds it).
-func forwardLosingTheFirstAcknowledgement(client *bus.Client, forwards *atomic.Int32, after func()) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+func forwardLosingTheFirstAcknowledgement(client *bus.Client, forwards *atomic.Int32, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 	real := startRoleForward(client)
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-		wait, err := real(subject, item, msgID, timeout)
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		wait, err := real(ctx, subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}

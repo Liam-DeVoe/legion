@@ -100,12 +100,14 @@ func pauseBeforeRetry(ctx context.Context) bool {
 // forwardAndWait forwards item to subject, under msgID as its Nats-Msg-Id when that is not empty,
 // through the delivery configuration's forwardRole and waits for its outcome, which is the form a
 // caller that answers for the forward needs: the publish route answers its sender with what the
-// forward did, and the kept lane's drain moves its cursor past the copy (walkKeptRole), where the
-// role lane hands the wait over and reports it later. The outcome is the stream's acknowledgement
-// that it stored the forward, nothing more: the holder answers no receipt and reads the stored
-// copy from its session consumer (startRoleForward).
-func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) error {
-	wait, err := cfg.forwardRole(subject, item, msgID, window)
+// forward did, the kept lane's drain moves its cursor past the copy (walkKeptRole), and a held
+// message's forward once more at the stop ends it or leaves it to its keep (forwardPinnedOnceMore),
+// where the role lane hands the wait over and reports it later. The outcome is the stream's
+// acknowledgement that it stored the forward, nothing more: the holder answers no receipt and reads
+// the stored copy from its session consumer (startRoleForward). ctx bounds the forward with window:
+// its cancel or its deadline ends the forward where it is.
+func (cfg listenerDeliveryHandlerConfig) forwardAndWait(ctx context.Context, subject string, item contracts.Envelope, msgID string, window time.Duration) error {
+	wait, err := cfg.forwardRole(ctx, subject, item, msgID, window)
 	if err != nil {
 		return err
 	}
@@ -564,7 +566,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.
-			err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
+			err := d.delivery.forwardAndWait(context.Background(), subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				d.confirm(item.DedupeKey, send.holder)
 				send.record.charge.stored()

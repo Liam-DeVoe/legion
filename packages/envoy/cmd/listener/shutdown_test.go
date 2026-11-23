@@ -36,17 +36,11 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 // would re-dial NATS. Whether a goroutine logs before the exit is a race, so the test stops the
 // real binary several times.
 //
-// One failure is not counted: a role forward whose window (roleForwardTimeout) ended before it was
-// published, which its line marks "window_ended_before_publish":true (finishRoleForward). The
-// window runs on the listener's own wall clock, which a loaded machine spends without the listener
-// running, so that failure says how the machine ran and not what the shutdown did. A drain cannot
-// cause it: a forward meets a connection before its publish only in ensureConnWithContext, which
-// serves a draining connection and refuses a stopped client at once, and in SubscribeSync, which
-// refuses a draining connection with an error of its own, counted here. A drain that holds a
-// forward after its publish fails it on its flush or its acknowledgement, with no mark, and is
-// counted. What this cannot see is a shutdown path that holds a forward before its publish, behind
-// a lock say: that forward would carry the mark. A change to the shutdown path or to
-// bus.Client.StartRequestStoredTo is read against this test for that case.
+// Every ERROR counts. A forward in flight at the stop does not run out its own window: the stop
+// cuts it, its message holds and parks, and it ends inside the drain's wait - forwarded once more
+// to its holder under the same Nats-Msg-Id when it was published, kept on its role's kept lane
+// otherwise (roleForwarder.stopCtx) - so neither a forward whose window ends before its publish nor
+// one whose acknowledgement is late is an ERROR.
 func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 	_, uri := testnats.Start(t)
 	testnats.Connect(t, uri).Close()
@@ -126,10 +120,6 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 			if signal >= 0 && lineStart > signal {
 				side = "after the signal"
 			}
-			if forwardWindowEndedBeforePublish(line) {
-				t.Logf("run %d: not counted, %s: %s", run, side, line)
-				continue
-			}
 			counted = append(counted, side+": "+line)
 		}
 		if len(counted) > 0 {
@@ -148,16 +138,6 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 
 // shutdownSignalLine is the message the listener logs when a signal begins its shutdown.
 const shutdownSignalLine = "received signal, shutting down"
-
-// forwardWindowEndedBeforePublish reports whether line is the listener's JSON record of a role
-// forward that failed because its window ended before it was published (finishRoleForward).
-func forwardWindowEndedBeforePublish(line string) bool {
-	var record struct {
-		Msg                      string `json:"msg"`
-		WindowEndedBeforePublish bool   `json:"window_ended_before_publish"`
-	}
-	return json.Unmarshal([]byte(line), &record) == nil && record.Msg == "listener role forward failed" && record.WindowEndedBeforePublish
-}
 
 // outputAroundSignal is the listener's output from the first JSON line whose time is no more than
 // 2 s before that of its signal line, which starts at or before offset signal, to the end: what a

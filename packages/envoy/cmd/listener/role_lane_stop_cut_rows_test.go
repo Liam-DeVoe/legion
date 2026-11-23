@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,7 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The four rows of this file. TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt names no
+// The first four rows of this file. TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt names no
 // symbol the stop context's rounds added, so it builds against the forwarder before them and fails
 // there for the reason it names. TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait and
 // TestAForwardResolvedAgainOnItsWorkerAtTheStopEndsBeforeTheDrainsWait read the claim through the
@@ -29,6 +31,13 @@ import (
 // TestAKeepARuleRefusesAtTheStopIsLoggedAsAFailure holds that a keep a rule refuses while the stop
 // cancels its caller is logged at ERROR, and its control that one whose failure holds the message
 // is the cut line at INFO; it fails at 106f8d769f, which logged both at INFO.
+//
+// The last three rows hold that the stop cuts a forward in flight. TestAForwardWhoseAcknowledgementIsLateAtTheStopEndsForwarded
+// and TestAForwardWhosePublishIsHeldAtTheStopEndsWithTheMessageBehindIt stand in for the bus with a
+// seam that waits as it does, until its context or its window ends; their control is the head with
+// the worker's forward under context.Background(), as at 9e1535310a, where each ends with an ERROR
+// that a message was not kept. TestARoleForwardOverTheBusEndsAtItsContextsCancel drives the real
+// forward (startRoleForward over the bus), whose control is its uncancelled forward.
 
 // keepThatNeverAnswers is a keep whose publish NATS never answers: it waits for its context to
 // end and fails with the context's error, as a keep over a connection whose replies are lost does.
@@ -66,7 +75,7 @@ func TestAForwardWhoseOutcomeComesLateInTheDrainsWaitEndsBeforeIt(t *testing.T) 
 	cfg := harness.config
 	cfg.client = slow
 	cfg.keepPublish = keepThatNeverAnswers
-	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		if forwards.Add(1) > 1 {
 			return func() error { return nil }, nil
 		}
@@ -133,7 +142,7 @@ func TestAHeldRetryInItsClaimReadAtTheStopEndsBeforeTheDrainsWait(t *testing.T) 
 	cfg := harness.config
 	cfg.claims = claims
 	cfg.keepPublish = keepThatNeverAnswers
-	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		if forwards.Add(1) == 1 {
 			claims.stopAnswering.Store(true)
 			return nil, fmt.Errorf("%w: the window was spent before the publish", bus.ErrNotSent)
@@ -201,7 +210,7 @@ func TestAForwardResolvedAgainOnItsWorkerAtTheStopEndsBeforeTheDrainsWait(t *tes
 	cfg.claims = claims
 	cfg.keepPublish = keepThatNeverAnswers
 	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
-	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		if forwards.Add(1) == 1 {
 			close(entered)
 			<-release
@@ -271,5 +280,194 @@ func TestAKeepARuleRefusesAtTheStopIsLoggedAsAFailure(t *testing.T) {
 				t.Fatalf("lines %v, want one %q at %s:\n%s", lines, row.wantLine, row.wantLevel, logs)
 			}
 		})
+	}
+}
+
+// forwardedLine is the line of a role forward the stream acknowledged (finishRoleForward).
+const forwardedLine = "listener role forwarded"
+
+// noErrorLines fails t when logs holds a record at ERROR: a forward the stop cut ends forwarded
+// or kept, and neither is an error.
+func noErrorLines(t *testing.T, logs string) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
+		if strings.Contains(line, `"level":"ERROR"`) {
+			t.Fatalf("the stop logged an ERROR: %s\n%s", line, logs)
+		}
+	}
+}
+
+// A forward whose acknowledgement has not come when the listener stops ends forwarded, with no
+// ERROR, before the drain's wait ends: the stop cuts the forward's wait (forwardRole takes the
+// stop context), the message holds pinned to its holder, since the stream may have stored it, and
+// parks at once, and its end makes the forward once more to that holder under the same Nats-Msg-Id,
+// which the stream answers as the duplicate of the copy it stored. The seam waits for the
+// acknowledgement as bus.PendingForward.Wait does, until its context ends or its window does, and
+// none comes. The drain releases the parked message right after the stop, so the window of a wait
+// that ran on past the stop would end after the end's deadline (keepBy): before, the message parked
+// then, its forward once more had no time and its keep failed, an ERROR that it was not kept.
+func TestAForwardWhoseAcknowledgementIsLateAtTheStopEndsForwarded(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role, holder = "acknowledgement-late-at-the-stop", "ses_acknowledgement_late"
+	claimFor(t, harness, role, holder)
+	entered := make(chan struct{})
+	var mu sync.Mutex
+	var msgIDs []string
+	cfg := harness.config
+	cfg.forwardRole = func(ctx context.Context, _ string, _ contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		mu.Lock()
+		msgIDs = append(msgIDs, msgID)
+		first := len(msgIDs) == 1
+		mu.Unlock()
+		if !first {
+			return func() error { return nil }, nil
+		}
+		return func() error {
+			close(entered)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("%w: %w", bus.ErrForwardNotStored, ctx.Err())
+			case <-time.After(timeout):
+				return bus.ErrForwardNotStored
+			}
+		}, nil
+	}
+	cfg = wireTestRoleForwarder(t, cfg)
+	forwarder := cfg.roleForwards
+	item, msg := laneMessage(t, role, "acknowledgement-late-at-the-stop")
+
+	coreNATSDeliveryHandler(cfg)(msg)
+	testwait.Receive(t, "the forward's wait for its acknowledgement to start", entered)
+	forwarder.stopHolding()
+	waitEnds := forwarder.keepHeldNow()
+	forwarder.settled(t)
+	ended := time.Now()
+
+	logs := harness.logs.String()
+	mu.Lock()
+	made := slices.Clone(msgIDs)
+	mu.Unlock()
+	if len(made) != 2 || made[0] != made[1] {
+		t.Fatalf("the lane made the forwards %v, want two under one Nats-Msg-Id: the cut one and its forward once more to the same holder:\n%s", made, logs)
+	}
+	if got := countLogged(logs, forwardedLine, item.EventID); got != 1 {
+		t.Fatalf("the message was forwarded %d times, want once, by its forward once more:\n%s", got, logs)
+	}
+	if got := endsOf(logs, item.EventID); got != 0 {
+		t.Fatalf("the message ended kept, or as not kept, %d times, want none: its forward once more ended it:\n%s", got, logs)
+	}
+	noErrorLines(t, logs)
+	if ended.After(waitEnds) {
+		t.Fatalf("the message ended %s after the drain's wait ended, want before it:\n%s", ended.Sub(waitEnds), logs)
+	}
+}
+
+// A forward whose publish is held when the listener stops, and the message queued behind it on its
+// holder's worker, both end before the drain's wait ends, with no ERROR: the stop cuts the publish
+// (forwardRole takes the stop context), the message holds pinned, since the publish was made, and
+// parks, and the worker parks the message behind it rather than forward it. At the end the first
+// is forwarded once more to its holder under the same Nats-Msg-Id, and the second, never forwarded,
+// is kept on its role's kept lane. The seam's publish waits for its flush as
+// bus.Client.StartRequestStoredTo does, until its context ends or its window does, and the flush
+// never answers. Before, the publish ran out its window past the end's deadline, and both messages
+// parked after it with no time for their ends: an ERROR that each was not kept.
+func TestAForwardWhosePublishIsHeldAtTheStopEndsWithTheMessageBehindIt(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const role, holder = "publish-held-at-the-stop", "ses_publish_held"
+	claimFor(t, harness, role, holder)
+	entered := make(chan struct{})
+	var mu sync.Mutex
+	var msgIDs []string
+	cfg := harness.config
+	cfg.forwardRole = func(ctx context.Context, subject string, _ contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		mu.Lock()
+		msgIDs = append(msgIDs, msgID)
+		first := len(msgIDs) == 1
+		mu.Unlock()
+		if !first {
+			return func() error { return nil }, nil
+		}
+		close(entered)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("bus: flush publish to %q: %w", subject, ctx.Err())
+		case <-time.After(timeout):
+			return nil, fmt.Errorf("bus: flush publish to %q: %w", subject, natsgo.ErrTimeout)
+		}
+	}
+	cfg = wireTestRoleForwarder(t, cfg)
+	forwarder := cfg.roleForwards
+	handler := coreNATSDeliveryHandler(cfg)
+	first, firstMsg := laneMessage(t, role, "publish-held-first")
+	behind, behindMsg := laneMessage(t, role, "publish-held-behind")
+
+	handler(firstMsg)
+	testwait.Receive(t, "the holder's first forward to start its publish", entered)
+	handler(behindMsg)
+	forwarder.stopHolding()
+	waitEnds := forwarder.keepHeldNow()
+	forwarder.settled(t)
+	ended := time.Now()
+
+	logs := harness.logs.String()
+	mu.Lock()
+	made := slices.Clone(msgIDs)
+	mu.Unlock()
+	if len(made) != 2 || made[0] != made[1] {
+		t.Fatalf("the lane made the forwards %v, want two under one Nats-Msg-Id: the cut publish and its forward once more, and none of the message behind it:\n%s", made, logs)
+	}
+	if got := countLogged(logs, forwardedLine, first.EventID); got != 1 {
+		t.Fatalf("the first message was forwarded %d times, want once, by its forward once more:\n%s", got, logs)
+	}
+	if got := countLogged(logs, keptLine, behind.EventID); got != 1 {
+		t.Fatalf("the message behind it was kept %d times, want once:\n%s", got, logs)
+	}
+	noErrorLines(t, logs)
+	if ended.After(waitEnds) {
+		t.Fatalf("the messages ended %s after the drain's wait ended, want before it:\n%s", ended.Sub(waitEnds), logs)
+	}
+}
+
+// A role forward over the bus (startRoleForward) ends at once when its context is cancelled, with an
+// error that holds its message pinned to its holder (forwardMayBeStored): the publish was made, so
+// the stream may have stored it. A plain subscriber takes the subject and never answers, so neither
+// an acknowledgement nor a no-responders answer ends the wait first. The control is the same forward
+// with no cancel, which waits out its window.
+func TestARoleForwardOverTheBusEndsAtItsContextsCancel(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	silent := testnats.Connect(t, harness.client.Conn.ConnectedUrl())
+	t.Cleanup(silent.Close)
+	const subject = "test.silent.role-forward"
+	if _, err := silent.SubscribeSync(subject); err != nil {
+		t.Fatalf("subscribe the silent taker: %v", err)
+	}
+	if err := silent.Flush(); err != nil {
+		t.Fatalf("flush the silent taker: %v", err)
+	}
+	forward := startRoleForward(harness.client)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+"cut-role-forward", "cut-role-forward")
+	const window = 30 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	wait, err := forward(ctx, subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
+	if err != nil {
+		t.Fatalf("start the forward: %v", err)
+	}
+	cancel()
+	started := time.Now()
+	err = wait()
+	if elapsed := time.Since(started); elapsed >= window/2 {
+		t.Fatalf("the cancelled forward's wait took %s, its window's; want it to end at the cancel", elapsed)
+	}
+	if !errors.Is(err, bus.ErrForwardNotStored) || !errors.Is(err, context.Canceled) || !forwardMayBeStored(err) {
+		t.Fatalf("the cancelled forward = %v, want ErrForwardNotStored wrapping context.Canceled, held as may be stored", err)
+	}
+
+	control := listenerTestEnvelope(contracts.RoleTopicPrefix+"cut-role-forward", "uncut-role-forward")
+	wait, err = forward(context.Background(), subject, control, bus.ForwardMsgID(control.DedupeKey, subject), 300*time.Millisecond)
+	if err != nil {
+		t.Fatalf("start the forward, control: %v", err)
+	}
+	if err := wait(); !errors.Is(err, bus.ErrForwardNotStored) || errors.Is(err, context.Canceled) {
+		t.Fatalf("the uncancelled forward = %v, want ErrForwardNotStored at its window, without a cancel", err)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,11 +47,11 @@ func TestAQueuedForwardPastTheFenceGoesToTheRolesHolderNow(t *testing.T) {
 	real := startRoleForward(r.harness.client)
 	cfg := r.harness.config
 	cfg.now = clock.now
-	cfg.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 		if forwards.Add(1) == 1 {
 			<-release
 		}
-		return real(subject, item, msgID, timeout)
+		return real(ctx, subject, item, msgID, timeout)
 	}
 	cfg = wireTestRoleForwarder(t, cfg)
 	handler := coreNATSDeliveryHandler(cfg)

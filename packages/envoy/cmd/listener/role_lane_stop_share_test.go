@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -23,7 +24,7 @@ func TestAPinnedMessageTheStopLeavesNoTimeToForwardIsKeptAtOnce(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		if forwards.Add(1) > 1 {
 			return func() error { return nil }, nil
 		}

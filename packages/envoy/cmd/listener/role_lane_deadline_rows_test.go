@@ -66,7 +66,7 @@ func TestAPinnedMessageAtTheStopEndsInsideTheDrainsWait(t *testing.T) {
 	var mu sync.Mutex
 	var forwardEnds, keepEnds []time.Time
 	cfg := harness.config
-	cfg.forwardRole = func(_ string, _ contracts.Envelope, _ string, timeout time.Duration) (func() error, error) {
+	cfg.forwardRole = func(_ context.Context, _ string, _ contracts.Envelope, _ string, timeout time.Duration) (func() error, error) {
 		first := forwards.Add(1) == 1
 		end := time.Now().Add(timeout)
 		return func() error {
@@ -215,7 +215,7 @@ func TestAForwardQueuedPastItsBoundIsKeptNotMade(t *testing.T) {
 	var forwards atomic.Int32
 	cfg := harness.config
 	cfg.now = func() time.Time { return time.Unix(0, clock.Load()) }
-	cfg.forwardRole = func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	cfg.forwardRole = func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 		if forwards.Add(1) == 1 {
 			close(entered)
 			<-release

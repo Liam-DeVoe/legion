@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func (r pinRig) deleteSession(t *testing.T, sessionID string) {
 
 // deliver hands one role message to the lane through forward and waits until the lane holds
 // nothing, returning the message.
-func (r pinRig) deliver(t *testing.T, eventID string, forward func(string, contracts.Envelope, string, time.Duration) (func() error, error)) contracts.Envelope {
+func (r pinRig) deliver(t *testing.T, eventID string, forward func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error)) contracts.Envelope {
 	t.Helper()
 	cfg := r.harness.config
 	cfg.forwardRole = forward
@@ -80,14 +81,14 @@ func (r pinRig) storedFor(t *testing.T, sessionID string) uint64 {
 // forwardNotSentFirst is the listener's own forward (startRoleForward), except that the first
 // forward is made with its window already spent, so it leaves nothing on the wire and fails with
 // the window error a forward the process stalled before its publish meets; before runs first.
-func forwardNotSentFirst(client *bus.Client, forwards *atomic.Int32, before func()) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+func forwardNotSentFirst(client *bus.Client, forwards *atomic.Int32, before func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 	real := startRoleForward(client)
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
 		if forwards.Add(1) == 1 {
 			before()
-			return real(subject, item, msgID, 0)
+			return real(ctx, subject, item, msgID, 0)
 		}
-		return real(subject, item, msgID, timeout)
+		return real(ctx, subject, item, msgID, timeout)
 	}
 }
 

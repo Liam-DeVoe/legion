@@ -75,10 +75,12 @@ type listenerDeliveryHandlerConfig struct {
 	// under msgID and timeout ended, or a later send failed, before an answer named that forward's
 	// copy: a forward under msgID reached the stream and may yet be stored, whether or not the
 	// error also wraps bus.ErrForwardNotStored. Otherwise the wait's bus.ErrForwardNotStored means
-	// the stream did not acknowledge storing it inside timeout, and any other error, returned by
-	// the publish (a raw nats.ErrTimeout from its flush included) or by the wait, means the forward
-	// is not known to have left this process.
-	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
+	// the stream did not acknowledge storing it inside timeout, or before ctx was cancelled, and any
+	// other error, returned by the publish (a raw nats.ErrTimeout from its flush included) or by the
+	// wait, means the forward is not known to have left this process. A cancel of ctx ends the
+	// publish where it is and the wait at once: the role lane passes its stop context
+	// (roleForwarder.stopCtx), so a forward in flight at the stop does not run out its window.
+	forwardRole func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
 	// configuration it reports through, once that configuration is otherwise built, and main.go
@@ -888,8 +890,6 @@ func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, 
 // - and the lane's forwarder holds the message for another attempt instead (roleForwarder.finish).
 // A failure clears the attempt, so a re-send is forwarded again; a delivered forward records the
 // dedupe entry.
-// A failure whose window ended before the forward was published (bus.ErrWindowEndedBeforePublish)
-// says so on its line, "window_ended_before_publish":true.
 func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, err error, attrs ...slog.Attr) {
 	item, sessionID := forward.item, forward.sessionID
 	switch {
@@ -907,11 +907,7 @@ func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, e
 			sessionID:    sessionID,
 			metricStatus: "failed",
 			log: func(logger *logging.Logger) {
-				failed := append(attrs, slog.String("error", err.Error()))
-				if errors.Is(err, bus.ErrWindowEndedBeforePublish) {
-					failed = append(failed, slog.Bool("window_ended_before_publish", true))
-				}
-				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", failed...)
+				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", append(attrs, slog.String("error", err.Error()))...)
 			},
 			exceptionReason: "delivery_failed",
 			clearAttempt:    true,

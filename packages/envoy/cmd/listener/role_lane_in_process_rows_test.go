@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -16,10 +17,10 @@ import (
 // of the same Nats-Msg-Id and its resend then left nothing on the wire
 // (publishPastInProcess: errEarlierAttemptInProcess wrapping bus.ErrNotSent). after runs between
 // the store and that report.
-func forwardEndingInProcessFirst(client *bus.Client, forwards *atomic.Int32, after func()) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+func forwardEndingInProcessFirst(client *bus.Client, forwards *atomic.Int32, after func()) func(context.Context, string, contracts.Envelope, string, time.Duration) (func() error, error) {
 	real := startRoleForward(client)
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-		wait, err := real(subject, item, msgID, timeout)
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		wait, err := real(ctx, subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
