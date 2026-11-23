@@ -288,9 +288,11 @@ const (
 	// It holds no row — a pass took it away for the wait (Issue.ReleasedForWaitAt), or its last
 	// transition left it owing a start with none — and the entry stands at the moment that mark
 	// records, or at the owed row's own creation time where no mark stands (LineFacts.Owed).
-	// Nothing of its work stopped, so its promotion grants it a row again and clears the mark;
-	// while the wait lasts the entry says what it waits on (Waits) and the promotion passes over
-	// it, as it passes over every candidate that waits on an issue.
+	// Nothing of its work stopped, so its promotion clears the mark and grants it a row again where
+	// the phase it goes on in keeps one (for one at admitted under an open gate of its tree, the
+	// phase of its first step, StartsIn, and an acceptance keeps none); while the wait lasts the
+	// entry says what it waits on (Waits) and the promotion passes over it, as it passes over every
+	// candidate that waits on an issue.
 	LineWaitingOnIssue
 )
 
@@ -1022,7 +1024,10 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 // one — and the released children of a tree that already runs, standing at admitted under an
 // open design gate. Each takes its tree root's place in the board's order, so a started tree's
 // children go before the roots ranked below their root, and a root ranked above a tree is not
-// kept out by a tree that keeps filing children.
+// kept out by a tree that keeps filing children. One of them whose first step keeps no slot, an
+// acceptance (LineEntry.StartsIn), waits here for no slot: admission promotes it on no row,
+// however many of the cap's rows are held, and the row goes to the entry behind it (admit's
+// slotFor, capLets).
 //
 // An unanswered awaiting root waits on the person rather than a slot, whatever Dispatch status it
 // currently shows, so it is not in the line until it is Answered. A root without the label waits
