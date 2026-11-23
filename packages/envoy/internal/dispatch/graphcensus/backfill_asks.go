@@ -125,7 +125,7 @@ func readAskBatch(ctx context.Context, database *store.Store, read string, args 
 func lockAskOwners(ctx context.Context, tx pgx.Tx, batch []askBatchRow) error {
 	owners := events.OwnerRows{}
 	for _, row := range batch {
-		owners.Add(row.issue, row.document, "ask "+row.askID)
+		owners.Add(row.issue, row.document)
 	}
 	return events.LockOwnerRows(ctx, tx, owners)
 }
