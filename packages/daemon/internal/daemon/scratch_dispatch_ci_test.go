@@ -149,7 +149,7 @@ func (r *scratchCIRig) fileIssue() {
 	t, base := r.t, r.dispatch.base
 	t.Helper()
 	dispatchCall(t, base, http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "CI states"}, nil)
-	dispatchCall(t, base, http.MethodPut, "/api/v1/settings/repo-projects/"+scratchCIRepo, map[string]any{"project": r.cfg.Project, "default": true}, nil)
+	dispatchCall(t, base, http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": scratchCIRepo}, nil)
 	var created struct {
 		Key string `json:"key"`
 	}
