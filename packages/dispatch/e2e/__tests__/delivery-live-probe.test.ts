@@ -456,15 +456,15 @@ test(
     await lineBy(run, "delta line", () => run.lines.some((line) => line.type === "delta"));
     expect(await exitAfter(run, "SIGINT")).toBe(1);
 
-    expect(comparisons(run.lines).map(({ equal, fields, rows }) => ({ equal, fields, rows }))).toEqual(
-      [
-        {
-          equal: false,
-          fields: { differ: ["total"], equal: false },
-          rows: { equal: false, extra: [String(firstRow.id)], missing: ["99"] },
-        },
-      ]
-    );
+    expect(
+      comparisons(run.lines).map(({ equal, fields, rows }) => ({ equal, fields, rows }))
+    ).toEqual([
+      {
+        equal: false,
+        fields: { differ: ["total"], equal: false },
+        rows: { equal: false, extra: [String(firstRow.id)], missing: ["99"] },
+      },
+    ]);
   },
   // The wait for the delta line, then the wait for the exit after SIGINT.
   rowLimit("short", "short")
@@ -524,14 +524,18 @@ test(
       ])
     ).toEqual([
       [TIMELINE_ROUTE, String(PROJECT_TIMELINE_PAGE_MAX), "0"],
-      [TIMELINE_ROUTE, String(limit - PROJECT_TIMELINE_PAGE_MAX), String(PROJECT_TIMELINE_PAGE_MAX)],
-    ]);
-    expect(comparisons(run.lines).map(({ equal, fields, rows }) => ({ equal, fields, rows }))).toEqual(
       [
-        { equal: true, fields: allEqual, rows: same },
-        { equal: true, fields: allEqual, rows: same },
-      ]
-    );
+        TIMELINE_ROUTE,
+        String(limit - PROJECT_TIMELINE_PAGE_MAX),
+        String(PROJECT_TIMELINE_PAGE_MAX),
+      ],
+    ]);
+    expect(
+      comparisons(run.lines).map(({ equal, fields, rows }) => ({ equal, fields, rows }))
+    ).toEqual([
+      { equal: true, fields: allEqual, rows: same },
+      { equal: true, fields: allEqual, rows: same },
+    ]);
   },
   // The wait for the snapshot line, then the wait for the exit after SIGINT.
   rowLimit("short", "short")
