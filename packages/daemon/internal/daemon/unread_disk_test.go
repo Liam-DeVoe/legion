@@ -207,6 +207,25 @@ func TestTheReleaseOfAPodNoClaimOwnsReadsItsDiskFirst(t *testing.T) {
 			t.Fatalf("workspace reads through the launcher = %d, want none: a kept volume the next pod mounts is not deleted", launcher)
 		}
 	})
+
+	// Sol's point 4 on R6: a clean read, then a turn of a claim of the issue that has already ended
+	// on the planner, which records no process. The turn can have made work the read did not see,
+	// so it voids the read, and the release's teardown takes nothing (store's releaseOvertaken).
+	t.Run("a_turn_after_the_clean_read_voids_it", func(t *testing.T) {
+		rig, _ := noRoleRig(t, false)
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, runtime.WorkspaceWork{Head: idleRigUnpushed.Head})
+		rig.rt.mu.Lock()
+		rig.rt.afterPodRead = func() { turnSinceTheRead(t, rig) }
+		rig.rt.mu.Unlock()
+		rig.w.releaseUnownedPods(ctx)
+		rig.drain(t)
+		if launcherReads(rig) != 1 {
+			t.Fatalf("the launcher read %d times, want once", launcherReads(rig))
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the teardown took %d pods, want none: a turn after the clean read voids it", suspended)
+		}
+	})
 }
 
 // The close of a left pod with no live claim while its tree runs on: the child was parked under
@@ -253,6 +272,34 @@ func TestTheCloseOfALeftPodWithNoLiveClaimReadsItsDiskFirst(t *testing.T) {
 			t.Fatalf("notices to the architect = %+v, want none: the pod was not kept", notices)
 		}
 	})
+
+	// Sol's point 4 on R6: a clean read, then a turn that has already ended on the planner, which
+	// records no process, after the check queued the Sandbox suspension and before that suspension
+	// is authorized. The suspension carries the check's turn start (record.IssueSuspend.TurnStart),
+	// so it finishes without acting and takes nothing.
+	t.Run("a_turn_after_the_clean_read_voids_it", func(t *testing.T) {
+		rig, _ := noRoleRig(t, true)
+		rig.rt.mu.Lock()
+		rig.rt.beforeAuthorize = func() { turnSinceTheRead(t, rig) }
+		rig.rt.mu.Unlock()
+		idlePasses(rig)
+		rig.drain(t)
+		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"SuspendIssue"}) {
+			t.Fatalf("teardowns asked = %v, want the close's Sandbox suspension asked once", asked)
+		}
+		if _, suspended := rig.rt.reads(); suspended != 0 {
+			t.Fatalf("the close's suspension took %d pods, want none: a turn after the clean read voids it", suspended)
+		}
+	})
+}
+
+// turnSinceTheRead records a turn of the rig's planner that started after the launcher's read and
+// has ended: the planner's claim stays failed and records no process.
+func turnSinceTheRead(t *testing.T, rig *idleRig) {
+	t.Helper()
+	if _, err := rig.pool.Exec(context.Background(), `update claims set last_turn_start = now() where token = $1`, string(rig.token)); err != nil {
+		t.Errorf("record the planner's turn: %v", err)
+	}
 }
 
 // declinedPod is the pod the issue's decline row names, and whether a row stands.
