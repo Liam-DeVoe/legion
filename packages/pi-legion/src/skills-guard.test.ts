@@ -953,7 +953,7 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
     ...lacks("legion-worker/references/ci-checks.md", [
       /On an issue with no pull request each such check reads `no_head`\. No run can prove it, so its words are wrong for that task\./,
       /hold their verdict with a `WAITING` line until the check is rewritten/,
-      /No step passes while such a check stands, and the retro holds its completion for it/,
+      /No reviewer or acceptance step passes while such a check stands, and the retro holds its completion for it/,
     ]),
     ...lacks("legion-retro/SKILL.md", [
       /`dispatch results --issue <issue> --at <head>`/,
@@ -1007,6 +1007,14 @@ test("the owner's retro of its own implementation step acts as the implement App
       /That includes your own App, the review App: for a planner, tester or reviewer step, acceptance, and a retro with no implementation step\./,
       /Where the task's last implementation step is yours, its retro waits for that step's App, the implement App, as the step did\./,
       /At the end of the step or of such a retro, Legion writes your own App back to your slot\./,
+    ]),
+  ]).toEqual([]);
+});
+
+test("the plan guide names which ci_check holds the merge on a task with no review step", () => {
+  expect([
+    ...lacks("legion-architect/references/plan.md", [
+      /a `ci_check` whose run has not concluded holds the merge only where the base branch requires it\./,
     ]),
   ]).toEqual([]);
 });
