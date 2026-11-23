@@ -610,13 +610,17 @@ var reflectionMethods = map[string]bool{
 // must hold neither the box's package nor an external error type's, and P must declare no generic
 // type (closureClean), so no type P declares can name the box. P's source is type-checked for the
 // build being read (sourceChecked), every named type it declares at package level or in a function
-// body among it, and every struct type of those whose fields, promoted ones included, hold the name
-// must type that field with no interface and no type parameter at any depth (through a pointer, a
-// slice, an array, a map, a channel or a struct's fields), and at least one must: only an interface
-// or a type parameter could hold the box at run time. Not covered, so refused: any other reflect
-// call, FieldByIndex and Field among them; a name that is no constant; a result passed on, stored
-// twice, or read through Elem or Interface. A func field's captured values are out of reflect's
-// reach, so a func type counts as holding nothing.
+// body among it, and in every struct type of those each field of the name that FieldByName can
+// reach (fieldsNamed) - the struct's own, and those of every struct it embeds, by value or by
+// pointer, from any package, at any depth, another package's read with its unexported fields from
+// that package's export data, and one FieldByName does not return, shadowed by a shallower one or
+// ambiguous at its depth, among them - must be typed with no interface and no type parameter at any
+// depth (through a pointer, a slice, an array, a map, a channel or a struct's fields), and at least
+// one struct type must reach such a field: only an interface or a type parameter could hold the box
+// at run time. Not covered, so refused: any other reflect call, FieldByIndex and Field among them;
+// a name that is no constant; a result passed on, stored twice, or read through Elem or Interface.
+// A func field's captured values are out of reflect's reach, so a func type counts as holding
+// nothing.
 func (w *walker) reflection(call *ast.CallExpr, parents []ast.Node, function string) {
 	kind, what := "", ""
 	if callee := w.callee(call); reflectionMethods[callee] {
@@ -1005,9 +1009,11 @@ func (w *walker) closureClean(pkg string) (bool, string) {
 
 // fieldRead reports whether call, a guarded reflect.Value.FieldByName on a value of a type of pkg,
 // is the one read guarded_package admits, and says why: a constant name, a result that is only a
-// method call's receiver, other than Elem's and Interface's (resultReceiver), and a field that
-// every struct type pkg declares with that name, promoted fields included, types with no interface
-// and no type parameter at any depth (holdsDynamic), with at least one such type.
+// method call's receiver, other than Elem's and Interface's (resultReceiver), and, in every struct
+// type pkg declares, every field of that name FieldByName can reach (fieldsNamed: the struct's own,
+// and those of each struct it embeds, from any package, by value or by pointer, at any depth) typed
+// with no interface and no type parameter at any depth (holdsDynamic), with at least one struct type
+// that reaches such a field.
 func (w *walker) fieldRead(call *ast.CallExpr, parents []ast.Node, pkg string) (bool, string) {
 	tv := w.info.Types[call.Args[0]]
 	if tv.Value == nil || tv.Value.Kind() != constant.String {
@@ -1024,26 +1030,77 @@ func (w *walker) fieldRead(call *ast.CallExpr, parents []ast.Node, pkg string) (
 	var found int
 	var dynamic []string
 	for _, tn := range declared.declaredTypes() {
-		if _, ok := tn.Type().Underlying().(*types.Struct); !ok {
+		s, ok := tn.Type().Underlying().(*types.Struct)
+		if !ok {
 			continue
 		}
-		obj, _, _ := types.LookupFieldOrMethod(tn.Type(), false, declared.pkg, name)
-		field, ok := obj.(*types.Var)
-		if !ok || !field.IsField() {
-			continue
+		reached := fieldsNamed(s, name, nil, map[*types.Struct]bool{})
+		if len(reached) > 0 {
+			found++
 		}
-		found++
-		if holdsDynamic(field.Type(), map[types.Type]bool{}) {
-			dynamic = append(dynamic, tn.Name()+"."+name+" ("+typeString(field.Type())+")")
+		for _, r := range reached {
+			if !holdsDynamic(r.field.Type(), map[types.Type]bool{}) {
+				continue
+			}
+			held := tn.Name() + "." + name + " (" + typeString(r.field.Type()) + ")"
+			if len(r.through) > 0 {
+				embedded := make([]string, len(r.through))
+				for i, e := range r.through {
+					embedded[i] = typeString(e.Type())
+				}
+				held += ", promoted through the embedded " + strings.Join(embedded, ", then ")
+			}
+			dynamic = append(dynamic, held)
 		}
 	}
 	switch {
 	case found == 0:
 		return false, "no struct type " + pkg + " declares has a field " + name + ", so the census reads nothing of what the read reaches"
 	case len(dynamic) > 0:
-		return false, pkg + " types the field " + name + " with an interface or a type parameter, which can hold the box at run time: " + strings.Join(dynamic, ", ")
+		return false, pkg + " types the field " + name + " with an interface or a type parameter, which can hold the box at run time: " + strings.Join(dynamic, "; ")
 	}
-	return true, fmt.Sprintf("FieldByName(%q) of the %d struct types %s declares with that field reaches no interface and no type parameter, and its result is only a method call's receiver", name, found, pkg)
+	return true, fmt.Sprintf("FieldByName(%q) reaches no interface and no type parameter in any of the %d struct types %s declares that hold a field of that name, promoted ones from any package at any depth included, and its result is only a method call's receiver", name, found, pkg)
+}
+
+// reachedField is a field FieldByName can reach in a struct type, and the embedded fields it is
+// promoted through, outermost first.
+type reachedField struct {
+	field   *types.Var
+	through []*types.Var
+}
+
+// fieldsNamed is every field named name that reflect's FieldByName can reach in a value of the
+// struct type s, reached through the embedded fields through: s's own fields, and those of each
+// struct type s embeds, by value or by pointer, at any depth. reflect matches a field by its name's
+// text alone, whatever package declares it, so an unexported field of another package's struct
+// that s embeds is reached, as go/types' LookupFieldOrMethod, which matches an unexported name only
+// in the package it is given, does not. Each struct type is read once (seen), so a cycle of
+// embedded pointers ends the walk. FieldByName returns the shallowest of these, and none where two
+// share that depth; every one is listed, so a field it does not return is held to what one it
+// returns is.
+func fieldsNamed(s *types.Struct, name string, through []*types.Var, seen map[*types.Struct]bool) []reachedField {
+	if seen[s] {
+		return nil
+	}
+	seen[s] = true
+	var out []reachedField
+	for i := range s.NumFields() {
+		f := s.Field(i)
+		if f.Name() == name {
+			out = append(out, reachedField{field: f, through: through})
+		}
+		if !f.Embedded() {
+			continue
+		}
+		t := types.Unalias(f.Type())
+		if p, ok := t.(*types.Pointer); ok {
+			t = types.Unalias(p.Elem())
+		}
+		if embedded, ok := t.Underlying().(*types.Struct); ok {
+			out = append(out, fieldsNamed(embedded, name, append(slices.Clip(through), f), seen)...)
+		}
+	}
+	return out
 }
 
 // resultReceiver is "" where call's result is only a method call's receiver, other than Elem's and

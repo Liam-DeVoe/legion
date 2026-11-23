@@ -136,8 +136,10 @@ type holderRow struct {
 // result is only a method call's receiver, other than Elem's and Interface's. In place of the types
 // it reaches, the census checks the guard (an unexported guard variable, stored once), that neither
 // the box's package nor an external error type's is in that package's import closure, that the
-// package declares no generic type, and that every struct type it declares with a field of that
-// name types it with no interface and no type parameter at any depth (structural.go, reflection).
+// package declares no generic type, and that every field of that name FieldByName can reach in a
+// struct type the package declares, promoted through embedded structs of any package at any depth
+// included, is typed with no interface and no type parameter at any depth (structural.go,
+// reflection).
 type reflectionExempt struct {
 	File               string   `json:"file"`
 	Function           string   `json:"function"`

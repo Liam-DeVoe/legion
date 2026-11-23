@@ -6,6 +6,9 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -79,6 +82,37 @@ type options struct{ useDirect []any }
 
 type kvs struct{ options }
 `
+
+// innerStub is a second package lib can import, whose structs keep the field the read names as an
+// interface, unexported: reflect's FieldByName finds it in a lib struct that embeds one of them,
+// though go/types names the field inner's and not lib's. Outer reaches it one embedded struct
+// deeper, through a cycle of embedded pointers. Exported keeps it exported, as UseDirect.
+const innerStub = `package inner
+
+type S struct{ useDirect any }
+
+type Outer struct{ *Loop }
+
+type Loop struct {
+	*Outer
+	useDirect any
+}
+
+type Exported struct{ UseDirect any }
+`
+
+// libWithInner is libStub importing inner, with decl added: libStub's kvs keeps a bool by the name
+// the read names, and the type decl declares reaches inner's interface by that name.
+func libWithInner(decl string) string {
+	return strings.Replace(libStub, "package lib\n", "package lib\n\nimport \"example.com/inner\"\n", 1) + "\n" + decl + "\n"
+}
+
+// libKvsEmbeds is a lib whose kvs, the handle the read's guard admits, embeds embedded, a struct of
+// inner, and whose other struct type keeps a bool named field.
+func libKvsEmbeds(embedded, field string) string {
+	return "package lib\n\nimport \"example.com/inner\"\n\ntype Conn struct{ n int }\n\ntype KeyValue interface{ Bucket() string }\n\n" +
+		"type kvs struct{ " + embedded + " }\n\ntype other struct{ " + field + " bool }\n"
+}
 
 // libLocalTypeStub declares, inside a function, a struct type that keeps it as an interface: a
 // type no export data holds, whose values still name lib as their package.
@@ -169,13 +203,13 @@ func guardedCensus(t *testing.T, source string, entry *reflectionExempt, closure
 	return guardedCensusOf(t, libStub, source, entry, closure)
 }
 
-// guardedCensusOf is guardedCensus with lib's source given.
+// guardedCensusOf is guardedCensus with lib's source given, which may import inner (innerStub).
 func guardedCensusOf(t *testing.T, lib, source string, entry *reflectionExempt, closure map[string]bool) finding {
 	t.Helper()
 	fset := token.NewFileSet()
 	stubs := stubImporter{}
 	var libSource *checkedSource
-	for _, stub := range []struct{ path, source string }{{"reflect", reflectStub}, {"example.com/lib", lib}, {"example.com/box", boxStub}} {
+	for _, stub := range []struct{ path, source string }{{"reflect", reflectStub}, {"example.com/inner", innerStub}, {"example.com/lib", lib}, {"example.com/box", boxStub}} {
 		f, err := parser.ParseFile(fset, stub.path+".go", stub.source, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -281,8 +315,12 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 	// reflect and holds whatever its type argument is, so the guard holds lib.Holder[box.Text] to
 	// lib while lib's import closure shows no box; a field the read names that is an interface, or
 	// holds one, can hold the box at run time, whether the struct type keeping it declares it or
-	// embeds it, at package level or in a function; and a package none of whose struct types has
-	// that field leaves the census nothing to read.
+	// embeds it, at package level or in a function; so can one of another package's struct that a
+	// lib type embeds, by value or by pointer, at any depth, or is defined over, since reflect's
+	// FieldByName matches a name's text whatever package declares it, beside a lib type that keeps
+	// a bool by that name, and one FieldByName does not return, shadowed or ambiguous, is held all
+	// the same; and a package none of whose struct types has that field leaves the census nothing to
+	// read.
 	fieldByName := strings.Replace(strings.Replace(genericRead, "kvs.FieldByIndex([]int{0, 0})", `kvs.FieldByName("V")`, 1), "text.IsNil()", "text.Bool()", 1)
 	for _, c := range []struct{ name, lib, source, why string }{
 		{"a generic type of the guarded package holds the box, read by FieldByIndex", genericLibStub, genericRead, "admits a reflect.Value.FieldByName with a constant name alone"},
@@ -292,11 +330,112 @@ func TestAGuardedPackageEntryPassesOnlyAReadItsGuardHoldsToACleanPackage(t *test
 		{"the field holds interfaces, promoted from an embedded struct", libPromotedFieldStub, guardedRead, "kvs.useDirect ([]any)"},
 		{"a struct type declared in a function keeps the field as an interface", libLocalTypeStub, guardedRead, "held.useDirect (any)"},
 		{"no struct type of the package has the field", libWithoutFieldStub, guardedRead, "no struct type example.com/lib declares has a field useDirect"},
+		{"another package's struct embedded by value keeps the field as an interface", libWithInner("type wrapped struct{ inner.S }"), guardedRead, "wrapped.useDirect (any), promoted through the embedded example.com/inner.S"},
+		{"another package's struct embedded by pointer keeps the field as an interface", libWithInner("type wrapped struct{ *inner.S }"), guardedRead, "wrapped.useDirect (any), promoted through the embedded *example.com/inner.S"},
+		{"the handle itself embeds another package's struct whose unexported field is an interface, beside another lib type that keeps a bool", libKvsEmbeds("inner.S", "useDirect"), guardedRead, "kvs.useDirect (any), promoted through the embedded example.com/inner.S"},
+		{"control: the handle embeds another package's struct whose exported field is an interface", libKvsEmbeds("inner.Exported", "UseDirect"), strings.Replace(guardedRead, `FieldByName("useDirect")`, `FieldByName("UseDirect")`, 1), "kvs.UseDirect (any)"},
+		{"another package's struct two embeddings down, through a cycle of embedded pointers, keeps the field as an interface", libWithInner("type wrapped struct{ inner.Outer }"), guardedRead, "wrapped.useDirect (any), promoted through the embedded example.com/inner.Outer, then *example.com/inner.Loop"},
+		{"a lib type defined over another package's struct keeps the field as an interface", libWithInner("type wrapped inner.S"), guardedRead, "wrapped.useDirect (any)"},
+		{"a field FieldByName does not return, shadowed by a shallower one, is held all the same", libWithInner("type wrapped struct {\n\tuseDirect bool\n\tinner.S\n}"), guardedRead, "wrapped.useDirect (any), promoted through the embedded example.com/inner.S"},
+		{"two fields of the name at one depth, which FieldByName does not return, are held all the same", libWithInner("type wrapped struct {\n\tinner.S\n\tplain\n}\n\ntype plain struct{ useDirect bool }"), guardedRead, "wrapped.useDirect (any), promoted through the embedded example.com/inner.S"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := guardedCensusOf(t, c.lib, c.source, entry, clean)
 			if got.OK || !strings.Contains(got.Why, c.why) {
 				t.Fatalf("the census answered ok=%t %q at %s:%d; want ok=false and %q in its reason", got.OK, got.Why, got.File, got.Line, c.why)
+			}
+		})
+	}
+	// Control: lib importing inner and keeping inner's struct in a field that is no embedding, which
+	// FieldByName does not look into, passes, so each refusal above is its embedding's.
+	if got := guardedCensusOf(t, libWithInner("type wrapped struct{ held inner.S }"), guardedRead, entry, clean); !got.OK || !strings.Contains(got.Why, "1 struct types example.com/lib declares") {
+		t.Fatalf("control: the census answered ok=%t %q for a field of inner's struct that is no embedding; want ok=true over kvs alone", got.OK, got.Why)
+	}
+}
+
+// exportModule is a module whose guarded package, lib, declares a type that embeds EMBED, a struct
+// of another package, inner, whose unexported useDirect is INNER, beside kvs, which keeps a bool by
+// that name; pkg's readsDirect is guardedRead.
+var exportModule = map[string]string{
+	"go.mod":         "module example.com/m\n\ngo 1.27\n",
+	"inner/inner.go": "package inner\n\ntype S struct{ useDirect INNER }\n\nfunc New(v INNER) S { return S{useDirect: v} }\n",
+	"lib/lib.go":     "package lib\n\nimport \"example.com/m/inner\"\n\ntype Conn struct{ n int }\n\ntype KeyValue interface{ Bucket() string }\n\ntype kvs struct{ useDirect bool }\n\ntype wrapped struct{ EMBED }\n",
+	"pkg/kv.go":      strings.ReplaceAll(guardedRead, "example.com/lib", "example.com/m/lib"),
+}
+
+// exportedGuardedCensus writes exportModule, with inner's field typed innerType and lib's wrapped
+// embedding embed, to a scratch directory, lists pkg with its export data and records each listed
+// package as goModuleCensus does (recordImports, recordSource), and runs the census over pkg
+// (goPackage) with a guarded_package entry for readsDirect naming lib. It answers the one
+// reflection finding the census lists.
+func exportedGuardedCensus(t *testing.T, innerType, embed string) finding {
+	t.Helper()
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOFLAGS", "")
+	dir := t.TempDir()
+	for name, text := range exportModule {
+		text = strings.ReplaceAll(strings.ReplaceAll(text, "INNER", innerType), "EMBED", embed)
+		path := filepath.Join(dir, "m", name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err := goList(filepath.Join(dir, "m"), runtime.GOOS+"/"+runtime.GOARCH, "", true, "./pkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exports := map[string]string{}
+	g := &gate{}
+	for _, p := range listed {
+		if p.Error != nil {
+			t.Fatalf("%s does not build: %s", p.ImportPath, p.Error.Err)
+		}
+		exports[p.ImportPath] = p.Export
+		g.recordImports(p.ImportPath, p.Deps)
+		g.recordSource(p, exports)
+	}
+	g.inv.Gate.Box = boxConfig{Type: "example.com/box.Text", Field: "text"}
+	g.inv.Gate.Reflection = []reflectionExempt{{File: "m/pkg/kv.go", Function: "example.com/m/pkg.readsDirect", GuardedPackage: "example.com/m/lib", Why: "test"}}
+	var c census
+	for _, p := range listed {
+		if p.ImportPath == "example.com/m/pkg" {
+			g.goPackage(&c, dir, p.ImportPath, p.Dir, p.GoFiles, false, exports, nil, nil, nil)
+		}
+	}
+	if len(c.Unknown) > 0 {
+		t.Fatalf("the census could not read the module: %s", strings.Join(c.Unknown, "; "))
+	}
+	if len(c.Reflect) != 1 {
+		t.Fatalf("the census listed %d reflection sites, want the one FieldByName: %+v", len(c.Reflect), c.Reflect)
+	}
+	return c.Reflect[0]
+}
+
+// TestAGuardedReadReadsAnotherPackagesEmbeddedStructFromItsExportData: the census type-checks the
+// guarded package alone from its source (sourceChecked), each package it imports from that
+// package's export data, and that export data keeps an exported struct's unexported fields: as the
+// gate lists and reads a module, a lib type that embeds inner's struct, by value or by pointer,
+// whose unexported useDirect is an interface is refused beside lib's kvs, which keeps a bool by
+// that name. Control: where inner keeps a bool there the read passes over both of lib's struct
+// types that hold the name, wrapped's through inner's export data, so the module was listed and read
+// through to inner's field.
+func TestAGuardedReadReadsAnotherPackagesEmbeddedStructFromItsExportData(t *testing.T) {
+	for _, c := range []struct {
+		name, innerType, embed string
+		ok                     bool
+		why                    string
+	}{
+		{"embedded by value", "any", "inner.S", false, "wrapped.useDirect (any), promoted through the embedded example.com/m/inner.S"},
+		{"embedded by pointer", "any", "*inner.S", false, "wrapped.useDirect (any), promoted through the embedded *example.com/m/inner.S"},
+		{"control: inner keeps a bool", "bool", "inner.S", true, "2 struct types example.com/m/lib declares"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := exportedGuardedCensus(t, c.innerType, c.embed)
+			if got.OK != c.ok || !strings.Contains(got.Why, c.why) {
+				t.Fatalf("the census answered ok=%t %q at %s:%d; want ok=%t and %q in its reason", got.OK, got.Why, got.File, got.Line, c.ok, c.why)
 			}
 		})
 	}
