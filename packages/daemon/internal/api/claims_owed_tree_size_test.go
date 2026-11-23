@@ -56,12 +56,12 @@ func (c *statementCount) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBa
 
 func (*statementCount) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
-// serveOwedOver has h's server read the records through pool, with the workflow's table of which
-// role works each phase (workflow.RoleFor), as the daemon wires the owed route.
-func serveOwedOver(h *harness, pool *store.Pool) {
+// serveOwedOver has h's server read the records through records over pool, with the workflow's
+// table of which role works each phase (workflow.RoleFor), as the daemon wires the owed route.
+func serveOwedOver(h *harness, pool *store.Pool, records record.Store) {
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: pool, Record: record.NewStore(), RoleFor: workflow.RoleFor,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: pool, Record: records, RoleFor: workflow.RoleFor,
 	}).Handler
 }
 
@@ -166,7 +166,7 @@ func TestClaimOwedSendsAsManyStatementsOnATreeOf1024IssuesAsOn16(t *testing.T) {
 		t.Fatalf("open the counted pool: %v", err)
 	}
 	t.Cleanup(traced.Close)
-	serveOwedOver(h, store.NewPool(traced))
+	serveOwedOver(h, store.NewPool(traced), record.NewStore())
 
 	chains := []owedChain{seedOwedChain(t, h, 100, 16), seedOwedChain(t, h, 1000, largeTree)}
 	sent := make([]int64, len(chains))
@@ -193,7 +193,7 @@ func TestClaimOwedTimingOnAChainOf1024Issues(t *testing.T) {
 			"package's suite fails on the load of the pod it runs on, so the suite holds the route's statement count instead")
 	}
 	h := newHarness(t)
-	serveOwedOver(h, h.store.Pool())
+	serveOwedOver(h, h.store.Pool(), record.NewStore())
 	chain := seedOwedChain(t, h, 1000, largeTree)
 
 	chain.ask(t)

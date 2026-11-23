@@ -20,13 +20,13 @@ import (
 
 // startTaskNow is the text an architect start of key delivers: a resume carries the wait it
 // answers and no text (record.SuperviseRequest.Awaiting), and its send writes it from the record
-// (the daemon's rootTask, workflow.ResumeTask), so it is written here from the record as tx reads
-// it, under steps; any other start carries its own text.
+// (the daemon's rootTask, workflow.ResumeAwaitedRootTask), so it is written here from the record
+// as tx reads it, under steps; any other start carries its own text.
 func startTaskNow(ctx context.Context, tx pgx.Tx, records record.Store, key string, steps []record.DesignStep, start record.SuperviseRequest) (string, error) {
 	if start.Awaiting == nil {
 		return start.Task, nil
 	}
-	return workflow.ResumeTask(ctx, tx, records, key, *start.Awaiting, steps)
+	return workflow.ResumeAwaitedRootTask(ctx, tx, records, key, *start.Awaiting, steps)
 }
 
 // resumeDocument is the primary document of mainPathRoot these tests register its gate on.

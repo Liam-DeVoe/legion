@@ -263,8 +263,8 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 // names entry, carries the work of it, keeps waiting, the wait it answers, and the moment the
 // engine raised it, and the one start the resume wrote carries that same entry and that same wait,
 // claims no kept decision, and carries no text of its own. The daemon renders that start's task at
-// its send (its rootTask, through ResumeTask), so it is rendered here the same way, from the
-// record as it stands, and it must be the very task the row keeps.
+// its send (its rootTask, through ResumeAwaitedRootTask), so it is rendered here the same way,
+// from the record as it stands, and it must be the very task the row keeps.
 func assertArchitectEntryRaised(t *testing.T, pool *pgxpool.Pool, engine *Engine, entry int64, waiting record.Awaiting) {
 	t.Helper()
 	row := entryRow(t, pool, claim.RoleArchitect)

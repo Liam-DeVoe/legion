@@ -1142,6 +1142,10 @@ func sameInstant(got, want *time.Time) bool {
 	return got.Equal(*want)
 }
 
+// forgetNothing is the forget a clear of a generation is required to be handed (KeptForget),
+// for a test whose issues keep no decision and queue no request: it has nothing to delete.
+var forgetNothing KeptForget = func(context.Context, pgx.Tx, string, KeptDecisions, []QueuedChanges) error { return nil }
+
 // The reviewer's row keeps the commit its newest recorded review read (PhaseRow.ReviewedHead),
 // which the task of a later review round names. A row the release before wrote names no such
 // column and reads back with none. A new generation clears it with the rest of the generation's
@@ -1202,18 +1206,17 @@ func TestAPhaseRowKeepsTheReviewedCommitUntilANewGeneration(t *testing.T) {
 		}
 	})
 
-	forget := func(context.Context, pgx.Tx, string, KeptDecisions, []QueuedChanges) error { return nil }
 	for _, tc := range []struct {
 		name  string
 		key   string
 		clear func(tx pgx.Tx, issue Issue) error
 	}{
 		{name: "a new generation of the issue clears it", key: "LEGION-290", clear: func(tx pgx.Tx, issue Issue) error {
-			_, err := NewStore().ClearGeneration(ctx, tx, issue, forget)
+			_, err := NewStore().ClearGeneration(ctx, tx, issue, forgetNothing)
 			return err
 		}},
 		{name: "a new generation of the tree clears it", key: "LEGION-291", clear: func(tx pgx.Tx, issue Issue) error {
-			_, err := NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, forget)
+			_, err := NewStore().ClearTreeGeneration(ctx, tx, issue.Tree, forgetNothing)
 			return err
 		}},
 	} {

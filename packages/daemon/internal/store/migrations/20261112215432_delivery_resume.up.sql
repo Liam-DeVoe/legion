@@ -8,7 +8,7 @@
 -- (store's putDelivery) from the outbox start that queued the task
 -- (record.SuperviseRequest.Awaiting, the daemon's outbox start handler), and the daemon's rootTask
 -- renders the task from it, beside the gate and the ask mirror as they stand at that send
--- (workflow.ResumeTask). It is null for every other delivery.
+-- (workflow.ResumeAwaitedRootTask). It is null for every other delivery.
 --
 -- The wait is carried rather than read from the issue at send because the issue no longer holds
 -- it then: admission's resume of an answered root clears issues' awaiting columns in the

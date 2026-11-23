@@ -449,16 +449,15 @@ func TestClearGenerationTakesTheToldRowsWithTheGate(t *testing.T) {
 
 	// The clear runs forget over what it is owed before it deletes the gates; nothing is kept here,
 	// so the forget has nothing to delete.
-	forget := func(context.Context, pgx.Tx, string, KeptDecisions, []QueuedChanges) error { return nil }
 	inTx(t, st, func(tx pgx.Tx) {
-		_, err := records.ClearGeneration(ctx, tx, child, forget)
+		_, err := records.ClearGeneration(ctx, tx, child, forgetNothing)
 		must(t, err)
 	})
 	if got := count(root.Key); got != 2 {
 		t.Fatalf("the told rows of %s after its child's clear = %d, want the root's two left", root.Key, got)
 	}
 	inTx(t, st, func(tx pgx.Tx) {
-		_, err := records.ClearTreeGeneration(ctx, tx, root.Key, forget)
+		_, err := records.ClearTreeGeneration(ctx, tx, root.Key, forgetNothing)
 		must(t, err)
 	})
 	if got := count(root.Key); got != 0 {

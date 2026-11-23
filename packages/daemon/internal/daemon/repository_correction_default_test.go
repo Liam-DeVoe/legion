@@ -134,15 +134,7 @@ func (r *defaultChangeRig) followed(resolved, branch string) {
 // issue is key's record as it stands.
 func (r *defaultChangeRig) issue(key string) record.Issue {
 	r.t.Helper()
-	ctx := context.Background()
-	var issue *record.Issue
-	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		issue, err = r.records.Issue(ctx, tx, key)
-		return err
-	}); err != nil {
-		r.t.Fatal(err)
-	}
+	issue := readIssue(r.t, r.pool, key)
 	if issue == nil {
 		r.t.Fatalf("%s is not recorded", key)
 	}

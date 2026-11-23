@@ -570,28 +570,28 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // (record.Waiting's LineFirstPhase), in the same admission pass that resumed this root.
 //
 // The start carries the wait it answers (record.SuperviseRequest.Awaiting) and no text: the task
-// is rendered where it is sent (ResumeTask, through the daemon's rootTask), from the gate and the
-// asks as the record holds them then, because a person can review the document again between
-// this write and that send, and every send of a held task is that moment again.
+// is rendered where it is sent (ResumeAwaitedRootTask, through the daemon's rootTask), from the
+// gate and the asks as the record holds them then, because a person can review the document again
+// between this write and that send, and every send of a held task is that moment again.
 //
 // The resume hands the architect work it was not on, so it raises the architect's phase entry and
 // writes the task as the work of that entry (EnterArchitect), rendered now by the same rule
-// (ResumeTask), and the start carries the number (record.SuperviseRequest.Entry) as a phase
-// worker's start does. That is what makes a resume survivable: the entry and its work live on the
-// record, so a start row that reaches no claim leaves the architect's claim below that entry, and
-// the entry sweep sends it that entry's work. The raise keeps on the entry the wait it answers
-// (record.PhaseRow.EntryAwaiting), which is what this start is built from, and the sweep's send
-// builds the same start from it (SendArchitectStart), so that send renders the task at its send
-// as this start's does. The text the entry holds is the record as it stands at this raise, and is
-// never sent again by this release: a person who approves the reviewed version after this raise
-// has answered the changes request it names. It is rendered and written all the same for its one
-// reader, a rollback to the release before contract 225: the rollback block in docs/kubernetes.md
-// (contract 225) marks each entry that holds a wait, and that release sends a marked entry's task
-// as written (record.PhaseRow.EntryTask), so the render goes only with that block. The root's
-// own record cannot stand in for the kept wait, since it holds the wait no longer once the root
-// resumes (the promotion clears it, and tellInPlace never writes one). Both callers get it — the
-// promotion of an answered root (admit's record.LineAnswered branch) and tellInPlace, which gives
-// a live architect this task where it stands.
+// (ResumeAwaitedRootTask), and the start carries the number (record.SuperviseRequest.Entry) as a
+// phase worker's start does. That is what makes a resume survivable: the entry and its work live
+// on the record, so a start row that reaches no claim leaves the architect's claim below that
+// entry, and the entry sweep sends it that entry's work. The raise keeps on the entry the wait it
+// answers (record.PhaseRow.EntryAwaiting), which is what this start is built from, and the sweep's
+// send builds the same start from it (SendArchitectStart), so that send renders the task at its
+// send as this start's does. The text the entry holds is the record as it stands at this raise,
+// and is never sent again by this release: a person who approves the reviewed version after this
+// raise has answered the changes request it names. It is rendered and written all the same for its
+// one reader, a rollback to the release before contract 225: the rollback block in
+// docs/kubernetes.md (contract 225) marks each entry that holds a wait, and that release sends a
+// marked entry's task as written (record.PhaseRow.EntryTask), so the render goes only with that
+// block. The root's own record cannot stand in for the kept wait, since it holds the wait no
+// longer once the root resumes (the promotion clears it, and tellInPlace never writes one). Both
+// callers get it — the promotion of an answered root (admit's record.LineAnswered branch) and
+// tellInPlace, which gives a live architect this task where it stands.
 //
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
@@ -614,7 +614,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	}
 	// The text is for the release a rollback returns to, which sends it as written; this release
 	// renders the entry's task again at each send (record.PhaseRow.EntryTask says why it stays).
-	task, err := ResumeTask(ctx, tx, e.store, root.Key, waiting, e.cfg.Steps)
+	task, err := ResumeAwaitedRootTask(ctx, tx, e.store, root.Key, waiting, e.cfg.Steps)
 	if err != nil {
 		return err
 	}
@@ -630,13 +630,13 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	return e.store.MarkIssueMoved(ctx, tx, root.Key, e.now())
 }
 
-// ResumeTask is the resume task of root key's architect for the wait waiting it answers, as tx
-// reads the record now: the root's gates, from which the step in question and its row are taken
-// (gateInQuestion) under steps, the design-gate steps the deployment gates (none is the gate
-// off), and the root's ask mirror rows. The daemon's rootTask renders it at each send of the task
-// ResumeAwaitedRoot queued, and ResumeAwaitedRoot renders it once for the entry it raises; the
-// reads are here so that every caller reads the rows the same way.
-func ResumeTask(ctx context.Context, tx pgx.Tx, store record.Store, key string, waiting record.Awaiting, steps []record.DesignStep) (string, error) {
+// ResumeAwaitedRootTask is the resume task of root key's architect for the wait waiting it
+// answers, as tx reads the record now: the root's gates, from which the step in question and its
+// row are taken (gateInQuestion) under steps, the design-gate steps the deployment gates (none is
+// the gate off), and the root's ask mirror rows. The daemon's rootTask renders it at each send of
+// the task ResumeAwaitedRoot queued, and ResumeAwaitedRoot renders it once for the entry it
+// raises; the reads are here so that every caller reads the rows the same way.
+func ResumeAwaitedRootTask(ctx context.Context, tx pgx.Tx, store record.Store, key string, waiting record.Awaiting, steps []record.DesignStep) (string, error) {
 	gates, err := store.GatesOf(ctx, tx, key)
 	if err != nil {
 		return "", err

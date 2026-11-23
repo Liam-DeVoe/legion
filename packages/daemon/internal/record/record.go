@@ -839,8 +839,8 @@ type PhaseRow struct {
 	// rendered into: the text names the person's review as the gate stood at the raise, and a
 	// person can approve or review again before the work is sent. So the sweep's send of the entry
 	// again (workflow's SendArchitectStart) builds the resume's own start from it, which the send
-	// renders from the record as it stands then (workflow.ResumeTask, through the daemon's
-	// rootTask), and it never sends EntryTask for such an entry.
+	// renders from the record as it stands then (workflow.ResumeAwaitedRootTask, through the
+	// daemon's rootTask), and it never sends EntryTask for such an entry.
 	//
 	// Every other raise clears it (workflow's enter), and Store.ClearGeneration resets it with
 	// the task. Nil is a task the derivation of a root architect's first task wrote, or no task at

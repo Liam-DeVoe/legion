@@ -98,13 +98,13 @@ func resumeTaskOf(t *testing.T, pool *pgxpool.Pool, key string) string {
 }
 
 // renderedResume is the resume task of key's architect for waiting as the record stands now,
-// under the design-gate policy the tests' engine runs (ResumeTask).
+// under the design-gate policy the tests' engine runs (ResumeAwaitedRootTask).
 func renderedResume(t *testing.T, pool *pgxpool.Pool, key string, waiting record.Awaiting) string {
 	t.Helper()
 	var task string
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
-		task, err = ResumeTask(context.Background(), tx, record.NewStore(), key, waiting, config.DesignGateRootIssues.Steps())
+		task, err = ResumeAwaitedRootTask(context.Background(), tx, record.NewStore(), key, waiting, config.DesignGateRootIssues.Steps())
 		return err
 	})
 	return task

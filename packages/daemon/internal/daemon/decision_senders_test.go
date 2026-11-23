@@ -269,7 +269,8 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 		t.Error("the walk found no loop over kept decisions that writes them into text in workflow.KeptDecisionsTask")
 	}
 	// The resume of an answered root is rendered at each send from the gate as it stands
-	// (workflow.ResumeTask, the daemon's rootTask), so it is a sender too: the walk has to see it.
+	// (workflow.ResumeAwaitedRootTask, the daemon's rootTask), so it is a sender too: the walk has
+	// to see it.
 	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.short() == "workflow.resumeTask" }) {
 		t.Error("the walk found no resume sender (workflow.resumeTask) in internal/workflow")
 	}

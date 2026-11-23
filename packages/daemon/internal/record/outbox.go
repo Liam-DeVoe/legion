@@ -1159,13 +1159,14 @@ type SuperviseRequest struct {
 	// Awaiting is the wait an architect start answers when it is the resume task of a root a
 	// person answered (workflow.Engine.ResumeAwaitedRoot), and nil for every other start, which
 	// carries its text in Task as it always has. Such a start carries no Task: the text is rendered
-	// at send (workflow.ResumeTask, through the daemon's rootTask), because the gate may move
-	// between the moment the row is written and the moment the task is sent, and the delivery
-	// carries the wait on to every send of it (supervise.Delivery.Resume), since the issue's record
-	// clears its wait when the root resumes. The field is decoded strictly, as every field is
-	// (DecodeOutboxPayload), so a daemon of an earlier release refuses a row this one wrote and
-	// retries it on its backoff until this release runs again; a row an earlier release wrote has
-	// no Awaiting and carries its Task, which this release delivers as it was written.
+	// at send (workflow.ResumeAwaitedRootTask, through the daemon's rootTask), because the gate
+	// may move between the moment the row is written and the moment the task is sent, and the
+	// delivery carries the wait on to every send of it (supervise.Delivery.Resume), since the
+	// issue's record clears its wait when the root resumes. The field is decoded strictly, as
+	// every field is (DecodeOutboxPayload), so a daemon of an earlier release refuses a row this
+	// one wrote and retries it on its backoff until this release runs again; a row an earlier
+	// release wrote has no Awaiting and carries its Task, which this release delivers as it was
+	// written.
 	Awaiting *Awaiting `json:"awaiting,omitempty"`
 	// Generation is the issue generation the request serves. A request of an earlier generation
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.

@@ -113,15 +113,7 @@ func (r *handOverCorrectionRig) complete(shown dispatch.Issue) *outboxDispatch {
 // child is the handed-over child's record as it stands.
 func (r *handOverCorrectionRig) child() record.Issue {
 	r.t.Helper()
-	ctx := context.Background()
-	var got *record.Issue
-	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		got, err = r.records.Issue(ctx, tx, handOverCorrectionChild)
-		return err
-	}); err != nil {
-		r.t.Fatalf("read the handed-over child: %v", err)
-	}
+	got := readIssue(r.t, r.pool, handOverCorrectionChild)
 	if got == nil {
 		r.t.Fatalf("%s is not recorded", handOverCorrectionChild)
 	}

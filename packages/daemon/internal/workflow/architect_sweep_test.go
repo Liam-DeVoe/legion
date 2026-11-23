@@ -283,8 +283,8 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 // (its second rule), and no task at all, which the upgrade leaves on the rows it fills. An entry
 // the resume of a person's answer raised is sent the start that resume wrote, built from the wait
 // the row keeps: that wait and no text, claiming nothing, whatever the stored text ends in. Its
-// send renders the task from the record as it stands then (ResumeTask), so a review the person's
-// approval answered since is not told as standing.
+// send renders the task from the record as it stands then (ResumeAwaitedRootTask), so a review the
+// person's approval answered since is not told as standing.
 func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 	const resumed = "A person answered your ask ask-q on LEGION-208, or replied in its thread; read it. Continue."
 	answered := &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}, AnsweredBy: record.AnsweredByAsk, AnsweredDetail: "ask-q"}

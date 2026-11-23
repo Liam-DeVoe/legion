@@ -182,8 +182,7 @@ func TestANewGenerationClearsTheStepOfAPhaseRow(t *testing.T) {
 		}
 		// The clear is required to be handed a forget (KeptForget), which runs here over no
 		// decision and no queued request: the issue keeps and queues none.
-		forget := func(context.Context, pgx.Tx, string, KeptDecisions, []QueuedChanges) error { return nil }
-		_, err = NewStore().ClearGeneration(ctx, tx, issue, forget)
+		_, err = NewStore().ClearGeneration(ctx, tx, issue, forgetNothing)
 		must(t, err)
 	})
 	inTx(t, st, func(tx pgx.Tx) {

@@ -71,8 +71,7 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number. It is a number of SupportedContracts, and no longer its
-// last: repositoryCorrectionContract, which came after it, is.
+// only with this change's own number. It is a number of SupportedContracts.
 const OwnerPlanContract = 219
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code

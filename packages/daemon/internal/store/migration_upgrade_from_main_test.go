@@ -118,14 +118,13 @@ import (
 // They stand above every other version of the list that rewrites outbox_kind_check but
 // cybermonklabs/legion#4464's 20261119003157 and the design news, so an upgrade applies them after
 // all the others and before those two. The count of starts of each step (20261117004117) creates
-// tables and a function of
-// its own, and its roll forward (20261117064152) changes nothing on a database no rollback
-// touched; neither touches outbox_kind_check. The four after them touch no outbox_kind_check
-// either. dispatch://INFRA-1997's 20261117112334 adds a column at its default, as the reviewer's
-// reviewed commit does, and dispatch://INFRA-4109's cutover clears a claim's ask mark where that
-// claim's ask is still queued. Nor does cybermonklabs/legion#4611's plan of an issue
-// (20261117034837), which creates the three tables of the plan and adds `phases.step_task` and
-// `phases.step_place`, each at a default that every row it finds reads as no plan
+// tables and a function of its own, and its roll forward (20261117064152) changes nothing on a
+// database no rollback touched; neither touches outbox_kind_check. The four after them touch no
+// outbox_kind_check either. dispatch://INFRA-1997's 20261117112334 adds a column at its default,
+// as the reviewer's reviewed commit does, and dispatch://INFRA-4109's cutover clears a claim's ask
+// mark where that claim's ask is still queued. Nor does cybermonklabs/legion#4611's plan of an
+// issue (20261117034837), which creates the three tables of the plan and adds `phases.step_task`
+// and `phases.step_place`, each at a default that every row it finds reads as no plan
 // (migration_20261117034837_test.go).
 // dispatch://INFRA-3136's wait on a resume's entry (20261118073048) is applied after all of them:
 // it replaces the column 20261114061900 adds, so it runs after that one. dispatch://INFRA-3136's

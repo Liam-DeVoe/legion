@@ -1409,10 +1409,11 @@ func (w *workflowRuntime) narrowedNews(ctx context.Context, c supervise.Claim, d
 
 // resumeTaskNow is the resume task delivery d carries the wait of (supervise.Delivery.Resume),
 // written from the record as it stands now: the root's gates and its ask mirror rows, read in one
-// transaction, rendered by the one rule (workflow.ResumeTask), which asks of every review it names
-// whether the person's approval followed it (workflow.SupersedingApproval), and of every approval
-// request whether the gate's approval answered it. A read that fails returns its error, as the
-// kept-decisions answer above does: the machine sends nothing then, and the next trigger asks again.
+// transaction, rendered by the one rule (workflow.ResumeAwaitedRootTask), which asks of every
+// review it names whether the person's approval followed it (workflow.SupersedingApproval), and of
+// every approval request whether the gate's approval answered it. A read that fails returns its
+// error, as the kept-decisions answer above does: the machine sends nothing then, and the next
+// trigger asks again.
 func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, error) {
 	var waiting record.Awaiting
 	if err := json.Unmarshal(d.Resume, &waiting); err != nil {
@@ -1421,7 +1422,7 @@ func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, 
 	var task string
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		task, err = workflow.ResumeTask(ctx, tx, w.records, c.Tree, waiting, w.gatedSteps)
+		task, err = workflow.ResumeAwaitedRootTask(ctx, tx, w.records, c.Tree, waiting, w.gatedSteps)
 		return err
 	}); err != nil {
 		return "", fmt.Errorf("read how the gate of %s stands for its resume task: %w", c.Tree, err)
