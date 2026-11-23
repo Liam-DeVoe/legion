@@ -235,3 +235,42 @@ func TestTheReleaseOfAKeptVolumeDeletesEachDeploymentRolesSecret(t *testing.T) {
 		}
 	}
 }
+
+// The release of a kept volume deletes the role Secret of each role the Sandbox's pod was built
+// with, a role the deployment no longer defines among them: a daemon that restarted with settings
+// that dropped the checker releases a pod built while the checker was defined, and the checker's
+// Secret, which holds its launcher token and the gh files of its App, goes with the others
+// (deleteIssueSecrets over the stored template's roles, builtRoles, as well as Runtime.issueRoles).
+// The control is the loop over the runtime's roles alone, which leaves the checker's Secret behind.
+func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfARoleTheDeploymentLost(t *testing.T) {
+	g := newRig(t, nil,
+		withOptions(func(o *Options) {
+			o.DeploymentApps = appauth.DeploymentApps{"checker": appauth.Implement, "critic": appauth.Review}
+			keptVolumes(SandboxMicroVM)(o)
+		}),
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)}))
+	g.spawn(childSpec(t))
+	name := SandboxName(childToken)
+	checker := roleSecretName(name, "checker")
+	if g.secret(checker) == nil {
+		t.Fatalf("the running pod's Sandbox has no Secret %s", checker)
+	}
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+	})()
+	if slices.Contains(restarted.issueRoles, "checker") {
+		t.Fatalf("the restarted runtime's issue roles %v hold the checker, want it gone with the setting", restarted.issueRoles)
+	}
+
+	if err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
+		t.Fatalf("ReleaseIssue: %v", err)
+	}
+
+	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {
+		t.Fatalf("after the release the issue's Sandbox is %+v, want it kept with its volume", s)
+	}
+	if g.secret(checker) != nil {
+		t.Errorf("the release left the Secret %s of the checker, a role the pod was built with, want it deleted", checker)
+	}
+}
