@@ -142,11 +142,12 @@ export function IssuePresets({
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
     // listener of the page's that a layer under it added earlier. A dialog open over the row
-    // takes the press wherever the focus is: not yet in it, the frame after it opens, or gone to
-    // the page. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which
-    // also decides which dialog the key closes, as Details' drawer asks it. An input method's
-    // Escape (`inputMethodKey`) is the input method's, and the menu stays open: the focus can be
-    // in a field while it is, as `e` opens the title's editor without closing it.
+    // takes the press wherever the focus is: on the dialog itself in its first frame, on its
+    // field, or gone to the page after a press on its text. Whether one is open is `useDialog`'s
+    // registry's answer (`dialogOpen()`), which also decides which dialog the key closes, as
+    // Details' drawer asks it. An input method's Escape (`inputMethodKey`) is the input method's,
+    // and the menu stays open: the focus can be in a field while it is, as `e` opens the title's
+    // editor without closing it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inputMethodKey(event) || inDialog(event.target)) return;
       if (dialogOpen()) return;

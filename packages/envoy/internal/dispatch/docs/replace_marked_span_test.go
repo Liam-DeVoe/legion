@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A replace whose find lies inside a marked span writes its with inside that span, so the span
@@ -1150,28 +1151,27 @@ func TestARefusalNamingNoFindGivesTheAdviceOfTheSpanThatStopsIt(t *testing.T) {
 	})
 }
 
-// requireDocument fails unless the write before it left artifactID's document reading want, as
-// the latest version stored holds it and as a caller reads it, and its live tree holds no two text
+// requireDocument fails unless the write before it left artifactID's document reading want, as a
+// caller reads it and as the latest version stored holds it, and its live tree holds no two text
 // runs beside each other under the same marks, which the markdown writes as one. what names the
-// write. It waits for the latest version to read want: the seed stores no version of its own, and
-// the settlement after the write stores what both wrote, unless a read of the room between the
-// seed and the write armed the seed's settlement, which then stores the seed's text first and the
-// write's after it. A write that left anything else never stores a version reading want, so the
-// wait ends at its ceiling and the comparison names what it stored.
+// write. A write that left the document reading anything else fails on the read at once. Then it
+// waits for the latest version to read want, bounded by the test binary's deadline alone, as
+// waitForDocumentVersion waits: the seed stores no version of its own, and the settlement after
+// the write stores what both wrote, unless a read of the room between the seed and the write armed
+// the seed's settlement, which then stores the seed's text first and the write's after it.
 func requireDocument(t *testing.T, service *Service, artifactID, want, what string) {
 	t.Helper()
-	waitForDocumentVersionThat(t, func() bool {
-		stored, _ := latestVersionOf(t, service.store, artifactID)
-		return stored == want
-	})
-	stored, _ := latestVersionOf(t, service.store, artifactID)
 	read, err := service.Text(context.Background(), artifactID)
 	if err != nil {
 		t.Fatalf("read the document: %v", err)
 	}
-	if stored != want || read != want {
-		t.Fatalf("%s:\n stored markdown %q\n read markdown   %q\nwant %q", what, stored, read, want)
+	if read != want {
+		t.Fatalf("%s:\n read markdown %q\nwant %q", what, read, want)
 	}
+	testwait.Until(t, fmt.Sprintf("%s: the latest stored version to read %q", what, want), func() (string, bool) {
+		stored, _ := latestVersionOf(t, service.store, artifactID)
+		return fmt.Sprintf("stored markdown %q", stored), stored == want
+	})
 	pmdoc.Walk(liveTree(t, service, artifactID), func(node *pmdoc.Node) bool {
 		for index := 1; index < len(node.Children); index++ {
 			if left, right := node.Children[index-1], node.Children[index]; left.Type == "text" && right.Type == "text" && reflect.DeepEqual(left.Marks, right.Marks) {
