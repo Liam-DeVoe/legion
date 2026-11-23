@@ -430,7 +430,8 @@ func (p *StoredPlan) MergingTask() (string, bool) {
 // needs, its part_of and its merges. A left task, whose issue left the workflow before the task
 // was done, neither merges nor needs: a need that only it names keeps no task from merging. It
 // answers which tasks will merge under the plan p is, so a version that changes a task's needs or
-// its merges changes it. plan.Merging has this one caller.
+// its merges changes it; whether a task's work merged already is WorkMerged's. plan.Merging has
+// this one caller.
 func (p StoredPlan) Merging() []string {
 	tasks := make([]plan.Task, 0, len(p.Tasks))
 	for _, row := range p.Tasks {
@@ -440,6 +441,39 @@ func (p StoredPlan) Merging() []string {
 		tasks = append(tasks, plan.Task{ID: row.Task, Needs: row.Needs, PartOf: row.PartOf, Merges: row.Merges})
 	}
 	return plan.Merging(tasks)
+}
+
+// WorkMerged says whether the work of task of p merged: its row is done at its merge. A merge
+// writes that fact: the workflow's close of a merged pull request (closeMerged) moves the task
+// from its merge to done by the table's row that keeps the place, and only a task at its merge
+// takes that row. No later write changes it: a later version's write of a task the generation
+// holds keeps its state and its place (PutPlan), the workflow refuses a version that changes a done
+// task (intake.FinishedTask), and a leave keeps a done task done. A person's close of the issue
+// while the task stands at its merge writes done there too, and that issue is out of the workflow.
+// It reads the row and never Merging, which answers which tasks will merge under the plan in
+// force: a version that adds a need on a merged task takes it out of Merging and leaves WorkMerged
+// true. A task p does not hold did not merge.
+func (p StoredPlan) WorkMerged(task string) bool {
+	row, ok := p.TaskOf(task)
+	return ok && row.workMerged()
+}
+
+// workMerged says whether t is done at its merge (WorkMerged).
+func (t PlanTask) workMerged() bool {
+	return t.State == TaskDone && t.Place == TaskPlace{Kind: PlaceMerge}
+}
+
+// TasksThatMerge is the ids of the tasks of p that have a merge, done or to come, in id order: each
+// task that will merge (Merging) and each task whose work merged (WorkMerged).
+func (p StoredPlan) TasksThatMerge() []string {
+	tasks := p.Merging()
+	for _, row := range p.Tasks {
+		if row.workMerged() && !slices.Contains(tasks, row.Task) {
+			tasks = append(tasks, row.Task)
+		}
+	}
+	slices.Sort(tasks)
+	return tasks
 }
 
 // TaskOf is the task of p whose id is id, and false where p holds none, or where there is no plan
