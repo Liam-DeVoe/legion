@@ -356,7 +356,6 @@ daemon_go_tests:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
-  - 'packages/envoy/consumernames/*'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -365,6 +364,7 @@ daemon_go_tests:
   - 'packages/envoy/scripts/forced-order.sh'
   - 'packages/envoy/internal/testnats/testdata/hooked/**'
   - 'packages/envoy/internal/contracts/**'
+  - 'packages/envoy/consumernames/*'
   - 'packages/contracts/fixtures/capability-redaction.json'
   - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
   - 'packages/contracts/fixtures/checks-settlement/*'
