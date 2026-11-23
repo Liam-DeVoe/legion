@@ -63,7 +63,8 @@ func TestASubArchitectsFailedClaimTellsTheArchitectAboveIt(t *testing.T) {
 		// One row in the whole outbox: the worker-died, and no controller copy beside it.
 		assertOutboxKinds(t, pool, []string{string(record.OutboxKindNotice)})
 		died := record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Testing,
-			Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start",
+			Reason: "LEGION-209's own architect failed, and its notices come to you until it runs again. The daemon starts it again at LEGION-209's next phase start. " +
+				"At an acceptance that architect does, no phase start comes until LEGION-209 moves: sign_off for LEGION-209, or move it back with request_backward_move",
 			Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: sentence,
 				LaunchFailures: record.FailureBudget{Count: 1, Limit: 3},
 				Deaths:         record.FailureBudget{Count: 3, Limit: 3},
