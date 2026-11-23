@@ -875,8 +875,12 @@ function holdsTreeRead(client: QueryClient, key: string): boolean {
  * the event names (`ancestors`) is a target of its own; for an event that names none, one target
  * reaches every read under `["issue"]` and passes the coverage read of each issue the page places
  * above the event's (`issuesAboveFor`). A check handed no client marks nothing.
+ * Each check is identified (`same`) by all it reads - an ancestor's by the ancestor, and the one
+ * of an event that names none by the event's issue - so the feed's flush runs it once on each
+ * query for the events of a batch that share it.
  */
 function ancestorCoverage(
+  key: string,
   ancestors: readonly string[] | undefined,
   above: IssuesAbove
 ): RefreshTarget[] {
@@ -884,12 +888,14 @@ function ancestorCoverage(
     return ancestors.map((ancestor) => ({
       exact: true,
       queryKey: ["issue", ancestor, "coverage"],
+      same: ancestor,
       when: (_data, _query, client) => client !== undefined && holdsTreeRead(client, ancestor),
     }));
   }
   return [
     {
       queryKey: ["issue"],
+      same: key,
       when: (_data, query, client) => {
         const [, issue, read] = query.queryKey;
         return (
@@ -903,6 +909,100 @@ function ancestorCoverage(
       },
     },
   ];
+}
+
+/** The count of a query's settled reads: each answer it took, and each refusal. A view whose count
+ *  moved since an event judged it has been read since. */
+function settledReads(query: Query): number {
+  return query.state.dataUpdateCount + query.state.errorUpdateCount;
+}
+
+/** An event's test of a tree read's answer (`treesHolding`'s `holds`): whether the answer holds a
+ *  node the event moves, with the issues the page places above the event's issue. */
+type AnswerHolds = (data: unknown, issues: ReadonlySet<string> | undefined) => boolean;
+
+/** One event's wait on an outline's answer (`waitForOutline`): the issues above the event's issue
+ *  that its test reads, and the views that wait, each with its settled reads (`settledReads`)
+ *  when the event judged it. */
+interface OutlineWait {
+  readonly issues: ReadonlySet<string> | undefined;
+  readonly views: Map<Query, number>;
+}
+
+/** The waits on each outline of a client while a read of the outline is out, each event's under
+ *  its test (`AnswerHolds`): one registry for each client, so an outline holds one listener on
+ *  the cache however many events wait on it (decision 412's cost 3). */
+const outlineWaits = new WeakMap<QueryClient, Map<Query, Map<AnswerHolds, OutlineWait>>>();
+
+/**
+ * Makes `view` wait on the answer of `outline`, whose read is out, for the event whose test is
+ * `holds`. The first wait on the outline puts one listener on the client's cache, and every later
+ * one, of whichever event, joins it; each event keeps its own views and its own test. The listener
+ * goes on the outline's response, its refusal or its removal. On a response or a refusal it marks,
+ * in one refresh, the views of each event whose test holds the answer the outline then holds:
+ * outside the cache's notification, through the refresh rules, and only those still idle and read
+ * no more since their event judged them, so a view another wait or the view's own read since has
+ * read is not read again. A view that two such events wait with is judged by the later of their
+ * counts, as the later event's own wait would judge it.
+ */
+function waitForOutline(
+  client: QueryClient,
+  outline: Query,
+  view: Query,
+  holds: AnswerHolds,
+  issues: ReadonlySet<string> | undefined
+): void {
+  const outlines = outlineWaits.get(client) ?? new Map<Query, Map<AnswerHolds, OutlineWait>>();
+  outlineWaits.set(client, outlines);
+  const known = outlines.get(outline);
+  const waits = known ?? new Map<AnswerHolds, OutlineWait>();
+  if (known === undefined) {
+    outlines.set(outline, waits);
+    const stop = client.getQueryCache().subscribe((change) => {
+      if (change.query !== outline) {
+        return;
+      }
+      const removed = change.type === "removed";
+      const settled = change.type === "updated" && outline.state.fetchStatus === "idle";
+      if (!(removed || settled)) {
+        return;
+      }
+      stop();
+      outlines.delete(outline);
+      if (!settled) {
+        return;
+      }
+      // Each event whose test holds the answer marks its views: each view once, by the latest
+      // count an event judged it at.
+      const views = new Map<Query, number>();
+      for (const [test, wait] of waits) {
+        if (test(outline.state.data, wait.issues)) {
+          for (const [each, reads] of wait.views) {
+            views.set(each, Math.max(reads, views.get(each) ?? reads));
+          }
+        }
+      }
+      if (views.size === 0) {
+        return;
+      }
+      queueMicrotask(() => {
+        const unread = [...views].flatMap(([each, reads]) =>
+          each.state.fetchStatus === "idle" && settledReads(each) === reads
+            ? [{ exact: true, queryKey: each.queryKey }]
+            : []
+        );
+        if (unread.length > 0) {
+          refreshQueries(client, unread);
+        }
+      });
+    });
+  }
+  const wait = waits.get(holds);
+  if (wait === undefined) {
+    waits.set(holds, { issues, views: new Map([[view, settledReads(view)]]) });
+  } else if (!wait.views.has(view)) {
+    wait.views.set(view, settledReads(view));
+  }
 }
 
 /**
@@ -980,58 +1080,24 @@ function treesHolding(
     }
     return answer;
   };
-  // The views that wait for the answer of each outline with a read out, each with the count of
-  // its settled reads when it was judged, and the one listener on the cache per outline that
-  // waits for it. The listener goes on the outline's response, its refusal or its removal, and
-  // marks the views where the answer the outline then holds holds a node the event moves: outside
-  // the cache's notification, through the refresh rules, and only those still idle and read no
-  // more since, so a view another event's wait or the view's own read since has read is not read
-  // again.
-  const waiting = new WeakMap<Query, Map<Query, number>>();
-  const settledReads = (query: Query): number =>
-    query.state.dataUpdateCount + query.state.errorUpdateCount;
-  const waitForOutline = (
-    client: QueryClient,
-    outline: Query,
-    view: Query,
-    issues: ReadonlySet<string> | undefined
-  ): void => {
-    const views = waiting.get(outline);
-    if (views !== undefined) {
-      if (!views.has(view)) {
-        views.set(view, settledReads(view));
-      }
-      return;
-    }
-    const waited = new Map([[view, settledReads(view)]]);
-    waiting.set(outline, waited);
-    const stop = client.getQueryCache().subscribe((change) => {
-      if (change.query !== outline) {
-        return;
-      }
-      const removed = change.type === "removed";
-      const settled = change.type === "updated" && outline.state.fetchStatus === "idle";
-      if (!(removed || settled)) {
-        return;
-      }
-      stop();
-      waiting.delete(outline);
-      if (settled && holds(outline.state.data, issues)) {
-        queueMicrotask(() => {
-          const unread = [...waited].flatMap(([each, reads]) =>
-            each.state.fetchStatus === "idle" && settledReads(each) === reads
-              ? [{ exact: true, queryKey: each.queryKey }]
-              : []
-          );
-          if (unread.length > 0) {
-            refreshQueries(client, unread);
-          }
-        });
-      }
-    });
-  };
+  // The check's identity (`same`, decision 412's cost 2) is every input it reads: the issue, the
+  // kinds it moves, whether the event writes a document, which decides whether an issue above
+  // reaches an answer (`issuesAboveFor`), and the ancestors the event names - none, `[]` or a
+  // chain, each its own. So the events of a batch that agree in all of them run one check on each
+  // query (`dedupeRefreshTargets`). An ask's event is on nodes of its own (`ON_ITS_TARGET`), which
+  // no identity names.
+  const same =
+    moved === ON_ITS_TARGET
+      ? undefined
+      : JSON.stringify([
+          key,
+          [...moved].sort(),
+          DOCUMENT_WRITES[event.type] === true,
+          payloadStrings(event, "ancestors") ?? null,
+        ]);
   return {
     queryKey: ["issue-tree"],
+    ...(same === undefined ? {} : { same }),
     // A view (`["issue-tree", key, view]`) holds only the nodes its view takes, so the node an
     // event of a child moves can be in the outline (`["issue-tree", key]`) and in no view yet: a
     // child's first check serving the issue's requirement.
@@ -1060,7 +1126,7 @@ function treesHolding(
       const answer = outline.state.data;
       const judged = typeof answer === "object" && answer !== null && held.get(answer) === true;
       if (outline.state.fetchStatus !== "idle" && !judged) {
-        waitForOutline(client, outline, query, issues);
+        waitForOutline(client, outline, query, holds, issues);
         return false;
       }
       return holds(answer, issues);
@@ -2026,7 +2092,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       // under the issue's key but are named here, since every issue target is `exact`.
       { exact: true, queryKey: ["issue", key, "coverage"] },
       // Each ancestor's coverage counts the issue's checks and plan tasks too.
-      ...ancestorCoverage(ancestors, above),
+      ...ancestorCoverage(key, ancestors, above),
       { exact: true, queryKey: ["issue", key, "results"] }
     );
     if (event.type === "artifact.version") {
