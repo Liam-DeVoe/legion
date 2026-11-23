@@ -460,7 +460,7 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 	// from the tuple arm.
 	costRunBackfill(t, head)
 	for _, arm := range arms {
-		costBlockIndexDrained(t, arm, 10*time.Minute)
+		costBlockIndexDrained(t, arm)
 		requireWriteCostShapes(t, corpora[arm])
 		t.Logf("%s: the corpus holds %d comment(s), %d document block(s) and %d block reference(s)%s",
 			arm.name,
@@ -490,7 +490,7 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 		}
 		if path.name != writeCostTickPath {
 			for _, arm := range arms {
-				costBlockIndexDrained(t, arm, 10*time.Minute)
+				costBlockIndexDrained(t, arm)
 			}
 		}
 	}
@@ -728,12 +728,12 @@ func writeCostWhatTheEditWrote(t *testing.T, arms []*costArm, corpora map[*costA
 		release := costHoldBlockIndex(t, arm)
 		writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+8, changed)
 		release()
-		costBlockIndexDrained(t, arm, 10*time.Minute)
+		costBlockIndexDrained(t, arm)
 		before := readWriteCostEditRows(t, arm, corpus.under, nil)
 		release = costHoldBlockIndex(t, arm)
 		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+9, changed)
 		release()
-		costBlockIndexDrained(t, arm, 10*time.Minute)
+		costBlockIndexDrained(t, arm)
 		after := readWriteCostEditRows(t, arm, corpus.under, &before)
 		var printed strings.Builder
 		for _, table := range before.tables {

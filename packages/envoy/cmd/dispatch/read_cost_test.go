@@ -65,8 +65,6 @@ const (
 	// nothing else of the corpus does, so the search of a shape matches that shape's corpus
 	// (readCostShapePhrase).
 	readCostPhrase = "zarf"
-	// readCostIndexWait bounds the wait for the block-index reconciliation to index a corpus.
-	readCostIndexWait = 30 * time.Minute
 	// readCostBefore and readCostAfter are the two states of this child's arm every read is
 	// measured in, named on every line and in every failure that reports a reading of either.
 	readCostBefore = "before the backfill"
@@ -757,7 +755,7 @@ func TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode(t *testing.T) 
 	// Each arm indexes what it was sent before the store is taken off it, so that no pass of
 	// this child's own writes a node after the clearing.
 	for _, arm := range arms {
-		costBlockIndexDrained(t, arm, readCostIndexWait)
+		costBlockIndexDrained(t, arm)
 	}
 	// The seed analysed each corpus before its arm's own tick had indexed the documents a write
 	// defers, so the commit before this child is analysed again over what it now holds, as this
