@@ -512,7 +512,14 @@ type stateNarrowing struct {
 // all whichever runs first, and a caller below only the higher one keeps the field with its
 // `place` and its `length`, which is what the lower band's own contract describes.
 //
-// A second pair touches one block, and one band of it writes that block in an older shape
+// A second pair is of the same kind: assignmentsContract's band drops each issue's `assignments`
+// whole, and assignmentPlanContract's takes `plan` from inside each row of that same list. A
+// caller below both is served no `assignments` whichever runs first. The second reads what the
+// first left only to know whether it took anything: run after it, as this table runs them, it
+// finds no row and writes no line, so a caller below assignmentsContract is told of the
+// assignments and not of their `plan` (narrowingsExpected holds that line back).
+//
+// A third pair touches one block, and one band of it writes that block in an older shape
 // rather than taking a key out: repositoriesLiveContract's band writes `repositories` as
 // contract 152 gave it, keys this daemon no longer writes among them, from the entries of that
 // block alone, and repositoryAppsContract's takes `apps` off the entries of that older block.
@@ -568,6 +575,7 @@ var stateNarrowings = []stateNarrowing{
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
+	{contract: assignmentPlanContract, issue: withoutAssignmentPlans, dropped: "the issues' assignments' plan"},
 	{contract: repositoryCorrectionContract, issue: withoutRepositoryCorrection,
 		dropped: "the issues' repoBefore, repoCorrectedAt, repoChangePending and repoChangeReason"},
 }
@@ -1016,6 +1024,18 @@ const repositoriesLiveContract = 202
 // leaves this constant behind names a contract no entry declares and fails there.
 const cachesSourceContract = 213
 
+// assignmentPlanContract is the daemon contract that added each assignment's `plan`, the group an
+// experiment's arm set at the issue's draw (version.go's 220). A plugin before it is served every
+// assignment without the key (withoutAssignmentPlans): its reader strips a key it does not name,
+// so the band is what keeps the group from a caller that did not ask for it rather than what keeps
+// such a caller reading. The rest of each row stays as assignmentsContract serves it.
+//
+// It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
+// that constant, and the contract the key arrived at stays where it is. It moves only with this
+// change's own number, and it is a number of answers.go's SupportedContracts, which names the
+// constant rather than its number for that reason.
+const assignmentPlanContract = 220
+
 // repositoryCorrectionContract is the daemon contract that added what a correction of an issue's
 // repository left on its record (version.go's 225, dispatch://INFRA-3136): `repoBefore` and
 // `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
@@ -1026,10 +1046,12 @@ const cachesSourceContract = 213
 // strips the key instead, so the band keeps the body its own contract's record describes. A pod's
 // reading counts no claim at shapedAnswersContract or above (podContracts), so a caller from
 // shapedAnswersContract to below this contract meets the band by the contract its header states.
-// repositoriesLiveContract stands below it with no row of stateNarrowings between the two, so a
-// caller from repositoriesLiveContract to below this contract is served the live block without
-// the four. The same contract added the claim route `POST /legion/v1/claims/owed` with its answer
-// (answers.go's AnswerOwed), which no contract below it records.
+// repositoriesLiveContract stands below it with one row of stateNarrowings between the two,
+// assignmentPlanContract's, so a caller from repositoriesLiveContract to below this contract is
+// served the live block without the four, and one below assignmentPlanContract is served each
+// assignment without its `plan` as well. The same contract added the claim route
+// `POST /legion/v1/claims/owed` with its answer (answers.go's AnswerOwed), which no contract below
+// it records.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys arrived at stays where it is. It moves only with
@@ -1092,6 +1114,22 @@ func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 	return issue, moved
+}
+
+// withoutAssignmentPlans is the issue with no assignment carrying `plan`, the one key
+// assignmentPlanContract added to the state; every other key of each row stays. The key is
+// `omitempty` and absent from a row whose arm named no group, so the band reports a move only for
+// an issue one of whose rows carries one. The list is copied before a row is changed, so the state
+// the source answered is left as it was.
+func withoutAssignmentPlans(issue Issue) (Issue, bool) {
+	if !slices.ContainsFunc(issue.Assignments, func(row AssignmentView) bool { return row.Plan != "" }) {
+		return issue, false
+	}
+	issue.Assignments = slices.Clone(issue.Assignments)
+	for i := range issue.Assignments {
+		issue.Assignments[i].Plan = ""
+	}
+	return issue, true
 }
 
 // withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,

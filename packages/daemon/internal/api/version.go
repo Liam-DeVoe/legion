@@ -3363,6 +3363,42 @@ package api
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
 //
+// 220: an experiment sets how each new issue is done. `POST /legion/v1/plans/register` and `POST
+// /legion/v1/tasks/stop` answer `409 PLAN_NOT_TAKEN` for a recorded issue that an experiment drew
+// into an arm whose `plan` is `default`: a code and a sentence that names the issue's variant and
+// experiment, with no `reasons`. Legion takes no plan from that issue's owner, and so no stop of
+// one of its tasks; register_plan's answer leaves the registration unspent, so the same call sent
+// again gets the same answer. The code is a value of the refusal's `code`, which no reader
+// enumerates, so a plugin below 220 reads the code and its sentence as it reads every other one,
+// and no answer's shape moves for it. This entry also names what the two routes answer and 219's
+// entry leaves out: register_plan's `400 INVALID_ISSUE`, `400 INVALID_ARTIFACT_ID`,
+// `400 INVALID_VERSION` and `500 DISPATCH_UNAVAILABLE`, and stop_task's
+// `400 INVALID_ISSUE`. `TestEveryCodeThePlanRoutesAnswerIsInTheContractHistory` reads the codes the
+// two routes answer of their own from the source and holds each to this history.
+// `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` gain one key: each assignment of
+// an issue's `assignments` carries `plan`, the group the arm of an experiment that sets how its
+// issues are done set at the issue's draw (`owner` or `default`), as the draw recorded it, and
+// absent where the arm named none. The issue runs on that group for its whole life, and the
+// project's file can change an arm's `plan` or rename the arm after the draw, so a reader takes
+// the group from the record and never from `settings`. The records of 220 hold
+// `issues.*.assignments.*.plan`, and no record below 220 does: a caller whose contract (the one it
+// states, else its pod's) is below 220 is served every assignment without the key (the band of
+// shaping.go's stateNarrowings, `withoutAssignmentPlans`). The key
+// `settings.projects.<KEY>.experiments.<name>.variants[].plan` came with it: a key below
+// `projects`, which no reader types, so no record holds it and nothing is served down
+// (answers.go's typedSettings).
+// (This entry takes 220, above each number another open pull request declared. The forward merge
+// of 2026-11-22 brought the base's 219 (the owner's plan's entry above). A reading of `const
+// DaemonAPIVersion` at the head commit of each of the 431 open pull requests, made between
+// 2026-11-22T02:35:47Z and 02:36:07Z, read all 431 and found 219 declared by #4611 and #4805, 220
+// by this change's own pull request alone, and nothing above 220. The forward merge of 2026-11-23
+// that brought in 7923340d brought the base's 219 again, over main's 217, and a reading of all 507
+// open heads between 2026-11-23T16:08:36Z and 16:09:51Z found 220 declared only by this change's
+// pull request and #5014, which is stacked on it and carries this entry, so this entry kept 220.
+// From this entry the last number of answers.go's SupportedContracts is
+// `api.assignmentPlanContract`, after `OwnerPlanContract`. Read the base's own number and every
+// open pull request again at the next merge rather than from this line.)
+//
 // 225: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
@@ -3378,8 +3414,8 @@ package api
 // caller: by the contract its `Legion-Plugin-Contract` header states, else by its pod's claims,
 // which count no claim at 193 or above, so a plugin of 193 meets the band by its header alone.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional. A
-// caller at 225 is served what one at 219 is with the four keys beside it, so 225's records are
-// 219's under its own number with the four key paths added to the state's and the record's,
+// caller at 225 is served what one at 220 is with the four keys beside it, so 225's records are
+// 220's under its own number with the four key paths added to the state's and the record's,
 // and with a record of the owed answer below, which no contract before 225 has.
 //
 // The same contract adds the claim route `POST /legion/v1/claims/owed` (`api.OwedRequest`, the
@@ -3444,7 +3480,7 @@ package api
 // v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal and `prompt_result`
 // carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
 // shimwire.CodeSessionBusy names the refusals that code covers). The daemon reads that code and
-// no words. A pod of the release before this one (contract 219) runs the same Oh My Pi and sends
+// no words. A pod of the release before this one (contract 220) runs the same Oh My Pi and sends
 // the code already. A pod still on an image before v18.18.6-sami.20261118-035823, until its update
 // round, sends its busy refusal with no code, and the daemon reads it as busy from its own record
 // of the claim working or from the agent's get_state (supervise's agentRefusalOutcome). While the
@@ -3453,7 +3489,7 @@ package api
 // ask, as a notice's turn can when the refusal came during its pre-turn work. Its refusal is then
 // charged as unrecognised, and its prompt's result as a prompt that ran no turn. Nothing of the
 // daemon API changes with the pin.
-// (This entry takes 225, which is above main's 219 and which no other open pull request
+// (This entry takes 225, which is above main's 220 and which no other open pull request
 // declares. It took 206 when main stood at 202: just before the push of 2026-11-21 that carried
 // main in at 202 (#4493, INFRA-4401's entry above), .github/scripts/check-daemon-api-contract.sh
 // read const DaemonAPIVersion at refs/pull/<n>/head for each open pull request whose file list
@@ -3491,7 +3527,10 @@ package api
 // 4a8d82bf brought main's 219 (#4611 and #5161, the entries above), which 225 is above, and a
 // reading of const DaemonAPIVersion at refs/pull/<n>/head for each open pull request whose file
 // list names this file or was cut short, from 2026-11-23T23:02:56Z to 23:05:42Z, found 225
-// declared by this change's own head alone, so this entry kept 225. The readings behind this
+// declared by this change's own head alone, so this entry kept 225. The forward merge of
+// 2026-11-24 that brought in 7df64124 brought main's 220 (#4930, the entry above), which 225 is
+// above, and the same reading, from 2026-11-24T00:12:04Z to 00:13:44Z, found 225 declared by
+// this change's own head alone, so this entry kept 225. The readings behind this
 // change's earlier numbers are in its implement handoffs on dispatch://INFRA-3136. That is a
 // reading and never the rule: read main's own number and every open head again at the next
 // forward merge rather than from this line.)

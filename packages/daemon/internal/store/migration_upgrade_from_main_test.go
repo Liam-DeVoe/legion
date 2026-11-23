@@ -162,9 +162,13 @@ import (
 // cybermonklabs/legion#4903's applied sequence of the copy of Dispatch's issues (20261121170714)
 // is applied after all of these and before dispatch://INFRA-3136's 20261122212816, and touches no
 // outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on every row it finds.
-// dispatch://INFRA-3136's 20261122212816 is applied after all of these; it adds
-// readmitted_approvals.artifact at its default and touches no outbox_kind_check, so the design
-// news stays the last word of that check.
+// dispatch://INFRA-3136's 20261122212816 is applied after all of these and before the plan of an
+// experiment's draw (20261123165139); it adds readmitted_approvals.artifact at its default and
+// touches no outbox_kind_check.
+// The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
+// default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
+// above every migration named here, and touches no outbox_kind_check, so the design news stays
+// the last word of that check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -240,6 +244,8 @@ var thisBranchsMigrations = []int{
 	20261121170714,
 	// dispatch://INFRA-3136: the document of the approval a re-admission kept.
 	20261122212816,
+	// cybermonklabs/legion#4930: the plan of an experiment's draw, experiment_assignments.plan.
+	20261123165139,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -262,9 +268,10 @@ var thisBranchsMigrations = []int{
 // 20261119003157, dispatch://INFRA-175's 20261119203047, cybermonklabs/legion#4573's
 // 20261120012547 (dispatch://INFRA-3178), cybermonklabs/legion#4581's 20261120042902
 // (dispatch://INFRA-4108), cybermonklabs/legion#4598's 20261120055717 (dispatch://INFRA-4729),
-// cybermonklabs/legion#4903's 20261121170714 and dispatch://INFRA-3136's 20261122212816, which is
-// why the loop below holds the list rather than counting it, so that a version added above any of
-// them is named here rather than read as main's.
+// cybermonklabs/legion#4903's 20261121170714, dispatch://INFRA-3136's 20261122212816 and the plan
+// of an experiment's draw (cybermonklabs/legion#4930's 20261123165139), which is why the loop
+// below holds the list rather than counting it, so that a version added above any of them is
+// named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

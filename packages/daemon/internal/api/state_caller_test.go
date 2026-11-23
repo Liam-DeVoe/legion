@@ -215,6 +215,28 @@ func withoutAssignmentKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutAssignmentPlanKeys is a state body with no assignment carrying `plan`, which is what a
+// caller below assignmentPlanContract is served of a state that carries it (api's
+// withoutAssignmentPlans). It serves the table below as withoutQuietKeys does.
+func withoutAssignmentPlanKeys(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		rows, _ := issue.(map[string]any)["assignments"].([]any)
+		for _, row := range rows {
+			delete(row.(map[string]any), "plan")
+		}
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its assignments' plan: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutMergeWaitKey is a state body with no issue carrying `mergeWait`, which is what a caller
 // below mergeWaitContract is served of a state (api's withoutMergeWait). It serves the table
 // below as withoutQuietKeys does: a row's baseline is the full state with exactly the keys that
@@ -643,6 +665,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// entries. No pod's claims place a caller at it (callerKind.reaches), so the rows served it
 		// are the three this daemon serves its own body.
 		repos bool
+		// plans is whether the caller is served each assignment's `plan` (assignmentPlanContract,
+		// the contract that added it), so a pod at it or above is served the key and every older
+		// pod is not.
+		plans bool
 		// correction is whether the caller is served what a correction of an issue's repository
 		// left on its record, the four keys repositoryCorrectionContract added: a caller at it is
 		// served them, and a caller below it that its header places, or a pod whose claims record
@@ -707,21 +733,23 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The band from pauseContract to below shapedAnswersContract, the last band a pod's
 		// reading reaches: the project's pause is served too, and every key a later row of
 		// stateNarrowings adds is held back, the claim views' keys of contract 193, the
-		// repositories block this daemon writes, which is served in contract 152's shape, and the
-		// four repository keys among them. The repository caches' row is served without its
-		// `source` here as in every band below, the value cachesSourceContract added.
+		// repositories block this daemon writes, which is served in contract 152's shape, each
+		// assignment's `plan` and the four repository keys among them. The repository caches' row
+		// is served without its `source` here as in every band below, the value
+		// cachesSourceContract added.
 		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: pauseContract, assigned: true, times: true, apps: true, pause: true},
 		// A pod whose claims record shapedAnswersContract, the contract from which every build
 		// states its contract in the header. Such a pod is in no pod reading: podContracts leaves
 		// out a claim at shapedAnswersContract or above. So the reading falls through to the body
 		// this daemon writes, which carries every key and every value, the repositories block
-		// repositoriesLiveContract writes, the four of a repository correction and the caches
-		// source among them, and the row names DaemonAPIVersion. repositoriesLiveContract and
-		// repositoryCorrectionContract stand above shapedAnswersContract, so a caller between them
-		// is served their bands by its header alone (contract_shapes_test.go).
-		{name: "a pod at the contract from which every build states its own", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true, caches: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true, caches: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, correction: true, caches: true},
+		// repositoriesLiveContract writes, each assignment's `plan`, the four of a repository
+		// correction and the caches source among them, and the row names DaemonAPIVersion.
+		// repositoriesLiveContract, assignmentPlanContract and repositoryCorrectionContract stand
+		// above shapedAnswersContract, so a caller between them is served their bands by its
+		// header alone (contract_shapes_test.go).
+		{name: "a pod at the contract from which every build states its own", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, contract: DaemonAPIVersion, assigned: true, times: true, apps: true, pause: true, repos: true, plans: true, correction: true, caches: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -787,6 +815,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				}
 				if !tc.pause {
 					want = withoutPausedKey(t, want)
+				}
+				if !tc.plans {
+					want = withoutAssignmentPlanKeys(t, want)
 				}
 				if !tc.correction {
 					want = withoutCorrectionKeys(t, want)
