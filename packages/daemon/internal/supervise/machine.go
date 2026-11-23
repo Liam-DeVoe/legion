@@ -182,6 +182,11 @@ type Claim struct {
 	// let-go replaces it — as the union of the two while it is still untold (joined). A claim
 	// whose let-gos ended nothing worth telling records none.
 	EndedWork EndedWork
+	// RoleChange is the record that the claim took another role (Rerole) and that its agent has
+	// still to be told so, which the first prompt its agent takes in the new role tells
+	// (roleChangedTask). It is persisted, since that prompt is a relaunch and can be a daemon
+	// restart away. A claim that never took another role records none.
+	RoleChange RoleChange
 	// ServingGeneration is the issue generation of the last confirmed delivery this claim retired:
 	// the run it goes on working until another delivery of a run replaces it. It is the second of
 	// the three sources ServingRun reads (serving): the pending delivery whose turn is running,
@@ -1451,15 +1456,17 @@ type Machine struct {
 	// EndedWork.TaskTurn). letGo clears it with the process. It is memory only: a daemon
 	// restarted inside such a park records the end without it, from what the claim still holds.
 	cutTurnOf string
-	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
-	// current process carried the sentence of (sentences, Delivery.message): the session the claim
-	// abandoned, and what its last let-go ended, each marked only where the prompt's text carries
-	// that record's own sentence. It is what confirm reads to mark each record told, so a turn
-	// whose prompt went out before a record existed — the takeover of a process another runtime
-	// still runs, whose relaunch the pacing parks — tells nothing of it. It is set where the send
-	// goes out (startSend), and goes with the process (letGo) and, for the record of the let-go,
-	// with that record (recordEnd), since a newer record is words no earlier prompt carried. It is
-	// memory only: a daemon restarted inside the turn of such a prompt reads none (confirm).
+	// carried is which of the claim's three untold records a prompt this machine sent to the
+	// claim's current process carried the sentence of (sentences, Delivery.message): the session
+	// the claim abandoned, what its last let-go ended, and the other role it took, each marked only
+	// where the prompt's text carries that record's own sentence. It is what confirm reads to mark
+	// each record told, so a turn whose prompt went out before a record existed — the takeover of a
+	// process another runtime still runs, whose relaunch the pacing parks — tells nothing of it. It
+	// is set where the send goes out (startSend), and goes with the process (letGo) and, for the
+	// record of the let-go, with that record (recordEnd), since a newer record is words no earlier
+	// prompt carried. A role change needs no such clearing: only a claim that runs nothing takes
+	// one (Rerole), and its process took its marks with it. It is memory only: a daemon restarted
+	// inside the turn of such a prompt reads none (confirm).
 	carried sentences
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
@@ -3542,6 +3549,27 @@ type AbandonedSession struct {
 // Tells is whether a prompt to this claim's agent must still name the session the claim
 // abandoned: one was abandoned and it has not been told yet.
 func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
+
+// RoleChange is the record that a claim took another role (Machine.Rerole) while its agent has
+// not yet been told so. The claim keeps its session, so the transcript its next generation resumes
+// can hold a GitHub token of the earlier role's App that the agent printed, which GitHub honours
+// for up to an hour; the first prompt the agent takes in its new role says that every such token
+// is void and that its gh and git now act as the new role's App (roleChangedTask). From is the
+// role the claim held before the first change not yet told, kept for the log: a second change
+// before that prompt leaves it, since the sentence names only the role the claim holds then.
+type RoleChange struct {
+	From claim.Role `json:"from"`
+	// Told is whether a turn of the agent took a prompt that told it, and ToldBy the delivery whose
+	// confirmation told it, as confirm states, the way AbandonedSession's are: told twice is the
+	// harmless way round, where a sentence lost leaves the agent free to use a token of a role it
+	// no longer holds.
+	Told   bool   `json:"told,omitempty"`
+	ToldBy string `json:"toldBy,omitempty"`
+}
+
+// Tells is whether a prompt to this claim's agent must still say that the claim took another role:
+// it took one and no turn has taken a prompt that said so.
+func (r RoleChange) Tells() bool { return r.From != "" && !r.Told }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
 // stands behind it. Three decisions tell it, each only once the process has ended: a death a probe

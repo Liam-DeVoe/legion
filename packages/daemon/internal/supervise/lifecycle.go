@@ -346,7 +346,9 @@ func judgeStanding(ctx context.Context, token claim.Token, pass bool) error {
 // holds then. Only a claim that runs nothing takes a new role, so a process keeps the role it was
 // started with; one that still runs is ErrRunsAProcess, and the start suspends it first, keeping
 // its session, and waits for its turn to end. The claim keeps its session, so its next generation
-// resumes it.
+// resumes it, and that session can hold a GitHub token of the earlier role that the agent printed:
+// the claim records the change (RoleChange), unless one it has not told yet stands, and the first
+// prompt its agent takes says such a token is void (roleChangedTask).
 //
 // The start read the step from the record before this lock, so it asks with the step's standing
 // (Standing), judged here under the lock: a step its issue has left since, by a move back or a
@@ -366,6 +368,9 @@ func (m *Machine) Rerole(ctx context.Context, role claim.Role) error {
 		return fmt.Errorf("give claim %s the role %s for its agent's next step: %w", m.claim.Token, role, err)
 	}
 	m.log.Info("supervise: the claim takes the role of its agent's next step", "claim", m.claim.Token, "from", m.claim.Role, "to", role)
+	if !m.claim.RoleChange.Tells() {
+		m.claim.RoleChange = RoleChange{From: m.claim.Role}
+	}
 	m.claim.Role = role
 	return m.persist(ctx)
 }

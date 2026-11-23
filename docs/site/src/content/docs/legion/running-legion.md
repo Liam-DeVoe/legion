@@ -1323,7 +1323,10 @@ Closing the terminal leaves the project without one, and the daemon logs
    issue leaves the workflow, when a claim moves to another tree, for a production check after the
    issue is done, or when an agent's next step is of another role than the one its claim holds:
    the start of that step suspends the claim at the end of its turn, keeping its session, gives
-   it the step's role and resumes it on the same session. A phase start gives its task to that live
+   it the step's role and resumes it on the same session. That session can hold a GitHub token of
+   the earlier role's App that the agent printed, so the first prompt the agent takes in the new
+   role tells it that any GitHub token it saw in an earlier role is void and that its `gh` and
+   `git` now act as the new role's App. A phase start gives its task to that live
    claim. At boot
    the daemon resumes by rule a suspended worker that still owns its issue's phase, but never a
    claim an

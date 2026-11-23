@@ -281,6 +281,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it"},
 		EndedWork: supervise.EndedWork{At: projectedAt.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
+		RoleChange:  supervise.RoleChange{From: claim.RoleTester},
 		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: projectedAt.Add(-time.Minute), TurnStartedAt: projectedAt.Add(-2 * time.Minute),
