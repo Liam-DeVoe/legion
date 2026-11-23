@@ -203,3 +203,76 @@ func TestARefusedLaunchInTheSlotOfARoleTheDeploymentLostQueuesNoStart(t *testing
 		})
 	}
 }
+
+// A refused launch queues no start the outbox would finish without acting, which is the start of
+// the role of a stopped task's step (StoppedStepRole) and any start of a member of a lingering
+// tree (the daemon outbox's start): such a start would bring the claim back no more than none, and
+// its end would leave the claim as it found it. The issue and the controller are still told. The
+// twins are queued their start as before: a task stopped at another role's step, whose start of no
+// phase reaches the tester, and the same child under a root that does not linger, whose tester is
+// sent its owed entry.
+func TestARefusedLaunchIsQueuedNoStartTheOutboxWouldFinishWithoutActing(t *testing.T) {
+	token := claim.Token("legion-legion-legion-209-tester")
+	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
+	stopped := func(from phase.Phase) func(t *testing.T, pool *pgxpool.Pool) {
+		return func(t *testing.T, pool *pgxpool.Pool) {
+			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-209",
+				Project: "LEGION", Title: "LEGION-209", Phase: phase.Held, Hold: &record.Hold{From: from, Reason: record.HoldTaskStopped}, Generation: 1,
+				Status: "in_progress", Rank: "U", HandedOver: true})
+		}
+	}
+	member := func(linger *time.Time) func(t *testing.T, pool *pgxpool.Pool) {
+		return func(t *testing.T, pool *pgxpool.Pool) {
+			root := "LEGION-208"
+			status, at := "in_progress", phase.Implementing
+			if linger != nil {
+				status, at = "done", phase.Done
+			}
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+				Title: "root", Phase: at, Generation: 1, Status: status, Rank: "U", LingerUntil: linger})
+			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root,
+				Project: "LEGION", Title: "child", Phase: phase.Testing, Generation: 1, Status: "in_progress", Rank: "V"})
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		stand func(t *testing.T, pool *pgxpool.Pool)
+		// want checks the starts the report queued; nil wants none.
+		want func(t *testing.T, starts []record.SuperviseRequest)
+	}{
+		{name: "the tester's own step stopped", stand: stopped(phase.Testing)},
+		{name: "a member of a lingering tree", stand: member(&until)},
+		{name: "twin: a task stopped at the implementer's step", stand: stopped(phase.Implementing), want: func(t *testing.T, starts []record.SuperviseRequest) {
+			if len(starts) != 1 || starts[0].Role != claim.RoleTester || starts[0].Claim != token || starts[0].Phase != "" {
+				t.Fatalf("the report queued %+v, want one start of the tester's claim, of no phase", starts)
+			}
+		}},
+		{name: "twin: a member of a tree that does not linger", stand: member(nil), want: func(t *testing.T, starts []record.SuperviseRequest) {
+			if len(starts) != 1 {
+				t.Fatalf("the report queued %+v, want one start", starts)
+			}
+			wantOwedEntryStart(t, starts[0])
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			tc.stand(t, pool)
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: token, Entry: 3, EntryTask: refusedTesterTask,
+				EntryRaisedAt: time.Now().UTC().Add(-time.Hour)})
+			engine := testEngine(config.DesignGateRootIssues, nil)
+
+			reportRefusal(t, pool, engine, "pod-refused:legion-legion-legion-209-tester:1", token)
+			got := queuedStarts(t, pool)
+			if tc.want == nil {
+				if len(got) != 0 {
+					t.Fatalf("the report queued %+v, want no start: the outbox would finish it without acting", got)
+				}
+			} else {
+				tc.want(t, got)
+			}
+			if kinds := controllerNoticeKinds(t, pool); len(kinds) != 1 || kinds[0] != string(record.PodWaitHeldNotice) {
+				t.Fatalf("the controller was told %v, want one %s notice", kinds, record.PodWaitHeldNotice)
+			}
+		})
+	}
+}

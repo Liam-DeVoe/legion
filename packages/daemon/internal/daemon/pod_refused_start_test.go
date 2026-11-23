@@ -25,11 +25,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// podRefusalRig is LEGION-208 in testing, its tester's claim suspended by the daemon with its
-// session kept and its phases row on entry 2, over an outbox runner that drains on the test's
-// goroutine. Every launch of the claim the runtime refuses is told to the workflow as the daemon
-// tells it (workflowRuntime.podRefused, supervise's Deps.PodRefused), and the machines run on a
-// clock whose timers fire only when the test fires them (heldClock).
+// podRefusalRig is LEGION-208 in testing, holding its admission slot, its tester's claim suspended
+// by the daemon with its session kept and its phases row on entry 2, over an outbox runner that
+// drains on the test's goroutine. The slot makes an owed entry's start claimable, as it is for an
+// issue the daemon started (record.SuperviseRequest.NeedsSlot). Every launch of the claim the
+// runtime refuses is told to the workflow as the daemon tells it (workflowRuntime.podRefused,
+// supervise's Deps.PodRefused), and the machines run on a clock whose timers fire only when the
+// test fires them (heldClock).
 type podRefusalRig struct {
 	t       *testing.T
 	runner  *outbox
@@ -58,6 +60,12 @@ func newPodRefusalRig(t *testing.T, answers func(pool *store.Pool, records recor
 	token := mustClaimToken(t, "LEGION-208", claim.RoleTester)
 	putPhaseRow(t, pool, runner.records, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: token, Entry: 2, EntryTask: "Test it.",
 		EntryRaisedAt: time.Now().UTC().Add(-time.Hour)})
+	if _, err := pool.Exec(context.Background(), `insert into slots (issue, index, admitted_at) values ('LEGION-208', 0, now())`); err != nil {
+		t.Fatalf("seed LEGION-208's admission slot: %v", err)
+	}
+	// A start that waits for the pod reads the claims through the supervisor's store
+	// (podWaitPrefix), as the daemon's does.
+	sup.store = openOutboxStore(t, pool)
 	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
 		Role: claim.RoleTester, Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
 		Session: "ses-tester", SessionFile: t.TempDir() + "/session.jsonl"}, "")
@@ -227,6 +235,7 @@ func TestALaunchItsPodRefusesAfterItsStartRowFinishedQueuesAStartOfTheClaim(t *t
 			if s := got[0]; s.Role != claim.RoleTester || s.Phase != phase.Testing || s.Entry != 2 || !strings.HasPrefix(s.Task, "Test it.") || !s.ResendEntry {
 				t.Fatalf("the queued start is %+v, want the tester's owed entry 2 of testing, its stored task, marked as a resend of that entry", s)
 			}
+			r.outboxSettles()
 		})
 	}
 }
@@ -271,6 +280,96 @@ func TestARefusalWhileItsParkedStartRowIsStillFinishingQueuesAStartOnceTheRowEnd
 	row := r.refusedWhileItsRowFinishes()
 	r.runner.settle(context.Background(), row, nil)
 	r.owedEntryQueued()
+	r.outboxSettles()
+}
+
+// A start row that ended without reaching the claim — one the outbox finished at a fence, above
+// the claim's record of its start (supervise's Machine.StartedBy) — asks the workflow nothing, and
+// the workflow queues a refused claim no start that the outbox would finish without acting. The
+// tester's launch is refused and its owed entry queued; then its owner stops its task, and the
+// outbox runs that start once: it serves a phase the issue has left and finishes at the phase
+// fence. Nothing follows it: no start, no fact. Were the finish of any start row of a refused
+// claim to read the claim's starts again (intake.RefusedStartEnded), it would queue a start of no
+// phase, which the outbox finishes at the stopped step's fence, whose finish would queue another,
+// at the database's speed, one row, one fact and one log line a turn, telling nobody.
+func TestAStartRowThatEndedAtAFenceQueuesARefusedClaimNoStartOfItsStoppedTask(t *testing.T) {
+	r := newPodRefusalRig(t, engineAnswers, nil)
+	r.refuseOnPod1()
+	if err := r.machine.Handle(context.Background(), supervise.RequestRuleResume{Claim: r.token, Reason: "it owns its issue's step"}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
+		t.Fatalf("the resume answered %v, want the refusal, which is runtime.ErrAwaitsPodUpdate", err)
+	}
+	r.toldTheController()
+	r.owedEntryQueued()
+	r.stopTheTestersTask()
+	facts := r.factsApplied()
+
+	drainAt(t, r.runner, 0, "the outbox's run of the owed entry")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if left := r.starts(); len(left) != 0 {
+			t.Fatalf("after the owed entry finished at the phase fence the outbox holds the starts %+v, want none: the outbox would finish each without acting", left)
+		}
+		if now := r.factsApplied(); now != facts {
+			t.Fatalf("after the owed entry finished at the phase fence %d facts were applied, want none: the row never reached the claim", now-facts)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.outboxSettles()
+}
+
+// stopTheTestersTask records LEGION-208 as its owner's stop of its task at testing leaves it: held
+// from testing, task-stopped, so the tester is the role of the stopped task's step
+// (workflow.StoppedStepRole).
+func (r *podRefusalRig) stopTheTestersTask() {
+	r.t.Helper()
+	putOutboxIssue(r.t, r.pool, r.runner.records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Held, Hold: &record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped},
+		Generation: 1, Status: "testing", Rank: "U", LastDispatchSeq: 5})
+}
+
+// factsApplied is how many facts the database records applied (processed_events).
+func (r *podRefusalRig) factsApplied() int {
+	r.t.Helper()
+	var n int
+	if err := r.pool.QueryRow(context.Background(), `select count(*) from processed_events`).Scan(&n); err != nil {
+		r.t.Fatalf("count the applied facts: %v", err)
+	}
+	return n
+}
+
+// rowsWritten is how many rows the outbox has ever been given: the last value its id sequence
+// handed out, which a finished row, deleted, does not take back.
+func (r *podRefusalRig) rowsWritten() int64 {
+	r.t.Helper()
+	var n int64
+	if err := r.pool.QueryRow(context.Background(), `select coalesce(pg_sequence_last_value('outbox_id_seq'), 0)`).Scan(&n); err != nil {
+		r.t.Fatalf("read the outbox's id sequence: %v", err)
+	}
+	return n
+}
+
+// outboxSettles is the loop control of the refused-launch tests: with nothing else changing, the
+// outbox stops writing rows and the workflow stops applying facts. It drains the outbox ten
+// times, each with the runner's clock past every backoff the drains before it set, and after the
+// work a row's finish starts on a goroutine of its own has had time to land, and fails unless the
+// last five drains wrote no row and applied no fact. A loop that queues one start a turn writes a
+// row at every drain.
+func (r *podRefusalRig) outboxSettles() {
+	r.t.Helper()
+	const drains, quiet = 10, 5
+	var rows int64
+	var facts int
+	for i := range drains {
+		if i == drains-quiet {
+			rows, facts = r.rowsWritten(), r.factsApplied()
+		}
+		drainAt(r.t, r.runner, time.Duration(i+1)*parkFound, "a drain of the loop control")
+		time.Sleep(200 * time.Millisecond)
+	}
+	if wrote, applied := r.rowsWritten()-rows, r.factsApplied()-facts; wrote != 0 || applied != 0 {
+		r.t.Fatalf("the last %d of %d drains, with nothing else changing, wrote %d outbox rows and applied %d facts, want none: the outbox and the workflow feed each other",
+			quiet, drains, wrote, applied)
+	}
 }
 
 // pacedTurn is the wake pacing that gives every launch its turn parkedTurn on.
