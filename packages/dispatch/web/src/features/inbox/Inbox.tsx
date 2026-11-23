@@ -1155,8 +1155,8 @@ export function Inbox({
    *  swaps `ApprovalBody` for `CardBody`, which unmounts the focused scroller and drops the
    *  focus to `document.body` - where neither of Escape's branches holds and the key would do
    *  nothing. The reader then stands exactly where a click and then `j` leaves them today. A
-   *  reading view below 1280 px has no row in sight to come back to, and Escape there leaves
-   *  the view from anywhere, so the step alone is taken. */
+   *  reading view below 1280 px has no row in sight to come back to, and its Escape goes to the
+   *  list rather than to a row, so the step alone is taken. */
   const move = (delta: 1 | -1) => {
     if (columns && focusInPane()) {
       paneSelection.selectedRow()?.focus();
@@ -1324,15 +1324,8 @@ export function Inbox({
       id: "back",
       inEditable: true,
       keys: "Escape",
-      label: reading ? "Back to the list" : "Back to the row, then clear the focused row",
+      label: "Back to the row, then clear the focused row",
       run: () => {
-        // Below 1280 px the reading view stands in the list's place, so one level out of it,
-        // from anywhere in it, is the list, at the row the reader left (`pane-selection.ts`).
-        // An answer typed and not sent is kept for the question (`answer-drafts.ts`).
-        if (reading) {
-          paneSelection.close();
-          return;
-        }
         // From the reading column, Escape is the way back to the row the reader came from: `l`
         // recorded that row, which is not the selected one whenever `j` moved the selection
         // without moving the focus. Every other way in records nothing, or the row the column
@@ -1356,10 +1349,25 @@ export function Inbox({
       // the selected row having none; every other way into the column records no row, and there
       // the selected row is the way out. With only the selected row tested, Escape in a column
       // held open over a hidden row would match no binding and do nothing.
+      //
+      // Below 1280 px a row's reading view hides the list, so there is no row to come back to:
+      // `leave-reading` below is that width's Escape, and this one stands down there.
       when: () =>
-        reading ||
-        rowAround(document.activeElement) !== null ||
-        (paneShown && focusInPane() && paneWayBack() !== null),
+        !reading &&
+        (rowAround(document.activeElement) !== null ||
+          (paneShown && focusInPane() && paneWayBack() !== null)),
+    },
+    {
+      // Below 1280 px the reading view stands in the list's place, so one level out of it is
+      // the list, at the row the reader left (`pane-selection.ts`). Not `inEditable`: inside the
+      // answer box, a text input or the document's editor, Escape is that field's own, and
+      // leaving the whole view from there would be a bigger move than the reader pressed for.
+      // Registered ahead of `clear-selection`, so the marks the bulk bar holds outlast it.
+      id: "leave-reading",
+      keys: "Escape",
+      label: "Back to the list",
+      run: () => paneSelection.close(),
+      when: () => reading,
     },
     {
       // The column is the other half of the page, and `l` is the step into it: the scroller

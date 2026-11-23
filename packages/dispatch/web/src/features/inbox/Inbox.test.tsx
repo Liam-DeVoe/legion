@@ -3001,6 +3001,92 @@ test("below 1280 px a short row's checkbox marks the row without opening it, and
   }
 });
 
+test("below 1280 px Escape in the reading view's answer box is the box's, and leaves the view only from outside a text field", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    await user.click(shortRow("ask-a"));
+    const view = await screen.findByTestId("inbox-reading-view");
+    const box = view.querySelector<HTMLElement>("[data-ask-answer]");
+    if (box === null) throw new Error("the reading view drew no answer box");
+    await user.click(box);
+    await user.keyboard("Ship it");
+
+    // In the box Escape is the box's own: the view, the question and the words typed all stay.
+    await user.keyboard("{Escape}");
+    expect(address()).toBe("/?item=ask-a");
+    expect(screen.getByTestId("inbox-reading-view")).toBe(view);
+    expect(box).toHaveValue("Ship it");
+
+    // From outside a text field it is the way back to the list, at the row the view showed.
+    screen.getByTestId("inbox-pane-scroller").focus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument());
+    expect(address()).toBe("/");
+    expect(shortRow("ask-a")).toHaveFocus();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("below 1280 px Assign to me in the reading view's head PATCHes the viewer's login", async () => {
+  const user = userEvent.setup();
+  // A row the server resolved nobody for, which is what "Assign to me" is drawn on (the drawer's
+  // card row above says why such a row is an older server's).
+  const orphan = issueAsk(
+    {
+      id: "ask-orphan",
+      issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
+      issue_key: "CORE-3",
+      question: "Orphan question?",
+    },
+    null
+  );
+  const rows = [orphan];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?assignee=unassigned");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-orphan"]));
+    // The short row carries no such control: the head of the view the row opens does.
+    expect(
+      within(shortRow("ask-orphan")).queryByRole("button", { name: "Assign CORE-3 to me" })
+    ).toBeNull();
+    await user.click(shortRow("ask-orphan"));
+    const view = await screen.findByTestId("inbox-reading-view");
+    await user.click(within(view).getByRole("button", { name: "Assign CORE-3 to me" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-3", { assignee: "alice" }, keyedAttempt)
+    );
+    await act(async () => {
+      save.resolve(narrowIssueOf(orphan, "alice"));
+      await save.promise;
+    });
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 test("a short row names its kind: a decision block, an approval request, and any other question", async () => {
   const narrow = widenToReadingPane();
   const question = inboxIssue("ask-question", "CORE-1", "Which approach?");
