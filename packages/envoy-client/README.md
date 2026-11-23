@@ -921,9 +921,10 @@ names a held issue, is kept by Dispatch and runs right after that text posts: Di
 only for a client that says it reads that `202`: every write the client sends carries
 `Dispatch-Accepts-Kept-Write: 1` (`DISPATCH_ACCEPTS_KEPT_WRITE_HEADER`), and Dispatch answers a
 write without it `409 HELD_TEXT` with the held id and keeps nothing. Three kinds of
-write are not kept so: a new ask, comment or message on a held issue, which the reviewer holds
-under an id of its own and answers `201` in its whole shape with `held` beside it; a reply to a
-delivered message or mention, and a delivery's resend or accept; and a result's dry run
+write are not kept so: a new ask, comment or message on a held issue, and a new issue under a held
+issue or blocked by one, which the reviewer holds under an id of its own and answers `201` in its
+whole shape with `held` beside it; a reply to a delivered message or mention, and a delivery's
+resend or accept; and a result's dry run
 (`heldTargetSelf`, `packages/envoy/internal/dispatch/api/held_replay.go`). The client reads no
 such `202` as the route's payload and throws `DispatchWriteKept` (`method`, `url`, the kept `id`
 and `held`), which is no refusal and no `DispatchServiceError`. Dispatch keeps an upload to a held

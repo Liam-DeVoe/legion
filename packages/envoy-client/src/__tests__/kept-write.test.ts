@@ -312,8 +312,7 @@ describe("a write Dispatch keeps beside a held text", () => {
 
   // The close's reason posts first, then Dispatch keeps the close: the close is accepted, and
   // will run, so the command prints the kept line and the message its reason landed as, and
-  // exits 0. Before, the close's error path read the kept write as one that may or may not have
-  // landed, and the command failed saying to read the issue's status before retrying.
+  // exits 0.
   test("a kept close says the message its reason landed as, and exits 0", async () => {
     const { code, stdout, stderr } = await run([
       "issue-update",

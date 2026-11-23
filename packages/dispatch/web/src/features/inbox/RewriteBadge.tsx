@@ -177,41 +177,75 @@ export interface RewritableText {
   readonly rewrite?: TextRewrite;
 }
 
-/** What a page draws of a comment or a message the reviewer may have rewritten
- *  (`useRewrittenText`). */
-export interface RewrittenText {
+/** The badge of a rewritten text and the `w` of the element that holds it (`rewriteControls`). */
+export interface RewriteControls {
   /** The badge, beside the text's author and time; nothing where no rewrite touched the text. */
   readonly badge: ReactNode;
-  /** The Markdown the text shows: the agent's own wording while the badge shows it, else the
-   *  body. */
-  readonly markdown: string;
-  /** The reading Go sent of the body, which the agent's wording has none of: `MarkdownBody` reads
-   *  that wording itself. */
-  readonly tree: DisplayTree | undefined;
   /** What the element holding the text spreads, so that `w` while it holds the focus does what a
    *  press on the badge does (`originalToggleProps`). */
   readonly toggle: OriginalToggleProps;
 }
 
 /**
+ * The badge of the text `id`'s rewrite, with `w` as its key, and the `w` of the element that holds
+ * the text, which both show or hide its original wording (`toggleOriginal`), `showingOriginal`
+ * saying whether it shows now: what `useRewrittenText` draws of a text; what an issue's title
+ * draws after its last word, on either page (`IssueTitleRow.tsx`, `issue/IssueHeader.tsx`); and
+ * what an outline row draws, which knows from its own words whether they show the original
+ * (`NodeRow.tsx`'s `RowRewriteBadge`), so that the row reads the store once. `tabIndex` is the
+ * badge's (`RewriteBadge`).
+ */
+export function rewriteControls({
+  id,
+  rewrite,
+  showingOriginal,
+  tabIndex,
+}: {
+  id: string;
+  rewrite: TextRewrite | undefined;
+  showingOriginal: boolean;
+  tabIndex?: -1;
+}): RewriteControls {
+  return {
+    badge: (
+      <RewriteBadge
+        onToggle={() => toggleOriginal(id)}
+        rewrite={rewrite}
+        showingOriginal={showingOriginal}
+        tabIndex={tabIndex}
+        toggleKey="w"
+      />
+    ),
+    toggle: originalToggleProps(id, rewrite?.state === "rewritten"),
+  };
+}
+
+/** What a page draws of a comment or a message the reviewer may have rewritten
+ *  (`useRewrittenText`): its badge and its element's `w` (`rewriteControls`), and its words. */
+export interface RewrittenText extends RewriteControls {
+  /** The Markdown the text shows: the agent's own wording while the badge shows it, else the
+   *  body. */
+  readonly markdown: string;
+  /** The reading Go sent of the body, which the agent's wording has none of: `MarkdownBody` reads
+   *  that wording itself. */
+  readonly tree: DisplayTree | undefined;
+}
+
+/**
  * A reply or a message the reviewer rewrote before the reader saw it (INFRA-3231's R7), as every
  * page draws one: its badge, with `w` as its key, shows the agent's wording in place, and `w`
- * while the text's own element holds the focus does the same. Every part of a page that draws
- * the text swaps together (`useOriginalShown`).
+ * while the text's own element holds the focus does the same. Every part of a page that reads the
+ * same store swaps together (`useOriginalShown`), an outline row of the text among them.
  */
 export function useRewrittenText(text: RewritableText): RewrittenText {
   const original = originalWording(text.rewrite, useOriginalShown(text.id));
   return {
-    badge: (
-      <RewriteBadge
-        onToggle={() => toggleOriginal(text.id)}
-        rewrite={text.rewrite}
-        showingOriginal={original !== undefined}
-        toggleKey="w"
-      />
-    ),
+    ...rewriteControls({
+      id: text.id,
+      rewrite: text.rewrite,
+      showingOriginal: original !== undefined,
+    }),
     markdown: original?.body ?? text.body,
-    toggle: originalToggleProps(text.id, text.rewrite?.state === "rewritten"),
     tree: original === undefined ? text.body_tree : undefined,
   };
 }

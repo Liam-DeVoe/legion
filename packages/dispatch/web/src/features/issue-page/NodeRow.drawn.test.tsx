@@ -13,6 +13,7 @@ import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
+import { originalListenersNow } from "../inbox/ask-rewrite";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { measureNearWords } from "./clamp-fixtures";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
@@ -1884,6 +1885,29 @@ test("an ask whose question was rewritten draws the badge, whose press shows the
     expect(options()).toContain("Wide");
     expect(options()).toContain("As wide as the screen.");
     expect(options()).not.toContain("Fill the window.");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The outline draws a row for every node of the issue, and each reads once whether its words show
+// the original: the badge is told by its row (`RowRewriteBadge`), so a row holds one subscription
+// to the store of shown originals, before and after a press of its badge.
+test("a rewritten row holds one subscription to the store of shown originals", async () => {
+  const user = userEvent.setup();
+  const rewritten = node({
+    id: "comment-rewritten",
+    rewrite: reviewerRewrite({ body: "The agent's own words." }),
+    text: "The reviewer's words.",
+    type: "comment",
+  });
+  const view = renderRow(rewritten, { author: { kind: "agent", name: "Planner", reader: false } });
+  try {
+    expect(originalListenersNow(), "the row subscribed more than once").toHaveLength(1);
+    await user.click(view.getByRole("button", { name: "Rewritten" }));
+    expect(rowWords(view)).toContain("The agent's own words.");
+    expect(view.getByRole("button", { name: "Original" })).toHaveAttribute("aria-pressed", "true");
+    expect(originalListenersNow(), "the row subscribed more than once").toHaveLength(1);
   } finally {
     view.unmount();
   }

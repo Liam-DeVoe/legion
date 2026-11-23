@@ -59,14 +59,9 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import {
-  originalToggleProps,
-  originalWording,
-  toggleOriginal,
-  useOriginalShown,
-} from "../inbox/ask-rewrite";
+import { originalWording, useOriginalShown } from "../inbox/ask-rewrite";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import { RewriteBadge } from "../inbox/RewriteBadge";
+import { rewriteControls } from "../inbox/RewriteBadge";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -135,6 +130,16 @@ export function IssueHeader({
   // shows the original (`original`, the agent's title and spec).
   const original = originalWording(issue.rewrite, useOriginalShown(issue.key));
   const originalTitle = original === undefined ? undefined : (original.title ?? issue.title);
+  // The badge and its `w` as every page draws them (`rewriteControls`), where the title is
+  // rewritten.
+  const controls =
+    issue.rewrite?.state === "rewritten"
+      ? rewriteControls({
+          id: issue.key,
+          rewrite: issue.rewrite,
+          showingOriginal: original !== undefined,
+        })
+      : undefined;
   const [routeEditing, setRouteEditing] = useState(false);
   const routeInputRef = useRef<HTMLInputElement>(null);
   // Focus the route input once when editing opens: the trigger button unmounts, so without this
@@ -497,23 +502,18 @@ export function IssueHeader({
                     they show. A press, a focus or a key on the badge is the badge's, not the
                     title's, which would open the title's editor: its `w` shows or hides the
                     original, as the page's `w` does (`IssuePage`). */}
-                {issue.rewrite?.state !== "rewritten" ? null : (
+                {controls === undefined ? null : (
                   // biome-ignore lint/a11y/noStaticElementInteractions: keeps the badge button's own press, focus and keys from reaching the title, which would open its editor; the button is the control
                   <span
                     className="ml-2 inline-flex translate-y-[-3px] align-middle"
                     onClick={(event) => event.stopPropagation()}
                     onFocus={(event) => event.stopPropagation()}
                     onKeyDown={(event) => {
-                      originalToggleProps(issue.key, true).onKeyDown(event);
+                      controls.toggle.onKeyDown(event);
                       event.stopPropagation();
                     }}
                   >
-                    <RewriteBadge
-                      onToggle={() => toggleOriginal(issue.key)}
-                      rewrite={issue.rewrite}
-                      showingOriginal={original !== undefined}
-                      toggleKey="w"
-                    />
+                    {controls.badge}
                   </span>
                 )}
               </h1>

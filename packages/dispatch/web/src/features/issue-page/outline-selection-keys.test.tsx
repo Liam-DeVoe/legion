@@ -14,14 +14,13 @@ import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
+import { KEY, node } from "./decisions-filter/decisions-fixtures";
 import { DocumentAdmissionProvider } from "./document-admission";
 import { DocumentStages } from "./document-stage";
 import { FocusedNodeProvider } from "./focused-node";
 import { IssueMarginCards } from "./IssueMargin";
 import { IssueTree } from "./IssueTree";
-import type { TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE, MarginSlotProvider, useFillMarginSlot } from "./margin-slot";
-import type { NodeType } from "./page-words";
 import { useIssueKeymap } from "./useIssueKeymap";
 
 /**
@@ -32,8 +31,6 @@ import { useIssueKeymap } from "./useIssueKeymap";
  * moves to the next open question, stands down while such words are selected, and acts as before
  * while none are.
  */
-
-const KEY = "CORE-1";
 
 beforeAll(async () => {
   await warmMarkdownRenderer();
@@ -65,23 +62,6 @@ function desktopWidth(): void {
       removeListener: () => {},
     } as MediaQueryList;
   }) as typeof window.matchMedia;
-}
-
-function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
 }
 
 /** The outline: an issue holding a comment, then an open question, which `q` moves to. */

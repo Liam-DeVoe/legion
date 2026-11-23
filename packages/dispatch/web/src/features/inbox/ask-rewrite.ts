@@ -20,6 +20,18 @@ export function originalWording(
   return shown && rewrite?.state === "rewritten" ? rewrite.original : undefined;
 }
 
+/** An option of a rewritten ask as `original`, the wording its agent wrote, holds it: its label,
+ *  which a rewrite never changes, with the description the agent wrote, or none. */
+export function originalOption(
+  option: { readonly label: string },
+  original: TextWording
+): { description?: string; label: string } {
+  const before = original.options?.find((one) => one.label === option.label);
+  return before?.description === undefined
+    ? { label: option.label }
+    : { description: before.description, label: option.label };
+}
+
 /** The newer of two readings of one text's rewrite, by when each was started, written or failed
  *  (`at`): a press's own answer and the read that is refreshed behind it. Of two at one instant,
  *  the read's is the later reading. */
@@ -33,7 +45,7 @@ export function newerRewrite(
 }
 
 /** Which rewritten texts show their original wording now, by the text's id (a comment's id, a
- *  message's, an issue's key): one place, so every part of a page that draws the text - an
+ *  message's, an ask's, an issue's key): one place, so every part of a page that reads it - an
  *  issue's title in its header and its spec in the tab under it - swaps together. */
 const originalsShown = new Set<string>();
 const originalListeners = new Set<() => void>();
@@ -50,15 +62,25 @@ export function resetOriginalsShown(): void {
   originalsShown.clear();
 }
 
+/** Calls `listener` after each toggle of any text, until the answer is called: the one
+ *  `subscribe` every reader of the store hands React, so a render of one subscribes nothing anew. */
+function subscribeOriginals(listener: () => void): () => void {
+  originalListeners.add(listener);
+  return () => {
+    originalListeners.delete(listener);
+  };
+}
+
+/** The listeners the store calls after each toggle, one for each part of the page that reads it
+ *  (`useOriginalShown`): the unit tests' read of how many a row holds, and of whether drawing it
+ *  again subscribed it anew. */
+export function originalListenersNow(): readonly (() => void)[] {
+  return [...originalListeners];
+}
+
 /** Whether the text `id` shows its original wording now. */
 export function useOriginalShown(id: string): boolean {
-  return useSyncExternalStore(
-    (listener) => {
-      originalListeners.add(listener);
-      return () => originalListeners.delete(listener);
-    },
-    () => originalsShown.has(id)
-  );
+  return useSyncExternalStore(subscribeOriginals, () => originalsShown.has(id));
 }
 
 /** Whether `event`, pressed on a rewritten text that holds the focus, is the `w` that shows or

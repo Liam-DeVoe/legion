@@ -105,7 +105,7 @@ import {
   useAskCardKeys,
 } from "./ask-card-keys";
 import type { OwnedAsk } from "./ask-name";
-import { newerRewrite, originalWording } from "./ask-rewrite";
+import { newerRewrite, originalOption, originalWording } from "./ask-rewrite";
 import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { useBlockQuestion } from "./block-question";
@@ -1406,14 +1406,8 @@ export function AskCard({
             <legend className="sr-only">Answer options</legend>
             {(displayedAsk.options ?? []).map((option) => {
               // The original wording keeps each option's label, which a rewrite never changes,
-              // with the description the agent wrote, or none.
-              const before = original?.options?.find((one) => one.label === option.label);
-              const shown =
-                original === undefined
-                  ? option
-                  : before?.description === undefined
-                    ? { label: option.label }
-                    : { description: before.description, label: option.label };
+              // with the description the agent wrote, or none (`originalOption`).
+              const shown = original === undefined ? option : originalOption(option, original);
               return (
                 <AskChoiceRow
                   checked={selected.includes(option.label)}

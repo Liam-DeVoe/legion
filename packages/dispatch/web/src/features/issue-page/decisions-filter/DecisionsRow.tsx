@@ -177,7 +177,10 @@ export function DecisionsRow({
       : entry.kind === "decision"
         ? !review
         : false;
-  const clamp = useClamp(words, cuttable);
+  // What the words are drawn from, as the outline's row keys its own (`NodeRow.tsx`): a row in
+  // view drawn from other words - a later read's, or the other wording a press of the badge
+  // shows - is measured again for them (`useClamp`).
+  const clamp = useClamp(words, cuttable, node.tree ?? node.text);
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
   const tone = toneOf(entry);
@@ -393,6 +396,7 @@ export function DecisionsRow({
             state: standing?.token,
             waiting: entry.kind === "decision" ? review : node.waiting,
           }}
+          showingOriginal={node !== entry.node}
           tabStops={false}
           tone={tone}
         />

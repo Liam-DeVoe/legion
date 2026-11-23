@@ -9,13 +9,8 @@ import {
   focusBorder,
   pageInkText,
 } from "../../theme/classes";
-import {
-  originalToggleProps,
-  originalWording,
-  toggleOriginal,
-  useOriginalShown,
-} from "../inbox/ask-rewrite";
-import { RewriteBadge } from "../inbox/RewriteBadge";
+import { originalWording, useOriginalShown } from "../inbox/ask-rewrite";
+import { rewriteControls } from "../inbox/RewriteBadge";
 import type { IssueDrafts } from "../issue/useIssueDrafts";
 import { hearPresses } from "./focus-keeper";
 import { authorText } from "./page-structure";
@@ -226,6 +221,12 @@ export function IssueTitleRow({
   const box = `[grid-area:1/1] min-w-0 rounded-md border px-1 font-semibold tracking-[-0.012em] whitespace-pre-wrap [overflow-wrap:anywhere] ${type} ${pageInkText}`;
   const whole = editing || held;
   const original = originalWording(rewrite, useOriginalShown(issueKey));
+  // The badge and its `w` as every page draws them (`rewriteControls`), where the title is
+  // rewritten.
+  const controls =
+    rewrite?.state === "rewritten"
+      ? rewriteControls({ id: issueKey, rewrite, showingOriginal: original !== undefined })
+      : undefined;
   const originalTitle = original === undefined ? undefined : (original.title ?? drafts.title);
   const editable = !isClosed && originalTitle === undefined;
 
@@ -261,19 +262,14 @@ export function IssueTitleRow({
         {originalTitle ??
           // A trailing space or an empty draft still holds a line, as the editor does.
           (shown === "" || shown.endsWith(" ") ? `${shown}\u200b` : shown)}
-        {editing || rewrite?.state !== "rewritten" ? null : (
+        {editing || controls === undefined ? null : (
           // biome-ignore lint/a11y/noStaticElementInteractions: hears the `w` pressed on the badge's own button, which is the control
           <span
             className="ml-2 inline-flex translate-y-[-3px] align-middle"
-            onKeyDown={originalToggleProps(issueKey, true).onKeyDown}
+            onKeyDown={controls.toggle.onKeyDown}
             {...{ [TITLE_REWRITE]: "" }}
           >
-            <RewriteBadge
-              onToggle={() => toggleOriginal(issueKey)}
-              rewrite={rewrite}
-              showingOriginal={original !== undefined}
-              toggleKey="w"
-            />
+            {controls.badge}
           </span>
         )}
       </h1>

@@ -259,6 +259,16 @@ interface ClosingNote {
   readonly held: HeldState | undefined;
 }
 
+/** The line that says the reviewer holds `note`, the closing reason of `issueKey`, as `held`. */
+function heldReasonLine(held: HeldState, note: ClosingNote, issueKey: string): string {
+  return heldWriteLine(
+    held,
+    "message",
+    note.id,
+    ` (${note.ref}), the closing reason of ${issueKey}`
+  );
+}
+
 /** What `dispatch issue-update` prints for its update Dispatch kept beside a held issue: the line
  *  every kept write prints (`keptWriteResult`), then, for a close, where its reason is, landed or
  *  held, so the caller never posts it again. */
@@ -274,12 +284,7 @@ function keptUpdateResult(
       result.text,
       note.held === undefined
         ? `The closing reason of ${issueKey} landed as message ${note.id} (${note.ref}).`
-        : heldWriteLine(
-            note.held,
-            "message",
-            note.id,
-            ` (${note.ref}), the closing reason of ${issueKey}`
-          ),
+        : heldReasonLine(note.held, note, issueKey),
     ].join("\n"),
     details: {
       ...result.details,
@@ -521,14 +526,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     text: [
       ...(closingNote?.held === undefined
         ? []
-        : [
-            heldWriteLine(
-              closingNote.held,
-              "message",
-              closingNote.id,
-              ` (${closingNote.ref}), the closing reason of ${after.key}`
-            ),
-          ]),
+        : [heldReasonLine(closingNote.held, closingNote, after.key)]),
       `${after.key}: ${changes.join("; ")}${await notSubscribed(issueTopic(after.key), input.subscriptions)}`,
       ...adviceLines,
     ].join("\n"),

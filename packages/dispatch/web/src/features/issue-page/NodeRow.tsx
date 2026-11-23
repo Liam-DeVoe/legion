@@ -29,13 +29,8 @@ import {
   pageStateText,
   pageWordsText,
 } from "../../theme/classes";
-import {
-  originalToggleProps,
-  originalWording,
-  toggleOriginal,
-  useOriginalShown,
-} from "../inbox/ask-rewrite";
-import { RewriteBadge } from "../inbox/RewriteBadge";
+import { originalOption, originalWording, useOriginalShown } from "../inbox/ask-rewrite";
+import { rewriteControls } from "../inbox/RewriteBadge";
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
@@ -433,7 +428,14 @@ export function NodeRow({
             </p>
           )}
         </div>
-        <RowMargin author={author} context={context} node={node} tabStops={tabStops} tone={tone} />
+        <RowMargin
+          author={author}
+          context={context}
+          node={node}
+          showingOriginal={shown !== node}
+          tabStops={tabStops}
+          tone={tone}
+        />
         {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
@@ -699,12 +701,16 @@ export function RowMargin({
   author,
   context,
   node,
+  showingOriginal,
   tabStops,
   tone,
 }: {
   author: { readonly kind: AuthorKind; readonly name: string; readonly reader: boolean };
   context: boolean;
   node: TreeNode;
+  /** Whether the row draws the wording the node's rewrite replaced (`useOriginalWords`), which its
+   *  badge says. */
+  showingOriginal: boolean;
   tabStops: boolean;
   tone: Tone;
 }): ReactNode {
@@ -782,7 +788,7 @@ export function RowMargin({
             )}
           </span>
         )}
-        <RowRewriteBadge node={node} tabStops={tabStops} />
+        <RowRewriteBadge node={node} showingOriginal={showingOriginal} tabStops={tabStops} />
       </div>
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
@@ -820,42 +826,53 @@ export function RowMargin({
 
 /**
  * The badge a rewrite left on the node's words, after its author and time (INFRA-3231's R7), as
- * every page draws one (`RewriteBadge`): Rewritten, whose press shows the wording the rewrite
+ * every page draws one (`rewriteControls`): Rewritten, whose press shows the wording the rewrite
  * replaced in place on every row of the node (`useOriginalWords`) and reads Original until it is
  * pressed again; Rewriting… while a person's Rewrite of an ask runs; and Rewrite failed where
- * Dispatch applied none, which nothing on this page tries again. `w` while the badge holds the
- * focus does what its press does (`originalToggleProps`), as the title's badge does on today's
- * page; on the row itself `w` stays the tree's, which moves into the decision behind the row
- * (`useTreeKeymap.ts`'s `tree-decision`). Out of the tab order unless `tabStops` holds, as every
- * control inside a row is: `f` stops on it. Nothing where no rewrite touched the words.
+ * Dispatch applied none, which nothing on this page tries again. Whether it reads Original is the
+ * row's to say (`showingOriginal`), which reads the store once for its words. `w` while the badge
+ * holds the focus does what its press does (`originalToggleProps`), as the title's badge does on
+ * today's page; on the row itself `w` stays the tree's, which moves into the decision behind the
+ * row (`useTreeKeymap.ts`'s `tree-decision`). Out of the tab order unless `tabStops` holds, as
+ * every control inside a row is: `f` stops on it. Its words are the shared badge's own, which the
+ * page marks as words it did not author (`authorText`), as the title's badge is inside the title.
+ * Nothing where no rewrite touched the words.
  */
-function RowRewriteBadge({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
-  const shown = useOriginalShown(node.id);
-  const rewrite = node.rewrite;
-  if (rewrite === undefined) return null;
-  const toggle = originalToggleProps(node.id, rewrite.state === "rewritten");
+function RowRewriteBadge({
+  node,
+  showingOriginal,
+  tabStops,
+}: {
+  node: TreeNode;
+  showingOriginal: boolean;
+  tabStops: boolean;
+}): ReactNode {
+  if (node.rewrite === undefined) return null;
+  const { badge, toggle } = rewriteControls({
+    id: node.id,
+    rewrite: node.rewrite,
+    showingOriginal,
+    tabIndex: tabStops ? undefined : -1,
+  });
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: hears the `w` pressed on the badge's own button, which is the control
-    <span className="inline-flex" data-node-rewrite="" onKeyDown={toggle.onKeyDown}>
-      <RewriteBadge
-        onToggle={() => toggleOriginal(node.id)}
-        rewrite={rewrite}
-        showingOriginal={originalWording(rewrite, shown) !== undefined}
-        tabIndex={tabStops ? undefined : -1}
-        toggleKey="w"
-      />
+    <span className="inline-flex" data-node-rewrite="" onKeyDown={toggle.onKeyDown} {...authorText}>
+      {badge}
     </span>
   );
 }
 
 /**
  * The node as its row draws its words (INFRA-3231's R7): the node itself, or, while the badge of
- * its rewrite shows the wording the rewrite replaced (`RowRewriteBadge`), the node holding that
- * wording: an ask's question, with each option's description as the agent wrote it, or none, and
- * each label kept, which a rewrite never changes (as `AskCard` draws them), and a comment's or a
- * message's body. That wording comes with no reading of the server's, so the row draws it as
- * stored, as it draws every text whose read sent none (`RowText`). Every row of the node swaps
- * together, and with every other part of the page that draws the same text (`useOriginalShown`).
+ * its rewrite shows the wording the rewrite replaced (`RowRewriteBadge`), a new node holding that
+ * wording, so the row tells which it draws by `!==`: an ask's question, with each option's
+ * description as the agent wrote it, or none, and each label kept, which a rewrite never changes
+ * (`originalOption`, as `AskCard` draws them), and a comment's or a message's body. That wording
+ * comes with no reading of the server's, so the row draws it as stored, as it draws every text
+ * whose read sent none (`RowText`). Every row of the node swaps together, and so does each part of
+ * the page that reads the same store (`useOriginalShown`), such as a comment's or a message's card
+ * in Details; an ask's card keeps its own state (`AskCard`), and the zoom's crumb and the focused
+ * node's title keep the rewritten first line.
  */
 export function useOriginalWords(node: TreeNode): TreeNode {
   const original = originalWording(node.rewrite, useOriginalShown(node.id));
@@ -872,14 +889,7 @@ function withOriginalWords(node: TreeNode, original: TextWording): TreeNode {
     ...rest,
     ...(node.options === undefined
       ? {}
-      : {
-          options: node.options.map((option) => {
-            const before = original.options?.find((one) => one.label === option.label);
-            return before?.description === undefined
-              ? { label: option.label }
-              : { description: before.description, label: option.label };
-          }),
-        }),
+      : { options: node.options.map((option) => originalOption(option, original)) }),
     text: original.body,
   };
 }
