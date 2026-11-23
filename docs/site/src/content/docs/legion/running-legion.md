@@ -1318,7 +1318,9 @@ Closing the terminal leaves the project without one, and the daemon logs
    first step back, on their kept sessions, at its next first phase start, and each other agent at
    the start of its step. A claim whose session supervise's `forgetSession` has dropped comes back
    in a new session instead. Besides an operator's suspension, a project pause
-   (`legion project pause`), a root agent's report of its own exit and the release of an idle
+   (`legion project pause`), the stop of a task (an owner's `stop_task`, or the daemon's for a
+   failed step no step takes back), which suspends the claim of the task's running step and keeps
+   its session, a root agent's report of its own exit and the release of an idle
    issue pod (`runtime.kubernetes.idle_release`), the daemon suspends or ends claims only when an
    issue leaves the workflow, when a claim moves to another tree, for a production check after the
    issue is done, or when an agent's next step is of another role than the one its claim holds:
