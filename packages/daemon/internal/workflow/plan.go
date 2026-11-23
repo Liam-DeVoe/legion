@@ -76,6 +76,12 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
 // telling names (tellPassedOver).
+//
+// Admission reads the phase the first step of that plan runs as before this settles it, for the
+// slot the promotion that starts the step takes or does not take (record.ReadFirstPhases), from
+// these same sources in this same order: a source added, dropped or moved here is one there too,
+// or the promotion grants a row the next pass takes back, or starts a step that keeps a slot on
+// none.
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
@@ -123,6 +129,12 @@ func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.P
 		StepsByDefault: true, State: record.TaskWaiting}
 	return version, []record.PlanTask{task}, record.NameAgents(nil, planSteps(plan.RolesOf(plan.Plan{}, e.cfg.Deployment), issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
+
+// DefaultSteps is the project's default steps (Config.DefaultSteps), which the run of an issue
+// whose owner gave no plan takes at its first step (defaultRows), and which admission reads the
+// phase of that step from before the step runs (record.ReadFirstPhases). The slice is the engine's
+// own, which the caller does not change.
+func (e *Engine) DefaultSteps() []plan.Step { return e.cfg.DefaultSteps }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
 // place from 1, with its agent key and the type its role has in roles, the roles the plan's steps

@@ -2213,6 +2213,10 @@ type Store interface {
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
 	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
+	// PlansInForce is the version in force of each generation of each issue of keys, with the role
+	// of its task's first step, each issue's newest first: the one read the phase each of them
+	// starts its run in is judged from (ReadFirstPhases).
+	PlansInForce(ctx context.Context, tx pgx.Tx, keys []string) ([]PlanInForce, error)
 	// CarryPlan copies the plan of issue at from to to, with every role it defines: with carried,
 	// each task where it stands; without, each task waiting at no act with its counts at 0. It
 	// writes nothing where from has no plan rows.

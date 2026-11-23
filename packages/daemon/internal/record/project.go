@@ -389,6 +389,15 @@ type LineEntry struct {
 	// promotion that passes over a candidate and the state's own report of what Legion waits for
 	// answer from one judgement.
 	Waits []string
+	// StartsIn is the phase the issue's promotion moves it into where that is the first step of
+	// its plan, the first of the phases the plan's line runs (LineFacts.FirstPhases): set on an entry
+	// standing at admitted under an open gate of its tree, whose first phase this promotion starts
+	// or whose row it gives back before the same pass starts that phase, and empty on every other,
+	// whose promotion leaves it in the phase its record carries. The grant reads it (admit's
+	// slotFor), so an issue whose first step keeps no slot, an acceptance, is given no row the next
+	// pass would take back. The line carries the fact as Holds is carried, so each reader of the
+	// grant judges an entry from the one read.
+	StartsIn phase.Phase
 }
 
 // LineFacts is everything the waiting line and the set of live trees are read from beyond the
@@ -467,6 +476,14 @@ type LineFacts struct {
 	// LineWaitingOnIssue until the wait ends. Only the caller can fill it, for the reason Held
 	// gives, and it is read again on every pass as ChildWaits is (blockers.startedWaits).
 	Waits map[string][]string
+	// FirstPhases is the phase the run of each issue whose promotion moves it into its first step
+	// starts in, by key (ReadFirstPhases): the issues standing at admitted under an open gate of
+	// their tree, and no other. The line carries it on each such entry (LineEntry.StartsIn), which
+	// the grant of a slot reads. Only the caller can fill it, since the default steps it falls back
+	// to are the project's settings, which this package is never given; admission's own reads fill
+	// it, and a line built from facts that leave it empty judges every entry by the phase its record
+	// carries, as no grant of a slot is made from such a line.
+	FirstPhases map[string]phase.Phase
 }
 
 // ChildWait is why one parent's own first phase waits: the open Dispatch children under it, in
@@ -817,11 +834,12 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // slot waits for one again (workflow.StartOrOwe).
 //
 // It is written as one list so that a later change adds or removes one entry and every reader of
-// the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
-// the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
-// waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot. PastReview is the complement of the three phases this refuses, for the repair that
-// must reach an issue holding no row.
+// the rule moves with it. Three read it, and a phase in one and not another would be a deadlock or
+// a row given and taken back: the cap's own half (KeepsSlot), the grant's reading of the first step
+// a promotion moves an issue into (admit's slotFor, LineEntry.StartsIn), and the mark a start of a
+// phase worker carries for the slot it waits for (workflow.StartOrOwe), whose row the outbox holds
+// unclaimable while the issue holds no slot. PastReview is the complement of the three phases
+// this refuses, for the repair that must reach an issue holding no row.
 func PhaseKeepsSlot(at phase.Phase) bool {
 	switch at {
 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
@@ -862,8 +880,9 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // It is the one statement of that half, and the two rules that must never disagree read it: the
 // release (NeedsSlot, which admit's releaseSlots asks of every issue holding a row) and the
 // grant (admit's slotFor, which asks it of every candidate of the waiting line that holds no
-// row). Written apart, one pass could grant a row the next pass takes away, and the issue would
-// queue again for the slot it had just been given.
+// row, and asks PhaseKeepsSlot beside it of the phase a candidate's promotion moves it into where
+// that is its first step, LineEntry.StartsIn). Written apart, one pass could grant a row the next
+// pass takes away, and the issue would queue again for the slot it had just been given.
 //
 // Whether the issue is in the workflow at all is InWorkflow's one statement, which this reads
 // rather than writing a second copy of: the linger InWorkflow leaves out is read by no part of
@@ -1318,16 +1337,20 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 	// just sorted into and not the order the loops above found it; the moment that placed a
 	// returned entry is the sort key itself, taken from the timed value rather than read a
 	// second time from the records (LineEntry.Since); and the rank that placed a starting entry
-	// is its tree root's, which the sort above read the same record for.
+	// is its tree root's, which the sort above read the same record for. The phase its first step
+	// starts in is set here for the same reason as its part: whatever loop placed the entry, an
+	// issue the facts read one for carries it (LineEntry.StartsIn).
 	line := make([]LineEntry, 0, len(returned)+len(starting))
 	for i, waiting := range returned {
 		entry := waiting.entry
 		entry.Part, entry.PartPlace, entry.Since = PartReturned, i+1, waiting.at
+		entry.StartsIn = facts.FirstPhases[entry.Issue.Key]
 		line = append(line, entry)
 	}
 	for i := range starting {
 		starting[i].Part, starting[i].PartPlace, starting[i].RootRank =
 			PartStarting, i+1, byKey[starting[i].Issue.Tree].Rank
+		starting[i].StartsIn = facts.FirstPhases[starting[i].Issue.Key]
 	}
 	return append(line, starting...), heldRows
 }

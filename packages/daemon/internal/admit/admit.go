@@ -435,7 +435,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list admission slots: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	facts, err := a.lineFacts(ctx, tx, issues)
 	if err != nil {
 		return false, err
 	}
@@ -1883,11 +1883,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				a.log.Info("admission waits for what this issue waits on", "issue", issue.Key, "blockers", waits)
 				continue
 			}
-			// A candidate that already holds a row, or that stands in a phase keeping none,
-			// takes no slot and so is never held by the cap: a root another tree handed to
-			// Legion carrying the phase it ran there opens its tree at once on the row it
-			// brought, and an answered root resumes its architect on the row it kept through
-			// the wait.
+			// A candidate that already holds a row, or whose promotion leaves it in a phase
+			// keeping none, takes no slot and so is never held by the cap: a root another tree
+			// handed to Legion carrying the phase it ran there opens its tree at once on the row
+			// it brought, an answered root resumes its architect on the row it kept through the
+			// wait, and an issue whose first step is an acceptance starts it on no row.
 			takes := slotFor(candidate)
 			if !capLets(candidate, len(own), a.cap) {
 				// A full cap gives no further slot, and the scan goes on. This is not the hold
@@ -1971,17 +1971,19 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.store.PutSlot(ctx, tx, slot); err != nil {
 					return admitted, released, fmt.Errorf("put admission slot for %s: %w", issue.Key, err)
 				}
-				// The mark of a release for a wait goes with the row's return: an issue holding
-				// a row has its place against the cap back, and a mark left standing would say
-				// it gave that place up (record.Issue.ReleasedForWaitAt). Only an issue that
-				// carries the mark is written, so an ordinary grant costs no statement.
-				if issue.ReleasedForWaitAt != nil {
-					if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
-						return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
-					}
-				}
 				slots, own = append(slots, slot), append(own, slot)
 				a.logSlot(ctx, "taken", issue.Key, len(own))
+			}
+			// The mark of a release for a wait goes with the wait's end, row or no row: an issue
+			// given its row back has its place against the cap back, one whose first step keeps
+			// no slot (slotFor) needs no place, and a mark left standing would say it still
+			// waits, so the line would offer it as waiting again on every round of this loop and
+			// its first phase never (record.Issue.ReleasedForWaitAt, record.Waiting). Only an
+			// issue that carries the mark is written, so an ordinary grant costs no statement.
+			if issue.ReleasedForWaitAt != nil {
+				if err := a.store.ClearReleasedForWait(ctx, tx, issue.Key); err != nil {
+					return admitted, released, fmt.Errorf("clear the slot release of %s for what it waits on: %w", issue.Key, err)
+				}
 			}
 			switch candidate.Kind {
 			case record.LineReturning:
@@ -1996,12 +1998,13 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				a.log.Info("admission gives a slot back to an issue whose work came back", "issue", issue.Key, "phase", issue.Phase)
 			case record.LineWaitingOnIssue:
 				// The wait is over — a candidate still waiting never reaches here, the skip
-				// above passes over it — and the row granted above is the whole of this
-				// promotion: nothing of the issue's work ever stopped, so there is nothing to
-				// start again. What its phase needs next, a first phase at admitted among it,
-				// the line offers from the record this grant leaves, the mark cleared, which is
-				// why this round is read again below (record.Waiting).
-				a.log.Info("admission gives a slot back to an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase)
+				// above passes over it — and the row granted above, where the phase the issue
+				// goes on in keeps one, is the whole of this promotion: nothing of the issue's
+				// work ever stopped, so there is nothing to start again. What its phase needs
+				// next, a first phase at admitted among it, the line offers from the record this
+				// promotion leaves, the mark cleared, which is why this round is read again below
+				// (record.Waiting).
+				a.log.Info("admission ends the wait of an issue whose wait ended", "issue", issue.Key, "phase", issue.Phase, "slot", takes)
 				resumed = true
 			case record.LineAnswered:
 				awaiting := issue.Awaiting
@@ -2117,12 +2120,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		// A resume, or a tree opened above whose design gate already stands open, releases
 		// members of its own tree that stood at admitted on the snapshot this round read and
 		// would otherwise wait a whole fact for their first phase. An issue whose wait ended
-		// and took its row back is read again for the same reason and with the same reach: the
-		// row is all its own promotion gave it, and what its record needs next — the first
-		// phase of an issue standing at admitted — is the line's to offer, from the record the
-		// grant leaves. The records are read again and the line rebuilt so they are promoted in
-		// this pass; a pass a hold stopped goes no further, since the hold is the answer for
-		// everything behind it too.
+		// is read again for the same reason and with the same reach: its row back, where its
+		// first step keeps one, is all its own promotion gave it, and what its record needs next
+		// — the first phase of an issue standing at admitted — is the line's to offer, from the
+		// record the promotion leaves. The records are read again and the line rebuilt so they
+		// are promoted in this pass; a pass a hold stopped goes no further, since the hold is the
+		// answer for everything behind it too.
 		if stopped || (!opened && !resumed) {
 			break
 		}
@@ -2157,23 +2160,52 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 	if err != nil {
 		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	facts, err := a.lineFacts(ctx, tx, issues)
 	return issues, slots, facts, err
+}
+
+// lineFacts is the facts every line admission grants a slot from is judged on: the project's
+// (record.ReadLineFacts) and the one of them only a reader holding the project's settings can
+// read, the phase each issue whose promotion starts its first step starts in
+// (record.LineFacts.FirstPhases, over the project's default steps). The three reads that build
+// such a line read them here — this pass's own (reread), the pass's first read beside its
+// adoptions (adoptQueuedRoots) and the free-slot measure (slotFree) — so the grant, its count and
+// the stall measure's free-slot term judge each entry by one fact (slotFor).
+func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx, issues []record.Issue) (record.LineFacts, error) {
+	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	if err != nil {
+		return record.LineFacts{}, err
+	}
+	if facts.FirstPhases, err = record.ReadFirstPhases(ctx, tx, a.store, issues, facts.Gates, a.engine.DefaultSteps()); err != nil {
+		return record.LineFacts{}, fmt.Errorf("read the phase the first step of each issue starts in: %w", err)
+	}
+	return facts, nil
 }
 
 // slotFor says whether promoting this candidate must take one of the cap's slots for it: it
 // holds none already (record.LineEntry.Holds, which the line sets from the slots it was built
-// from) and its phase keeps one (record.KeepsSlot). The grant and the release read that one
-// predicate, so no pass hands out a row the next pass would take back.
+// from) and the phase its promotion leaves it in keeps one. The grant and the release read one
+// rule of the phase (record.KeepsSlot over record.PhaseKeepsSlot), so no pass hands out a row the
+// next pass would take back.
 //
-// It reads the phase the candidate's record carries, save for a candidate at admitted, which it
-// judges by the phase its promotion moves it into, its task's first step's (planning on the
-// default steps), so the two agree wherever this is asked: KeepsSlot refuses accepting, retro and
-// merging (in the default steps, the phases past an issue's review), a phase of done and a
-// Dispatch status out of the workflow, and a candidate at admitted whose first step keeps no slot,
-// such as a first step `acceptance`, is promoted on no row. An answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and a
-// root whose tree is opened keeps the phase it ran in the tree it left.
+// That phase is the one the candidate's record carries (record.KeepsSlot), save where the
+// promotion moves the candidate into the first step of its plan: a candidate standing at
+// admitted under an open gate of its tree, whose first phase the promotion starts
+// (record.LineFirstPhase), or whose row it gives back before the same pass starts that phase
+// (record.LineWaitingOnIssue). Such a candidate is judged by the phase that first step runs as,
+// which the line carries (record.LineEntry.StartsIn, read as workflow's planFirstStep settles the
+// plan the step walks, record.ReadFirstPhases): planning on the default steps, which keeps a
+// slot, and accepting where the first step is an acceptance, which keeps none. So a candidate
+// whose first step is an acceptance is started on no row, and the row goes to the candidate
+// behind it in the same pass. Judged by admitted, which keeps one, it would be granted a row that
+// the next pass's release takes back, since it stands in accepting by then.
+//
+// KeepsSlot refuses accepting, retro and merging (in the default steps, the phases past an
+// issue's review), a phase of done and a Dispatch status out of the workflow. An answered root
+// goes from awaiting_person back to admitted on the row it kept through the wait, a returning
+// issue keeps the worker phase it stands in, a root whose tree is opened under a gate that is not
+// open stands at admitted while its architect writes the design, which keeps a row, and a root
+// handed over from another tree keeps the phase it ran in the tree it left.
 //
 // So a root another tree handed over carrying accepting, retro or merging is a candidate this
 // refuses, and its promotion opens its tree while it holds no row. That follows from the rule
@@ -2187,7 +2219,10 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
 // holding it back would bound nothing and would leave its tree closed for no reason.
 func slotFor(entry record.LineEntry) bool {
-	return !entry.Holds && record.KeepsSlot(entry.Issue)
+	if entry.Holds || !record.KeepsSlot(entry.Issue) {
+		return false
+	}
+	return entry.StartsIn == "" || record.PhaseKeepsSlot(entry.StartsIn)
 }
 
 // capLets says whether the cap lets the promotion start entry, given held, the rows of the cap
