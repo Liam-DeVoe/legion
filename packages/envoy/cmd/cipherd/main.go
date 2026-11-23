@@ -851,12 +851,13 @@ func main() {
 	// The NATS auth service starts once the broker serves, so a connection it admits can trade
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
 	// the drain begins. BROKER_NATS_SERVICES alone starts none (config.Load), and the record says
-	// which, with the edge listeners GET /v1/project-repositories answers either way.
+	// which, with the edge listeners GET /v1/project-repositories answers either way, and the hub
+	// account it places each client in (BROKER_NATS_ACCOUNT).
 	if cfg.NATS.Enabled() {
-		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners))
+		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners), "account", cfg.NATS.Account)
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
-			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services, Account: cfg.NATS.Account,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
@@ -1325,7 +1326,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
-		// endpoint and retry.
+		// endpoint and retry. A github-installations token has no give-back: it is the token the
+		// secret stores, which every other release of it hands over too.
 		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
@@ -1673,10 +1675,13 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 // no binding at all mints no secret of that type. The google-service-account and
 // anthropic-federation minters are pointers: a method value would otherwise copy the credentials
 // each caches away from the minter every later mint reads. The other two are copied, and each
-// Retry they hold is a pointer, so minters given one Retry still draw from its one budget.
+// Retry they hold is a pointer, so minters given one Retry still draw from its one budget. The
+// github-installations minter takes no setting and calls no endpoint: it reads the tokens the
+// secret stores, so it is built here.
 func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount, anthropicFederation *secrets.AnthropicFederation) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGitHubInstallations:  secrets.GitHubInstallations{}.Mint,
 		policy.TypeGoogleLogin:          googleLogin.Mint,
 		policy.TypeAzureLogin:           azureLogin.Mint,
 		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,

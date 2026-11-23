@@ -243,6 +243,9 @@ holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
+and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
+patches nats-server with.
 No bun_install and no skills/** - the two pages of skills/ this filter names are all
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
@@ -485,7 +488,7 @@ browser row reads: the dashboard and its contracts, the Dispatch server its harn
 builds, and the two workflow files that hold the steps. The retired `dispatch` job's
 filter also held three fixture sets whose only readers are the dashboard's and the
 proof editor's unit tests, and they are not here: dispatch-ui's filter names all
-three, and with this output ungated on a pull request they would start five shard
+three, and with this output ungated on a pull request they would start four shard
 machines and the merge job for a fixture-only change. The dispatch_browser gate in
 .github/scripts/ci_job_reads.py says what this suite reads, and check-ci-filters.sh
 holds this filter to that gate - it refuses a filter that misses a read, never one
@@ -511,7 +514,7 @@ every project and the two-process job, which is the lane the nightly
 whole suite on a pull request with the label, and the group is where a change to
 that file meets it before main anyway. The nightly itself is not in this list:
 no step of this suite reads it, which rule 9's second direction refuses, since
-five shard machines and the merge job would start over a change no row sees. It
+four shard machines and the merge job would start over a change no row sees. It
 is a read of the ci_filters gate instead, so a change to it re-runs this check,
 which holds this filter and that gate together.
 
