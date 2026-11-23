@@ -195,6 +195,23 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
+	return partsText(t, parts)
+}
+
+// subOwnerText is composedText for the prompt of a sub-owner of role (ComposeSubOwner).
+func subOwnerText(t *testing.T, composer *Composer, role string) string {
+	t.Helper()
+	parts, err := composer.ComposeSubOwner(role)
+	if err != nil {
+		t.Fatalf("ComposeSubOwner %s: %v", role, err)
+	}
+	return partsText(t, parts)
+}
+
+// partsText is the text of parts: each file of Parts.RolePromptPaths read back from the snapshot,
+// joined in order.
+func partsText(t *testing.T, parts Parts) string {
+	t.Helper()
 	var text strings.Builder
 	for _, path := range parts.RolePromptPaths {
 		body, err := os.ReadFile(path)
@@ -979,31 +996,39 @@ func TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCar
 
 // An agent that wants a pod of its own for a task writes one line of a fixed form in its session,
 // and Legion starts no pod for it: the line is a wish that a later read of the stored sessions
-// counts. Legion's own part of every prompt gives the form, architect-common.md for an owner and
-// worker-common.md for the agent of a step, so each composition an issue's agents start with holds
-// the form, in the clause that says when to write it, and the clause that says Legion starts no
-// pod for it, each held by its terms. This shows the text is loaded, never that an agent writes
-// the line.
+// counts. Legion's own part of every prompt gives the form, architect-common.md for an owner, the
+// sub-owner of a task among them (ComposeSubOwner), and worker-common.md for the agent of a step,
+// so each composition an issue's agents start with holds the form, in the clause that says when
+// to write it, and the clause that says Legion starts no pod for it, each held by its terms. This
+// shows the text is loaded, never that an agent writes the line.
 func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	for _, tc := range []struct {
-		name   string
-		role   claim.Role
-		isRoot bool
+		name     string
+		role     claim.Role
+		isRoot   bool
+		subOwner bool
 	}{
-		{"root architect", claim.RoleArchitect, true},
-		{"sub-architect", claim.RoleArchitect, false},
-		{"planner", claim.RolePlanner, false},
-		{"implementer", claim.RoleImplementer, false},
-		{"tester", claim.RoleTester, false},
-		{"reviewer", claim.RoleReviewer, false},
-		{"merger", claim.RoleMerger, false},
+		{"root architect", claim.RoleArchitect, true, false},
+		{"sub-architect", claim.RoleArchitect, false, false},
+		{"planner", claim.RolePlanner, false, false},
+		{"implementer", claim.RoleImplementer, false, false},
+		{"tester", claim.RoleTester, false, false},
+		{"reviewer", claim.RoleReviewer, false, false},
+		{"merger", claim.RoleMerger, false, false},
+		{"sub-owner of role architect", claim.RoleArchitect, false, true},
+		{"sub-owner of role implementer", claim.RoleImplementer, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			text := composedText(t, composer, tc.role, tc.isRoot)
+			var text string
+			if tc.subOwner {
+				text = subOwnerText(t, composer, string(tc.role))
+			} else {
+				text = composedText(t, composer, tc.role, tc.isRoot)
+			}
 			for _, terms := range [][]string{
 				{"pod of its own", "one line", "SEPARATE-POD", "SEPARATE-POD <ISSUE> <task> <reason>"},
 				{"Legion", "no pod", "this line"},
@@ -1013,6 +1038,94 @@ func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The sub-owner of a task owns that task's parts as an owner owns an issue's plan, so its prompt is
+// its role's shared parts, then the owner's part every architect composes (architect-common.md),
+// then the sub-owner's own (sub-owner.md). It holds no part of a phase worker (worker-common.md) and
+// not the sub-architect's own part of this daemon (go/architect.md), whose operations move the
+// issues of a tree. A role that is neither architect nor one of Legion's step roles has no such
+// prompt. The sub-owner's part names its acts in the order it does them, and none of the tree's
+// operations that only an architect's grant passes. This shows the text is loaded, never that a
+// sub-owner follows it.
+func TestASubOwnersPromptIsAnOwnersPart(t *testing.T) {
+	stateDir := t.TempDir()
+	composer, err := New(stateDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	shared := func(part string) string { return filepath.Join(stateDir, "prompts", "shared", part) }
+	daemon := func(part string) string { return filepath.Join(stateDir, "prompts", "go", part) }
+	for _, tc := range []struct {
+		role, name string
+		want       []string
+	}{
+		{"architect", "roles/architect.md", []string{shared("architect.md"), daemon("architect-common.md"), daemon("sub-owner.md")}},
+		{"implementer", "the implementer's shared parts", []string{shared("core/common.md"), shared("core/implementer.md"), shared("mechanics/headless.md"), shared("implementer.md"), daemon("architect-common.md"), daemon("sub-owner.md")}},
+	} {
+		t.Run(tc.role, func(t *testing.T) {
+			parts, err := composer.ComposeSubOwner(tc.role)
+			if err != nil {
+				t.Fatalf("ComposeSubOwner(%q): %v", tc.role, err)
+			}
+			if !slices.Equal(parts.RolePromptPaths, tc.want) {
+				t.Fatalf("ComposeSubOwner(%q) = %q, want %s, then go/architect-common.md and go/sub-owner.md: %q", tc.role, parts.RolePromptPaths, tc.name, tc.want)
+			}
+			for _, path := range parts.RolePromptPaths {
+				if path == daemon("architect.md") || path == daemon("worker-common.md") {
+					t.Errorf("ComposeSubOwner(%q) joins %s", tc.role, path)
+				}
+			}
+			// Every launch joins the parts byte for byte (runtime.ComposePrompt), so each of this
+			// daemon's parts meets the part before it at one blank line.
+			var text strings.Builder
+			for i, path := range parts.RolePromptPaths {
+				body, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read part: %v", err)
+				}
+				if joined := text.String(); i >= len(tc.want)-2 {
+					gap := len(joined) - len(strings.TrimRight(joined, "\n")) + len(body) - len(strings.TrimLeft(string(body), "\n"))
+					if gap != 2 {
+						t.Errorf("ComposeSubOwner(%q) joins %s with %d newlines, want one blank line", tc.role, path, gap)
+					}
+				}
+				text.Write(body)
+			}
+			for _, term := range []string{"`complete_task`", "`parent`", "implementer (implementation)"} {
+				if !strings.Contains(text.String(), term) {
+					t.Errorf("the composed prompt of a sub-owner of role %s omits %q", tc.role, term)
+				}
+			}
+		})
+	}
+	for _, role := range []string{"merger", "controller"} {
+		if parts, err := composer.ComposeSubOwner(role); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", role)) {
+			t.Errorf("ComposeSubOwner(%q) = %q, %v; want an error that names the role", role, parts.RolePromptPaths, err)
+		}
+	}
+	body, err := goParts.ReadFile("go/sub-owner.md")
+	if err != nil {
+		t.Fatalf("read go/sub-owner.md: %v", err)
+	}
+	part, at, previous := foldWhitespace(string(body)), 0, "its start"
+	for _, act := range []string{"sub-owner of one task", "`plan_task`", "`parent`", "`steps`", "`owner`", "`needs`", "`register_plan`",
+		"yours to change", "`stop_task`", "`complete_step`", "`parts-done`", "`complete_task`", "`report-refused`", "owner above you", "no person"} {
+		found := strings.Index(part[at:], act)
+		if found < 0 {
+			t.Errorf("go/sub-owner.md does not name %q after %q", act, previous)
+			continue
+		}
+		at, previous = at+found+len(act), act
+	}
+	for _, operation := range []string{"park_child", "rerun_child", "release_children", "sign_off"} {
+		if strings.Contains(part, operation) {
+			t.Errorf("go/sub-owner.md names %s, an operation of the tree that a sub-owner's grant does not pass", operation)
+		}
+	}
+	if strings.Contains(part, "part_of") {
+		t.Error("go/sub-owner.md names part_of: a part names its task by its `parent`")
 	}
 }
 
