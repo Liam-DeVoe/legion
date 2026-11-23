@@ -128,9 +128,9 @@ hold its role, which the daemon's `holdsRole` decides, the child's notices come 
 | Worker question or failure | Handle it or message the worker with `envoy_publish` to its role token. |
 
 The reviewer's approval moves this child to `accepting`, where no worker runs and the acceptance
-is yours (`skill://legion-architect`, section 6): read the tester's handoff,
-`dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
-by SHA
+is yours (`skill://legion-architect`, section 6): read `dispatch results --issue <issue>` at each
+open head, whose states decide each check and whose fail results give each failure, the tester's
+handoff for its `head` and `note`, and the reviewer's approval of the head by SHA
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4).

@@ -1101,3 +1101,71 @@ func TestNoTesterPartHoldsTheOldRunRule(t *testing.T) {
 		t.Errorf("%s still says %q", held.part, held.phrase)
 	}
 }
+
+// allParts are every part of both trees, each by its path in this package, with its text.
+func allParts(t *testing.T) map[string]string {
+	t.Helper()
+	parts := map[string]string{}
+	for dir, tree := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
+		err := eachPart(tree, dir, func(name string, body []byte) error {
+			parts[dir+"/"+name] = string(body)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", dir, err)
+		}
+	}
+	return parts
+}
+
+// testHandoffFailureReads are the failure fields of a `test` handoff and a read of them. `failed`
+// is matched only as the count of failures, since a review's outcome is `failed` too. Each is
+// joined from its halves, as oldTesterRunRule's phrases are.
+var testHandoffFailureReads = []string{
+	implementerProofField, failuresField, "with " + failedField + " counting", "tester's fail" + "ures",
+}
+
+// A failure is a fail result on its check, so each role that reads a failure reads it with
+// `dispatch results`, never from a `test` handoff, and no part of either tree names the handoff's
+// failure fields. Each of the eight parts that read a failure holds its sentence that sends its
+// role to the fail results. The architect's three parts hold the check states in the same
+// sentence, and the reviewer's core holds its read of `dispatch results`. A read of the handoff's
+// `head` or `note` stays. The quiet control: in the planner's "When a review ended `failed`",
+// `failed` is a review's outcome, and the check finds nothing in that line. The planted control: a
+// temporary part that holds main's field list of the tester's handoff, and a line that copies the
+// tester's failures, is reported for each field and for the copy.
+func TestNoRolePartReadsAFailureFromATestHandoff(t *testing.T) {
+	parts := allParts(t)
+	const reviewEnded = "When a review ended " + failedField
+	var line string
+	for _, candidate := range strings.Split(parts["roles/planner.md"], "\n") {
+		if strings.Contains(candidate, reviewEnded) {
+			line = candidate
+		}
+	}
+	if line == "" {
+		t.Fatalf("roles/planner.md does not hold %q, the quiet control", reviewEnded)
+	}
+	if held := partsHolding(map[string]string{"roles/planner.md": line}, testHandoffFailureReads, false); len(held) != 0 {
+		t.Errorf("control: the check finds %q in the planner's line %q, which names a review's outcome and no field", held, line)
+	}
+	requirePlantsCaught(t, parts, testHandoffFailureReads, false, []partPin{
+		{"roles/planted.md", "`head` (the 40-character lower-case commit your recorded results name), `" + implementerProofField + "`, and " + failuresField + " (each `{check, evidence}`) with " + failedField + " counting them."},
+		{"roles/planted.md", "Copy the tester's fail" + "ures into your acceptance."},
+	})
+	for _, held := range partsHolding(parts, testHandoffFailureReads, false) {
+		t.Errorf("%s still says %q", held.part, held.phrase)
+	}
+	const results = "`dispatch results --issue <issue>`"
+	const evidence = results + " at each open head, whose states decide each check and whose fail results give each failure, the tester's handoff for its `head` and `note`, and the reviewer's approval of the head by SHA"
+	requirePins(t, parts, []partPin{
+		{"go/architect-common.md", "read the evidence (" + evidence + ")"},
+		{"roles/architect.md", "read " + evidence},
+		{"roles/architect-root.md", "read " + evidence},
+		{"roles/implementer.md", "Read each check that failed from its fail results in " + results + " at the tested head; the `test` handoff holds no failure."},
+		{"roles/core/implementer.md", "Read each failure of that round from the fail results that " + results + " prints at the tested head."},
+		{"roles/reviewer.md", "Read each failure from the fail results in " + results + ", never from a `test` handoff."},
+		{"roles/core/reviewer.md", results},
+		{"roles/tester.md", "read each earlier failure from the fail results that " + results + " prints, not from a handoff"},
+	})
+}

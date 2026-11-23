@@ -199,8 +199,9 @@ writes `done`, and the tester's production check follows in its own session, on 
 request, asking nothing of you. Your acceptance comes before it: the reviewer's approval moves an
 issue to `accepting`. The reviewer's notice of it comes to you for the root, and for another issue
 when neither its own architect nor an architect between it and the root holds its role. You then
-read the tester's handoff, `dispatch results --issue <issue>` at the approved head and the
-reviewer's approval of the head by SHA (the daemon refuses a sign-off while an issue beneath it is
+read `dispatch results --issue <issue>` at each open head, whose states decide each check and whose
+fail results give each failure, the tester's handoff for its `head` and `note`, and the reviewer's
+approval of the head by SHA (the daemon refuses a sign-off while an issue beneath it is
 still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4).
 Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
