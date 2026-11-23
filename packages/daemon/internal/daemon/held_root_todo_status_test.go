@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -59,7 +60,7 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 			child := record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: rootKey, Project: "LEGION",
 				Title: "child", Parent: &parent, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
 				Rank: "B", LastDispatchSeq: 1, HandedOver: true}
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				version := record.PlanVersion{Issue: rootKey, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 					GivenBy: mustClaimToken(t, rootKey, claim.RoleArchitect), GivenAt: now.Add(-time.Hour)}
 				task := record.PlanTask{Issue: rootKey, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
@@ -96,7 +97,7 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 			writeRootStatuses := func() {
 				t.Helper()
 				var rows []record.OutboxRow
-				if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 					var err error
 					rows, err = records.PendingStatusWrites(ctx, tx, "LEGION")
 					return err

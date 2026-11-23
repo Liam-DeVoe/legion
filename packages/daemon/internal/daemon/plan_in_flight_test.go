@@ -212,7 +212,7 @@ func (r *inFlightRig) wentOn(issue *inFlightIssue) error {
 		}
 	}
 	var stored *record.StoredPlan
-	if err := r.st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = r.records.Plan(context.Background(), tx, issue.key, 1)
 		return err

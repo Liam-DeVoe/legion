@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -153,7 +154,7 @@ func (r *ownerStepsRig) storedPlan(issue string, generation uint64) *record.Stor
 	r.t.Helper()
 	ctx := context.Background()
 	var stored *record.StoredPlan
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		stored, err = r.records.Plan(ctx, tx, issue, generation)
 		return err

@@ -114,7 +114,7 @@ func adoptionsOf(rt *fake.Runtime, token claim.Token) []string {
 func resumeTaskOf(t testing.TB, pool *store.Pool, engine *workflow.Engine, key string) string {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := pool.Begin(ctx)
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
 	}
@@ -539,7 +539,7 @@ func seedWorkflowTreeIn(t *testing.T, st *store.Store, project string, root reco
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}

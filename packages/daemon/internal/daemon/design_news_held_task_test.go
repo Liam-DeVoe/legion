@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -181,7 +183,7 @@ func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *tes
 	// The sign-off names the root's architect, the child's generation and its run of accepting, as
 	// the route reads them (api's signOff).
 	var entry record.StepEntry
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		entry, err = record.NewStore().OpenStep(r.ctx, tx, pathChild)
 		return err
