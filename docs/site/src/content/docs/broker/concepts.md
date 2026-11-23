@@ -1622,8 +1622,9 @@ What the airlock does not stop is as much of the design as what it does:
   The proxy dials it only at an address in a range the destination may be in — private,
   `100.64.0.0/10`, or inside `BROKER_AIRLOCK_CLUSTER_RANGES` — and never at a loopback,
   link-local, unspecified, multicast or IPv4 broadcast address, one in `0.0.0.0/8`, a cloud
-  metadata server's, or an IPv6 address that carries an IPv4 address (NAT64, 6to4, Teredo and
-  the IPv4-compatible form); a tunnel or plain-HTTP request to that address stays refused.
+  metadata server's, or an IPv6 address that carries an IPv4 address (NAT64, 6to4, Teredo,
+  IPv4-compatible, IPv4-translated and ISATAP forms); a tunnel or plain-HTTP request to that
+  address stays refused.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

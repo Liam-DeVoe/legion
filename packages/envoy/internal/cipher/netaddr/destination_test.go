@@ -49,6 +49,12 @@ var neverRows = []struct{ addr, want string }{
 	// Teredo (2001::/32): a server of 169.254.169.254, and a client of 169.254.169.254 (the last 32
 	// bits inverted).
 	{"2001:0:a9fe:a9fe::1", neverCarries}, {"2001:0:4136:e378::5601:5601", neverCarries},
+	// IPv4-translated (::ffff:0:0:0/96, RFC 2765) of 169.254.169.254, 127.0.0.1 and the private
+	// 10.0.0.5; and ISATAP (an interface identifier 0:5efe or 200:5efe, RFC 5214) under a public,
+	// a unique-local and a 6to4 /64, carrying 169.254.169.254, 10.0.0.5 and 8.8.8.8.
+	{"::ffff:0:a9fe:a9fe", neverCarries}, {"::ffff:0:7f00:1", neverCarries}, {"::ffff:0:a00:5", neverCarries},
+	{"2606:4700:4700:1:0:5efe:a9fe:a9fe", neverCarries}, {"2606:4700:4700:1:200:5efe:808:808", neverCarries},
+	{"fd12:3456::5efe:a00:5", neverCarries}, {"2002:808:808:1:0:5efe:a9fe:a9fe", neverCarries},
 	// The local-use translation prefix (64:ff9b:1::/48), whatever it seems to carry.
 	{"64:ff9b:1::a9fe:a9fe", neverLocalUse}, {"64:ff9b:1::a00:5", neverLocalUse}, {"64:ff9b:1:ffff:ffff:ffff:ffff:ffff", neverLocalUse},
 }
@@ -72,6 +78,7 @@ var rangedRows = []string{"34.118.224.10", "::ffff:34.118.224.10", "2001:db8:5::
 var outsideRows = []string{
 	"8.8.8.8", "203.0.113.5", "2001:4860:4860::8888", "1.0.0.0", "11.0.0.0", "172.32.0.0", "100.128.0.0",
 	"34.118.240.1", "::1:a9fe:a9fe", "64:ff9b::1:a9fe:a9fe", "64:ff9b:2::a9fe:a9fe", "2001:1:a9fe:a9fe::", "2003::1",
+	"::ffff:1:a9fe:a9fe", "2606:4700:4700:1:400:5efe:a9fe:a9fe", "2606:4700:4700:1:0:5eff:a9fe:a9fe",
 }
 
 // TestTheDestinationTakesTheRangesItNamesAlone: DestinationRefusal takes an address because it is

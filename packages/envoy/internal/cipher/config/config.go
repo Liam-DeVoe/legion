@@ -322,8 +322,9 @@ type Config struct {
 	// to is in a range the destination may be in - private, 100.64.0.0/10 or inside
 	// BROKER_AIRLOCK_CLUSTER_RANGES - and none is loopback, link-local, unspecified, multicast, the
 	// IPv4 broadcast address, in 0.0.0.0/8, a cloud metadata server's IPv6 address, or an IPv6
-	// address that carries an IPv4 address (NAT64, 6to4, Teredo, IPv4-compatible, 64:ff9b:1::/48)
-	// (netaddr.DestinationRefusal), and a tunnel or a plain-HTTP request to those addresses stays
+	// address that carries an IPv4 address (NAT64, 6to4, Teredo, IPv4-compatible,
+	// IPv4-translated, ISATAP, 64:ff9b:1::/48) (netaddr.DestinationRefusal), and a tunnel or a
+	// plain-HTTP request to those addresses stays
 	// refused. The request keeps the host as its Host header, and the DPoP proof of a dpop entry
 	// still names https:// and the host. Unset, the proxy sends every bound host's request to that
 	// host's own address. The start is refused, naming the setting and the fault and quoting no part

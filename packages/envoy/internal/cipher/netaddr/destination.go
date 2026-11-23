@@ -46,11 +46,11 @@ const outsideTheRanges = "an address outside the private ranges and BROKER_AIRLO
 //   - an unspecified or multicast address, the IPv4 broadcast address and 0.0.0.0/8 ("this
 //     network", RFC 1122), which no one service has;
 //   - a cloud metadata server's IPv6 address (metadataServers), which is unique-local;
-//   - an IPv6 address that carries an IPv4 address (carriedIPv4: the NAT64, 6to4, Teredo and
-//     IPv4-compatible forms), whatever address it carries, and the local-use translation prefix
-//     64:ff9b:1::/48, whose IPv4 address the address alone does not say: the network sends a
-//     packet for such an address to an IPv4 address that is no address of the destination's own,
-//     and no Service of a cluster has one.
+//   - an IPv6 address that carries an IPv4 address (carriedIPv4: the NAT64, 6to4, Teredo,
+//     IPv4-compatible, IPv4-translated and ISATAP forms), whatever address it carries, and the
+//     local-use translation prefix 64:ff9b:1::/48, whose IPv4 address the address alone does not
+//     say: the network sends a packet for such an address to an IPv4 address that is no address
+//     of the destination's own, and no Service of a cluster has one.
 func DestinationNever(addr netip.Addr) string {
 	addr = Canonical(addr)
 	switch {
@@ -73,7 +73,7 @@ func DestinationNever(addr netip.Addr) string {
 		}
 	}
 	if _, n := carriedIPv4(addr); n > 0 {
-		return "an IPv6 address that carries an IPv4 address (a NAT64, 6to4, Teredo or IPv4-compatible form), which is never the private destination's"
+		return "an IPv6 address that carries an IPv4 address (a NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated or ISATAP form), which is never the private destination's"
 	}
 	return ""
 }

@@ -406,16 +406,16 @@ func TestAnUpstreamAtTheIPv4BroadcastAddressIsRefused(t *testing.T) {
 }
 
 // TestAnUpstreamAtAnAddressThatCarriesAnIPv4AddressIsRefused: a destination whose name resolves to
-// an IPv6 address that carries an IPv4 address - the NAT64, 6to4, IPv4-compatible and Teredo forms
-// of the metadata server, loopback, 0.0.0.1, multicast and the broadcast address, and an address of
-// the local-use translation prefix - or to 0.0.0.1 is refused, whatever address it carries, and
-// nothing is dialled. The general rule refuses each of them too, by the address it carries, and
-// the destination's rule takes an address only for the ranges it names (netaddr.DestinationRefusal),
-// so a form the general rule refuses is never read as private: before that rule, each row here was
-// dialled and its write stored. Control: the private address the rig's other tests take, in the
-// same run, stores its write.
+// an IPv6 address that carries an IPv4 address - the NAT64, 6to4, IPv4-compatible, Teredo,
+// IPv4-translated and ISATAP forms of the metadata server, loopback, 0.0.0.1, multicast and the
+// broadcast address, and an address of the local-use translation prefix - or to 0.0.0.1 is
+// refused, whatever address it carries, and nothing is dialled. The general rule refuses each of
+// them too, by the address it carries, and the destination's rule takes an address only for the
+// ranges it names (netaddr.DestinationRefusal), so a form the general rule refuses is never read
+// as private: before that rule, each row here was dialled and its write stored. Control: the
+// private address the rig's other tests take, in the same run, stores its write.
 func TestAnUpstreamAtAnAddressThatCarriesAnIPv4AddressIsRefused(t *testing.T) {
-	const carries = "an IPv6 address that carries an IPv4 address (a NAT64, 6to4, Teredo or IPv4-compatible form), which is never the private destination's"
+	const carries = "an IPv6 address that carries an IPv4 address (a NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated or ISATAP form), which is never the private destination's"
 	for _, row := range []struct{ name, addr, want string }{
 		{"0.0.0.1, of 0.0.0.0/8", "0.0.0.1", "an address of 0.0.0.0/8, which is reserved for this network"},
 		{"NAT64 of 169.254.169.254", "64:ff9b::a9fe:a9fe", carries},
@@ -428,6 +428,9 @@ func TestAnUpstreamAtAnAddressThatCarriesAnIPv4AddressIsRefused(t *testing.T) {
 		{"IPv4-compatible 169.254.169.254", "::a9fe:a9fe", carries},
 		{"IPv4-compatible 127.0.0.1", "::7f00:1", carries},
 		{"Teredo whose server is 169.254.169.254", "2001:0:a9fe:a9fe::1", carries},
+		{"IPv4-translated 169.254.169.254", "::ffff:0:a9fe:a9fe", carries},
+		{"ISATAP of 169.254.169.254 under a unique-local /64", "fd12:3456::5efe:a9fe:a9fe", carries},
+		{"ISATAP of 10.0.0.5 under a unique-local /64", "fd12:3456::200:5efe:a00:5", carries},
 		{"local-use translation of 169.254.169.254", "64:ff9b:1::a9fe:a9fe", "a local-use translation IPv6 address (64:ff9b:1::/48), which is never the private destination's"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
