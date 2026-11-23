@@ -483,7 +483,7 @@ test.each([
       [...section.querySelectorAll("[data-selected]")].map((row) =>
         row.getAttribute("data-selected")
       )
-    ).toEqual(chosen);
+    ).toEqual([...chosen]);
   } finally {
     view.unmount();
   }
