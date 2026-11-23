@@ -395,7 +395,8 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   const tabs = tablist.getByRole("tab");
   await expect(tabs).toHaveCount(10);
   // Every tab lies whole inside the tablist, which never scrolls sideways: ten tabs that do not
-  // fit its width wrap onto a further line (dispatch://INFRA-5200, the layout rule's 4).
+  // fit its width wrap onto a further line (dispatch://INFRA-5200, the layout rule's 4). A tab is
+  // one line, at most 48 px tall: the tabs wrap between tabs, never inside one.
   const wholeInTablist = (tab: Locator) =>
     expect
       .poll(async () => {
@@ -408,7 +409,12 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
         const listRight = listLeft + (listBox?.width ?? 0);
         const left = box?.x ?? Number.NEGATIVE_INFINITY;
         const right = left + (box?.width ?? 0);
-        return !scrolls && left >= listLeft - 0.5 && right <= listRight + 0.5;
+        return (
+          !scrolls &&
+          left >= listLeft - 0.5 &&
+          right <= listRight + 0.5 &&
+          (box?.height ?? Number.POSITIVE_INFINITY) <= 48
+        );
       })
       .toBe(true);
   const viewport = page.viewportSize();
@@ -467,6 +473,7 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await activityTab.click();
   await expect(activityTab).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "Show margin" }).click();
+  // The count of ten above settled the tabs, so one read lists them all.
   for (const tab of await tabs.all()) {
     await wholeInTablist(tab);
   }

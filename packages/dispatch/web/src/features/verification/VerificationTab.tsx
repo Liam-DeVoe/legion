@@ -299,6 +299,10 @@ function ComparedWith({ check }: { check: CheckBlock }): ReactNode {
   ));
 }
 
+/** One check of the Verification document. Its head line's groups, in this order: its standing
+ *  (whether its pass stands, and from which roles), then its words; when the line is too narrow
+ *  the words move under the standing whole and wrap inside themselves. Its facts follow as a list
+ *  of names and values, then its results. */
 function Check({ check }: { check: CheckBlock }): ReactNode {
   const stands = check.pass_stands.answer;
   const roles = check.pass_stands.roles ?? [];

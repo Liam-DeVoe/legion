@@ -105,11 +105,11 @@ export type RepoControlFailure = {
 };
 
 /**
- * The issue's repository in today's issue header's Details: `Repository:` and one combobox,
- * labelled `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` that
- * suggests the project's default repository. The suggestion is not the set of values: any
- * `owner/name` may be typed, which is what the server takes, and that is why this is a text box
- * with a list and not a `<select>`, which cannot hold a value its options lack.
+ * The issue's repository: one combobox, labelled `Repository of <KEY>`, holding the issue's own
+ * repository, with a `<datalist>` that suggests the project's default repository. The suggestion
+ * is not the set of values: any `owner/name` may be typed, which is what the server takes, and
+ * that is why this is a text box with a list and not a `<select>`, which cannot hold a value its
+ * options lack.
  *
  * The box shows the issue's own repository and nothing else, so the repository it resolves to -
  * its nearest ancestor's in its own project, else the project's default - is its placeholder,
@@ -178,12 +178,13 @@ export type RepoControlFailure = {
  * out. Whichever of the text and the box takes the other's place takes the focus the other held,
  * the clear control's included, where that focus fell to the document with it. Outside a row of
  * Details the box is drawn whether or not a repository resolves, and its description says
- * `No repository` when none does. `inHeaderDetails` draws it as the value of a row of today's
- * issue header's Details, which names it, so the control draws no `Repository:` of its own.
+ * `No repository` when none does. Outside `NoTooltips` the control is the value of the Repository
+ * row of today's issue header's Details, which names it, so it draws no `Repository:` of its own;
+ * the box fills the row up to 28 rem and ends a longer name, the project's default it shows as a
+ * placeholder among them, with an ellipsis.
  */
 export function RepoControl({
   disabled = false,
-  inHeaderDetails = false,
   inRow = false,
   issueKey,
   project,
@@ -193,7 +194,6 @@ export function RepoControl({
   sayFailure,
 }: {
   disabled?: boolean;
-  inHeaderDetails?: boolean;
   /** Whether the control is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
@@ -341,38 +341,33 @@ export function RepoControl({
       focusHeld.current = true;
     },
   };
-  // The place the box is drawn in, its width and its flow: `main`'s keeps its 200 px; inside
-  // `NoTooltips` nothing keeps its width, the box at most 200 px and narrowing to its line, and in
-  // a row of Details as wide as the row, or the repository's text as wide as its words. In a row
-  // of Details the place wraps, so the box's clear control, drawn after the box at the place's
-  // full width, goes onto the line under it.
+  // The place the box is drawn in, its width and its flow: in today's Details as wide as its row;
+  // inside `NoTooltips` nothing keeps its width, the box at most 200 px and narrowing to its
+  // line, and in a row of Details as wide as the row, or the repository's text as wide as its
+  // words. In a row of Details the place wraps, so the box's clear control, drawn after the box at
+  // the place's full width, goes onto the line under it.
   const placeLayout =
     page === null
-      ? inHeaderDetails
-        ? "inline-flex w-full min-w-0"
-        : "inline-flex shrink-0"
+      ? "inline-flex w-full min-w-0"
       : showsText
         ? "inline-flex min-w-0 max-w-full"
         : inDetails
           ? "flex w-full min-w-0 max-w-full flex-wrap gap-y-1"
           : "inline-flex w-[200px] min-w-0 max-w-full";
-  // The line's layout: `main`'s keeps its width; inside `NoTooltips` it narrows to its row and
-  // wraps, and in a row of Details it is as wide as the row's value as well. That value is a flex
-  // row, in which a line of no width of its own is only as wide as what it holds, so the place's
-  // `w-full` and the box's would fill no more than that, and the box would fall back to a text
-  // box's own width, which cuts a name the value has room for.
+  // The line's layout: as wide as its row in today's Details; inside `NoTooltips` it narrows to
+  // its row and wraps, and in a row of Details it is as wide as the row's value as well. That
+  // value is a flex row, in which a line of no width of its own is only as wide as what it holds,
+  // so the place's `w-full` and the box's would fill no more than that, and the box would fall
+  // back to a text box's own width, which cuts a name the value has room for.
   const lineLayout =
     page === null
-      ? inHeaderDetails
-        ? "w-full min-w-0"
-        : "shrink-0"
+      ? "w-full min-w-0"
       : inDetails
         ? "w-full min-w-0 max-w-full flex-wrap"
         : "min-w-0 max-w-full flex-wrap";
-  // The box's width, and in a row of Details the room it gives a name: `main`'s 200 px; in today's
-  // header's Details the row's width up to 28 rem, with an ellipsis for a name longer still (the
-  // project's default repository it shows as a placeholder among them); and inside `NoTooltips`
-  // its place's width. In a row of Details the box draws no datalist arrow
+  // The box's width, and in a row of Details the room it gives a name: in today's Details the
+  // row's width up to 28 rem, with an ellipsis for a name longer still; inside `NoTooltips` its
+  // place's width. In a row of the new page's Details the box draws no datalist arrow
   // (Chromium's `::-webkit-calendar-picker-indicator`, some 22 px of a narrow row's box), so a
   // name that fits the row's value shows whole; the list stays bound, and Chromium still opens
   // its suggestions on a click in the box, on ArrowDown and as the reader types. Its padding is
@@ -381,27 +376,26 @@ export function RepoControl({
   // clear control, which keeps the name off the × laid over the box's right end.
   const boxWidth =
     page === null
-      ? inHeaderDetails
-        ? "w-full min-w-0 max-w-md text-ellipsis"
-        : "w-[200px]"
+      ? "w-full min-w-0 max-w-md text-ellipsis"
       : inDetails
         ? "w-full min-w-0 [&::-webkit-calendar-picker-indicator]:hidden"
         : "w-full min-w-0";
-  // Where the clear control is drawn: `main`'s, and the one outside a row of Details, over the
-  // box's right end, 32 px wide and as tall as the box. In a row of Details it is in the flow after
-  // the box, on the line under it at the line's start: below 1280 px `styles.css` sets every input
-  // in 16 px and gives every button a 44 px minimum width, so a control over the box takes 44 px
-  // of a row's box and leaves a name that fits the row's value no room beside it. There it keeps
-  // a 44 px target below `md`, as that minimum makes it anyway, and from `md` the size it has over
-  // the box: 32 px wide and the box's 28 px tall where that minimum no longer holds.
+  // Where the clear control is drawn: in today's Details, and outside a row of the new page's
+  // Details, over the box's right end, 32 px wide and as tall as the box. In a row of the new
+  // page's Details it is in the flow after the box, on the line under it at the line's start:
+  // below 1280 px `styles.css` sets every input in 16 px and gives every button a 44 px minimum
+  // width, so a control over the box takes 44 px of a row's box and leaves a name that fits the
+  // row's value no room beside it. There it keeps a 44 px target below `md`, as that minimum
+  // makes it anyway, and from `md` the size it has over the box: 32 px wide and the box's 28 px
+  // tall where that minimum no longer holds.
   const clearPlace = inDetails
     ? "inline-flex min-h-11 min-w-11 md:min-h-7 md:min-w-8"
     : "absolute inset-y-0 right-0 inline-flex w-8";
   return (
     <div className={`flex ${lineLayout} items-center gap-2 text-sm ${lineText}`}>
-      {inDetails || inHeaderDetails ? null : (
-        <span className="font-medium" {...page?.pageChrome}>
-          {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
+      {page === null || inDetails ? null : (
+        <span className="font-medium" {...page.pageChrome}>
+          {`${page.PROPERTY_LABELS.repository}:`}
         </span>
       )}
       {showsNone ? (

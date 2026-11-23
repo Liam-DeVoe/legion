@@ -98,21 +98,19 @@ function RemoveCross(): ReactNode {
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
  *
- * Inside `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their
- * marks and carries no `title`; there `inRow` draws it as the value of a row of Details, which
- * draws the label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a
- * priority" on its add control while the issue advances none. `inHeaderDetails` draws it as the
- * value of a row of today's issue header's Details, which names it: no `Advances` of its own, and
- * a line that wraps inside its row.
+ * Outside `NoTooltips` it is the value of the Advances row of today's issue header's Details,
+ * which names it: no `Advances` of its own, and a line that wraps inside its row. Inside
+ * `NoTooltips` (`components/tooltips.tsx`) it says the new issue page's words with their marks and
+ * carries no `title`; there `inRow` draws it as the value of a row of Details, which draws the
+ * label: no `Advances` of its own, a line that wraps and cuts no word, and "Add a priority" on its
+ * add control while the issue advances none.
  */
 export function IssuePriorityLine({
   disabled,
-  inHeaderDetails = false,
   inRow = false,
   issue,
 }: {
   disabled: boolean;
-  inHeaderDetails?: boolean;
   /** Whether the line is the value of a row of the new issue page's Details. It acts inside
    *  `NoTooltips` alone. */
   inRow?: boolean;
@@ -249,12 +247,10 @@ export function IssuePriorityLine({
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
-  // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details and in the
-  // header alike: a priority's title and a refusal's reason are values, which break anywhere and
-  // stay within their line - the title with `min-w-0`, a flex item that shrinks beside the mark
-  // after it, the reason with `max-w-full` - rather than push the line past its row. Outside,
-  // each part stays whole, as on `main`.
-  const wraps = page !== null || inHeaderDetails;
+  // Nothing of the line keeps its width, on either page: a priority's title and a refusal's
+  // reason are values, which break anywhere and stay within their line - the title with
+  // `min-w-0`, a flex item that shrinks beside the mark after it, the reason with `max-w-full` -
+  // rather than push the line past its row.
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -265,10 +261,10 @@ export function IssuePriorityLine({
 
   return (
     <div
-      className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
+      className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid={inDetails ? undefined : "issue-advances"}
     >
-      {advances.length === 0 || inDetails || inHeaderDetails ? null : (
+      {advances.length === 0 || page === null || inDetails ? null : (
         <span className="font-medium" {...page?.pageChrome}>
           {page?.PROPERTY_LABELS.advances ?? "Advances"}
         </span>
@@ -276,14 +272,11 @@ export function IssuePriorityLine({
       {advances.map((entry) => {
         const label = labels.get(entry.id) ?? entry.id;
         return (
-          <span
-            className={`flex ${wraps ? "min-w-0" : "shrink-0"} items-center gap-1`}
-            key={entry.id}
-          >
-            {/* Inside `NoTooltips` the priority's title wraps inside its line rather than
-                widening it; its words are the person's who wrote it. */}
+          <span className="flex min-w-0 items-center gap-1" key={entry.id}>
+            {/* The priority's title wraps inside its line rather than widening it; its words
+                are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link ${wraps ? "min-w-0 [overflow-wrap:anywhere]" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              className={`dispatch-inline-link min-w-0 [overflow-wrap:anywhere] underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
               {...page?.authorText}
@@ -325,7 +318,7 @@ export function IssuePriorityLine({
         );
       })}
       {atCap ? (
-        <span className={`${wraps ? "" : "shrink-0 "}text-xs ${quiet}`} {...page?.pageChrome}>
+        <span className={`text-xs ${quiet}`} {...page?.pageChrome}>
           {page === null ? (
             <>An issue advances at most {MAX_ISSUE_ADVANCES} priorities.</>
           ) : (
@@ -334,7 +327,7 @@ export function IssuePriorityLine({
         </span>
       ) : adding ? (
         <form
-          className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
+          className="flex min-w-0 flex-wrap items-center gap-2"
           onKeyDown={(event) => {
             // A press that ends an IME composition gives up what the reader was composing, not
             // the form: the form leaves it alone, unmarked, as the key registry does.
@@ -425,17 +418,13 @@ export function IssuePriorityLine({
         </button>
       )}
       {priorities.isError ? (
-        <span
-          className={`${wraps ? "" : "shrink-0 "}text-xs ${failed}`}
-          role="alert"
-          {...page?.pageChrome}
-        >
+        <span className={`text-xs ${failed}`} role="alert" {...page?.pageChrome}>
           {page?.ANSWER_LINES.priorities_unreadable ?? "Could not load the priorities."}
         </span>
       ) : null}
       {write.error === null ? null : (
         <span
-          className={`${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`}
+          className={`max-w-full [overflow-wrap:anywhere] text-xs ${failed}`}
           role="alert"
           {...(failureIsPageWords ? page?.pageChrome : page?.authorText)}
         >

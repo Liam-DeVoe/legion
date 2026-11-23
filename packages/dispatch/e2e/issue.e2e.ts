@@ -755,8 +755,10 @@ test("issue header keeps each group whole, its properties in Details, and the wh
     expect(await top(page.getByTestId("issue-labels"))).toBeGreaterThan(stateRow);
     expect(await inView(indicator, 390)).toBe(true);
     expect(await inView(detailsButton, 390)).toBe(true);
+    // Measured 314 px at 390 px (2026-11-23). A line of this header is at least 44 px tall here,
+    // so one line piled on reaches 358 px and fails.
     const phoneHeader = await header.boundingBox();
-    expect(phoneHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(360);
+    expect(phoneHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(358);
     await expect(pageFits()).resolves.toBe(true);
     const phoneShot = testInfo.outputPath("issue-header-390.png");
     await page.screenshot({ path: phoneShot });
@@ -786,8 +788,10 @@ test("issue header keeps each group whole, its properties in Details, and the wh
     expect(await inView(indicator, 1280)).toBe(true);
     // Two labels leave room for Close and Details on their line.
     expect(await middle(close)).toBe(await middle(detailsButton));
+    // Measured 134 px at 1280 px (2026-11-23). A line of this header is at least 32 px tall here,
+    // so one line piled on reaches 166 px and fails.
     const desktopHeader = await header.boundingBox();
-    expect(desktopHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(240);
+    expect(desktopHeader?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(166);
     await expect(pageFits()).resolves.toBe(true);
 
     await page.setViewportSize({ height: 900, width: 1536 });
@@ -836,7 +840,11 @@ test("issue header flips between Waiting on you and Waiting on agents as the new
   }
 });
 
-test("issue header gives the title the row's free space beside a short details line", async ({
+// The header's title slot takes a row of its own below 1536 px and shares its row with the State
+// and Attention groups only from there, and then only where they fit beside the whole title: so
+// however busy those groups are, and whether Details is open or shut, the title keeps at least
+// half the card.
+test("issue header keeps the title at least half the card beside busy State and Attention groups", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -861,40 +869,29 @@ test("issue header gives the title the row's free space beside a short details l
         width: heading.getBoundingClientRect().width,
       };
     });
-  try {
-    // One cold load for the whole row: the header's layout is CSS plus a `ResizeObserver`
-    // (`IssueHeader.tsx`), so a resize re-runs every decision a fresh load would make, and the
-    // writes below reach the open page on its event feed - whose refresh its own clock fires
-    // rather than the wall clock.
-    await page.clock.install();
-    await page.setViewportSize({ height: 800, width: 1024 });
-    await page.goto(`/issues/${issue.key}`);
-    await expect(title).toHaveText("Header keeps its title readable");
-
-    // Below 1280 the details line shares the row with the title once it fits beside the state
-    // controls; the title must still take the rest of the row rather than split it with the line.
-    for (const width of [1024, 1200, 1279]) {
+  const widths = [1024, 1279, 1440, 1600];
+  const titleHoldsHalf = async (label: string) => {
+    for (const width of widths) {
       await page.setViewportSize({ height: 800, width });
       await nextFrames(page);
       const measured = await measureTitle();
       expect(
         measured.width,
-        `title ${measured.width}px of a ${measured.contentWidth}px card at ${width}px`
+        `title ${measured.width}px of a ${measured.contentWidth}px card at ${width}px ${label}`
       ).toBeGreaterThanOrEqual(measured.contentWidth / 2);
-      if (width === 1024) {
-        const shot = testInfo.outputPath("issue-header-title-1024.png");
-        await page.screenshot({ path: shot });
-        await testInfo.attach("issue header title (1024px)", {
-          contentType: "image/png",
-          path: shot,
-        });
-      }
     }
+  };
+  try {
+    await page.setViewportSize({ height: 800, width: 1024 });
+    await page.goto(`/issues/${issue.key}`);
+    await expect(title).toHaveText("Header keeps its title readable");
+    await titleHoldsHalf("with quiet groups");
+    const shot = testInfo.outputPath("issue-header-title-1024.png");
+    await page.setViewportSize({ height: 800, width: 1024 });
+    await page.screenshot({ path: shot });
+    await testInfo.attach("issue header title (1024px)", { contentType: "image/png", path: shot });
 
-    // A busy details line (whose-turn badge, one label, Route, Subscribers) that fits beside a
-    // 12rem title but not beside the whole title: just below 1280 the title must keep at least
-    // half the card rather than share the row and drop to its minimum. The line without the
-    // GitHub link is the one that could squeeze (with the link it is too wide to share).
+    // Busy groups: whose turn, a label and a subscriber, beside a longer title.
     await patchIssue(issue.key, {
       labels: ["api"],
       title: "Migrate the issue header to a single row",
@@ -905,32 +902,10 @@ test("issue header gives the title the row's free space beside a short details l
     await page.reload();
     await expect(title).toHaveText("Migrate the issue header to a single row");
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (1)");
-    // The subscribers and the GitHub link are rows of Details, which the reader opens here.
+    await titleHoldsHalf("with busy groups, Details shut");
     await openIssueDetails(page);
     await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
-    const githubLink = page.locator(
-      '[data-testid=issue-header] a[href="https://github.com/sjawhar/legion/pull/1051"]'
-    );
-    for (const withLink of [false, true]) {
-      await patchIssue(issue.key, {
-        external_links: withLink
-          ? [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }]
-          : [],
-      });
-      // The link's own state is what the measurement below depends on, so it is waited for.
-      await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-      await expect(githubLink).toHaveCount(withLink ? 1 : 0);
-      for (const width of [1265, 1279]) {
-        await page.setViewportSize({ height: 800, width });
-        await nextFrames(page);
-        const measured = await measureTitle();
-        const label = `${width}px ${withLink ? "with" : "without"} the GitHub link`;
-        expect(
-          measured.width,
-          `title ${measured.width}px of a ${measured.contentWidth}px card at ${label}`
-        ).toBeGreaterThanOrEqual(measured.contentWidth / 2);
-      }
-    }
+    await titleHoldsHalf("with busy groups, Details open");
   } finally {
     await context.close();
   }

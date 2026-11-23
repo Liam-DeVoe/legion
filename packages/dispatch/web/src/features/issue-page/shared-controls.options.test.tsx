@@ -2014,29 +2014,32 @@ test("the default shapes keep main's class strings", async () => {
     "ClaimChip unresponsive dot": "shrink-0",
     "ClaimChip unresponsive": "shrink-0",
 
-    // `main`'s features/issue/RepoControl.tsx: the line, its label, the box's wrapper, the box
-    // holding the issue's own repository and the box of an inherited one, the clear control, the
-    // box's description and the refusal of a value that is not owner/name.
+    // features/issue/RepoControl.tsx as today's issue header's Details draws it (INFRA-5200): the
+    // line and the box's wrapper as wide as their row, the box holding the issue's own repository
+    // and the box of an inherited one, the clear control, the box's description and the refusal
+    // of a value that is not owner/name.
     "RepoControl line":
-      "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
-    "RepoControl label": "font-medium",
-    "RepoControl wrapper": "relative inline-flex shrink-0 items-center",
+      "flex w-full min-w-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
+    "RepoControl wrapper": "relative inline-flex w-full min-w-0 items-center",
     "RepoControl box, its own":
-      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+      "min-h-11 w-full min-w-0 max-w-md text-ellipsis rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "RepoControl box, inherited":
-      "min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-1.5 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
+      "min-h-11 w-full min-w-0 max-w-md text-ellipsis rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 pr-1.5 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "RepoControl clear":
       "absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400",
     "RepoControl description": "sr-only",
     "RepoControl refusal": "text-rose-700 dark:text-rose-400",
 
+    // features/issue/IssueComponentsLine.tsx as today's Details draws it: a line that wraps, and
+    // chips and words that break inside themselves.
     "IssueComponentsLine line":
-      "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
+      "flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
     "IssueComponentsLine chip":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
+      "inline-flex min-w-0 [overflow-wrap:anywhere] items-center rounded-full px-2 py-0.5 text-xs font-medium bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300",
     "IssueComponentsLine retired chip":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
-    "IssueComponentsLine inherited from": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
+      "inline-flex min-w-0 [overflow-wrap:anywhere] items-center rounded-full px-2 py-0.5 text-xs font-medium bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300",
+    "IssueComponentsLine inherited from":
+      "min-w-0 [overflow-wrap:anywhere] text-xs text-slate-500 dark:text-slate-400",
     "IssueComponentsLine inherited link":
       "dispatch-inline-link underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "IssueComponentsLine not attached": "text-slate-500 dark:text-slate-400",
@@ -2051,28 +2054,30 @@ test("the default shapes keep main's class strings", async () => {
     "IssueLabels trigger":
       "min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400 refused:text-slate-400 dark:refused:text-slate-600",
 
+    // features/priorities/IssuePriorityLine.tsx as today's Details draws it: a line that wraps,
+    // and titles that break inside themselves.
     "IssuePriorityLine line":
-      "flex shrink-0 items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
-    "IssuePriorityLine entry": "flex shrink-0 items-center gap-1",
+      "flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-700 dark:text-slate-300",
+    "IssuePriorityLine entry": "flex min-w-0 items-center gap-1",
     "IssuePriorityLine link":
-      "dispatch-inline-link shrink-0 whitespace-nowrap underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
+      "dispatch-inline-link min-w-0 [overflow-wrap:anywhere] underline text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
     "IssuePriorityLine inherited": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
     "IssuePriorityLine remove":
       "shrink-0 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100",
     "IssuePriorityLine add":
       "inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100",
-    "IssuePriorityLine form": "flex shrink-0 items-center gap-2",
+    "IssuePriorityLine form": "flex min-w-0 flex-wrap items-center gap-2",
     "IssuePriorityLine picker":
       "min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-sm md:min-h-8 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
     "IssuePriorityLine Add":
       "min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 refused:text-slate-400 dark:refused:text-slate-600",
     "IssuePriorityLine Cancel":
       "min-h-11 rounded px-2 py-1 text-sm font-medium md:min-h-8 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
-    // `main`'s features/priorities/IssuePriorityLine.tsx: the line at the cap, the refusal of the
-    // priorities' read and that of a save.
-    "IssuePriorityLine at the cap": "shrink-0 text-xs text-slate-500 dark:text-slate-400",
-    "IssuePriorityLine priorities unread": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
-    "IssuePriorityLine not saved": "shrink-0 text-xs text-rose-700 dark:text-rose-400",
+    // The line at the cap, the refusal of the priorities' read and that of a save.
+    "IssuePriorityLine at the cap": "text-xs text-slate-500 dark:text-slate-400",
+    "IssuePriorityLine priorities unread": "text-xs text-rose-700 dark:text-rose-400",
+    "IssuePriorityLine not saved":
+      "max-w-full [overflow-wrap:anywhere] text-xs text-rose-700 dark:text-rose-400",
 
     "AgentName link":
       "rounded outline-none focus-visible:ring-2 focus-visible:ring-sky-600 dark:focus-visible:ring-sky-400 text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
@@ -2511,7 +2516,6 @@ test("the default shapes keep main's class strings", async () => {
     const ownRepository = within(caseOf(view, "repository"));
     const repository = ownRepository.getByRole("combobox", { name: "Repository of CORE-1" });
     classAt("RepoControl line", repository.parentElement?.parentElement);
-    classAt("RepoControl label", ownRepository.getByText("Repository:"));
     classAt("RepoControl wrapper", repository.parentElement);
     classAt("RepoControl box, its own", repository);
     classAt(
@@ -3494,7 +3498,7 @@ test("Escape in the priority's form closes the form alone and returns the focus 
 // or leaving the box with nothing typed, draws "None" again, Escape with the focus on it; a
 // refused draft keeps the box; a repository written with Enter is written once, and the box
 // stays while its write is out and gives the row back to "None" once the write lands, since the
-// issue still resolves to none. Outside, the row is `main`'s box.
+// issue still resolves to none. Outside, the row is today's Details' box, which the row names.
 test("inside NoTooltips the repository row with no repository reads None and opens the box", async () => {
   const user = userEvent.setup();
   const noneName = `${CONTROL_LABELS.none}, Repository of CORE-1`;
@@ -3516,7 +3520,7 @@ test("inside NoTooltips the repository row with no repository reads None and ope
       if (surface === "outside") {
         expect(scope.queryByRole("button", { name: noneName })).toBeNull();
         expect(scope.queryByText(CONTROL_LABELS.none)).toBeNull();
-        expect(scope.getByText("Repository:")).toBeInTheDocument();
+        expect(scope.queryByText("Repository:")).toBeNull();
         expect(box()).toHaveAccessibleDescription("No repository");
         expect(box().getAttribute("placeholder")).toBe("owner/name");
         continue;
@@ -3645,7 +3649,7 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
         await settleReads();
         expect(box().value).toBe(LONG_REPOSITORY);
         expect(scope.queryByRole("button", { name: textName })).toBeNull();
-        expect(scope.getByText("Repository:")).toBeInTheDocument();
+        expect(scope.queryByText("Repository:")).toBeNull();
         continue;
       }
       await scope.findByRole("button", { name: textName });
@@ -3760,7 +3764,8 @@ test("inside NoTooltips a repository row draws a long repository as text that wr
 // box with a list and which takes some of a narrow row's room from the name, shrinks within its
 // place, and keeps no right padding for the clear control: the control is not laid over the box
 // but drawn after it in the box's place, which wraps, so it goes onto the line under the box.
-// Outside, the box is `main`'s 200 px box with its arrow, and the line as wide as what it holds.
+// Outside, the box is today's Details' box with its arrow, as wide as its row up to 28 rem, and
+// the line as wide as its row.
 test("inside NoTooltips the repository box fills its row's value and keeps no room a name needs", async () => {
   const user = userEvent.setup();
   const noArrow = "[&::-webkit-calendar-picker-indicator]:hidden";
@@ -3785,10 +3790,10 @@ test("inside NoTooltips the repository box fills its row's value and keeps no ro
       const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
       if (surface === "outside") {
         await settleReads();
-        expect(classOf(box())).toContain("w-[200px]");
+        expect(classOf(box())).toContain("w-full");
+        expect(classOf(box())).toContain("max-w-md");
         expect(classOf(box())).not.toContain(noArrow);
-        expect(classOf(box())).not.toContain("w-full");
-        expect(classOf(line)).not.toContain("w-full");
+        expect(classOf(line)).toContain("w-full");
         continue;
       }
       // The press of the repository's text draws the box in its place.

@@ -521,6 +521,50 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   }
 });
 
+// The route editor lives in Details. Closing Details over an edit not saved gives the edit up,
+// as Cancel does: the header shows the saved route's warning again, and nothing is written.
+test("IssuePage's Details, closed over a route edit not saved, gives the edit up and shows the route's warning again", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
+  const patchIssue = answerIssuePatches().mockResolvedValue(issue);
+  const view = renderIssuePage();
+  try {
+    const stateRow = await screen.findByTestId("issue-state-actions");
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toBeDefined();
+
+    await openIssueDetails(user);
+    await user.click(await screen.findByRole("button", { name: "Messages default to role:sre" }));
+    const routeInput = await screen.findByLabelText("Message route");
+    await user.clear(routeInput);
+    await user.type(routeInput, "role:draft");
+    // The draft hides the saved route's warning, which speaks for the saved route alone.
+    await waitFor(() =>
+      expect(within(stateRow).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument()
+    );
+
+    const details = within(screen.getByTestId("issue-header")).getByRole("button", {
+      name: "Details",
+    });
+    await user.click(details);
+    expect(details).toHaveAttribute("aria-expanded", "false");
+    expect(within(stateRow).getByTestId("issue-route-unreachable")).toHaveTextContent(
+      "Nobody holds it right now"
+    );
+
+    // Opened again, the row shows the saved route, not the draft.
+    await user.click(details);
+    expect(
+      await screen.findByRole("button", { name: "Messages default to role:sre" })
+    ).toBeDefined();
+    expect(screen.queryByDisplayValue("role:draft")).not.toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
 // A route whose holder has missed its heartbeats is neither unreachable nor unjudged: the
 // listener judged it and said the session is stalled, and what is sent to the issue waits for
 // it. Folding that into either of the other two markers tells a reader to re-staff a role that
@@ -1111,6 +1155,77 @@ test("IssuePage keeps a pull request's title and state when only its check-runs 
     expect(within(link).getByText("open")).toBeDefined();
     expect(within(link).queryByText(/^checks:/)).not.toBeInTheDocument();
     expect(link).toHaveAttribute("title", "owner/repository#7: Keep the title when checks vanish");
+  } finally {
+    view.unmount();
+    githubRest.mockRestore();
+    restore();
+  }
+});
+
+// The CLI and an agent send a link as its address alone, and the server stores it as kind `url`:
+// a pull request linked that way is a pull request all the same, told by its address.
+test("IssuePage lists a pull request stored as kind url under Pull requests with its checks, and another address under Links", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    external_links: [
+      { kind: "url", url: "https://github.com/owner/repository/pull/7" },
+      { kind: "url", url: "https://example.com/design-notes" },
+    ],
+  });
+  const githubRest = spyOn(api, "githubRest").mockImplementation(async (path) => {
+    if (path === "repos/owner/repository/pulls/7") {
+      return new Response(
+        JSON.stringify({
+          head: { sha: "abcdef" },
+          merged: false,
+          state: "open",
+          title: "Link sent with no kind",
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (path === "repos/owner/repository/commits/abcdef/check-runs?per_page=100&page=1") {
+      return new Response(
+        JSON.stringify({
+          check_runs: [
+            {
+              check_suite: { id: 11 },
+              conclusion: "success",
+              id: 21,
+              name: "ci",
+              status: "completed",
+            },
+          ],
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (path === "repos/owner/repository/actions/runs?head_sha=abcdef&per_page=100&page=1") {
+      return new Response(
+        JSON.stringify({
+          workflow_runs: [{ check_suite_id: 11, event: "pull_request", id: 31, name: "CI" }],
+        }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+    throw new Error(`unexpected GitHub read ${path}`);
+  });
+  const view = renderIssuePage();
+
+  try {
+    const details = await openIssueDetails(userEvent.setup());
+    const pullRequests = within(details).getByTestId("issue-details-pull-requests");
+    const link = await within(pullRequests).findByRole("link", {
+      name: /#7 Link sent with no kind/,
+    });
+    expect(within(link).getByText("open")).toBeDefined();
+    expect(await within(link).findByText("checks: success")).toBeDefined();
+    const links = within(details).getByTestId("issue-details-links");
+    expect(within(links).getByRole("link", { name: /example\.com\/design-notes/ })).toHaveAttribute(
+      "href",
+      "https://example.com/design-notes"
+    );
+    expect(within(links).queryByRole("link", { name: /#7/ })).toBeNull();
   } finally {
     view.unmount();
     githubRest.mockRestore();

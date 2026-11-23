@@ -1,5 +1,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
+import { expandedState } from "./settled";
+
 /**
  * Today's issue header's Details (`web/src/features/issue/HeaderDetails.tsx`): the properties a
  * reader does not act on in the header itself - what the issue advances, who opened it, its
@@ -12,11 +14,11 @@ export function issueDetailsButton(page: Page): Locator {
 }
 
 /** Opens Details as a reader does, by its button, unless it is open already, and answers its
- *  panel once it is drawn. */
+ *  panel once it is drawn. Whether it is open is read once the header shows the button: the
+ *  reader's choice is read from this browser as the header mounts. */
 export async function openIssueDetails(page: Page): Promise<Locator> {
   const button = issueDetailsButton(page);
-  await expect(button).toBeVisible();
-  if ((await button.getAttribute("aria-expanded")) !== "true") await button.click();
+  if ((await expandedState("the issue header's Details", button)) === "shut") await button.click();
   const panel = page.getByTestId("issue-header").getByTestId("issue-details");
   await expect(panel).toBeVisible();
   return panel;

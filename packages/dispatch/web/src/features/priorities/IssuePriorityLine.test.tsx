@@ -94,7 +94,8 @@ test("the line names the priority an issue advances, by its order and title, and
       name: "P2 Rocq and Lean speed work restarted",
     });
     expect(link).toHaveAttribute("href", "/priorities/rocq-lean");
-    expect(view.q.getByTestId("issue-advances")).toHaveTextContent("Advances");
+    // The line is the value of the Advances row of the header's Details, which names it.
+    expect(view.q.getByTestId("issue-advances")).not.toHaveTextContent("Advances");
     // The issue's own relation is the issue's to retract, so the entry carries the remove.
     view.q.getByRole("button", {
       name: "Remove P2 Rocq and Lean speed work restarted from CORE-9",

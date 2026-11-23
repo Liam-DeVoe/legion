@@ -72,7 +72,7 @@ import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
-import { GitHubLink } from "./GitHubLink";
+import { GitHubLink, isPullRequestLink } from "./GitHubLink";
 import { gatedStepEntries, isProjectRoot } from "./gated-steps";
 import { HeaderDetails, type HeaderDetailsRow } from "./HeaderDetails";
 import { IssueComponentsLine } from "./IssueComponentsLine";
@@ -404,8 +404,10 @@ export function IssueHeader({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   const referencesPanelId = useId();
-  const pullRequests = (issue.external_links ?? []).filter((link) => link.kind === "github_pr");
-  const otherLinks = (issue.external_links ?? []).filter((link) => link.kind !== "github_pr");
+  // A pull request is told by its address, as `GitHubLink` draws it: a link sent with no kind is
+  // stored as `url` whatever it names.
+  const pullRequests = (issue.external_links ?? []).filter(isPullRequestLink);
+  const otherLinks = (issue.external_links ?? []).filter((link) => !isPullRequestLink(link));
   // Details, in this order: what the issue advances, who opened it, where its messages go, who is
   // subscribed, what references it, its parent, its repository, its components, its pull
   // requests and its other links. Each row's own control edits it there, as it did in the rail
@@ -414,7 +416,7 @@ export function IssueHeader({
     {
       id: "advances",
       label: "Advances",
-      value: <IssuePriorityLine disabled={isClosed} inHeaderDetails issue={issue} />,
+      value: <IssuePriorityLine disabled={isClosed} issue={issue} />,
     },
     ...(issue.created_by == null
       ? []
@@ -611,7 +613,6 @@ export function IssueHeader({
       value: (
         <RepoControl
           disabled={isClosed || updateIssue.isPending}
-          inHeaderDetails
           issueKey={issue.key}
           project={issue.project}
           repo={issue.repo}
@@ -622,7 +623,7 @@ export function IssueHeader({
     {
       id: "components",
       label: "Components",
-      value: <IssueComponentsLine inHeaderDetails issue={issue} />,
+      value: <IssueComponentsLine issue={issue} />,
     },
     ...[
       { id: "pull-requests", label: "Pull requests", links: pullRequests },
@@ -648,11 +649,11 @@ export function IssueHeader({
       })),
   ];
   // The title slot has one flex-basis whether it shows the heading or the editor: below 2xl the
-  // title always takes its own row (basis-full) and the state controls and details line share
-  // the row beneath it; from 2xl the slot is content-sized (basis-auto) so they join the title's
-  // row when they fit. A basis that changed between view and edit mode would move every other
-  // control on the blur a mousedown causes, and Chromium would deliver the mouseup — and so the
-  // click — to a different element, swallowing the first click after a title edit.
+  // title always takes its own row (basis-full) and the State and Attention groups share the row
+  // beneath it; from 2xl the slot is content-sized (basis-auto) so they join the title's row when
+  // they fit. A basis that changed between view and edit mode would move every other control on
+  // the blur a mousedown causes, and Chromium would deliver the mouseup — and so the click — to a
+  // different element, swallowing the first click after a title edit.
 
   return (
     // `data-issue-header` is load-bearing for the keyboard: the `issue` scope's bindings find
@@ -894,6 +895,19 @@ export function IssueHeader({
             />
           </div>
         }
+        // The route and parent editors live in Details: closing it gives up an edit not saved, as
+        // Cancel does, so the header never hides the route's warnings behind a draft the reader
+        // can no longer see. A saved edit has closed its editor already and is not touched.
+        onClose={() => {
+          if (routeEditing) {
+            drafts.discardRoute();
+            setRouteEditing(false);
+          }
+          if (parentEditing) {
+            drafts.discardParent();
+            setParentEditing(false);
+          }
+        }}
         trailing={
           isClosed ? null : (
             <div className={headerGroup} data-testid="issue-actions">

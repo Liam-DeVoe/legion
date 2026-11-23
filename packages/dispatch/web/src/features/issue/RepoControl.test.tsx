@@ -500,7 +500,9 @@ test("RepoControl describes the repository the issue resolves to", async () => {
 test("RepoControl says No repository when nothing resolves", async () => {
   const { unmount } = renderControl({ repo: null, resolvedRepo: null }, noCoreDefault);
   try {
-    expect(await screen.findByText("Repository:")).toBeTruthy();
+    // The control is the value of the Repository row of the header's Details, which names it.
+    await screen.findByLabelText("Repository of CORE-1");
+    expect(screen.queryByText("Repository:")).toBeNull();
     expect(box().placeholder).toBe("owner/name");
     expect(box()).toHaveAccessibleDescription("No repository");
   } finally {
@@ -509,7 +511,7 @@ test("RepoControl says No repository when nothing resolves", async () => {
 });
 
 // A project with no default repository has nothing to suggest, and its issues take a repository
-// all the same, so the rail carries the item with an empty suggestion list.
+// all the same, so Details carries the item with an empty suggestion list.
 test("RepoControl shows the item for an issue whose project has no default repository", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
@@ -527,7 +529,7 @@ test("RepoControl shows the item for an issue whose project has no default repos
       expect(queryClient.getQueryData<Project[]>(["projects"])).toEqual(noCoreDefault)
     );
     await act(async () => {});
-    expect(screen.getByText("Repository:")).toBeTruthy();
+    expect(screen.getByLabelText("Repository of CORE-1")).toBeTruthy();
     expect(suggestions()).toEqual([]);
     await write(user, "zed/elsewhere");
     await waitFor(() =>

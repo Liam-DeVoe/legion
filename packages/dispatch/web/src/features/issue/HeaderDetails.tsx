@@ -39,16 +39,19 @@ const writeOpen = (open: boolean) => (open ? "open" : "closed");
  * for 14 rem of it, and under it otherwise, and a value wraps inside its own cell.
  *
  * Whether Details is open is the reader's: closed until they open it, and then kept open for them
- * in this browser (`issue.details`), on every issue, until they close it.
+ * in this browser (`issue.details`), on every issue, until they close it. `onClose` runs when the
+ * reader closes it, before its panel goes: what a row holds open, an edit not saved, goes with it.
  */
 export function HeaderDetails({
   after,
   leading,
+  onClose,
   rows,
   trailing,
 }: {
   after?: ReactNode;
   leading: ReactNode;
+  onClose?: () => void;
   rows: readonly HeaderDetailsRow[];
   trailing?: ReactNode;
 }): ReactNode {
@@ -64,7 +67,10 @@ export function HeaderDetails({
             aria-controls={panelId}
             aria-expanded={open}
             className={`min-h-11 shrink-0 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-            onClick={() => setOpen(!open)}
+            onClick={() => {
+              if (open) onClose?.();
+              setOpen(!open);
+            }}
             type="button"
           >
             Details

@@ -154,7 +154,8 @@ test("IssueComponentsLine reads Not attached, and stays read-only without an arc
     undefined
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe("Components:Not attached");
+    // The line is the value of the Components row of the header's Details, which names it.
+    expect(view.q.getByTestId("issue-components").textContent).toBe("Not attached");
     expect(view.q.queryByRole("link")).not.toBeInTheDocument();
     await waitFor(() => expect(view.listProjectArchitectureSources).toHaveBeenCalledTimes(1));
     expect(
@@ -200,9 +201,7 @@ test("IssueComponentsLine shows a none attachment with its reason", () => {
     undefined
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe(
-      "Components:None — hiring, not code"
-    );
+    expect(view.q.getByTestId("issue-components").textContent).toBe("None — hiring, not code");
     expect(view.q.queryByRole("link")).not.toBeInTheDocument();
   } finally {
     view.unmountAll();
@@ -264,9 +263,7 @@ test("an explicit set naming components of two sources shows each as a bare id c
     tree
   );
   try {
-    expect(view.q.getByTestId("issue-components").textContent).toBe(
-      "Components:dispatch-serverinfra-cluster"
-    );
+    expect(view.q.getByTestId("issue-components").textContent).toBe("dispatch-serverinfra-cluster");
   } finally {
     view.unmountAll();
   }

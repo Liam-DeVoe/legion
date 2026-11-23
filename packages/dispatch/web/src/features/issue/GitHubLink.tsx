@@ -97,11 +97,22 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
   return [...newest.values()];
 }
 
+/** A GitHub issue's or pull request's address, as `GitHubLink` reads one: the owner, the
+ *  repository, `issues` or `pull`, and the number. */
+const GITHUB_REFERENCE = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/;
+
+/** Whether `link` is a GitHub pull request, read from its address as `GitHubLink` draws it: the
+ *  server stores a link the CLI or an agent sends with no kind as `url`, so a pull request
+ *  linked that way is told by its address alone. */
+export function isPullRequestLink(link: ExternalLink): boolean {
+  return safeExternalHref(link.url)?.match(GITHUB_REFERENCE)?.[3] === "pull";
+}
+
 /**
- * One external link on the issue header's details line. A GitHub issue or pull request is
- * shown as its number and title (the repository while the title is unknown — loading, or no
- * GitHub App installation for the repository), never as the raw address, so it fits the line on a
- * phone; the title is truncated and carried in full by the link's tooltip.
+ * One external link in today's issue header's Details, under Pull requests or Links. A GitHub
+ * issue or pull request is shown as its number and title (the repository while the title is
+ * unknown — loading, or no GitHub App installation for the repository), never as the raw address,
+ * so it fits its row on a phone; the title is truncated and carried in full by the link's tooltip.
  *
  * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
  * `title`, so what the tooltip said is drawn instead: a GitHub
@@ -118,8 +129,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   const tooltips = useTooltips();
   const page = usePageWords();
   const href = safeExternalHref(link.url);
-  const match =
-    href?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/) ?? null;
+  const match = href?.match(GITHUB_REFERENCE) ?? null;
   const isPullRequest = match?.[3] === "pull";
   const githubReference = useQuery({
     enabled: match !== null,

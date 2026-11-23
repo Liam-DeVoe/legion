@@ -1270,10 +1270,8 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
  *  card is passing. The pill floats at the foot now, where the list scrolls behind it as it
  *  does behind any floating control, so a turn's quiet actions - Copy reference, Reply, Pin -
  *  pass under it and are not tapped.
- *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor (the
- *  issue tablist scrolls sideways at this width, so a tab past its edge is not on screen to tap
- *  at all), are not tapped either. A step away from where the page settled that draws no pill is
- *  recorded too. */
+ *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor, are not
+ *  tapped either. A step away from where the page settled that draws no pill is recorded too. */
 async function tapsLostAcrossBand(
   page: Page,
   band: { end: number; settled: number }
