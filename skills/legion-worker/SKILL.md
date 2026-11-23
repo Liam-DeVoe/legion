@@ -62,7 +62,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
 - A released pod is not a stop.
-  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
+  Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives, unless the deployment keeps the pod's volume.
 
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`, or its runs (step 1).
 
@@ -86,7 +86,7 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 - The merge gate follows the task's `Steps:` line: each named step runs in order, then retro and the merger.
   The default task has tester evidence, reviewer approval and architect acceptance.
   With no tester step, the implementer's evidence serves;
-  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro.
+  with no reviewer step, no Legion approval is awaited; without `acceptance:owner`, the last step starts retro, or holds a parent until the issues beneath it leave.
   Only the merger runs `gh pr merge`; nobody turns auto-merge on.
 
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
