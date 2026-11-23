@@ -145,12 +145,12 @@ func PullRequestHeadState(state string, merged bool) string {
 // It marks every failure on the way to that write that a later attempt may get past, because
 // they all end the same way: a read of Postgres (the stored row recordPullRequestHead compares
 // the event with, and the stored commit messages and the statement's answer that
-// storePullRequestFacts reads; the repository's canonical name is no read, since the boot read the
-// rename pairs), a read of GitHub that failed (a 5xx,
-// network failure, a rate limit), and a GitHub answer that holds a value no head row holds
-// (errNoRowHolds). GitHub's refusals are not marked: a pull request it does not know and a
-// repository the App cannot read write no row, are owed a read the reconcile makes, and are
-// acknowledged (recordPullRequestHead).
+// storePullRequestFacts reads), a read of GitHub that failed (a 5xx, a network failure, a rate
+// limit), and a GitHub answer that holds a value no head row holds (errNoRowHolds). The
+// repository's canonical name is no read (Attributor.canonical, over the pairs the boot read).
+// GitHub's refusals are not marked: a pull request it does not know and a repository the App
+// cannot read write no row, are owed a read the reconcile makes, and are acknowledged
+// (recordPullRequestHead).
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 
 // markHeadNotStored marks err as ErrHeadNotStored, keeping err itself inside the mark.
@@ -195,11 +195,11 @@ type headValue struct {
 // repository and the number key the row and the read its triggers owe
 // (pull_request_heads_older_read, pull_request_heads_unread_write), so they must be a pull request
 // GitHub can have (checkPullRequestKey, errNoPullRequestNamed): the repository is a canonical name,
-// which repo_projects gives and no envelope does. Each other value of identity (the head commit and
-// branch, the base branch, the merge commit, the URL, and the head repository and base branch of
-// the texts) must be UTF-8 that holds no NUL, and each value an index holds must have at most
-// headRefBound bytes. The state must be one the column's check takes. Each of those is
-// errNoRowHolds.
+// which the rename pairs the boot read give and no envelope does. Each other value of identity
+// (the head commit and branch, the base branch, the merge commit, the URL, and the head repository
+// and base branch of the texts) must be UTF-8 that holds no NUL, and each value an index holds
+// must have at most headRefBound bytes. The state must be one the column's check takes. Each of
+// those is errNoRowHolds.
 func checkHeadRow(head PullRequestHead) (PullRequestHead, error) {
 	if err := checkPullRequestKey(head.Repo, head.Number); err != nil {
 		return PullRequestHead{}, err
@@ -1357,8 +1357,8 @@ func (a *Attributor) ReadThroughCommitPulls(
 const ReadThroughTimeout = time.Minute
 
 // ErrReadThroughNotStored marks a read-through that failed in Dispatch's own database: before it
-// asked GitHub (the canonical name, the start of the read) or after GitHub answered (a stored
-// row read, the write of a pull request's facts). No claim of the read may outlast it: what
+// asked GitHub (the start of the read) or after GitHub answered (a stored row read, the write of a
+// pull request's facts); the canonical name is no read. No claim of the read may outlast it: what
 // GitHub answered, or would have, is not stored, and nothing but another read stores it. A
 // failure of GitHub's, its rate limit on a pull request's commit messages among them, is never
 // marked so.
