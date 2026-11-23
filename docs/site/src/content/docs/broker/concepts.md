@@ -702,7 +702,12 @@ value, `google-login` or `azure-login` source), or a tag rule its own tags over 
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), so every GitHub App token the broker mints is a
-profile's.
+profile's. The profile `DISPATCH_RESULTS_TOKEN`, a name and a proxy block of kind `dpop` and
+nothing else, is served by a CI run's result grant and has no stored secret as its source: with
+none of its name, the policy refuses it as `profile-source-missing`, and a stored secret of its
+name is never released, as a value or as a placeholder. The profiles file is refused when that
+profile has no proxy block, or when a profile of kind `dpop` sets a `source`, `tier`,
+`requesters`, `maxGrant`, `github` or `google`.
 A profile's `requesters` may name a Google group as a `requesters` tag does, and a full load reads
 every group a profile names as it reads the stored secrets' groups. Against a source's list, a
 group entry is matched by that same group alone: a profile that names a person in the source's
