@@ -322,6 +322,7 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"goes back to the implementer, or to",
 		"let the merge close it",
 		"You get no backstop",
+		"at your retro, or in `accepting` with no plan rows",
 	}
 	for _, tc := range []struct {
 		part string
