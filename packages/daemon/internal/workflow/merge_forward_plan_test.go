@@ -357,6 +357,68 @@ func TestAParentHeldBeforeItsRetroAsksWhatTheMoveIntoItsRetroAsks(t *testing.T) 
 	})
 }
 
+// A parent held before its retro, then released into it, reaches merging as a parent that moved
+// into its retro at once does: the record still holds the implementer's ask of implementing, which
+// covers implementing alone, so the move into merging asks the merger to merge the base forward
+// (record.ConflictMergeNext), asks the implementer nothing and holds no merger, and the architect's
+// one checks-red notice names merging. Had the hold or its release asked the implementer again, the
+// merge would have stayed the implementer's, and the move into merging would hold the merger
+// (holdMerger) rather than ask it. The two cases are the parent with an issue beneath it, held and
+// then released when that issue leaves, and the same parent with nothing beneath it.
+func TestAHeldParentReleasedIntoItsRetroLeavesTheMergeToTheMerger(t *testing.T) {
+	unread := &record.BaseRules{Unread: "HTTP 502"}
+	for _, tc := range []struct {
+		name  string
+		child bool
+	}{
+		{name: "held before its retro, then released into it", child: true},
+		{name: "nothing beneath it, into its retro at once"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := plannedConflictIssue(t, phase.Implementing, settledGreen("lint"), "implementer")
+			// The release starts the retro only in a tree that runs (startHeldRetro, record.TreeRunning).
+			seedTreeLifecycle(t, pool, "LEGION-208")
+			if tc.child {
+				stepChild(t, pool, heldParentChild, phase.Implementing, nil)
+			}
+			confirmsConflict(t, pool, unread)
+			completesImplementingAt(t, pool)
+			if tc.child {
+				if got := issuePhase(t, pool); got != phase.Held {
+					t.Fatalf("after the implementer's completion LEGION-208 is in %s, want held before its retro", got)
+				}
+				childLeavesDone(t, pool, readsAfter(3*time.Minute))
+			}
+			if got := issuePhase(t, pool); got != phase.Retro {
+				t.Fatalf("before the retro's completion LEGION-208 is in %s, want retro", got)
+			}
+
+			applyRefusingNothing(t, pool, readsAfter(4*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+				Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "retro done", Commit: conflictHead})
+			if got := issuePhase(t, pool); got != phase.Merging {
+				t.Fatalf("after the retro's completion LEGION-208 is in %s, want merging", got)
+			}
+			want := []record.MergeForwardMessage{implementerAsked(phase.Implementing, record.ConflictRulesUnread),
+				{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: conflictHead, Base: "main", Phase: phase.Merging, PullRequest: 42,
+					Why: record.ConflictMergeNext}}
+			if got := mergeForwardMessages(t, pool); !reflect.DeepEqual(got, want) {
+				t.Fatalf("after the move into merging the merge-forward messages are %+v, want %+v: the merger is asked, the implementer is not asked again and no merger is held",
+					got, want)
+			}
+			if mf := recordedPR(t, pool, "LEGION-208").MergeForward; mf == nil || mf.Role != claim.RoleMerger || mf.Phase != phase.Merging ||
+				mf.Why != record.ConflictMergeNext {
+				t.Fatalf("the record's merge forward = %+v, want the merger's ask in merging for the merge that comes next", mf)
+			}
+			if told := capNotices(t, pool, "checks-red"); told != 1 {
+				t.Fatalf("the architect has %d checks-red notices, want one", told)
+			}
+			if reason, named := checksRedNotice(t, pool); named != phase.Merging || !strings.Contains(reason, "the merger is asked to merge main forward") {
+				t.Fatalf("the checks-red notice names phase %q with reason %q, want merging and the merger asked", named, reason)
+			}
+		})
+	}
+}
+
 // A planner step after the implementer works on a branch whose pull request is open, so it is read
 // for a conflict as every later step is: a head push and a base push in its planning each ask for a
 // read (classify.MergeStateReadOwed). An ask made in implementing is asked again on the move into
