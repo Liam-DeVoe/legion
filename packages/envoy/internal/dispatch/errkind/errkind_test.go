@@ -2,6 +2,7 @@ package errkind
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -47,6 +48,8 @@ func TestOfNamesTheKindAndNoneOfTheErrorsText(t *testing.T) {
 		{"a network timeout", &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}, "network timeout"},
 		{"a refused network connection", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, "network"},
 		{"any other failure", errors.New("the answer named " + person), "*errors.errorString"},
+		{"a failure wrapped beside a sentinel", fmt.Errorf("%w: %w", errors.New("the lists could not be read"), &json.SyntaxError{Offset: 3}), "*json.SyntaxError"},
+		{"a joined failure", errors.Join(errors.New("first "+person), &json.InvalidUnmarshalError{}), "*json.InvalidUnmarshalError"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			stored := fmt.Errorf("read membership of %q: %w", person, row.cause)

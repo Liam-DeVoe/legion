@@ -76,7 +76,7 @@ type recorder struct {
 	mu   sync.Mutex
 	kind string
 	id   string
-	// hash is id's login hash (model.LoginHash) when kind is a person's (personKind), made by Note
+	// hash is id's login hash (model.LoginHash) when the caller is a person (person), made by Note
 	// from the id it was handed, and empty otherwise.
 	hash string
 	// credential is the owner or subject a bearer's credential proved, kept when the bearer then
@@ -173,25 +173,26 @@ func HandlerFunc(route string, next http.HandlerFunc) http.HandlerFunc {
 // wherever it resolves a caller, and the last resolution wins: a bearer is noted by what its
 // token proved and then by the session it named, which is the caller a reader wants. A session
 // named after a credential of its own keeps that credential as the line's `credential`:
-// `token:<owner's login_hash>`, `service:<subject>`, `broker-token:<person's login_hash>` or
-// `shared-token`. For the first three that session is text the caller wrote, except under a
-// broker-issued token, where the token itself names it.
+// `token:<owner's login_hash>`, `service:<subject>`, `broker-token:<person's login_hash>` (or
+// `broker-token:service:<fleet>` for a broker token that acts for no person) or `shared-token`.
+// For the first three that session is text the caller wrote, except under a broker-issued token,
+// where the token itself names it.
 func Note(ctx context.Context, kind, id string) {
 	rec, _ := ctx.Value(callerKey{}).(*recorder)
 	if rec == nil {
 		return
 	}
 	hash := ""
-	if personKind(kind) {
+	if person(kind, id) {
 		hash = model.LoginHash(id)
 	}
 	rec.mu.Lock()
 	switch {
 	case kind == KindSession && rec.kind == KindSharedToken:
 		rec.credential = KindSharedToken
-	case kind == KindSession && (rec.kind == KindToken || rec.kind == KindBrokerToken):
+	case kind == KindSession && (rec.kind == KindToken || rec.kind == KindBrokerToken) && rec.hash != "":
 		rec.credential = rec.kind + ":" + rec.hash
-	case kind == KindSession && rec.kind == KindService:
+	case kind == KindSession && (rec.kind == KindService || rec.kind == KindBrokerToken):
 		rec.credential = rec.kind + ":" + rec.id
 	case kind != KindSession:
 		rec.credential = ""
@@ -200,10 +201,21 @@ func Note(ctx context.Context, kind, id string) {
 	rec.mu.Unlock()
 }
 
-// personKind reports whether a caller of kind is a person, whom the line names by their login's
-// hash (`login_hash`) in place of `caller`.
-func personKind(kind string) bool {
-	return kind == KindUser || kind == KindToken || kind == KindBrokerToken
+// brokerServicePrefix starts the id a broker-issued token that acts for no person is noted by
+// (api's server.brokerTokenActor: "service:" and the token's service), which is no login.
+const brokerServicePrefix = "service:"
+
+// person reports whether a caller of kind noted as id is a person, whom the line names by their
+// login's hash (`login_hash`) in place of `caller`: a signed-in person, a personal token's owner,
+// and the person a broker-issued token acts for, but not a broker token's fleet.
+func person(kind, id string) bool {
+	switch kind {
+	case KindUser, KindToken:
+		return true
+	case KindBrokerToken:
+		return !strings.HasPrefix(id, brokerServicePrefix)
+	}
+	return false
 }
 
 // Detached returns ctx with its request's recorder masked, so a caller resolved on it names no
@@ -230,7 +242,7 @@ func (rec *recorder) write(route string, r *http.Request, elapsed time.Duration,
 		}
 	}
 	who := []any{"caller", clip(id)}
-	if personKind(kind) {
+	if hash != "" {
 		who = []any{"login_hash", hash}
 	}
 	attrs := append([]any{
@@ -270,25 +282,20 @@ func peerAddress(r *http.Request) string {
 var loginSegments = map[string]bool{"{login}": true, "{email}": true}
 
 // loggedPath is the escaped path as the line writes it: each segment that route names a person's
-// login in is written `login_hash:<hash>` (model.LoginHash of the segment, unescaped), so the line
-// holds no address, and every other segment as it was sent.
+// login in, and each that holds an '@' unescaped whatever the route (an `unmatched` path, a
+// method the route does not serve), is written `login_hash:<hash>` (model.LoginHash of the
+// segment, unescaped), so the line holds no address; every other segment is as it was sent.
 func loggedPath(route, path string) string {
-	if !strings.Contains(route, "{login}") && !strings.Contains(route, "{email}") {
-		return path
-	}
 	pattern, segments := strings.Split(route, "/"), strings.Split(path, "/")
-	if len(pattern) != len(segments) {
-		return path
-	}
-	for i, wildcard := range pattern {
-		if !loginSegments[wildcard] {
-			continue
-		}
-		login, err := url.PathUnescape(segments[i])
+	aligned := len(pattern) == len(segments)
+	for i, segment := range segments {
+		text, err := url.PathUnescape(segment)
 		if err != nil {
-			login = segments[i]
+			text = segment
 		}
-		segments[i] = "login_hash:" + model.LoginHash(login)
+		if strings.Contains(text, "@") || aligned && loginSegments[pattern[i]] {
+			segments[i] = "login_hash:" + model.LoginHash(text)
+		}
 	}
 	return strings.Join(segments, "/")
 }

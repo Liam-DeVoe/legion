@@ -25,7 +25,9 @@ import (
 //   - "broker HTTP <status>", for an answer of the secrets broker that was no success;
 //   - "broker account token", for Dispatch's own broker token that could not be read;
 //   - "network timeout" or "network", for any other network failure;
-//   - otherwise the Go type of the innermost error err wraps, such as "*errors.errorString".
+//   - otherwise the Go type of the innermost error err wraps, such as "*errors.errorString",
+//     following the last of the errors an error wraps where it wraps several (`"%w: %w"`,
+//     errors.Join), which is the cause where the first names the failure.
 //
 // Each is fixed words, a code the database or the broker chose, or a type the code names, and never
 // text a caller formatted into err.
@@ -59,8 +61,27 @@ func Of(err error) string {
 		}
 		return "network"
 	}
-	for next := errors.Unwrap(err); next != nil; next = errors.Unwrap(err) {
-		err = next
+	return reflect.TypeOf(innermost(err)).String()
+}
+
+// innermost is the error err wraps that wraps nothing, taking the last of several.
+func innermost(err error) error {
+	for {
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() []error }:
+			wrapped := wrapper.Unwrap()
+			if len(wrapped) == 0 || wrapped[len(wrapped)-1] == nil {
+				return err
+			}
+			err = wrapped[len(wrapped)-1]
+		case interface{ Unwrap() error }:
+			next := wrapper.Unwrap()
+			if next == nil {
+				return err
+			}
+			err = next
+		default:
+			return err
+		}
 	}
-	return reflect.TypeOf(err).String()
 }

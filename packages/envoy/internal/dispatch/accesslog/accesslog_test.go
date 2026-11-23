@@ -205,11 +205,13 @@ func TestANamedSessionIsClipped(t *testing.T) {
 
 // A person on the line is named by their login's hash, never their address: a signed-in person,
 // a personal token's owner and the person a broker-issued token acts for, as the caller and as the
-// credential a session was named under, and a login a route's path carries ({login}, {email}).
-// Every other segment of such a path, and the caller of every other kind, is as it was.
+// credential a session was named under, and a login a path carries, in a segment the route names
+// {login} or {email} or in any segment that holds an '@' (an unmatched path's). Every other
+// segment, the caller of every other kind, and a broker-issued token's service, which is no
+// person, are as they were.
 //
-// Control: write `caller`, the credential and the path as they came, and every row but the
-// service's fails on the '@' they bring back to the line.
+// Control: write `caller`, the credential and the path as they came, and every person row fails on
+// the '@' they bring back to the line; hash every broker-token caller, and the service rows fail.
 func TestTheLineNamesAPersonByTheirLoginsHash(t *testing.T) {
 	const ada = "Ada@Example.com"
 	hash := model.LoginHash(ada)
@@ -229,6 +231,11 @@ func TestTheLineNamesAPersonByTheirLoginsHash(t *testing.T) {
 			[]string{`path=/api/v1/people/login_hash:` + hash + `/nodes `, `caller=session-1`}},
 		{"an escaped email in the path", "/api/v1/projects/{key}/access/people/{email}", "/api/v1/projects/CORE/access/people/Ada%40Example.com", [][2]string{{KindUser, "owner@example.com"}},
 			[]string{`path=/api/v1/projects/CORE/access/people/login_hash:` + hash + ` `, `login_hash=` + model.LoginHash("owner@example.com")}},
+		{"an address in an unmatched path", "unmatched", "/api/v1/projects/CORE/access/people/Ada@Example.com/extra", nil,
+			[]string{`path=/api/v1/projects/CORE/access/people/login_hash:` + hash + `/extra `, `route=unmatched `}},
+		{"a broker-issued token's service", "/r", "/r", [][2]string{{KindBrokerToken, "service:fleet-a"}}, []string{`caller_kind=broker-token`, `caller=service:fleet-a`}},
+		{"a session a service's broker-issued token named", "/r", "/r", [][2]string{{KindBrokerToken, "service:fleet-a"}, {KindSession, "session-1"}},
+			[]string{`caller=session-1`, `credential=broker-token:service:fleet-a`}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			logged := capture(t)

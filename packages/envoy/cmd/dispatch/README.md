@@ -4898,7 +4898,7 @@ Each item below names a field of the line, then what it holds.
 - `path`
 
   The request path as it was sent, still escaped (`a%2Fb` stays `a%2Fb`), without its query string.
-  A segment the route names `{login}` or `{email}` (`/api/v1/people/{login}/nodes`, `/api/v1/projects/{key}/access/people/{email}`) is written `login_hash:<value>`, the hash of the login it holds, so the path names no address.
+  A segment the route names `{login}` or `{email}` (`/api/v1/people/{login}/nodes`, `/api/v1/projects/{key}/access/people/{email}`), and any segment that holds an `@` once unescaped (an `unmatched` path's included), is written `login_hash:<value>`, the hash of the text it holds, so the path names no address.
 
 - `caller_kind`
 
@@ -4912,8 +4912,8 @@ Each item below names a field of the line, then what it holds.
 
 - `login_hash`
 
-  Only on a `user`, `token` or `broker-token` line, in place of `caller`: the hash of the signed-in person's login, of the personal token's owner's, or of the person a broker-issued token acts for (`model.LoginHash`).
-  The line never names a person's address.
+  Only on a `user` or `token` line, and on a `broker-token` line whose token acts for a person, in place of `caller`: the hash of the signed-in person's login, of the personal token's owner's, or of the person the broker-issued token acts for (`model.LoginHash`).
+  A broker-issued token that acts for no person keeps `caller=service:<service>`.
   To find a person's requests, hash their address, or read the address a value stands for from the people table, as [A person in the access log and the sign-in lines](#a-person-in-the-access-log-and-the-sign-in-lines) says.
 
 - `address`
@@ -4950,7 +4950,7 @@ Each item below names a field of the line, then what it holds.
 - `credential`
 
   Only on a `session` line: the credential behind the session.
-  `token:<login_hash>` (the token's owner), `service:<subject>`, `shared-token` or `broker-token:<login_hash>` (the person the token acts for).
+  `token:<login_hash>` (the token's owner), `service:<subject>`, `shared-token`, `broker-token:<login_hash>` (the person the token acts for) or `broker-token:service:<service>` (a token that acts for no person).
   For every one but the last that session id is the caller's own text; under a broker-issued token the credential itself named it.
 
 - `aborted`
@@ -4958,8 +4958,8 @@ Each item below names a field of the line, then what it holds.
   Only when the handler panicked (an artifact download whose store fails mid-stream aborts this way): `true`.
   The line is still written, and the panic still reaches the server.
 
-The line never carries a token, a cookie, a query string, a request body, a response body or a person's address.
-The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes.
+The line never carries a token, a cookie, a query string, a request body or a response body, and names every person it names by `login_hash`.
+The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes; a session id is that text as the caller wrote it.
 
 A websocket resolves its caller again on every heartbeat, and that resolution does not change the line: it names the caller the connection was admitted as.
 
@@ -4974,14 +4974,15 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 
 ## A person in the access log and the sign-in lines
 
-The access log (`login_hash`, and a `credential` or `path` that names a person, above) and the lines the sign-in and membership code writes name a person by `login_hash`: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`), never their address.
-The sign-in and membership lines are those of a sign-in, a dev sign-in, a sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in (a passkey's among them), the membership pass, a Workspace Directory check under IAP identity, a passkey sign-in or ceremony refused, a stored refresh token that does not open, and a decision, mint or scope change refused because whether Dispatch holds its caller could not be read.
+The access log (`login_hash`, and a `credential` or `path` that names a person, above) and the sign-in and membership lines name a person by `login_hash`: the first 16 hex digits of the SHA-256 of their canonical login (`model.LoginHash`), never their address.
+Those are the lines `internal/dispatch/identity` and `internal/dispatch/routes` write, of a sign-in, a dev sign-in, a sign-out, a refused sign-in or IAP assertion, the hourly confirmation and the end of a sign-in (a passkey's among them), the membership pass, a Workspace Directory check under IAP identity, and a passkey sign-in or ceremony refused; the API's line of a decision, mint or scope change refused because whether Dispatch holds its caller could not be read; and the people store's line of a stored refresh token that does not open.
+The people store's other lines of a sign-in (the account binding's catch-up, ended sessions and revoked tokens, and a plain refresh token the pool did not revoke) and the passkey store's lines of an end still name `email`.
 A refusal's or an end's `reason` gives the refusal's words, and names the address a refreshed sign-in carried by its `login_hash`.
 One login has one value in every process and every build.
-To find a person's lines, the requests they made among them, hash their address the same way:
+To find a person's lines, the requests they made among them, hash their canonical login: their address with its ASCII capitals lowered and no white space around it, as `tr` does here:
 
 ```
-printf %s alice@example.com | sha256sum | cut -c1-16
+printf %s 'Alice@Example.com' | tr A-Z a-z | sha256sum | cut -c1-16
 ```
 
 To read the address a value stands for, ask the people table, which holds the canonical login of every person who signed in (`TestTheLoginHashResolveQueryFindsThePerson` holds this statement to `model.LoginHash`):
@@ -4991,7 +4992,7 @@ select email from people where left(encode(sha256(convert_to(email, 'UTF8')), 'h
 ```
 
 The same lines name a failed store or broker call by `error_kind`, never by its error, whose text quotes the address (`errkind.Of`):
-`canceled`, `deadline exceeded`, `database connection`, `database SQLSTATE <code>`, `broker HTTP <status>`, `broker account token`, `network timeout`, `network`, or else the Go type of the innermost error.
+`canceled`, `deadline exceeded`, `database connection`, `database SQLSTATE <code>`, `broker HTTP <status>`, `broker account token`, `network timeout`, `network`, or else the Go type of the innermost error (the last, where an error wraps several).
 
 ## Routes
 
