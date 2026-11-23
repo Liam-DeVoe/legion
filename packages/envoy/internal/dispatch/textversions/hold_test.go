@@ -119,9 +119,9 @@ func fillTakeOverAfterDeath(t *testing.T) time.Duration {
 // so the standby takes the hold and writes the next event. The standby's retry runs on a fake
 // clock the row never moves (Config.standbyClock), so the retry never fires; its wake has given up
 // the signal of the hub's LISTEN (releasedWake), and the hub listened once; and nothing wakes the
-// standby's events until it has taken the hold, whose first pass writes what was written while it
-// stood by. So the take can only be the notification's. That it comes within 2 s is a service
-// level, which TestAStandbyTakesTheReleasedHoldWithinTwoSeconds holds in benchtime's timing lane.
+// standby's events until the row has seen it take the hold. So the take can only be the
+// notification's. That it comes within 2 s is a service level, which
+// TestAStandbyTakesTheReleasedHoldWithinTwoSeconds holds in benchtime's timing lane.
 func TestAStandbyTakesTheReleasedHold(t *testing.T) {
 	takeReleasedHold(t)
 }
@@ -168,11 +168,15 @@ func takeReleasedHold(t *testing.T) time.Duration {
 	}
 	id := commitComment(t, database, broker, textversionstest.Issue).id
 	// Nothing wakes the standby's events before its take: a standby that took the hold only once
-	// an event woke it would never write the next event, and the row would fail here by name.
+	// an event woke it would never log its take, and the row would fail here by name.
 	second.AwaitLine(t, tookHoldMessage)
 	if n := listens(); n != 1 {
 		t.Fatalf("the standby's listener hub listened %d times; want once, so that what woke the standby is the release's notification", n)
 	}
+	// The take can come before the event's commit, and its first pass with it, so the row wakes
+	// the standby's events now, as the event's commit does in production; the take is already
+	// seen, so the wake cannot have brought it.
+	second.Wake()
 	textversionstest.AwaitRows(t, database, []int64{id}, nil)
 	took := time.Since(stopped)
 	t.Logf("the standby wrote the next event %v after the holder stopped", took.Round(time.Millisecond))
