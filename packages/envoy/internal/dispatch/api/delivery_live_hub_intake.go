@@ -427,8 +427,10 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 }
 
 // window is the view's window as its last answer resolved it: a custom range as named, a preset
-// from its last start (or its length before now, before its first answer) to the present, and a
-// pipeline view from the first shown day of its pinned at or of its last answer's.
+// from its last start (or, before its first answer, the start presetWindow gives now) to the
+// present, and a pipeline view from the first shown day of its pinned at or of its last answer's.
+// A preset's end is the present itself, not presetWindow's truncated end: a change stamped inside
+// the present's microsecond is inside the window the next read takes.
 func (view *deliveryView) window(now time.Time) (from, to time.Time) {
 	switch {
 	case view.spec.kind == deliveryLivePipeline:
@@ -441,7 +443,8 @@ func (view *deliveryView) window(now time.Time) (from, to time.Time) {
 		return measures.WindowStart(at), time.Time{}
 	case view.spec.preset > 0:
 		if view.from.IsZero() {
-			return now.Add(-view.spec.days()), now
+			from, _ := presetWindow(now, view.spec.days())
+			return from, now
 		}
 		return view.from, now
 	default:

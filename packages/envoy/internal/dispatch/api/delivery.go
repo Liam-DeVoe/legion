@@ -668,19 +668,41 @@ func runsWhere(runs []delivery.DeliveryRun, jobs map[int64][]delivery.DeliveryRu
 	return kept, keptJobs
 }
 
+// presetWindow is the window [from, to) of a preset of length n ending at the present now, as the
+// live hub reads it, narrows to it and names it in a frame: now truncated to its microsecond, as
+// pgx encodes a timestamptz parameter (a floor, pgtype/timestamptz.go), and n before that. Every
+// stored time is a whole microsecond, and PostgreSQL compares a window's bounds at the microsecond
+// pgx sends, so a window whose bounds are whole microseconds holds in memory exactly the rows a GET
+// over it reads from the database, whatever moment the hub reads its clock at. A window bounded at
+// nanoseconds does not: inside a row's microsecond the hub would drop the row while a GET over the
+// same bounds kept it. n is a whole number of days, so the window's length stays n.
+func presetWindow(now time.Time, n time.Duration) (from, to time.Time) {
+	to = now.Truncate(time.Microsecond)
+	return to.Add(-n), to
+}
+
+// firstInstantPast is the first instant at which a preset window's bound (presetWindow) lies past
+// at: the end of at's microsecond, since every instant inside it truncates onto it or before.
+func firstInstantPast(at time.Time) time.Time {
+	return at.Truncate(time.Microsecond).Add(time.Microsecond)
+}
+
 // nextExpiry is the first moment after now at which a preset window of length n, ending at the
-// present, loses something the population holds or its daily series moves: just past the oldest
-// row's merge + n, the oldest run start (each list that filters on starts) + n, the oldest creation
-// among the runs ListRuns read + n, and each waiting entry's ship time + n; and the next UTC
-// midnight (measures.DailySeries, measures.go:240), where a whole-day window's first and last days
-// move together. Nothing else in the timeline or the measures reads the present (the LEGION-690 PR's
+// present (presetWindow), loses something the population holds or its daily series moves: the
+// first instant past the oldest row's merge + n, the oldest run start (each list that filters on
+// starts) + n, the oldest creation among the runs ListRuns read + n, and each waiting entry's ship
+// time + n; and the first instant past the next UTC midnight (measures.DailySeries,
+// measures.go:240), by which a whole-day window's first and last days have both moved. A window
+// whose end is the midnight itself has dropped its first day and holds none of the new one, so a
+// view read inside the midnight's microsecond is due at that microsecond's end and not at the next
+// midnight. Nothing else in the timeline or the measures reads the present (the LEGION-690 PR's
 // Task 0 checks, Step 17).
 func nextExpiry(pop deliveryPopulation, n time.Duration, now time.Time) time.Time {
-	next := nextUTCMidnight(now)
+	next := firstInstantPast(nextUTCMidnight(now.Add(-time.Microsecond)))
 	consider := func(leaves time.Time) {
-		// A row is in the window while its time is at or after the start, so it leaves just past
-		// its time + n.
-		if at := leaves.Add(n).Add(time.Nanosecond); at.After(now) && at.Before(next) {
+		// A row is in the window while its time is at or after the window's truncated start, so it
+		// leaves at the first instant whose start lies past its time + n.
+		if at := firstInstantPast(leaves.Add(n)); at.After(now) && at.Before(next) {
 			next = at
 		}
 	}

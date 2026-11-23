@@ -315,7 +315,7 @@ func (h *deliveryHub) readDeliveryView(ctx context.Context, spec deliveryLiveSpe
 	}
 	from, to := spec.from, spec.to
 	if spec.preset > 0 {
-		from, to = now.Add(-spec.days()), now
+		from, to = presetWindow(now, spec.days())
 	}
 	if read.pop, err = h.server.readDeliveryPopulation(ctx, read.settings, from, to, spec.query, spec.kind == deliveryLiveTimeline); err != nil {
 		return nil, err
@@ -373,9 +373,10 @@ func (h *deliveryHub) expire(g *hubGeneration, view *deliveryView) {
 		from = measures.WindowStart(at)
 		prs, runs = len(narrowed.leadTimes.prs), len(narrowed.checks.Runs)+len(narrowed.deploys.Runs)
 	} else {
-		from = now.Add(-spec.days())
+		var to time.Time
+		from, to = presetWindow(now, spec.days())
 		narrowed := pop.narrowedTo(settings, from)
-		body = deliveryLiveCompute(spec.kind, settings, narrowed, from, now, now)
+		body = deliveryLiveCompute(spec.kind, settings, narrowed, from, to, now)
 		expiry = nextExpiry(narrowed, spec.days(), now)
 		prs, runs = len(narrowed.prs), len(narrowed.applyRuns)+len(narrowed.windowRuns)
 	}

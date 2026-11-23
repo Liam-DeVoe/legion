@@ -2239,18 +2239,19 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
 }
 
-// A view's window is judged in memory, at nanoseconds (narrowedTo), while the GET route's window
-// start reaches PostgreSQL truncated to its microsecond (pgx's binary timestamptz), where the rows'
-// times are whole microseconds. A pull request leaves a preset window a nanosecond past its time
-// plus the window's length (nextExpiry), and the hub arms its one timer for that moment. The test
-// moves the fake a microsecond past it, as a timer fires late in production: an idle process waits
-// for one in whole milliseconds (the runtime's netpoll), and the hub reads its clock only once the
-// woken worker runs. From a microsecond late on, the window start the hub narrows to and the one
-// PostgreSQL reads lie past the same rows, and the hub's narrowed view holds the same pull requests
-// the GET route's SQL does over the window it reports. Inside that microsecond, which only a
-// process whose scheduler never rests reaches, the hub's window start falls in the leaving row's
-// own microsecond, and a GET over that very start, which only a client comparing a frame's own
-// window sends (the page reads the hub alone), would keep the row the hub dropped.
+// A GET reaches PostgreSQL with its window's start truncated to the microsecond (pgx's binary
+// timestamptz), and every stored time is a whole microsecond, so the live hub's window must start on
+// a whole microsecond too (presetWindow) for its narrowed view to hold what a GET over the frame's
+// window reads. A pull request leaves a preset window at the first instant whose truncated start
+// lies past it, the end of the microsecond of its merge plus the window's length (nextExpiry), and
+// the hub arms its one timer for that moment. The test moves the fake 500 ns past it, as a timer
+// fires late in production: on a process whose scheduler never rests, about one wake in 300 read
+// the clock less than a microsecond after its timer's moment (the earliest 727 ns after). There the
+// expiry's narrowed view has dropped the leaving pull request and holds the same pull requests the
+// GET route's SQL does over the window it reports. With the window at nanoseconds and the leaving a
+// nanosecond past, the hub dropped the pull request while a GET over that start, truncated onto the
+// row's microsecond, kept it; with a truncated window and the leaving a nanosecond past, the hub's
+// window still started on the row's microsecond at that wake and the pull request stayed.
 func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T) {
 	clock := newStillHubClock()
 	rig := newClockedHubRig(t, clock)
@@ -2277,21 +2278,199 @@ func TestAViewsWindowEdgeAgreesWithPostgresAtASubMicrosecondExpiry(t *testing.T)
 	}
 	// The view's one timer is the pull request's leaving, a moment just past merged + 28 days and
 	// well before the midnight expiry; the fake clock reports the exact deadline it is armed for,
-	// which the test moves a microsecond past, as a real timer fires late (above), without asserting
-	// its sub-second part, since the agreement below is what the moment's resolution decides.
+	// which the test moves 500 ns past, as a real timer fires late (above), without asserting its
+	// sub-second part, since what the view holds there is what the moment's resolution decides.
 	leaves, midnight := merged.Add(28*24*time.Hour), nextUTCMidnight(clock.Now())
 	armed := clock.AwaitArmed(t, "the pull request's expiry", 1)
 	if len(armed) != 1 || !armed[0].After(leaves) || !armed[0].Before(midnight) {
 		t.Fatalf("the view's timer is armed for %v, want the pull request's leaving between %v and %v", armed, leaves, midnight)
 	}
 	start := rig.mark()
-	clock.Set(armed[0].Add(time.Microsecond))
+	clock.Set(armed[0].Add(500 * time.Nanosecond))
 	rig.waitFor(t, start, "the expiry's recompute to end", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
 	})
 	body := rig.onlyViewBody(t)
-	requireSameBody(t, "the view narrowed a microsecond past its sub-microsecond expiry", body,
+	requireSameBody(t, "the view narrowed 500 ns past its pull request's expiry", body,
 		getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, body, "")))
+	if held := timelinePRIDs(t, body); slices.Contains(held, "acme/widgets#1") {
+		t.Fatalf("the view narrowed 500 ns past acme/widgets#1's expiry holds %v, want acme/widgets#1 gone", held)
+	}
+}
+
+// A recompute the pull request's own leaving does not cause can land inside its microsecond too:
+// the view's midnight expiry, when the pull request merged a microsecond after the midnight 28 days
+// before. The view is due at the first instant past the midnight, when its truncated end has passed
+// it (nextExpiry), and the test moves the fake 500 ns past that, as a timer fires late. The
+// window's truncated start then lies on the pull request's own microsecond, so the view keeps it,
+// as a GET over the frame's window does. A window started at nanoseconds there would start 500 ns
+// into that microsecond and drop the pull request, while the GET, its start truncated onto the
+// microsecond, kept it.
+func TestAViewsWindowEdgeAgreesWithPostgresWhenItsMidnightLandsInsideAPullRequestsMicrosecond(t *testing.T) {
+	clock := newStillHubClock()
+	rig := newClockedHubRig(t, clock)
+	seedHubSettings(t, rig.database)
+	window := 28 * 24 * time.Hour
+	midnight := nextUTCMidnight(clock.Now())
+	merged := midnight.Add(-window).Add(time.Microsecond)
+	upsertPR(t, rig.database, hubPR(1, merged))
+	upsertPR(t, rig.database, hubPR(2, clock.Now().Add(-time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", presetView(deliveryLiveTimeline, 28, "")))
+	conn.snapshot(t, "p")
+	rig.waitConnected(t)
+	rig.settle(t)
+	// Run the recompute a seeded change left due, so the only timer left is the midnight's, and
+	// drain its delta.
+	clock.Advance(2 * viewQuiet)
+	rig.settle(t)
+	for drained := false; !drained; {
+		select {
+		case <-conn.frames:
+		default:
+			drained = true
+		}
+	}
+	// The view's one timer is the midnight's, a microsecond before the pull request leaves, so a
+	// wake 500 ns past it reads a window starting inside the pull request's microsecond.
+	dayEdge := midnight.Add(time.Microsecond)
+	armed := clock.AwaitArmed(t, "the view's midnight expiry", 1)
+	if len(armed) != 1 || !armed[0].Equal(dayEdge) {
+		t.Fatalf("the view's timer is armed for %v, want the first instant past the midnight, %v, where its window's "+
+			"truncated start reaches acme/widgets#1's microsecond %v", armed, dayEdge, merged)
+	}
+	start := rig.mark()
+	clock.Set(dayEdge.Add(500 * time.Nanosecond))
+	rig.waitFor(t, start, "the midnight expiry's recompute to end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
+	})
+	body := rig.onlyViewBody(t)
+	requireSameBody(t, "the view narrowed 500 ns past its midnight expiry", body,
+		getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, body, "")))
+	if held := timelinePRIDs(t, body); !slices.Contains(held, "acme/widgets#1") {
+		t.Fatalf("the view narrowed at the midnight holds %v, want acme/widgets#1, merged on its window start's own microsecond", held)
+	}
+}
+
+// A change to a pull request merged on a preset view's window start marks the view (touchedBy): a
+// row on the start's own microsecond is in the window PostgreSQL reads, so the view must answer
+// for its change as a GET over its window does. The view reads at a moment 500 ns into a
+// microsecond, so its truncated window start (presetWindow) is the pull request's merge, and a
+// change to that pull request then commits. A window start at nanoseconds would lie 500 ns past
+// the merge, judge the change outside the window and mark nothing, while a GET over the view's
+// window still read the pull request. The view is then recomputed for the change, at its quiet
+// delay, and its frame is a GET's over its window.
+func TestAChangeToAPullRequestOnAPresetViewsWindowStartMarksTheView(t *testing.T) {
+	clock := newStillHubClock()
+	rig := newClockedHubRig(t, clock)
+	seedHubSettings(t, rig.database)
+	window := 28 * 24 * time.Hour
+	// The view's own read below happens 3*viewQuiet and 500 ns after noon, so its window starts on
+	// this merge's microsecond.
+	merged := clock.Now().Add(3 * viewQuiet).Add(-window)
+	upsertPR(t, rig.database, hubPR(1, merged))
+	upsertPR(t, rig.database, hubPR(2, clock.Now().Add(-time.Hour)))
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("m", presetView(deliveryLiveMeasures, 28, "")))
+	conn.snapshot(t, "m")
+	rig.waitConnected(t)
+	rig.settle(t)
+	// Run the recompute a seeded change left due.
+	clock.Advance(2 * viewQuiet)
+	rig.settle(t)
+
+	// A change well inside the window marks the view at a moment 500 ns into a microsecond, so its
+	// recompute is due a quiet delay later, at noon + 3*viewQuiet + 500 ns.
+	clock.Advance(500 * time.Nanosecond)
+	read := clock.Now().Add(viewQuiet)
+	inside := hubPR(2, clock.Now().Add(-time.Hour))
+	inside.Title = "feat: change 2, renamed"
+	upsertPR(t, rig.database, inside)
+	awaitArmedAt(t, clock.Fake, "the recompute the change inside the window left due", read)
+	start := rig.mark()
+	clock.Set(read)
+	rig.waitFor(t, start, "the recompute of the change inside the window to end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseChange
+	})
+	if from := rig.onlyViewFrom(t); !from.Equal(merged) {
+		t.Fatalf("the view read at %v holds the window start %v, want acme/widgets#1's merge %v, the start truncated to its microsecond",
+			read, from, merged)
+	}
+
+	// The change to the pull request on the window start: an earlier opening moves the measures'
+	// opened-to-merge time.
+	edge := hubPR(1, merged)
+	edge.CreatedAt = new(merged.Add(-5 * time.Hour))
+	upsertPR(t, rig.database, edge)
+	latest, err := delivery.LatestChangeSeq(t.Context(), rig.database.Pool)
+	if err != nil {
+		t.Fatalf("read the newest delivery change: %v", err)
+	}
+	testwait.Until(t, fmt.Sprintf("the hub's change cursor through the change to acme/widgets#1, change %d", latest), func() (int64, bool) {
+		at := rig.changeCursor()
+		return at, at >= latest
+	})
+	if dirty, cause := rig.onlyViewDirty(t); !dirty || cause != deliveryCauseChange {
+		t.Fatalf("after a change to acme/widgets#1, merged on the view's window start %v, the view is dirty=%t cause=%q; want it marked for the change",
+			merged, dirty, cause)
+	}
+	again := clock.Now().Add(viewQuiet)
+	awaitArmedAt(t, clock.Fake, "the recompute the change to acme/widgets#1 left due", again)
+	start = rig.mark()
+	clock.Set(again)
+	rig.waitFor(t, start, "the recompute of the change to acme/widgets#1 to end", func(note deliveryHubNote) bool {
+		return note.what == "recompute end" && note.cause == deliveryCauseChange
+	})
+	body := rig.onlyViewBody(t)
+	requireSameBody(t, "the view recomputed for the change on its window start", body,
+		getBody(t, rig.handler, windowTarget(t, deliveryLiveMeasures, body, "")))
+}
+
+// onlyViewFrom is the window start the hub's one view last answered for, read under the hub's lock.
+func (r *hubRig) onlyViewFrom(t *testing.T) time.Time {
+	t.Helper()
+	r.hub.mu.Lock()
+	defer r.hub.mu.Unlock()
+	if n := len(r.hub.generation.views); n != 1 {
+		t.Fatalf("the hub holds %d views, want one", n)
+	}
+	for _, view := range r.hub.generation.views {
+		return view.from
+	}
+	return time.Time{}
+}
+
+// onlyViewDirty is whether the hub's one view is marked for a recompute, and the cause of the mark,
+// read under the hub's lock.
+func (r *hubRig) onlyViewDirty(t *testing.T) (bool, string) {
+	t.Helper()
+	r.hub.mu.Lock()
+	defer r.hub.mu.Unlock()
+	if n := len(r.hub.generation.views); n != 1 {
+		t.Fatalf("the hub holds %d views, want one", n)
+	}
+	for _, view := range r.hub.generation.views {
+		return view.dirty, view.cause
+	}
+	return false, ""
+}
+
+// timelinePRIDs is the ids of the pull requests a timeline body lists.
+func timelinePRIDs(t *testing.T, body json.RawMessage) []string {
+	t.Helper()
+	var timeline struct {
+		PRs []struct {
+			ID string `json:"id"`
+		} `json:"prs"`
+	}
+	if err := json.Unmarshal(body, &timeline); err != nil {
+		t.Fatalf("decode the timeline body's pull requests: %v", err)
+	}
+	ids := make([]string, len(timeline.PRs))
+	for i, pr := range timeline.PRs {
+		ids[i] = pr.ID
+	}
+	return ids
 }
 
 // The clock reads noon UTC (newNoonHubClock) and runs on from there, so the row's run itself
