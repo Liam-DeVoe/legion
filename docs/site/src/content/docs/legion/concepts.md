@@ -203,8 +203,13 @@ the architect's own acceptance in `accepting`, stands after an `implementer` ste
 request it reads. Any other step may carry a key after its role (`implementer:a tester:a`), the
 steps of one key running as one agent in one claim and one session. A role may stand at two steps,
 of one agent or of two: `implementer reviewer implementer` runs step 3 in a second agent of the
-role implementer, `implementer-2`, in a session of its own. The owner writes the plan as the
-issue's `plan.md` document, with one `plan_task` block such as
+role implementer, `implementer-2`, in a session of its own. A key keeps its name in every version
+of the plan, and while a version leaves the key out no other agent takes that name, so the key's
+agent finds its session again when a later version names the key; the agent that would have taken
+the name takes a numbered one and a slot of its own, so its start can wait for the issue pod's
+update round. A name that only agents with no key held is given again to a later agent with no
+key, which starts in a session of its own. The owner writes the plan as the issue's `plan.md`
+document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
 starts: for a child, before `release_children` releases it, since a released child can start its

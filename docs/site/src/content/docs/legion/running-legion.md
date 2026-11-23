@@ -238,7 +238,7 @@ The account's name joins the owners that each later launch of that App's roles i
 `Legion addressing` line of its prompt.
 Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's
 next refresh.
-Under `runtime: kubernetes` the bundle is each role's Secret, and a pod projects the directories
+Under `runtime: kubernetes` the bundle is each slot's Secret, and a pod projects the directories
 of its creation, an issue pod only those that both role Apps' bundles hold.
 So once both role Apps are installed on the account, the daemon opens one update round over each
 live issue pod, and the pod that replaces it projects the new directory.
@@ -282,15 +282,15 @@ Dispatch read them, delete the files, then install every App from
   tolerates the taint `legion.dev/pool=legion:NoSchedule`. You may add node selectors, tolerations
   and a priority class under `runtime.kubernetes.scheduling`, but not the pool label itself.
 - **One reservation per pod, no affinity set by Legion.** An issue pod runs every role of the
-  issue in one container, `roles`, each role's process in Linux namespaces of its own that keep
-  its tokens out of its siblings' reads; the roles share the pod's own disk and network, so code
+  issue in one container, `roles`, each agent's process in Linux namespaces of its own that keep
+  its tokens out of its siblings' reads; the agents share the pod's own disk and network, so code
   one of them plants there can run in another with that one's credentials. Every container of a
   Legion pod carries a cpu and memory limit with a
   request no greater than it, and bounds its ephemeral storage — the node's disk: the image's own
-  content and each role's home and `/tmp`, the issue's temporary directory, cache and data homes
-  and bun install cache being one set its roles share on the pod's own disk instead, each role's
+  content and each slot's home and `/tmp`, the issue's temporary directory, cache and data homes
+  and bun install cache being one set its agents share on the pod's own disk instead, each agent's
   state home a separate directory there, and the two Go caches one pair on that disk shared by the
-  issue's roles — with a limit over a smaller request. `runtime.kubernetes.resources` takes two
+  issue's agents — with a limit over a smaller request. `runtime.kubernetes.resources` takes two
   keys: `issue`, the one reservation of every issue pod (its `roles` container and both init
   containers), and `controller`, the daemon-launched controller's pod's (`controller: daemon`
   only). Each takes `cpu` and `memory` (the limits), `cpu_request` and `memory_request` (what the
@@ -744,9 +744,10 @@ What each part is for:
   the role's own App token on every owner that App is installed on, with the role's own
   permissions, each reaching every repository that owner's installation holds, and the
   controller's read-only. Oh My Pi starts only once it exits 0; a failure is a failed launch, and
-  its output is in the role's log. It may install an Oh My Pi plugin marketplace from GitHub. Such
-  an install renames a directory in the role's home overlay, which stopped the pod's gVisor
-  sandbox until legion-v19.18.1 mounted that overlay with `userxattr` (gVisor could not write its
+  its output is on the lines of its agent's slot in the `roles` container's log. It may install an
+  Oh My Pi plugin marketplace from GitHub. Such an install renames a directory in the slot's home
+  overlay, which stopped the pod's gVisor sandbox until legion-v19.18.1 mounted that overlay with
+  `userxattr` (gVisor could not write its
   opaque mark on the renamed directory). For example:
 
   ```yaml
@@ -979,7 +980,7 @@ answer. A pre-registration states seven things.
    outcome.** `unit: tree` draws once for a whole tree, so every issue of that tree runs in one
    arm. `unit: issue` draws for each issue, so two issues of one tree can run in different arms.
    Mixing inside a tree is safe when an arm cannot reach its siblings — an overlay that changes
-   how one issue's implementer writes its own code, and nothing the tree shares. It is a danger
+   how one issue's implementers write its own code, and nothing the tree shares. It is a danger
    when the arm can reach them: anything that changes what a role writes into the tree's spec,
    its branch, or its architect's context reaches the tree's other issues, so the control arm
    measures the treatment too and the difference you read is smaller than the true one. Where an
@@ -1586,9 +1587,10 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
-  `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
-  count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
-  made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
+  `architect` and `workers` (one claim per role, the worker on its step; each claim's `state`, and
+  on the implementer `backwardMoves`, one count for each kind of move back the issue has made,
+  keyed `<from>-<to>`, left out where it has made none), `otherClaims` (each other claim of the
+  issue, such as a second agent of one role, with the role it holds), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
@@ -1661,7 +1663,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   ```sh
   kubectl -n legion get sandboxes,pods -l legion.dev/tree=WIDGETS-12
-  kubectl -n legion logs <pod> -c roles | grep '^implementer: '   # that role's launcher, its shim and Oh My Pi
+  kubectl -n legion logs <pod> -c roles | grep '^<agent>: '   # one agent's slot, such as implementer-2: its launcher, its shim and Oh My Pi
   kubectl -n legion logs <pod> -c workspace-init    # the workspace provisioning
   ```
 

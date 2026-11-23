@@ -768,8 +768,9 @@ type Issue struct {
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
 	// with the role it holds, in token order, and absent where there is none (contract 222). Two
 	// claims of one issue can hold one role — the agent of a key on a step of another role,
-	// beside that role's own claim of an earlier version of the plan — and `workers` holds one
-	// entry per role, so a reader finds the other one here, by its token (ClaimView.Token).
+	// beside that role's own claim of an earlier version of the plan, or a second agent of one
+	// role, `implementer-2`, beside the first — and `workers` holds one entry per role, so a
+	// reader finds the other one here, by its token (ClaimView.Token).
 	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
 	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
 	DesignGate  *GateView        `json:"designGate,omitempty"`
@@ -1822,11 +1823,12 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 	return grouped
 }
 
-// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the role's
-// own claim, whose token the issue and the role spell (and for an entry that names no token), and
-// `<issue> <role> (claim <token>)` for the claim of an agent named for another role, which holds
-// the role for its step. Two claims of one role on one issue are then named apart, and the token
-// is what `legion claims` takes.
+// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the claim
+// of an agent named for its role, whose token the issue and the role spell (and for an entry that
+// names no token), and `<issue> <role> (claim <token>)` for every other claim: an agent named for
+// another role, which holds the role for its step, or a second agent of one role, `implementer-2`.
+// Two claims of one role on one issue are then named apart, and the token is what `legion claims`
+// takes.
 func (c StrandedClaim) Name() string {
 	named := c.Issue + " " + string(c.Role)
 	if _, agent, ok := c.Token.Cut(); ok && string(agent) != string(c.Role) {
