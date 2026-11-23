@@ -313,6 +313,25 @@ test.skipIf(skip)(
   600_000
 );
 
+// Every architect's addressing ends with the project's production check line, after the roles of
+// the deployment and, for a root's architect, after the design gate steps, as a launch's does
+// (workerSpawnSpec). The rig's deployment leaves `production_check` unset, so the line names the
+// tester.
+test.skipIf(skip)(
+  "ends an architect's addressing with the production check line of a deployment that leaves it unset",
+  () => {
+    const root = composeRolePrompt(DAEMON_MODULE, "architect", true);
+    expect(root).toMatch(
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. Design gate steps: [^\n]+\. Production check: tester\.$/
+    );
+    const child = composeRolePrompt(DAEMON_MODULE, "architect", false);
+    expect(child).toMatch(
+      /\n\nLegion addressing: [^\n]* critic \(review\)\. Production check: tester\.$/
+    );
+  },
+  600_000
+);
+
 // daemon-pane.go restates two of the daemon's functions, the parts of a step of a role of the
 // deployment and the sentence of the deployment's roles, and daemon-pane_test.go holds each to the
 // daemon's own in this checkout's module. `go test` exits 0 on a run that holds no test, so the row

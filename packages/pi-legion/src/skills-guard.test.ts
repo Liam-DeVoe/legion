@@ -995,6 +995,16 @@ test("the plan guide says which checks retro does not send back", () => {
   ).toEqual([]);
 });
 
+// The roles a step may name stand inside the `Legion addressing` line of an architect's prompt,
+// not after it, so the plan guide sends its reader to that line.
+test("the plan guide finds the roles of the deployment in the addressing line", () => {
+  const plan = collapsed(path.join(staged, "legion-architect", "references", "plan.md"));
+  expect(plan).toContain(
+    'your `Legion addressing` line lists both ("The roles of this deployment"), each with the type of its step.'
+  );
+  expect(plan).not.toContain("your launch lists both after your addressing");
+});
+
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.

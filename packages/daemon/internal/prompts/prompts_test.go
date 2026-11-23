@@ -123,8 +123,8 @@ func TestTheImplementerIsToldEachMergeTriggerAndRetrosOwnCommits(t *testing.T) {
 	}
 }
 
-// The owner is told the roles a step of its plan may name by the list its launch gives after its
-// addressing, never by a list in its prompt, since the deployment's settings name roles no prompt
+// The owner is told the roles a step of its plan may name by the list in its `Legion addressing`
+// line, never by a list in its prompt, since the deployment's settings name roles no prompt
 // part can know. Its prompt says where a step of such a role runs, that it runs at the phase step
 // whatever its type, and that it reports pass or fail. It also says what goes on after a task
 // stops because the deployment no longer defines the role of one of its steps. Both architect
@@ -137,9 +137,10 @@ func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
 	}
 	for _, isRoot := range []bool{true, false} {
 		holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot), composedText(t, composer, claim.RoleArchitect, isRoot), []string{
+			"A step names a role of the list in your `Legion addressing` line, \"The roles of this deployment\", each with the type of its step:",
 			"A role this deployment defines runs where its step stands in your plan, at the phase `step` whatever its type, and reports pass or fail.",
 			`A task that stops with the reason "step <i> names the role <role>, which the deployment no longer defines" goes on in one of two ways: you give a later version of your plan, or the operator defines the role again and a person's todo restarts the task.`,
-		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands"})
+		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands", "the list your launch gives after your addressing"})
 	}
 }
 
