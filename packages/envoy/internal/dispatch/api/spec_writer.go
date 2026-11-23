@@ -16,7 +16,9 @@ import (
 // On an issue that Legion runs, a version of the issue's spec (its primary document) or of its
 // Verification document is written only by a person, by an architect of the issue, or by an
 // architect of an issue above it: the session of an architect row of issue_role_holders on the
-// issue's parent chain (dispatch://INFRA-4764/spec, R1 and R2). Every route that writes such a
+// issue's parent chain (dispatch://INFRA-4764/spec, R1 and R2). The chain climbs only to a parent
+// of the issue's own project, as "Legion runs" does (issueChainSQL), so an issue whose parent is of
+// another project is the root of its own project's tree here. Every route that writes such a
 // version calls refuseSpecWriter inside its transaction, after the owner's lock and before its
 // first document call and its first write, so a write it refuses with 403
 // DOCUMENT_WRITER_NOT_ARCHITECT stores nothing and appends no event; the source guard
@@ -141,6 +143,11 @@ type specWrite struct {
 	// write, which the check reads on the issue's own chain as it stands.
 	under  string
 	labels []string
+	// project is the project of the row a create or a move leaves: the new issue's, or the moved
+	// issue's own, which a move keeps. The walk up the row's chain climbs only to a parent of that
+	// project (issueChainSQL), so a create or a move under a parent of another project is judged as
+	// a root of its own project's tree.
+	project string
 	// to is the new parent of a specWriteMoveAway, wherever it is, which the refusal names; the
 	// check reads that move on the issue's own chain, with under empty. toChecked is that the
 	// move is also checked on to's chain (specWriteMove), because Legion runs the moved issue as
@@ -204,11 +211,13 @@ func specWriterReadSQL(start string) string {
 var (
 	// specWriterOfIssueSQL is the check's statement for a write on the issue $2, over its chain as
 	// it stands.
-	specWriterOfIssueSQL = specWriterReadSQL(`select i.key, i.parent_key, i.labels, 0 as depth from issues i where i.key = $2`)
+	specWriterOfIssueSQL = specWriterReadSQL(`select i.key, i.parent_key, i.labels, i.project_key, 0 as depth from issues i where i.key = $2`)
 	// specWriterOfRowSQL is the check's statement for a create or a move under the parent $2, over
-	// the row as the write leaves it, $3 its labels: the walk of legionManagedStatusOfRowSQL. The
-	// row's own key is not carried, so its architects are read from the parent's chain alone.
-	specWriterOfRowSQL = specWriterReadSQL(`select null::text as key, $2::text as parent_key, $3::text[] as labels, 0 as depth`)
+	// the row as the write leaves it, $3 its labels and $4 its project: the walk of
+	// legionManagedStatusOfRowSQL. The row's own key is not carried, so its architects are read from
+	// the parent's chain alone, and a parent of another project ends the chain at the row, which
+	// then names no subject and passes.
+	specWriterOfRowSQL = specWriterReadSQL(`select null::text as key, $2::text as parent_key, $3::text[] as labels, $4::text as project_key, 0 as depth`)
 )
 
 // specWriterRead is what the check's one statement reads over the chain of a write.
@@ -264,7 +273,7 @@ func judgeSpecWriter(ctx context.Context, q queryer, writer specWriter, write sp
 	session := sessionOf(writer.actor)
 	statement, args := specWriterOfIssueSQL, []any{session, write.issue}
 	if write.under != "" {
-		statement, args = specWriterOfRowSQL, []any{session, write.under, write.labels}
+		statement, args = specWriterOfRowSQL, []any{session, write.under, write.labels, write.project}
 	}
 	var read specWriterRead
 	if err := q.QueryRow(ctx, statement, args...).Scan(
@@ -454,22 +463,23 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 	if writer.person {
 		return nil
 	}
-	// The labels the write leaves: those it writes, or, for a write of the parent alone, those the
-	// issue holds, read under the owner lock its writer holds. Only a move and a write that may take
-	// the issue out of Legion read them.
+	// The labels the write leaves - those it writes, or, for a write of the parent alone, those the
+	// issue holds - and the issue's project, which no write changes, read under the owner lock its
+	// writer holds. Only a move and a write that may take the issue out of Legion read them.
 	var labels []string
-	switch {
-	case step.labelsAfter != nil:
-		labels = *step.labelsAfter
-	case step.changesParent():
-		if err := tx.QueryRow(ctx, `select labels from issues where key = $1`, step.key).Scan(&labels); err != nil {
+	var project string
+	if step.changesParent() || step.labelsAfter != nil {
+		if err := tx.QueryRow(ctx, `select labels, project_key from issues where key = $1`, step.key).Scan(&labels, &project); err != nil {
 			return err
+		}
+		if step.labelsAfter != nil {
+			labels = *step.labelsAfter
 		}
 	}
 	moves := step.changesParent() && step.parentAfter != nil
 	if moves {
 		if err := refuseSpecWriter(ctx, tx, writer, specWrite{
-			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels,
+			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels, project: project,
 		}); err != nil {
 			return err
 		}
@@ -477,11 +487,11 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 		// Legion runs before the move too, wherever the new parent is; its refusal names the new
 		// parent's check only when that check holds the move: when Legion runs the issue as the move
 		// leaves it (runsAfter).
-		runsAfter, err := legionManagedStatusOfRow(ctx, tx, step.key, step.parentAfter, labels)
+		runsAfter, err := legionManagedStatusOfRow(ctx, tx, step.key, project, step.parentAfter, labels)
 		if err != nil {
 			return err
 		}
-		if err := refuseSpecWriterOfMovedSubtree(ctx, tx, writer, step.key, *step.parentAfter, runsAfter); err != nil {
+		if err := refuseSpecWriterOfMovedSubtree(ctx, tx, writer, step.key, project, *step.parentAfter, runsAfter); err != nil {
 			return err
 		}
 	}
@@ -500,7 +510,7 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 		if step.reparent {
 			parent = step.parentAfter
 		}
-		after, err := legionManagedStatusOfRow(ctx, tx, step.key, parent, labels)
+		after, err := legionManagedStatusOfRow(ctx, tx, step.key, project, parent, labels)
 		if err != nil || after {
 			return err
 		}
@@ -519,18 +529,21 @@ const labelledIssuesSQL = `
 	where exists (select 1 from unnest(i.labels) as label where ` + legionLabelSQL + `)
 	order by k.ord`
 
-// refuseSpecWriterOfMovedSubtree is the check of writer's move of the issue key under the parent
-// to, wherever to is, on the chain of each issue of the moved subtree that Legion runs before the
-// move, as it stands; toChecked is that the move is also checked on to's chain, which the refusal
-// says. When Legion runs the issue before the move, its own chain decides: an architect at or above
-// it is at or above every issue under it. Otherwise the chain of each labelled issue under it
-// decides, nearest first, and the first refusal names that issue: the descendant walk
-// (refs.IssueDescendants) reads the keys, and labelledIssuesSQL keeps those that carry the label,
-// by the one match every answer to "Legion runs" reads. A subtree that holds no issue Legion runs
-// passes. A person passes before this runs, and the daemon passes none of these checks. As in
+// refuseSpecWriterOfMovedSubtree is the check of writer's move of the issue key, of project,
+// under the parent to, wherever to is, on the chain of each issue of the moved subtree that Legion
+// runs before the move, as it stands; toChecked is that the move is also checked on to's chain,
+// which the refusal says. When Legion runs the issue before the move, its own chain decides: an
+// architect at or above it is at or above every issue under it. Otherwise the chain of each
+// labelled issue under it decides, nearest first, and the first refusal names that issue. The
+// moved subtree is the issues whose chain climbs to key: those reached from it through parents of
+// its own project alone, since a chain ends at the first ancestor of another project
+// (issueChainSQL), so the move changes no chain below an issue of another project. The
+// descendant walk (refs.IssueDescendantRows) reads the rows, and labelledIssuesSQL keeps, of the
+// issues of the moved subtree, those that carry the label, by the one match every answer to
+// "Legion runs" reads. A subtree that holds no issue Legion runs passes. A person passes before this runs, and the daemon passes none of these checks. As in
 // legionManagedStatus, no lock holds the labels this reads of the issues around key: a concurrent
 // label write can change the answer before the move commits.
-func refuseSpecWriterOfMovedSubtree(ctx context.Context, tx pgx.Tx, writer specWriter, key, to string, toChecked bool) error {
+func refuseSpecWriterOfMovedSubtree(ctx context.Context, tx pgx.Tx, writer specWriter, key, project, to string, toChecked bool) error {
 	runs, err := legionManagedStatus(ctx, tx, key)
 	if err != nil {
 		return err
@@ -538,15 +551,27 @@ func refuseSpecWriterOfMovedSubtree(ctx context.Context, tx pgx.Tx, writer specW
 	if runs {
 		return refuseSpecWriter(ctx, tx, writer, specWrite{act: specWriteMoveAway, issue: key, to: to, toChecked: toChecked})
 	}
-	subtree, err := refs.IssueDescendants(ctx, tx, key)
-	if err != nil || len(subtree) == 0 {
+	rows, err := refs.IssueDescendantRows(ctx, tx, key)
+	if err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, labelledIssuesSQL, subtree)
+	// The rows come nearest first, so a parent is placed before its children.
+	moved := map[string]bool{key: true}
+	subtree := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Project == project && moved[row.Parent] {
+			moved[row.Key] = true
+			subtree = append(subtree, row.Key)
+		}
+	}
+	if len(subtree) == 0 {
+		return nil
+	}
+	labelledRows, err := tx.Query(ctx, labelledIssuesSQL, subtree)
 	if err != nil {
 		return fmt.Errorf("read the labelled issues under %s: %w", key, err)
 	}
-	labelled, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	labelled, err := pgx.CollectRows(labelledRows, pgx.RowTo[string])
 	if err != nil {
 		return fmt.Errorf("read the labelled issues under %s: %w", key, err)
 	}

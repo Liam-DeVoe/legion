@@ -789,6 +789,7 @@ func (r *personHandoverRig) cleaned(key string) {
 //     retitle's own sequence, no handover row is queued, and the one queue of step 2 is all the log
 //     holds.
 func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 
@@ -883,6 +884,7 @@ func TestAPersonsLabelOnATriageRootIsQueuedByTheDaemonAgainstScratchDispatch(t *
 //  9. the root of step 3, parked again by the person and its spec revised by the person, is
 //     approved again by the person at the new version: todo again, a second queue.
 func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
@@ -1009,6 +1011,7 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 // It shows the boot path. It does not show a daemon down for longer than the event stream keeps a
 // message.
 func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 
 	// 1. The person's label falls while no daemon runs.
@@ -1084,6 +1087,7 @@ func TestABootListingQueuesAPersonsLabelAgainstScratchDispatch(t *testing.T) {
 //     todo under the daemon's own actor, admission.waiting names it, the daemon logged the one
 //     queue from source approval and left no handover row in its outbox.
 func TestPersonHandoverIsQueuedForAnApprovalMadeWithThePersonsTokenAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	r := newPersonHandoverRig(t, 1)
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}

@@ -185,7 +185,7 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		server: s, key: key, change: change, writer: writer, callerName: statusChangeCallerName(writer.actor),
 		callerProject: callerProject, outliving: outlivingTheClient(r), resumed: resumed, pointed: resumed != nil,
 	}
-	plan, err := s.planStatusChange(ctx, key, change, writer, resumed)
+	plan, err := s.planStatusChange(ctx, key, change, writer, callerProject, resumed)
 	// A dry run answers what the call answers with the rule on, whatever the setting.
 	if err == nil && plan.conflict != nil && (change.dryRun || s.deps.ParentStatusRule.On()) {
 		err = plan.conflict
@@ -340,15 +340,17 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 // writes nothing, takes the owner locks of every step's issue and of each step's current and
 // new parent in one store.LockOwners call. Under them it loads the issue the call names and
 // decides expected_sequence first (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has
-// it (409 ISSUE_CLOSED), reads the plan again, and checks the whole plan (refuseIssueWritePlan). A
-// plan whose issues moved between the two reads, so that it needs a lock the transaction does not
-// hold, starts over with what the second read found, as lockPatchOwnersAndParent does, and a plan
-// that moves at every attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls
-// back before the first step, and each step takes its own locks in its own transaction. resumed is
-// the recovery point of an earlier attempt that this attempt resumes, nil for a first attempt: it
-// changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
+// it (409 ISSUE_CLOSED), reads the plan again, refuses a step outside callerProject, the one
+// project the request's credential may write (refuseStepsOutsideCallerProject, 403
+// PROJECT_SCOPE), and checks the whole plan (refuseIssueWritePlan). A plan whose issues moved
+// between the two reads, so that it needs a lock the transaction does not hold, starts over with
+// what the second read found, as lockPatchOwnersAndParent does, and a plan that moves at every
+// attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back before the
+// first step, and each step takes its own locks in its own transaction. resumed is the recovery
+// point of an earlier attempt that this attempt resumes, nil for a first attempt: it changes the
+// fence, the gate and the plan as planStatusChangeUnderLocks says.
 func (s *server) planStatusChange(
-	ctx context.Context, key string, change statusChange, writer issueWriter, resumed *statusChangeRecovery,
+	ctx context.Context, key string, change statusChange, writer issueWriter, callerProject string, resumed *statusChangeRecovery,
 ) (statusChangePlan, error) {
 	pool, err := s.readyPool()
 	if err != nil {
@@ -359,7 +361,7 @@ func (s *server) planStatusChange(
 		return statusChangePlan{}, err
 	}
 	for range parentLockAttempts {
-		plan, moved, err := s.planStatusChangeUnderLocks(ctx, key, change, writer, read, resumed)
+		plan, moved, err := s.planStatusChangeUnderLocks(ctx, key, change, writer, callerProject, read, resumed)
 		if err != nil || moved == nil {
 			return plan, err
 		}
@@ -382,7 +384,7 @@ func (s *server) planStatusChange(
 // entry, and runs no closed-issue gate on the named issue when the point holds its entry: the
 // call's own close closed it.
 func (s *server) planStatusChangeUnderLocks(
-	ctx context.Context, key string, change statusChange, writer issueWriter, read statusChangeRead, resumed *statusChangeRecovery,
+	ctx context.Context, key string, change statusChange, writer issueWriter, callerProject string, read statusChangeRead, resumed *statusChangeRecovery,
 ) (statusChangePlan, *statusChangeRead, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -431,6 +433,9 @@ func (s *server) planStatusChangeUnderLocks(
 		steps[index].title, steps[index].lastSeq = row.title, row.lastSeq
 		writes.steps = append(writes.steps, steps[index].issueWriteStep)
 	}
+	if err := refuseStepsOutsideCallerProject(callerProject, steps, rows); err != nil {
+		return statusChangePlan{}, nil, err
+	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)
 	if err != nil {
 		return statusChangePlan{}, nil, err
@@ -446,6 +451,36 @@ func (s *server) planStatusChangeUnderLocks(
 		}
 	}
 	return statusChangePlan{named: named, steps: steps, conflict: conflict}, nil, nil
+}
+
+// refuseStepsOutsideCallerProject refuses, with 403 PROJECT_SCOPE, a status change one of whose
+// steps writes an issue outside callerProject, the one project the request's credential may
+// write; a credential that names none (callerProject empty) is refused nothing. The route's
+// pre-handler check holds only the issue the path names to that project (project_scope.go), and
+// a parent may be an issue of another project (validateIssueParent), so an ancestor that
+// include_parent moves and a descendant that include_children moves or unlink_children unlinks
+// can each belong to another. The whole call is refused before its first step, a dry run as well,
+// as every other write of such a credential outside its project is refused: no step of it writes
+// an issue the credential may not write. rows are the steps' issues as the plan read them under
+// their owner locks, and a step whose issue no row answers is refused too, as the pre-handler
+// check fails closed.
+func refuseStepsOutsideCallerProject(callerProject string, steps []statusChangeStep, rows map[string]issueWriteRow) error {
+	if callerProject == "" {
+		return nil
+	}
+	for _, step := range steps {
+		project := rows[step.key].project
+		if project == callerProject {
+			continue
+		}
+		writes := "the issue this status change names"
+		if step.option != "" {
+			writes = "an issue this status change's " + step.option + " writes"
+		}
+		return errorf(http.StatusForbidden, codeProjectScope,
+			"this request's credential may write project %s; %s, %s, belongs to project %s", callerProject, writes, step.key, project)
+	}
+	return nil
 }
 
 // statusChangeRun is one attempt of a status change that runs its steps. callerName is the caller

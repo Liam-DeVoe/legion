@@ -11,9 +11,11 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // provenSessionsRow is a project as a route answers it. ProvenSessions is nil where the answer
@@ -225,5 +227,78 @@ func TestSpecWriteAGatedStepsEventCarriesTheStoredSetting(t *testing.T) {
 	}
 	if update.provenSessions == nil || !*update.provenSessions {
 		t.Errorf("with the setting on, the gated-steps event carries proven_sessions %v, want true", update.provenSessions)
+	}
+}
+
+// TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft: the project.updated event of a
+// proven-sessions PUT and of a gated-steps publication carries the project's default_repo as the
+// row holds it when the write commits, read under the project's owner lock, and not as the
+// route's read of the project found it before that lock. Each write here reads the project, then
+// waits on its owner lock, which the test holds while it sets the default repository; once the
+// lock is released, the write's event names the repository set while it waited.
+func TestAProjectUpdateCarriesTheDefaultRepositoryItsWriteLeft(t *testing.T) {
+	for _, write := range []struct {
+		name string
+		body map[string]any
+		path string
+	}{
+		{"a proven-sessions PUT", map[string]any{"actor": sessionActor()}, "/proven-sessions"},
+		{"a gated-steps publication", map[string]any{"steps": []string{model.GatedStepSpec}, "actor": sessionActor()}, "/gated-steps"},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			ctx := context.Background()
+			handler, database := newTestHandlerWithStore(t)
+			const project = "REPO"
+			createAdviceProject(t, handler, project)
+
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder: %v", err)
+			}
+			defer func() { _ = holder.Rollback(ctx) }()
+			if err := store.LockOwner(ctx, holder, store.ProjectOwner(project)); err != nil {
+				t.Fatalf("hold %s's owner lock: %v", project, err)
+			}
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				answered <- agentRequest(t, handler, http.MethodPut, "/api/v1/projects/"+project+write.path, write.body, "agent-token")
+			}()
+			if early, answeredEarly, _ := storetest.AwaitOwnerLockWaiter(t, database, write.name, answered); answeredEarly {
+				t.Fatalf("%s answered %d %s while this test held %s's owner lock", write.name, early.Code, early.Body.String(), project)
+			}
+			// The default repository changes while the write waits, after its read of the project.
+			if _, err := holder.Exec(ctx, `update projects set default_repo = 'acme/widgets' where key = $1`, project); err != nil {
+				t.Fatalf("set %s's default repository: %v", project, err)
+			}
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatalf("release %s's owner lock: %v", project, err)
+			}
+			var response *httptest.ResponseRecorder
+			select {
+			case response = <-answered:
+			case <-time.After(30 * time.Second):
+				t.Fatalf("%s never answered once the owner lock was released", write.name)
+			}
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%s", write.name, response.Code, response.Body.String())
+			}
+			var payload []byte
+			if err := database.Pool.QueryRow(ctx, `
+				select payload from events where project_key = $1 and type = 'project.updated'
+				order by id desc limit 1
+			`, project).Scan(&payload); err != nil {
+				t.Fatalf("read %s's last project.updated event: %v", project, err)
+			}
+			var row struct {
+				DefaultRepo *string `json:"default_repo"`
+			}
+			if err := json.Unmarshal(payload, &row); err != nil {
+				t.Fatalf("decode the payload %s: %v", payload, err)
+			}
+			if row.DefaultRepo == nil || *row.DefaultRepo != "acme/widgets" {
+				t.Errorf("%s's project.updated event carries default_repo %v, want acme/widgets, which the row held when it committed: %s",
+					write.name, row.DefaultRepo, payload)
+			}
+		})
 	}
 }

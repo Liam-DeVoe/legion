@@ -90,13 +90,13 @@ func (s *server) storeProjectProvenSessions(ctx context.Context, key string, act
 	if err := store.LockOwner(ctx, tx, store.ProjectOwner(project.Key)); err != nil {
 		return err
 	}
-	// The update returns the gated steps too, read under the owner lock, so the event carries
-	// the row as this write left it.
+	// The update returns the row's other written columns too, read under the owner lock, so the
+	// event carries the row as this write left it and not as loadProject read it before the lock.
 	if err := tx.QueryRow(ctx, `
 		update projects set proven_sessions = $2
 		where key = $1 and proven_sessions is distinct from $2
-		returning gated_steps, proven_sessions
-	`, project.Key, on).Scan(&project.GatedSteps, &project.ProvenSessions); err != nil {
+		returning gated_steps, default_repo, proven_sessions
+	`, project.Key, on).Scan(&project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}

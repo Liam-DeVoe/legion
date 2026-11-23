@@ -1635,6 +1635,33 @@ func TestSpecWriteChecksAMovedSubtreeWhereverItsNewParentIs(t *testing.T) {
 	}
 }
 
+// TestSpecWriteChecksAMovedSubtreeWithinItsProject: an issue's chain ends at the first parent of
+// another project, as at a root (issueChainSQL), so the moved subtree a move is checked on is the
+// issues reached from the moved issue through parents of its own project. On a rig with R and its
+// child C in P, U2, a root of P with no label, and Y, an issue of the second project Q under U2 with
+// the label legion, whose own architect the daemon of Q publishes: R's architect's move of U2
+// under C is taken, since Y's chain is Y alone and the move changes no chain of Y, and R's
+// architect's edit of Y's spec after the move is refused, since Y's architects are still Y's own.
+func TestSpecWriteChecksAMovedSubtreeWithinItsProject(t *testing.T) {
+	server := newSpecWriterServer(t, testServerOptions{})
+	rig := server.rig(t, specWriterRigShape{unlabelled: true, unmarked: true})
+	y := rig.fileIn(t, rig.q, "labelled", rig.u2.key, []string{"legion"})
+	yArchitect := "ses-y-architect-" + strings.ToLower(rig.q)
+	rig.publish(t, y.key, []issueRoleHolder{{Role: "architect", Session: yArchitect}})
+	rig.quiet(t)
+
+	what := fmt.Sprintf("R's architect's move of %s under %s", rig.u2.key, rig.c.key)
+	rig.requireTaken(t, what, http.StatusOK, func(t *testing.T) *httptest.ResponseRecorder {
+		return rig.sendAs(t, rig.rArchitect, http.MethodPatch, "/api/v1/issues/"+rig.u2.key, map[string]any{"parent": rig.c.key})
+	})
+	if parent := rig.issueRow(t, rig.u2.key).parent; parent == nil || *parent != rig.c.key {
+		t.Fatalf("%s left %s under %s, want it under %s", what, rig.u2.key, specWriterParentName(parent), rig.c.key)
+	}
+	edit := rig.editAttempt(rig.rArchitect, y, "spec.md")
+	edit.refusal = specWriteRefusal{issues: []string{y.key}, document: "spec.md", writer: rig.rArchitect, architects: []string{yArchitect}}
+	rig.requireRefused(t, edit)
+}
+
 // TestSpecWriteDecidesAMovedSubtreesLabelInSQL: the check of a moved subtree reads in SQL which
 // issues under the moved issue carry the label legion, by the one match every answer to "Legion
 // runs" reads, so it judges each of them as that answer does. Each run has a rig of its own with R
