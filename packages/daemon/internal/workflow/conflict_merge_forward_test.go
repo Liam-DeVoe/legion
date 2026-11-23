@@ -437,6 +437,69 @@ func TestAConflictKeepsPhaseAndAsksTheImplementerToMergeForward(t *testing.T) {
 	}
 }
 
+// A merge forward the record holds for the head, asked away from the task's implementation step,
+// covers that head wherever the task stands, so mergeForward asks nothing again and reads nothing
+// of the task's walk to decide so: the walk decides only for an ask made at that step
+// (record.MergeForward.Own), which covers that step alone. The walk is made unreadable here, a plan
+// of two tasks, which this release walks none of (record.StoredPlan.Task), so any read of it is an
+// error. The control is the ask made at the implementation step, whose decision reads the walk and
+// answers its error.
+func TestAMergeForwardAlreadyAskedOfTheHeadReadsNoWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		own   bool
+		reads bool
+	}{
+		{name: "an ask made away from the implementation step", own: false},
+		{name: "control: an ask made at the implementation step", own: true, reads: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := settledGreen("lint")
+			pr.ConflictingHead = conflictHead
+			pr.MergeForward = &record.MergeForward{Head: conflictHead, Base: "main", Phase: phase.Testing, Own: tc.own,
+				Why: record.ConflictCheckNotGreen, AskedAt: firstConflictRead}
+			pool := seedConflictIssue(t, phase.Testing, "testing", pr)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				v := record.PlanVersion{Issue: "LEGION-208", Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+					GivenBy: claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect)), GivenAt: stepClock}
+				tasks := []record.PlanTask{
+					{Issue: "LEGION-208", Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting},
+					{Issue: "LEGION-208", Generation: 1, Task: "b", PlanVersion: 2, BlockText: "Test the widget.", State: record.TaskWaiting},
+				}
+				return record.NewStore().PutPlan(t.Context(), tx, v, tasks, nil)
+			})
+
+			engine := readsAfter(2 * conflictConfirmWait)
+			tx, err := pool.Begin(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(t.Context())
+			issue, err := engine.store.Issue(t.Context(), tx, "LEGION-208")
+			if err != nil || issue == nil {
+				t.Fatalf("read LEGION-208: %v, %v", issue, err)
+			}
+			recorded, err := engine.store.PullRequest(t.Context(), tx, "LEGION-208")
+			if err != nil || recorded == nil {
+				t.Fatalf("read the pull request of LEGION-208: %v, %v", recorded, err)
+			}
+			err = engine.mergeForward(t.Context(), tx, *issue, recorded, record.ConflictCheckNotGreen)
+			if read := err != nil && strings.Contains(err.Error(), "holds 2 tasks"); read != tc.reads || (err != nil && !read) {
+				t.Fatalf("mergeForward at the head already asked of (Own %t) = %v, want the walk read %t", tc.own, err, tc.reads)
+			}
+			if tc.reads {
+				return
+			}
+			if err := tx.Commit(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if messages := mergeForwardMessages(t, pool); len(messages) != 0 {
+				t.Fatalf("merge-forward messages %+v, want none: the head was asked of already", messages)
+			}
+		})
+	}
+}
+
 // A confirmed conflict is acted on only when the issue's next step needs a head that merges
 // (dispatch://INFRA-4374 R0). Where every check the base requires is green on the head and no rule
 // of the base requires the head to be current, the conflict is recorded and nothing is sent: the
