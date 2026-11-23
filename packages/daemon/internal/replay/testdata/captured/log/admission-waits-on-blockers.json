@@ -2,9 +2,7 @@
   {
     "timestamp": "2026-11-21T05:08:03.917843442Z",
     "jsonPayload": {
-      "blockers": [
-        "ACME-2"
-      ],
+      "blockers": ["ACME-2"],
       "issue": "ACME-45",
       "level": "INFO",
       "msg": "admission waits for what this issue waits on",

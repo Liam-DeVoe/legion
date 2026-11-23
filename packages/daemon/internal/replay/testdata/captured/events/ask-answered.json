@@ -17,9 +17,7 @@
       "answer": {
         "at": "2026-11-20T22:07:57.233851Z",
         "id": "b4",
-        "selected": [
-          "text 4"
-        ],
+        "selected": ["text 4"],
         "text": "text 3",
         "user": "person-1@example.invalid"
       },
@@ -87,9 +85,7 @@
       "referenced_by_count": 4,
       "revision": 2,
       "state": "answered",
-      "thread_logins": [
-        "person-1@example.invalid"
-      ],
+      "thread_logins": ["person-1@example.invalid"],
       "urgency": "high"
     }
   }

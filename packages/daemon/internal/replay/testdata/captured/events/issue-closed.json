@@ -23,17 +23,12 @@
       "number": 27,
       "parent": "ACME-24",
       "status": "done",
-      "changed": [
-        "status",
-        "closed_at"
-      ],
+      "changed": ["status", "closed_at"],
       "project": "ACME",
       "assignee": "person-1@example.invalid",
       "last_seq": 99,
       "priority": null,
-      "ancestors": [
-        "ACME-24"
-      ],
+      "ancestors": ["ACME-24"],
       "closed_at": "2026-11-13T21:26:48.67625Z",
       "blocked_by": [],
       "components": {

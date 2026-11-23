@@ -55,14 +55,7 @@
         "doneAt": {
           "ACME-1": "2001-03-05T12:00:00Z"
         },
-        "assumptions": [
-          1,
-          2,
-          8,
-          9,
-          11,
-          15
-        ],
+        "assumptions": [1, 2, 8, 9, 11, 15],
         "scenario": "none"
       }
     },
@@ -121,14 +114,7 @@
         "doneAt": {
           "ACME-1": "2001-03-05T12:00:00Z"
         },
-        "assumptions": [
-          1,
-          2,
-          8,
-          9,
-          11,
-          15
-        ],
+        "assumptions": [1, 2, 8, 9, 11, 15],
         "scenario": "drawn"
       }
     },
@@ -187,14 +173,7 @@
         "doneAt": {
           "ACME-1": "2001-03-05T12:00:00Z"
         },
-        "assumptions": [
-          1,
-          2,
-          8,
-          9,
-          11,
-          15
-        ],
+        "assumptions": [1, 2, 8, 9, 11, 15],
         "scenario": "drawn-done"
       }
     }

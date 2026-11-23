@@ -91,13 +91,7 @@
         "ACME-43": "2001-03-05T09:00:00Z"
       },
       "doneAt": {},
-      "assumptions": [
-        1,
-        2,
-        8,
-        9,
-        15
-      ],
+      "assumptions": [1, 2, 8, 9, 15],
       "scenario": "none"
     },
     "main": {
@@ -233,14 +227,7 @@
         "ACME-85": "2001-03-05T09:50:00Z"
       },
       "doneAt": {},
-      "assumptions": [
-        1,
-        2,
-        8,
-        9,
-        11,
-        15
-      ],
+      "assumptions": [1, 2, 8, 9, 11, 15],
       "scenario": "none"
     }
   }

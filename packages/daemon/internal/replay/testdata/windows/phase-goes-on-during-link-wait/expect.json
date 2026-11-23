@@ -56,13 +56,7 @@
       "doneAt": {
         "ACME-1": "2001-03-05T14:30:00Z"
       },
-      "assumptions": [
-        1,
-        2,
-        4,
-        9,
-        10
-      ],
+      "assumptions": [1, 2, 4, 9, 10],
       "scenario": "none"
     }
   }

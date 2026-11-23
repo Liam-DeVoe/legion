@@ -20,9 +20,7 @@
     }
   ],
   "tickInterval": "1h0m0s",
-  "gateSteps": [
-    "spec"
-  ],
+  "gateSteps": ["spec"],
   "linger": "2h0m0s",
   "reviewRoundCap": 3,
   "stalledTreeNotice": "6h0m0s",

@@ -19,15 +19,11 @@
       "claim": null,
       "route": null,
       "title": "text 13",
-      "labels": [
-        "legion"
-      ],
+      "labels": ["legion"],
       "number": 29,
       "parent": null,
       "status": "todo",
-      "changed": [
-        "status"
-      ],
+      "changed": ["status"],
       "project": "ACME",
       "assignee": "person-1@example.invalid",
       "last_seq": 2,

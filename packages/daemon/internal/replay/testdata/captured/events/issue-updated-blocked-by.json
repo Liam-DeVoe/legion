@@ -29,10 +29,7 @@
       "number": 58,
       "parent": "ACME-15",
       "status": "triage",
-      "changed": [
-        "components",
-        "blocked_by"
-      ],
+      "changed": ["components", "blocked_by"],
       "project": "ACME",
       "advances": [
         {
@@ -43,15 +40,9 @@
       "assignee": "person-1@example.invalid",
       "last_seq": 3,
       "priority": null,
-      "ancestors": [
-        "ACME-15"
-      ],
+      "ancestors": ["ACME-15"],
       "closed_at": null,
-      "blocked_by": [
-        "ACME-42",
-        "ACME-52",
-        "ACME-53"
-      ],
+      "blocked_by": ["ACME-42", "ACME-52", "ACME-53"],
       "components": {
         "ids": [],
         "mode": "none",
