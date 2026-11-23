@@ -894,17 +894,25 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// decides the round and leaves the commit where it stands, since the reviewer never read the
 	// commit the person did; while the reviewer's claim records no session, no review-App review
 	// gets here, since it waits (RefusedWhileNoSession). And the review must be of the entry that
-	// stands (reviewedCommitStays).
+	// stands (reviewedCommitStays). The commit is its agent's, not the step's: it is written onto
+	// every row of that agent's role on the task too (shareReviewedHead), so the agent's next round
+	// at any of its steps names the newest of its own reviews.
+	moved := false
 	if e.byReviewer(fact, reviewerSession) {
 		if why := reviewedCommitStays(fact, reviewer); why != "" {
 			e.logOnCommit(ctx, "workflow: the reviewer's own review moves no reviewed commit: "+why,
 				"issue", issue.Key, "pull_request", pr.Number, "head", reviewer.Decision.Head, "footer_entry", fact.LegionEntry(), "entry", reviewer.Entry)
 		} else {
-			reviewer.ReviewedHead = reviewer.Decision.Head
+			reviewer.ReviewedHead, moved = reviewer.Decision.Head, true
 		}
 	}
 	if err := e.store.PutPhase(ctx, tx, reviewer); err != nil {
 		return intake.Result{}, err
+	}
+	if moved {
+		if err := e.shareReviewedHead(ctx, tx, reviewer); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	_, err = e.settleRound(ctx, tx, *issue, reviewer, pr, before, by)
 	return intake.Result{}, err
@@ -940,6 +948,30 @@ func reviewedCommitStays(review intake.PullRequestReview, reviewer record.PhaseR
 		return fmt.Sprintf("its footer names entry %d and the reviewer's row stands at entry %d", named, reviewer.Entry)
 	}
 	return ""
+}
+
+// shareReviewedHead writes the commit row's agent's deciding review has just written on row
+// (record.PhaseRow.ReviewedHead) onto each other row of row's role on row's task that its agent ran
+// (record.AgentsOtherRows). A role keeps a row for each step it runs, while the commit a review step
+// is named is its agent's newest on the task, at whichever of its steps that review was made, and
+// no row records when its commit was read, so no read could pick the newest among them: each row
+// of one agent holds that one commit alike instead. The reviewer's own review (review) and a
+// deployment review step's report (recordStepReview) both write through it, after writing row.
+func (e *Engine) shareReviewedHead(ctx context.Context, tx pgx.Tx, row record.PhaseRow) error {
+	rows, err := e.store.Phases(ctx, tx, row.Issue)
+	if err != nil {
+		return err
+	}
+	for _, other := range record.AgentsOtherRows(rows, row) {
+		if other.ReviewedHead == row.ReviewedHead {
+			continue
+		}
+		other.ReviewedHead = row.ReviewedHead
+		if err := e.store.PutPhase(ctx, tx, other); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // reviewHead is the head review read, which is the head its decision is recorded against and the

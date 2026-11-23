@@ -1,13 +1,19 @@
 package workflow
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
@@ -91,5 +97,248 @@ func TestAReviewerStepOfTheSameAgentIsNamedTheStepBeforesCommit(t *testing.T) {
 		strings.Contains(first.EntryTask, reviewround.AnotherAgentLabel) {
 		t.Fatalf("step 4's first round = claim %s, commit %q, task %q; want the reviewer's, step 2's commit, and a task ending %q",
 			first.Claim, first.ReviewedHead, first.EntryTask, reviewround.Sentences(stepTwoRead, first.Entry))
+	}
+}
+
+// reviewerStepFive walks `implementer:a reviewer:a tester:s reviewer:s reviewer:a` of LEGION-208 to
+// step 5, agent a's second reviewer step, agent a's review at step 2 having read stepTwoRead and key
+// s's at step 4 stepFourRead, and answers the reviewer's rows by place.
+func reviewerStepFive(t *testing.T, pool *pgxpool.Pool, engine *Engine) map[int]record.PhaseRow {
+	t.Helper()
+	reviewerStepFour(t, pool, engine, agentToken(t, "tester"), 1)
+	recordReviewRead(t, pool, "LEGION-208", 4, stepFourRead)
+	move(t, pool, engine, "LEGION-208", TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
+	assertWalksAt(t, pool, engine, "LEGION-208", phase.Reviewing, stepPlace(5))
+	return rolesRows(t, pool, engine, "LEGION-208", claim.RoleReviewer)
+}
+
+// An agent's later reviewer step is named the commit its own earlier reviewer step read, though a
+// reviewer step of another agent stands between them: in `implementer:a reviewer:a tester:s
+// reviewer:s reviewer:a`, step 5's first task names step 2's commit, agent a's, as its own, and no
+// other agent's, and step 5's row holds it. Before, step 5's first run started from the role's row
+// now, key s's at step 4, and cleared that row's commit as another agent's, so step 5 named `none`
+// and key s's commit, though agent a has a deciding review of its own on the task.
+func TestALaterReviewerStepIsNamedItsAgentsOwnCommitPastAnotherAgentsStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:a", "tester:s", "reviewer:s", "reviewer:a")
+	five := reviewerStepFive(t, pool, engine)[5]
+	if five.Claim != agentToken(t, "implementer") || five.ReviewedHead != stepTwoRead ||
+		!strings.HasSuffix(five.EntryTask, reviewround.Sentences(stepTwoRead, five.Entry)) ||
+		strings.Contains(five.EntryTask, reviewround.AnotherAgentLabel) {
+		t.Fatalf("step 5's first round = claim %s, commit %q, task %q; want agent a's, step 2's commit, and a task ending %q with no other agent's commit",
+			five.Claim, five.ReviewedHead, five.EntryTask, reviewround.Sentences(stepTwoRead, five.Entry))
+	}
+}
+
+// The mirror of the test above, on the same plan: step 4 is key s's first reviewer step, so its
+// first task names no commit of its own, `Last reviewed commit: none.`, and agent a's commit of
+// step 2 as another agent's before it. Its control is a lookup of the step's agent that takes any
+// agent's earlier row for its own, which names agent a's commit as key s's.
+func TestAnAgentsFirstReviewerStepIsNamedNoneAndAnotherAgentsCommit(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:a", "tester:s", "reviewer:s", "reviewer:a")
+	keyS := agentToken(t, "tester")
+	four := reviewerStepFour(t, pool, engine, keyS, 1)
+	want := reviewround.AnotherAgentsSentence(stepTwoRead) + reviewround.Sentences("", four.Entry)
+	if four.Claim != keyS || four.ReviewedHead != "" || !strings.HasSuffix(four.EntryTask, want) {
+		t.Fatalf("step 4's first round = claim %s, commit %q, task %q; want key s's, no commit of its own, and a task ending %q",
+			four.Claim, four.ReviewedHead, four.EntryTask, want)
+	}
+}
+
+// releasesAs leaves token's claim of LEGION-208, working role, as an idle release leaves a pod's
+// claims (seedReleasedClaim, for a claim of a key rather than of the role's own token), and hands
+// engine the project's pod records, so a wake of that claim can be taken.
+func releasesAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token, role claim.Role) {
+	t.Helper()
+	engine.cfg.Pods = wakePods(t, pool)
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
+		session, session_file, state, suspended_by, serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, $3, 'LEGION-208', 'LEGION-208', $2, 1, 'ses-woken', '', 'suspended', 'released', 1, 0, 0, 0, 0)`,
+		string(token), string(role), wakeProjectToken(t)); err != nil {
+		t.Fatalf("release the claim %s as the %s: %v", token, role, err)
+	}
+}
+
+// wakesClaim brings token's released claim back by a message sent to its session, through the one
+// act every wake performs (wakeReleased), and answers the task that wake gives it (WakeTask).
+func wakesClaim(t *testing.T, pool *pgxpool.Pool, engine *Engine, token claim.Token) string {
+	t.Helper()
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		released, found, err := engine.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(token))
+		if err != nil || !found {
+			return fmt.Errorf("read the released claim %s: found %t, %v", token, found, err)
+		}
+		woken, err := engine.wakeReleased(ctx, tx, released, pods.WakeAgentMessage, "its detail", engine.now())
+		if err == nil && !woken {
+			err = fmt.Errorf("the wake of %s took no wake", token)
+		}
+		return err
+	})
+	return WakeTask(pods.WakeAgentMessage, "its detail", StoppedByRelease)
+}
+
+// A wake of the reviewer in the first round of a reviewer step of another agent names that other
+// agent's commit, as the step's start did: in `implementer:a reviewer tester:s reviewer:s`, key s's
+// released claim, woken at step 4, is given a task that ends naming step 2's commit as another
+// agent's and then `none` and step 4's entry. The wake carries no stored task, so the queue names
+// its round (queuedRow) from the issue's phases rows; given no rows, it would name no other agent's
+// commit, which is this test's control.
+func TestAWakeInAReviewerStepOfAnotherAgentNamesThatAgentsCommit(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer", "tester:s", "reviewer:s")
+	keyS := agentToken(t, "tester")
+	four := reviewerStepFour(t, pool, engine, keyS, 1)
+	outboxRan(t, pool)
+	releasesAs(t, pool, engine, keyS, claim.RoleReviewer)
+	wake := wakesClaim(t, pool, engine, keyS)
+	want := wake + reviewround.AnotherAgentsSentence(stepTwoRead) + reviewround.Sentences("", four.Entry)
+	if task := onlyReviewerStart(t, pool).Task; task != want {
+		t.Fatalf("the woken reviewer of step 4 is given the task %q, want %q", task, want)
+	}
+}
+
+// A wake of an agent's claim names the commit and the entry of that agent's own row of the role,
+// never those of another agent's step that the task stands at: at step 5 of `implementer:a
+// reviewer:a tester:s reviewer:s reviewer:a`, agent a's, key s's released reviewer claim, woken, is
+// given a task that ends naming its own commit of step 4 and step 4's entry, and no other agent's
+// commit. Before, the queue read the role's row now, step 5's, and named agent a's commit and entry
+// to key s as its own.
+func TestAWakeOfAnEarlierReviewerStepsAgentNamesItsOwnRow(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:a", "tester:s", "reviewer:s", "reviewer:a")
+	four := reviewerStepFive(t, pool, engine)[4]
+	keyS := agentToken(t, "tester")
+	outboxRan(t, pool)
+	releasesAs(t, pool, engine, keyS, claim.RoleReviewer)
+	wake := wakesClaim(t, pool, engine, keyS)
+	if want, task := wake+reviewround.Sentences(stepFourRead, four.Entry), onlyReviewerStart(t, pool).Task; task != want {
+		t.Fatalf("key s's woken reviewer claim at step 5 is given the task %q, want %q: its own commit of step 4 and step 4's entry", task, want)
+	}
+}
+
+// Three heads LEGION-208's pull request stands at in turn, each read by a deciding review of agent
+// r's.
+const (
+	firstRead  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	secondRead = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	thirdRead  = "cccccccccccccccccccccccccccccccccccccccc"
+)
+
+// standsAt puts LEGION-208's pull request #42 at head, open with nothing against it, as a push
+// leaves it.
+func standsAt(t *testing.T, pool *pgxpool.Pool, head string) {
+	t.Helper()
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
+		Branch: "legion/LEGION-208", HeadSHA: head, Failing: []string{}})
+}
+
+// completesAtHead is role's completion of its n-th run under token, as completesAs applies it, at
+// head, which the pull request stands at.
+func completesAtHead(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, token claim.Token, word string, n int, head string) {
+	t.Helper()
+	standsAt(t, pool, head)
+	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: token,
+		Summary: "done", Commit: head, HandoffRecord: fmt.Sprintf("%s-%d", word, n), HandoffVersion: n}
+	if role == claim.RoleTester {
+		fact.Verdict = "pass"
+	}
+	if result := applyFacts(t, pool, engine)(fmt.Sprintf("%s-%s-%d", role, word, n), fact); result.Refusal != nil {
+		t.Fatalf("the %s's completion %s version %d was refused: %+v", role, word, n, result.Refusal)
+	}
+}
+
+// reviewsAs submits, as the review App from session, a review in state of head, where the pull
+// request stands, its Legion footer naming head and the entry the reviewer's row stands on: a
+// deciding review of the reviewer's own session, which records head as the commit it read
+// (workflow's review) and, at a clean head, ends the round.
+func reviewsAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, id int64, state, head, session string) {
+	t.Helper()
+	standsAt(t, pool, head)
+	entry := roleRowNow(t, pool, engine, "LEGION-208", claim.RoleReviewer).Entry
+	review := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: id, State: state, CommitID: head, Author: testReviewApp,
+		Body: reviewBodyOfEntry("the review", session, head, entry), SubmittedAt: stepClock.Add(time.Duration(id) * time.Minute)}
+	if result := applyFacts(t, pool, engine)(fmt.Sprintf("review-%d", id), review); result.Refusal != nil {
+		t.Fatalf("the review %d was refused: %+v", id, result.Refusal)
+	}
+}
+
+// agentHolds fails the test, going on, unless each of agent's rows of role on LEGION-208 holds want
+// as the commit its reviews read: the rows of one agent never differ.
+func agentHolds(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, agent claim.Token, want, when string) {
+	t.Helper()
+	held := map[int]string{}
+	for place, row := range rolesRows(t, pool, engine, "LEGION-208", role) {
+		if row.Claim == agent {
+			held[place] = row.ReviewedHead
+		}
+	}
+	for place, commit := range held {
+		if commit != want {
+			t.Errorf("%s, the %s rows of %s hold %v; want %s at each, place %d among them", when, role, agent, held, want, place)
+			return
+		}
+	}
+}
+
+// agentRReviewsAtStepFourAndReturns walks `implementer:a reviewer:r tester reviewer:r` of LEGION-208
+// with deciding reviews of agent r's own: step 2 approves firstRead, step 4 requests changes at
+// secondRead, and the task returns to step 1 and walks to step 2 again. It answers step 2's row.
+func agentRReviewsAtStepFourAndReturns(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.PhaseRow {
+	t.Helper()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer:a", "reviewer:r", "tester", "reviewer:r")
+	keyA, keyR := agentToken(t, "implementer"), agentToken(t, "reviewer")
+	seedClaimSession(t, pool, keyR, "ses-r")
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	completesAtHead(t, pool, engine, claim.RoleImplementer, keyA, "implement", 1, firstRead)
+	reviewsAs(t, pool, engine, 1, "approved", firstRead, "ses-r")
+	completesAtHead(t, pool, engine, claim.RoleTester, agentToken(t, "tester"), "test", 1, firstRead)
+	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(4))
+	reviewsAs(t, pool, engine, 2, "changes_requested", secondRead, "ses-r")
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
+	agentHolds(t, pool, engine, claim.RoleReviewer, keyR, secondRead, "after step 4's request for changes")
+	completesAtHead(t, pool, engine, claim.RoleImplementer, keyA, "implement", 2, secondRead)
+	assertWalksAt(t, pool, engine, root.Key, phase.Reviewing, stepPlace(2))
+	return rolesRows(t, pool, engine, root.Key, claim.RoleReviewer)[2]
+}
+
+// The commit an agent's reviewer step is named is that agent's newest deciding review on the task,
+// at whichever of its steps the review was made: in `implementer:a reviewer:r tester reviewer:r`,
+// after agent r's step 4 requested changes at secondRead, step 2's next round names secondRead, and
+// each row of agent r holds it. Before, each step's row kept the commit of its own step's reviews,
+// so step 2's next round named firstRead, its own first round's, an older review of agent r's.
+func TestAnEarlierReviewerStepsNextRoundIsNamedItsAgentsNewerCommitOfALaterStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	two := agentRReviewsAtStepFourAndReturns(t, pool, engine)
+	if !strings.HasSuffix(two.EntryTask, reviewround.Sentences(secondRead, two.Entry)) || strings.Contains(two.EntryTask, reviewround.AnotherAgentLabel) {
+		t.Fatalf("step 2's next round task = %q, want it to end %q, agent r's newest commit, step 4's, and name no other agent's",
+			two.EntryTask, reviewround.Sentences(secondRead, two.Entry))
+	}
+}
+
+// The mirror of the test above: after step 2's next round approves thirdRead, step 4's next round
+// names thirdRead, agent r's newest commit, which step 2's review read, and each row of agent r
+// holds it. Before, step 4's row kept secondRead, its own round's.
+func TestALaterReviewerStepsNextRoundIsNamedItsAgentsNewerCommitOfAnEarlierStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := textEngine()
+	agentRReviewsAtStepFourAndReturns(t, pool, engine)
+	reviewsAs(t, pool, engine, 3, "approved", thirdRead, "ses-r")
+	agentHolds(t, pool, engine, claim.RoleReviewer, agentToken(t, "reviewer"), thirdRead, "after step 2's approval")
+	completesAtHead(t, pool, engine, claim.RoleTester, agentToken(t, "tester"), "test", 2, thirdRead)
+	assertWalksAt(t, pool, engine, "LEGION-208", phase.Reviewing, stepPlace(4))
+	four := rolesRows(t, pool, engine, "LEGION-208", claim.RoleReviewer)[4]
+	if !strings.HasSuffix(four.EntryTask, reviewround.Sentences(thirdRead, four.Entry)) {
+		t.Fatalf("step 4's next round task = %q, want it to end %q, agent r's newest commit, step 2's", four.EntryTask, reviewround.Sentences(thirdRead, four.Entry))
 	}
 }

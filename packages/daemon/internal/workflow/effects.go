@@ -189,9 +189,12 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 //
 // Only a start of the reviewer that carries a task and does not hold the sentences already is
 // named, so no other row reads the record for them. Such a start reads the phase its issue stands
-// in and the reviewer's row as tx holds them, which is the row's commit and entry at the moment
-// the task is queued, and it then carries the typed fact that its task ends with the daemon's
-// sentences (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none.
+// in and, as tx holds them, the issue's phases rows and among them the row of the role that the
+// start's claim ran last (record.AgentsRowOf), which is the row's commit and entry at the moment
+// the task is queued: the role's row now, unless that is the step of another agent of the role, so
+// a wake of an earlier step's agent is named its own commit and entry, never the other agent's. It
+// then carries the typed fact that its task ends with the daemon's sentences
+// (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none.
 // A start whose task is the stored task of its entry - the start of the transition that raised
 // the entry, whose task enter stored through namingTheReviewRound in the same transaction, the
 // promoted worker's and the owed entry's - comes with that fact already, and is queued as it is
@@ -215,7 +218,7 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 		if rows, err = store.Phases(ctx, tx, issue); err != nil {
 			return record.OutboxRow{}, err
 		}
-		standsIn, row = standing.Phase, record.PhaseRowOf(rows, start.Role)
+		standsIn, row = standing.Phase, record.AgentsRowOf(rows, start.Role, start.Claim)
 	}
 	start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, row, rows)
 	start.RoundNamed = true
@@ -1001,9 +1004,11 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // two steps of a task, and each step's run keeps its own row: a run of a step that ran before
 // raises the row its earlier runs wrote, and a step's first run raises a row of its own, which
 // starts as the role's row now (record.PhaseRowOf) with no handoff (phaseHandoff), so it carries
-// what the role's one row carried from one phase to the next — the record it last named, the
-// commit its last review read — and leaves the earlier step's report standing for the task text
-// that names it (reportsBefore). An issue with no plan rows keeps no task and place 0, one row for
+// what the role's one row carried from one phase to the next, the record it last named among it,
+// and leaves the earlier step's report standing for the task text that names it (reportsBefore).
+// The commit a review read it takes from the step's agent alone (stepRunRow): its agent's newest
+// on the task, held by its own earlier row of the role, and none where that agent ran no earlier
+// step of the role there. An issue with no plan rows keeps no task and place 0, one row for
 // each role, as it always did, and the architect's entry is no step of the issue's task. w is the
 // walk of issue's run as the caller read it, which only a phase worker's raise reads;
 // EnterArchitect gives none.
@@ -1035,29 +1040,28 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		return entered{}, err
 	}
 	row := record.PhaseRowOf(rows, role)
-	now := row
 	worker := role != claim.RoleArchitect
 	at := record.StandsAt(issue)
-	fresh := false
-	if worker {
-		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
-			var found record.RowFound
-			if row, found = stepRunRow(rows, row, role, w.Task, place.Place); found == record.RowOfNoStep {
-				if err := e.store.MovePhaseToStep(ctx, tx, issue.Key, role, w.Task, place.Place); err != nil {
-					return entered{}, err
-				}
-			}
-			fresh = found == record.NoRowOfTheStep
-		}
-	}
-	row.Issue, row.Role = issue.Key, role
-	entry := row.Entry + 1
-	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
 	var agent claim.Token
 	if worker && recordsSteps(issue) {
 		if agent, err = e.startClaim(issue, *w, role); err != nil {
 			return entered{}, err
 		}
+	}
+	if worker {
+		if place, _, _, ok := placeOnWalk(*w, standingIn(at)); w.Stored && ok {
+			var moves bool
+			if row, moves = stepRunRow(rows, row, role, w.Task, place.Place, agent); moves {
+				if err := e.store.MovePhaseToStep(ctx, tx, issue.Key, role, w.Task, place.Place); err != nil {
+					return entered{}, err
+				}
+			}
+		}
+	}
+	row.Issue, row.Role = issue.Key, role
+	entry := row.Entry + 1
+	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
+	if worker && recordsSteps(issue) {
 		for _, other := range rows {
 			if (other.Claim == agent || other.Role == role) && other.Entry >= entry {
 				entry = other.Entry + 1
@@ -1069,13 +1073,6 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 		}
 		if given := held[agent]; given != nil && given.GivenEntry >= entry {
 			entry = given.GivenEntry + 1
-		}
-		// The first run of a later step starts from the role's row now, the step before's, and
-		// keeps the commit that step's review read only where both steps are this agent's: an
-		// agent whose step has no deciding review of its own on the task reads the whole change,
-		// and the reviewer's task names the other agent's commit beside it (namingTheReviewRound).
-		if fresh && now.Claim != "" && now.Claim != agent {
-			row.ReviewedHead = ""
 		}
 		row.Claim = agent
 	}
@@ -1113,30 +1110,36 @@ type entered struct {
 	agent claim.Token
 }
 
-// stepRunRow is the row an entry of role's step at place of task raises, among rows, and how it
-// was found (record.StepRowOf), the lookup every read of a step's row makes: the row the step's
-// earlier runs wrote (record.RowOfTheStep), which takes the record the role named last from now,
-// the role's row now, since a return to an earlier step of the role comes after the role named a
-// record at a later one, and the next completion must name one written anew (HANDOFF_NOT_NEW);
+// stepRunRow is the row an entry of role's step at place of task raises, among rows, run by agent
+// (startClaim; "" for an issue whose key names no claims), and whether the entry moves that row to
+// the step. It reads the step's row as every read of one does (record.StepRowOf): the row the
+// step's earlier runs wrote (record.RowOfTheStep), which takes the record the role named last from
+// now, the role's row now, since a return to an earlier step of the role comes after the role named
+// a record at a later one, and the next completion must name one written anew (HANDOFF_NOT_NEW);
 // else the role's row of no step (record.RowOfNoStep), which was the role's one row and so is the
 // step's, as the one row of a role was raised at each step it ran, and which the entry moves to the
 // step (record.Store.MovePhaseToStep); else, for a later step's first run (record.NoRowOfTheStep),
-// now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries what the
-// role's one row carried into its next phase and the row of the role's earlier step keeps its
-// report. The commit its review read it carries only for the same agent (enter).
-func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int) (record.PhaseRow, record.RowFound) {
+// now, with no handoff (phaseHandoff) and stamped with the step, so the new row carries the record
+// the role named last and the counts of its rounds, and the row of the role's earlier step keeps its
+// report. The commit a review read (record.PhaseRow.ReviewedHead) is the agent's own, never now's:
+// a first run takes the commit of agent's own nearest earlier row of the role on the task, which
+// holds agent's newest (record.ReviewedBefore), and none where agent ran no earlier step of the
+// role there, so that agent reads the whole change and its task names another agent's commit
+// beside it (record.AnotherAgentsReview, namingTheReviewRound).
+func stepRunRow(rows []record.PhaseRow, now record.PhaseRow, role claim.Role, task string, place int, agent claim.Token) (record.PhaseRow, bool) {
 	row, found := record.StepRowOf(rows, role, task, place)
 	switch found {
 	case record.RowOfTheStep:
 		row.LastHandoff = now.LastHandoff
-		return row, found
+		return row, false
 	case record.RowOfNoStep:
 		row.StepTask, row.StepPlace = task, place
-		return row, found
+		return row, true
 	}
 	row = phaseHandoff{}.onto(now)
 	row.StepTask, row.StepPlace = task, place
-	return row, found
+	row.ReviewedHead = record.ReviewedBefore(rows, role, task, place, agent)
+	return row, false
 }
 
 // EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the

@@ -82,30 +82,95 @@ func ServedClaim(rows []PhaseRow, role claim.Role, entry int64) claim.Token {
 	return ""
 }
 
-// AnotherAgentsReview is the commit the review of the step before row's read, among rows: the row
-// of row's role on row's task at the nearest earlier place, where that step's agent (its Claim) is
-// another than row's and row holds no commit of its own (ReviewedHead ""). A row's ReviewedHead is
-// the commit its own agent's newest deciding review read, carried from the step before only where
-// that step is the same agent's (workflow's enter), so an agent whose step has no deciding review
-// of its own on the task reads the whole change; this commit is what its task names beside that,
-// as another agent's (reviewround.AnotherAgentsSentence). "" for every other row: one that holds
-// a commit, one of no step, one whose step before is the same agent's or names no claim, and one
-// with no step before it.
-func AnotherAgentsReview(rows []PhaseRow, row PhaseRow) string {
-	if row.ReviewedHead != "" || row.StepTask == "" || row.Claim == "" {
-		return ""
-	}
-	var before *PhaseRow
-	for i, other := range rows {
-		if other.Role == row.Role && other.StepTask == row.StepTask && other.StepPlace > 0 && other.StepPlace < row.StepPlace &&
-			(before == nil || other.StepPlace > before.StepPlace) {
-			before = &rows[i]
+// earlierStepRow is the one lookup of what an earlier step of a role read on a task: the row of
+// role on task among rows at the nearest place before place, of the rows of a step (place 1 and up)
+// that of accepts, and whether one stands. The commit a step's agent last read on the task is read
+// through it (ReviewedBefore), and so is the commit another agent's review read (AnotherAgentsReview),
+// so the two never take their agents from two different rows.
+func earlierStepRow(rows []PhaseRow, role claim.Role, task string, place int, of func(PhaseRow) bool) (PhaseRow, bool) {
+	var found *PhaseRow
+	for i, row := range rows {
+		if task != "" && row.Role == role && row.StepTask == task && row.StepPlace > 0 && row.StepPlace < place && of(row) &&
+			(found == nil || row.StepPlace > found.StepPlace) {
+			found = &rows[i]
 		}
 	}
-	if before == nil || before.Claim == "" || before.Claim == row.Claim {
+	if found == nil {
+		return PhaseRow{}, false
+	}
+	return *found, true
+}
+
+// ReviewedBefore is the commit the first run of agent's step of role at place of task is named as
+// the one its own reviews read, among rows: the commit agent's own nearest earlier row of role on
+// task holds (ReviewedHead), and "" where agent ran no earlier step of role on task, so an agent
+// whose step has no deciding review of its own on the task reads the whole change. Each row of one
+// agent's role on a task holds the commit that agent's newest deciding review there read
+// (AgentsOtherRows), so the row it is taken from holds the newest whichever step read it. agent ""
+// is the worker of an issue whose key names no claims, one for each role, whose every row of the
+// role is its own.
+func ReviewedBefore(rows []PhaseRow, role claim.Role, task string, place int, agent claim.Token) string {
+	own, _ := earlierStepRow(rows, role, task, place, func(row PhaseRow) bool { return agent == "" || row.Claim == agent })
+	return own.ReviewedHead
+}
+
+// AnotherAgentsReview is the commit another agent's review on row's task read, which the task of a
+// review step names beside its own `none` (reviewround.AnotherAgentsSentence), among rows: where row
+// holds no commit of its own (ReviewedHead ""), the commit held by the row of row's role on row's
+// task at the nearest earlier place whose agent (its Claim) is another than row's and whose review
+// read one. "" for every other row: one that holds a commit, one of no step or naming no claim, and
+// one with no such row before it. A row holds no commit while its agent has no deciding review of
+// its own on the task (ReviewedBefore), so such an agent reads the whole change and is told what
+// another agent's review read, so it can see what changed since.
+func AnotherAgentsReview(rows []PhaseRow, row PhaseRow) string {
+	if row.ReviewedHead != "" || row.Claim == "" {
 		return ""
 	}
-	return before.ReviewedHead
+	other, _ := earlierStepRow(rows, row.Role, row.StepTask, row.StepPlace, func(before PhaseRow) bool {
+		return before.Claim != "" && before.Claim != row.Claim && before.ReviewedHead != ""
+	})
+	return other.ReviewedHead
+}
+
+// AgentsOtherRows is each row among rows of row's role on row's task, other than row, that names
+// row's claim: the rows of the other steps of that role that row's agent ran. A deciding review's
+// commit is written onto row and onto each of them (workflow's shareReviewedHead), since the commit
+// a review step is named is its agent's newest on the task, at whichever of its steps that review
+// was made, and no row records when its commit was read. None for a row of no step or naming no
+// claim.
+func AgentsOtherRows(rows []PhaseRow, row PhaseRow) []PhaseRow {
+	if row.StepTask == "" || row.Claim == "" {
+		return nil
+	}
+	var others []PhaseRow
+	for _, other := range rows {
+		if other.Role == row.Role && other.StepTask == row.StepTask && other.StepPlace != row.StepPlace && other.Claim == row.Claim {
+			others = append(others, other)
+		}
+	}
+	return others
+}
+
+// AgentsRowOf is role's row among rows that agent ran last, the row whose commit and entry a task
+// queued for agent names (workflow's queuedRow): the role's row now (PhaseRowOf) where that row is
+// agent's, runs no step or names no claim (a row a clear left or the release before wrote, whose
+// worker is the role's own token, WorkerClaim), or agent is "" (an issue whose key names no claims).
+// Where the row now is the step of another agent of the role, it is the highest of agent's own rows
+// of role that run a step (rowAbove), and the zero row of role where agent ran none, which names no
+// commit and no entry. So a wake of an earlier step's agent is never named another agent's commit
+// as its own.
+func AgentsRowOf(rows []PhaseRow, role claim.Role, agent claim.Token) PhaseRow {
+	now := PhaseRowOf(rows, role)
+	if agent == "" || now.StepTask == "" || now.Claim == "" || now.Claim == agent {
+		return now
+	}
+	own, found := PhaseRow{Role: role}, false
+	for _, row := range rows {
+		if row.Role == role && row.StepTask != "" && row.Claim == agent && (!found || rowAbove(row, own)) {
+			own, found = row, true
+		}
+	}
+	return own
 }
 
 // StartLeft says whether a start of role's phase entry entry is of work the role has left, read

@@ -236,3 +236,88 @@ func TestAResumedReviewStepIsToldTheCommitItsStepRead(t *testing.T) {
 		})
 	}
 }
+
+// critics writes LEGION-208's plan of words under engine, each step of the role critic of the type
+// review, and walks the plan into its first step, whose implementer then reports at stepCommitW.
+func critics(t *testing.T, pool *pgxpool.Pool, engine *Engine, words ...string) {
+	t.Helper()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, words...)
+	if _, err := pool.Exec(t.Context(), `update plan_steps set type = case role when 'critic' then 'review' else 'testing' end
+		where issue = $1 and task = 'a' and role in ('critic', 'checker')`, root.Key); err != nil {
+		t.Fatalf("store the types of the critic and the checker: %v", err)
+	}
+	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
+	reportsAtEntry(t, pool, engine, "impl-1", root.Key, root.Generation, claim.RoleImplementer, "", stepCommitW, 0)
+}
+
+// criticReportsAt is the critic's report of the step it runs on LEGION-208 now, under id with
+// verdict, at commit, of the entry its row of that step stands on, place: a report of the entry that
+// stands, which records commit as the one its review read (recordStepReview).
+func criticReportsAt(t *testing.T, pool *pgxpool.Pool, engine *Engine, id string, place int, verdict, commit string) {
+	t.Helper()
+	row := rolesRows(t, pool, engine, "LEGION-208", "critic")[place]
+	reportsAtEntry(t, pool, engine, id, "LEGION-208", 1, "critic", verdict, commit, row.Entry)
+}
+
+// A review step of a deployment role is named the commits a reviewer step is, by the same lookup
+// of the step's agent: in `implementer:a critic critic:a`, step 3 is agent a's first critic step
+// after the critic's own agent reviewed at step 2, so its first task names no commit of its own and
+// names step 2's commit as another agent's (reviewround.AnotherAgentsSentence); in `implementer:a
+// critic:a critic critic:a`, step 4 is agent a's second critic step, past the critic's own agent's
+// step 3, and its first task names agent a's own commit of step 2. Before, step 3 named no commit at
+// all, and step 4's first run cleared the commit it took from step 3's row as another agent's.
+func TestAReviewStepOfADeploymentRoleIsNamedItsAgentsCommitOrAnotherAgentsBesideNone(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		words []string
+		// at is the step whose first task is read; own is whether it names stepCommitX as its own
+		// commit, and otherwise it names stepCommitX as another agent's.
+		at  int
+		own bool
+	}{
+		{"another agent's first critic step", []string{"implementer:a", "critic", "critic:a"}, 3, false},
+		{"an agent's later critic step past another agent's", []string{"implementer:a", "critic:a", "critic", "critic:a"}, 4, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := deploymentEngine()
+			critics(t, pool, engine, tc.words...)
+			criticReportsAt(t, pool, engine, "pass-2", 2, "pass", stepCommitX)
+			if tc.at == 4 {
+				criticReportsAt(t, pool, engine, "pass-3", 3, "pass", stepCommitY)
+			}
+			assertWalksAt(t, pool, engine, "LEGION-208", phase.Step, stepPlace(tc.at))
+			row := rolesRows(t, pool, engine, "LEGION-208", "critic")[tc.at]
+			own, other := reviewedPartOf(stepCommitX), reviewround.AnotherAgentsSentence(stepCommitX)
+			switch {
+			case tc.own && (row.ReviewedHead != stepCommitX || !strings.HasSuffix(row.EntryTask, own) || strings.Contains(row.EntryTask, reviewround.AnotherAgentLabel)):
+				t.Fatalf("step %d's first task = %q with the commit %q, want it to end %q, its agent's own, and name no other agent's", tc.at, row.EntryTask, row.ReviewedHead, own)
+			case !tc.own && (row.ReviewedHead != "" || !strings.HasSuffix(row.EntryTask, other) || strings.Contains(row.EntryTask, reviewround.CommitLabel)):
+				t.Fatalf("step %d's first task = %q with the commit %q, want no commit of its own and a task ending %q", tc.at, row.EntryTask, row.ReviewedHead, other)
+			}
+		})
+	}
+}
+
+// A deployment role's review step is named its agent's newest commit on the task, at whichever of
+// its steps it was read, as a reviewer step is: in `implementer:a critic:c checker critic:c`, agent
+// c passes step 2 at X and fails step 4 at Y, the task returns to step 1, and step 2's next task
+// names Y, each row of agent c holding it. Before, step 2's row kept X, its own run's.
+func TestADeploymentReviewStepIsNamedItsAgentsNewestCommitOfAnotherStep(t *testing.T) {
+	pool := migratedPool(t)
+	engine := deploymentEngine()
+	critics(t, pool, engine, "implementer:a", "critic:c", "checker", "critic:c")
+	criticReportsAt(t, pool, engine, "pass-2", 2, "pass", stepCommitX)
+	reportsAtEntry(t, pool, engine, "check-3", "LEGION-208", 1, "checker", "pass", stepCommitX, 0)
+	assertWalksAt(t, pool, engine, "LEGION-208", phase.Step, stepPlace(4))
+	criticReportsAt(t, pool, engine, "fail-4", 4, "fail", stepCommitY)
+	assertWalksAt(t, pool, engine, "LEGION-208", phase.Implementing, stepPlace(1))
+	agentHolds(t, pool, engine, "critic", agentToken(t, "critic"), stepCommitY, "after step 4's fail")
+	reportsAtEntry(t, pool, engine, "impl-2", "LEGION-208", 1, claim.RoleImplementer, "", stepCommitY, 0)
+	assertWalksAt(t, pool, engine, "LEGION-208", phase.Step, stepPlace(2))
+	two := rolesRows(t, pool, engine, "LEGION-208", "critic")[2]
+	if says := reviewedPartOf(stepCommitY); !strings.HasSuffix(two.EntryTask, says) {
+		t.Fatalf("step 2's next task = %q, want it to end %q, agent c's newest commit, step 4's", two.EntryTask, says)
+	}
+}

@@ -998,8 +998,10 @@ func returnToOf(issue record.Issue, w Walk, fact intake.HandoffComplete, reporte
 // recordStepReview writes the commit a completion of a step of the type review that runs as step
 // read onto the role's phases row (record.PhaseRow.ReviewedHead), so the task of the step's next
 // run names it (namingTheReviewRound), as the reviewer's next round names the commit its own
-// review read. The row is the row of the step the completion is of (phaseRow), and the first run of
-// a later step of the role starts from it (stepRunRow), as the reviewer's next round does; the
+// review read. The row is the row of the step the completion is of (phaseRow), and the commit is
+// written onto each other row of that role on the task that the step's agent ran too
+// (shareReviewedHead), so the agent's next run at any of its steps names its newest, and a first
+// run of a later step of that agent takes it (stepRunRow), as the reviewer's steps do; the
 // clear of a generation empties it with the reviewer's (record.Store.ClearGeneration). It
 // writes only for a completion of the entry that stands, by equality of an entry number and no
 // time compared: row, the role's phases row the completion read and wrote in its own transaction
@@ -1024,7 +1026,10 @@ func (e *Engine) recordStepReview(ctx context.Context, tx pgx.Tx, issue record.I
 		return nil
 	}
 	row.ReviewedHead = fact.Commit
-	return e.store.PutPhase(ctx, tx, row)
+	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+		return err
+	}
+	return e.shareReviewedHead(ctx, tx, row)
 }
 
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {

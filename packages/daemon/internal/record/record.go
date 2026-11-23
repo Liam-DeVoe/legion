@@ -656,8 +656,13 @@ type PhaseRow struct {
 	// review of the entry that stood: the head named in the Legion footer of a review that
 	// approved or requested changes, submitted as the review App from the session the claims
 	// record holds for the claim the daemon starts the reviewer under (workflow's review,
-	// byReviewer and reviewersClaim), in the first round as in every later one. Only the
-	// reviewer's row holds it. A person's review does not move it, since the reviewer did not read
+	// byReviewer and reviewersClaim), in the first round as in every later one. The reviewer's rows
+	// hold it, and the rows of a deployment role's review step (workflow's recordStepReview). It is
+	// its agent's, not its step's: a review that moves it writes it onto every row of that agent's
+	// role on the task (workflow's shareReviewedHead), so each row of one agent holds the commit of
+	// its newest deciding review there, and a step's first run takes it from the agent's own earlier
+	// row, or none where the agent ran none (workflow's stepRunRow, ReviewedBefore). A person's
+	// review does not move it, since the reviewer did not read
 	// that commit; neither does another review-App session's review or a review that decides
 	// nothing, and while the reviewer's claim records no session no review-App review decides the
 	// round or moves it (workflow's RefusedWhileNoSession). Unlike Decision it outlives its round:
