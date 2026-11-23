@@ -247,3 +247,12 @@ func TestTheHeadlessPartSaysAReportThatMovesNothingReachesNoOne(t *testing.T) {
 		{"mechanics/headless.md", "Your completion's summary reaches the architect by itself"},
 	})
 }
+
+// A task with no pull request has a diff from the default branch, and the red team reads it.
+func TestTheAcceptancePromptGivesTheRedTeamTheDiffOfATaskWithNoPullRequest(t *testing.T) {
+	saysAndRetires(t, promptPart, [][2]string{
+		{"acceptance.md", "Give the goal red team those and that diff in place of the pull request's body and diff."},
+	}, [][2]string{
+		{"acceptance.md", "Give the goal red team those in place of the body and the diff."},
+	})
+}

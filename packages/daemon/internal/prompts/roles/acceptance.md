@@ -28,7 +28,7 @@ Post your reading on the issue with `dispatch comment` before you complete. It n
 
 ## A task with no pull request
 
-A task with no pull request has no pull request body. Its `Task text:` names what it delivers, and its diff runs from the default branch to the head you read. Read what that text names, where it names it, and the reports of the steps before yours. `dispatch steps --issue <issue>` lists each run of each step and how it ended, and `dispatch handoff-read` reads a step's handoff. Give the goal red team those in place of the body and the diff.
+A task with no pull request has no pull request body. Its `Task text:` names what it delivers, and its diff runs from the default branch to the head you read. Read what that text names, where it names it, and the reports of the steps before yours. `dispatch steps --issue <issue>` lists each run of each step and how it ended, and `dispatch handoff-read` reads a step's handoff. Give the goal red team those and that diff in place of the pull request's body and diff.
 
 ## What you change
 
