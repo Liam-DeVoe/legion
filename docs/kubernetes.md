@@ -907,7 +907,7 @@ the image compiles the Go `legion` at `go.work`'s Go version, so a change that m
 It also fails when trigger (2)'s `worker_image` filter matches a file the build does not read (one the `.dockerignore` drops, or one no `COPY` names), since a pull request touching only that file would build an image for nothing;
 the filter's `!` patterns drop those, under its step's `some-with-excludes`.
 Trigger (2) selects by the pull request's whole diff:
-on `pull_request`, the `changes` job of `ci.yaml` reads the pull request's file list, so a later commit that touches none of those paths (retro's learnings, a docs fix) still gets the build and the PR head never loses it.
+on `pull_request`, the `changes` job of `ci.yaml` reads the pull request's file list, so a later commit that touches none of those paths (a docs fix, say) still gets the build and the PR head never loses it.
 A filter on the pushed commits alone would leave such a head unguarded.
 The `worker-image` job of `ci.yaml` grants the called workflow its `packages`/`contents` permissions, which apply to same-repo pull requests (this repository takes no fork PRs, whose token would be read-only).
 The `attest` job's `id-token` and `attestations` scopes reach a pull request run only if it drops that job's `if:`, and its attestation then names `refs/pull/<n>/merge`, which the verify command above refuses.
@@ -1377,7 +1377,7 @@ Keep the route unchanged across the copy below in particular: there every sessio
 ### What `cloudsql-iam` puts in a pod
 
 No session key, anywhere.
-No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string, and no URL sits in a Secret, a volume, an argv, an environment value or a log.
+No issue pod, no controller pod and no image-probe pod mounts one (`sessionSecretKey`, `internal/runtime/sandbox/manifest.go`, which answers for `postgres` alone), the daemon holds no connection string, and no URL of the database itself sits in a Secret, a volume, an argv, an environment value or a log: the one URL a role is given names the local socket its launcher binds, in a file on the role's own memory-backed private volume (below).
 What the pod's `legion launcher` is told instead is where the database is
 — `--session-instance <project:region:instance>`, `--session-database <name>` and `--session-user <login>`, in that order, the three values of `session_database` (`sessionProxyFlags` over `sessionProxyFlagNames`, `manifest.go`), once for every role it serves.
 When `impersonate_service_account` is set, a fourth flag follows the three: `--session-impersonate-service-account <email>` (`sessionProxyAccountFlag`, `manifest.go`).
@@ -2436,7 +2436,7 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that asks the merger to merge the base forward
 
-This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `accepting` or `retro` (cybermonklabs/legion#4979).
+This release asks the merger, not the implementer, to merge the base forward once the issue stands in `merging`, and asks nothing in `retro`, or in `accepting` where the acceptance is the task's last step (cybermonklabs/legion#4979).
 It adds no migration: a `merge_forward` row's payload and `pull_requests.merge_forward` are JSON, and the ask names its role there (`role`).
 An earlier release refuses a `merge_forward` ask whose role is the merger when it decodes the row, and reads an ask that names the merger as the implementer's, already made, so it would ask nobody.
 Run this with the daemon stopped, before the earlier image is pinned:
@@ -2638,6 +2638,53 @@ A rating row left in place is not harmless in the same way: the release that rec
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the release that runs a task's steps in any order
+
+This release takes a plan whose steps stand in another order than today's: the planner at any place, and the tester, the reviewer and the owner's acceptance in any order after the implementer (`Supported` in `internal/plan/validate.go`).
+It adds no migration: the plan rows of the release before hold such a plan as they hold any other.
+The release before refuses that order wherever it reads it, so a rollback has three things to settle first, in this order.
+
+**1. Let no task in another order run.**
+The release before builds each task's moves from today's order, whatever its plan rows say.
+Its table of moves back holds only a move to an earlier phase of today's order (`backwardRows` over `phase.BackwardPairs`), and it counts a move as a move back by today's order (`phase.MovesBack` in its `transition`).
+So over a task of `implementer reviewer tester` it would count the review's approval, `reviewing` to `testing`, as a move back, with a pass, the pair `reviewing-testing` and the hooks it fires; it would hold no move for the tester's move back to `reviewing`; and over `implementer acceptance:owner reviewer` it would start the reviewer after the sign-off with the reviewer's own record of the phase, not the implementer's report (`signOff`).
+With this release still running, list each task of the project that is in the workflow and runs in another order:
+
+```sql
+select distinct a.issue, a.task, t.state
+from plan_steps a
+join plan_steps b on b.issue = a.issue and b.generation = a.generation and b.task = a.task and b.position > a.position
+join plan_tasks t on t.issue = a.issue and t.generation = a.generation and t.task = a.task
+join issues i on i.key = a.issue and i.generation = a.generation
+where split_part(a.issue, '-', 1) = '<PROJECT>' and t.state not in ('done', 'left')
+  and array_position(array['planner', 'implementer', 'tester', 'reviewer', 'acceptance'], a.role)
+    > array_position(array['planner', 'implementer', 'tester', 'reviewer', 'acceptance'], b.role);
+```
+
+Roll back only when it lists no row.
+For each row, let the issue run to `done`, or have its architect stop the task (`stop_task`) and give it a later version of the plan whose steps stand in today's order (`register_plan`), which starts that task at its first step.
+A task that runs the project's `default_steps` is listed the same way, since its steps are written to `plan_steps` too.
+
+**2. Make `legion.yaml` one the release before takes.**
+Its loader refuses `projects.<KEY>.default_steps` in another order than today's (`readDefaultSteps` in `config/stage3.go`, with the reason `… and this release runs the steps in the order …`), and a hook whose `moves` names a pair that is no move back of today's order (`readHookMoves`: `… which is no move back the daemon counts …`).
+This release takes seven pairs more than that one: `planning-implementing`, `planning-testing`, `planning-reviewing`, `planning-accepting`, `testing-reviewing`, `testing-accepting` and `reviewing-accepting`.
+So put each project's `default_steps` in today's order, or remove the key, and remove those seven pairs from each hook, before you pin the earlier image; a daemon of the release before does not start on a file it refuses.
+Run the earlier release's `legion start --check-config` on the file to see it taken.
+
+**3. Delete the hook prompts the release before refuses.**
+A `hook_prompt` row of a move back in another order names a pair the release before does not take: its decode refuses it (`a hook prompt names the move back that fired it; … is no move back`, `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward, and its words reach nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+delete from outbox where kind = 'hook_prompt' and split_part(issue, '-', 1) = '<PROJECT>'
+  and (array_position(array['planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging'], payload->>'to')
+    < array_position(array['planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging'], payload->>'from')) is not true;
+```
+
+A deleted row is a hook's words that no worker reads for that move.
+The counts of moves back a task's row holds (`plan_tasks.backward_moves`) can keep a pair in another order; the release before reads the map and lists only its own pairs in a hook's words, so such a count stays and harms nothing.
+The outbox and the plan rows are shared by every project's daemon on the database, and each statement above takes the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project, since a project key holds no hyphen), so one project can roll back while another stays on this release.
+
 #### Rolling back the release whose owner's plan picks the steps
 
 This release's migration `20261117034837_issue_plans.up.sql` adds three tables, `issue_plans`, `plan_tasks` and `plan_steps`, and two columns, `phases.step_task` and `phases.step_place`.
@@ -2650,7 +2697,7 @@ A `controller_notice` row takes every kind an architect is told, these three amo
 It writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
 An earlier release decodes a `notice`, a `controller_notice` and a `supervise` row strictly: its decode refuses a notice kind it does not know (`unknown notice kind`, `validNoticeKinds` in `record/outbox.go`), a field it does not hold, such as `stoppedBy`, and an op it does not know (`unknown supervise operation`, `validSuperviseOp`), which is no permanent refusal for those kinds (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll-forward.
 The refusal of a `step_stop` row also fails every read of that role's run at that generation, because `RoleRuns` in `record/store.go` decodes the queued supervise rows of each run it reads, and the transaction that makes the read fails with it.
-This release also writes two new reasons of a hold on `issues.hold_reason`: `task-stopped`, an issue its owner or a failed step stopped the task of, and `children`, a parent whose plan has no acceptance step, held before its retro for the issues beneath it.
+This release also writes two new reasons of a hold on `issues.hold_reason`: `task-stopped`, an issue its owner or a failed step stopped the task of, and `children`, a parent whose task's last step is not the owner's acceptance, held before its retro for the issues beneath it.
 An earlier release serves `holdReason` as the record holds it, and its plugin reads the key with the one value `escalated` (`LegionStateResponse` in that release's `packages/contracts/src/legion-api.ts`) and refuses the whole state body for another, so every agent's `read_record` and each completion's read of the state on that project would fail while any issue stands held for either reason.
 
 At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, with `<PROJECT>` the key of the project whose daemon rolls back.
@@ -6635,8 +6682,8 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot past its review, in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue before then (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
-So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing past their review, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue in a phase that keeps one (`docs/site/src/content/docs/legion/concepts.md`, "Admission and the `legion` label"), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
+So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing in `accepting`, `retro` or `merging`, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk (a [kept volume](#a-kept-volume-on-a-microvm-pod) stays) while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
@@ -6646,7 +6693,7 @@ once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 500m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue past its review, by an issue that released its slot to wait on another issue and by a production check.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue in `accepting`, `retro` or `merging`, by an issue that released its slot to wait on another issue and by a production check.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
@@ -9077,7 +9124,7 @@ Legion holds no model, provider or route.
 Everything a pod's Oh My Pi needs to reach a model is the operator's, and the daemon hands the same pieces to every pod it runs:
 each issue's pod (every role of it alike) and the image probe's.
 
-- **The project's repositories** come from Dispatch: each issue's repository is the one Dispatch resolves for it (its own, else its nearest ancestor's, else the project's default repository, which is set in Dispatch);
+- **The project's repositories** come from Dispatch: each issue's repository is the one Dispatch resolves for it (its own, else its nearest ancestor's in its own project, else the project's default repository, which is set in Dispatch);
   `legion.yaml`'s `projects.<KEY>` names none and refuses `repo`.
   The daemon boots for any project, and at boot fills a record without its repository columns (one read each, bounded at 15 s; a failure leaves the record for the refresher);
   it proves each role App's key with GitHub's read of its installations, and a refusal of that read stops the boot naming the App, while an App installed on no account boots with one log line.
@@ -9090,7 +9137,7 @@ each issue's pod (every role of it alike) and the image probe's.
   An event of an unrecorded issue on a repository GitHub did not answer for is applied and acknowledged with nothing said on it and nothing kept, and once GitHub answers, the daemon recovers the repository:
   one read of Dispatch's project listing, applied as the boot applies it, to the unrecorded issues on it, under a parent on it, or whose event it applied silently for it during the outage (a labelled root admitted, a child of a live tree recorded under it, parents first, a person's issue left as it is), tried again on a failed listing.
   Every role's gh bundle holds one directory for each owner account that role's App is installed on, one for each owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's recorded owner ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
-  An issue is recorded on the repository Dispatch resolves for it, which is any `owner/name` an issue or its parent chain names, with that repository's default branch as GitHub names it, when the daemon first records it, and keeps both, except that this release's one-time pass writes a configured rename's `to`, as GitHub spells it, over its `from` once GitHub shows the transfer.
+  An issue is recorded on the repository Dispatch resolves for it, which is any `owner/name` an issue or its parent chain in its own project names, with that repository's default branch as GitHub names it, when the daemon first records it, and keeps both, except that this release's one-time pass writes a configured rename's `to`, as GitHub spells it, over its `from` once GitHub shows the transfer.
   A claim on an issue the workflow does not record, such as an operator's tree, works the repository Dispatch resolves for that issue, read at its first launch and kept while the issue holds its workspace;
   when the issue resolves to none, the launch is refused with `<KEY> names no repository: set the repository of <KEY>, or the default repository of project <PROJECT>, in Dispatch`, and the daemon stays up.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then set the old `projects.<KEY>.repo` as the project's default repository in Dispatch, then delete the key and start this daemon;

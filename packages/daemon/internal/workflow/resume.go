@@ -42,26 +42,25 @@ import (
 // consumers start, owes a start to each merger the `awaiting_merge` cutover left released with no
 // wake to come.
 //
-// The claims it weighs are the suspended owners of the project's unfinished phases in running
-// trees (suspendedPhaseOwners), the read the cutover's repair picks its mergers from too, and it
-// starts each of them whose claim a ByRule source suspended. Each is given the start
-// admission gives a re-admitted tree's mid-phase child, built where every start of a phase worker
-// is built (Engine.started) and so written through the outbox's start like every other
-// (StartOrOwe), and what that start carries is decided by the entry the role's phases row names,
-// read here as the ready of such a claim reads it (catch_up.go's readyWorkerTask) and admission
-// reads it for the same decision (admit's owedEntryRoles). A claim behind that entry is sent the
-// work of that entry at that entry (startSuspendedOwner: OwedEntry, sendOwedEntry), which is the
-// task the transition wrote when it raised the number: the resume says to carry the existing phase
-// work on, and the work of an entry this claim was never given is work it does not have, so the
-// resume would spend the claim's first turn after the boot on the wrong prompt and the completion
-// it answered with would be refused as behind that entry. A claim level with that entry is sent
-// the task that takes its phase on (ResumeTask), which the outbox does not deliver to a claim
-// still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
-// the slot rule gives its phase (StartOrOwe), as every start of a phase worker built through
-// started does, so it waits for the issue's admission slot in a phase up to the review and for
-// none past it; the fourth step's start of a phase owner level with its entry is enqueued
-// directly and takes none (startStoppedClaim). A role a start already covers (StartFor) gets no
-// second.
+// The claims it weighs are the suspended owners of the project's unfinished phases in running trees
+// (suspendedPhaseOwners), the read the cutover's repair picks its mergers from too, and it starts
+// each of them whose claim a ByRule source suspended. Each is given the start admission gives a
+// re-admitted tree's mid-phase child, built where every start of a phase worker is built
+// (Engine.started) and so written through the outbox's start like every other (StartOrOwe), and
+// what that start carries is decided by the entry the role's phases row names, read here as the
+// ready of such a claim reads it (catch_up.go's readyWorkerTask) and admission reads it for the
+// same decision (admit's owedEntryRoles). A claim behind that entry is sent the work of that entry
+// at that entry (startSuspendedOwner: OwedEntry, sendOwedEntry), which is the task the transition
+// wrote when it raised the number: the resume says to carry the existing phase work on, and the
+// work of an entry this claim was never given is work it does not have, so the resume would spend
+// the claim's first turn after the boot on the wrong prompt and the completion it answered with
+// would be refused as behind that entry. A claim level with that entry is sent the task that takes
+// its phase on (ResumeTask), which the outbox does not deliver to a claim still holding its phase's
+// task. Either start resumes the claim by rule and takes the slot mark the slot rule gives its
+// phase (StartOrOwe), as every start of a phase worker built through started does, so it waits for
+// the issue's admission slot in a phase that keeps one and for none in accepting, retro or merging;
+// the fourth step's start of a phase owner level with its entry is enqueued directly and takes none
+// (startStoppedClaim). A role a start already covers (StartFor) gets no second.
 //
 // Fourth, the start of every claim the project release stopped (startReleaseStopped), of every
 // role: the release holds every start until this boot, and the claims it stopped are read by
