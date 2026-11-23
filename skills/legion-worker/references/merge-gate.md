@@ -9,7 +9,7 @@ The merger's steps are all in its role prompt.
 1. Read CI on GitHub and the issue's results with `dispatch results --issue <issue>`, never from a handoff.
 2. When the diff the round reads touches runtime code (the whole change, or the difference from the commit your task names), run `task(agent="thermonuclear-deep-review")` and `task(agent="thermonuclear-code-quality")` once at the head the round reviews, and `wait` for each result.
    Each agent reviews only the diff its task supplies: name in each task the commit, the head and `git diff <sha> <head>`, or the whole change.
-   The last two sentences of your task, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, and a `Commit another agent's review read: <sha>.` before them, are the daemon's; your role prompt says how to read them.
+   The daemon writes your task's last two sentences, `Last reviewed commit: <sha>.` and `Review entry: <n>.`, and any `Commit another agent's review read: <sha>.` before them; your role prompt says how to read them.
 3. A result that carries no report, or that names another place for it, is a failed run, not a verdict: run that agent again, or read its transcript.
    Reading the agent's diff yourself and recording that in its place is the same as answering the rubric from a bare verdict.
    When you can do neither, that half of the round has no review: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on until it answers.
