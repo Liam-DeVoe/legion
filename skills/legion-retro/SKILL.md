@@ -10,8 +10,8 @@ Retro runs on the reviewed head, between the architect's acceptance and the merg
 
 Retro commits nothing and pushes nothing: the merger merges the branch's head, and a push would put
 a commit above the head the reviewer approved. Outside a forward merge of the base, no Legion check
-compares the head that merges with the one the review approved. Never rebase the branch or make
-another branch or bookmark.
+compares the head that merges with the one the review approved. Make no other branch or
+bookmark.
 Retro writes no handoff. In the workspace it changes nothing; outside it, it writes only step 4's
 `mktemp -d` directory, the PR body and the Dispatch comment and message. It sets no GitHub or
 Dispatch label: Legion keeps phase state in the daemon.
