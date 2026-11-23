@@ -99,3 +99,20 @@ func TestALaunchOfAnotherAppIntoASlotWhoseLauncherDoesNotWaitIsRefused(t *testin
 		})
 	}
 }
+
+// A slot whose name no claim token carries is refused, never answered as a slot whose launcher
+// waits for the credential: that answer lets a re-role into the slot start with no credential wait
+// (the daemon's reroleWaitsForCredential). The control: the slot of an agent's name with no
+// launcher connected still answers that the launch waits.
+func TestASlotNoTokenCarriesIsRefusedRatherThanLetThrough(t *testing.T) {
+	r, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod, waits := r.SlotWaitsForCredential(testTree, "implementer"); pod != "" || !waits {
+		t.Fatalf("the slot implementer with no launcher connected = %q, %t; want none, waits", pod, waits)
+	}
+	if pod, waits := r.SlotWaitsForCredential(testTree, "Implementer"); waits {
+		t.Fatalf("the slot Implementer, a name no claim token carries = %q, waits: a re-role into it would start with no credential wait; want a refusal", pod)
+	}
+}
