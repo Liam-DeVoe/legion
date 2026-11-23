@@ -50,7 +50,7 @@ const HISTORY = '[data-testid="issue-history"]';
 const DRAWING_FRAMES = 20;
 
 /** How many frames past the two the opener takes to focus the row's control (`useOpenDetailsAt`)
- *  the hold of the landed place waits for that focus to arrive before it holds nothing. */
+ *  the hold of the landed place waits for that focus before it holds nothing. */
 const FOCUS_FRAMES = 4;
 
 /** The collaborators' row inside Details, which `t o` and its address open Details at. */
@@ -79,13 +79,12 @@ export function DetailsPeople({ issue }: DetailsMoreProps): ReactNode {
   const unsubscribeRefusal = useSaidFailure(subscribers.unsubscribe);
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(opensCollaborators);
-  // Each arrival at the address opens the list, as it opens Details (`DetailsHistory`), with the
-  // same arrival: one following of the address (`useFollowing`). Closing it again is the reader's
-  // until the next, so this only ever opens.
-  const arrival = opensCollaborators ? following : undefined;
+  // Each following of the address opens the list, as it opens Details (`DetailsHistory`). Closing
+  // it again is the reader's until the next, so this only ever opens.
+  const collaboratorsFollowing = opensCollaborators ? following : undefined;
   useEffect(() => {
-    if (arrival !== undefined) setCollaboratorsOpen(true);
-  }, [arrival]);
+    if (collaboratorsFollowing !== undefined) setCollaboratorsOpen(true);
+  }, [collaboratorsFollowing]);
   const subscribersRow = useRef<HTMLDivElement>(null);
   const subscribersControl = useRef<HTMLButtonElement>(null);
   const collaboratorsControl = useRef<HTMLButtonElement>(null);
@@ -256,11 +255,11 @@ export function DetailsFocusedNode({ issue, state }: DetailsMoreProps): ReactNod
  * among themselves, open Details at the history - its heading brought into view, or that turn
  * marked; `/issues/<key>/collaborators` opens Details at the collaborators' row of the People
  * section (`useOpenDetailsAt`), whose list `DetailsPeople` opens. Each address opens Details once
- * per arrival at it, and the reader's own Close is the later word for as long as they stay
- * there. This place is drawn outside every section Details can collapse, so it is mounted for
- * the life of the panel and keeps that count, and the reader's read mark for the visit, which
- * the history is handed. `t v` and `t o` open those two addresses and put the focus in what
- * they open.
+ * per following of it (`useFollowing`), and the reader's own Close is the later word for as long
+ * as they stay there. This place is drawn outside every section Details can collapse, so it is
+ * mounted for the life of the panel and keeps the following it last opened for, and the reader's
+ * read mark for the visit, which the history is handed. `t v` and `t o` open those two addresses
+ * and put the focus in what they open.
  *
  * The history's log is read only while Details is open or an address opens it, so a load that
  * leaves Details shut costs no request for it. Whether an item's address names a turn of a
@@ -283,11 +282,11 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
     outlineItemRoute(route, search, addressed) !== undefined;
   // A comment or message an agent wrote outside every thread a person wrote in is no row of the
   // outline: it is an entry of the history, which Details opens at, with the entry marked. The
-  // entry is the turn `AgentsOnlyTurn` told for this arrival at the address, which is one
-  // following of it (`useFollowing`); until it tells, the one it told for the following before -
-  // at another address, maybe a row's, or at this one under another fragment - is no answer here.
+  // entry is the turn `AgentsOnlyTurn` told for the following the reader is at; until it tells,
+  // the one it told for the following before - at another address, maybe a row's, or at this one
+  // under another fragment - is no answer here.
   const [turn, setTurn] = useState<AgentsTurn | undefined>(undefined);
-  const item = namesItem && turn?.arrival === following ? turn.id : undefined;
+  const item = namesItem && turn?.following === following ? turn.id : undefined;
   const opensHistory = route?.kind === "activity" || item !== undefined;
   const opensCollaborators = route?.kind === "collaborators";
   const opensPanel = opensCollaborators || opensHistory;
@@ -295,28 +294,20 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   const openDetails = drawer?.setOpen;
   const openDetailsAt = useOpenDetailsAt();
   const holdLandedPlace = useLandedPlaceHold(drawer?.open);
-  // Details opens once per arrival at an address that opens it (`opensPanel`), which is one
-  // following of that address (`useFollowing`): a link the reader follows to the address they are
-  // on, and a fragment the browser changes under the one key it gives every entry it makes, are
-  // each an arrival of their own and open it again. Details opens for an arrival only where it
-  // differs from the last one it opened for, so the reader's Close stands for the rest of that
-  // arrival. While the reader has no arrival, that last one is kept only where it is the
-  // following they are at: an address naming an item, whose agents' turn opened Details and was
-  // then taken back until the outline's reads answer again, so the turn told again for the same
-  // following opens nothing the reader closed. At any other following with no arrival - an
-  // address that opens no Details, a row's address, a turn not told yet - it is forgotten, so
-  // Back to an earlier entry of `/activity` or `/collaborators`, the same following again, opens
-  // Details again. Where Details has no drawer to open, each arrival is noted as opened all the
-  // same.
+  // Details opens once per following of an address that opens it (`opensPanel`): a link the reader
+  // follows to the address they are on, and a fragment the browser changes under the one key it
+  // gives every entry it makes, are each a following of their own and open it again, and the
+  // reader's Close stands for the rest of the following. `openedFor` holds the following Details
+  // last opened for while the reader stays at it, and none once they are at another following that
+  // opens no Details. So an item's agents' turn, taken back until the outline's reads answer and
+  // told again at the same following, opens nothing the reader closed; and Back to an earlier entry
+  // of `/activity` or `/collaborators` from an address that opens no Details opens it again. Where
+  // Details has no drawer to open, each following is noted as opened all the same.
   const openedFor = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!opensPanel) {
-      if (openedFor.current !== following) openedFor.current = undefined;
-      return;
-    }
     if (openedFor.current === following) return;
-    openedFor.current = following;
-    if (openDetails === undefined) return;
+    openedFor.current = opensPanel ? following : undefined;
+    if (!opensPanel || openDetails === undefined) return;
     openDetails(true);
     // At the collaborators' row, its control focused, with the People section that holds it
     // opened if the reader closed it, and the control kept where it lands while the rows above it
@@ -373,7 +364,6 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
       {namesItem ? (
         <AgentsOnlyTurn
           address={addressed}
-          arrival={following}
           issue={issue}
           onTurn={setTurn}
           route={route}
@@ -400,40 +390,39 @@ export function DetailsHistory({ issue, state }: DetailsMoreProps): ReactNode {
   );
 }
 
-/** The turn of a thread only agents wrote in that one arrival at an address names
- *  (`AgentsOnlyTurn`), with that arrival: one following of the address (`useFollowing`). */
+/** The turn of a thread only agents wrote in that one following of an address names
+ *  (`AgentsOnlyTurn`), with that following (`useFollowing`). */
 interface AgentsTurn {
-  readonly arrival: string;
+  readonly following: string;
   readonly id: string;
 }
 
 /**
- * Tells `onTurn` the turn of a thread only agents wrote in that `address` names, for `arrival`,
- * as the outline lands on it: the outline's own decision (`address-target.ts`'s
- * `useAddressFallback`, its `agents-only` kind), over the tree and the reads `slots/body.tsx`
- * hands it (`useOutlineReads`), so it is told once every read the tree is built from has
- * answered, as the outline lands on the turn's nearest drawn ancestor, and taken back as the
- * outline lets go of it. Those reads are the outline's own, under its keys and with its
- * freshness, so this costs no request of its own.
+ * Tells `onTurn` the turn of a thread only agents wrote in that `address` names, for the
+ * following the reader is at (`useFollowing`), as the outline lands on it: the outline's own
+ * decision (`address-target.ts`'s `useAddressFallback`, its `agents-only` kind), over the tree
+ * and the reads `slots/body.tsx` hands it (`useOutlineReads`), so it is told once every read the
+ * tree is built from has answered, as the outline lands on the turn's nearest drawn ancestor, and
+ * taken back as the outline lets go of it. Those reads are the outline's own, under its keys and
+ * with its freshness, so this costs no request of its own.
  *
  * Drawn only while the address names an ask, a comment or a message of the outline, the only
  * address that can name such a turn, so the tree is built here only then. It draws nothing.
  */
 function AgentsOnlyTurn({
   address,
-  arrival,
   issue,
   onTurn,
   route,
   search,
 }: {
   address: IssueAddress;
-  arrival: string;
   issue: IssueDetails;
   onTurn: (turn: AgentsTurn | undefined) => void;
   route: IssueRoute;
   search: string;
 }): null {
+  const following = useFollowing();
   const { reads, readsHeld, root } = useOutlineReads(issue);
   const { reveal } = useAddressTarget(root, address);
   const fallback = useAddressFallback({
@@ -449,9 +438,9 @@ function AgentsOnlyTurn({
   const id = fallback?.kind === "agents-only" ? fallback.id : undefined;
   useEffect(() => {
     if (id === undefined) return;
-    onTurn({ arrival, id });
+    onTurn({ following, id });
     return () => onTurn(undefined);
-  }, [arrival, id, onTurn]);
+  }, [following, id, onTurn]);
   return null;
 }
 
@@ -513,17 +502,17 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  * of the issues it names - grows when that read lands, after the focus, and would push the
  * focused element down, out of the view where the reader sees the focus; a focused element
  * keeps its own place, as the CSS scroll-anchoring spec takes the focused element first.
- * So once the focus has arrived inside `target` - up to `frames` frames are waited for it, and
- * nothing is held if it never arrives - each change of height of the content of Details'
- * scrolling box around the focused element, at every depth (`watchedIn`), scrolls the box by as
- * far as the focused element then stands from the top kept. That top is measured afresh each
- * time, so a move anything else made, the browser's own scroll anchoring among them, is made good
- * rather than added to.
+ * So once the focus is inside `target` - up to `frames` frames are waited for it, and nothing is
+ * held if it never gets there - each change of height of the content of Details' scrolling box
+ * around the focused element, at every depth (`watchedIn`), scrolls the box by as far as the
+ * focused element then stands from the top kept. That top is measured afresh each time, so a move
+ * anything else made, the browser's own scroll anchoring among them, is made good rather than
+ * added to.
  *
  * The opener brings the control's whole row into the view, not the control itself: a row taller
  * than the view - the collaborators' row with its list open - that the box comes to from below,
  * once the reader has read far down Details, shows its foot, and the control at its head stays
- * above the view. So as the focus arrives, a focused element not wholly in the view is brought
+ * above the view. So as the focus lands, a focused element not wholly in the view is brought
  * into it first, by the least scroll that shows it whole (`nearest`). An element taller than the
  * view is brought in only where it lies wholly outside the view, its top to the view's top, which
  * `nearest` would not show from below; one that already shows in part keeps the focus in sight
@@ -550,9 +539,9 @@ function useLandedPlaceHold(open: boolean | undefined): (target: string, frames:
  *
  * The reader's act that takes the box back, as `ViewportAnchor`'s `takeBox` states, ends the
  * hold, and its claim with it (`claimBox`'s `end`), and the history's anchor keeps the entry that
- * act names from then on. So an event that arrives above the reader's entry, or an entry above it
- * that grows, leaves that entry where the reader sees it, where the hold of the history's top
- * would keep the heading and let the entry move.
+ * act names from then on. So a new event above the reader's entry, or an entry above it that
+ * grows, leaves that entry where the reader sees it, where the hold of the history's top would
+ * keep the heading and let the entry move.
  *
  * One move is the place the key asked for rather than one to make good: `t v` often reaches the
  * history while its list is still the loading line, at the end of what Details holds, and once
@@ -575,13 +564,13 @@ function holdLandedPlace(target: string, frames: number): () => void {
     stop?.();
     stop = undefined;
   }
-  const arrive = (left: number): void => {
+  const findFocus = (left: number): void => {
     const control = document.activeElement;
     if (
       !(control instanceof HTMLElement) ||
       document.querySelector(target)?.contains(control) !== true
     ) {
-      if (left > 0) frame = requestAnimationFrame(() => arrive(left - 1));
+      if (left > 0) frame = requestAnimationFrame(() => findFocus(left - 1));
       return;
     }
     // The box that scrolls the control, inside Details' own `aside`: the history's anchor finds
@@ -611,12 +600,8 @@ function holdLandedPlace(target: string, frames: number): () => void {
       claim?.();
       claim = undefined;
     };
-    // The opener brings the control's row into the view, which leaves the control at the head of
-    // a row taller than the view above it where the box comes to that row from below. So the
-    // focused element is brought into the view before its top is kept: wholly, or, where it is
-    // taller than the view, by its top, and then only while no part of it is in the view. The
-    // scroll is marked as the hold's own, and its event is raised in a later frame, once `keepTop`
-    // has claimed the box, so neither the hold nor the history's anchor takes it for the reader's.
+    // The focused element is brought into the view before its top is kept, by the rule this
+    // function's doc states for the opener's row.
     const own = ownScrollMark();
     const landing = control.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
@@ -668,7 +653,7 @@ function holdLandedPlace(target: string, frames: number): () => void {
   };
   // The opener focuses the control in its second frame, and this looks in that frame, after it.
   frame = requestAnimationFrame(() => {
-    frame = requestAnimationFrame(() => arrive(frames));
+    frame = requestAnimationFrame(() => findFocus(frames));
   });
   return release;
 }

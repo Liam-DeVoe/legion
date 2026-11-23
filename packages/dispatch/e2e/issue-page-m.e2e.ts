@@ -2868,8 +2868,8 @@ async function seedAgentsThread(): Promise<{
 // focus in the history, and a Close there is the later word; `/collaborators` and `t o` open the
 // People section the reader closed, with the collaborators' list open and the focus on its
 // control; the address of an agents' turn opens Details at that turn, its folded day open, marked
-// and on screen, once per arrival, and a turn that arrives while the history's log is held is
-// reached at once; and Keys lists both keys.
+// and on screen, once per following of the address, and a turn that arrives while the history's
+// log is held is reached at once; and Keys lists both keys.
 test("t v and t o open Details at the history and at the collaborators, and an agents' turn's address marks it", async ({
   browser,
 }) => {
@@ -2978,7 +2978,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
       "false"
     );
     await expect(turn).toHaveCount(0);
-    // Once per arrival: the reader's Close is the later word.
+    // Once per following of the address: the reader's Close is the later word.
     await closeDetails(page);
     await nextFrames(page);
     await expect(marginShell(page), "Details opened again after the reader closed it").toBeHidden();

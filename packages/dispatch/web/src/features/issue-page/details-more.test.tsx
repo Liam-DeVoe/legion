@@ -706,10 +706,10 @@ test("the subscribers' Retry taken away by a read the reader did not press for l
   }
 });
 
-// `/issues/<key>/collaborators` opens Details once per arrival at it (`DetailsHistory`), and
-// the collaborators' list with it: a reader who closed the list there and arrives at the same
+// `/issues/<key>/collaborators` opens Details once per following of it (`DetailsHistory`), and
+// the collaborators' list with it: a reader who closed the list there and follows the same
 // address again - `t o`, or a link to the address they are on - finds it open.
-test("each arrival at the collaborators' address opens their list, though the reader closed it", async () => {
+test("each following of the collaborators' address opens their list, though the reader closed it", async () => {
   const getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const getIssueCollaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
     agents: [],
@@ -742,7 +742,7 @@ test("each arrival at the collaborators' address opens their list, though the re
     act(() => navigate?.(address, { replace: true }));
     expect(
       collaborators.getAttribute("aria-expanded"),
-      "an arrival at the collaborators' address again left their list shut"
+      "following the collaborators' address again left their list shut"
     ).toBe("true");
   } finally {
     view.unmount();
@@ -1419,15 +1419,19 @@ const AGENTS_THREAD: MessageRead = {
 
 /** `readsHeld()`'s client with the agents' thread as the issue's one thread of messages
  *  (`AGENTS_THREAD`), and the issue's results and decisions, which the outline lands by too,
- *  held empty; and the spy that answers each read of the names the page's words reference with
- *  none, which the case restores. */
+ *  held empty; the spy that answers each read of the outline's coverage, which it lands by as
+ *  well, with none, and which a case can hold out instead; and the spy that answers each read of
+ *  the names the page's words reference with none. The case restores both spies. */
 function agentsThreadClient() {
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+    requirements: [],
+  } as never);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const client = readsHeld();
   client.setQueryData(["issue-messages", KEY], [AGENTS_THREAD]);
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
-  return { client, names };
+  return { client, getIssueCoverage, names };
 }
 
 // The address of a turn only agents wrote in opens Details at the history with that turn marked
@@ -1438,11 +1442,9 @@ function agentsThreadClient() {
 // while the outline still waited.
 test("an agents' turn's address opens Details at it once every read the outline lands by has answered", async () => {
   const coverage = Promise.withResolvers<IssueCoverage>();
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockImplementation(
-    () => coverage.promise
-  );
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
+  getIssueCoverage.mockImplementation(() => coverage.promise);
   const id = AGENTS_THREAD.message.id;
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ id, key: KEY, kind: "message" })]}>
@@ -1517,8 +1519,8 @@ async function readMessagesAgainFromNothing(
 // Every entry the browser makes has the key "default", a load and a fragment typed in the address
 // bar alike, so a fragment typed at `/issues/<key>/activity` is a following of its own though the
 // key stays one (`useFollowing`): Details opens again at it, though the reader closed it. Details
-// counted an arrival by the key and the address without its fragment, took the typed fragment for
-// the arrival it had opened at, and stayed shut.
+// told followings apart by the key and the address without its fragment, took the typed fragment
+// for the following it had opened at, and stayed shut.
 test("a fragment typed at the history's address opens Details again, though the reader closed it", async () => {
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
   const hold: DrawerHold = {};
@@ -1550,60 +1552,20 @@ test("a fragment typed at the history's address opens Details again, though the 
 
 // The address of an agents' turn opens Details at it once per following, and the reader's Close
 // stands for the rest of that following. The outline's read of the messages going out again with
-// nothing held takes the turn back until it answers, and the turn is then told again for the same
-// following: Details stays shut. Details forgot the arrival it had opened for as the turn was taken
-// back, and opened again at the same arrival when the read answered.
-test("a closed Details stays closed when the outline's reads answer again for the same following of an agents' turn's address", async () => {
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    requirements: [],
-  } as never);
+// nothing held takes the turn back until it answers, and the turn told again for the same
+// following leaves Details shut. A fragment typed at the address is a following of its own: typed
+// while a read the outline lands by is out, the outline lets go of the turn until that read
+// answers, Details then opens at the turn once, and a later answer of the outline's reads leaves it
+// shut. Details told followings apart without the fragment and forgot the one it had opened for
+// as the turn was taken back, so it opened again at each answer of the reads.
+test("a closed Details stays closed when the outline's reads answer again for the same following of an agents' turn's address, and after a fragment typed there while a read the outline lands by is out, opens once at the turn and stays closed at a later answer of the reads", async () => {
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const messages = Promise.withResolvers<MessageRead[]>();
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockReturnValue(messages.promise);
-  const { client, names } = agentsThreadClient();
-  const hold: DrawerHold = {};
-  const id = AGENTS_THREAD.message.id;
-  const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ id, key: KEY, kind: "message" })]}>
-      <QueryClientProvider client={client}>
-        <HistoryInDrawer hold={hold} of={{ ...issueDetails(), artifacts: [] }} />
-      </QueryClientProvider>
-    </MemoryRouter>
+  // Each read of the outline's messages is answered through the resolver it finds here.
+  let messages = Promise.withResolvers<MessageRead[]>();
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockImplementation(
+    () => messages.promise
   );
-  try {
-    await waitFor(() => {
-      expect(turnMarked(id), "the agents' turn's address marked no turn in the history").toBe(true);
-      expect(hold.isOpen, "the agents' turn's address left Details shut").toBe(true);
-    });
-    act(() => hold.open?.(false));
-
-    await readMessagesAgainFromNothing(client, messages.resolve);
-    expect(
-      hold.isOpen,
-      "the outline's reads answered again for the same following of the agents' turn's address, and Details opened again after the reader closed it"
-    ).toBe(false);
-  } finally {
-    view.unmount();
-    for (const spy of [getIssueCoverage, getIssueEvents, listIssueMessages, names]) {
-      spy.mockRestore();
-    }
-  }
-});
-
-// A fragment typed at an agents' turn's address is a following of its own. Typed while a read the
-// outline lands by is out, the outline lets go of the turn until that read answers, and Details
-// then opens at the turn, once: the reader's Close stands for the rest of that following, and a
-// later answer of the outline's reads, which takes the turn back and tells it again, leaves it
-// shut. Details counted an arrival without the fragment and forgot it as the turn was taken back,
-// so it opened again at each answer.
-test("after a fragment typed at an agents' turn's address while a read the outline lands by is out, Details opens once at the turn, and a later answer of the reads leaves it closed", async () => {
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    requirements: [],
-  } as never);
-  const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const messages = Promise.withResolvers<MessageRead[]>();
-  const listIssueMessages = spyOn(api, "listIssueMessages").mockReturnValue(messages.promise);
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
   const hold: DrawerHold = {};
   const id = AGENTS_THREAD.message.id;
   const address = buildIssuePath({ id, key: KEY, kind: "message" });
@@ -1619,6 +1581,12 @@ test("after a fragment typed at an agents' turn's address while a read the outli
       expect(hold.isOpen, "the agents' turn's address left Details shut").toBe(true);
     });
     act(() => hold.open?.(false));
+
+    await readMessagesAgainFromNothing(client, messages.resolve);
+    expect(
+      hold.isOpen,
+      "the outline's reads answered again for the same following of the agents' turn's address, and Details opened again after the reader closed it"
+    ).toBe(false);
 
     // The outline's coverage goes out again with nothing held, and the fragment is typed while it
     // is out.
@@ -1649,6 +1617,7 @@ test("after a fragment typed at an agents' turn's address while a read the outli
       "Details opened again at the turn the fragment's following told, after the reader closed it"
     ).toBe(false);
 
+    messages = Promise.withResolvers<MessageRead[]>();
     await readMessagesAgainFromNothing(client, messages.resolve);
     expect(
       hold.isOpen,
@@ -1697,18 +1666,12 @@ test("Back to the history's address from the issue's own address opens Details a
   }
 });
 
-// The address of a comment that has a row of the outline opens no Details: the outline lands on
-// that row. Back from it to an earlier entry of `/issues/<key>/activity` is that entry's following
-// again, and Details opens again there, though the reader closed it at the comment. An address
-// that names an item keeps the arrival Details last opened for only where that arrival is its own
-// following, so the history's address's arrival is forgotten at the comment's, and Back to it
-// opens Details again.
+// The reader loads `/issues/<key>/activity`, which opens Details, follows a link to the address
+// of a comment that has a row of the outline, where the outline lands on that row and opens no
+// Details, closes Details there, and goes Back to the history's address: Details opens again.
 test("Back to the history's address from a comment's address with a row of the outline opens Details again, though the reader closed it there", async () => {
-  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
-    requirements: [],
-  } as never);
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
   const hold: DrawerHold = {};
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: KEY, kind: "activity" })]}>
@@ -2234,7 +2197,7 @@ test("a load of /collaborators keeps the focused Collaborators control's place a
 // control wholly in the view. The opener brings the whole row into the view (`nearest`), which
 // from below shows the row's foot, the control at its head still above the view; the hold then
 // found the control wholly outside the view and yielded, so nothing brought it back. The hold
-// brings the focused control into the view as the focus arrives. Found by the tester on a running
+// brings the focused control into the view as the focus lands. Found by the tester on a running
 // build after the history's Load older was pressed until it went: the control 151 px above
 // Details' view at 1440 px, and 435 px at 390.
 test("t o pressed again at /collaborators with Details read far below a collaborators' row taller than its view leaves the focused Collaborators control wholly in the view", async () => {
@@ -2632,11 +2595,11 @@ type EarlierPlace = "older" | "pin" | "pointer" | "scroll";
  * the reader looked at: that entry's middle.
  */
 async function readerLeftAPlace(place: EarlierPlace) {
-  const { client, names } = agentsThreadClient();
+  const { client, getIssueCoverage, names } = agentsThreadClient();
   const log = claimsNewestFirst(place === "older" ? 200 : 30);
   const older = Promise.withResolvers<DispatchEvent[]>();
   const reads = [
-    spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
+    getIssueCoverage,
     names,
     // A pin reads the reader's state of the issue, and writes it with the line pinned.
     spyOn(api, "getMyState").mockResolvedValue(READ_THROUGH_TWO),
@@ -2774,7 +2737,7 @@ for (const [landing, landingName] of SWEEP_LANDINGS) {
               if (heading === null) throw new Error("the history drew no heading");
               landed = heading;
             } else {
-              // The address arrives a while after the reader's last act: its landing's scroll
+              // The address is followed a while after the reader's last act: its landing's scroll
               // is no scroll of theirs.
               page.later(READER_ACT_PASSED_MS);
               const id = AGENTS_THREAD.message.id;
