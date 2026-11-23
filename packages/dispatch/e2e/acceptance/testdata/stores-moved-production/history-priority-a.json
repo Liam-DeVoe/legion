@@ -1,0 +1,38 @@
+[
+  {
+    "field": "advances",
+    "value": "",
+    "issue": "CORE-1",
+    "asserted": true,
+    "actor": {
+      "kind": "user",
+      "id": "alice",
+      "proven": true
+    },
+    "at": "2026-11-22T07:13:40.760899Z"
+  },
+  {
+    "field": "rank",
+    "value": "F",
+    "issue": null,
+    "asserted": true,
+    "actor": {
+      "kind": "user",
+      "id": "alice",
+      "proven": true
+    },
+    "at": "2026-11-21T08:00:00.5Z"
+  },
+  {
+    "field": "title",
+    "value": "Priority A",
+    "issue": null,
+    "asserted": true,
+    "actor": {
+      "kind": "user",
+      "id": "alice",
+      "proven": true
+    },
+    "at": "2026-11-19T01:58:42.824034Z"
+  }
+]

@@ -1,0 +1,16 @@
+[
+  {
+    "key": "CORE",
+    "name": "The fixture project",
+    "open_asks": 0,
+    "gated_steps": [],
+    "created_at": "2026-11-10T00:44:06.468488Z"
+  },
+  {
+    "key": "OTHER",
+    "name": "Another project",
+    "open_asks": 2,
+    "gated_steps": [],
+    "created_at": "2026-11-11T00:00:00Z"
+  }
+]

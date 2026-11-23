@@ -1,0 +1,28 @@
+{
+  "issues": [
+    {
+      "key": "CORE-1",
+      "title": "The issue that ran",
+      "status": "done",
+      "advances": [
+        {
+          "id": "priority-a",
+          "inherited": false
+        }
+      ],
+      "advances_revision": 1237,
+      "updated_at": "2026-11-21T03:36:57.051675Z"
+    },
+    {
+      "key": "CORE-2",
+      "title": "An issue that never ran",
+      "status": "triage",
+      "advances": [],
+      "advances_revision": 0,
+      "updated_at": "2026-11-20T03:36:57Z"
+    }
+  ],
+  "limit": 250,
+  "offset": 0,
+  "total": 2
+}

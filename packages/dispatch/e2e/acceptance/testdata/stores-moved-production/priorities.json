@@ -1,0 +1,71 @@
+{
+  "priorities": [
+    {
+      "id": "priority-a",
+      "title": "Priority A",
+      "description": "The first priority of the fixture.",
+      "owner": "alice",
+      "rank": "F",
+      "state": "live",
+      "made_at": "2026-11-19T01:58:42.824034Z",
+      "made_by": {
+        "kind": "user",
+        "id": "alice",
+        "owner": "alice"
+      },
+      "work": {
+        "by_status": {
+          "backlog": 2,
+          "done": 0,
+          "in_progress": 1
+        },
+        "claimed": 1,
+        "open_asks": 0,
+        "closed_last_7_days": 3,
+        "newest_event_at": "2026-11-23T21:12:46.457573Z"
+      }
+    },
+    {
+      "id": "priority-b",
+      "title": "Priority B",
+      "description": "The second priority of the fixture.",
+      "owner": "bob",
+      "rank": "G",
+      "state": "live",
+      "made_at": "2026-11-20T03:10:00.000001Z",
+      "made_by": {
+        "kind": "user",
+        "id": "bob",
+        "owner": "bob"
+      },
+      "work": {
+        "by_status": {
+          "backlog": 0,
+          "done": 1
+        },
+        "claimed": 0,
+        "open_asks": 0,
+        "closed_last_7_days": 1,
+        "newest_event_at": "2026-11-22T10:00:00Z"
+      }
+    }
+  ],
+  "priority_work_parked": {
+    "count": 1,
+    "by_priority": {
+      "priority-a": 1
+    }
+  },
+  "work_under_no_priority": {
+    "count": 1,
+    "by_project": {
+      "CORE": 1
+    },
+    "issues": [
+      {
+        "key": "CORE-3",
+        "title": "An issue under no priority"
+      }
+    ]
+  }
+}

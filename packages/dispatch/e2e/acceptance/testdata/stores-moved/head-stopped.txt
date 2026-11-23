@@ -1,0 +1,7 @@
+time=2026-11-23T21:11:58.216Z level=INFO msg="dispatch: no app credentials yet — dashboard will respond 503 until configured"
+time=2026-11-23T21:11:58.217Z level=WARN msg="dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY" origin=http://127.0.0.1:57510
+time=2026-11-23T21:11:58.217Z level=INFO msg="dispatch: NATS publisher disabled"
+time=2026-11-23T21:11:58.217Z level=INFO msg="dispatch: agent conversation relay served from the test hook"
+time=2026-11-23T21:11:58.217Z level=INFO msg="dispatch: targeted messages for a session no store holds go to the test hook's recorder"
+time=2026-11-23T21:12:00.583Z level=INFO msg="dispatch: the move of the priority store and the workflow store into the graph store begins" batch=2
+time=2026-11-23T21:12:00.606Z level=ERROR msg="dispatch: move the priority store and the workflow store into the graph store" error="the stores' move stopped after the batches its test setting allows: 3 batches of at most 2 tuples, 6 tuples"

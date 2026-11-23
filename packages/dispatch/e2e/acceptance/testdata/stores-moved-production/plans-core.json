@@ -1,0 +1,52 @@
+{
+  "project": "CORE",
+  "issues": [
+    {
+      "issue": "CORE-1",
+      "title": "The issue that ran",
+      "closed_at": "2026-11-23T16:53:40.964657Z",
+      "duration_seconds": 112953,
+      "failed_steps": 0,
+      "started_at": "2026-11-22T09:41:07.013507Z",
+      "ended_at": "2026-11-23T04:31:09.241227978Z",
+      "plan": {
+        "id": "5d244206-e015-5028-b33a-f8d3f8e5c7c2",
+        "issue": "CORE-1",
+        "generation": 1,
+        "source": "default",
+        "artifact_id": null,
+        "version": null,
+        "tasks": [
+          {
+            "id": "default",
+            "steps": [
+              "planner",
+              "implementer",
+              "tester",
+              "reviewer"
+            ]
+          }
+        ]
+      },
+      "ratings": [
+        {
+          "rating": 4,
+          "reason": "The plan fit the work.",
+          "step_id": "37d5db0e-9c0c-58de-96cb-aaf5262335a2",
+          "ended_at": "2026-11-23T04:31:09.241227978Z"
+        }
+      ]
+    },
+    {
+      "issue": "CORE-3",
+      "title": "A finished issue that Legion never ran",
+      "closed_at": "2026-11-23T21:09:16.14259Z",
+      "duration_seconds": null,
+      "failed_steps": 0,
+      "started_at": null,
+      "ended_at": null,
+      "plan": null,
+      "ratings": []
+    }
+  ]
+}

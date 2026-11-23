@@ -1,0 +1,46 @@
+time=2026-11-23T21:07:37.511Z level=INFO msg="dispatch: no app credentials yet — dashboard will respond 503 until configured"
+time=2026-11-23T21:07:37.511Z level=WARN msg="dispatch: dev sign-in mounted: any email signs in at /auth/_dev/signin without the sign-in issuer; cookies are valid on every process given this DISPATCH_DEV_SIGNIN_SHARED_KEY" origin=http://127.0.0.1:34482
+time=2026-11-23T21:07:37.512Z level=INFO msg="dispatch: NATS publisher disabled"
+time=2026-11-23T21:07:37.512Z level=INFO msg="dispatch: agent conversation relay served from the test hook"
+time=2026-11-23T21:07:37.512Z level=INFO msg="dispatch: targeted messages for a session no store holds go to the test hook's recorder"
+time=2026-11-23T21:07:40.066Z level=INFO msg="dispatch: the move of the priority store and the workflow store into the graph store begins" batch=2
+time=2026-11-23T21:07:40.938Z level=WARN msg="dispatch: an attempt of the stores' swap gave up waiting for a lock; the boot tries it again" lock="priority_nodes in access exclusive mode" attempt=1 attempts=120 pause=2s
+time=2026-11-23T21:07:42.981Z level=INFO msg="dispatch: the census before the drop: priority: node rows: old 5 (md5 8309311abaf75e8d375a4c4ca50c45ae), moved 5 (md5 8309311abaf75e8d375a4c4ca50c45ae), 0 differing"
+time=2026-11-23T21:07:42.982Z level=INFO msg="dispatch: the census before the drop: priority: tuples: old 34 (md5 ae57a89d7a87202eea16a2a75d4e3502), moved 34 (md5 ae57a89d7a87202eea16a2a75d4e3502), 0 differing"
+time=2026-11-23T21:07:42.982Z level=INFO msg="dispatch: the census before the drop: workflow: node rows: old 5 (md5 d5542a6b3d645a63c6f1e043e7f494b6), moved 5 (md5 d5542a6b3d645a63c6f1e043e7f494b6), 0 differing"
+time=2026-11-23T21:07:42.982Z level=INFO msg="dispatch: the census before the drop: workflow: tuples: old 53 (md5 618a3d4cb1490a33c27730d967ed2268), moved 53 (md5 618a3d4cb1490a33c27730d967ed2268), 0 differing"
+time=2026-11-23T21:07:42.982Z level=INFO msg="dispatch: the census before the drop: workflow: stated values: old 10 (md5 2d0a704da0e04911292dc332733e2458), moved 10 (md5 2d0a704da0e04911292dc332733e2458), 0 differing"
+time=2026-11-23T21:07:42.982Z level=INFO msg="dispatch: the census before the drop: workflow: runs and plans whose issue attribute names another issue than their part_of: 0"
+time=2026-11-23T21:07:42.982Z level=INFO msg="dispatch: the census before the drop: workflow: runs and plans whose project_key is null or names another project than their issue's: 0"
+time=2026-11-23T21:07:42.982Z level=INFO msg="dispatch: the move of the priority store and the workflow store into the graph store ended" copied=74 batches=38 swap_copied=13 swap_attempts=2 took=2.91545819s
+time=2026-11-23T21:07:43.025Z level=WARN msg="dispatch: the boot's retirement kept its objects: the build a rollback reaches does not list every relation kind of the release that kept them" retirement="the stores' move's views and triggers" commit=1de3a542d1ab17caf4a4f52ccc0bb3804ca09fa4 announcement_seq=1 announcement_commit=93625c08f23dfa873a5c7fa189ecbe0926773b54 announcement_kinds="[affects anchored_to attached_to authored_by changed_by_run child_of constrained_by decided_by depends_on duplicate_of filed_from followed_by from_ask has_kind in_document issue_room mentions needs owned_by parent part_of prevented_by serves shaped triggered_by]" missing=[stores_moved]
+time=2026-11-23T21:07:43.027Z level=INFO msg="dispatch: no dashboard build to publish: the web dist holds no index.html" dir=/tmp/dispatch-baseline.capture/web-dist
+time=2026-11-23T21:07:43.032Z level=INFO msg="dispatch: pruned dashboard builds" builds=0 assets=0
+time=2026-11-23T21:07:43.033Z level=INFO msg="dispatch: retired the refresh tokens stored in plain text" retired=0 failed=0
+time=2026-11-23T21:07:43.033Z level=INFO msg="dispatch: document rooms' limits" read_budget_bytes=268435456 max_live_rooms=1000 max_doc_connections=1000
+time=2026-11-23T21:07:43.037Z level=INFO msg="dispatch: restored decided asks' wordings" restored=0 copies=0
+time=2026-11-23T21:07:43.044Z level=INFO msg="dispatch: repaired the asks of closed and reopened issues" withdrawn=0 restored=0 swept=0
+time=2026-11-23T21:07:43.045Z level=INFO msg="dispatch: filled reviews' content hashes" filled=0 unhashable=0
+time=2026-11-23T21:07:43.045Z level=INFO msg="dispatch: rewrote renamed repositories' old names" pairs=0 rows=0 deleted=0 failures=0 left=0
+time=2026-11-23T21:07:43.046Z level=WARN msg="dispatch: meaning search unavailable" error="embed: needs an AWS region: set AWS_REGION, or a region in the shared AWS config"
+time=2026-11-23T21:07:43.046Z level=WARN msg="dispatch: no text model configured, so this server cannot answer questions" setting=DISPATCH_ANSWERER
+time=2026-11-23T21:07:43.056Z level=INFO msg="dispatch: webhook redelivery off: it needs NATS and the GitHub App private key"
+time=2026-11-23T21:07:43.056Z level=INFO msg="dispatch: CI reconcile off: it needs NATS and the GitHub App private key"
+time=2026-11-23T21:07:43.056Z level=INFO msg="dispatch delivery: no NATS client — intake is idle; the reconcile alone still runs"
+time=2026-11-23T21:07:43.058Z level=INFO msg="dispatch architecture: no GitHub App key — the architecture importer is idle"
+time=2026-11-23T21:07:43.058Z level=INFO msg="dispatch delivery: no GitHub App key — the reconcile is idle"
+time=2026-11-23T21:07:43.143Z level=INFO msg="dispatch: the boot pass ended the overdue answer runs" ended=0 duration=84.1893ms
+time=2026-11-23T21:07:43.173Z level=INFO msg="dispatch duty: leased pass skipped" lease=document-compaction due=2026-11-23T21:07:43.047045401Z period=2026-11-23T21:00:00Z
+time=2026-11-23T21:07:43.173Z level=INFO msg="dispatch duty: leased pass skipped" lease=settlement-resumption due=2026-11-23T21:07:43.04663059Z period=2026-11-23T21:07:00Z
+time=2026-11-23T21:07:43.173Z level=INFO msg="dispatch duty: leased pass skipped" lease=search-term-stats due=2026-11-23T21:07:43.046787461Z period=2026-11-23T21:00:00Z
+time=2026-11-23T21:07:43.173Z level=INFO msg="dispatch duty: leased pass skipped" lease=text-tree-fill due=2026-11-23T21:07:43.047140381Z period=2026-11-23T21:00:00Z
+time=2026-11-23T21:07:43.181Z level=INFO msg="dispatch duty: leased pass skipped" lease=legion-state due=2026-11-23T21:07:43.05855085Z period=2026-11-23T21:07:00Z
+time=2026-11-23T21:07:43.181Z level=INFO msg="dispatch: owner locks take the advisory lock alone: no earlier build, which serialises on the owner row, is in the fleet" was=unknown mode=advisory
+time=2026-11-23T21:07:43.183Z level=INFO msg="dispatch duty: leased pass ran" lease=edit-notices
+time=2026-11-23T21:07:43.187Z level=INFO msg="dispatch: the embeddings project_key fill has nothing to do: every row stored before this release carries its project"
+time=2026-11-23T21:07:43.187Z level=INFO msg="dispatch duty: leased pass ran" lease=embeddings-project-key-fill
+time=2026-11-23T21:07:43.203Z level=INFO msg="dispatch duty: leased pass ran" lease=reference-excerpts
+time=2026-11-23T21:07:43.215Z level=INFO msg="dispatch: reconciled issue task progress" issues=1
+time=2026-11-23T21:07:43.216Z level=INFO msg="dispatch: registered this server process" instance=a3f3da46-0404-4c02-b9ac-e381c00790eb
+time=2026-11-23T21:07:43.216Z level=INFO msg="dispatch: listening" addr=127.0.0.1:34482
+time=2026-11-23T21:07:43.222Z level=INFO msg="dispatch: another process holds the keyword fill's hold; standing by" holder=7e843f74-8821-493d-bed4-3a1a6fc1f838

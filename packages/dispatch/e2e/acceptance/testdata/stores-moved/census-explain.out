@@ -1,0 +1,296 @@
+census: schema version 20261123120000 (schema_migrations); pending: 20261123134318_stores_moved.up.sql, 20261123185607_graph_nodes_artifact_id_index.up.sql
+census: 20261123134318_stores_moved.up.sql touches graph_nodes: 164 rows, 176.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261123134318_stores_moved.up.sql touches graph_tuples: 1,023 rows, 632.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261123134318_stores_moved.up.sql census (20261123134318_stores_moved.census.sql): 0
+census: 20261123185607_graph_nodes_artifact_id_index.up.sql touches graph_nodes: 164 rows, 176.0 KiB (limit 1.0 GiB); locks held by other sessions: none
+census: 20261123185607_graph_nodes_artifact_id_index.up.sql census (20261123185607_graph_nodes_artifact_id_index.census.sql): 0
+census: transactions open longer than 1m0s, or of an age the census cannot see: none
+census: ok
+census: rehearsal: it applies the pending migration 20261123134318_stores_moved.up.sql, of this issue's own: transactional create table, create index on a table it creates and bounded inserts alone
+census: rehearsal: it skips the pending migration 20261123185607_graph_nodes_artifact_id_index.up.sql, of this issue's own: a concurrent index build, which no transaction may run
+census: rehearsal: its copy ended: 60 tuples of the four tables in 24ms, in batches of 200
+census: rehearsal: plan of the census of the priority node rows:
+    Nested Loop Left Join  (cost=72.07..72.09 rows=1 width=200)
+      CTE old
+        ->  Seq Scan on priority_nodes  (cost=0.00..13.00 rows=300 width=248)
+      CTE moved
+        ->  Index Scan using graph_nodes_pkey on graph_nodes  (cost=0.27..8.29 rows=1 width=243)
+              Index Cond: (kind = 'priority'::text)
+      CTE differing
+        ->  Hash Full Join  (cost=0.04..8.31 rows=300 width=112)
+              Hash Cond: ((o.kind = m.kind) AND (o.id = m.id))
+              Filter: ((o.kind IS NULL) OR (m.kind IS NULL) OR (o.supertag IS DISTINCT FROM m.supertag) OR (o.visibility IS DISTINCT FROM m.visibility) OR (o.state IS DISTINCT FROM m.state) OR (o.attributes IS DISTINCT FROM m.attributes) OR (o.made_at IS DISTINCT FROM m.made_at) OR (o.made_by IS DISTINCT FROM m.made_by) OR (o.source_event IS DISTINCT FROM m.source_event))
+              ->  CTE Scan on old o  (cost=0.00..6.00 rows=300 width=248)
+              ->  Hash  (cost=0.02..0.02 rows=1 width=248)
+                    ->  CTE Scan on moved m  (cost=0.00..0.02 rows=1 width=248)
+      InitPlan 4
+        ->  Aggregate  (cost=6.75..6.76 rows=1 width=8)
+              ->  CTE Scan on old  (cost=0.00..6.00 rows=300 width=0)
+      InitPlan 5
+        ->  Aggregate  (cost=21.35..21.36 rows=1 width=32)
+              ->  Sort  (cost=18.34..19.09 rows=300 width=240)
+                    Sort Key: old_1.kind, old_1.id
+                    ->  CTE Scan on old old_1  (cost=0.00..6.00 rows=300 width=240)
+      InitPlan 6
+        ->  Aggregate  (cost=0.02..0.03 rows=1 width=8)
+              ->  CTE Scan on moved  (cost=0.00..0.02 rows=1 width=0)
+      InitPlan 7
+        ->  Aggregate  (cost=0.05..0.06 rows=1 width=32)
+              ->  Sort  (cost=0.03..0.04 rows=1 width=240)
+                    Sort Key: moved_1.kind, moved_1.id
+                    ->  CTE Scan on moved moved_1  (cost=0.00..0.02 rows=1 width=240)
+      InitPlan 8
+        ->  Aggregate  (cost=6.75..6.76 rows=1 width=8)
+              ->  CTE Scan on differing differing_1  (cost=0.00..6.00 rows=300 width=0)
+      ->  Result  (cost=0.00..0.01 rows=1 width=0)
+      ->  Limit  (cost=7.50..7.50 rows=1 width=112)
+            ->  Sort  (cost=7.50..8.25 rows=300 width=112)
+                  Sort Key: differing.old_seq, differing.moved_seq, differing.node_kind, differing.node_id
+                  ->  CTE Scan on differing  (cost=0.00..6.00 rows=300 width=112)
+census: rehearsal: plan of the census of the priority tuples:
+    Nested Loop Left Join  (cost=104.31..104.33 rows=1 width=200)
+      CTE old
+        ->  WindowAgg  (cost=27.13..34.53 rows=330 width=225)
+              Window: w1 AS (PARTITION BY priority_tuples.from_kind, priority_tuples.from_id ORDER BY priority_tuples.seq ROWS UNBOUNDED PRECEDING)
+              ->  Sort  (cost=27.10..27.93 rows=330 width=217)
+                    Sort Key: priority_tuples.from_kind, priority_tuples.from_id, priority_tuples.seq
+                    ->  Seq Scan on priority_tuples  (cost=0.00..13.30 rows=330 width=217)
+      CTE moved
+        ->  WindowAgg  (cost=16.59..16.64 rows=2 width=139)
+              Window: w1 AS (PARTITION BY "*SELECT* 1".from_kind, "*SELECT* 1".from_id ORDER BY "*SELECT* 1".seq ROWS UNBOUNDED PRECEDING)
+              ->  Sort  (cost=16.59..16.60 rows=2 width=131)
+                    Sort Key: "*SELECT* 1".from_kind, "*SELECT* 1".from_id, "*SELECT* 1".seq
+                    ->  Result  (cost=0.28..16.58 rows=2 width=131)
+                          ->  Append  (cost=0.28..16.56 rows=2 width=131)
+                                ->  Subquery Scan on "*SELECT* 1"  (cost=0.28..8.25 rows=1 width=131)
+                                      ->  Index Scan using graph_tuples_as_of_out on graph_tuples  (cost=0.28..8.24 rows=1 width=131)
+                                            Index Cond: (from_kind = 'priority'::text)
+                                ->  Subquery Scan on "*SELECT* 2"  (cost=0.27..8.30 rows=1 width=131)
+                                      ->  Index Scan using graph_tuples_as_of_in on graph_tuples graph_tuples_1  (cost=0.27..8.29 rows=1 width=131)
+                                            Index Cond: ((to_kind = 'priority'::text) AND (kind = 'advances'::text))
+                                            Filter: (from_kind <> 'priority'::text)
+      CTE differing
+        ->  Hash Full Join  (cost=0.08..10.42 rows=330 width=112)
+              Hash Cond: ((o.from_kind = m.from_kind) AND (o.from_id = m.from_id) AND (o.place = m.place))
+              Filter: ((o.from_kind IS NULL) OR (m.from_kind IS NULL) OR (o.kind IS DISTINCT FROM m.kind) OR (o.to_kind IS DISTINCT FROM m.to_kind) OR (o.to_id IS DISTINCT FROM m.to_id) OR (o.at IS DISTINCT FROM m.at) OR (o.who IS DISTINCT FROM m.who) OR (o.source_event IS DISTINCT FROM m.source_event) OR (o.asserted IS DISTINCT FROM m.asserted))
+              ->  CTE Scan on old o  (cost=0.00..6.60 rows=330 width=225)
+              ->  Hash  (cost=0.04..0.04 rows=2 width=225)
+                    ->  CTE Scan on moved m  (cost=0.00..0.04 rows=2 width=225)
+      InitPlan 4
+        ->  Aggregate  (cost=7.43..7.44 rows=1 width=8)
+              ->  CTE Scan on old  (cost=0.00..6.60 rows=330 width=0)
+      InitPlan 5
+        ->  Aggregate  (cost=19.38..19.39 rows=1 width=32)
+              ->  Incremental Sort  (cost=0.04..16.90 rows=330 width=217)
+                    Sort Key: old_1.from_kind, old_1.from_id, old_1.place
+                    Presorted Key: old_1.from_kind, old_1.from_id
+                    ->  CTE Scan on old old_1  (cost=0.00..6.60 rows=330 width=217)
+      InitPlan 6
+        ->  Aggregate  (cost=0.04..0.06 rows=1 width=8)
+              ->  CTE Scan on moved  (cost=0.00..0.04 rows=2 width=0)
+      InitPlan 7
+        ->  Aggregate  (cost=0.15..0.16 rows=1 width=32)
+              ->  Incremental Sort  (cost=0.03..0.13 rows=2 width=217)
+                    Sort Key: moved_1.from_kind, moved_1.from_id, moved_1.place
+                    Presorted Key: moved_1.from_kind, moved_1.from_id
+                    ->  CTE Scan on moved moved_1  (cost=0.00..0.04 rows=2 width=217)
+      InitPlan 8
+        ->  Aggregate  (cost=7.43..7.44 rows=1 width=8)
+              ->  CTE Scan on differing differing_1  (cost=0.00..6.60 rows=330 width=0)
+      ->  Result  (cost=0.00..0.01 rows=1 width=0)
+      ->  Limit  (cost=8.25..8.25 rows=1 width=112)
+            ->  Sort  (cost=8.25..9.08 rows=330 width=112)
+                  Sort Key: differing.old_seq, differing.moved_seq, differing.node_kind, differing.node_id
+                  ->  CTE Scan on differing  (cost=0.00..6.60 rows=330 width=112)
+census: rehearsal: plan of the census of the workflow node rows:
+    Nested Loop Left Join  (cost=75.60..75.63 rows=1 width=200)
+      CTE old
+        ->  Seq Scan on workflow_nodes  (cost=0.00..13.00 rows=300 width=248)
+      CTE moved
+        ->  Seq Scan on graph_nodes  (cost=0.00..11.64 rows=3 width=243)
+              Filter: (kind = ANY ('{step,plan}'::text[]))
+      CTE differing
+        ->  Hash Full Join  (cost=0.10..8.38 rows=300 width=112)
+              Hash Cond: ((o.kind = m.kind) AND (o.id = m.id))
+              Filter: ((o.kind IS NULL) OR (m.kind IS NULL) OR (o.supertag IS DISTINCT FROM m.supertag) OR (o.visibility IS DISTINCT FROM m.visibility) OR (o.state IS DISTINCT FROM m.state) OR (o.attributes IS DISTINCT FROM m.attributes) OR (o.made_at IS DISTINCT FROM m.made_at) OR (o.made_by IS DISTINCT FROM m.made_by) OR (o.source_event IS DISTINCT FROM m.source_event))
+              ->  CTE Scan on old o  (cost=0.00..6.00 rows=300 width=248)
+              ->  Hash  (cost=0.06..0.06 rows=3 width=248)
+                    ->  CTE Scan on moved m  (cost=0.00..0.06 rows=3 width=248)
+      InitPlan 4
+        ->  Aggregate  (cost=6.75..6.76 rows=1 width=8)
+              ->  CTE Scan on old  (cost=0.00..6.00 rows=300 width=0)
+      InitPlan 5
+        ->  Aggregate  (cost=21.35..21.36 rows=1 width=32)
+              ->  Sort  (cost=18.34..19.09 rows=300 width=240)
+                    Sort Key: old_1.kind, old_1.id
+                    ->  CTE Scan on old old_1  (cost=0.00..6.00 rows=300 width=240)
+      InitPlan 6
+        ->  Aggregate  (cost=0.07..0.08 rows=1 width=8)
+              ->  CTE Scan on moved  (cost=0.00..0.06 rows=3 width=0)
+      InitPlan 7
+        ->  Aggregate  (cost=0.12..0.13 rows=1 width=32)
+              ->  Sort  (cost=0.08..0.09 rows=3 width=240)
+                    Sort Key: moved_1.kind, moved_1.id
+                    ->  CTE Scan on moved moved_1  (cost=0.00..0.06 rows=3 width=240)
+      InitPlan 8
+        ->  Aggregate  (cost=6.75..6.76 rows=1 width=8)
+              ->  CTE Scan on differing differing_1  (cost=0.00..6.00 rows=300 width=0)
+      ->  Result  (cost=0.00..0.01 rows=1 width=0)
+      ->  Limit  (cost=7.50..7.50 rows=1 width=112)
+            ->  Sort  (cost=7.50..8.25 rows=300 width=112)
+                  Sort Key: differing.old_seq, differing.moved_seq, differing.node_kind, differing.node_id
+                  ->  CTE Scan on differing  (cost=0.00..6.00 rows=300 width=112)
+census: rehearsal: plan of the census of the workflow tuples:
+    Nested Loop Left Join  (cost=108.46..108.49 rows=1 width=200)
+      CTE old
+        ->  WindowAgg  (cost=27.13..34.53 rows=330 width=225)
+              Window: w1 AS (PARTITION BY workflow_tuples.from_kind, workflow_tuples.from_id ORDER BY workflow_tuples.seq ROWS UNBOUNDED PRECEDING)
+              ->  Sort  (cost=27.10..27.93 rows=330 width=217)
+                    Sort Key: workflow_tuples.from_kind, workflow_tuples.from_id, workflow_tuples.seq
+                    ->  Seq Scan on workflow_tuples  (cost=0.00..13.30 rows=330 width=217)
+      CTE moved
+        ->  WindowAgg  (cost=20.75..20.79 rows=2 width=139)
+              Window: w1 AS (PARTITION BY g.from_kind, g.from_id ORDER BY g.seq ROWS UNBOUNDED PRECEDING)
+              ->  Incremental Sort  (cost=20.71..20.75 rows=2 width=131)
+                    Sort Key: g.from_kind, g.from_id, g.seq
+                    Presorted Key: g.from_kind, g.from_id
+                    ->  Index Scan using graph_tuples_as_of_out on graph_tuples g  (cost=0.28..20.70 rows=1 width=131)
+                          Index Cond: (from_kind = ANY ('{step,plan}'::text[]))
+                          Filter: ((to_kind <> 'value'::text) OR ((kind <> ALL ('{visibility,state}'::text[])) AND ((kind <> 'project'::text) OR (NOT (ANY ((from_kind = (hashed SubPlan 3).col1) AND (from_id = (hashed SubPlan 3).col2)))))))
+                          SubPlan 3
+                            ->  Seq Scan on workflow_nodes w  (cost=0.00..13.75 rows=297 width=64)
+                                  Filter: (NOT (attributes ? 'project'::text))
+      CTE differing
+        ->  Hash Full Join  (cost=0.08..10.42 rows=330 width=112)
+              Hash Cond: ((o.from_kind = m.from_kind) AND (o.from_id = m.from_id) AND (o.place = m.place))
+              Filter: ((o.from_kind IS NULL) OR (m.from_kind IS NULL) OR (o.kind IS DISTINCT FROM m.kind) OR (o.to_kind IS DISTINCT FROM m.to_kind) OR (o.to_id IS DISTINCT FROM m.to_id) OR (o.at IS DISTINCT FROM m.at) OR (o.who IS DISTINCT FROM m.who) OR (o.source_event IS DISTINCT FROM m.source_event) OR (o.asserted IS DISTINCT FROM m.asserted))
+              ->  CTE Scan on old o  (cost=0.00..6.60 rows=330 width=225)
+              ->  Hash  (cost=0.04..0.04 rows=2 width=225)
+                    ->  CTE Scan on moved m  (cost=0.00..0.04 rows=2 width=225)
+      InitPlan 6
+        ->  Aggregate  (cost=7.43..7.44 rows=1 width=8)
+              ->  CTE Scan on old  (cost=0.00..6.60 rows=330 width=0)
+      InitPlan 7
+        ->  Aggregate  (cost=19.38..19.39 rows=1 width=32)
+              ->  Incremental Sort  (cost=0.04..16.90 rows=330 width=217)
+                    Sort Key: old_1.from_kind, old_1.from_id, old_1.place
+                    Presorted Key: old_1.from_kind, old_1.from_id
+                    ->  CTE Scan on old old_1  (cost=0.00..6.60 rows=330 width=217)
+      InitPlan 8
+        ->  Aggregate  (cost=0.04..0.06 rows=1 width=8)
+              ->  CTE Scan on moved  (cost=0.00..0.04 rows=2 width=0)
+      InitPlan 9
+        ->  Aggregate  (cost=0.15..0.16 rows=1 width=32)
+              ->  Incremental Sort  (cost=0.03..0.13 rows=2 width=217)
+                    Sort Key: moved_1.from_kind, moved_1.from_id, moved_1.place
+                    Presorted Key: moved_1.from_kind, moved_1.from_id
+                    ->  CTE Scan on moved moved_1  (cost=0.00..0.04 rows=2 width=217)
+      InitPlan 10
+        ->  Aggregate  (cost=7.43..7.44 rows=1 width=8)
+              ->  CTE Scan on differing differing_1  (cost=0.00..6.60 rows=330 width=0)
+      ->  Result  (cost=0.00..0.01 rows=1 width=0)
+      ->  Limit  (cost=8.25..8.25 rows=1 width=112)
+            ->  Sort  (cost=8.25..9.08 rows=330 width=112)
+                  Sort Key: differing.old_seq, differing.moved_seq, differing.node_kind, differing.node_id
+                  ->  CTE Scan on differing  (cost=0.00..6.60 rows=330 width=112)
+census: rehearsal: plan of the census of the workflow stated values:
+    Nested Loop Left Join  (cost=237.76..237.78 rows=1 width=200)
+      CTE old
+        ->  Nested Loop  (cost=12.93..51.52 rows=897 width=192)
+              ->  Hash Left Join  (cost=12.93..26.77 rows=300 width=240)
+                    Hash Cond: ((w.attributes ->> 'issue'::text) = i.key)
+                    ->  Seq Scan on workflow_nodes w  (cost=0.00..13.00 rows=300 width=208)
+                    ->  Hash  (cost=11.30..11.30 rows=130 width=64)
+                          ->  Seq Scan on issues i  (cost=0.00..11.30 rows=130 width=64)
+              ->  Values Scan on "*VALUES*"  (cost=0.00..0.05 rows=3 width=64)
+                    Filter: ((column1 <> 'project'::text) OR (NOT (w.attributes ? 'project'::text)))
+      CTE moved
+        ->  WindowAgg  (cost=20.75..20.80 rows=2 width=132)
+              Window: w1 AS (PARTITION BY g.from_kind, g.from_id, g.kind ORDER BY g.seq ROWS UNBOUNDED PRECEDING)
+              ->  Incremental Sort  (cost=20.71..20.75 rows=2 width=124)
+                    Sort Key: g.from_kind, g.from_id, g.kind, g.seq
+                    Presorted Key: g.from_kind, g.from_id, g.kind
+                    ->  Index Scan using graph_tuples_values on graph_tuples g  (cost=0.28..20.70 rows=1 width=124)
+                          Index Cond: (from_kind = ANY ('{step,plan}'::text[]))
+                          Filter: ((kind = ANY ('{visibility,state}'::text[])) OR ((kind = 'project'::text) AND (ANY ((from_kind = (hashed SubPlan 3).col1) AND (from_id = (hashed SubPlan 3).col2)))))
+                          SubPlan 3
+                            ->  Seq Scan on workflow_nodes w_1  (cost=0.00..13.75 rows=297 width=64)
+                                  Filter: (NOT (attributes ? 'project'::text))
+      CTE differing
+        ->  Hash Full Join  (cost=0.08..31.50 rows=897 width=112)
+              Hash Cond: ((o.from_kind = m.from_kind) AND (o.from_id = m.from_id) AND (o.kind = m.kind) AND (o.place = m.place))
+              Filter: ((o.from_kind IS NULL) OR (m.from_kind IS NULL) OR (o.to_id IS DISTINCT FROM m.to_id) OR (o.at IS DISTINCT FROM m.at) OR (o.who IS DISTINCT FROM m.who) OR (o.source_event IS DISTINCT FROM m.source_event))
+              ->  CTE Scan on old o  (cost=0.00..17.94 rows=897 width=192)
+              ->  Hash  (cost=0.04..0.04 rows=2 width=192)
+                    ->  CTE Scan on moved m  (cost=0.00..0.04 rows=2 width=192)
+      InitPlan 6
+        ->  Aggregate  (cost=20.18..20.19 rows=1 width=8)
+              ->  CTE Scan on old  (cost=0.00..17.94 rows=897 width=0)
+      InitPlan 7
+        ->  Aggregate  (cost=70.91..70.92 rows=1 width=32)
+              ->  Sort  (cost=61.93..64.18 rows=897 width=184)
+                    Sort Key: old_1.from_kind, old_1.from_id, old_1.kind, old_1.place
+                    ->  CTE Scan on old old_1  (cost=0.00..17.94 rows=897 width=184)
+      InitPlan 8
+        ->  Aggregate  (cost=0.04..0.06 rows=1 width=8)
+              ->  CTE Scan on moved  (cost=0.00..0.04 rows=2 width=0)
+      InitPlan 9
+        ->  Aggregate  (cost=0.15..0.16 rows=1 width=32)
+              ->  Incremental Sort  (cost=0.03..0.13 rows=2 width=184)
+                    Sort Key: moved_1.from_kind, moved_1.from_id, moved_1.kind, moved_1.place
+                    Presorted Key: moved_1.from_kind, moved_1.from_id, moved_1.kind
+                    ->  CTE Scan on moved moved_1  (cost=0.00..0.04 rows=2 width=184)
+      InitPlan 10
+        ->  Aggregate  (cost=20.18..20.19 rows=1 width=8)
+              ->  CTE Scan on differing differing_1  (cost=0.00..17.94 rows=897 width=0)
+      ->  Result  (cost=0.00..0.01 rows=1 width=0)
+      ->  Limit  (cost=22.43..22.43 rows=1 width=112)
+            ->  Sort  (cost=22.43..24.67 rows=897 width=112)
+                  Sort Key: differing.old_seq, differing.moved_seq, differing.node_kind, differing.node_id
+                  ->  CTE Scan on differing  (cost=0.00..17.94 rows=897 width=112)
+census: rehearsal: plan of the census of the workflow runs and plans whose issue attribute names another issue than their part_of:
+    Nested Loop Left Join  (cost=40.47..40.49 rows=1 width=72)
+      CTE hits
+        ->  Bitmap Heap Scan on graph_nodes n  (cost=8.56..40.32 rows=3 width=26)
+              Recheck Cond: (kind = ANY ('{step,plan}'::text[]))
+              Filter: ((attributes ->> 'issue'::text) IS DISTINCT FROM (SubPlan 1))
+              ->  Bitmap Index Scan on graph_nodes_pkey  (cost=0.00..8.55 rows=3 width=0)
+                    Index Cond: (kind = ANY ('{step,plan}'::text[]))
+              SubPlan 1
+                ->  Limit  (cost=0.28..8.30 rows=1 width=48)
+                      ->  Index Scan using graph_tuples_as_of_out on graph_tuples t  (cost=0.28..8.30 rows=1 width=48)
+                            Index Cond: ((from_kind = n.kind) AND (from_id = n.id) AND (kind = 'part_of'::text))
+      InitPlan 3
+        ->  Aggregate  (cost=0.07..0.08 rows=1 width=8)
+              ->  CTE Scan on hits hits_1  (cost=0.00..0.06 rows=3 width=0)
+      ->  Result  (cost=0.00..0.01 rows=1 width=0)
+      ->  Limit  (cost=0.08..0.08 rows=1 width=64)
+            ->  Sort  (cost=0.08..0.08 rows=3 width=64)
+                  Sort Key: hits.kind, hits.id
+                  ->  CTE Scan on hits  (cost=0.00..0.06 rows=3 width=64)
+census: rehearsal: plan of the census of the workflow runs and plans whose project_key is null or names another project than their issue's:
+    Nested Loop Left Join  (cost=23.80..23.82 rows=1 width=72)
+      CTE hits
+        ->  Hash Right Join  (cost=11.67..23.65 rows=3 width=26)
+              Hash Cond: (i.key = (n.attributes ->> 'issue'::text))
+              Filter: ((n.project_key IS NULL) OR (n.project_key IS DISTINCT FROM i.project_key))
+              ->  Seq Scan on issues i  (cost=0.00..11.30 rows=130 width=64)
+              ->  Hash  (cost=11.64..11.64 rows=3 width=153)
+                    ->  Seq Scan on graph_nodes n  (cost=0.00..11.64 rows=3 width=153)
+                          Filter: (kind = ANY ('{step,plan}'::text[]))
+      InitPlan 2
+        ->  Aggregate  (cost=0.07..0.08 rows=1 width=8)
+              ->  CTE Scan on hits hits_1  (cost=0.00..0.06 rows=3 width=0)
+      ->  Result  (cost=0.00..0.01 rows=1 width=0)
+      ->  Limit  (cost=0.08..0.08 rows=1 width=64)
+            ->  Sort  (cost=0.08..0.08 rows=3 width=64)
+                  Sort Key: hits.kind, hits.id
+                  ->  CTE Scan on hits  (cost=0.00..0.06 rows=3 width=64)
+census: rehearsal: priority: node rows: old 3 (md5 d6d2b7a45345ab287be2584c1cff05be), moved 3 (md5 d6d2b7a45345ab287be2584c1cff05be), 0 differing
+census: rehearsal: priority: tuples: old 23 (md5 8b3a49f1a5d516e080d0904f995acc91), moved 23 (md5 8b3a49f1a5d516e080d0904f995acc91), 0 differing
+census: rehearsal: workflow: node rows: old 3 (md5 a6be3fe0451c7e426f687c8f3d92bf38), moved 3 (md5 a6be3fe0451c7e426f687c8f3d92bf38), 0 differing
+census: rehearsal: workflow: tuples: old 37 (md5 124c4eb47179384d063c659a1b291c8c), moved 37 (md5 124c4eb47179384d063c659a1b291c8c), 0 differing
+census: rehearsal: workflow: stated values: old 6 (md5 537ea2dd1702f97b188af9a6874edea7), moved 6 (md5 537ea2dd1702f97b188af9a6874edea7), 0 differing
+census: rehearsal: workflow: runs and plans whose issue attribute names another issue than their part_of: 0
+census: rehearsal: workflow: runs and plans whose project_key is null or names another project than their issue's: 0
+census: rehearsal: no difference; it rolled back, so it changed nothing

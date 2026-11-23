@@ -1,0 +1,3 @@
+relation,mode,granted
+graph_nodes,ShareRowExclusiveLock,t
+priority_nodes,AccessExclusiveLock,f
