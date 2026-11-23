@@ -48,7 +48,7 @@ func mergeForwardRunnerAt(t *testing.T, publisher notify.Publisher, at phase.Pha
 	ctx := context.Background()
 	logs := &syncBuffer{}
 	runner, sup, pool := runnerIn(t, at, status, publisher, slog.New(slog.NewJSONHandler(logs, nil)))
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
 			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: asked})
@@ -67,6 +67,7 @@ func mergeForwardRunnerAt(t *testing.T, publisher notify.Publisher, at phase.Pha
 // with nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
 // delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
+	t.Parallel()
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
@@ -239,6 +240,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 // deployment of the daemon before the restart, which defines the role: its attempt wakes the
 // released claim, as every held message does.
 func TestAMergeForwardMessageQueuedBeforeARestartThatDroppedItsRoleEndsUndelivered(t *testing.T) {
+	t.Parallel()
 	roles := deploymentRoles(t)
 	withoutChecker := slices.DeleteFunc(slices.Clone(roles), func(role config.Role) bool { return role.Name == deploymentChecker })
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Step, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
@@ -266,7 +268,7 @@ func TestAMergeForwardMessageQueuedBeforeARestartThatDroppedItsRoleEndsUndeliver
 			publisher := &holderPublisher{}
 			runner, sup, pool := runnerIn(t, phase.Step, "in_progress", publisher, slog.New(slog.NewJSONHandler(logs, nil)))
 			runner.deployment = config.Config{Roles: tc.roles}.Deployment()
-			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 				return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208",
 					Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(),
 					Failing: []string{}, CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: tc.asked})
@@ -302,6 +304,7 @@ func TestAMergeForwardMessageQueuedBeforeARestartThatDroppedItsRoleEndsUndeliver
 // message to the merger still queued ends with nothing published: the phase the issue moved to
 // works the workspace now.
 func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
+	t.Parallel()
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Role: claim.RoleMerger, Phase: phase.Merging,
 		Why: record.ConflictMergeNext, AskedAt: time.Now()}
 	toMerger := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",

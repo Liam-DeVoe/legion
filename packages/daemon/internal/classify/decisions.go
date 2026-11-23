@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"slices"
 	"sort"
 	"time"
 
@@ -1255,8 +1254,12 @@ func MergeForwardStands(line []phase.Phase, place record.TaskPlace) bool {
 // implementerPlace is the place of the implementer's step on line, and whether line holds one: a
 // line holds each step first, at its place from 1, and the implementer runs one step at most.
 func implementerPlace(line []phase.Phase) (record.TaskPlace, bool) {
-	at := slices.Index(line, phase.Implementing)
-	return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, at >= 0
+	for at, p := range line {
+		if p == phase.Implementing {
+			return record.TaskPlace{Kind: record.PlaceStep, Position: at + 1}, true
+		}
+	}
+	return record.TaskPlace{}, false
 }
 
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull

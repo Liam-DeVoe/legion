@@ -2826,7 +2826,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
-  expect(narrowedRest).toEqual(belowDeploymentRoles({ ...rest, capabilities: withoutCachesSource }));
+  expect(narrowedRest).toEqual(
+    belowDeploymentRoles({ ...rest, capabilities: withoutCachesSource })
+  );
 
   // What serving the current block would do: the reader of 152 refuses it for the three keys it
   // requires beside the `withoutWebhookApp` and `caches` the block keeps, so a caller from 152 to
