@@ -717,11 +717,12 @@ func TestAListenerWhoseGrantRefusesItsSpentProofBucketStaysUnready(t *testing.T)
 
 // A broker-token request presented while the spent-proof bucket is not open is answered 503
 // "service starting" and is not taken. The listener's grant refuses the bucket, so the start waits
-// at its open (openSpentProofBucket), and a token the broker would admit, presented once the start
-// has named the refusal, is answered 503 "service starting" with Retry-After 1 as the credential
-// still opening (brokerTokens.verify): the broker is never asked about it, it reaches no /v1
-// route, and no spent proof is recorded, so no proof is accepted without the check that refuses
-// one another replica already spent.
+// at its open (openSpentProofBucket) and /v1's gate stays closed, since the bucket opens before the
+// gate. A token the broker would admit, presented once the start has named the refusal, is
+// answered by the closed gate ahead of apiAuth (v1API, startingGate.ahead), before any credential
+// is read: the broker is never asked about it, brokerTokens.verify never sees it, and no spent
+// proof is recorded, so no proof is accepted without the check that refuses one another replica
+// already spent.
 func TestABrokerTokenPresentedBeforeTheSpentProofBucketOpensIsAnsweredStartingAndNotTaken(t *testing.T) {
 	t.Parallel()
 	const (
@@ -739,7 +740,7 @@ func TestABrokerTokenPresentedBeforeTheSpentProofBucketOpensIsAnsweredStartingAn
 		}
 	}
 
-	status, retryAfter, body := signedListenerCall(t, rig.listener.port, rig.caller, token, path, `{"session_id":"`+sessionID+`","topics":[]}`)
+	status, _, body := signedListenerCall(t, rig.listener.port, rig.caller, token, path, `{"session_id":"`+sessionID+`","topics":[]}`)
 	if status != http.StatusServiceUnavailable || !strings.Contains(body, "service starting") {
 		t.Fatalf("a broker-token request while %s = %d %s, want 503 service starting:\n%s", while, status, body, rig.listener.Output.String())
 	}
@@ -747,14 +748,11 @@ func TestABrokerTokenPresentedBeforeTheSpentProofBucketOpensIsAnsweredStartingAn
 		t.Fatalf("the listener asked the broker %d times about a token presented while %s, want never: it took the token without the spent-proof check:\n%s",
 			asked, while, rig.listener.Output.String())
 	}
-	waitFor(t, 5*time.Second, "the listener to log the token's rejection as starting", func() bool {
-		return len(linesIn(rig.listener.Output.String(), "listener: broker token rejected", map[string]any{"reason": "starting", "path": path})) == 1
+	waitFor(t, 5*time.Second, "the listener to log the closed /v1 gate's refusal of the request", func() bool {
+		return len(linesIn(rig.listener.Output.String(), "request refused while starting", map[string]any{"gate": "v1", "path": path})) == 1
 	})
-	if reached := linesIn(rig.listener.Output.String(), "request refused while starting", map[string]any{"gate": "v1", "path": path}); len(reached) != 0 {
-		t.Fatalf("the broker-token request reached /v1's gate (%v), want it refused before any route", reached)
-	}
-	if retryAfter != "1" {
-		t.Fatalf("the starting 503's Retry-After = %q, want 1", retryAfter)
+	if judged := linesIn(rig.listener.Output.String(), "listener: broker token rejected", map[string]any{"path": path}); len(judged) != 0 {
+		t.Fatalf("the listener judged the broker token presented while %s (%v), want the closed gate to answer before any credential is read", while, judged)
 	}
 	admin, err := natsgo.Connect(rig.granted.AdminURL)
 	if err != nil {

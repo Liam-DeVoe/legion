@@ -20,8 +20,8 @@ var replicatedConflict = &nats.APIError{ErrorCode: nats.JSErrCodeStreamWrongLast
 // replicated is answered 10164, not the 10071 a bucket of one copy answers, and IsCASConflict counts
 // it a conflict all the same: a Create of the key, an Update at its revision, and a Delete and a
 // Purge at its revision (nats.LastRevision). nats.ErrKeyExists matches 10071 alone, so it misses the
-// Update, the Delete and the Purge; nats.go v1.55.0 names those nats.ErrKeyRevisionMismatch, and
-// wraps a Create's 10164 in nats.ErrKeyExists itself.
+// Delete and the Purge, which nats.go v1.55.0 names nats.ErrKeyRevisionMismatch; nats.go wraps a
+// Create's 10164 in nats.ErrKeyExists itself, and this package's Update wraps its own (Update).
 func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -57,7 +57,7 @@ func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.
 		{"an update at the key's revision", "update", func(key string, revision uint64) error {
 			_, err := kv.Update(key, []byte("x"), revision)
 			return err
-		}, false},
+		}, true},
 		{"a delete at the key's revision", "delete", func(key string, revision uint64) error {
 			return kv.Delete(key, nats.LastRevision(revision))
 		}, false},

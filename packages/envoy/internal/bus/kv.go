@@ -706,9 +706,11 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 // is how a loser of a race on a replicated bucket is answered when it reaches the leader before the
 // winner has landed. nats.go v1.55.0 names a Create's conflict nats.ErrKeyExists and an Update's,
 // Delete's or Purge's nats.ErrKeyRevisionMismatch, under either code, but nats.ErrKeyExists itself
-// matches an error by its code, 10071 alone: a lost Update, Delete or Purge on a replicated bucket
-// is not nats.ErrKeyExists. A conflict is therefore asked of this and never of nats.ErrKeyExists. A
-// publish's 10164 nats.go names nothing, so it is matched by its code.
+// matches an error by its code, 10071 alone: a lost Delete or Purge on a replicated bucket is not
+// nats.ErrKeyExists. This package's Update is the exception: it wraps its refusal in
+// nats.ErrKeyExists whichever code the stream sent (Update). A conflict is therefore asked of this
+// and never of nats.ErrKeyExists. A publish's 10164 nats.go names nothing, so it is matched by its
+// code.
 func IsCASConflict(err error) bool {
 	return errors.Is(err, nats.ErrKeyExists) || errors.Is(err, nats.ErrKeyRevisionMismatch) || errors.Is(err, wrongLastSequenceReplicated)
 }

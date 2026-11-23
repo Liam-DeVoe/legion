@@ -227,7 +227,7 @@ func (c *Client) noteSeverable(nc *nats.Conn) {
 // handed nats.go on that connection reaches the server any more, and cannot wait for nats.go's
 // connection lock, which a write to a stalled socket holds until its write deadline (a minute,
 // nats.go's FlusherTimeout), nor for the client's own lock, which a caller holds while it waits for
-// nats.go's (Connected, Close). It reads the connection without either (severable). It resets every
+// nats.go's (SubOK, CoreSubOK, Close). It reads the connection without either (severable). It resets every
 // socket of the connection (severableDialer), so a write holding nats.go's lock fails at once and
 // what the kernel holds unsent is discarded; it refuses the connection every later dial, so no
 // reconnect of it sends anything; and then it closes it, which the reset socket lets nats.go do at
