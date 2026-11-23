@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
 import type { Actor, AskResolution } from "../../api/types";
 import { compiledBlockSchema } from "../doc/schema";
 import { ASK_RESOLUTION_WORDS, askResolutionBadge } from "../refs/actor";
 import * as pageStructure from "./page-structure";
 import {
+  freeze,
   HELP_LINES,
   KEY_REPORTS,
   MARGIN_SECTION_NAMES,
@@ -58,6 +60,17 @@ import {
   VERIFICATION_WORDS,
   wordsIn,
 } from "./page-words";
+import {
+  JOINED_TABLES,
+  joinTables,
+  type PartWords,
+  TABLE_NAMES,
+  type TableName,
+  WORD_CLASHES,
+  WORD_FILES,
+  type WordClash,
+  type WordFile,
+} from "./page-words-parts";
 
 /** The block schema the server owns, read here rather than repeated, so a type, an attribute or
  *  a `when` choice added to it fails this file until the page has a word for it. */
@@ -122,9 +135,16 @@ const UNASKED: readonly unknown[] = [
   VERIFICATION_WORDS,
   PLAN_WORDS,
   NODE_REFERENCES_WORDS,
+  ...WORD_FILES.flatMap(({ module }) => module.default.unasked),
 ];
 
-const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
+const ANSWERS: readonly unknown[] = [
+  ANSWER_LINES,
+  BLOCKED_BY_REFUSALS,
+  HELP_LINES,
+  KEY_REPORTS,
+  ...WORD_FILES.flatMap(({ module }) => module.default.answers),
+];
 
 const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
 
@@ -524,4 +544,278 @@ test("the reader's own words are theirs whatever the case of the login", () => {
   const alice: Actor = { id: "Alice", kind: "user" };
   expect(isReader(alice, "alice")).toBe(true);
   expect(isReader({ ...alice, act: { session: "planner" } }, "alice")).toBe(false);
+});
+
+/** `value` as nested lists of its entries. `toEqual` then reads the order of each object's keys,
+ *  and it reads a key whose value is `undefined`. */
+function entriesOf(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(entriesOf);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).map(([key, held]) => [key, entriesOf(held)]);
+  }
+  return value;
+}
+
+/** The path of each object in `value` that is not frozen. `value` itself is one of the objects. */
+function unfrozenIn(value: unknown, path: string): readonly string[] {
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  return [
+    ...(Object.isFrozen(value) ? [] : [path]),
+    ...Object.entries(value).flatMap(([key, held]) => unfrozenIn(held, `${path}.${key}`)),
+  ];
+}
+
+/** A made-up file of a part, in the shape that `WORD_FILES` holds. It adds `add` and declares no
+ *  table of its own. */
+function partFile<const Add extends PartWords["add"]>(letter: string, add: Add) {
+  return freeze({
+    file: `page-words-${letter}.ts`,
+    module: { default: { add, unasked: [], answers: [] } },
+  } as const);
+}
+
+// The join reads each table that page-words.ts declares under the table's own name. A part's own
+// table is read through page-words.ts too, and a case below holds it.
+test("every word table page-words.ts declares joins the parts' files, under its own name", () => {
+  // The two objects that page-words.ts makes from other words, each with how it makes it. They
+  // are no tables of words of its own, so no part adds to them.
+  const made: Readonly<Record<string, string>> = {
+    GLYPH_NAMES: "`glyphNames()` makes it from other tables",
+    ISSUE_STATUS_WORDS: "it is made from the board's statuses (`features/project/board-model.ts`)",
+  };
+  const partExports = new Set(
+    WORD_FILES.flatMap(({ module }) => Object.keys(module).filter((name) => name !== "default"))
+  );
+  const exported = new Map<string, unknown>(Object.entries(pageWords));
+  const members = [...exported]
+    .filter(
+      ([name, value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        !Object.hasOwn(made, name) &&
+        !partExports.has(name)
+    )
+    .map(([name]) => name)
+    .sort();
+  expect(members).toEqual([...TABLE_NAMES].sort());
+  expect([...JOINED_TABLES.keys()].sort()).toEqual([...TABLE_NAMES].sort());
+  // The name that a `joinWords` call gives is the name of the const that holds its table.
+  const misnamed = TABLE_NAMES.filter((name) => exported.get(name) !== JOINED_TABLES.get(name));
+  expect(misnamed, "page-words.ts exports another table under each of these names").toEqual([]);
+});
+
+/** One case of the join: a table's name and its own words, the files that add to it, and the
+ *  table and the clashes that the join gives. */
+interface JoinRow {
+  readonly title: string;
+  readonly name: TableName;
+  readonly main: object;
+  readonly files: readonly WordFile[];
+  readonly table: object;
+  readonly clashes: readonly WordClash[];
+}
+
+test("the join adds each file's keys after the table's own, nested as the table is, and names each key two files give with both files", () => {
+  const rows: readonly JoinRow[] = [
+    {
+      title:
+        "a key that a part adds comes after the table's own keys, and a part that adds to another table adds nothing",
+      name: "CONTROL_LABELS",
+      main: freeze({ accept: "Accept", retry: "Retry" }),
+      files: [
+        partFile("j", { CONTROL_LABELS: { about: "About" } }),
+        partFile("l", { GAP_WORDS: { no_owner: "No owner" } }),
+      ],
+      table: { accept: "Accept", retry: "Retry", about: "About" },
+      clashes: [],
+    },
+    {
+      title: "a nested key goes into the table's own sub-table",
+      name: "NODE_REFERENCES_WORDS",
+      main: freeze({ edges: { cites: "cites" }, heading: "Referenced by" }),
+      files: [
+        partFile("j", {
+          NODE_REFERENCES_WORDS: { edges: { constrained_by: "constrained statement" } },
+        }),
+      ],
+      table: {
+        edges: { cites: "cites", constrained_by: "constrained statement" },
+        heading: "Referenced by",
+      },
+      clashes: [],
+    },
+    {
+      title: "two parts add different keys to one sub-table, and both keys stay with no clash",
+      name: "NODE_REFERENCES_WORDS",
+      main: freeze({ edges: { cites: "cites" } }),
+      files: [
+        partFile("j", {
+          NODE_REFERENCES_WORDS: { edges: { constrained_by: "constrained statement" } },
+        }),
+        partFile("m", { NODE_REFERENCES_WORDS: { edges: { served_by: "served by" } } }),
+      ],
+      table: {
+        edges: { cites: "cites", constrained_by: "constrained statement", served_by: "served by" },
+      },
+      clashes: [],
+    },
+    {
+      title: "page-words.ts and part J both give `retry`, and the table's own word stays",
+      name: "CONTROL_LABELS",
+      main: freeze({ retry: "Retry" }),
+      files: [partFile("j", { CONTROL_LABELS: { retry: "Try again" } })],
+      table: { retry: "Retry" },
+      clashes: [{ key: "CONTROL_LABELS.retry", files: ["page-words.ts", "page-words-j.ts"] }],
+    },
+    {
+      title: "parts J and M both give one nested key, and part J's word stays",
+      name: "NODE_REFERENCES_WORDS",
+      main: freeze({ edges: { cites: "cites" } }),
+      files: [
+        partFile("j", { NODE_REFERENCES_WORDS: { edges: { served_by: "served by" } } }),
+        partFile("m", { NODE_REFERENCES_WORDS: { edges: { served_by: "is served by" } } }),
+      ],
+      table: { edges: { cites: "cites", served_by: "served by" } },
+      clashes: [
+        {
+          key: "NODE_REFERENCES_WORDS.edges.served_by",
+          files: ["page-words-j.ts", "page-words-m.ts"],
+        },
+      ],
+    },
+    {
+      title: "a key of the table whose value is undefined stays",
+      name: "RESULT_STANDS_WORDS",
+      main: freeze({ at_basis: "Up to date", unknown: undefined }),
+      files: [partFile("s", { RESULT_STANDS_WORDS: { superseded: "Superseded" } })],
+      table: { at_basis: "Up to date", unknown: undefined, superseded: "Superseded" },
+      clashes: [],
+    },
+    {
+      title:
+        "a merge two levels down leaves each frozen input as it was, and the table is frozen at every level",
+      name: "GLYPH_TOKENS",
+      main: freeze({ states: { check: { failed: "check-failed" } }, types: { ask: "type-ask" } }),
+      files: [
+        partFile("m", { GLYPH_TOKENS: { states: { check: { stale: "check-stale" } } } }),
+        partFile("z", { GLYPH_TOKENS: { states: { lens: { open: "lens-open" } } } }),
+      ],
+      table: {
+        states: {
+          check: { failed: "check-failed", stale: "check-stale" },
+          lens: { open: "lens-open" },
+        },
+        types: { ask: "type-ask" },
+      },
+      clashes: [],
+    },
+  ];
+  for (const row of rows) {
+    const inputs = entriesOf([row.main, row.files]);
+    const { table, clashes } = joinTables(row.name, row.main, row.files);
+    expect(entriesOf(table), row.title).toEqual(entriesOf(row.table));
+    expect(clashes, row.title).toEqual(row.clashes);
+    expect(unfrozenIn(table, row.name), `${row.title}: these objects are not frozen`).toEqual([]);
+    expect(entriesOf([row.main, row.files]), `${row.title}: the join changed its inputs`).toEqual(
+      inputs
+    );
+  }
+
+  // The type check reads the cases below. The type of a joined table is the table's own type
+  // with the type of each file's words. So a component reads a key that a part adds as its
+  // literal, and a key that no file gives is an error.
+  const joined = joinTables(
+    "CONTROL_LABELS",
+    freeze({ accept: "Accept", sub: { first: "First" } } as const),
+    [
+      partFile("j", { CONTROL_LABELS: { b: "B" } }),
+      partFile("m", { CONTROL_LABELS: { sub: { second: "Second" } } }),
+    ] as const
+  ).table;
+  const added: "B" = joined.b;
+  const nested: "Second" = joined.sub.second;
+  expect([joined.accept, joined.sub.first, added, nested]).toEqual([
+    "Accept",
+    "First",
+    "B",
+    "Second",
+  ]);
+  // @ts-expect-error No file gives `missing`, so the joined table has no such key.
+  expect(joined.missing).toBeUndefined();
+
+  // A part that adds a node type adds its glyph token too. The joined table then satisfies a
+  // check over both types, as the `satisfies` of `GLYPH_TOKENS` in page-words.ts reads it.
+  const lensFile = partFile("w", {
+    GLYPH_TOKENS: { types: { lens: "type-lens" } },
+    NODE_TYPE_NAMES: { lens: "lens" },
+  });
+  const typeNames = joinTables("NODE_TYPE_NAMES", freeze({ ask: "question" } as const), [
+    lensFile,
+  ] as const).table;
+  const glyphTokens = joinTables("GLYPH_TOKENS", freeze({ types: { ask: "type-ask" } } as const), [
+    lensFile,
+  ] as const).table satisfies { types: Record<"ask" | "lens", string> };
+  const lensName: "lens" = typeNames.lens;
+  expect([lensName, glyphTokens.types.lens]).toEqual(["lens", "type-lens"]);
+
+  // `add` names only the tables of `TABLE_NAMES`. A table that a part's file declares is not one
+  // of them, so a new key for that table goes in that part's file.
+  const lensWords = {
+    // @ts-expect-error `LENS_WORDS` is not a table of `TABLE_NAMES`.
+    add: { LENS_WORDS: { title: "Lens" } },
+    unasked: [],
+    answers: [],
+  } satisfies PartWords;
+  const tableNames: readonly string[] = TABLE_NAMES;
+  expect(Object.keys(lensWords.add).filter((name) => !tableNames.includes(name))).toEqual([
+    "LENS_WORDS",
+  ]);
+});
+
+// A part's file that the join does not read fails here. So does a part that has no file.
+test("each open part of the page has its own words file, which the join reads", () => {
+  const letters = ["J", "L", "M", "N", "S", "T", "U", "W", "X", "Y", "Z"];
+  const expected = letters.map((letter) => `page-words-${letter.toLowerCase()}.ts`);
+  const read: readonly string[] = WORD_FILES.map(({ file }) => file);
+  expect(read).toEqual(expected);
+  const inDirectory = readdirSync(import.meta.dir).filter(
+    (name) =>
+      name.startsWith("page-words-") &&
+      name.endsWith(".ts") &&
+      name !== "page-words-parts.ts" &&
+      !name.endsWith(".test.ts")
+  );
+  expect(inDirectory.sort()).toEqual([...expected].sort());
+});
+
+// Two files that give one key is the refusal: each clash names the key and both files.
+test("no key is given by two of the files the page's words are joined from", () => {
+  const clashes = WORD_CLASHES.map(
+    ({ key, files: [first, second] }) => `${key}: ${first} and ${second}`
+  );
+  expect(clashes).toEqual([]);
+});
+
+// A part's own table is a named export of its file, and page-words.ts exports it again. A table
+// of page-words.ts with the same name hides it, and so does a second part's export of that name.
+test("each table a part's file declares is read through page-words.ts, and is frozen", () => {
+  const exported = new Map<string, unknown>(Object.entries(pageWords));
+  const offenders: string[] = [];
+  for (const { file, module } of WORD_FILES) {
+    for (const [name, value] of Object.entries(module)) {
+      if (name === "default") continue;
+      if (exported.get(name) !== value) {
+        offenders.push(`${name} of ${file} is not what page-words.ts exports under that name`);
+      }
+      for (const path of unfrozenIn(value, name)) {
+        offenders.push(`${path} of ${file} is not frozen`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
 });
