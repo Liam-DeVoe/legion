@@ -140,8 +140,9 @@ type IdleRoot struct {
 
 // StartWaitsForPodPrefix begins the last error of a start row that waits because the issue's live
 // pod lacks the slot of the start's claim or the role of its step, built before the deployment
-// defined that name (the outbox's roleWaitsForItsPod): the one text the outbox writes and the idle
-// view, the release's boundary and the served state read.
+// defined or the issue's plan named that name, such as the slot `implementer-2` of a second agent
+// of one role (the outbox's roleWaitsForItsPod): the one text the outbox writes and the idle view,
+// the release's boundary and the served state read.
 const StartWaitsForPodPrefix = "the start waits for its issue's pod: "
 
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of

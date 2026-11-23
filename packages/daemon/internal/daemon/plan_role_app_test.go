@@ -97,7 +97,7 @@ func TestTheAddressingOfARoleOfAPlanNamesTheOwnersItsAppReaches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the coder's spawn spec: %v", err)
 	}
-	if want := RepositoriesClause([]string{"acme"}); !strings.Contains(spec.Prompt.Addressing, want) {
+	if want := workerRepositoriesClause([]string{"acme"}); !strings.Contains(spec.Prompt.Addressing, want) {
 		t.Errorf("the coder's addressing = %q, want it to hold %q", spec.Prompt.Addressing, want)
 	}
 }

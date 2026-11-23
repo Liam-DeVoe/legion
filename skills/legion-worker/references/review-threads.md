@@ -26,8 +26,8 @@ At retro it answers the threads it finds; a run still going may open more, so re
 - The implementation step's agent, or at retro the retro's agent, records each thread in the PR body's `Threads` section.
   Each is stamped with the head it just pushed, or at retro with the head retro found.
 
-- The reviewer lists the threads, replies, and names the threads it accepted to the implementation step's agent by node id.
-  It names them on that agent's role topic, the architect's where the step is `implementer:owner`, or in its review body:
+- The reviewer lists the threads, replies, and names the threads it accepted by node id to the implementer agent that works on next.
+  It names them on that agent's own topic (its `Legion addressing` line or `dispatch steps --issue <KEY>` names it: an issue can have two implementer agents), the architect's where the step is `implementer:owner`, or in its review body:
 
   ```bash
   gh api graphql --paginate -f query='query($o:String!,$r:String!,$n:Int!,$endCursor:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}}' -F o=<owner> -F r=<repo> -F n=<number>

@@ -221,7 +221,12 @@ agent: two steps of one key are one agent's, and the key `owner` makes the step 
 own, of any role and at any place: `acceptance:owner` is its acceptance in `accepting`, and
 `implementer:owner` its own implementation. A role may stand at two steps, of one agent or of two:
 `implementer reviewer implementer` runs step 3 in a second agent of the role implementer,
-`implementer-2`, in a session of its own. A step `acceptance` with no key is a fresh agent of
+`implementer-2`, in a session of its own. A key keeps its name in every version of the plan, and
+while a version leaves the key out no other agent takes that name, so the key's agent finds its
+session again when a later version names the key; the agent that would have taken the name takes a
+numbered one and a slot of its own, so its start can wait for the issue pod's update round. A name
+that only agents with no key held is given again to a later agent with no key, which starts in a
+session of its own. A step `acceptance` with no key is a fresh agent of
 the role `acceptance`. Legion tells the architect each step of its own with an `owner-step` notice,
 once its slot holds the App of the step's role, and only while the step runs; while it runs and no
 such notice of it is queued, Legion tells it again, with the same task, at a launch of the

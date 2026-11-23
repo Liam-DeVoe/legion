@@ -53,15 +53,20 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 //     (OwnerClaim) or one above that runs the step for it (workflow's ownerAgent), whose token
 //     names its issue and its role and no name of an agent.
 //  2. Each other key that an earlier row names takes the name of its latest such row, and a key no
-//     earlier row names takes the name whose claim holds its session, where it is the key that held
-//     that name last: the key of the latest earlier row of the name, else the key whose session the
-//     name's claim holds. Every such key is named before any other pass gives a name. Rows written
+//     earlier row names takes the name whose claim holds its session, each only where it is the
+//     key that held that name last. The key that held a name last is the key of the latest earlier
+//     row of the name that names a key, and a later row of the name with no key does not end that
+//     hold; where no earlier row of the name names a key, it is the key whose session the name's
+//     claim holds. Every such key is named before any other pass gives a name. Rows written
 //     before a name a key held was kept for it can show another key holding the name after it,
 //     where that key took by pass 4 the name of a key its version did not name; the name's claim
 //     ran that other key's agent last, so the key whose row held it before is named by pass 4,
 //     whether or not the version names the other key, and no name passes from one key to another.
 //  3. Each step with no key takes the name of the latest earlier row of its task, place and role
-//     with no key, unless pass 2 or an earlier step of this pass gave that name, or a key holds it.
+//     with no key, where that row holds one, unless pass 2 or an earlier step of this pass gave
+//     that name, or a key holds it. A row that holds no name gives none: the first form of
+//     20261117213545 left every row it found at the empty string, and a step named "" has no
+//     claim token, so such a step is named by pass 4.
 //  4. Each agent still with no name, in the order of its first step, takes the role of that first
 //     step, cut to 32 bytes (claim.RoleAgentName), where no agent of steps has that name and no key
 //     holds it; and otherwise a name of its own, `<role>-2`, `<role>-3` and so on, the first that
@@ -72,8 +77,8 @@ func KeySessionsOf(claims []IssueClaim) KeySessions {
 func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []PlanStep {
 	named := slices.Clone(steps)
 	keyNames := map[string]claim.Agent{}
-	// lastHolder is the key that holds each name a key holds: the key whose latest earlier row held
-	// it, else the key whose agent's session the name's claim holds.
+	// lastHolder is the key that holds each name a key holds: the key of the latest earlier row of
+	// the name that names a key, else the key whose agent's session the name's claim holds.
 	lastHolder := map[claim.Agent]string{}
 	keyHeld := func(name claim.Agent) bool {
 		_, ok := lastHolder[name]
@@ -118,7 +123,7 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 		if agent.Key != "" {
 			continue
 		}
-		if name, ok := earlierPlaceName(earlier, step); ok && !taken[name] && !keyHeld(name) {
+		if name := earlierPlaceName(earlier, step); name != "" && !taken[name] && !keyHeld(name) {
 			give(agent, name)
 		}
 	}
@@ -142,13 +147,14 @@ func NameAgents(earlier []PlanStep, sessions KeySessions, steps []PlanStep) []Pl
 }
 
 // earlierPlaceName is the name of the latest row of earlier at step's task and place, on step's
-// role and with no key: the agent that place had, which a step with no key keeps (pass 3).
-func earlierPlaceName(earlier []PlanStep, step PlanStep) (claim.Agent, bool) {
+// role and with no key: the agent that place had, which a step with no key keeps (pass 3). It is
+// "" where no such row is, or where that row holds no name.
+func earlierPlaceName(earlier []PlanStep, step PlanStep) claim.Agent {
 	for i := len(earlier) - 1; i >= 0; i-- {
 		row := earlier[i]
 		if row.AgentKey == "" && row.Task == step.Task && row.Position == step.Position && row.Role == step.Role {
-			return row.AgentName(), true
+			return row.AgentName()
 		}
 	}
-	return "", false
+	return ""
 }

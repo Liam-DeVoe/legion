@@ -1242,7 +1242,7 @@ The party reachable this way is any other issue, role or tree **of this deployme
 the database holds this deployment's sessions, and no pod of it mounts another's.
 
 Under `cloudsql-iam` there is no such credential to hold:
-what the agent reads carries a login and no password at all (`Endpoint.AgentURL`, `internal/ompsessions/store.go`), and what it names is a unix socket in the generation's own directory on the role's own memory-backed private volume, which the pod's one `roles` container mounts under that role's directory alone and which no other role's namespace is shown (`legion launcher role-init`).
+what the agent reads carries a login and no password at all (`Endpoint.AgentURL`, `internal/ompsessions/store.go`), and what it names is a unix socket in the generation's own directory on the slot's own memory-backed private volume, which the pod's one `roles` container mounts under that slot's directory alone and which no other slot's namespace is shown (`legion launcher role-init`).
 Any process of the role's own generation can still dial that socket, as any process in a pod can read the URL file under `postgres`:
 this store removes the password, not that trade, and the rights the login has in the database are still every conversation's.
 With `writer_audience`, the socket admits only the launcher and the generation's Oh My Pi process, and closes every other connection ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
@@ -1362,7 +1362,7 @@ When `impersonate_service_account` is set, a fourth flag follows the three: `--s
 A launcher told the fourth without all of the three refuses the database as named in part before it connects, and names each missing flag (`validateSessionDatabase`, `internal/launcher/launcher.go`).
 When `writer_audience` is set, a fifth flag follows the fourth: `--session-writer-audience <audience>` (`sessionWriterAudienceFlag`, `manifest.go`).
 A launcher refuses the fifth before it connects, and says why: without the fourth, in another form than `ompsessions.ValidWriterAudience` takes, and in the single-role form, whose agent runs in the container's own namespaces, where the token would be in its view (`validateSessionDatabase`).
-There is no address among them: the launcher binds each generation's socket in that generation's own directory, under the role's own private directory, which it already knows from `--roles-dir` (`--private-dir` in the controller's pod).
+There is no address among them: the launcher binds each generation's socket in that generation's own directory, under its slot's own private directory, which it already knows from `--roles-dir` (`--private-dir` in the controller's pod).
 
 With `writer_audience`, the pod also carries the session writer token (`sessionWriterVolumes`, `manifest.go`).
 It is one projected ServiceAccount token volume, `session-writer-token`, of the member's audience, for 3600 seconds, with mode 0440, where the token is the file `token`.
@@ -1376,10 +1376,10 @@ The volume name is Legion's in every deployment, with or without the member, so 
 
 Every generation of that role then gets its own connection, in this order (`manager.start`, `packages/daemon/internal/launcher/launcher.go`):
 
-1. The launcher makes the generation's own directory, `/var/run/legion/private/g<generation>` as the role's namespace sees it, on the role's own memory-backed private volume, owner-only, and writes the connection URL into it as `OMP_SESSION_SQL_DSN`, mode `0600`, created exclusively and without following a link
+1. The launcher makes the generation's own directory, `/var/run/legion/private/g<generation>` as the slot's namespace sees it, on the slot's own memory-backed private volume, owner-only, and writes the connection URL into it as `OMP_SESSION_SQL_DSN`, mode `0600`, created exclusively and without following a link
    — the way it writes that generation's boot token (`writeFiles`, then `startSession`).
-   The URL names the socket at the path the role's own namespaces show it, which role-init binds back under `/var/run/legion/private`;
-   the launcher, outside those namespaces, binds it at the role's directory of the roles directory.
+   The URL names the socket at the path the slot's own namespaces show it, which role-init binds back under `/var/run/legion/private`;
+   the launcher, outside those namespaces, binds it at the slot's directory of the roles directory.
 
 2. It binds a unix socket beside that file, `.s.PGSQL.5432`, which is libpq's own name for a Postgres server on port 5432 (`ompsessions.SocketName`), and proves the credential path with one upstream connection before its start returns (`sessionproxy.Start`, `packages/daemon/internal/sessionproxy`).
    The socket is bound before anything is dialed, so a start that loses the address to something else costs no credential work.
@@ -1704,7 +1704,7 @@ What the container mounts for the pod rather than for a role is every role's ali
 the operator's providers Secret (`provider_keys`) and, under `runtime.kubernetes.agent_secrets`, the projected broker token.
 A claim's process is addressed by the pod's uid, its slot (the name of its agent) and its generation (the incarnation `<pod uid>/<generation>`):
 in a healthy running pod, starting, suspending or recovering one role never restarts the pod or touches another role.
-A new generation of a role in a running pod is a new child of its launcher.
+A new generation of a claim in a running pod is a new child of the launcher of the claim's slot, the slot named for its agent.
 A pod is replaced after it dies, when it was not made by this runtime, or when a closed issue is re-admitted after suspension (`packages/daemon/internal/runtime/sandbox`).
 
 Releasing a role ends only its process.
@@ -1730,7 +1730,7 @@ Then it deletes the Sandbox, whatever the close was:
 a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
 Sandbox and the role Secrets it owned` — the role Secrets, one for each slot of the pod, go with it by owner reference.
 Where the Sandbox owns a kept volume, the foreground delete deletes that volume too ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
-An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
+An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each claim in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
 The parent's Sandbox is another issue's and is never touched.
 A daemon restart retries the stored effect.
 Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions, and a claim whose session supervise's `forgetSession` has dropped starts a new one;
@@ -2640,7 +2640,7 @@ An earlier release names each column of `claims` it reads and writes, so the col
 
 **Roll back only once each issue whose plan names a second agent of one role is done or stopped.**
 This release runs a second agent of one role, an agent such as `implementer-2`, in a slot of the issue's pod that has the agent's name, with a claim and a session of its own.
-The release before has no slot rule and no session rule for such an agent: it gives the agent no slot of its own in the pod, and it keeps no record of which agent a claim's session belongs to.
+The release before has no slot rule and no session rule for such an agent: a pod it builds has a slot for each role alone, so none for such an agent, and it refuses the launcher hello of a slot that is no role, such as `implementer-2`, in a pod this release built; and it keeps no record of which agent a claim's session belongs to.
 Each row this read returns is a step of such an agent, in a task that is not done and not stopped; run each such task to done, or stop it, before you stop the daemons:
 
 ```sql
@@ -2649,7 +2649,9 @@ from plan_steps s
 join issues i on i.key = s.issue and i.generation = s.generation
 join plan_tasks t on t.issue = s.issue and t.generation = s.generation and t.task = s.task
 where i.phase <> 'done' and t.state not in ('done', 'stopped', 'left')
-  and s.agent <> '' and s.agent <> s.role;
+  and s.agent <> ''
+  and s.agent not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')
+  and s.agent not in (select r.role from plan_steps r where r.issue = s.issue);
 ```
 
 At the rollback, with this release's daemon stopped and before the earlier image is pinned, run the way back in the migration's header (`migrations.WayBack`): it takes the key `agent` off each queued `supervise` row and leaves every other key, drops the column and deletes the migration's version row, so the roll-forward's `Migrate` adds the column again at its default.
@@ -3013,7 +3015,7 @@ one merge patch, so a suspension the API server refuses names nothing and every 
 Once the named pod is being deleted or is gone, the runtime reports each role recorded in it as displaced.
 When its cached copy of the Sandbox does not name the pod yet, it reads the Sandbox from the API server before it reports the end, and reports it uncertain, to be read again, if that read fails.
 The supervisor then logs `supervise: the process ended with a pod
-the daemon replaced; relaunching it uncharged` and resumes the role's session in the new pod at once.
+the daemon replaced; relaunching it uncharged` and resumes that claim's session in the new pod at once.
 It charges neither a launch failure nor a death.
 A turn the role was in is lost: its task goes back to waiting and is sent again once the session resumes, as a moved address's relaunch does.
 The annotation lives on the Sandbox, so a daemon restarted mid-replacement reads it as well.
@@ -3482,9 +3484,9 @@ At a later generation of the issue, the same version is a new registration, judg
 20261121183336_pod_resume_claim adds `pod_resumes.claim`, the claim each wake brought back, names on each resume it finds the claim of the resume's role whose token the earlier release built for it, refuses a resume that names no claim, and holds one open resume per claim in place of one per role, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which closes all but the newest open resume of each role, puts the one open resume per role back over every row, drops the column and deletes its version row, so that the roll-forward adds the column again and names each resume again.
 20261122062637_phase_step_key makes the primary key of `phases` `(issue, role, step_task, step_place)`, so a role that stands at two steps of a task keeps a row for each, and touches none of the six, so the block holds over it; the earlier release's upsert of a phases row names the conflict target `(issue, role)`, which no unique index answers under the new key, so every write of a phases row by a daemon of a release before it fails until the way back its header gives runs, which keeps the row of each role with the highest entry, writes the key `(issue, role)` again and deletes its version row, so every project's daemon on the database moves past it together, in either direction, and a rollback past it waits until each task whose plan in force names a role at two steps is done or stopped ([Rolling back the release that keys a phases row by its step](#rolling-back-the-release-that-keys-a-phases-row-by-its-step)).
 20261122072945_pod_wake_backstop_claim adds `pod_wake_backstops.claim`, the claim each backstop wakes, names on each backstop it finds the claim of the backstop's role whose token the earlier release built for it, refuses a backstop that names no claim, and holds one open backstop per claim in place of one per role, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which keeps the newest open backstop of each role, puts the one open backstop per role back over every row, drops the column and deletes its version row, so that the roll-forward adds the column again and names each backstop again.
-20261122102933_release_suspends_claims rewrites the mark of a release in flight, `issue_releases.suspended`, from the roles it names to the token of each claim of the issue that holds one of them, adds `pod_releases.claims`, the tokens of the claims each release suspended, at its default, the empty string, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives first of this release's after 20261123033101's, which writes each mark in flight back as the role each of its tokens names, the token's last part, and not the role the claim stores, which is the role of its key's step where the release moved the claim, drops the column and deletes its version row, so that the roll-forward runs it again.
+20261122102933_release_suspends_claims rewrites the mark of a release in flight, `issue_releases.suspended`, from the roles it names to the token of each claim of the issue that holds one of them, adds `pod_releases.claims`, the tokens of the claims each release suspended, at its default, the empty string, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives after those of 20261123092755, 20261123060645 and 20261123033101, which writes each mark in flight back as the role each of its tokens names, the token's last part, and not the role the claim stores, which is the role of its key's step where the release moved the claim, drops the column and deletes its version row, so that the roll-forward runs it again.
 20261122120917_claim_session_agent adds `claims.session_agent` at its default, the empty string, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives first ([Rolling back the release that records the agent of a claim's session](#rolling-back-the-release-that-records-the-agent-of-a-claims-session)), which takes the key `agent` off each queued `supervise` row, drops the column and deletes its version row, so that the roll-forward adds the column again at its default.
-20261123033101_claim_role_change adds `claims.role_change`, the record that a claim took another role and whether its agent has been told that the GitHub tokens of its earlier role are no longer its to use, null on every row, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives first of this release's, which drops the column and deletes its version row, so that the roll-forward adds the column again, null on every row.
+20261123033101_claim_role_change adds `claims.role_change`, the record that a claim took another role and whether its agent has been told that the GitHub tokens of its earlier role are no longer its to use, null on every row, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives after those of 20261123092755, 20261123072537, 20261123060645 and 20261123042513, the newer migrations below, which drops the column and deletes its version row, so that the roll-forward adds the column again, null on every row.
 20261123042513_step_owner_restarts adds `step_starts.owner_restarts`, how many times the daemon started a child's own architect again after it failed in the run of a step of its own, at its default, 0, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which drops the column and deletes its version row, so that the roll-forward adds the column again at its default, and a rollback past 20261117004117_step_starts runs that way back before its own.
 20261123060645_merge_forward_own adds the key `own` to each `pull_requests.merge_forward` ask the earlier release recorded in implementing, the mark that the ask was made at the task's implementation step, and touches none of the six, so the block holds over it; the earlier release reads that column leniently and ignores the key, and a rollback past it runs the way back its header gives, which deletes its version row alone, so that the roll-forward marks again each ask recorded in implementing in between.
 20261123072537_step_owner_told adds `step_starts.owner_told_session`, the session the listener forwarded the owner-step of a step's run to when it was last published, and `step_starts.owner_told_launch`, the launch of the owner's claim where that claim ran in that session, at their defaults, the empty string and 0, and touches none of the six, so the block holds over it; a rollback past it runs the way back its header gives, which drops both columns and deletes its version row, so that the roll-forward adds them again at their defaults and the next launch of each owner at a step of its own tells it the step once more, and a rollback past 20261117004117_step_starts runs that way back before its own.
@@ -3800,7 +3802,7 @@ The child leaves two paths as the container holds them, the two a role's namespa
 A removal unlinks a name that is not a directory as the name it is and never recurses through it (`replaced`, `packages/daemon/internal/launcher/roleinit.go`).
 Since both namespaces are built from that one list, which holds directories alone, a directory added to it for a role's is covered for the deleter in the same edit.
 So a link a removal did follow would reach only what the role that left it could already delete itself, by its own path, as the same uid.
-That is the bound and the whole of it: the roles of a pod share one uid and `/legion` is wholly visible to that child, so containment takes nothing away from what a role can delete of its own volume, and what it removes is the reach across the role-isolation boundary into what the container holds for the roles and no role holds itself — another role's private, state and agent-secrets directories under the roles directory (not its state home under `/legion/scratch/state`, which is on the volume), its launcher token, the shared configuration home, the home each role starts from, and whatever the container keeps at the paths where a role has its own.
+That is the bound and the whole of it: every slot of a pod, one for each role and one for each agent of its plan whose name no role has, shares one uid and `/legion` is wholly visible to that child, so containment takes nothing away from what a role can delete of its own volume, and what it removes is the reach across the role-isolation boundary into what the container holds for the slots and no slot holds itself — another slot's private, state and agent-secrets directories under the roles directory (not its state home under `/legion/scratch/state`, which is on the volume), its launcher token, the shared configuration home, the home each slot starts from, and whatever the container keeps at the paths where a slot has its own.
 A sweep whose child will not start deletes nothing and says why in the pod's log.
 `runtime.kubernetes.volume_trim` sets all five values, and `enabled: false` hands the pod's launcher no settings, on which its trimmer reads and deletes nothing.
 A change to them reaches a running pod at its next connection to the daemon, which every daemon restart gives it, and no pod is replaced for it: a pod told `enabled: false` stops sweeping and keeps its trimmer, which takes up an answer that carries settings again within ten seconds, its poll of the settings in force, and reads the volume one `interval_seconds` after that — the same for a daemon rolled back to a release that does not know this work and the roll-forward after it.
@@ -3954,8 +3956,8 @@ Nothing reads the claim's own usage from Kubernetes.
 
 Ephemeral storage is what the `roles` container writes outside every volume:
 its root filesystem, the node's disk — the image's own content and whatever a recipe writes outside the told directories
-— and the `role-homes` disk `emptyDir`, which holds each role's home overlay and its `/tmp` and `/var/tmp` ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
-Each role's private and state directories and the pod's shared config home are in-memory `emptyDir`s, whose pages the bound does not count, and the issue's temporary directory, cache and data homes and bun install cache, each role's state home and the issue's shared Go caches are on the issue's volume, which the bound does not count either.
+— and the `role-homes` disk `emptyDir`, which holds each slot's home overlay and its `/tmp` and `/var/tmp` ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+Each slot's private and state directories and the pod's shared config home are in-memory `emptyDir`s, whose pages the bound does not count, and the issue's temporary directory, cache and data homes and bun install cache, each agent's state home and the issue's shared Go caches are on the issue's volume, which the bound does not count either.
 Pods of unrelated trees share a node, so one issue filling the node's disk would put every pod on it under `DiskPressure`;
 the limit has the kubelet evict the pod of the container that passed it, the offending issue's alone, and the request is what the scheduler fits to the node's allocatable ephemeral storage, its root volume.
 The request is small by default so that scheduling binds to almost nothing;
@@ -4142,7 +4144,7 @@ runtime:
 - `acme-skills` is the `name` the repository's marketplace file gives, and `agent-skills` is a plugin that file names.
 
 - It removes the marketplace first, because `omp plugin marketplace add` refuses a name already added, and a start that ended before its last step leaves the name added.
-  It removes it again at the end, which deletes the clone from the role's home and keeps the installed plugin: a clone is the marketplace repository's whole tree (49 MB for one measured marketplace), and each role of a pod has a home of its own.
+  It removes it again at the end, which deletes the clone from the slot's home and keeps the installed plugin: a clone is the marketplace repository's whole tree (49 MB for one measured marketplace), and each slot of a pod has a home of its own.
 
 - It installs only after the `add` succeeded, because an install of `<plugin>@<name>` whose `<name>` is no registered marketplace goes to npm.
 
@@ -4634,7 +4636,7 @@ launcher: memory guard: off reason=the pod runs in a microVM, whose own kernel s
 
 It runs the guest watch in the guard's place (`memoryguard.Guest`, `packages/daemon/internal/memoryguard/guest.go`, started by `serveMemoryGuard`, `packages/daemon/internal/launcher/memoryguard.go`).
 The guest watch ends no process itself.
-It steers the pod's kernel to stop a command before an agent, names each process the kernel stopped, tells that process's role, and logs the pod's memory each hour.
+It steers the pod's kernel to stop a command before an agent, names each process the kernel stopped, tells the agent whose process it was, and logs the pod's memory each hour.
 As the guard does, it runs only where the launcher is the container's first process: a launcher started any other way writes the guard's `off reason=the launcher is pid <n>, …` line and runs neither.
 The launcher knows that its pod runs in a microVM from its own `--microvm` flag, which is fixed when the pod is built, and never from the daemon's answer.
 `runtime.kubernetes.memory_guard` configures the gVisor guard alone:
@@ -4720,11 +4722,11 @@ No later wait names or counts them, a zombie that stays in `/proc` among them.
 A role's session ends with a SIGKILL of its own `role-init`'s.
 Once the role's shim has exited, `role-init` sends SIGTERM to every process of the role's namespace, waits up to 2 s (`roleNamespaceDrain`) for them to go, and then sends SIGKILL to each one left (`kill(-1)`, `runRoleShim` in `packages/daemon/internal/launcher/roleinit_linux.go`), which shows in `ShdPnd` as the kernel's does.
 On a stop, `role-init` sends that `kill(-1)` as soon as it has reaped the shim.
-So the watch keeps, for each role, the time that it last saw one of the role's session processes leave `/proc`: the role's `role-init`, its shim, or a direct child of its shim.
+So the watch keeps, for each slot, the time that it last saw one of the slot's session processes leave `/proc`: the slot's `role-init`, its shim, or a direct child of its shim.
 Such a process has left where its `stat` is gone or its pid is back with another start time, and a zombie has not left.
-Every such SIGKILL comes after a session process of its role has left, so each pass looks for those processes once, after its last `status` read.
-Such a SIGKILL that one of the pass's `status` reads saw came after the departure, so that look finds the departure, and that same pass sets the role's processes aside (below).
-Each such SIGKILL reaches the processes of its own role alone, so the pass weighs every other role's processes as ever.
+Every such SIGKILL comes after a session process of its slot has left, so each pass looks for those processes once, after its last `status` read.
+Such a SIGKILL that one of the pass's `status` reads saw came after the departure, so that look finds the departure, and that same pass sets the slot's processes aside (below).
+Each such SIGKILL reaches the processes of its own slot alone, so the pass weighs every other slot's processes as ever.
 A scan lets go of a session process that it no longer holds only once that process has left, and it keeps a zombie.
 A role whose session process left at most 3 s before the first rise of the wait, or at any time since, has no process named for the rest of the wait.
 Its processes that a pass sees show SIGKILL pending are set aside, and no pass counts them against the kills left to name, so that the set-aside does not block another role's real victim.
@@ -4819,7 +4821,7 @@ The kernel can also stop a process that the classifier protects ("The score", ab
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
 
 ```text
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
+launcher: memory guard: ended pid=<pid> role=<slot> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
 ```
 
 The guest watch fills it from what it read:
@@ -4864,11 +4866,11 @@ For a process of a role, the watch also gives a report to that role's part of th
   On any other connection the launcher drops each report with this line, since an earlier daemon may close the connection on a frame it does not know, or tell the role of the kernel's stop in the guard's words:
 
   ```text
-  <role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
+  <slot>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no kernelKills, so the daemon behind it may not know the report
   ```
 
 A process of no role has its `ended` line and no report, whether the classifier protects it or not.
-The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the role's topic with the sizes in binary units.
+The daemon chooses the note by the report's cause (`memoryGuardKill`, `packages/daemon/internal/workflow/engine.go`) and queues it to the topic of the claim whose process it was, with the sizes in binary units.
 
 For `cause: kernel` the note is `kernelKillNote`'s, and the daemon logs `workflow: the role whose process the pod's kernel stopped is told why` with the report's `cause`:
 
@@ -4879,20 +4881,20 @@ The pod's kernel stopped one of your processes because the pod ran out of memory
 For `cause: kernel-protected` the note is `kernelProtectedKillNote`'s, and the daemon logs `workflow: the role whose session's own process the pod's kernel stopped is told why` with the report's `cause`:
 
 ```text
-The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of your role. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
+The pod's kernel stopped one of your processes because the pod ran out of memory: `<name>` (pid <pid>) held <size> when the pod's memory read <counter> of its <limit> limit. It was one of the processes that run your session, not a command you ran. If it was your agent, your turn ended with it, and so did every other process of yours. The daemon then starts the same session again and sends again any task that the turn was running. It counts each such exit of an agent's process as a failed launch, and at the limit of failed launches it fails your claim instead. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
 ```
 
 That note does not say that the session goes on.
-The end of a role's agent ends its shim and its `role-init`, and with them every process of the role, so the role's turn ends.
-The daemon reads that as the role's process gone (`died`, `packages/daemon/internal/supervise/machine.go`).
+The end of an agent ends its shim and its `role-init`, and with them every process of its slot, so that agent's turn ends.
+The daemon reads that as the claim's process gone (`died`, `packages/daemon/internal/supervise/machine.go`).
 It takes back the task that the turn was running, counts one failed launch, and starts the same session again.
 At the limit of failed launches it fails the claim instead.
 One of Oh My Pi's helpers can end alone, so the note says what follows only for the agent.
 
 A note can be lost in each case in which the guard's note can, and in each of them the `ended` line stays in the container's log.
 The `kernel-protected` note of an agent's end may reach nobody.
-The outbox delivers a note only to a live session that holds the role's topic when the note's row runs (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
-When the daemon finds the role's process gone, its supervisor asks the Envoy listener to delete that session's registration (`died`, and `cleanSessionStop`, `packages/daemon/internal/daemon/daemon.go`).
+The outbox delivers a note only to a live session that holds the claim's topic when the note's row runs (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
+When the daemon finds the claim's process gone, its supervisor asks the Envoy listener to delete that session's registration (`died`, and `cleanSessionStop`, `packages/daemon/internal/daemon/daemon.go`).
 It then starts the same session again.
 A row that runs while no live session holds the topic ends undelivered, with the log line `outbox role message finished undelivered: its role has no live holder`.
 A row whose holder did not confirm the note runs again on the row's backoff (`roleMessage`'s retry); whether such a row reaches the relaunched session has not been measured.
@@ -4927,7 +4929,7 @@ Its reason is `cgroup v1's memory.oom_control raises no file-modified event` on 
 The watch then reads the counter at its 100 ms scan alone, so it names a stopped process only where that process still shows SIGKILL pending at a scan.
 
 `killed unnamed` comes when a wait ends with kills that no process was named for, and at each rise of the counter once the watch is off.
-It is the kill line with the process unknown: no process showed SIGKILL pending, or more showed it at one pass than there were kills left to name, or each one that showed it was of a role whose session had ended ("The kills", above).
+It is the kill line with the process unknown: no process showed SIGKILL pending, or more showed it at one pass than there were kills left to name, or each one that showed it was of a slot whose session had ended ("The kills", above).
 It gives the count of those kills, the counter's total, and the pod's four figures as an `ended` line gives them, read at the first rise of the wait, and it tells no role.
 
 `score failed` comes once for each process a score write failed on, with that process's start time in clock ticks since boot and the score the write would have set.
@@ -5058,7 +5060,7 @@ capabilities.decided.<name>: "<reason>"` on a deployment row and `capability <na
 configLine?, source?}`, `status` one of `present`, `unchecked`, `withheld`, `decided` or `open` (daemon API contract 16 added the list, contract 21 dropped `live` from it and contract 25 dropped `installed`, which nothing has emitted since LEGION-629;
 the image rows are `present` once the probe passed and `unchecked` before it or under tmux), `source` (`configuration` or `boot`, contract
 25) on a deployment row alone — what legion.yaml alone decides or what boot measured
-— never on a live row, and under each claim's `capabilities` (`issues.<KEY>.architect` and `issues.<KEY>.workers.<role>.claim`) that claim's latest report
+— never on a live row, and under each claim's `capabilities` (`issues.<KEY>.architect`, `issues.<KEY>.workers.<role>.claim` and, for a claim neither shows, such as a second agent of one role, `issues.<KEY>.otherClaims[].claim`) that claim's latest report
 — `measuredAt`, `incarnation`, `ok` (the names its checks passed) and `open[{name, detail}]` — whatever process sent it;
 compare its `incarnation` with the claim's `locator.incarnation` to tell the running process's report from a predecessor's.
 The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/SKILL.md`).
@@ -5141,7 +5143,7 @@ architect, planner, implementer, tester, reviewer, merger):
 3. The `roles` container's PID 1 is one `legion launcher` in multi-role mode:
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
    set>:<worker_stream_port> --sandbox <name> --roles-dir /var/run/legion/roles --role architect
-   --role planner --role implementer --role tester --role reviewer --role merger --stop-grace <d>`, the pod's uid from `POD_UID` (the downward API).
+   --role planner --role implementer --role tester --role reviewer --role merger --stop-grace <d>`, with one `--role` more for each role the deployment defines and for each agent of the issue's plan whose name no role has, such as `--role implementer-2`, and the pod's uid from `POD_UID` (the downward API).
    A microVM issue pod's command adds `--microvm`, and, where the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`, `--metadata-workload-pool <pool> --metadata-identity-provider <provider>` after it, all before `--stop-grace` ([Issue pods in microVMs](#issue-pods-in-microvms)).
    Each `--role` names a slot, and a claim's process runs in the slot named for its agent, whatever role its step is on ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
    It holds one authenticated worker-stream connection per slot, each with that slot's own launcher token, read from `/var/run/legion/roles/<slot>/launcher/LAUNCHER_TOKEN`, and starts and stops each slot's `legion worker-shim` (Oh My Pi) child on the daemon's command, never a worker process of its own.
@@ -5151,7 +5153,7 @@ architect, planner, implementer, tester, reviewer, merger):
    A prefix only ever starts a line: the launcher's lines and each generation in a slot write through writers of their own, each holding back a partial line until its newline arrives, and a generation's last line without a newline is written out as a line of its own once the generation ends.
    A line longer than 64 KiB (`maxLogLine` in `internal/launcher/launcher.go`) is cut there:
    its first 64 KiB is written as a line of its own and the rest follows on a new line behind the prefix again.
-   A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
+   A line the launcher writes for no slot (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a claim quotes the last 20 lines of the claim's slot, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher does three things:
 
@@ -5204,7 +5206,7 @@ On such a volume a provision is not always the issue's first: `workspace-init` k
 The feed is its `feed` directory: `workspace-fetch` mounts that `subPath` alone, read-write, at `/legion/feed`, and `workspace-init` and `roles` mount the same `subPath` again, read-only, at `/legion/feed` over their whole-disk mount.
 The clone's object store owns its links to that feed, and no agent writes what the token-holding container reads.
 The kubelet makes the directory on first use.
-Each slot's Secret, `<sandbox>-<slot>-boot`, holds that slot's launcher token and the gh bundle of the App of the role its process was launched as, or of the step's role while the architect in it does a step of its own plan (at the pod's build, each slot no claim is launched in holds its own name's App):
+Each slot's Secret, `<sandbox>-<slot>-boot`, holds that slot's launcher token and the gh bundle of the App of the role its process was launched as, or of the step's role while the architect in it does a step of its own plan (at the pod's build, a slot no claim is launched in holds the App of the role of its own name, and the slot of an agent of the plan whose name no role has, such as `implementer-2`, the App of the role of that agent's first step):
 for every directory of the bundle, `github-hosts-<dir>`, gh's `hosts.yml` carrying a GitHub App installation token under user `x-access-token`, and `github-config-<dir>`, a `config.yml` of `version: "1"`, then `github-renames`, the configured renames the bundle's root holds as `renames.txt`, and `github-default`, the directory the issue's repository routes to.
 A directory names a GitHub owner, and the bundle holds no repository directory.
 The bundle holds one directory per owner the role's App is installed on, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's recorded owner, less every directory GitHub refuses the role's App a lease for: an owner whose installation GitHub answers for as not installed, suspended, granted none of the permissions a lease asks for, or refusing those permissions is left out of that role's bundle, said once on the daemon's stderr, where the directory of the role's own repository refused fails its launch instead.
@@ -5220,10 +5222,10 @@ Which repository the issue names decides that default and nothing else.
 The one directory minted on another owner's installation is the one a configured rename adds: it holds the lease of the owner whose installation serves the moved repository.
 Each mint asks for what the App's installation on that owner is granted of the set it names, so a permission the account has not approved — such as one added to the App after the account installed it, until the account approves it — is left out of the request and said once in a warn record of the daemon's log, naming the App, the owner, the permission and the access asked and granted, rather than costing the role the whole bundle.
 
-The `roles` container mounts each role `<r>`'s own volumes under its directory of `/var/run/legion/roles`:
-`/var/run/legion/roles/<r>/launcher` (volume `launcher-<r>`, read-only:
-the launcher token, as `LAUNCHER_TOKEN`), `/var/run/legion/roles/<r>/gh` (`gh-<r>`, read-only:
-the role's gh bundle, each directory's two keys as `<dir>/hosts.yml` and `<dir>/config.yml`), `/var/run/legion/roles/<r>/private` (`private-<r>`, memory), `/var/run/legion/roles/<r>/state` (`state-<r>`, memory) and, only when the pod enrolls with the secrets broker, `/var/run/legion/roles/<r>/agent-secrets` (`agent-secrets-key-<r>`, memory).
+The `roles` container mounts each slot `<s>`'s own volumes under its directory of `/var/run/legion/roles`, a slot being a role or the name of an agent of the plan that no role has, such as `implementer-2`:
+`/var/run/legion/roles/<s>/launcher` (volume `launcher-<s>`, read-only:
+the launcher token, as `LAUNCHER_TOKEN`), `/var/run/legion/roles/<s>/gh` (`gh-<s>`, read-only:
+the slot's gh bundle, each directory's two keys as `<dir>/hosts.yml` and `<dir>/config.yml`), `/var/run/legion/roles/<s>/private` (`private-<s>`, memory), `/var/run/legion/roles/<s>/state` (`state-<s>`, memory) and, only when the pod enrolls with the secrets broker, `/var/run/legion/roles/<s>/agent-secrets` (`agent-secrets-key-<s>`, memory).
 One disk `emptyDir`, `role-homes`, is at `/var/run/legion/roles/.homes`.
 A microVM issue pod whose deployment sets `runtime.kubernetes.sandbox.microvm.metadata` also mounts the projected token volume `workload-identity-token`, read-only, at `/var/run/legion/roles/workload-identity`, where no role's namespace shows it ([The pod-local metadata endpoint](#the-pod-local-metadata-endpoint)).
 An issue pod whose `session_database` names a `writer_audience` also mounts the projected token volume `session-writer-token`, read-only, at `/var/run/legion/roles/session-writer`, where no role's namespace shows it ([What `cloudsql-iam` puts in a pod](#what-cloudsql-iam-puts-in-a-pod)).
@@ -5231,7 +5233,7 @@ The pod's shared mounts appear once: the issue volume at `/legion`, the config h
 Every one of them that belongs at or under `/home/legion` (the config home at `.config`, an operator's mount there) is mounted under `/var/run/legion/home` at the same relative path instead, so `/home/legion` itself carries no mount in the `roles` container;
 each role's namespace binds it back at its own path, except the config home.
 That one is `workspace-init`'s, and no role sees or writes it:
-each role gets a config home of its own at `~/.config`, a copy of the shared one made the first time a generation of the role starts in the pod and kept on `role-homes` for the pod's life (`/var/run/legion/roles/.homes/<role>/config` in the container's view;
+each slot gets a config home of its own at `~/.config`, a copy of the shared one made the first time a generation of the slot starts in the pod and kept on `role-homes` for the pod's life (`/var/run/legion/roles/.homes/<slot>/config` in the container's view;
 `ownConfigHome` in `internal/launcher/roleinit_linux.go`;
 the copy holds a `.legion-config-home-complete` file once whole, and one without it is made again), with any mount under the shared config home bound back on top.
 A git `core.fsmonitor` or a jj alias one role writes in its own `~/.config` so never runs in a sibling's git or jj;
@@ -5259,15 +5261,15 @@ The issue's `-boot` Secret holds the provisioning token, projected into `workspa
 
 **Each role in namespaces of its own.**
 The launcher starts each role generation through the hidden `legion launcher role-init`, in its own Linux user, mount, PID and IPC namespaces.
-Inside them `/var/run/legion/roles` is covered by an empty memory filesystem, and the role's own gh, private, state and agent-secrets directories are bound back at the fixed paths `/var/run/legion/gh`, `/var/run/legion/private`, `/var/run/legion/state` and `/var/run/legion/agent-secrets`;
+Inside them `/var/run/legion/roles` is covered by an empty memory filesystem, and the slot's own gh, private, state and agent-secrets directories are bound back at the fixed paths `/var/run/legion/gh`, `/var/run/legion/private`, `/var/run/legion/state` and `/var/run/legion/agent-secrets`;
 its launcher token is bound nowhere, so no role's process reads it, and no role sees a sibling's directories.
 The one file from under the covered directory a role reads is the pod's test server log, which role-init binds read-only at `/var/run/legion/testpg.log` where the pod serves a test database ([A test database in the pod](#a-test-database-in-the-pod) says why the file and not its directory).
-`/home/legion` is an overlay whose lower is the image's and whose upper and work directories are the role's on `role-homes` (a work directory of each generation's own), with every mount the container holds under `/var/run/legion/home` bound back on top at its own path under `/home/legion`, and `/var/run/legion/home` itself then covered.
+`/home/legion` is an overlay whose lower is the image's and whose upper and work directories are the slot's on `role-homes` (a work directory of each generation's own), with every mount the container holds under `/var/run/legion/home` bound back on top at its own path under `/home/legion`, and `/var/run/legion/home` itself then covered.
 The mount carries `userxattr`, so gVisor writes a renamed directory's opaque mark in the `user.overlay.` attribute namespace, which the role's own upper layer keeps and the role may write (`homeOverlayOptions`, `roleinit_linux.go`);
 without it the mark goes to `trusted.overlay.opaque`, which a task in the role's nested user namespace may not write, and gVisor panics when that write is refused, which ends the pod's whole sandbox.
 The lower layer has no mount under it because Linux refuses an overlay over one with mounts locked under it from a more privileged namespace, which every container mount is inside a role's user namespace;
 gVisor allows it today, and the layout does not lean on that.
-`/tmp` and `/var/tmp` are binds of the role's own directories on `role-homes`;
+`/tmp` and `/var/tmp` are binds of the slot's own directories on `role-homes`;
 `/run/lock`, `/var/lock` and `/dev/shm` are private small memory filesystems;
 `/dev/pts` is a new devpts instance holding only the terminals the role opens (`newinstance`, `ptmxmode=0666`, with `/dev/ptmx` bound to it where the image's is a node), and `/dev/mqueue` is mounted from the role's own IPC namespace, so it shows only that namespace's message queues (`privateTerminals` and `privateQueues`, `roleinit_linux.go`); `/proc` is the role's own.
 role-init follows no link on the way to a mount point in the role's own layers:
@@ -5302,7 +5304,7 @@ The roles share the pod's network namespace, the workspace path and the Oh My Pi
 **One container, one fate.**
 Each role is judged by its own launcher connection's state: one role's process exiting is that role's `gone` alone.
 The `roles` container ending — its PID 1 exiting, `OOMKilled`, an eviction
-— ends every role of the issue: each is `gone`, its detail naming the container's reason and exit code and quoting its slot's own last 20 prefixed lines, then the container's last 20 unprefixed lines, which are no slot's (`roleLog`, `observe.go`), and the supervisor relaunches each as it relaunches any `gone` role.
+— ends every claim of the issue: each is `gone`, its detail naming the container's reason and exit code and quoting its slot's own last 20 prefixed lines, then the container's last 20 unprefixed lines, which are no slot's (`roleLog`, `observe.go`), and the supervisor relaunches each as it relaunches any `gone` claim.
 When that reason is `OOMKilled`, each role whose turn the end cut off gets its task again behind a note that its pod ran out of memory and a pointer to `skill://legion-worker/references/tools.md` (`Observation.OutOfMemory`, then `outOfMemoryTask` in `internal/supervise/delivery.go`, kept on the delivery across a daemon restart);
 a role that was in no turn gets nothing, and neither an init container's end nor the controller's pod gives the note.
 
@@ -5418,10 +5420,10 @@ Every role can write the whole issue volume, and the roles share the pod's netwo
 
 The issue's roles trust one another's writes to the volume as they did when each ran in a container of its own.
 The namespaces keep a role's tokens and private files out of a sibling's own reads, and no further.
-One credential is the pod's and not a role's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every role of the pod reads at the same path, and every role's session is registered for that one pod.
-Each role's session is registered bound to that role's own key: the thumbprint of the key the role's shim names at its hello, which the daemon sends with every write of the registration.
-The broker refuses a trade for a session proved with any other key, so a sibling role that holds the pod's exchange token and its own key is refused another role's session.
-Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each role trading with a key of its own, since until then a role's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each role's session id rather than taking its agent's report.
+One credential is the pod's and not a slot's: the exchange token of `runtime.kubernetes.agent_secrets.exchange_audience` ([Operator configuration](#operator-configuration)), which every slot of the pod reads at the same path, and every claim's session is registered for that one pod.
+Each claim's session is registered bound to the own key of the claim's slot: the thumbprint of the key the slot's shim names at its hello, which the daemon sends with every write of the registration.
+The broker refuses a trade for a session proved with any other key, so a sibling slot that holds the pod's exchange token and its own key is refused another claim's session.
+Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each agent trading with the key of its own slot, since until then an agent's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each agent's session id rather than taking its agent's report.
 The daemon already holds each session id to the claim of its project that first recorded it and registers no session another of its claims holds.
 That closes a direct mint only: the roles of one issue are no boundary against code a sibling plants in another role's process, which then runs with that role's key as it runs with that role's tokens ([Trust model](#trust-model-the-provisioning-token) lists what a plant reaches).
 Through the helper, every git a role runs, the setup command's ([Configuration](#configuration)) and an agent's own clone of another repository included, answers `https://github.com/<owner>/…` from the role's own files when `<owner>` is an owner the role's gh files hold a directory for (in an issue pod, an owner both role Apps are installed on) and the role's App is installed on that repository;
@@ -5483,8 +5485,9 @@ the script runs the install twice, so two waits take two thirds of the deadline 
 That remainder holds at every configuration but the smallest, where the floor takes over:
 under a three-second deadline two floored waits of a second consume it, deliberately, since being serialised and then retired is no worse than racing
 — an unserialised cold fill fails the launch anyway.
-Above that floor the bound is also long enough for the last of six roles to queue behind five serialised installs of the pair, 24 seconds each at the defaults
-— the half of the bound a smaller divisor would break, which `TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline` holds against the installs rather than against the derivation.
+Above that floor the bound is also long enough for the last slot of the pod to queue behind the installs of every slot before it: five in a pod of Legion's six roles, and one more for each role the deployment defines and for each agent a plan runs beside its role's own, such as `implementer-2`, in a slot of its own name.
+The defaults' 120 seconds give the five installs 24 seconds each, and a queue of 120 installs a second each, where a cold install of the pair measured about half a second
+— the half of the bound a smaller divisor would break, which `TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline` holds against the installs of the slots of a pod the runtime builds rather than against the derivation.
 A wait that times out exits 1, so it takes the retry and then the script's named failure
 — that one bump's launch fails the way it did before the lock existed, rather than hanging.
 `flock` is advisory and per-inode, which holds exactly where this needs it
@@ -5525,10 +5528,10 @@ once its Oh My Pi has written its first frame
 — its extensions loaded, its RPC loop serving
 — the shim builds the workspace's CodeGraph index in the background (`codegraph init`, or `codegraph index` to repair one an earlier build left partial, as `codegraph status --json` decides).
 Nothing waits on it: not the launch, not the role's registration, not a prompt.
-Six role shims share one workspace, so the warm-up holds a lease at `.codegraph/legion-warm.lock` for its run
+The shims of every slot of a pod share one workspace, so the warm-up holds a lease at `.codegraph/legion-warm.lock` for its run
 — an exclusive create whose holder refreshes its mtime every 10 s, taken over once it is 60 s stale, the takeover itself under a second exclusive create beside it so two shims that both read one stale lease never both build
 — and a shim that finds the lease held leaves the build to its holder.
-When a build finishes, the shim's warm-up logs one line in the `roles` container's log, prefixed `<role>: `, `codegraph warm-up for <workspace> built the index: codegraph init took
+When a build finishes, the shim's warm-up logs one line in the `roles` container's log, prefixed `<slot>: `, `codegraph warm-up for <workspace> built the index: codegraph init took
 <duration>, done <duration> after launch` — the build's own duration and the time since the role's launch (`codegraph index` in place of `init` for a repair)
 — which stage 4b's `repository-tools` checkpoint reads (`kubectl logs <pod> --all-containers`).
 A stop mid-build — the launcher's one SIGTERM to the role's process group
@@ -5862,8 +5865,8 @@ Run no `git` or `jj` in the pod, and bring no credential into it, for two reason
 - **The shell can read every role's credentials.**
   `kubectl exec -c roles` runs as user 1000, the launcher's own user, outside every role's namespaces, so it can read everything under `/var/run/legion/roles/`.
   The pod's `fsGroup` opens the mode-0440 mounts to it:
-  each role's gh files (`<role>/gh`) and launcher token (`<role>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment), the projected ServiceAccount token at `/var/run/legion/agent-secrets-token` when the pod is enrolled with the secrets broker, the broker's exchange token at `/var/run/legion/agent-secrets-exchange/token` where `agent_secrets.exchange_audience` is set, the Workload Identity pool's projected token at `/var/run/legion/roles/workload-identity/token` in a microVM pod with the metadata endpoint, and the session writer token at `/var/run/legion/roles/session-writer/token` where `session_database.writer_audience` is set.
-  It reads the rest as their owner: each running generation's `<role>/private/g<generation>/` files, which the launcher writes owner-only (the boot token, the Envoy and Dispatch bearers, a spec's secrets and, under `cloudsql-iam`, the session database's URL file and socket), each role's `<role>/agent-secrets/` key directory and each role's home under `.homes/`, whose files a role writes as user 1000 outside its namespaces.
+  each slot's gh files (`<slot>/gh`) and launcher token (`<slot>/launcher`), the providers Secret at `/var/run/legion/providers` (the provider keys, the `legion-pane` NATS nkey seed when the daemon has one and, under `postgres`, the session database's URL, the login to every conversation of the deployment), the projected ServiceAccount token at `/var/run/legion/agent-secrets-token` when the pod is enrolled with the secrets broker, the broker's exchange token at `/var/run/legion/agent-secrets-exchange/token` where `agent_secrets.exchange_audience` is set, the Workload Identity pool's projected token at `/var/run/legion/roles/workload-identity/token` in a microVM pod with the metadata endpoint, and the session writer token at `/var/run/legion/roles/session-writer/token` where `session_database.writer_audience` is set.
+  It reads the rest as their owner: each running generation's `<slot>/private/g<generation>/` files, which the launcher writes owner-only (the boot token, the Envoy and Dispatch bearers, a spec's secrets and, under `cloudsql-iam`, the session database's URL file and socket), each slot's `<slot>/agent-secrets/` key directory and each slot's home under `.homes/`, whose files a role writes as user 1000 outside its namespaces.
   It reads each agent's environment through `/proc/<pid>/environ` too, and whatever the operator's `runtime.kubernetes.pod.volume_mounts` mount.
   Where the pods' ServiceAccount is federated to a cloud identity, it can act as that identity, as every role can.
   Under `cloudsql-iam` with `impersonate_service_account`, that identity can also impersonate the service account, so the shell and every role can act as that account: they can sign in to the session database as it, and use every other role that it holds.
@@ -6569,7 +6572,7 @@ the issue pod's whole 10Gi, shared by its roles.
 An issue pod's roles share one memory limit, and under gVisor the host kernel sees the pod's sandbox and not the processes in it:
 a container that passes its limit is stopped whole, `OOMKilled`, and every role's turn ends with it ([Liveness rules](#liveness-rules)).
 The memory guard in the pod's launcher, where the deployment runs it (it is on by default), acts before that point.
-When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor an agent's own, and the daemon tells that process's role why, on the role's own topic.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor an agent's own, and the daemon tells the agent whose process it was why, on its claim's own topic.
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
@@ -6694,9 +6697,9 @@ launcher: memory guard: started act_percent=<n> floor_percent=<n> wait=<d> inter
 launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> interval=<d>
 launcher: memory guard: off: the daemon's acknowledgement carries no settings
 launcher: memory guard: settings refused: <why>; nothing changes
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
+launcher: memory guard: ended pid=<pid> role=<slot> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
 launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
-launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_executable="<name>"
+launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<slot> largest_size=<bytes> largest_executable="<name>"
 launcher: memory guard: off reason=<why>
 launcher: memory guard: unread pid=<pid> reason=<why>
 launcher: memory guard: kill failed pid=<pid> reason=<why>
@@ -6720,16 +6723,16 @@ The guard measures that largest process again, in a goroutine of its own that de
 `unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on.
 Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
 
-The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
+The launcher writes three lines of its own about the reports below, each behind the slot's `<slot>: ` prefix (a slot is named for its agent, so `role=` and `largest_role=` above name a slot too):
 
 ```text
-<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
-<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report
-<role>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
+<slot>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
+<slot>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report
+<slot>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
 ```
 
 **The report and the note.**
-For each process of a role that it ends, the guard gives a report to that role's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the role's connection:
+For each process of a slot that it ends, the guard gives a report to that slot's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the slot's connection:
 the guard's own id, its count of kills, the pid, the process's name as its lines give it (`executable`, at most 256 bytes and no argument), the process's size, the reading, the counter and the limit.
 The launcher sends a report only on a connection whose answer carried settings, since a daemon built before the guard closes a connection on a frame it does not know, and it drops a report waiting for any other connection with a line.
 Up to 32 reports wait while the role has no connection, and a 33rd drops the oldest with a line, or the next oldest while the oldest is being written.
@@ -7282,8 +7285,8 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
   The release then logs `sandbox runtime: released the issue's pod and kept its Sandbox, which owns the issue's kept volume, Suspended; deleted the Secrets that the next launch writes again`.
 
 The pod's disk goes with the pod, as at every other end of a pod, and a released issue leaves nothing in the namespace: no Sandbox, no pod and no volume claim.
-A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, and the claim of its volume, and no pod.
-Each role's session stays where it was, a row in the session database ([Selecting the store](#selecting-the-store)), and the wake resumes each role in its own session.
+A kept volume is the exception: a released issue whose Sandbox owns one leaves that Sandbox, `Suspended`, and the claim of its volume, and no pod and no Secret.
+Each claim's session stays where it was, a row in the session database ([Selecting the store](#selecting-the-store)), and the wake resumes each claim in its own session.
 A release moves no issue and ends no phase.
 
 A wake brings the pod back and resumes, in its own session, each role the wake is for.
@@ -7339,7 +7342,7 @@ The 10 minutes of that warning run from the resume's stuck clock (`pod_resumes.c
 A release of a pod no claim owns suspends no claim, so it leaves no released claim and owes no wake.
 Its pod comes back at the next start of a claim of that issue, and that start builds the Sandbox, the pod and the workspace again.
 There are four such starts.
-An operator's `legion claims retry` of a failed claim resumes the role's recorded session from the session database, or starts a new one once supervise's `forgetSession` has dropped it.
+An operator's `legion claims retry` of a failed claim resumes the session that claim recorded from the session database, or starts a new one once supervise's `forgetSession` has dropped it.
 The same retry with `--fresh-session` forgets that session first and starts a new one.
 A start the daemon queues for a phase worker itself does as the first does: a phase start, a backward move, a retry after the architect's `retry_or_escalate`, and that same retry made by a `todo` written on a held root, which releases the hold and starts the held phase's worker.
 At a step or a retro the architect does itself none of these starts a worker: the architect is told the step with an `owner-step` notice instead, and an operator's retry of the architect's claim there relaunches that claim and tells it the step again.
@@ -7362,9 +7365,9 @@ The row's `bundle` column is a git bundle, so an operator reads it out with `psq
 A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
 A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
 The `bundle_unrestored` hold does not keep such a pod either, since that release saves no bundle over the one the database holds.
-On an ephemeral disk nothing else is kept: `$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
+On an ephemeral disk nothing else is kept: `$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each slot's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.
 A kept volume keeps the parts of that list that are on the volume: `$TMPDIR`, the ignored files, the files jj does not snapshot and the CodeGraph index.
-Each role's home and a test Postgres are not on the volume, so they go with the pod there too.
+Each slot's home and a test Postgres are not on the volume, so they go with the pod there too.
 A restore whose base commit is gone writes a notice that names what it could not bring back.
 
 This is the release's own form of [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod), which stays the operator's procedure for a pod the daemon is not releasing.
@@ -7616,8 +7619,8 @@ Each held row runs, and the first row to run for a claim (the claim the row name
 The claim's other held rows find it launching or live and are delivered to it.
 A held role message launches nothing itself: its row publishes the message, and the Envoy listener's report of that publish is the role's wake (`wakeReleased`, `internal/workflow/wake.go`), whose `start` row launches the role through the same pacing.
 The daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), but not a row that a pause held for a role that a pause stopped: one with a stop that ended `stopped` after the issue's newest pod release (`StoppedByAPause`, `internal/store/pause.go`, read by `heldMessageOwed`, `internal/daemon/outbox.go`).
-Such a row waits until the role is back and its session holds the role's topic: at its launch's turn where the pacing holds that launch, and through the moment between the woken agent's ready and its plugin's claim of the role, when the listener still answers that the role has no live holder.
-Then it reaches the role's session, once.
+Such a row waits until the claim is back and its session holds the claim's topic: at its launch's turn where the pacing holds that launch, and through the moment between the woken agent's ready and its plugin's claim of that topic, when the listener still answers that the role has no live holder.
+Then it reaches that claim's session, once.
 A second pause that begins before the role is back holds the row again, and the row still reaches the role once it is back.
 A later stop of the role that is still open, or that ended cancelled, taken over or failed, changes nothing.
 A later stop that stops the role carries the debt itself: the row is then owed under that stop's pause, and the pod release that ends it is one recorded after that stop.
@@ -7830,7 +7833,7 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
 
 - `Running`: each claim judged by the launcher connection of its slot (the name of its agent, whatever role its step is on), never the whole pod
   — one claim's process exiting is that claim's **dead (gone)** alone, and changes nothing for its siblings.
-  The `roles` container terminated (its PID 1 exited, `OOMKilled`, an eviction) ends every role of the issue:
+  The `roles` container terminated (its PID 1 exited, `OOMKilled`, an eviction) ends every claim of the issue:
   each is **dead (gone)**, its detail naming the container's reason and exit code and quoting its slot's own last 20 `<slot>: ` lines of the container's log, then the container's last 20 unprefixed lines (`roleLog`, `observe.go`).
   The launcher's memory guard ends one process near the limit so that the container does not end `OOMKilled` ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and it never ends a slot's `role-init`, shim or agent, so a claim whose command it ended stays **alive** by these rules and is told of the kill on its own topic.
   No status at all for the container → **unknown**.
@@ -8843,9 +8846,9 @@ each issue's pod (every role of it alike) and the image probe's.
   The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
   Turning the key off replaces no pod: the next generation of each role is told no identity, though its pod still mounts the token until it is replaced.
 
-  - With the key set, the daemon also registers each role's session for the pod it runs in, which the broker's exchange requires of a pod whose account's exchange entry fixes no session: it posts the pod's own token for the broker's audience (the one the shim's hello carries, or the one the shim reads again), the session name and the thumbprint of the role's own key (the one its shim's hello names) to the broker's `POST /v1/oauth/exchange/pod-sessions`, under its own ServiceAccount token as the bearer, the credential that route's class checks.
+  - With the key set, the daemon also registers each claim's session for the pod it runs in, which the broker's exchange requires of a pod whose account's exchange entry fixes no session: it posts the pod's own token for the broker's audience (the one the shim's hello carries, or the one the shim reads again), the session name and the thumbprint of the own key of the claim's slot (the one that slot's shim's hello names) to the broker's `POST /v1/oauth/exchange/pod-sessions`, under its own ServiceAccount token as the bearer, the credential that route's class checks.
 
-  - Every registration is made at or after the role's shim hello, with that hello's thumbprint, and never before it: none is sent for a role whose hello has not arrived or names no thumbprint.
+  - Every registration is made at or after the hello of the shim of the claim's slot, with that hello's thumbprint, and never before it: none is sent for a slot whose hello has not arrived or names no thumbprint.
 
   - A registration's thumbprint is the one its process's first hello names: a later hello of the same process that names another key is logged, and the registration keeps the first key.
 
@@ -8874,7 +8877,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
   - Unset, the daemon makes no registration call.
 
-  - The exchange token is the pod's, not a role's: every role reads it at the same path, and every role's session is registered for the same pod, each bound to the key of the role whose registration it is, so the broker refuses a trade for that session proved with any other key.
+  - The exchange token is the pod's, not a slot's: every slot reads it at the same path, and every claim's session is registered for the same pod, each bound to the key of the slot its claim runs in, so the broker refuses a trade for that session proved with any other key.
     Which session a role registers is held to its claim, but it is still its agent's word, and until session names are bound to the daemon that registered them any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session (the gate above), so this does not yet keep a role out of another claim's session ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) says what that closes and what it does not).
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.

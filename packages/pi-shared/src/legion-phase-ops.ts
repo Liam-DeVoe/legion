@@ -414,8 +414,9 @@ export function legionToolDescription(host: {
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
     "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
-    "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
-    "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
+    "names. It can end earlier, once every agent the round asks has answered, no agent of the issue is in a turn and the last " +
+    "report of each agent in the pod names no running subagent or background job. Two agents of one role answer each for itself. " +
+    "No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
     "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
     "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
     (host.after ?? "") +

@@ -2160,16 +2160,16 @@ const (
 // stopped by the pod's kernel (shimwire.MemoryKillCauseKernelProtected): the role-init, the shim,
 // the agent and the helpers the launcher's classifier protects. The agent's end ends the shim's
 // (the shim returns the agent's exit), the shim's ends the role-init's, which ends every process
-// of the role with it, and the launcher reports that generation's exit. The daemon reads that as
-// the role's process gone, as it reads every exit a role's process makes on its own: it takes
+// of the agent's slot with it, and the launcher reports that generation's exit. The daemon reads
+// that as the claim's process gone, as it reads every exit an agent's process makes on its own: it takes
 // back the task the turn was running, charges one launch failure, and relaunches the same
 // session, which is sent that task again, or fails the claim where the launch failures have
 // reached their limit (supervise's died, interrupted, relaunchAfterFailure). A helper of the
 // agent's may end alone, which is why the note says what follows only of the agent.
 const kernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
-	"If it was your agent, your turn ended with it, and so did every other process of your role. " +
+	"If it was your agent, your turn ended with it, and so did every other process of yours. " +
 	"The daemon then starts the same session again and sends again any task that the turn was running. " +
-	"It counts each such exit of a role's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
+	"It counts each such exit of an agent's process as a failed launch, and at the limit of failed launches it fails your claim instead. "
 
 // memoryGuardNote is what a role reads when the memory guard ended one of its processes: which
 // process, how much it held, how near the limit the pod was, that nothing else of the role

@@ -281,10 +281,12 @@ type PodUpdateOpen struct {
 // a later round has already replaced it names the round it read, and is refused rather than
 // counted for the round it never saw (podUpdateSignalled).
 //
-// An answer from every role brings the round's end forward only while no role reports background
-// work: before endsAt the round ends once every role it asks has answered, no role is in a turn,
-// and no role with a process in the round's pod has an activity report that names a subagent or a
-// background job that runs, or no report since its last turn started. internal/daemon's
+// An answer from every claim it asks brings the round's end forward only while no claim reports
+// background work: before endsAt the round ends once every claim it asks has answered, no claim of
+// the issue is in a turn, and no claim with a process in the round's pod has an activity report
+// that names a subagent or a background job that runs, or no report since its last turn started;
+// two claims of one role, such as `…-implementer` and `…-implementer-2`, answer each for itself.
+// internal/daemon's
 // roundEnd.holding is the one statement of that rule. No answer, no turn and no background work
 // holds the pod past endsAt, so the text names that moment and what goes with the pod then: the
 // turn in progress, each subagent, each background job and each named service that still runs,
@@ -324,7 +326,7 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 
 The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
-If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
+If every agent the round asks answers, the round can end before that moment. It then ends once the last report of each agent in the pod names no subagent and no background job that runs, and no agent of the issue is in a turn. Your plugin sends that report at the end of each turn. If an agent does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
 
 This message can arrive while you are in a turn. Do these five steps, in this order:
 

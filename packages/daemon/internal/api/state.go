@@ -719,9 +719,10 @@ type Issue struct {
 	PlaceRole string `json:"placeRole,omitempty"`
 	// StartWaitsForPod are the roles of the starts that wait because the issue's live pod lacks
 	// the slot of the start's claim or the role of its step, the pod having been built before the
-	// deployment defined that name (record.Store.StartsWaitingForPod): a start that creates its
-	// claim has none to show yet, and only the pod's update round or its release lets it start.
-	// Absent where none waits.
+	// deployment defined or the issue's plan named that name, such as the slot `implementer-2` of
+	// a second agent of one role, whose start is named here by its role, `implementer`
+	// (record.Store.StartsWaitingForPod): a start that creates its claim has none to show yet, and
+	// only the pod's update round or its release lets it start. Absent where none waits.
 	StartWaitsForPod []string `json:"startWaitsForPod,omitempty"`
 	// Status is the status the daemon means the issue to have and writes to Dispatch
 	// (record.Issue.Status). It is not the status Dispatch shows: that is
@@ -781,8 +782,9 @@ type Issue struct {
 	// OtherClaims is every claim of the issue that neither `architect` nor `workers` shows, each
 	// with the role it holds, in token order, and absent where there is none (contract 222). Two
 	// claims of one issue can hold one role — the agent of a key on a step of another role,
-	// beside that role's own claim of an earlier version of the plan — and `workers` holds one
-	// entry per role, so a reader finds the other one here, by its token (ClaimView.Token).
+	// beside that role's own claim of an earlier version of the plan, or a second agent of one
+	// role, `implementer-2`, beside the first — and `workers` holds one entry per role, so a
+	// reader finds the other one here, by its token (ClaimView.Token).
 	OtherClaims []OtherClaimView `json:"otherClaims,omitempty"`
 	PullRequest *PullRequestView `json:"pullRequest,omitempty"`
 	DesignGate  *GateView        `json:"designGate,omitempty"`
@@ -1852,11 +1854,12 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 	return grouped
 }
 
-// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the role's
-// own claim, whose token the issue and the role spell (and for an entry that names no token), and
-// `<issue> <role> (claim <token>)` for the claim of an agent named for another role, which holds
-// the role for its step. Two claims of one role on one issue are then named apart, and the token
-// is what `legion claims` takes.
+// Name is the claim as the boot's line and `legion state` name it: `<issue> <role>` for the claim
+// of an agent named for its role, whose token the issue and the role spell (and for an entry that
+// names no token), and `<issue> <role> (claim <token>)` for every other claim: an agent named for
+// another role, which holds the role for its step, or a second agent of one role, `implementer-2`.
+// Two claims of one role on one issue are then named apart, and the token is what `legion claims`
+// takes.
 func (c StrandedClaim) Name() string {
 	named := c.Issue + " " + string(c.Role)
 	if _, agent, ok := c.Token.Cut(); ok && string(agent) != string(c.Role) {

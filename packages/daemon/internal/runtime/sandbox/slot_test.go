@@ -1,17 +1,21 @@
 package sandbox
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -144,12 +148,49 @@ func TestAnIssuePodHasASlotForEachAgentNameOfItsPlan(t *testing.T) {
 }
 
 // The gh refresh passes over the slot of an agent of the plan in which no stored claim runs yet: its
-// name is no role's, so no App names it, and nothing in it reads its files. Once a claim of that
-// agent is stored, the refresh renders its slot for that claim's role as it does every other slot.
+// name is no role's, so no App names it, and nothing in it reads its files. The slot keeps the App
+// the pod's build wrote into it, that of the agent's first step, through a tick that re-mints every
+// other slot's lease. Once a claim of that agent is stored, the refresh renders its slot for that
+// claim's role as it does every other slot. The daemon's own function refuses a role that names no
+// App (appauth.AppRoleFor), so a refresh that asked for the slot's own name would write nothing
+// there and log a failure at each tick; the stand-in here renders a bundle for any role it is asked
+// for, named by that role, so such a refresh would show in the slot's files.
 func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
-	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}))
+	var lease atomic.Pointer[string]
+	first, second := "first", "second"
+	lease.Store(&first)
+	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}), withOptions(func(o *Options) {
+		o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+			app := string(role)
+			if acting, err := appauth.AppRoleFor(role, nil, appauth.Planned{}); err == nil {
+				app = string(acting)
+			}
+			owner := strings.ToLower(repo.Owner())
+			if owner == "" {
+				owner = "sjawhar"
+			}
+			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
+				"acme": ghconfig.Render("ghs_"+app+"_"+*lease.Load()+"_read", app, staticCredentialExpiry),
+				owner:  ghconfig.Render("ghs_"+app+"_"+*lease.Load(), app, staticCredentialExpiry),
+			}}, nil
+		})
+	}))
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	slot := roleSecretName(loc.Sandbox.Name, "implementer-2")
+	implementer := roleSecretName(loc.Sandbox.Name, claim.RoleImplementer)
+	implement := func(lease string) string { return "ghs_" + string(appauth.Implement) + "_" + lease }
+	holds := func(name string) string {
+		t.Helper()
+		secret := g.secret(name)
+		if secret == nil {
+			t.Fatalf("the Sandbox has no Secret %s", name)
+		}
+		token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(string(secret.Data[GitHubDefaultKey]))])
+		if err != nil {
+			t.Fatalf("the Secret %s's default hosts.yml: %v", name, err)
+		}
+		return token
+	}
 	readSecrets := func() map[string]bool {
 		read := map[string]bool{}
 		for _, a := range g.requests() {
@@ -159,15 +200,27 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 		}
 		return read
 	}
+	if got := holds(slot); got != implement(first) {
+		t.Fatalf("the build wrote %q into %s, want the implement App's %q, the App of the agent's first step", got, slot, implement(first))
+	}
+
+	lease.Store(&second)
 	g.clearActions()
 	g.r.refreshGitHubCredentials(g.ctx)
 	read := readSecrets()
-	if !read[roleSecretName(loc.Sandbox.Name, claim.RoleImplementer)] {
+	if !read[implementer] {
 		t.Fatalf("the refresh read the Secrets %v, want the implementer's among them", read)
+	}
+	if got := holds(implementer); got != implement(second) {
+		t.Fatalf("the refresh left %q in %s, want the re-minted %q: the tick wrote no slot", got, implementer, implement(second))
 	}
 	if read[slot] {
 		t.Errorf("the refresh read %s, want no read of the slot of an agent no stored claim is of", slot)
 	}
+	if got := holds(slot); got != implement(first) {
+		t.Errorf("the refresh left %q in %s, want the implement App's %q the build wrote: no stored claim runs in the slot", got, slot, implement(first))
+	}
+
 	g.store.mu.Lock()
 	g.store.claims = append(g.store.claims, supervise.Claim{Token: secondImplementer, Issue: testTree, Role: claim.RoleImplementer, Generation: 1})
 	g.store.mu.Unlock()
@@ -175,6 +228,9 @@ func TestTheRefreshOfAPlanSlotWaitsForAClaimOfItsAgent(t *testing.T) {
 	g.r.refreshGitHubCredentials(g.ctx)
 	if !readSecrets()[slot] {
 		t.Errorf("the refresh after a claim of implementer-2 was stored read %v, want %s among them", readSecrets(), slot)
+	}
+	if got := holds(slot); got != implement(second) {
+		t.Errorf("the refresh after a claim of implementer-2 was stored left %q in %s, want the implement App's re-minted %q", got, slot, implement(second))
 	}
 }
 
