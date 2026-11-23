@@ -842,8 +842,14 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	if !claim.IsRole(c.Role) || s.pool == nil {
 		return 0, "", false
 	}
-	if stopping := s.stopRefusal("retry"); stopping != "" {
-		return http.StatusServiceUnavailable, stopping, true
+	// A phase worker is refused during the daemon's stop before its issue is read, as it always
+	// was; an architect only once the read says it is the owner at a place of its own, so the retry
+	// of any other architect during a stop is the machine's alone, with no refusal to report.
+	architect := c.Role == claim.RoleArchitect
+	if !architect {
+		if stopping := s.stopRefusal("retry"); stopping != "" {
+			return http.StatusServiceUnavailable, stopping, true
+		}
 	}
 	recorded, err := s.recordedIssue(r.Context(), c.Issue)
 	if err != nil {
@@ -853,8 +859,13 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	if recorded == nil || recorded.RoleAt(recorded.WorkingPhase()) != c.Role {
 		return 0, "", false
 	}
-	if c.Role == claim.RoleArchitect && !ownersOwnPlace(*recorded, token) {
-		return 0, "", false
+	if architect {
+		if !ownersOwnPlace(*recorded, token) {
+			return 0, "", false
+		}
+		if stopping := s.stopRefusal("retry"); stopping != "" {
+			return http.StatusServiceUnavailable, stopping, true
+		}
 	}
 	working := recorded.WorkingPhase()
 	// The fact names the claim it restarts the phase for, which the workflow holds to the claim
