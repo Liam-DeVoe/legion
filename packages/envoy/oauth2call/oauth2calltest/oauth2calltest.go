@@ -45,12 +45,13 @@ func PrintTest(t *testing.T, h Holder) {
 // Token is redacttest.Token, a made-up credential, for a request whose stand-in echoes it.
 const Token = redacttest.Token
 
-// KeptPrintTest is redacttest.KeptPrintTest: v, which keeps one of the made-up credentials where
-// no printer may reach it (an answer's record of its request), printed under every fmt verb and a
-// bad verb, at every holding, beside twin, a plain string that holds one.
-func KeptPrintTest(t *testing.T, name string, v any, twin string) {
+// KeptPrintTest is redacttest.KeptPrintTest: v, which keeps one of the made-up credentials, or one
+// of credentials the request carried, where no printer may reach it (an answer's record of its
+// request), printed under every fmt verb and a bad verb, at every holding, beside twin, a plain
+// string that holds one.
+func KeptPrintTest(t *testing.T, name string, v any, twin string, credentials ...string) {
 	t.Helper()
-	redacttest.KeptPrintTest(t, name, v, twin)
+	redacttest.KeptPrintTest(t, name, v, twin, credentials...)
 }
 
 // StatusLineServer is redacttest.StatusLineServer: a server that answers every request with

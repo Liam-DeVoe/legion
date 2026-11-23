@@ -1,8 +1,10 @@
 package redacttest
 
 import (
+	"encoding/hex"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -53,10 +55,12 @@ func mapOf(v any) any {
 // credentials a box's or an answer's record of its request keeps - under every verb of keptVerbs,
 // at every place of keptHoldings, each a subtest. A row fails, as REDACT-ASSERT
 // kept/<name>/<holding>/<verb>, when its output holds a secret, as written or hex-encoded
-// (Leaks); and as blind when twin, a plain string that holds a secret, printed under the same verb
-// in a struct's field at the same holding, prints none, since such a row could not see one. It
-// logs one `REDACT-KEPT <name> rows=<n> blind=<n>` line.
-func KeptPrintTest(t *testing.T, name string, v any, twin string) {
+// (Leaks), or a run of one of credentials, the values the request carried where that is not one
+// of Secrets (a key's signed JWT), as written or hex-encoded (shownPieces); and as blind when
+// twin, a plain string that holds a secret or one of credentials, printed under the same verb in
+// a struct's field at the same holding, prints none, since such a row could not see one. It logs
+// one `REDACT-KEPT <name> rows=<n> blind=<n>` line.
+func KeptPrintTest(t *testing.T, name string, v any, twin string, credentials ...string) {
 	t.Helper()
 	type plain struct{ s string }
 	rows, blind := 0, 0
@@ -65,7 +69,7 @@ func KeptPrintTest(t *testing.T, name string, v any, twin string) {
 			rows++
 			out := fmt.Sprintf(verb, at.hold(v))
 			twinOut := fmt.Sprintf(verb, at.hold(plain{twin}))
-			seen := len(Leaks(twinOut)) > 0
+			seen := len(Leaks(twinOut)) > 0 || shownPieces(twinOut, credentials) != nil
 			if !seen {
 				blind++
 			}
@@ -75,6 +79,9 @@ func KeptPrintTest(t *testing.T, name string, v any, twin string) {
 				for _, s := range Leaks(out) {
 					t.Errorf("REDACT-ASSERT %s: the value prints the secret %q it keeps: %q", capture, s, out)
 				}
+				for _, piece := range shownPieces(out, credentials) {
+					t.Errorf("REDACT-ASSERT %s: the value prints %q, a run of a credential its request carried: %q", capture, piece, out)
+				}
 				if !seen {
 					t.Errorf("blind: the twin, a plain string in a struct's field at this holding, prints no secret under %s: %q", verb, twinOut)
 				}
@@ -82,4 +89,25 @@ func KeptPrintTest(t *testing.T, name string, v any, twin string) {
 		}
 	}
 	t.Logf("REDACT-KEPT %s rows=%d blind=%d", name, rows, blind)
+}
+
+// shownPieces is, for each of credentials that text shows, the first run of it text holds: a
+// Piece as written, or the 16 hex digits of 8 of its bytes, as %x and %X write them.
+func shownPieces(text string, credentials []string) []string {
+	var shown []string
+	lower := strings.ToLower(text)
+	for _, credential := range credentials {
+		if piece := Piece(text, credential); piece != "" {
+			shown = append(shown, piece)
+			continue
+		}
+		hexed := hex.EncodeToString([]byte(credential))
+		for at := 0; at+16 <= len(hexed); at += 2 {
+			if piece := hexed[at : at+16]; strings.Contains(lower, piece) {
+				shown = append(shown, piece)
+				break
+			}
+		}
+	}
+	return shown
 }
