@@ -404,10 +404,16 @@ ARG GH_TOOL
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# Every download of this file goes through one form: at most a bounded time an attempt (300 s for
+# an archive, 60 s for a key or a text file), up to two more attempts after any failure (curl's
+# --retry-all-errors: a 429, a 5xx, a reset, or a stall the bound cut), no new attempt once the
+# retries have run past twice that bound, honouring a Retry-After; then one line naming the stage,
+# the address and curl's exit status. Any checksum check stays after its fetch. A single 503 from
+# GitHub failed this image's build in job 137719519443 (2026-11-23).
 RUN set -eu; \
+    get() { url=$1; shift; curl -fsSL --max-time 300 --retry 2 --retry-all-errors --retry-max-time 600 "$@" "$url" || { rc=$?; echo "tools: $url failed after up to 3 attempts of 300 s (curl exit $rc)" >&2; exit 1; }; }; \
     t=/tmp/mise; mkdir -p "$t"; \
-    curl -fsSLo "$t/mise.tar.gz" \
-      "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz"; \
+    get "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz" -o "$t/mise.tar.gz"; \
     printf '%s  %s\n' "$MISE_SHA256" "$t/mise.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/mise.tar.gz" -C "$t" --no-same-owner; \
@@ -431,8 +437,9 @@ COPY .omp-pin /omp-pin
 # it stands in; a pin of any other shape fails here by its name rather than fetch an address it
 # does not name. /opt/omp is the Oh My Pi archive with its one top-level directory stripped, as mise strips
 # it: bin/omp. Each fetch refuses by the tool's name and the address it read: a digest ARG that is
-# no 64-hex sha256, a download curl did not complete (a 404, a truncated body), or an archive
-# whose sha256 is not the pinned one, so the log says which of the three failed and why, though
+# no 64-hex sha256, a download curl did not complete in three attempts (a 404, a truncated body, a
+# 5xx: the form the comment above the mise layer gives), or an archive whose sha256 is not the
+# pinned one, so the log says which of the three failed and why, though
 # BuildKit marks every line of this RUN. The three digests are declared here, after the layers
 # above, so a bump of one rebuilds this layer alone.
 ARG OMP_SHA256
@@ -453,10 +460,11 @@ RUN set -eu; \
     omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; omp_tag="v${omp_pin##*@}"; \
     jj_repo="${JJ_TOOL#github:}"; jj_repo="${jj_repo%@*}"; jj_tag="v${JJ_TOOL##*@}"; \
     gh_version="${GH_TOOL#gh@}"; \
+    get() { url=$1; shift; curl -fsSL --max-time 300 --retry 2 --retry-all-errors --retry-max-time 600 "$@" "$url" || { rc=$?; echo "tools: $url failed after up to 3 attempts of 300 s (curl exit $rc)" >&2; exit 1; }; }; \
     fetch() { \
       tool=$1; arg=$2; want=$3; url=$4; file=$5; \
       printf '%s\n' "$want" | grep -Eqx '[0-9a-f]{64}' || { echo "tools: $tool: ARG $arg is '$want', which is no 64-hex sha256, so the archive at $url is not fetched" >&2; exit 1; }; \
-      curl -fsSL --max-time 300 -o "$file" "$url" || { echo "tools: $tool: the archive did not download from $url (curl exit $?)" >&2; exit 1; }; \
+      get "$url" -o "$file"; \
       got=$(sha256sum "$file"); got=${got%% *}; \
       [ "$got" = "$want" ] || { echo "tools: $tool: the archive from $url has sha256 $got, and ARG $arg pins $want" >&2; exit 1; }; \
       echo "tools: $tool: $url, sha256 $got"; \
@@ -637,17 +645,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker/language-servers/package-lock.json /opt/language-servers/
 RUN set -eu; \
+    get() { url=$1; shift; curl -fsSL --max-time 300 --retry 2 --retry-all-errors --retry-max-time 600 "$@" "$url" || { rc=$?; echo "toolchain: $url failed after up to 3 attempts of 300 s (curl exit $rc)" >&2; exit 1; }; }; \
     t=/tmp/toolchain; mkdir -p "$t" /out/bin /opt/node; \
-    curl -fsSLo "$t/uv.tar.gz" \
-      "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"; \
-    curl -fsSLo "$t/node.tar.xz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
-    curl -fsSLo "$t/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
-    curl -fsSLo "$t/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
-    curl -fsSLo "$t/kubectl" "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
-    curl -fsSLo "$t/yq" \
-      "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"; \
-    curl -fsSLo "$t/chromium.zip" \
-      "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
+    get "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" -o "$t/uv.tar.gz"; \
+    get "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "$t/node.tar.xz"; \
+    get "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip" -o "$t/awscli.zip"; \
+    get "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o "$t/go.tar.gz"; \
+    get "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" -o "$t/kubectl"; \
+    get "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64" -o "$t/yq"; \
+    get "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip" -o "$t/chromium.zip"; \
     printf '%s  %s\n' "$UV_SHA256" "$t/uv.tar.gz" "$NODE_SHA256" "$t/node.tar.xz" \
       "$AWS_CLI_SHA256" "$t/awscli.zip" "$GO_SHA256" "$t/go.tar.gz" \
       "$KUBECTL_SHA256" "$t/kubectl" "$YQ_SHA256" "$t/yq" \
@@ -717,9 +723,9 @@ RUN set -eu; \
 ARG GCLOUD_VERSION
 ARG GCLOUD_SHA256
 RUN set -eu; \
+    get() { url=$1; shift; curl -fsSL --max-time 300 --retry 2 --retry-all-errors --retry-max-time 600 "$@" "$url" || { rc=$?; echo "gcloud: $url failed after up to 3 attempts of 300 s (curl exit $rc)" >&2; exit 1; }; }; \
     t=/tmp/gcloud; mkdir -p "$t"; export CLOUDSDK_CONFIG="$t/config"; \
-    curl -fsSLo "$t/sdk.tar.gz" \
-      "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz"; \
+    get "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" -o "$t/sdk.tar.gz"; \
     printf '%s  %s\n' "$GCLOUD_SHA256" "$t/sdk.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/sdk.tar.gz" -C /opt --no-same-owner; \
@@ -935,7 +941,8 @@ ARG PGDG_KEY_SHA256
 # hadolint ignore=DL3008
 RUN install -d -m 0755 /etc/apt/keyrings \
     && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && curl -fsSL -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && { curl -fsSL --max-time 60 --retry 2 --retry-all-errors --retry-max-time 120 -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+      || { echo "postgres: https://www.postgresql.org/media/keys/ACCC4CF8.asc failed after up to 3 attempts of 60 s (curl exit $?)" >&2; exit 1; }; } \
     && printf '%s  %s\n' "$PGDG_KEY_SHA256" /etc/apt/keyrings/pgdg.asc > /tmp/pgdg-key.sha256 \
     && sha256sum --check --strict /tmp/pgdg-key.sha256 \
     && rm -f /tmp/pgdg-key.sha256 \
@@ -1031,11 +1038,11 @@ COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
 # the stage comment above describes (a source change, not a pin bump, reuses it, so it rebuilds
 # rarely), and running unauthenticated GitHub raw-content requests in parallel risks tripping its
 # secondary rate limit for a build-time saving that doesn't matter on a layer this cold.
-# Each read goes through get(): at most 60 s an attempt, and up to two more attempts after any
-# failure (curl's --retry-all-errors: a 429, a 5xx, a reset or a stall cut at 60 s), within 180 s
-# of retrying, honouring a Retry-After; then one line naming the URL and curl's exit status. A
-# single 503 from raw.githubusercontent.com failed this RUN, and the worker-image job with it, in
-# job 137719519443 (2026-11-23); each file is a few kilobytes, read in about a second.
+# Each read goes through get(), the form the comment above the mise layer gives: at most 60 s an
+# attempt, and up to two more attempts after any failure (a 429, a 5xx, a reset or a stall cut at
+# 60 s), with no new attempt after 120 s of retrying; then one line naming the URL and curl's exit
+# status. A single 503 from raw.githubusercontent.com failed this RUN, and the worker-image job
+# with it, in job 137719519443 (2026-11-23); each file is a few kilobytes, read in about a second.
 RUN set -eu; \
     omp_pin="$(cat /omp-pin)"; omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; \
     omp_tag="v${omp_pin##*@}"; \
@@ -1050,7 +1057,7 @@ RUN set -eu; \
       "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$codegraph_node_tag" "$codegraph_version" \
       "$typescript_version" "$tsls_version" "$pyright_version" > /in/tags.env; \
     gh_raw_url() { printf 'https://raw.githubusercontent.com/%s/%s/%s' "$1" "$2" "$3"; }; \
-    get() { url=$1; shift; curl -fsSL --max-time 60 --retry 2 --retry-all-errors --retry-max-time 180 "$@" "$url" || { rc=$?; echo "notices: $url failed after up to 3 attempts of 60 s (curl exit $rc)" >&2; exit 1; }; }; \
+    get() { url=$1; shift; curl -fsSL --max-time 60 --retry 2 --retry-all-errors --retry-max-time 120 "$@" "$url" || { rc=$?; echo "notices: $url failed after up to 3 attempts of 60 s (curl exit $rc)" >&2; exit 1; }; }; \
     fetch() { get "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
     fetch oven-sh/bun "bun-v${BUN_VERSION}" LICENSE.md bun-LICENSE.md; \
     fetch "$omp_repo" "$omp_tag" LICENSE omp-LICENSE; \
