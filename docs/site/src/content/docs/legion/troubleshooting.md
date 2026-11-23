@@ -676,10 +676,15 @@ restarts the tree when it finds no cause or the cause is gone, and asks a person
 it when the cause stays. A child's own architect that failed holds nothing and wakes no controller:
 the architect above it is told with a `worker-died` and takes the child's notices, all but an
 `owner-step`, which goes to the child's own architect alone, and the child's next phase start
-starts it again. Where the child stands at a step its own architect does itself, no phase start
-comes until that architect reports the step, so the `worker-died` says the child waits for a
-retry of it, and `legion state` names it under `failed, retry` on its `claims nothing will wake`
-line; the retry relaunches it and tells it its step again. What brings a root's architect back
+starts it again. Where the child stands at a step or the retro its own architect does itself,
+other than its acceptance, no phase start comes until that architect reports it, so the daemon
+starts the architect again at once, at most three times in that step's run, and the `worker-died`
+says which start it is. Once those three are spent it stays failed, the `worker-died` says so, and
+`legion state` names it under `failed, retry` on its `claims nothing will wake` line; the retry
+relaunches it, tells it its step again and gives it three restarts again. At its own acceptance
+a failed child's architect is not started again at once: an architect above it can end that
+acceptance with `sign_off`, and the phase start after it starts the child's architect again. What
+brings a root's architect back
 depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will wake` line
@@ -896,7 +901,8 @@ idle, and, in the log, either the boot's one line per claim for the degraded dae
 A restart re-adopts every process still running, but a claim with no process runs again only when
 something starts it. A worker is started by the workflow when its phase begins, a tree's architect
 by its admission, and a child's own architect by the child's first phase start, and again after a
-failure by the child's next phase start. A notice starts no architect, except one whose idle pod
+failure by the child's next phase start, or at once where the child stands at a step or the retro
+only it reports. A notice starts no architect, except one whose idle pod
 the daemon released, which it wakes: a notice for a root's architect waits for it, or ends
 undelivered once that claim has failed or retired, and a notice for a child whose own architect
 does not hold its role goes to the architect above, except an `owner-step`, which goes to the
@@ -909,8 +915,10 @@ a claim a close or a stop retired while its tree runs, whatever its role. Each o
 child's own architect stops its tree: nothing wakes it, the daemon looks healthy and the state
 shows the tree active, but the tree stops for good at the worker's phase, or at the first decision
 that needs its architect. A child's own architect stops no tree, since its child's notices go to
-the architect above, except where its child stands at a step that architect does itself, which
-only it reports: a failed one stops that child there, and the list below names it under `retry`.
+the architect above, except where its child stands at a step or the retro that architect does
+itself, other than its acceptance, which only it reports: the daemon starts a failed one again at
+once, at most three times in that step's run, and then it stops that child there, and the list
+below names it under `retry`.
 The paragraph under the list says what brings one back elsewhere. Once a boot has re-adopted its
 claims, the daemon names every such claim in one
 error line, under the move that brings it back:
@@ -975,8 +983,9 @@ name of the claim's agent, the role of that agent's first step, whatever role it
       --task "Continue <title>. Issue: WIDGETS-12. Phase: implementing. Resume the existing phase work."
     ```
 
-- **`retry`** (a failed architect: a tree's, or a child's own whose child stands at a step it does
-  itself): retry it. The daemon relaunches it on the session it kept, or on
+- **`retry`** (a failed architect: a tree's, or a child's own whose child stands at a step or the
+  retro it does itself, other than its acceptance, once the daemon's three restarts of it there are
+  spent): retry it. The daemon relaunches it on the session it kept, or on
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
   catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
   stands at. The daemon drops every notice it could
@@ -1019,7 +1028,9 @@ and the answer's task is delivered on the pass that reads the answer, which take
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
 return to `todo` starts it.
 The list names a child's own architect in one case alone: it failed while its child stands at a
-step it does itself, which only it reports, and it is listed under `retry`. Otherwise, while that
+step or the retro that only it reports, other than its acceptance, the daemon's three restarts of
+it in that step's run are spent, and no start of it is queued; it is listed under `retry`.
+Otherwise, while that
 architect does not hold its role, the architect above it takes the child's notices, all but an
 `owner-step`, and a later start of the role brings it back, as the
 daemon's supervise table decides for the state the claim stands in. The workflow's own starts of
