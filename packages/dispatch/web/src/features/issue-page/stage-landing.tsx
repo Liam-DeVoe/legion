@@ -1,6 +1,13 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Navigate, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -204,6 +211,61 @@ export function ViewNodeKeeper({
     if (viewOn && focused !== undefined) kept.current = focused.id;
   }, [focused, viewOn]);
   return null;
+}
+
+/** What the stage keeps of the first thing a view told it for a following of an address that
+ *  names a node (`ViewSlotProps.onAddressDrawn`): that following, and whether the reader had
+ *  acted since it began (`ReaderActsWatch`) by then. */
+export interface ViewTold {
+  readonly following: string;
+  readonly reader: boolean;
+}
+
+/** The mark the stage sets on the box it draws a view in (`useAddressLanding`), which the box's
+ *  take of the focus reads (`ViewStage`), with the values it takes (`LANDING_MARKS`). */
+export const ADDRESS_LANDING = "data-address-landing";
+
+/** The values of `ADDRESS_LANDING`: the view has not told the stage yet whether it draws the
+ *  node the address names (`undecided`), or told it after the reader's first act since the
+ *  address was followed (`acted`). */
+export const LANDING_MARKS = { acted: "acted", undecided: "undecided" } as const;
+
+/**
+ * An address that names a node moves the focus once, onto where it lands (dispatch://INFRA-1196
+ * decision 413): the row the view draws for the node, the outline's row drawn in the view's place,
+ * the line there that the issue holds none of it, or a failed read's Retry. Where the view takes
+ * the focus on its tab stop as it draws its rows (`ViewStage`), before every read it needs has
+ * settled and it can say whether it draws the node, the focus moved first to the view's first
+ * row, then to the outline drawn in its place, then to the line drawn in the outline's place. So
+ * from the following's start (`following`, undefined where the address names no such node) until
+ * the view has told the stage what it draws (`told`), the stage marks the box it draws the view in
+ * (`box`) undecided, and the box's take of the focus gives none to a row meanwhile. Told after
+ * the reader's first act since the address was followed, it marks the box `acted`: the landing
+ * moves nothing then, as the view's own landing on its row does nothing after such an act. The
+ * mark is set in the commit that draws the view, before the box's take runs, and read again as
+ * it changes. An address that names no node leaves the box unmarked, so the view's tab stop takes
+ * the focus as its rows are drawn.
+ */
+export function useAddressLanding(
+  box: RefObject<HTMLElement | null>,
+  following: string | undefined,
+  told: ViewTold | undefined
+): void {
+  const mark =
+    following === undefined
+      ? undefined
+      : told?.following !== following
+        ? LANDING_MARKS.undecided
+        : told.reader
+          ? LANDING_MARKS.acted
+          : undefined;
+  // At every commit of the stage, so a box drawn anew for another view takes the mark too.
+  useLayoutEffect(() => {
+    const element = box.current;
+    if (element === null) return;
+    if (mark === undefined) element.removeAttribute(ADDRESS_LANDING);
+    else element.setAttribute(ADDRESS_LANDING, mark);
+  });
 }
 
 /** An approval request's own address puts the focus on the approval the header draws for the

@@ -459,13 +459,13 @@ export function SpecFilterBody({
   // answered, so this looks again on every drawing of the columns, and the address is taken only
   // once its row is found. The reader's first act since they followed the address ends the
   // landing (`addressActs`), as it ends the outline's: a reader who acted before the reads
-  // settled - a key, a turn of the wheel, a press on another control, while the stage held the
-  // focus on the first statement - keeps the focus where they put it and the page where they had
-  // it, and the landing does nothing to the page: no focus, no scroll, no hold. Watched only from
-  // the landing's start, a read that answered late pulled them back to the address's row. The
-  // landing is keyed on the following and the node (`landingKey`), as the outline's is: a link to
-  // the node the reader moved away from, followed again, lands again, and the columns drawn again
-  // at the same following land nowhere again.
+  // settled - a key, a turn of the wheel, a press on another control, while the stage gave the
+  // view's tab stop no focus, its landing undecided (`ViewStage`) - keeps the focus where they put
+  // it and the page where they had it, and the landing does nothing to the page: no focus, no
+  // scroll, no hold. Watched only from the landing's start, a read that answered late pulled them
+  // back to the address's row. The landing is keyed on the following and the node (`landingKey`),
+  // as the outline's is: a link to the node the reader moved away from, followed again, lands
+  // again, and the columns drawn again at the same following land nowhere again.
   const landingHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => landingHold.current?.abort(), []);
   // The following, which the landing is keyed on with the node.

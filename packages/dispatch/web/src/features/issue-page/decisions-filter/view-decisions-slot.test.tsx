@@ -319,28 +319,33 @@ function askRow(id: string): string {
   return `[data-decisions-body] [data-node-row][data-node-id="${id}"]`;
 }
 
-// A key pressed on a row of the view is an act of the following too, but the row that holds the
-// focus leaves the page with the view where the view then draws no node the address names. The
-// outline drawn in the view's place lands as it does where the reader pressed nothing: with the
-// comments read out the view draws the questions, `j` is pressed on the first one's row, and once
+// A key pressed while the view is drawn is an act of the following too, but where the view then
+// draws no node the address names and the focus was the view's - here held by nothing, since the
+// view's rows take no focus while the address's landing is undecided (decision 413) - the outline
+// drawn in the view's place lands as it does where the reader pressed nothing: with the comments
+// read out the view draws the questions without the focus, `j` is pressed on the page, and once
 // the comments answer, the outline's line that the issue holds no such comment takes the focus.
-test("`j` on a row of the Decisions view, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
+test("`j` pressed while the Decisions view is drawn, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
   spyOn(api, "listIssueAsks").mockResolvedValue([...ASKED]);
   const commentsOut = Promise.withResolvers<Comment[]>();
   spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
-    await rowTakesFocus(view, askRow("ask-open"), "the Decisions view with the comments out");
+    await waitFor(() => expect(view.container.querySelector(askRow("ask-open"))).not.toBeNull());
+    expect(
+      view.container.contains(document.activeElement),
+      `the Decisions view with the comments out gave the focus to ${focusedRow() ?? document.activeElement?.tagName} before the address landed`
+    ).toBe(false);
     act(() => {
       document.activeElement?.dispatchEvent(
         new KeyboardEvent("keydown", { bubbles: true, key: "j" })
       );
     });
     expect(
-      view.container.querySelector(askRow("ask-open")),
-      `the focus left the first question's row at \`j\` for ${focusedRow() ?? document.activeElement?.tagName}`
-    ).toHaveFocus();
+      view.container.contains(document.activeElement),
+      `\`j\` before the address landed moved the focus to ${focusedRow() ?? document.activeElement?.tagName}`
+    ).toBe(false);
     await act(async () => commentsOut.resolve([]));
     await goneLineTakesFocus(view, "the comments answering after `j`");
   } finally {
