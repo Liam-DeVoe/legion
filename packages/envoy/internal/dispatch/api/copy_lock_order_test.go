@@ -51,12 +51,18 @@ var (
 // its own; settleRoomWithin calls settlePass in a loop, each pass opening a transaction of its
 // own and committing or rolling it back, so what one pass took is released before the next pass
 // takes the copy lock; and leaseSettlementPending, which settleRoomWithin calls before its first
-// pass, and releaseSettlementLease, which it calls as it returns, each run their one statement on
-// the settlements pool outside any transaction, so the row lock it takes ends with that statement.
+// pass, extendSettlementLease, which a pass calls through leaseThroughWrite before it opens its
+// transaction, and releaseSettlementLease, which settleRoomWithin calls as it returns, each run
+// their one statement on the settlements pool outside any transaction, so the row lock it takes
+// ends with that statement. leaseThroughWrite is listed beside extendSettlementLease because a
+// call is ordered by what its callee reaches, and settlePass calls leaseThroughWrite, whose only
+// lock is that statement's.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
 	"docs.settlement.settlePass",
 	"docs.leaseSettlementPending",
+	"docs.extendSettlementLease",
+	"docs.settlementPass.leaseThroughWrite",
 	"docs.releaseSettlementLease",
 	"api.server.settleIssueBeforeClose",
 	"api.server.sweepClosedIssueAsks",

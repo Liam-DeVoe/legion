@@ -97,13 +97,16 @@ var keyedWriteGuardAllowed = map[string]string{
 	// a repeat after a takeover finds the row moved and writes nothing a second time.
 	"docs.Service.persistLastActor": "writes a closing room's latest edit source, the room's bookkeeping, refused once the row has moved",
 	// The lease a settlement takes on its document's pending-settlement row as it begins its work
-	// (docs.leaseSettlementPending), and the give-back of that lease as it ends without committing
-	// (docs.releaseSettlementLease), which an issue's close reaches through the settlement it runs
-	// before its transaction (settleIssueBeforeClose): the settlement's bookkeeping, never the
-	// request's own work, each one statement outside any transaction so it holds no lock across the
-	// document's work. A repeat after a takeover runs the settlement again, whose lease only moves
-	// the lease's end, and the give-back clears only the lease it names.
+	// (docs.leaseSettlementPending), its extension over a pass's write phase before the pass opens
+	// its transaction (docs.extendSettlementLease, from settlementPass.leaseThroughWrite), and the
+	// give-back of that lease as it ends without committing (docs.releaseSettlementLease), which an
+	// issue's close reaches through the settlement it runs before its transaction
+	// (settleIssueBeforeClose): the settlement's bookkeeping, never the request's own work, each one
+	// statement outside any transaction so it holds no lock across the document's work. A repeat
+	// after a takeover runs the settlement again, whose lease and extension only move the lease's
+	// end, and the give-back clears only the lease it names.
 	"docs.leaseSettlementPending": "marks a settlement's own pending row held while it runs; a repeat only moves the lease's end",
+	"docs.extendSettlementLease":  "moves the end of a settlement's own lease, only where the row still holds that lease; a repeat only moves the lease's end",
 	"docs.releaseSettlementLease": "clears a settlement's own lease as it ends, only where the row still holds that lease",
 }
 
