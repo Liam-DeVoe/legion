@@ -114,6 +114,7 @@ func runHubStartupProbe(t *testing.T, command []string, scrape string) (int, str
 // packages/envoy/infra/gcp/clusteredhub_listener.go) to the one registerListGauges registers, and
 // a rename on either side fails it.
 func TestHubListenerStartupProbePassesOnlyOnceV1Serves(t *testing.T) {
+	t.Parallel()
 	command, path := hubStartupProbe(t)
 	const gauge = "envoy_active_interests"
 	run := func(t *testing.T, state, scrape string, want int) {

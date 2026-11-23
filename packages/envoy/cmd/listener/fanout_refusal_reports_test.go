@@ -26,6 +26,7 @@ import (
 // is taken and the resolution that then fails records nothing, and a mode that cannot be read is
 // refused before the entry is read at all but recorded only where the resolution succeeded.
 func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// entry is the recipient's session entry, nil for a recipient that has none.
@@ -155,6 +156,7 @@ func TestTheFanoutReportsItsOwnRefusalsForTheSessionsItDeliversTo(t *testing.T) 
 // message is delivered by that consumer's relay, which a record would make hold its copy, the
 // session's later messages behind it.
 func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	sessionID := "ses_fanout_no_path_" + id.New()
 	topic := "notifications.github.acme.fanout-no-path-" + id.New() + ".mention"
@@ -214,6 +216,7 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 // nobody, so a record would have the relay's own copy of the next event under that key skipped as
 // one already on its way (INFRA-594).
 func TestTheFanoutReportsARefusalOfASessionOnConsumerDelivery(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// payload is what the publisher sends.

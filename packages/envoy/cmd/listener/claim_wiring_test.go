@@ -13,6 +13,7 @@ import (
 // entry as Host, kept separate from MachineID (always the registering listener's own machine,
 // never the caller's), which decides which listener fans a topic out to the session.
 func TestSessionEntryFromSubscribe_CarriesHost(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID: "ses_z",
 		Host:      "example-host-a",
@@ -41,6 +42,7 @@ func TestSessionEntryFromSubscribe_DefaultsHostEmpty(t *testing.T) {
 // entry: Dispatch draws a machine's panes from what the entry holds and from nothing else, so a
 // member lost here is a pane drawn wrong.
 func TestSessionEntryFromSubscribe_CarriesTmuxPlace(t *testing.T) {
+	t.Parallel()
 	var body listenerwire.SubscribeRequest
 	if err := json.Unmarshal([]byte(`{
 		"session_id":"ses_tmux",
@@ -76,6 +78,7 @@ func TestSessionEntryFromSubscribe_CarriesTmuxPlace(t *testing.T) {
 // "tmux_place" key - and both must leave the entry's place nil. An empty place would put a pane
 // on the Agents page that no tmux server knows.
 func TestSessionEntryFromSubscribe_DefaultsTmuxPlaceNil(t *testing.T) {
+	t.Parallel()
 	for name, payload := range map[string]string{
 		"a session outside tmux":           `{"session_id":"ses_plain","host":"example-host-a"}`,
 		"a plugin that predates the field": `{"session_id":"ses_old","self_subscribed":true}`,
@@ -98,6 +101,7 @@ func TestSessionEntryFromSubscribe_DefaultsTmuxPlaceNil(t *testing.T) {
 // The plugin a session registers through and that plugin's build reach the session entry, with
 // the surrounding space a session id loses dropped too.
 func TestSessionEntryFromSubscribe_CarriesThePluginAndItsVersionTrimmed(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID:     "ses_plugin",
 		Plugin:        " @sjawhar/pi-envoy\n",
@@ -121,6 +125,7 @@ func TestSessionEntryFromSubscribe_DefaultsThePluginAndItsVersionEmpty(t *testin
 // The client instance id reaches the session entry, where a soft claim naming a predecessor
 // session reads it to tell that predecessor's own instance from another instance's live session.
 func TestSessionEntryFromSubscribe_CarriesTheClientInstanceID(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID:        "ses_instance",
 		ClientInstanceID: "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a",
@@ -134,6 +139,7 @@ func TestSessionEntryFromSubscribe_CarriesTheClientInstanceID(t *testing.T) {
 // The id is compared as stored (session.InstanceMatches trims nothing), so the surrounding space
 // a session id loses is dropped here, where the wire value enters the entry.
 func TestSessionEntryFromSubscribe_TrimsTheClientInstanceID(t *testing.T) {
+	t.Parallel()
 	got := sessionEntryFromSubscribe(listenerwire.SubscribeRequest{
 		SessionID:        "ses_instance_spaced",
 		ClientInstanceID: " \t4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a\n",
