@@ -473,8 +473,8 @@ func TestTakeWhoseFinishIsOwedAcrossARestartIsFinishedByItsCleanReportNotALaterP
 // took it back with no line; the line reads the phase as the take-back does (compactStart).
 //
 // The negative control is the commit under this change, where each reader asked whether the
-// take's turn started alone (Delivery.awaitsTurn, Delivery.turnStarted), and the compaction's line
-// whether the take was in waitTake.
+// take's turn started alone (Delivery.awaitsStart, Delivery.startRecorded), and the compaction's
+// line whether the take was in waitTake.
 func TestTakeWhoseFinishIsOwedReadsAsATakeWhoseTurnRan(t *testing.T) {
 	t.Run("a turn starts", func(t *testing.T) {
 		h, number := owedFinishAwaitingItsTurn(t, true)

@@ -118,7 +118,7 @@ func TestAHelloWhoseDecisionFailsOnTheStoreLeavesTheClaimBounded(t *testing.T) {
 	if n := launches() - before; n != 0 {
 		t.Errorf("the claim was launched %d times before the hello plus the reconnect bound, want none", n)
 	}
-	if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
 		t.Fatalf("a second before the hello plus the reconnect bound the claim holds %+v, want take %d still awaiting its turn", p, number)
 	}
 

@@ -132,7 +132,7 @@ func (m *Machine) heldUnrun(ctx context.Context, r RequestTurnOutcome) error {
 // (turnsStarted, startedSince).
 func (m *Machine) sinceGiven() (uint64, bool) {
 	p, a := m.claim.Pending, m.turns.anchor
-	if p == nil || !p.turnStarted() || a.given == 0 {
+	if p == nil || !p.startRecorded() || a.given == 0 {
 		return 0, false
 	}
 	seen := m.turnsStarted()

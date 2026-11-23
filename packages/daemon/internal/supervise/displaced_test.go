@@ -122,7 +122,7 @@ func TestTakeBackOfAParkedDisplacementKeepsItsOutOfMemoryNote(t *testing.T) {
 	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone,
 		At: h.clock.Now(), Displaced: true, OutOfMemory: true}})
 	waiting := h.wantWaitingWake(WakeLaunch)
-	if p := h.pending(); !p.turnStarted() {
+	if p := h.pending(); !p.startRecorded() {
 		t.Fatalf("the task after the park is %+v, want its take's turn still standing until the wake's turn", p)
 	}
 	h.advance(waiting.At.Sub(h.clock.Now()))

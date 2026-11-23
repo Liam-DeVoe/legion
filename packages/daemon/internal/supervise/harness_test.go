@@ -1000,7 +1000,7 @@ func (h *harness) handleQuiet(ev Event) error {
 func (h *harness) post(ev Event, report bool) error {
 	var ran uint64
 	if _, ending := ev.(StreamTurnEnd); ending && report {
-		if p := h.m.Claim().Pending; p != nil && p.turnStarted() {
+		if p := h.m.Claim().Pending; p != nil && p.startRecorded() {
 			ran = p.Number
 		}
 	}
@@ -1356,7 +1356,7 @@ func (h *harness) reach(state ClaimState) {
 			if h.worker.manual {
 				h.mustTake()
 			}
-			if p := h.claim().Pending; p == nil || !p.awaitsTurn() {
+			if p := h.claim().Pending; p == nil || !p.awaitsStart() {
 				h.t.Fatalf("reach working: the task's take was not accepted: %+v", h.worker.answers)
 			}
 			h.must(StreamTurnStart{Claim: h.token})

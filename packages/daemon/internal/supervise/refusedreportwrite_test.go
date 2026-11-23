@@ -180,13 +180,13 @@ func TestTurnOutcomeFinishTheStoreRefusedIsOwedAgainAfterADaemonRestart(t *testi
 	// report does.
 	owesNothing := func(t *testing.T, h *harness, number uint64) {
 		t.Helper()
-		if p := h.pending(); p.Number != number || !p.turnStarted() || h.state() != StateIdle {
+		if p := h.pending(); p.Number != number || !p.startRecorded() || h.state() != StateIdle {
 			t.Fatalf("the claim is %s holding %+v, want it idle over task %d's turn, its report to come", h.state(), p, number)
 		}
 		h.restart()
 		h.connect()
 		h.advance(3 * testRPC)
-		if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.startRecorded() {
 			t.Fatalf("three bounds after the restart the claim holds %+v, want task %d's turn over and its report to come", p, number)
 		}
 		if finished := h.records.of(finishedLine); len(finished) != 0 {
@@ -214,7 +214,7 @@ func TestTurnOutcomeFinishTheStoreRefusedIsOwedAgainAfterADaemonRestart(t *testi
 
 		h.restart()
 		h.advance(testRPC - time.Second)
-		if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.startRecorded() {
 			t.Fatalf("less than a bound after the restart the claim holds %+v, want task %d's turn over and its finish to come", p, number)
 		}
 		h.advance(time.Second)
@@ -238,7 +238,7 @@ func TestTurnOutcomeFinishTheStoreRefusedIsOwedAgainAfterADaemonRestart(t *testi
 		// took the take back, and after the relaunched process took the task again and ran it.
 		h.worker.sequence++
 		h.must(RequestTurnOutcome{Claim: h.token, Generation: left, Sequence: h.worker.sequence, Task: number})
-		if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.startRecorded() {
 			t.Fatalf("after generation %d's report the claim holds %+v, want generation %d's take of task %d standing, its turn over",
 				left, p, h.generation(), number)
 		}
@@ -285,7 +285,7 @@ func TestTurnOutcomeAheadOfItsTurnStartIsFinishedWhenTheStoreRefusedItsStartAndF
 			h.reach(StateReady)
 			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Entry: 1})
 			number := h.pending().Number
-			if p := h.pending(); !p.awaitsTurn() {
+			if p := h.pending(); !p.awaitsStart() {
 				t.Fatalf("the task is %+v, want its take accepted and its turn to come", p)
 			}
 			h.store.fail("PutDelivery", errBoom)
@@ -295,7 +295,7 @@ func TestTurnOutcomeAheadOfItsTurnStartIsFinishedWhenTheStoreRefusedItsStartAndF
 			}
 			h.store.fail("PutDelivery", nil)
 			h.store.fail("RetireDelivery", nil)
-			if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsTurn() {
+			if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsStart() {
 				t.Fatalf("the store holds %+v (held %v), want the take still awaiting its turn", stored, ok)
 			}
 			if restart {
@@ -413,7 +413,7 @@ func refusedTakeBack(t *testing.T, status int, restart, ahead bool) *harness {
 		t.Fatalf("the report whose take-back the store refused = %v, want %v", err, errBoom)
 	}
 	stored := h.store.load(h.token)
-	if p := stored.Pending; p == nil || !p.taken() || p.turnStarted() == ahead || p.ProviderErrorRetries != 0 {
+	if p := stored.Pending; p == nil || !p.taken() || p.startRecorded() == ahead || p.ProviderErrorRetries != 0 {
 		t.Fatalf("the store holds %+v, want its take standing, its turn started %v, with no ladder step", p, !ahead)
 	}
 	if kept := stored.TurnOutcomes; len(kept) != 1 || kept[0].Unapplied || kept[0].Task != number {

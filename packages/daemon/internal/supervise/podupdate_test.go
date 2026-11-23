@@ -97,7 +97,7 @@ func (h *harness) unsentAsk(round string) Delivery {
 
 // leftAsk is unsentAsk for an ask whose take the older daemon accepted before the deploy, its
 // turn still to come (tookAsk): the worker holds the ask's words, and the next turn that starts
-// is that take's turn (Delivery.awaitsTurn). It is the take's form of a sent task.
+// is that take's turn (Delivery.awaitsStart). It is the take's form of a sent task.
 func (h *harness) leftAsk(round string) Delivery {
 	h.t.Helper()
 	return h.olderDaemonsAsk(round, tookAsk)
@@ -1468,14 +1468,14 @@ func TestPodUpdateAnAnswerForTheClaimsOwnRoundIsRecorded(t *testing.T) {
 //
 // The two turns are the two ways a turn can be in flight across a switch on a claim this daemon
 // restored holding an older daemon's ask: the turn of the take that daemon accepted of its ask,
-// which starts under this daemon (Delivery.awaitsTurn); and a turn the daemon accepted no take
+// which starts under this daemon (Delivery.awaitsStart); and a turn the daemon accepted no take
 // for, an Envoy notice or a person's steer. With the id carried, the daemon has to know nothing
 // about either.
 func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 	first := PodRound(testOtherPod)
 	for name, turn := range map[string]func(*harness){
 		"the turn of the take the older daemon accepted": func(h *harness) {
-			if p := h.pending(); !p.awaitsTurn() {
+			if p := h.pending(); !p.awaitsStart() {
 				h.t.Fatalf("the restored claim holds %+v; this test needs the take whose turn is still to come", p)
 			}
 			h.must(StreamTurnStart{Claim: h.token})
@@ -1554,7 +1554,7 @@ func TestTakeBackOfAnAskKeepsItsRound(t *testing.T) {
 	h.openUpdate(testRound, testReasons)
 	ask := h.leftAsk(testRound)
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); p.ID != ask.ID || !p.turnStarted() {
+	if p := h.pending(); p.ID != ask.ID || !p.startRecorded() {
 		t.Fatalf("pending = %+v, want the older daemon's ask in the turn of the take it accepted", p)
 	}
 	sent := len(h.prompts())

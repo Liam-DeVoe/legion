@@ -70,12 +70,12 @@ func (h *harness) wantTheRunGivenATakeGivenBack(sequence uint64) {
 	h.hostsRun()
 	putBacks := len(h.logs.lines(notTheTakesTurnLine))
 	h.reportOf(sequence, 0)
-	if p := h.pending(); !p.awaitsTurn() || len(h.logs.lines(notTheTakesTurnLine)) != putBacks+1 {
+	if p := h.pending(); !p.awaitsStart() || len(h.logs.lines(notTheTakesTurnLine)) != putBacks+1 {
 		h.t.Fatalf("after the report of the run given task %d's take, as turn %d, the claim holds %+v, want the take awaiting its turn again",
 			number, sequence, p)
 	}
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); !p.turnStarted() {
+	if p := h.pending(); !p.startRecorded() {
 		h.t.Fatalf("the turn after the report is %+v, want it task %d's take's", p, number)
 	}
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -98,7 +98,7 @@ func (h *harness) wantTheCountRightFrom(sequence uint64) {
 // having given it back since putBacks lines of it were logged.
 func (h *harness) wantStillItsTurn(number uint64, putBacks int, why string) {
 	h.t.Helper()
-	if p := h.pending(); p.Number != number || !p.turnStarted() || len(h.logs.lines(notTheTakesTurnLine)) != putBacks {
+	if p := h.pending(); p.Number != number || !p.startRecorded() || len(h.logs.lines(notTheTakesTurnLine)) != putBacks {
 		h.t.Fatalf("%s the claim holds %+v, want task %d's take with its turn started", why, p, number)
 	}
 }

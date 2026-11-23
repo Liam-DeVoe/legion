@@ -37,7 +37,7 @@ func (h *harness) reportRequest(r RequestTurnOutcome) {
 // putBacks lines of it were logged, by what by names (putBack).
 func (h *harness) wantPutBackBy(number uint64, putBacks int, by string) {
 	h.t.Helper()
-	if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
 		h.t.Fatalf("the claim holds %+v, want task %d's take awaiting its turn again", p, number)
 	}
 	lines := h.records.of(notTheTakesTurnLine)
@@ -126,7 +126,7 @@ func TestAReportThatHeldTheTakesTextGivesTheFirstTakeAfterARestartItsTurnBack(t 
 		h.reportHeldOf(2, 0, number)
 		h.wantPutBackBy(number, putBacks, "held")
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
-		if p := h.pending(); !p.awaitsTurn() {
+		if p := h.pending(); !p.awaitsStart() {
 			t.Fatalf("after the given turn's end the claim holds %+v, want the take awaiting its turn", p)
 		}
 		h.ownTurnFinishes(number, 3)
@@ -137,7 +137,7 @@ func TestAReportThatHeldTheTakesTextGivesTheFirstTakeAfterARestartItsTurnBack(t 
 		h.reportHeldOf(2, 0, number)
 		starts := len(h.records.of(turnStartedLine))
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.awaitsTurn() || len(h.logs.lines(heldPassedOverLine)) != 1 {
+		if p := h.pending(); !p.awaitsStart() || len(h.logs.lines(heldPassedOverLine)) != 1 {
 			t.Fatalf("the start of the turn the report said held the text left %+v, want it given no take", p)
 		}
 		if _, named := h.records.of(turnStartedLine)[starts].attr("task"); named {
@@ -145,7 +145,7 @@ func TestAReportThatHeldTheTakesTextGivesTheFirstTakeAfterARestartItsTurnBack(t 
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the start after it left %+v, want it given the take", p)
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
@@ -289,7 +289,7 @@ func TestAReportThatHeldTheTakesTextPutsBackNoTakeWhoseOwnTurnStarted(t *testing
 		starts := len(h.records.of(turnStartedLine))
 		h.must(StreamTurnStart{Claim: h.token})
 		wantAttr(t, h.records.of(turnStartedLine)[starts], "task", strconv.FormatUint(next, 10))
-		if p := h.pending(); p.Number != next || !p.turnStarted() {
+		if p := h.pending(); p.Number != next || !p.startRecorded() {
 			t.Fatalf("the next task's start left %+v, want task %d's take with its turn started", p, next)
 		}
 	})

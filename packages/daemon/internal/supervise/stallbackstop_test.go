@@ -524,7 +524,7 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	}
 	// The park makes no take-back: the process runs on until the wake's turn, and so does the
 	// take's turn it was stalled in (replaceNow).
-	if c := stalled.Claim(); c.Pending == nil || !c.Pending.turnStarted() || c.Pending.Number != 1 {
+	if c := stalled.Claim(); c.Pending == nil || !c.Pending.startRecorded() || c.Pending.Number != 1 {
 		t.Fatalf("the claim's task after the park = %+v, want its take's turn still standing until the wake's turn", c.Pending)
 	}
 	h.wantStarts(secondToken, 0)

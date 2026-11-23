@@ -1567,8 +1567,8 @@ func (m *Machine) askRestoredTurn(ctx context.Context) {
 //     that names its number by the report of that turn, which the relaunch waits for
 //     (refreshPlugin, relaunchWaitsForReport); one no turn ran is given back with no note.
 //
-// Either answer is read in one decision, in the one place every answer makes the view whole
-// (answerView), by the rule of every answer (applyTurnAnswer): an answer of no turn ends a turn the
+// Either answer is read in one decision, in the one place every answer makes the view whole and
+// is applied by the rule of every answer (answerView): an answer of no turn ends a turn the
 // claim still reads as running, and the relaunch is then decided with that turn applied. That
 // order is live: a replayed start made the claim working, its connection broke with that turn's
 // end frame in it, and the next hello's ask on its own connection is the only word of that end
@@ -1605,7 +1605,7 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 	if !answer.Streaming {
 		m.markRestoredTurnUnseen()
 	}
-	return m.refreshPlugin(ctx, m.askTrigger, nil)
+	return m.refreshPlugin(ctx, m.askTrigger, nil, notAtReconnectDeadline)
 }
 
 // markRestoredTurnUnseen marks the take whose stale-plugin relaunch is decided now — at its agent's
@@ -1681,7 +1681,7 @@ func (m *Machine) logUnansweredAsk(ctx context.Context, line string, args ...any
 // and no sweep asks it again; over none, the next sweep asks again (observe), which the line of an
 // unanswered ask says (sweepAsksAgain).
 //
-// A turn that is over is ended by the rule every answer is applied by (applyTurnAnswer,
+// A turn that is over is ended by the rule every answer is applied by (answerView,
 // turnEnded). The end is counted as every end is (TurnsEnded), so the daemon posts it to the
 // issue's other claims, whose phase tasks may have been held for this turn (its wakeIssue). An
 // answer either way makes the connection's view whole again where every answer does, which ends
@@ -2107,7 +2107,7 @@ func (m *Machine) backAtEnd(back ClaimState) (id string, ran bool) {
 func (m *Machine) afterTurn(ctx context.Context) error {
 	if held := m.staleRelaunch; held != nil {
 		m.staleRelaunch = nil
-		if err := m.refreshPlugin(ctx, *held, nil); err != nil {
+		if err := m.refreshPlugin(ctx, *held, nil, notAtReconnectDeadline); err != nil {
 			return err
 		}
 	}

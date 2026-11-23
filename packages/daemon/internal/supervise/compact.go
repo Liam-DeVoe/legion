@@ -344,20 +344,22 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		}
 		return fmt.Errorf("the claim's session is not held to it, so nothing is asked of that session: %w", err)
 	}
-	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
-		// A take whose report's finish the store refused is finished by that report instead
-		// (makeOwedFinish): no turn of it is aborted. Any other take awaiting its turn is taken
-		// back, a migrated worker's (waitNone) among them, and the line says so; where the view
-		// does not show every frame of the claim's turns — the compaction needs only a connection,
-		// so it can run while a hello's ask waits for its answer — it goes back as a cut turn with
-		// its note (clearTake, turnMayHaveRunUnseen).
-		owed, err := m.makeOwedFinish(ctx)
-		if !owed {
-			m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
-				"task", p.Number)
-			err = m.takeBack(ctx, takenBackCompaction)
+	switch p := m.claim.Pending; {
+	case m.takeAwaitsTurn():
+		// A take awaiting its turn is taken back, a migrated worker's (waitNone) among them, and the
+		// line says so; where the view does not show every frame of the claim's turns — the
+		// compaction needs only a connection, so it can run while a hello's ask waits for its
+		// answer — it goes back as a cut turn with its note (dropTake, turnMayHaveRunUnseen).
+		m.log.Info("supervise: the compaction aborts the turn this task's take was to start; the task goes back to waiting",
+			"task", p.Number)
+		if err := m.takeBack(ctx, takenBackCompaction); err != nil {
+			return err
 		}
-		if err != nil {
+	case p != nil && p.awaitsStart():
+		// A take whose start is not recorded and whose report's finish the store refused
+		// (takePhase, waitFinish) is finished by that report instead (makeOwedFinish): no turn of
+		// it is aborted.
+		if _, err := m.makeOwedFinish(ctx); err != nil {
 			return err
 		}
 	}

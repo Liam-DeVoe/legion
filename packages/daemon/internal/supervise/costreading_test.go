@@ -654,7 +654,7 @@ func TestTaskCostLogReadsTheMachinesOwnPutBack(t *testing.T) {
 			h.advance(10 * time.Second)
 			h.must(StreamTurnStart{Claim: testToken})
 			tc.putBack(h)
-			if p := h.pending(); !p.awaitsTurn() {
+			if p := h.pending(); !p.awaitsStart() {
 				t.Fatalf("after the put-back the task is %+v, want its take awaiting its turn", p)
 			}
 			h.advance(turnStartBound)

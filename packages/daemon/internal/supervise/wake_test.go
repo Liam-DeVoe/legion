@@ -783,10 +783,10 @@ func TestParkedRelaunchKeepsTheTakeUntilTheWakesTurn(t *testing.T) {
 
 	h.observe(runtime.StaleAddress)
 	waiting := h.wantWaitingWake(WakeLaunch)
-	if p := h.pending(); !p.awaitsTurn() || p.ID != first.DeliveryID || p.TakenText != task {
+	if p := h.pending(); !p.awaitsStart() || p.ID != first.DeliveryID || p.TakenText != task {
 		t.Fatalf("the task after the park is %+v, want task %d's take still standing: its process runs until the wake's turn", p, first.Number)
 	}
-	if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsTurn() {
+	if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsStart() {
 		t.Fatalf("the stored delivery is %+v (%v), want the take still standing", stored, ok)
 	}
 	// The session reports that nothing of its own runs, as Oh My Pi's does, so the let-go at the
@@ -838,7 +838,7 @@ func TestATakeBackTheStoreRefusesWhereTheLaunchIsDecidedRetiresNoTask(t *testing
 	if p == nil {
 		t.Fatal("the claim holds no task after the take-back its store refused, want the one its worker is on")
 	}
-	if p.ID != sent.ID || p.Task != task || !p.awaitsTurn() {
+	if p.ID != sent.ID || p.Task != task || !p.awaitsStart() {
 		t.Fatalf("the task after the refused take-back is %+v, want %s taken as the store holds it", p, sent.ID)
 	}
 	if run := h.claim().ServingRun(); run != 7 {
@@ -867,7 +867,7 @@ func TestATakeBackTheStoreRefusesWhereTheLaunchIsDecidedLeavesNoMarkBehind(t *te
 	// life: a take of a claim already stale is refused, since every `legion` call of that process
 	// is (claimHold's staleRefusesClaim).
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", ID: "outbox:7", Row: 7, Generation: 7})
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("the task is %+v, want it taken", p)
 	}
 	h.m.deps.PluginContract = 25
@@ -1285,7 +1285,7 @@ func TestTakeOfAProcessARefusedLaunchKeptStandsWithIt(t *testing.T) {
 
 	h.observe(runtime.StaleAddress)
 	waiting := h.wantWaitingWake(WakeLaunch)
-	if p := h.pending(); !p.awaitsTurn() || p.Number != first.Number {
+	if p := h.pending(); !p.awaitsStart() || p.Number != first.Number {
 		t.Fatalf("the task after the park is %+v, want task %d's take still standing", p, first.Number)
 	}
 
@@ -1295,14 +1295,14 @@ func TestTakeOfAProcessARefusedLaunchKeptStandsWithIt(t *testing.T) {
 
 	h.wantState(StateReady)
 	h.wantStarts(h.token, 1)
-	if p := h.pending(); !p.awaitsTurn() || p.Number != first.Number {
+	if p := h.pending(); !p.awaitsStart() || p.Number != first.Number {
 		t.Fatalf("the task after the refused turn is %+v, want task %d's take still standing with the process it was made on", p, first.Number)
 	}
 
 	h.observe(runtime.Alive)
 
 	h.wantPrompts(1)
-	if p := h.pending(); !p.awaitsTurn() || p.Number != first.Number {
+	if p := h.pending(); !p.awaitsStart() || p.Number != first.Number {
 		t.Fatalf("the task after the sweep is %+v, want task %d's take still standing", p, first.Number)
 	}
 }
@@ -1981,7 +1981,7 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	// the launch below ends no work and the operator's task goes as it was given (recordEnd).
 	h.reportActivity()
 	ran := h.pending()
-	if h.state() != StateIdle || !ran.turnStarted() {
+	if h.state() != StateIdle || !ran.startRecorded() {
 		t.Fatalf("the claim is %s holding %+v, want idle over a take whose turn ran: this test proves nothing", h.state(), ran)
 	}
 
@@ -2048,7 +2048,7 @@ func TestAnOperatorsDeliveryOverAParkedLaunchTheLifecycleRefusesChangesNothing(t
 				h.must(StreamTurnStart{Claim: h.token})
 				h.mustQuiet(StreamTurnEnd{Claim: h.token})
 				h.reportActivity()
-				if ran := h.pending(); h.state() != StateIdle || !ran.turnStarted() {
+				if ran := h.pending(); h.state() != StateIdle || !ran.startRecorded() {
 					t.Fatalf("the claim is %s holding %+v, want idle over a take whose turn ran: this case proves nothing", h.state(), ran)
 				}
 				h.observe(runtime.StaleAddress)

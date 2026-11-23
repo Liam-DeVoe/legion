@@ -164,7 +164,7 @@ const relaunchWaitsForViewLine = "supervise: the process speaks another plugin c
 // end of this decision gives it back (endRefreshLane). And the relaunch that hold left waiting
 // comes back through here at the turn's end, with no credit of its own and the claim in whatever
 // state that end left it (afterTurn).
-func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *RefreshCredit) error {
+func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *RefreshCredit, atDeadline bool) error {
 	if credit != nil {
 		if m.refreshCredit != nil {
 			// This machine already holds a credit: the post's own goes back.
@@ -200,11 +200,11 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 	// turn start unseen, its start frame lost as the connection broke, and a relaunch now would
 	// take it back over a turn running, the task run twice behind row 26's note. The first post
 	// after the agent's answer or a turn frame decides it, and the reconnect deadline bounds the
-	// wait: that deadline's own relaunch is the bound, and passes (atReconnectDeadline). A claim
-	// holding no take is relaunched as before, an untaken pending task with it: only a take the
-	// daemon accepted can have a turn running unseen, and R10 asks for a relaunch onto the current
-	// plugin wherever one can be made.
-	if p := m.claim.Pending; p != nil && p.taken() && m.connSeen != viewWhole && !m.atReconnectDeadline {
+	// wait: that deadline's own relaunch is the bound, and passes (atDeadline, reconnectDeadline). A
+	// claim holding no take is relaunched as before, an untaken pending task with it: only a take
+	// the daemon accepted can have a turn running unseen, and R10 asks for a relaunch onto the
+	// current plugin wherever one can be made.
+	if p := m.claim.Pending; p != nil && p.taken() && m.connSeen != viewWhole && !atDeadline {
 		m.log.Info(relaunchWaitsForViewLine, "task", p.Number, "state", m.claim.State, "trigger", trigger,
 			"pluginContract", m.claim.PluginContract, "daemonApiVersion", m.deps.PluginContract)
 		return nil
@@ -238,6 +238,15 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, credit *Ref
 	}
 	return m.relaunchStale(ctx, WakePluginRefresh, trigger)
 }
+
+// atReconnectDeadline and notAtReconnectDeadline are refreshPlugin's atDeadline at its callers:
+// the reconnect deadline's own stale-plugin relaunch (reconnectDeadline) passes the guard of the
+// view, since that deadline is the bound of the wait for a whole view, and every other caller's
+// relaunch of a claim holding a take waits for a whole view.
+const (
+	atReconnectDeadline    = true
+	notAtReconnectDeadline = false
+)
 
 // holdStaleRelaunch leaves the relaunch waiting for the agent's turn to end (turnEnded), which
 // re-decides it through refreshPlugin as it stands then: by that point the claim is idle, so the
@@ -457,7 +466,7 @@ func (m *Machine) commitPluginRelaunch() {
 // machine then holds for the relaunch it is about to raise (refreshPlugin, refreshCredit).
 func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
 	stale := ev.(StalePlugin)
-	return m.refreshPlugin(ctx, stale.Trigger, stale.Credit)
+	return m.refreshPlugin(ctx, stale.Trigger, stale.Credit, notAtReconnectDeadline)
 }
 
 // refreshOverturned is the fact the lane's relaunch was raised for, read again at the wake's own

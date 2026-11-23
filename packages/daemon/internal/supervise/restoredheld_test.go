@@ -52,7 +52,7 @@ func (h *harness) wantNextTaskStartsItsOwnTurn() {
 	starts := len(h.records.of(turnStartedLine))
 	h.must(StreamTurnStart{Claim: h.token})
 	wantAttr(h.t, h.records.of(turnStartedLine)[starts], "task", strconv.FormatUint(next, 10))
-	if p := h.pending(); p.Number != next || !p.turnStarted() {
+	if p := h.pending(); p.Number != next || !p.startRecorded() {
 		h.t.Fatalf("the next task's start left %+v, want task %d's take with its turn started", p, next)
 	}
 }
@@ -98,7 +98,7 @@ func TestAHeldReportGivesATakeRestoredFromTheStoreItsTurnBack(t *testing.T) {
 		h, number := takeAcrossARestart(t, nothingMore, withWaits)
 		h.connect()
 		h.hostsRun()
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the first start after the restart left %+v, want it given the take", p)
 		}
 		putBacks := len(h.records.of(notTheTakesTurnLine))
@@ -136,7 +136,7 @@ func TestAHeldReportGivesATakeRestoredFromTheStoreItsTurnBack(t *testing.T) {
 		h.wantPutBackBy(number, putBacks, "held")
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the start after the given run left %+v, want it given the take", p)
 		}
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})

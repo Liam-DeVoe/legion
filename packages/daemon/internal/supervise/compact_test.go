@@ -980,7 +980,7 @@ func TestARestartWhileASessionIsBeingCompactedSendsTheOwedTaskWhenItsAgentSaysNo
 	if prompts[ladderSends].DeliveryID != owed {
 		t.Fatalf("the take after the restart's question carried %q, want the task the claim owed, %q", prompts[ladderSends].DeliveryID, owed)
 	}
-	if got := h.pending(); got.ID != owed || !got.awaitsTurn() {
+	if got := h.pending(); got.ID != owed || !got.awaitsStart() {
 		t.Fatalf("the claim holds %+v, want the task %s taken and its turn still to come", got, owed)
 	}
 }

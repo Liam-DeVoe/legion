@@ -379,7 +379,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	}
 	// The confirmed row's take reads as one whose turn started, with no text kept, as it read when
 	// a confirmed take with no text was read so: the fill set its turn_started, which is all the
-	// claim reads of where the take stands (supervise's Delivery.turnStarted). On an idle claim
+	// claim reads of where the take stands (supervise's Delivery.startRecorded). On an idle claim
 	// such a take no longer works its task; one awaiting its turn would.
 	if started == nil || started.TakenText != "" || !started.TurnStarted ||
 		started.StillWorked(started.Generation, started.Phase, supervise.StateIdle) {

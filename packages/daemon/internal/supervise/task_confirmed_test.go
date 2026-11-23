@@ -25,7 +25,7 @@ func TestTakeAcceptedCallsTaskConfirmedOnce(t *testing.T) {
 	if len(confirmed) != 1 || confirmed[0].Token != testToken {
 		t.Fatalf("told of %+v, want the one claim whose task was taken", confirmed)
 	}
-	if p := confirmed[0].Pending; p == nil || !p.awaitsTurn() {
+	if p := confirmed[0].Pending; p == nil || !p.awaitsStart() {
 		t.Fatalf("told of pending %+v, want the accepted take", p)
 	}
 

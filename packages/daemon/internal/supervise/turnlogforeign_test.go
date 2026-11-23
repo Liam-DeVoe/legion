@@ -51,7 +51,7 @@ func TestTheTurnLogEndLineNamesWhatItsOwnStartLineNamed(t *testing.T) {
 	h.mustQuiet(StreamTurnEnd{Claim: testToken})
 
 	p := h.claim().Pending
-	if _, waits := h.m.timers[TimerFinish]; p == nil || !p.turnStarted() || !waits {
+	if _, waits := h.m.timers[TimerFinish]; p == nil || !p.startRecorded() || !waits {
 		t.Fatalf("the task is not waiting for its finish: pending %+v, state %s, finish bound armed %v", p, h.state(), waits)
 	}
 

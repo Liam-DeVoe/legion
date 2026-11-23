@@ -54,7 +54,7 @@ func putWorkerClaim(t *testing.T, pool *pgxpool.Pool, root, key string, role cla
 // claim still works it (supervise.Delivery.StillWorked). A confirmed task is a take whose turn
 // started (turn_started), as the task numbers' fill reads a confirmed row: a take accepted whose
 // turn has not started is one the claim still works whatever its state, and the turn's start is
-// read from turn_started alone (supervise's turnStarted).
+// read from turn_started alone (supervise's Delivery.startRecorded).
 func putWorkerTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, generation uint64, stands phase.Phase, confirmed bool) {
 	t.Helper()
 	var at *time.Time

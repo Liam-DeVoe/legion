@@ -83,11 +83,11 @@ func TestRelaunchOfAMigratedTakeRunsItOnce(t *testing.T) {
 		h := restoreMigrated(t, true)
 		h.observe(runtime.StaleAddress)
 		waiting := h.wantWaitingWake(WakeLaunch)
-		if p := h.pending(); !p.awaitsTurn() {
+		if p := h.pending(); !p.awaitsStart() {
 			t.Fatalf("the task after the park is %+v, want the migrated take standing", p)
 		}
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the turn in the wait left %+v, want it the take's turn", p)
 		}
 
@@ -297,7 +297,7 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		h.answer(true)
 
 		h.wantState(StateWorking)
-		if p := h.pending(); !p.turnStarted() || p.TakenText != "the task" {
+		if p := h.pending(); !p.startRecorded() || p.TakenText != "the task" {
 			t.Fatalf("the task after the answer is %+v, want its take's turn started", p)
 		}
 		h.wantCalls("Resume", 0)

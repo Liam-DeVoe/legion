@@ -241,7 +241,7 @@ func (m *Machine) takePhase() waitPhase {
 		return waitFinish
 	case TakesNoTask(m.claim.PluginContract):
 		return waitNone
-	case p.awaitsTurn():
+	case p.awaitsStart():
 		return waitTake
 	}
 	return waitReport
@@ -255,7 +255,7 @@ func (m *Machine) takePhase() waitPhase {
 // turn or a compaction (runHeldAtEnd, endNothingHeld).
 func (m *Machine) takesTurnRan() bool {
 	p := m.claim.Pending
-	return p != nil && (p.turnStarted() || m.takePhase() == waitFinish)
+	return p != nil && (p.startRecorded() || m.takePhase() == waitFinish)
 }
 
 // takeAwaitsTurn is whether the pending take awaits its turn, as the one rule of where the take

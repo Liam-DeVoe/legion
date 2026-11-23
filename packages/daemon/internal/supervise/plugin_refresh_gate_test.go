@@ -256,7 +256,7 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 
 	h.mustRefreshPass(gate, "sweep")
 	waiting := h.wantWaitingWake(WakePluginRefresh)
-	if p := h.pending(); !p.awaitsTurn() || p.Number != number {
+	if p := h.pending(); !p.awaitsStart() || p.Number != number {
 		t.Fatalf("the claim holds %+v after the pass, want task %d's take still standing", p, number)
 	}
 
@@ -272,14 +272,14 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 		t.Fatalf("the claim whose refresh found it current records %+v marked for %d, want the process it still runs, %+v, marked for 0",
 			got.Locator, got.PluginRelaunchFor, kept)
 	}
-	if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
 		t.Fatalf("the claim holds %+v, want task %d's take still standing", p, number)
 	}
 	gate.wantAsks(t, "the refresh that found its claim current", refreshAsks{asked: 1, granted: 1, released: 1})
 
 	h.ready()
 	h.wantPrompts(1)
-	if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
 		t.Fatalf("the claim holds %+v after the ready, want task %d's take still standing", p, number)
 	}
 }
@@ -439,7 +439,7 @@ func TestARefreshOverAClaimWithNoProcessToReplaceGivesItsCreditBack(t *testing.T
 	if credit == nil {
 		t.Fatal("the gate refused the first admission of a fresh gate")
 	}
-	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", credit) })
+	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", credit, notAtReconnectDeadline) })
 	if err != nil {
 		t.Fatalf("the refresh of a suspended claim = %v, want nil", err)
 	}
@@ -688,7 +688,7 @@ func TestARefreshTheLaunchPathRefusesGivesItsCreditBack(t *testing.T) {
 func (h *harness) taskTheAgentTook() {
 	h.t.Helper()
 	h.must(RequestDeliver{Claim: h.token, Task: "review the pull request", ID: "outbox:42", Row: 42, Generation: 7})
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		h.t.Fatalf("the task is %+v, want its take accepted and its turn still to come", p)
 	}
 }
@@ -757,7 +757,7 @@ func TestATakeBackTheStoreRefusesAtTheRelaunchsWakeTurnGivesTheCreditBack(t *tes
 	}
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: credit2})
 	waiting := h.wantWaitingWake(WakePluginRefresh)
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("the task after the park is %+v, want its take standing: the park makes no take-back", p)
 	}
 	h.store.fail("PutDelivery", errBoom)

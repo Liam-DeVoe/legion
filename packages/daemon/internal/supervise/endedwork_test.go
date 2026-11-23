@@ -265,7 +265,7 @@ func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
 			t.Fatalf("the park recorded %+v, want nothing before the turn lets the process go", got)
 		}
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); !p.turnStarted() {
+		if p := h.pending(); !p.startRecorded() {
 			t.Fatalf("the task is %+v in the wait, want the turn the old process began given to its take", p)
 		}
 		h.reportActivity("async-job")
@@ -666,7 +666,7 @@ func TestARelaunchRecordsTheUnionWithAnUntoldRecord(t *testing.T) {
 	}
 	h.relaunched()
 	p := h.pending()
-	if !p.awaitsTurn() {
+	if !p.awaitsStart() {
 		t.Fatalf("the task after the relaunch is %+v, want its take accepted and its turn not yet begun", p)
 	}
 	if ended := h.claim().EndedWork; !ended.Told || ended.ToldBy != p.ID {
@@ -944,7 +944,7 @@ func (h *harness) takesTurnEndsWithItsReportToCome() {
 	h.wantState(StateWorking)
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	h.wantState(StateIdle)
-	if p := h.pending(); p.ID != sent || !p.turnStarted() {
+	if p := h.pending(); p.ID != sent || !p.startRecorded() {
 		h.t.Fatalf("the task after its take's turn ended is %+v, want %s still held, its turn run and its report to come", p, sent)
 	}
 }

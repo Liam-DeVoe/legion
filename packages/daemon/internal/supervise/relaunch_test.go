@@ -177,7 +177,7 @@ func TestARelaunchSentenceSaysTheTasksTurnOnlyInFrontOfTheTaskTakenBack(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateWorking)
-			if p := h.pending(); p.Task != task || !p.turnStarted() {
+			if p := h.pending(); p.Task != task || !p.startRecorded() {
 				t.Fatalf("the working claim holds %+v, want its task's take in its turn", p)
 			}
 			h.advance(time.Second)
@@ -421,7 +421,7 @@ func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
 		}
 		recordSentences := []string{"Your previous process ended", "Your process ended", "interrupted", "No result of that work will come to you."}
 		wantSaysNot(t, first.Message, recordSentences...)
-		if p := h.pending(); p.ID != first.DeliveryID || !p.awaitsTurn() {
+		if p := h.pending(); p.ID != first.DeliveryID || !p.awaitsStart() {
 			t.Fatalf("the first take left %+v, want it accepted and its turn to come", p)
 		}
 		h.wantAbandonedToldBy(first.DeliveryID, "at the accepted take")
@@ -920,7 +920,7 @@ func TestARelaunchSentenceIsToldAgainWhenATakeWhoseTurnHasNotStartedIsCutOff(t *
 				earlier := h.claim().EndedWork.Generation
 				h.ready()
 				id := h.wantPrompts(1)[0].DeliveryID
-				if p := h.pending(); p.ID != id || !p.awaitsTurn() {
+				if p := h.pending(); p.ID != id || !p.awaitsStart() {
 					t.Fatalf("pending after the ready = %+v, want the take of %s accepted and its turn to come", p, id)
 				}
 				h.wantEndedTold(true, id, "at the accepted take")
@@ -1113,7 +1113,7 @@ func TestARelaunchSentenceDeliveryGivesWayToANewerTask(t *testing.T) {
 		h := relaunchedHoldingNothing(t)
 		h.relaunched()
 		relaunch := h.pending()
-		if !relaunchTask(relaunch.ID) || !relaunch.awaitsTurn() {
+		if !relaunchTask(relaunch.ID) || !relaunch.awaitsStart() {
 			t.Fatalf("the relaunched claim holds %+v, want the relaunch's delivery taken and its turn to come", relaunch)
 		}
 

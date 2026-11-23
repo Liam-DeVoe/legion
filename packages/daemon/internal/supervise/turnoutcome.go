@@ -388,8 +388,8 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	}
 	reaches := m.claim.reportOfTake(r.Generation, r.Task)
 	o.Refused = r.Refused && (r.ProviderError == nil || !reaches)
-	if p := m.claim.Pending; r.ProviderError != nil && reaches && p != nil {
-		o.ProviderErrorRetries = p.ProviderErrorRetries + 1
+	if r.ProviderError != nil && reaches {
+		o.ProviderErrorRetries = m.claim.Pending.ProviderErrorRetries + 1
 	}
 	if first, applied := m.appliedTurnOutcome(r); applied && r.ProviderError != nil {
 		o.Refused, o.ProviderErrorRetries = first.Refused, first.ProviderErrorRetries
@@ -449,7 +449,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 // turn's sequence, and the take's number places it among the turns the machine saw.
 func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
-	if p == nil || !m.claim.reportOfTake(r.Generation, r.Task) {
+	if !m.claim.reportOfTake(r.Generation, r.Task) {
 		if r.Task != 0 {
 			m.log.Info("supervise: a turn's report names a task that no take of this claim holds; it finishes nothing",
 				"task", r.Task, "generation", r.Generation, "pending", pendingNumber(p))
@@ -571,7 +571,7 @@ func (m *Machine) notTheTakesTurn(ctx context.Context, r RequestTurnOutcome) err
 	if !count.known {
 		return m.heldUnrun(ctx, r)
 	}
-	if !p.turnStarted() || count.take == 0 || r.Sequence != count.take {
+	if !p.startRecorded() || count.take == 0 || r.Sequence != count.take {
 		return nil
 	}
 	if m.startedSince(count.take) {

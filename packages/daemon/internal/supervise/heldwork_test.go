@@ -97,7 +97,7 @@ func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testi
 // decided by the next hello's answer or by that deadline, and never left to the stall backstop:
 //
 //   - the next hello asks again (askView), and an answer of no turn ends the turn the claim
-//     is read in (applyTurnAnswer): the relaunch waits for the take's report, which finishes the
+//     is read in (answerView): the relaunch waits for the take's report, which finishes the
 //     task once before the relaunch runs;
 //   - with no answer and no turn frame on that connection by the reconnect deadline, the process is
 //     relaunched, charged nothing, and the task taken back as a cut turn, as at the deadline of
@@ -187,7 +187,7 @@ func TestChargeOnceAtTheSecondBoundForAPutBackWhilePausedThenThePausesStopLands(
 	h.reach(StateReady)
 	number := h.takeOf("implement the plan")
 	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); !p.turnStarted() {
+	if p := h.pending(); !p.startRecorded() {
 		t.Fatalf("the run that started after the take is %+v, want it given to the take", p)
 	}
 	flag.set(7)
@@ -197,7 +197,7 @@ func TestChargeOnceAtTheSecondBoundForAPutBackWhilePausedThenThePausesStopLands(
 	h.mustQuiet(StreamTurnEnd{Claim: h.token})
 	h.wantState(StateIdle)
 	h.reportOf(h.worker.sequence+1, 0)
-	if p := h.pending(); p.Number != number || !p.awaitsTurn() {
+	if p := h.pending(); p.Number != number || !p.awaitsStart() {
 		t.Fatalf("after the report of the run given the take the claim holds %+v, want task %d's take awaiting its turn again", p, number)
 	}
 

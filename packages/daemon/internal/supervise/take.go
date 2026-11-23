@@ -751,7 +751,8 @@ func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	m.claim = c
 	m.settleOwedWrite("PutClaimAndDelivery")
 	m.anchorTake(first)
-	m.restoredTake, m.turnUnseen = false, false
+	m.restoredTake = false
+	m.setTurnUnseen(false)
 	if toldAbandoned {
 		m.log.Info("supervise: an accepted take told the agent of the session its claim abandoned",
 			"task", p.Number, "delivery", p.ID, "session", c.Abandoned.Session)
@@ -974,7 +975,7 @@ func (m *Machine) stateHold() string {
 
 // takeBack returns a taken task to waiting under the number it has, for a reason that keeps the
 // process: a provider error's turn, a compaction, and the second wait. The take goes (ConfirmedAt,
-// TakenText, TurnStarted, TakeTold, the four clearTake and interrupted reset together), so the
+// TakenText, TurnStarted, TakeTold, which dropTake resets for both take-backs of a take), so the
 // next take of the number is decided afresh and its text composed
 // again with whatever note the cause left (Delivery.message); the end of the task's turn is no
 // longer awaited. The take state the claim recorded stays, which is how the end of the cause's
@@ -990,8 +991,11 @@ func (m *Machine) stateHold() string {
 // write that fails leaves the delivery unsaved, and settle writes it again, with the claim.
 //
 // A take awaiting its turn while the claim's connection does not show every frame of its turns, or
-// one marked so, goes back as a cut turn with its note (clearTake, turnMayHaveRunUnseen): the
+// one marked so, goes back as a cut turn with its note (dropTake, turnMayHaveRunUnseen): the
 // operator's compaction can take it back while the view waits for the agent's answer to a hello.
+// The task is then marked for the record of a let-go of the process that comes before its next
+// take (Machine.cutTurnOf), so that record tells the cut turn rather than a turn the agent was not
+// in.
 //
 // A take whose report's finish the store refused (takePhase, waitFinish) is not taken back but
 // finished, by that report (makeOwedFinish): the report decides whichever turn the take awaits,
@@ -1009,15 +1013,19 @@ func (m *Machine) takeBack(ctx context.Context, cause string) error {
 // takeBackInMemory is takeBack with no write: the take goes from the delivery and the claim in
 // memory, for a caller that writes them in a write of its own, together with what it decides
 // next — the ladder's step, which must land with the take-back or not at all (takeToLadder). It
-// answers whether the claim moved with it (giveBackTake). With no task pending it takes nothing
-// back.
+// answers whether the claim moved with it (giveBackTake). A take that goes back as a cut turn is
+// marked for the let-go's record at once, as the take-back stands in memory (Machine.cutTurnOf,
+// dropTake). With no task pending it takes nothing back.
 func (m *Machine) takeBackInMemory(cause string) (claimMoved bool) {
 	p := m.claim.Pending
 	if p == nil {
 		return false
 	}
 	m.disarm(TimerFinish)
-	claimMoved = m.clearTake(p, cause)
+	claimMoved, cut := m.clearTake(p, cause)
+	if cut {
+		m.cutTurnOf = p.ID
+	}
 	m.rewrite = valueRewrite{number: p.Number, cause: TaskValueRetake}
 	return claimMoved
 }

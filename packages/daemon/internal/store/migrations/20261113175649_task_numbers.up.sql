@@ -44,7 +44,7 @@
 -- release keeps the mark through a death, a retirement and a suspension — comes before it. Such a
 -- row is filled as an accepted take awaiting its turn — confirmed_at from delivered_at,
 -- taken_text the row's own text, turn_started false, task_taken 1 — so the turn the old process
--- starts is that take's turn (supervise's Delivery.awaitsTurn), and a process let go before it
+-- starts is that take's turn (supervise's Delivery.awaitsStart), and a process let go before it
 -- starts one gives the take back (supervise's interrupted), so the relaunched worker takes the
 -- task under its number: either way it runs once. The take is that process's, of the claim's
 -- generation and session, which nothing but a let-go of that process moves, and the let-go gives

@@ -838,7 +838,7 @@ func (c Claim) RuleHoldError() error {
 // ends the claim is in its task's turn, and two roles of one issue that each read the other as
 // idle would otherwise adopt at the same moment (dispatch://INFRA-314).
 func (c Claim) InTurn() bool {
-	return c.State == StateWorking || (c.Pending != nil && c.Pending.awaitsTurn())
+	return c.State == StateWorking || (c.Pending != nil && c.Pending.awaitsStart())
 }
 
 // ClaimView is a claim as its machine last published it (Machine.View), with what only the decision
@@ -1587,11 +1587,6 @@ type Machine struct {
 	askTurn    bool
 	askedAt    time.Time
 	askTrigger string
-	// atReconnectDeadline is whether the decision running is the reconnect deadline's own
-	// stale-plugin relaunch (reconnectDeadline): that deadline is the bound of the wait for a whole
-	// view, so the relaunch it decides passes refreshPlugin's guard of the view. It is set for that
-	// one call and cleared when it returns.
-	atReconnectDeadline bool
 	// unansweredAsks counts the asks in a row the agent left unanswered while askFirst or askTurn
 	// stayed armed (askTurnOver, askRestoredTurn); from unansweredAsksWarn on, each one is logged
 	// at Warn.
@@ -1684,15 +1679,19 @@ type Machine struct {
 	// whose hello did not say the shim's backlog is whole (markRestoredTurnUnseen, turnCount.cut),
 	// and a trim of that backlog can drop a whole turn; or a turn this daemon never saw begin ended
 	// over the take, which may have been the take's own, its start frame lost as the connection
-	// broke (blindTurnEnded); or a reconnect deadline passed, or a let-go was recorded — a
-	// death's, a displacement's, a retirement's, a suspension's — while the claim's connection did
-	// not show its turns whole (reconnectDeadline, recordEnd, turnMayHaveRunUnseen, connview.go).
-	// Each site marks by one test (markTurnUnseen): a take awaiting its turn whose finish is not
-	// owed. Every take-back that follows takes such a take back with the note of a cut turn rather
-	// than unstarted (interrupted, takeBackUnstarted, clearTake), so the next process is told its
-	// turn on the task may have run. It stays through the let-go, for the take-back made after it,
-	// where the view reads whole again; the next accepted take clears it (accept), and it is memory
-	// only.
+	// broke (blindTurnEnded); or a reconnect deadline passed (reconnectDeadline); or a let-go was
+	// recorded — a death's, a displacement's, a retirement's, a suspension's — while the claim's
+	// connection did not show its turns whole (recordEnd, turnMayHaveRunUnseen, connview.go).
+	// Every write of it goes through one writer (setTurnUnseen). The first three sites mark it by
+	// one test (markTurnUnseen): a take awaiting its turn whose finish is not owed. The record of a
+	// let-go writes it too: it sets it to what the let-go reads (turnMayHaveRunUnseen), which
+	// marks it over a view not whole, keeps a mark standing, and clears it where the take no longer
+	// awaits its turn — its own turn started after the mark, or its report came — so a stale mark
+	// says nothing to that record, which reads the field itself (recordEnd). The next accepted take
+	// clears it (accept). Every take-back that follows a mark takes such a take back with the note of
+	// a cut turn rather than unstarted (interrupted, takeBackUnstarted, clearTake: dropTake), so the
+	// next process is told its turn on the task may have run. It stays through the let-go, for the
+	// take-back made after it, where the view reads whole again, and it is memory only.
 	turnUnseen bool
 	// rewrite is the pending task whose value the next write at a hold's end (offerPending) logs
 	// under a cause of its own, and that cause: TaskValueRetake for a task taken back in this
@@ -1709,17 +1708,20 @@ type Machine struct {
 	// The first wait's bound over such a revision writes the value again rather than charging
 	// (takeBoundOver). It is memory only: a daemon that starts next reads the store's report again.
 	seenFromStore bool
-	// cutTurnOf is the delivery id of the pending task the decision that lets the claim's process
-	// go takes back from its turn (interrupted), and "" while no decision has taken one back from
-	// it. interrupted sets it where it takes back a take whose turn was running. The take-back
-	// clears the take, so this, rather than the take or the claim's state, is what tells the
-	// let-go that follows — in the same decision, or at the turn of a wake the replacement parked
-	// — that the task's turn was cut off (recordEnd, EndedWork.TaskTurn). The two decisions that
+	// cutTurnOf is the delivery id of the pending task a take-back sent back as a cut turn before
+	// the let-go of the claim's process recorded anything, and "" while none has (dropTake):
+	// interrupted, in the decision that lets the process go, where it takes back a take whose turn
+	// was running or may have run unseen, and takeBack, which keeps the process, where its take went
+	// back as a cut turn (takeBackInMemory). The take-back clears the take, so this, rather than the
+	// take or the claim's state, is what tells the let-go that follows — in the same decision, at the
+	// turn of a wake the replacement parked, or in a later decision before the task's next take —
+	// that the task's turn was cut off (recordEnd, EndedWork.TaskTurn). The two decisions that
 	// record the end of a process they found gone before they take its task back (died,
-	// displaced) need no mark: that record reads the take itself. The delivery id never changes,
-	// so the mark stands under it across the take-back. letGo clears it with the process. It is
-	// memory only: a daemon restarted inside such a park records the end without it, from what
-	// the claim still holds.
+	// displaced) need no mark: that record reads the take itself. The take-back a let-go makes
+	// after its record (takeBackUnstarted) sets none (dropTake). The delivery id never changes, so
+	// the mark stands under it across the take-back. letGo clears it with the process. It is memory
+	// only: a daemon restarted inside such a park records the end without it, from what the claim
+	// still holds.
 	cutTurnOf string
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
@@ -1978,7 +1980,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		// again to this daemon, and the time no daemon served it is no time it had to do so
 		// (dispatch://INFRA-2811). A plugin that names its task's number has its task finished
 		// by that report alone.
-		if p := c.Pending; p != nil && p.turnStarted() && TakesNoTask(m.claim.PluginContract) {
+		if p := c.Pending; p != nil && p.startRecorded() && TakesNoTask(m.claim.PluginContract) {
 			m.finishAtAct = true
 		}
 		// A claim holding a take that the stale-plugin lane will relaunch waits for its agent's
@@ -2007,7 +2009,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	// pending owes nothing.
 	p := m.claim.Pending
 	if owed, ok := m.claim.owedReport(); ok && p != nil {
-		if p.awaitsTurn() {
+		if p.awaitsStart() {
 			p.TurnStarted = true
 			m.resetPromptBudgets()
 			m.unsaved = true

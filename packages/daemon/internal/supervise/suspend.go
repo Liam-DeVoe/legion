@@ -156,20 +156,20 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	// is a held suspension or else the stale-plugin relaunch, since only work already waiting goes
 	// on waiting there (reportHolds).
 	if ev.(RequestSuspend).NeverHold {
+		waiting := "a relaunch"
+		if m.held != nil {
+			waiting = "a held suspension"
+		}
 		var reason string
 		switch phase := m.reportWaitNow(); {
 		case phase == waitTurn:
 			reason = "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
 		case m.busy():
 			reason = "the claim's session is being compacted, and this suspension is not one that is held for the compaction's end"
-		case phase == waitTake && m.held != nil:
-			reason = "the claim's take awaits its turn again with a held suspension waiting behind it, and this suspension is not one that is held for that turn"
 		case phase == waitTake:
-			reason = "the claim's take awaits its turn again with a relaunch waiting behind it, and this suspension is not one that is held for that turn"
-		case phase == waitFinish && m.held != nil:
-			reason = "a held suspension waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"
+			reason = "the claim's take awaits its turn again with " + waiting + " waiting behind it, and this suspension is not one that is held for that turn"
 		case phase == waitFinish:
-			reason = "a relaunch waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"
+			reason = waiting + " waits for the finish of the report of the claim's last turn, which the store refused, and this suspension is not one that is held for that finish"
 		case m.held != nil:
 			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
 		default:

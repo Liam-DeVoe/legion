@@ -369,7 +369,7 @@ func TestAQuestionWhoseTurnEndedInAProviderErrorIsDroppedWhenTheLaddersWaitPasse
 	ask := h.leftAsk(testRound)
 	takes := len(h.prompts())
 	h.must(StreamTurnStart{Claim: testToken})
-	if p := h.pending(); p.ID != ask.ID || !p.turnStarted() {
+	if p := h.pending(); p.ID != ask.ID || !p.startRecorded() {
 		t.Fatalf("pending = %+v, want the older daemon's ask in the turn of the take it accepted", p)
 	}
 
@@ -705,7 +705,7 @@ func TestANewerTaskDoesNotReplaceTheLaddersTaskWhoseTakeWasAccepted(t *testing.T
 	if retaken.DeliveryID != owed.ID {
 		t.Fatalf("the take after the ladder's wait = %+v, want the owed task %s", retaken, owed.ID)
 	}
-	if p := h.pending(); !p.awaitsTurn() {
+	if p := h.pending(); !p.awaitsStart() {
 		t.Fatalf("the owed task is %+v, want its take accepted and its turn still to come", p)
 	}
 

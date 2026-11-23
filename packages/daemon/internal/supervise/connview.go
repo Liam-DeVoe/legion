@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -33,7 +34,7 @@ import (
 // claim read in a turn is read as that turn's end (turnEnded), so a lost end frame leaves no claim
 // working for ever, and the bounds are armed whole from the answer. Every answer the daemon reads
 // makes the view whole in one place (answerView), which ends the reconnect deadline below, and is
-// applied there by that one rule (applyTurnAnswer): this ask's, and a daemon start's own.
+// applied to the claim there, by one rule: this ask's, and a daemon start's own.
 //
 // The ask is made once on each reconnect hello over a pending task, and never again at a sweep
 // while that connection stands (helloAsked, observe). Its one bound is the reconnect deadline
@@ -374,12 +375,22 @@ func (m *Machine) turnMayHaveRunUnseen() bool {
 // which every let-go finishes by that report before it reads the mark (interrupted). It is the one
 // test of every site that marks: the reconnect deadline (reconnectDeadline), a stale-plugin
 // relaunch decided behind a cut backlog (markRestoredTurnUnseen), and a turn's end the daemon
-// never saw begin (blindTurnEnded).
+// never saw begin (blindTurnEnded). It is not the mark's only writer, and each writes it through
+// setTurnUnseen: the record of a let-go sets the mark to what that let-go reads
+// (turnMayHaveRunUnseen), and so clears it where the take no longer awaits its turn (recordEnd),
+// and the next accepted take clears it (accept).
 func (m *Machine) markTurnUnseen() {
 	if m.takeAwaitsTurn() {
-		m.turnUnseen = true
+		m.setTurnUnseen(true)
 	}
 }
+
+// setTurnUnseen is the one writer of the mark of a take whose turn may have run unseen
+// (Machine.turnUnseen): markTurnUnseen sets it, by its one test, at every site that marks; the
+// record of a let-go sets it to what the let-go reads (recordEnd, turnMayHaveRunUnseen), which
+// marks it over a view not whole and clears it where the take no longer awaits its turn; and an
+// accepted take clears it (accept).
+func (m *Machine) setTurnUnseen(unseen bool) { m.turnUnseen = unseen }
 
 // answerView is the agent's answer to whether it is in a turn (streaming), on every path an answer
 // reaches the machine: the ask a reconnect hello made, over the view that hello left waiting for it
@@ -389,10 +400,14 @@ func (m *Machine) markTurnUnseen() {
 // viewAnsweredLine where the answer made it so), the reconnect deadline that bounded the ask goes,
 // and the daemon start's own asks are answered and end with it (askFirst, askTurn), so no sweep
 // asks them again. Left armed, that deadline would find the view whole and take the path of a shim
-// that never said hello (retireNeverReady), and retire and charge a live worker in its turn. The
-// answer is then applied to the claim with every frame the shim replayed applied already
-// (applyTurnAnswer). The bounds are armed whole from here at the end of this decision, or at the
-// end of the turn the answer started.
+// that never said hello (retireNeverReady), and retire and charge a live worker in its turn.
+//
+// The answer is then applied to the claim, read behind every frame its shim sent before it, by the
+// one rule of every answer the daemon reads: a turn running over a claim not busy is a turn start,
+// the take's own over a take awaiting its turn (turnStarted), and no turn over a claim in one is
+// that turn's end (turnEnded), so an end frame the connection lost leaves no claim working for
+// ever. An answer the claim already agrees with changes nothing. The bounds are armed whole from
+// here at the end of this decision, or at the end of the turn the answer started.
 func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 	cut := m.connSeen != viewWhole
 	m.setView(viewWhole)
@@ -401,18 +416,6 @@ func (m *Machine) answerView(ctx context.Context, streaming bool) error {
 	if cut {
 		m.log.Info(viewAnsweredLine, "streaming", streaming)
 	}
-	return m.applyTurnAnswer(ctx, streaming)
-}
-
-// applyTurnAnswer applies the agent's answer to whether it is in a turn to the claim, read behind
-// every frame its shim sent before it: a turn running over a claim not busy is a turn start, the
-// take's own over a take awaiting its turn (turnStarted), and no turn over a claim in one is that
-// turn's end (turnEnded), so an end frame the connection lost leaves no claim working for ever. An
-// answer the claim already agrees with changes nothing. It is the one rule of every answer the
-// daemon reads, applied where that answer makes the view whole (answerView): the ask a reconnect
-// hello makes, and a daemon start's own two — of a claim restored working (askTurnOver) and of a
-// restored take on a stale plugin (turnAnswered).
-func (m *Machine) applyTurnAnswer(ctx context.Context, streaming bool) error {
 	switch {
 	case streaming && !m.busy():
 		return turnStarted(m, ctx, nil)
@@ -420,4 +423,111 @@ func (m *Machine) applyTurnAnswer(ctx context.Context, streaming bool) error {
 		return turnEnded(m, ctx, nil)
 	}
 	return nil
+}
+
+// reconnectDeadline is the reconnect deadline (connview.go): of a claim a daemon start restored
+// with its agent ready, idle or working (NewMachine), or whose connection closed while it held a
+// pending task, no earlier than a whole bound from that close (closeView, reconnectFromClose), or
+// whose agent said it is ready over a connection whose view was not whole (readyView), or which was
+// given a pending task over a connection closed since its last hello (armReconnectForTask), its
+// shim not having said hello since; or of a reconnect hello of a claim holding a pending task whose
+// agent has not answered whether it is in a turn, nor sent a turn frame, since (helloView), a hello
+// whose decision failed after it opened that view included.
+//
+// With no hello, it probes and retires as the registration deadline does (registrationDeadline,
+// retireNeverReady). A process found gone takes the death path (judge, died). A process found
+// alive is retired and relaunched with a charged launch failure, CauseNeverReconnected, since a
+// live process whose shim never comes back is held by nothing else: no frame of it reaches the
+// daemon, so none of R5's waits can be judged of it. The task its turn was running is taken back
+// first, as a replacement takes it (interrupted), so the relaunched worker takes it again under
+// its number; a take awaiting its turn goes back as a cut turn (markTurnUnseen,
+// Machine.turnUnseen), since that turn may have run while no frame of the claim reached the
+// machine.
+//
+// A suspension held for the claim's turn ends here instead: no turn's end will reach it from a
+// shim that never came back. A relaunch the tree lifecycle refuses, a take-back the store would
+// not write and a stop the runtime refuses each keep the process, and the deadline is tried again
+// at the probe interval, as the registration deadline's are.
+//
+// After a hello no answer followed, the process is relaunched, charged nothing, and its task taken
+// back as a cut turn (replaceProcess, endUnanswered): the process came back, but none of the three
+// bounds can be judged of it until its agent answers or a turn frame comes, so a hung agent's turn
+// is cut, and a take awaiting its turn may have had that turn run unseen. A held suspension ends
+// the process there instead, as every replacement ends it (replaceNow, endHeld). A take-back the
+// store refuses leaves the process as it was, and the deadline is tried again at the probe
+// interval.
+//
+// A claim whose shim did say hello, and whose agent has not said since whether it is in a turn
+// for the stale-plugin relaunch that waits for the answer (askTurn, askRestoredTurn), reaches the
+// deadline its hello armed again for that ask: a hung agent's turn costs nothing to cut, and the
+// daemon relaunches onto the current plugin a worker it can (R10). That relaunch is the
+// stale-plugin lane's own (refreshPlugin), charged nothing, as the lane's relaunch is: the
+// process did come back, and the relaunch is for its plugin, not for a failure of the claim. A
+// gate the lane finds full leaves it to the next sweep's post, which no answer holds back any
+// more. The deadline then bounds that ask, not a suspension held over the claim, whose shim came
+// back and whose turn's end and take's report reach the machine: a hold over a claim working, or
+// one that waits for the report of its take's turn (heldWaits, reportwait.go), is left to that
+// turn and that wait, as reready leaves it, and the relaunch waits with it (refreshPlugin's own
+// holds). Run here, its stop would cut off the take's own turn, or come before that turn's report,
+// and settle would take back as a cut turn a task whose turn ran whole. A hold neither waits for
+// runs here, as before the hello. And where a hello of the process's generation did not say its
+// shim's backlog is whole, a take still awaiting its turn may have had that turn run unseen, its
+// frames dropped from the replay, so the relaunch takes it back as a cut turn rather than
+// unstarted, as at the agent's answer of no turn (markRestoredTurnUnseen, turnAnswered).
+//
+// Such a claim read in a turn whose end its connection cannot show is no case of the lane's: a
+// replayed start made it working, its connection broke with that turn's end frame in it, and
+// neither an answer nor a turn frame came on the next hello's connection, or no hello came at all
+// (connSeen not viewWhole). The lane would hold the relaunch for a turn's end that may never come
+// (refreshPlugin, holdStaleRelaunch), and leave the claim working until the stall backstop. So it
+// is decided below, as any claim whose view is not whole at this deadline: relaunched, uncharged,
+// after a hello no answer followed, or retired as a shim that never reconnected with no hello since
+// its close, a held suspension stopping the process in either place, and the task taken back as a
+// cut turn (interrupted).
+func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
+	askedTurn := m.askTurn && !m.askedAt.IsZero()
+	if askedTurn && m.inTurn() && m.connSeen != viewWhole {
+		m.askTurn, m.unansweredAsks, askedTurn = false, 0, false
+	}
+	helloed := askedTurn || m.connSeen == viewAsked
+	if (m.held != nil && !helloed) || m.heldRunsNow() {
+		return m.suspendHeld(ctx)
+	}
+	if askedTurn {
+		m.askTurn, m.unansweredAsks = false, 0
+		m.log.Warn("supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn within the reconnect deadline of its hello; the stale-plugin lane relaunches it, uncharged",
+			"askedAt", m.askedAt)
+		m.markRestoredTurnUnseen()
+		// This deadline is the bound of the wait for a whole view, so its relaunch does not wait
+		// for one (refreshPlugin), and row 26 takes its take back as a cut turn (interrupted).
+		return m.refreshPlugin(ctx, m.askTrigger, nil, atReconnectDeadline)
+	}
+	m.markTurnUnseen()
+	if m.connSeen == viewAsked {
+		m.log.Warn(viewUnansweredRelaunchLine, "task", pendingNumber(m.claim.Pending))
+		end, err := m.replaceProcess(ctx, "the agent did not say whether it is in a turn by the reconnect deadline of its shim's hello", ordinaryEnd, endUnanswered)
+		if end == EndNotMade {
+			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
+		}
+		return err
+	}
+	never := neverReady{
+		whose: "shim never reconnected",
+		never: "never said hello to the daemon that started",
+		line:  "supervise: the shim never reconnected after the daemon started; retired its process",
+		cause: CauseNeverReconnected,
+	}
+	why := "the shim never reconnected after the daemon started"
+	if m.connSeen == viewClosed {
+		never.never = "never said hello again after its connection closed"
+		never.line = "supervise: the shim never reconnected after its connection closed; retired its process"
+		why = "the shim never reconnected after its connection closed"
+	}
+	never.before = func(ctx context.Context) error {
+		if err := m.interrupted(ctx, why, ordinaryEnd); err != nil {
+			return fmt.Errorf("take the task back: %w", err)
+		}
+		return nil
+	}
+	return m.retireNeverReady(ctx, never)
 }

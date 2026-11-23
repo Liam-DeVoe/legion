@@ -35,15 +35,15 @@ func TestATaskQueuedBeforeReadyIsDeliveredOnceAtReady(t *testing.T) {
 	if sent.DeliveryID != queued.ID || sent.Number != 1 || sent.Message != "implement the plan" {
 		t.Errorf("took %+v, want the queued task under its number", sent)
 	}
-	if !h.pending().awaitsTurn() {
+	if !h.pending().awaitsStart() {
 		t.Error("the accepted take is not recorded on the delivery")
 	}
 	h.must(StreamTurnStart{Claim: testToken})
 	h.wantState(StateWorking)
-	if !h.pending().turnStarted() {
+	if !h.pending().startRecorded() {
 		t.Error("the turn did not start the take's turn")
 	}
-	if stored, _ := h.store.delivery(testToken); !stored.turnStarted() {
+	if stored, _ := h.store.delivery(testToken); !stored.startRecorded() {
 		t.Error("the take's turn start was not persisted")
 	}
 
@@ -155,7 +155,7 @@ func TestADeliveryToAnIdleClaimIsSentAtOnce(t *testing.T) {
 	}
 	h.must(StreamTurnStart{Claim: testToken})
 	h.wantState(StateWorking)
-	if !h.pending().turnStarted() {
+	if !h.pending().startRecorded() {
 		t.Error("the idle claim's turn did not start its take's turn")
 	}
 }
@@ -195,7 +195,7 @@ func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 			}
 			h.reach(StateReady)
 			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "row-1"})
-			if got := h.pending().awaitsTurn(); got != taken {
+			if got := h.pending().awaitsStart(); got != taken {
 				t.Fatalf("the pending delivery at ready is %+v, want the state this case is about", h.pending())
 			}
 
@@ -221,7 +221,7 @@ func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 func TestANewerTaskTakesThePlaceOfOneATurnHasTaken(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateWorking)
-	if !h.pending().turnStarted() {
+	if !h.pending().startRecorded() {
 		t.Fatalf("the pending delivery at working is %+v, want the task whose turn this is", h.pending())
 	}
 	sentBefore := len(h.prompts())
@@ -300,7 +300,7 @@ func TestAConfirmedDeliveryLeftBehindByACrashIsRetiredBeforeTheNextTask(t *testi
 	if err := h.handle(StreamTurnEnd{Claim: testToken}); !errors.Is(err, errBoom) {
 		t.Fatalf("turn end over a failing retirement returned %v, want the store's error", err)
 	}
-	if stored := h.store.load(testToken); stored.State != StateIdle || stored.Pending == nil || !stored.Pending.turnStarted() {
+	if stored := h.store.load(testToken); stored.State != StateIdle || stored.Pending == nil || !stored.Pending.startRecorded() {
 		t.Fatalf("stored %+v, want an idle claim still holding the delivery whose turn ran", stored)
 	}
 	h.store.fail("RetireDelivery", nil)
@@ -393,7 +393,7 @@ func TestAFailedGetStateLeavesARestoredTurnRunning(t *testing.T) {
 
 		h.must(StreamHello{Claim: testToken, Generation: restored.Generation})
 		h.wantState(StateWorking)
-		if p := h.claim().Pending; p == nil || p.ID != restored.Pending.ID || !p.turnStarted() {
+		if p := h.claim().Pending; p == nil || p.ID != restored.Pending.ID || !p.startRecorded() {
 			t.Fatalf("after the failed ask pending = %+v, want the turn's task kept", p)
 		}
 		h.observe(runtime.Alive)
@@ -533,7 +533,7 @@ func TestAConfirmationDoesNotSurviveHalfWritten(t *testing.T) {
 	}
 
 	stored := h.store.load(testToken)
-	if stored.State == StateWorking && (stored.Pending == nil || !stored.Pending.turnStarted()) {
+	if stored.State == StateWorking && (stored.Pending == nil || !stored.Pending.startRecorded()) {
 		t.Fatalf("the store holds a working claim whose delivery's turn is unrecorded: %+v, pending %+v",
 			stored.State, stored.Pending)
 	}
