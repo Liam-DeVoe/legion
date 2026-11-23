@@ -439,3 +439,80 @@ func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) 
 		t.Fatalf("the drain still remembers %v, want nothing", liveAhead.documents)
 	}
 }
+
+// A version's index whose block pass loses the revision fence writes no block of the version
+// (refs.BlockIndexing.Queue queues nothing for it), so its reconciliation settles nothing of the
+// forms queue either: the document's row stays owed for the next pass, as the block index's own
+// mark stays. The pass here runs at version 1, the version the document's blocks already stand
+// at with no mark, which the fence refuses. The control is the same index one version above the
+// stored one: it wins, writes its blocks and settles the row, so what kept the row owed was the
+// fence and not an index that settles nothing.
+func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
+	ctx := context.Background()
+	database, service := blockIndexService(t)
+	const markdown = "# Fenced\n\nThe plan is dispatch://CORE-1/plan.\n"
+	document := createOwedDocument(t, database, service, "CORE-1", "", "fenced", markdown, "")
+	settle(t, database, document)
+	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
+		t.Fatalf("the first tick indexed %d documents, want the fixture's one", tick.Documents)
+	}
+	if stands := blockIndexAt(t, database, document); stands == nil || *stands != 1 {
+		t.Fatalf("the document's blocks stand at %s, want version 1", standsText(stands))
+	}
+	row := "artifact " + document
+	oweForms := func() {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `
+			insert into refs_forms_owed (kind, id) values ('artifact', $1::uuid)
+			on conflict (kind, id) do update set enqueued_at = now()
+		`, document); err != nil {
+			t.Fatalf("owe the document to the forms queue: %v", err)
+		}
+	}
+	index := func(version int) bool {
+		t.Helper()
+		live, blocks, err := service.TextWithBlocks(ctx, document)
+		if err != nil {
+			t.Fatalf("read the document: %v", err)
+		}
+		var versionAt time.Time
+		if err := database.Pool.QueryRow(ctx, `
+			select created_at from artifact_versions where artifact_id = $1 and number = $2
+		`, document, version).Scan(&versionAt); err != nil {
+			t.Fatalf("read version %d: %v", version, err)
+		}
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the index of version %d: %v", version, err)
+		}
+		defer tx.Rollback(ctx)
+		_, _, won, err := service.indexRenderedVersion(ctx, tx, document, version, versionAt, live, blocks, nil)
+		if err != nil {
+			t.Fatalf("index version %d: %v", version, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the index of version %d: %v", version, err)
+		}
+		return won
+	}
+
+	oweForms()
+	if index(1) {
+		t.Fatalf("the index of version 1, the version the blocks stand at with no mark, won the fence")
+	}
+	if _, owed := formsOwedRows(t, database)[row]; !owed {
+		t.Errorf("a block pass that lost the revision fence settled the document's forms row: it wrote no block of the version, so its index is not current")
+	}
+	if stands := blockIndexAt(t, database, document); stands == nil || *stands != 1 {
+		t.Errorf("the losing pass moved the document's blocks to %s, want them at version 1", standsText(stands))
+	}
+
+	second := nextVersionRow(t, database, document, markdown)
+	oweForms()
+	if !index(second) {
+		t.Fatalf("the control pass at version %d, above the stored version 1, lost the fence", second)
+	}
+	if _, owed := formsOwedRows(t, database)[row]; owed {
+		t.Errorf("the control pass at version %d won the fence and left the forms row owed, so the losing pass proves nothing", second)
+	}
+}

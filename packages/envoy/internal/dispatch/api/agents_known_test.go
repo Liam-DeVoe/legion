@@ -115,6 +115,7 @@ func askKnownSessions(t *testing.T, handler http.Handler, ids ...string) []known
 // it holds (null where it holds none), and each ended session by the one record it left, while an
 // id no agent ever held and a person's login are absent.
 func TestKnownSessionsAnswersTheAskedSessionsWithARecordInTheOrderAsked(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	knownSessionsFixture(t, database)
 
@@ -139,6 +140,7 @@ func TestKnownSessionsAnswersTheAskedSessionsWithARecordInTheOrderAsked(t *testi
 // Each kind of record makes a session known on its own, so an ended session that left only that
 // record is answered, and an id with none is answered an empty list rather than refused.
 func TestKnownSessionsCountsEachKindOfRecordOnItsOwn(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	knownSessionsFixture(t, database)
 
@@ -178,6 +180,7 @@ func TestKnownSessionsCountsEachKindOfRecordOnItsOwn(t *testing.T) {
 // The whole batch is one statement, however many ids it names: the identity is read on the
 // untraced pool, so what is counted is the route's own work.
 func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	knownSessionsFixture(t, database)
 	counter := &roundTrips{}
@@ -213,6 +216,7 @@ func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
 // text names, no id at all, one more than the bound, and a parameter the route does not take.
 // Each bound itself is admitted, and so is the whole API's session parameter.
 func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	knownSessionsFixture(t, database)
 
@@ -261,6 +265,7 @@ func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 // The longest id the route answers for is the longest a dispatch://agent/<session id> reference
 // in text names: at it the text is a reference to that session, and one byte past it is none.
 func TestKnownSessionsLongestIDIsTheLongestAReferenceNames(t *testing.T) {
+	t.Parallel()
 	const server = "https://dispatch.test"
 	longest := strings.Repeat("s", knownSessionIDMax)
 	got := text.Extract("dispatch://agent/"+longest, server)
@@ -276,6 +281,7 @@ func TestKnownSessionsLongestIDIsTheLongestAReferenceNames(t *testing.T) {
 // GET /api/v1/agents/{session_id}/messages answers, each the same way
 // (expectSameCallersAsConversationRead).
 func TestKnownSessionsAdmitsExactlyTheCallersTheConversationReadAdmits(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	knownSessionsFixture(t, rig.database)
 	expectSameCallersAsConversationRead(t, rig, "the known-sessions read", knownActivity, knownSessionsPath(knownActivity))
