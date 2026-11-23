@@ -1694,7 +1694,7 @@ const legionDeliveryView = z.object({
  * before migration 0038; `released` is one whose idle issue pod the daemon released, which keeps
  * the claim's phase and its pending task until the next wake for its role; an `operator` and a
  * `controller` one hold against the daemon's rules, ranked in that order: the controller's
- * `resume_agent` lifts its own and never the operator's (contract 227). */
+ * `resume_agent` lifts its own and never the operator's (contract 223). */
 const legionSuspendedBy = z.enum([
   "unknown",
   "operator",
@@ -1708,7 +1708,7 @@ const legionSuspendedBy = z.enum([
  * suspend, resume_agent, compact and fresh session of one agent, named by its issue and role)
  * answer: stop, retry, suspend and resume
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`, each taking `LegionClaimRequest`, contract
- * 227): the claim's `state` after the request — `retired` after a stop; `suspended` after a
+ * 223): the claim's `state` after the request — `retired` after a stop; `suspended` after a
  * suspension that landed, and still `working` or `launching` with
  * `suspensionHeld` after one held for the agent's turn or its ready; `launching` after a resume or
  * a retry the claim's machine ran; and still `failed` or `retired` after a retry of a phase worker
@@ -1717,11 +1717,11 @@ const legionSuspendedBy = z.enum([
  * controller's own, which its `resume_agent` and the operator's resume lift; and `operator` for
  * the operator's, which only the operator lifts. These
  * routes are the one session-facing surface that names a suspender, since no plugin below
- * contract 227 calls them; the state does not ("no session-facing response carries suspendedBy"
+ * contract 223 calls them; the state does not ("no session-facing response carries suspendedBy"
  * in legion-api.test.ts). The `legion` tool hands the answer to its agent whole, which is no
  * read, so the reader takes every field as optional (`LEGION_ANSWER_READS`), `state` among them,
  * though the daemon always writes it. The three enumerations are the daemon's table's
- * (`enumerated-fields.json`, the `agent-action` rows), each whole at contract 227. */
+ * (`enumerated-fields.json`, the `agent-action` rows), each whole at contract 223. */
 export const LegionAgentActionResponse = z.object({
   state: z.enum(LEGION_CLAIM_STATES).optional(),
   suspendedBy: legionSuspendedBy.optional(),
@@ -1730,7 +1730,7 @@ export const LegionAgentActionResponse = z.object({
 });
 
 /** `api.PodUpdateRequest`, the project's controller asking the daemon to replace the pod one issue
- * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 227): its grant and the
+ * of its project runs in (`POST /legion/v1/issues/pod-update`, contract 223): its grant and the
  * issue. The daemon opens its update round over that pod as a drift opens one: each role of the
  * pod is asked to push its work and answer `ready_for_update`, and the pod is replaced once each
  * has answered, no turn runs and each role's report since its last turn names no running

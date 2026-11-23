@@ -163,13 +163,13 @@ const schemas: Record<string, z.ZodType> = {
   "issue-status.json": LegionEmptyResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
-  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 227):
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 223):
   // the claim's state after each, and who holds a suspension over the agent.
   "agent-stop.json": LegionAgentActionResponse,
   "agent-retry.json": LegionAgentActionResponse,
   "agent-suspend.json": LegionAgentActionResponse,
   "agent-resume.json": LegionAgentActionResponse,
-  // The controller's request for the replacement of one issue's pod (contract 227): the update
+  // The controller's request for the replacement of one issue's pod (contract 223): the update
   // round over it, its reasons, and whether the request opened it.
   "issue-pod-update.json": LegionPodUpdateResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -448,7 +448,7 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
   register: LegionRegisterResponse,
-  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 227):
+  // Four of the controller's six agent actions, stop, retry, suspend and resume (contract 223):
   // the claim's `state`, and who holds a suspension over it.
   "agent-action": LegionAgentActionResponse,
 };
@@ -2676,7 +2676,7 @@ const operatorSchemas: Record<string, true> = {
 /** The one session-facing exception: four of the controller's six agent actions
  * (`POST /legion/v1/agents/stop|retry|suspend|resume`) answer who holds a suspension,
  * because those routes are where the caller reads whether its own resume_agent lifts it. The
- * reason the guard exists does not reach them: they arrived with contract 227, so only a plugin at
+ * reason the guard exists does not reach them: they arrived with contract 223, so only a plugin at
  * that contract or later calls them, and no reader of these bodies predates the key. The schema
  * and the four fixtures it pins are named here, and nothing else; a new session-facing body that
  * names a suspender still fails the walk below. */
@@ -2728,7 +2728,7 @@ function schemaKeys(
 // session reads whatever this daemon serves with the schema of its own contract, so a key no
 // older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
 // and is dropped at every plugin after it, which loses the field rather than the body.
-// `suspendedBy` is served to the operator's bearer and, from contract 227, to the controller's four
+// `suspendedBy` is served to the operator's bearer and, from contract 223, to the controller's four
 // agent actions (agentActionSchemas), and nowhere else; this holds that for every schema the
 // module exports, present and future.
 test("no session-facing response carries suspendedBy", () => {

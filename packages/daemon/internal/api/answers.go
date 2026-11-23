@@ -206,16 +206,16 @@ var Answers = []Answer{
 	// version.go's 178: the pause the controller's resume ended and how many held rows it let out
 	// (`api.ProjectResumeResponse`), arrived with its route as the pause's answer did.
 	{ID: AnswerProjectResume, Routes: []string{"POST /legion/v1/project/resume"}, Since: pauseContract},
-	// version.go's 227: the claim's state after one of the controller's four agent actions on the
+	// version.go's 223: the claim's state after one of the controller's four agent actions on the
 	// `agents/` routes (`api.AgentActionResponse`). The routes arrive with the answer, so no
-	// contract below 227 records either.
+	// contract below 223 records either.
 	{ID: AnswerAgentAction, Routes: []string{
 		"POST /legion/v1/agents/stop",
 		"POST /legion/v1/agents/retry",
 		"POST /legion/v1/agents/suspend",
 		"POST /legion/v1/agents/resume",
 	}, Since: agentActionsContract},
-	// version.go's 227: the update round the controller's pod update opened or found open over
+	// version.go's 223: the update round the controller's pod update opened or found open over
 	// the issue's pod (`api.PodUpdateResponse`), arrived with its route as the agent actions'
 	// answer did.
 	{ID: AnswerPodUpdate, Routes: []string{"POST /legion/v1/issues/pod-update"}, Since: agentActionsContract},
