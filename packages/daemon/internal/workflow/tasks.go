@@ -122,15 +122,14 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			continue
 		}
 		// The step's text names the pull request of its own task (taskPullRequest), none for a task
-		// that has not opened one. The gate's opening names none: the work starts there, as the move
-		// out of admitted always told it, and no task of a plan of several holds a pull request
-		// before its first start (record.StoredPlan.TasksOfBranch).
-		var pr *record.PullRequest
-		var err error
-		if trigger != TriggerGateOpened {
-			if pr, err = e.taskPullRequest(ctx, tx, s); err != nil {
-				return record.Issue{}, err
-			}
+		// that has not opened one, read once as the task stands before its start, at the gate's
+		// opening too: no task of a plan of several holds a pull request on the issue's branch before
+		// its first start, and the task of a plan of one, which takes that branch, holds the one
+		// there (record.StoredPlan.TasksOfBranch). The start names that row, and the merge forward
+		// that follows the start reads it, with no read of their own.
+		pr, err := e.taskPullRequest(ctx, tx, s)
+		if err != nil {
+			return record.Issue{}, err
 		}
 		from := s.issue.Phase
 		if err := e.moveTask(ctx, tx, &s, steps[0], first, record.TaskRunning); err != nil {
@@ -163,8 +162,8 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return record.Issue{}, err
 		}
 		view := s.issue
-		if err := e.start(ctx, tx, s, role, func(at Standing) string {
-			return task(view, at, record.PhaseRow{}, pr, "")
+		if err := e.start(ctx, tx, s, role, readPull(pr), func(at Standing) string {
+			return task(view, at, record.PhaseRow{}, "")
 		}, false); err != nil {
 			return record.Issue{}, err
 		}
@@ -175,7 +174,7 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 				}
 			}
 		}
-		if err := e.mergeForwardOnEntry(ctx, tx, s, from); err != nil {
+		if err := e.mergeForwardOnEntry(ctx, tx, s, from, pr); err != nil {
 			return record.Issue{}, err
 		}
 	}
