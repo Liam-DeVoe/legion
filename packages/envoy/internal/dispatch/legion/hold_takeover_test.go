@@ -663,3 +663,55 @@ func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *test
 		})
 	}
 }
+
+// TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead: judge's boot rule (rows 3.5 and
+// 5.7) calls for a store read of a boot of a store the cursor drops only while the cursor follows
+// the setting's URL in a store a read verified. While the URL a write named is unverified, the
+// cursor holds no store, and a boot of the store the setting named before is a message of that
+// store like any other (rows 4.3 and 4.4): it is finished unapplied, logged as dropped, holds no
+// read, and calls for the owed read only where it is due. Each subtest writes INFRA's setting
+// naming a URL whose reads all fail, and then INFRA's daemon named before restarts and publishes a
+// boot of its store, once before the owed read is due and once after.
+func TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		due  bool
+		// served is how many reads the URL the write named serves: the write's failed starting
+		// read, and the owed read where it is due.
+		served int
+	}{
+		{"before the owed read is due", false, 1},
+		{"once the owed read is due", true, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unverified := newFakeDaemon(t, "")
+			unverified.refuses(http.StatusServiceUnavailable)
+			rig := newIntakeRig(t)
+			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+			rig.start()
+			rig.awaitStartingRead("INFRA")
+			if _, err := PutSettings(t.Context(), rig.database.Pool, "INFRA", unverified.URL, model.Actor{Kind: "user", ID: "alice@example.com"}); err != nil {
+				t.Fatalf("point INFRA at a URL whose reads fail: %v", err)
+			}
+			rig.wake <- struct{}{}
+			rig.awaitWholeReads(2)
+			if tc.due {
+				rig.clock.advance(ReadRetryAfter + time.Second)
+			}
+			rig.publish("INFRA", booted(11, stateSchema, 2))
+			if drops := rig.awaitLogRecords(forgottenLine, 1); len(drops) != 1 || drops[0]["stateId"] != rigStateID {
+				t.Errorf("the drops logged = %v, want one, of the boot of the store %s the setting named before", drops, rigStateID)
+			}
+			if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return unverified.served() > tc.served }) {
+				t.Errorf("the URL the write named served %d reads, want %d: the boot of the store the setting named before made a read of its own", unverified.served(), tc.served)
+			}
+			if c := cursorOf(t, rig.database, "INFRA"); c.readHolder != nil || c.readHolds != 0 || c.stateID != nil || !slices.Equal(c.readReasons, []string{ReadReasonRetry}) {
+				t.Errorf("INFRA's cursor is %s, want the read owed for retry alone, no holder and no store: the boot of the store the setting named before holds the read", c)
+			}
+			if held := rig.logRecords(heldLine); len(held) != 0 {
+				t.Errorf("the messages sent back = %v, want none: no message of the store the setting named before holds the read", held)
+			}
+		})
+	}
+}
