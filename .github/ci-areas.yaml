@@ -38,10 +38,10 @@ worker-image:
   - '!skills/AGENTS.md'
   - &wiw .github/workflows/worker-image.yaml # own
 kind: # kind-image and kind. build: kind-image builds worker.Dockerfile as worker-image.yaml's build
-  # does; pkg+mod: kind's go test in packages/daemon; test: kind-sandbox.sh, operator-route/*.yml;
-  # own
+  # does; pkg+mod: kind's go test in packages/daemon; test: kind-sandbox.sh, operator-route/*.yml,
+  # the leak guard step; own
   [*pd, *pe, *gw, *ni, *b1, *b2, *b3, *b4, *b5, *b6, *b7, *b8, *c1, *c2, *c3, *p1, *p2, *cc, *cl, *sk, *pp, *tpn, *omp, *di,
-   &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**]
+   *lg, &e2l scripts/e2e/lib/**, &k8s deploy/kubernetes/**, &o1 .github/actions/kind/**]
 go-daemon:
   - &dm [*pd, *pe, *gw, *ni] # pkg+mod go-test.sh ./... in packages/daemon, which requires packages/envoy
   - [*omp, *b3] # test install-omp, setup-bun
@@ -123,6 +123,7 @@ go-envoy:
   - [*bun, *tsp, *cc, *cl, *plug, *tf] # pkg+ws envoy-session-stall
   - [packages/proof-editor/**, packages/dispatch/web/src/features/refs/__fixtures__/**] # test parity-fuzz.ts
   - [*sk, *omp, .claude-code-pin, packages/daemon/docker/worker.Dockerfile, packages/dispatch/e2e/fake-*.ts, packages/dispatch/e2e/harness-ports.ts] # test session-stall's rig
+  - *dsp # test read-token-live.ts, the dispatch:local stack it reads
   - [*scr, *dsa, *tgt] # test spec-check guard, architecture-check, build-envoy-command.sh
   - *gh # test spec-check guard; own go-envoy/**
 text-checks: # credential_argument_test.go reads every text file

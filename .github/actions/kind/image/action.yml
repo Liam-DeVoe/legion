@@ -6,8 +6,10 @@ description: >-
   publishing nothing: the image goes into a docker archive, which each leg of the kind job
   downloads as the artifact kind-image-worker-image. The kind job runs on a merge group and on a
   dispatched run with the kind-and-agent-harness input, never on a pull request, so no run of it
-  has a worker-image build of its own head to take the image from. The kind filter of
-  .github/ci-areas.yaml names every file the build reads.
+  has a worker-image build of its own head to take the image from. Before the upload, the leak
+  guard's test (scripts/e2e/leak-guard-image-probe.sh) runs in the image, as worker-image.yaml's
+  step after its build runs it. The kind filter of .github/ci-areas.yaml names every file the
+  build and that test read.
 runs:
   using: composite
   steps:
@@ -49,6 +51,23 @@ runs:
           LEGION_PROBE_SKIP_TLS=1
         secrets: |
           github_token=${{ github.token }}
+
+    # The leak guard's test inside the image this job built, as worker-image.yaml's step after its
+    # build runs it on the pushed digest: the image's `git` and `jj` wrappers send each push
+    # through the pre-push hook to `legion leak-check`, and a run with the wrappers taken off PATH
+    # is its control (the probe's header says what each arm holds). The archive is loaded into the
+    # runner's Docker, and the image runs by the tag the build gave it, never pulled, as the user
+    # it names, one CHECK line per check.
+    - name: Leak guard test of the built image
+      shell: bash
+      env:
+        ARCHIVE: ${{ runner.temp }}/worker-image.tar
+        KIND_WORKER_IMAGE: legion-worker:kind
+      run: |
+        docker load --input "$ARCHIVE"
+        docker run --rm --pull never --entrypoint /bin/bash \
+          --volume "$GITHUB_WORKSPACE/scripts/e2e/leak-guard-image-probe.sh:/probe/leak-guard-image-probe.sh:ro" \
+          "$KIND_WORKER_IMAGE" /probe/leak-guard-image-probe.sh
 
     # Layers a docker archive holds are compressed already, so the artifact stores them as they
     # are. A day is long enough for a re-run of the leg that reads it. The name holds no run

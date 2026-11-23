@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The test of the worker image's leak guard, run inside the image ci.yaml's worker-image job has
-# just built: that job's step after the build runs it with `docker run` on the pushed digest. The
+# The test of the worker image's leak guard, run inside an image ci.yaml has just built: the step
+# of the worker-image job after its build runs it with `docker run` on the pushed digest, and the
+# step of the kind-image job after its build on the image it loaded from its archive. The
 # image's `git` and `jj` wrappers must send every push through the root-owned pre-push hook to
 # `legion leak-check`, so that a push naming a private host is refused under `git push` and under
 # each shape of `jj git push`, and a push naming nothing lands (k1 of dispatch://INFRA-1527), and

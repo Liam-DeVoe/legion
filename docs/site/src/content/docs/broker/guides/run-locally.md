@@ -447,6 +447,23 @@ sends such a token to every route Dispatch mounts. The `envoy-go-checks` job run
 `packages/envoy/scripts/dev-broker.test.sh`, which holds that this script writes the read entry's
 pod token and names it in its banner.
 
+The `envoy-session-stall` leg of the `go-envoy` job holds both halves at once, with
+`packages/dispatch/e2e/read-token-live.ts`. On its runner it starts this script and a
+`bun run dispatch:local` Dispatch that reads this broker, as the steps below do, and the script
+seeds the project `EXAMPLE` with an architecture source and an issue. It then sends three
+requests with the read entry's token, reads the issue's comments as alice, and sends the same
+comment with the example entry's token, which may write `EXAMPLE`. The leg's log prints one line
+per answer, and a line that starts `FAIL` fails the leg:
+
+```text
+seeded EXAMPLE: architecture source example/arch, issue EXAMPLE-1
+ok   GET /api/v1/projects/EXAMPLE/architecture [read-only token]: 200 - (want 200)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /api/v1/issues/EXAMPLE-1/comments [alice]: 0 comment(s) with this run's body (want 0)
+ok   GET /api/v1/issues/EXAMPLE-1 [read-only token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   POST /api/v1/issues/EXAMPLE-1/comments [named-project token]: 201 - (want 2xx)
+```
+
 To use the token against a Dispatch of your own, leave the stack running. `bun run dispatch:local`
 runs until Ctrl-C, so it takes a shell of its own: open a new one and paste the dev broker's
 exports into it too, as you pasted them into the second shell. A shell without them expands

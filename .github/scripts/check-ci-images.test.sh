@@ -163,6 +163,17 @@ jobs:
     steps:
       - run: docker run --rm "\$REF" /probe/leak-guard-image-probe.sh
 YAML
+  # The kind-image job runs the same probe in the image it built and loaded by its local tag, the
+  # entry IMAGE_FROM holds for its action, so the fixture carries that command too.
+  mkdir -p "$root/.github/actions/kind/image"
+  cat > "$root/.github/actions/kind/image/action.yml" <<YAML
+name: Build the worker image the kind legs test
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: docker run --rm --pull never "\$KIND_WORKER_IMAGE" /probe/leak-guard-image-probe.sh
+YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
 name: Pull the images tests start
 description: Pull the images the tests start.

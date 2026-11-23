@@ -636,6 +636,11 @@ driver pulls BuildKit's row of .github/ci-images.yaml, and carries `!cancelled()
 tool-fallback does, so a ci-images job that `changes` skipped holds nothing back. It is the
 `kind / image` part it was, named by its matrix, and reads the kind output.
 
+Before the upload it runs scripts/e2e/leak-guard-image-probe.sh in the image it built, as
+worker-image.yaml's step after its build does: a merge group has no worker-image job, so this is
+where it tests the leak guard of the image its kind legs run. The docker load that step needs
+costs the kind chain its time.
+
 ## The kind job and its legs
 
 The kind rig: legs that each bring up a kind cluster on the runner with Agent Sandbox's controller
@@ -1122,6 +1127,13 @@ so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane 
 envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
+
+The read-only token's live proof rides this leg too: packages/dispatch/e2e/read-token-live.ts
+against the two stacks its header names, the dev broker (packages/envoy/scripts/dev-broker.sh, on
+the job's Postgres through DEV_BROKER_POSTGRES_URL, so no Docker) and a `bun run dispatch:local`
+Dispatch that reads it. It needs the Postgres, Go, psql and Bun this leg already sets up. The
+go-envoy filter names packages/dispatch/**, the script, its helpers, and the SPA and e2e harness
+that Dispatch builds and runs.
 
 ## What the lint leg holds the CI layout and every workflow file to
 

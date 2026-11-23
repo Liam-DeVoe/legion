@@ -2,11 +2,12 @@ name: envoy-session-stall
 description: >-
   The envoy-session-stall leg of ci.yaml's go-envoy job, which carries that old check-run name: the
   session-stall suites of envoy-client, pi-envoy and claude-envoy against a real natsd and listener,
-  the session state rig, the role takeover smoke, and the real `dispatch` CLI and Dispatch server
-  proofs, on the job's Postgres. The leg runs on ubuntu-24.04 (x86_64): the pinned Oh My Pi the
-  session rig's third part runs ships linux-x64 alone. LEGION_E2E_ENVOY_STACK and
-  LEGION_E2E_DISPATCH_STACK select the suites that start the envoy and Dispatch stacks, and
-  DISPATCH_TEST_DATABASE_URL names the job's Postgres; each step that runs a suite carries them.
+  the session state rig, the role takeover smoke, the real `dispatch` CLI and Dispatch server
+  proofs, and a read-only token of the dev broker against a local Dispatch, on the job's Postgres.
+  The leg runs on ubuntu-24.04 (x86_64): the pinned Oh My Pi the session rig's third part runs
+  ships linux-x64 alone. LEGION_E2E_ENVOY_STACK and LEGION_E2E_DISPATCH_STACK select the suites
+  that start the envoy and Dispatch stacks, and DISPATCH_TEST_DATABASE_URL names the job's
+  Postgres; each step that runs a suite carries them.
 inputs:
   postgres:
     description: The id of the job's Postgres service container (ci.yaml's `job.services.postgres.id`).
@@ -153,7 +154,8 @@ runs:
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: bun test src/__tests__/approved-version-bytes.live.test.ts
     # The two Dispatch proofs below each reset a database of their own on the job's Postgres,
-    # through psql, which this runner may not carry.
+    # through psql, which this runner may not carry, and so does the read-only token's Dispatch
+    # stack; the dev broker beside it creates its own database through psql too.
     - name: Install psql and create the Dispatch proofs' databases
       shell: bash
       env:
@@ -161,7 +163,7 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends postgresql-client
-        for database in claimant_delivery verification_results; do
+        for database in claimant_delivery verification_results read_token_live; do
           psql "$DISPATCH_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c "create database $database"
         done
     # Dispatch's outbox publishes a person's answer, comment or untargeted message on a claimed
@@ -208,3 +210,73 @@ runs:
         LEGION_E2E_DISPATCH_STACK: "1"
         DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       run: bun test src/__tests__/dispatch-keyed-resend-live.test.ts
+    # A read-only token the dev broker mints reads Dispatch's architecture route and nothing else,
+    # and the example entry's token still writes: packages/dispatch/e2e/read-token-live.ts, whose
+    # header says what it seeds and sends, against the dev broker (dev-broker.sh) on the job's
+    # Postgres and a `bun run dispatch:local` Dispatch that reads that broker, both built from this
+    # tree and started as the script's header says. Each stack runs in a process group of its own,
+    # which the step stops on its way out, and its log follows the script's lines in a group. The
+    # broker's address, its caller token and its work directory are what its banner exports.
+    - name: Read-only token of the dev broker against a local Dispatch
+      shell: bash
+      working-directory: packages/dispatch
+      env:
+        DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      run: |
+        logs=$(mktemp -d "$RUNNER_TEMP/read-token-live.XXXXXX")
+        broker_pid=""
+        dispatch_pid=""
+        stop() {
+          local pid name
+          for pid in "$dispatch_pid" "$broker_pid"; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+              kill -TERM -- "-$pid" 2>/dev/null || true
+              wait "$pid" 2>/dev/null || true
+            fi
+          done
+          for name in dev-broker dispatch-local; do
+            echo "::group::$name log"
+            cat "$logs/$name.log" 2>/dev/null || true
+            echo "::endgroup::"
+          done
+        }
+        trap stop EXIT
+        # await <what> <seconds> <log> <grep -E pattern> <pid>, as dev-airlock.sh's: it fails the
+        # step the moment the process ends, or once the bound passes without the line.
+        await() {
+          local waited=0
+          while [ "$waited" -lt "$(($2 * 2))" ]; do
+            if grep -qE "$4" "$3" 2>/dev/null; then return 0; fi
+            if ! kill -0 "$5" 2>/dev/null; then
+              echo "::error::$1 ended before it was up; its log is below"
+              exit 1
+            fi
+            sleep 0.5
+            waited=$((waited + 1))
+          done
+          echo "::error::$1 was not up within $2 s; its log is below"
+          exit 1
+        }
+        # The six builds take minutes on a cold build cache.
+        DEV_BROKER_POSTGRES_URL=$DISPATCH_TEST_DATABASE_URL \
+          setsid bash ../envoy/scripts/dev-broker.sh >"$logs/dev-broker.log" 2>&1 &
+        broker_pid=$!
+        await dev-broker.sh 600 "$logs/dev-broker.log" '^dev-broker: ready\.$' "$broker_pid"
+        broker_url=$(sed -n 's/^  export AGENT_SECRETS_URL=//p' "$logs/dev-broker.log")
+        account_token_file=$(sed -n 's/^  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=//p' "$logs/dev-broker.log")
+        broker_dir=$(sed -n 's/^  export DEV_BROKER_DIR=//p' "$logs/dev-broker.log")
+        if [ -z "$broker_url" ] || [ -z "$account_token_file" ] || [ -z "$broker_dir" ]; then
+          echo "::error::dev-broker.sh's banner exports no AGENT_SECRETS_URL, AGENT_SECRETS_ACCOUNT_TOKEN_FILE or DEV_BROKER_DIR"
+          exit 1
+        fi
+        # The web build, the server build and the seed; the last line of its banner ends the wait.
+        DATABASE_URL="${DISPATCH_TEST_DATABASE_URL%/*}/read_token_live?sslmode=disable" \
+          DISPATCH_E2E_AGENT_SECRETS_URL=$broker_url \
+          DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$account_token_file \
+          setsid bun run dispatch:local >"$logs/dispatch-local.log" 2>&1 &
+        dispatch_pid=$!
+        await "bun run dispatch:local" 600 "$logs/dispatch-local.log" '^Press Ctrl-C to stop\.$' "$dispatch_pid"
+        # The ports its "Run a spec against it" line prints, each a NAME=port word of that line.
+        mapfile -t ports < <(grep -m1 '^    DISPATCH_E2E_REUSE_SERVERS=1 ' "$logs/dispatch-local.log" | tr ' ' '\n' | grep -E '^[A-Z0-9_]+_PORT(_[AB])?=[0-9]+$')
+        env "${ports[@]}" AGENT_SECRETS_URL="$broker_url" DEV_BROKER_DIR="$broker_dir" \
+          timeout 300 bun e2e/read-token-live.ts
