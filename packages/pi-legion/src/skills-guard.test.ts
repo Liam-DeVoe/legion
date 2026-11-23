@@ -748,7 +748,8 @@ test("an implementer and tester task gives the reviewer's body lines and bot thr
       /no reviewer step[^.;]*retro[^.;]*Not proven \/ risk/,
     ]),
     ...lacks("legion-worker/references/review-threads.md", [
-      /no reviewer step[^.;]*implementer lists unresolved bot threads[^.;]*retro/,
+      /no reviewer step[^.;]*implementation step lists unresolved bot threads[^.;]*retro's agent does at retro/,
+      /`gh` acts as the implement App only while it does an implementation step, not at its retro/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
       /no reviewer step[^.;]*no Legion approval/,
