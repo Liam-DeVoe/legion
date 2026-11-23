@@ -273,6 +273,21 @@ func (v IdleView) QuietSince() (time.Time, bool) {
 	return newest, !newest.IsZero()
 }
 
+// NewestTurnStart is the newest turn start of the pod's claims (IdleClaim.LastTurnStart), zero
+// where none has had a turn. It is the one moment the idle rules weigh a later turn against: a
+// release's mark records it (store's issue_releases.turn_start), and a left pod's close carries it
+// in its workspace check and its stops (record.IssueWorkspaceCheck.TurnStart). A claim whose turn
+// started after it is the pod given work since, which cancels the release and holds the close.
+func (v IdleView) NewestTurnStart() time.Time {
+	var newest time.Time
+	for _, c := range v.Claims {
+		if c.LastTurnStart.After(newest) {
+			newest = c.LastTurnStart
+		}
+	}
+	return newest
+}
+
 // The two reasons the idle release's check declines a release (store's idle_release_declines,
 // internal/daemon's checkIssueWorkspace): the workspace holds work that no branch or tag on origin
 // holds, or the check could not read the workspace and so cannot say that it holds none.

@@ -2811,6 +2811,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil
 		}
+		// The suspend of a left pod's close is fenced on the turn start its workspace check read
+		// (record.SuperviseRequest.TurnStart): a turn of the claim that started after it may have
+		// made work the check's read did not see, so the stop finishes without acting, as a
+		// release's role stop is cancelled by a turn after its mark. The claim stays live in its
+		// pod, the close's Sandbox suspension waits for it (store.IssueSuspension), and the next
+		// idle pass decides the close again with a read of its own (workflow.LeftPodClose).
+		if fence, turned := payload.TurnStart, machine.Claim().LastTurnStart; fence != nil && turned.After(*fence) {
+			r.log.Info("outbox suspend of a left pod's close held: the claim started a turn after the close's check; finished without acting",
+				"row", row.ID, "issue", issue.Key, "role", payload.Role, "turn-start", turned, "check-turn-start", *fence)
+			return nil
+		}
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}

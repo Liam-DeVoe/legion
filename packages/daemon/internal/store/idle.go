@@ -298,18 +298,17 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 		if boundary == 0 {
 			return fmt.Errorf("the release of %s named no boundary row", issue)
 		}
-		// The newest start row and the newest turn of the pod's claims: a start row above the one
-		// or a turn after the other is the pod given work since this mark (releaseOvertaken). The
-		// turn is the supervisor's own stamp (claims.last_turn_start), so the two compare on one
-		// clock; null where no claim has had a turn.
+		// The newest start row and the newest turn of the pod's claims (pods.IdleView.NewestTurnStart):
+		// a start row above the one or a turn after the other is the pod given work since this mark
+		// (releaseOvertaken). The turn is the supervisor's own stamp (claims.last_turn_start), so the
+		// two compare on one clock; null where no claim has had a turn.
 		var started int64
-		var turned *time.Time
 		for _, c := range view.Claims {
 			started = max(started, c.LastStartRow)
-			if !c.LastTurnStart.IsZero() && (turned == nil || c.LastTurnStart.After(*turned)) {
-				turn := c.LastTurnStart
-				turned = &turn
-			}
+		}
+		var turned *time.Time
+		if newest := view.NewestTurnStart(); !newest.IsZero() {
+			turned = &newest
 		}
 		// The newest wake this pod has had: a wake recorded above it is one this release never
 		// saw, and cancels it (releaseOvertaken).

@@ -469,22 +469,22 @@ func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDec
 // LeftPodCloseAfterCheck decides, once the close's workspace check has read the workspace and found
 // nothing that origin does not hold, whether the close still stops the pod's roles and suspends its
 // Sandbox (internal/daemon's checkLeftPodWorkspace). turnStart is the newest turn start of the
-// issue's claims in the view the pass queued the check from (record.IssueWorkspaceCheck.TurnStart).
-// It reads every conjunct of LeftPodClose but three: the check is the one queued, the quiet period
-// was read when the check was queued, and the read it made is newer than any decline on record. A
-// claim of the issue that started a turn after turnStart may have made work the read did not see:
-// a turn that starts before the read and ends while it runs commits after the read's snapshot, and
-// the read's own moment does not show it. So the close waits for the next pass and its next read
-// (IdleHoldNotIdle), as a release's role stop is cancelled by a turn after its mark.
+// issue's claims in the view the pass queued the check from (record.IssueWorkspaceCheck.TurnStart,
+// pods.IdleView.NewestTurnStart). It reads every conjunct of LeftPodClose but three: the check is
+// the one queued, the quiet period was read when the check was queued, and the read it made is
+// newer than any decline on record. A claim of the issue that started a turn after turnStart may
+// have made work the read did not see: a turn that starts before the read and ends while it runs
+// commits after the read's snapshot, and the read's own moment does not show it. So the close waits
+// for the next pass and its next read (IdleHoldNotIdle), as a release's role stop is cancelled by a
+// turn after its mark. A turn that starts after this decision holds the close's stop of its role
+// instead (record.SuperviseRequest.TurnStart).
 func LeftPodCloseAfterCheck(view pods.IdleView, turnStart time.Time) IdleDecision {
 	decision := leftPodStops(view)
 	if !decision.Close {
 		return decision
 	}
-	for _, c := range view.Claims {
-		if c.LastTurnStart.After(turnStart) {
-			return IdleDecision{Hold: IdleHoldNotIdle}
-		}
+	if view.NewestTurnStart().After(turnStart) {
+		return IdleDecision{Hold: IdleHoldNotIdle}
 	}
 	return decision
 }

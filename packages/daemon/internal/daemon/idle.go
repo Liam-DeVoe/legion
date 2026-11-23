@@ -630,20 +630,14 @@ func idleReleaseRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 // (store.IdleReleaseMark.Close).
 func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
 	if len(decision.Roles) == 0 {
-		return leftPodStopRows(view, decision, now)
+		return leftPodStopRows(view, decision, now, nil)
 	}
 	told := decision.Roles[0]
 	if open := workflow.OpenPhaseRole(view.Phase); slices.Contains(decision.Roles, open) {
 		told = open
 	}
-	var turnStart time.Time
-	for _, c := range view.Claims {
-		if c.LastTurnStart.After(turnStart) {
-			turnStart = c.LastTurnStart
-		}
-	}
 	row, err := record.NewOutboxRow(view.Issue, record.IssueWorkspaceCheck{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, Role: told, CloseRoles: decision.Roles, TurnStart: turnStart}, now)
+		TreeGeneration: view.Root.Generation, Role: told, CloseRoles: decision.Roles, TurnStart: view.NewestTurnStart()}, now)
 	if err != nil {
 		return store.IdleReleaseMark{}, fmt.Errorf("encode the workspace check of %s's close: %w", view.Issue, err)
 	}
@@ -656,14 +650,15 @@ func leftPodCloseRows(view pods.IdleView, decision workflow.IdleDecision, now ti
 // (leftPodStopRows) over a view read again in the store's transaction, where the close still
 // stands there and no claim started a turn after turnStart, the newest turn start of the pass that
 // queued the check (record.IssueWorkspaceCheck.TurnStart, workflow.LeftPodCloseAfterCheck), and no
-// rows where it does not.
+// rows where it does not. Each stop carries turnStart on, so a turn that starts after this decision
+// and before the lane runs the stop holds it (record.SuperviseRequest.TurnStart).
 func leftPodStopsAfterCheck(now, turnStart time.Time) func(pods.IdleView) (store.IdleReleaseMark, error) {
 	return func(view pods.IdleView) (store.IdleReleaseMark, error) {
 		decision := workflow.LeftPodCloseAfterCheck(view, turnStart)
 		if !decision.Close {
 			return store.IdleReleaseMark{}, nil
 		}
-		return leftPodStopRows(view, decision, now)
+		return leftPodStopRows(view, decision, now, &turnStart)
 	}
 }
 
@@ -672,8 +667,9 @@ func leftPodStopsAfterCheck(now, turnStart time.Time) func(pods.IdleView) (store
 // for the daemon with its session kept, and then the issue's Sandbox suspension
 // (record.IssueSuspend), which deletes the Sandbox, the pod and the disk once every role has
 // stopped (store.IssueSuspension). A pod with a live claim reaches it only through the workspace
-// check (leftPodCloseRows, checkLeftPodWorkspace).
-func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time) (store.IdleReleaseMark, error) {
+// check (leftPodCloseRows, checkLeftPodWorkspace), whose turn start each `suspend` carries as
+// turnStart (record.SuperviseRequest.TurnStart); nil where no claim is live and nothing is stopped.
+func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now time.Time, turnStart *time.Time) (store.IdleReleaseMark, error) {
 	mark := store.IdleReleaseMark{Generation: view.Generation, Close: true}
 	add := func(payload record.OutboxPayload) error {
 		row, err := record.NewOutboxRow(view.Issue, payload, now)
@@ -686,7 +682,7 @@ func leftPodStopRows(view pods.IdleView, decision workflow.IdleDecision, now tim
 	reason := fmt.Sprintf("%s left the workflow, and its pod has been idle for the release period", view.Issue)
 	for _, role := range decision.Roles {
 		if err := add(record.SuperviseRequest{Op: "suspend", Tree: view.Tree, Role: role,
-			Generation: view.Generation, Reason: reason}); err != nil {
+			Generation: view.Generation, Reason: reason, TurnStart: turnStart}); err != nil {
 			return store.IdleReleaseMark{}, err
 		}
 	}

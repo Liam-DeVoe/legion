@@ -7851,6 +7851,7 @@ A read that fails keeps the work the read before it found, and the role it told.
 A whole turn that starts after the release's mark cancels the release at its workspace check, at a role stop or at the teardown:
 the mark records the newest turn of the pod's claims (`issue_releases.turn_start`), and a later one is the pod given work since.
 The close of a left pod likewise stops no role after a clean read where a claim started a turn after the pass that queued its check: the check carries that pass's newest turn start, so a turn that began before the read and ended while it ran holds the close too.
+Each `suspend` the close then queues carries that turn start too, so a role whose turn starts after the check decided and before the lane runs its stop is not stopped: the stop finishes without acting, the close's Sandbox suspension waits for the live role, and the next idle pass reads the workspace again.
 Before this release, the daemon saved the workspace's unpushed work as a git bundle in its database and restored it into the next pod;
 nothing reads or writes such a bundle now ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)).
 On an ephemeral disk nothing else is kept:
@@ -7959,7 +7960,7 @@ For each row of `select issue, release_id, size_bytes from workspace_bundles`, w
 Then tell the roles of each such issue, through Dispatch, where their copied work is: a role the earlier daemon released wakes on this release with no bundle restored, and its wake task and its plugin's notice say only that an idle release made by a release before this one lost the work it had not pushed.
 
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
-A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`) is no row the release before can read, so let the outbox run dry of `issue_bundle` rows first: `select count(*) from outbox where kind = 'issue_bundle'` prints 0.
+A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`) is no row the release before can read, and nor is that close's `suspend`, whose payload names `turnStart`, so let the outbox run dry of both first: `select count(*) from outbox where kind = 'issue_bundle' or (kind = 'supervise' and payload ? 'turnStart')` prints 0.
 It is the last paragraph of the migration's header, and the two say the same statements:
 
 ```sh

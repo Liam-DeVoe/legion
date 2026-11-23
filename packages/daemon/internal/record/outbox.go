@@ -1254,6 +1254,18 @@ type SuperviseRequest struct {
 	Linger uint64 `json:"linger,omitempty"`
 	// Reason is why a suspend stops the claim, for the line the suspended claim logs.
 	Reason string `json:"reason,omitempty"`
+	// TurnStart fences the `suspend` of a left pod's close on a turn: it is the newest turn start
+	// of the issue's claims in the view the pass queued the close from, as the close's workspace
+	// check carried it (IssueWorkspaceCheck.TurnStart), the zero moment where none had had a turn.
+	// The suspend of a claim whose last turn started after it finishes without acting (the daemon
+	// outbox's suspend), since that turn may have made work the check's read did not see, as a
+	// release's role stop is cancelled by a turn after its mark (issue_releases.turn_start). The
+	// claim stays live, the close's Sandbox suspension waits for it (store.IssueSuspension), and
+	// the next idle pass decides the close again. Every other request carries none: nil is no
+	// fence, and the zero moment is a fence that any turn passes. A release before this field
+	// refuses a row that carries it (DisallowUnknownFields), so a rollback waits for such rows to
+	// run (docs/kubernetes.md, "Rolling back the release that keeps no saved workspace").
+	TurnStart *time.Time `json:"turnStart,omitempty"`
 	// CheckLook is the look of the issue's production check a start starts, 0 for a phase start.
 	// A check start runs after the close, where the issue has no phase and its tree may linger, so
 	// the outbox fences it on the open check and its look (the row acts only while the check is
@@ -1347,10 +1359,12 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // CloseRoles is a release's, and its JSON is the one an earlier release wrote.
 //
 // TurnStart, on a close's row, is the newest turn start of the issue's claims in the view the pass
-// queued the close from (pods.IdleClaim.LastTurnStart), zero where none had had a turn: the close
-// stops no role after a turn that started since (workflow.LeftPodCloseAfterCheck), as a release's
-// mark holds the same moment for its own stops (issue_releases.turn_start). A release's row leaves
-// it zero, since its mark holds it.
+// queued the close from (pods.IdleView.NewestTurnStart), zero where none had had a turn: the close
+// stops no role after a turn that started since, as a release's mark holds the same moment for its
+// own stops (issue_releases.turn_start). The check holds the close on a turn before its decision
+// (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
+// (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
+// release's row leaves it zero, since its mark holds it.
 type IssueWorkspaceCheck struct {
 	Tree           string       `json:"tree"`
 	Generation     uint64       `json:"generation"`
@@ -2459,6 +2473,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
+		}
+		if value.TurnStart != nil && value.Op != "suspend" {
+			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
 		}
 	case RoleMessage:
 		if value.Role == "" {
