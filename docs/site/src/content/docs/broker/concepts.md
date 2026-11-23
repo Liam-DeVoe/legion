@@ -1168,7 +1168,7 @@ The broker evaluates every name
   same setting binds the secret to its account, with the same refusals, and the same `requesters`
   rule holds, but the type is human tier alone (`type-human-tier`), so no session gets a grant of
   it without asking, and a person approves every release of it: the model judge decides none,
-  whatever seconds a profile's `proxy` block gives the name ([The model judge](#the-model-judge)).
+  whatever seconds its `judge` tag gives the judge ([The model judge](#the-model-judge)).
   The federation rule's `token_lifetime_seconds` must be 3600 or less, since a grant of the secret
   lasts an hour at most; the broker refuses a longer token, naming that setting. The minted value
   expires at the token's own end, which the airlock's proxy reads to mint again five minutes before
@@ -1845,7 +1845,7 @@ Every run ends the request one of three ways:
 For a request the judge decides, a lifetime longer than a judge key's seconds, or than 15 minutes,
 is refused when the request is written, naming the `--ttl` that would do, and the judge is never
 asked; a request naming no lifetime gets the shortest of those seconds. A request a person decides
-— a judge key beside a key with no judge entry, or any request on a broker that runs no judge —
+— a judge key beside a key with no `judge` tag, or any request on a broker that runs no judge —
 keeps the ordinary lifetime rules.
 
 An approval is the judge's own. The decision event's actor is `judge:<model id>` and its login is

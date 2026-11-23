@@ -138,7 +138,7 @@ knows whether the broker made, or revoked, the enrollment. These messages say so
 
 ## A request the judge decides is pending, refused, or with a person
 
-A request for keys whose profiles' `proxy` blocks let the model judge decide is the judge's alone while it holds
+A request for keys whose `judge` tags let the model judge decide is the judge's alone while it holds
 it, for at most two minutes from when it was written: it carries `judge_deciding` and no page, and it
 is on no person's list. The judge then grants it, refuses it for good, or hands it to its person
 once, as an ordinary card ([Concepts](/legion/broker/concepts/#the-model-judge)). A refusal reads
