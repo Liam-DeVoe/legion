@@ -766,9 +766,11 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // it. It answers every refusal itself and reports the status its caller's success answer takes.
 // Whether the retry goes through the issue's phase is restartWorkedPhase's to decide: where it
 // starts that phase again, a relaunched phase worker is handed the phase's task, since a worker
-// relaunched outside its own phase is handed none and does nothing. Every claim it does not reach,
-// an architect among them, is the machine's to answer (machineRetry), relaunched on its own with
-// whatever task it still holds. It is how an operator relaunches the claims a runtime failed to
+// relaunched outside its own phase is handed none and does nothing; and the issue's own architect
+// at a step or a retro it does as the owner is relaunched and told that step again, one more
+// owner-step. Every claim it does not reach, any other architect among them, is the machine's to
+// answer (machineRetry), relaunched on its own with whatever task it still holds. It is how an
+// operator relaunches the claims a runtime failed to
 // launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
 // gone.
 //
@@ -790,11 +792,13 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 }
 
 // restartWorkedPhase starts again the phase the claim's role works, which is what hands a
-// relaunched phase worker that phase's task. Both recoveries run it: the retry of a failed or
+// relaunched phase worker that phase's task, and tells the issue's own architect, where its issue
+// stands at a step or a retro the owner does, that step again (one more owner-step with the
+// retry's task) as its claim is relaunched. Both recoveries run it: the retry of a failed or
 // retired claim (retryStart), and the fresh session of a phase worker that comes back owing no
-// task (freshSession). restarted is false for a claim no phase start reaches — an architect, a
-// claim whose issue works another role's phase or has left the workflow, and any claim on a daemon
-// that records no issues — and its caller starts such a claim another way.
+// task (freshSession). restarted is false for a claim no phase start reaches — any other
+// architect, a claim whose issue works another role's phase or has left the workflow, and any
+// claim on a daemon that records no issues — and its caller starts such a claim another way.
 //
 //   - an issue held for that worker's own role (record.Issue.RoleAt of the phase it is held from,
 //     which at step is the role of its running step, a role the deployment defines) is

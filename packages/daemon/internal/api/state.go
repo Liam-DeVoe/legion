@@ -697,10 +697,11 @@ type Issue struct {
 	Key        string      `json:"key"`
 	Generation uint64      `json:"generation"`
 	Phase      phase.Phase `json:"phase"`
-	// StepRole is the role that works the issue's running step where the issue stands at step or
-	// its hold took it out of step (record.Issue.StepRole): a role of the deployment, which no
-	// phase names, so the phase alone does not say who works the issue. Absent at every other
-	// phase, whose role the phase names (phase.RoleFor).
+	// StepRole is the role of the issue's running step where the issue stands at step or its hold
+	// took it out of step (record.Issue.StepRole): a role the deployment or the plan defines, which
+	// no phase names. Absent at every other phase, where the step's role is the one the phase
+	// names (phase.RoleFor); who works the issue's place, the owner at a step of its own among
+	// them, is PlaceRole's to say.
 	StepRole string `json:"stepRole,omitempty"`
 	// PlaceRole is the role of the claim that works the place where the issue's task stands
 	// (record.Issue.PlaceRole), read from the issue's plan rows: the architect at a step or a
@@ -822,14 +823,18 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
-	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
-	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase, and at step the role
-	// of the running step, StepRole), and GivenEntry the
+	// PhaseEntry is the number of the phase entry the role that works the issue's place stands on
+	// (record.PhaseRow.Entry of the role record.Issue.RoleAt names: phase.RoleFor of the phase for
+	// a run with no plan rows, and otherwise the role of the claim that works the task's place, the
+	// step's own role at a step, `acceptance` for the fresh agent of acceptance, and the retro
+	// agent's role at the retro), and GivenEntry the
 	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
 	// sends the entry's own work to a role whose given number is below the entry its row names, on
 	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
 	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
-	// daemon has still to reach.
+	// daemon has still to reach. At a step or a retro the owner does, PhaseEntry is the entry of
+	// the row the owner's run raised (the step's role's, the retro's at the retro) and GivenEntry
+	// is absent: the owner is told that step by its notice owner-step, never queued a task of it.
 	//
 	// A root carries them as a child does: phase.RoleFor answers the architect for admitted, the
 	// phase a root's own architect works, so the two numbers there are the architect's as they
@@ -1259,11 +1264,12 @@ type PhaseView struct {
 	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
 	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
-	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
-	// exactly: it rises on every move back, a conflict round included, where no pair counts a
-	// conflict round, since nobody sent the work back. The counts start empty at the migration
-	// that added them and are never filled in from the past, so an issue already in flight reads
-	// counts that add up to less than its `rounds`.
+	// counts at all from one whose counts the daemon holds. Rounds beside it counts the review
+	// rounds alone, which a review step's request for changes opens where the step's agent is not
+	// the owner, so most moves back raise a pair and no round; a conflict round a review opened
+	// raises Rounds and no pair, since nobody sent the work back. The counts start empty at the
+	// migration that added them and are never filled in from the past, so an issue already in
+	// flight reads counts that add up to less than its `rounds`.
 	BackwardMoves map[string]int `json:"backwardMoves,omitempty"`
 	// passHidden is set on the copy the state route serves a caller below the contract that added
 	// Pass (api's withoutStateMachineFields, below shaping.go's stateMachineContract): that reader
@@ -1303,7 +1309,8 @@ type HandoffRecordView struct {
 // the workflow ends the round on when the reviewer completes. It shows from the review that
 // decided it until the next round opens or a new generation clears it, so a request for changes
 // stays through implementing and testing, and an approval through retro and every phase after
-// it; absent until a review in a round decides.
+// it; absent until a review in a round decides. A review step the owner does ends by its own
+// verdict, never by a decision shown here.
 // State is whether the pull request is open, merged, or closed unmerged, always one of the three:
 // a merged root waits in merging for the rest of its tree, so an operator reads the merge
 // here rather than guessing at it.
@@ -1585,9 +1592,10 @@ type CheckWakeView struct {
 // the round waits on GitHub's merge state for the pull request's head, which is one rule the
 // daemon reads everywhere (classify.RoundWaitsOnMergeState, over the issue, its reviewer's row
 // and its open pull request): a reviewer's approval stands on the head the pull request is at,
-// and the merge state the record holds for that head is not one the issue may advance on. The
-// engine reads that same rule to decide whether to read GitHub for the round, so the object is
-// on the view exactly for the rounds the daemon is reading for.
+// and the merge state the record holds for that head is not one the issue may advance on. A
+// review step the owner does has no round that waits on GitHub, since its verdict ends it, so it
+// never carries one. The engine reads that same rule to decide whether to read GitHub for the
+// round, so the object is on the view exactly for the rounds the daemon is reading for.
 //
 // It stands for the round waiting for a first answer and for the stuck round alike — both wait on
 // GitHub's next answer about the same head — and ToldHead with ToldState say what the architect and
@@ -1750,7 +1758,9 @@ func StrandedMoves() []StrandedMove {
 //     task or its phase start waits, otherwise the operator's delivery of its phase's resume task.
 //   - StrandedRetry, a failed architect: the operator's retry (`legion claims retry`), which
 //     relaunches its session with fresh budgets, or a new one once supervise's
-//     Machine.forgetSession has dropped it, and a catch-up follows.
+//     Machine.forgetSession has dropped it, and a catch-up follows; an architect whose own issue
+//     stands at a step or a retro it does as the owner is also told that step again, one more
+//     owner-step, and a failed child's own architect at such a step is listed here too.
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.

@@ -846,11 +846,11 @@ func TestTheOperatorsRefusedFreshSessionRetryHasAlreadyForgottenTheSession(t *te
 	}
 }
 
-// R2: an operator's retry of an architect builds no phase restart and relaunches the claim
-// through its machine, on the session it recorded. restartWorkedPhase answers a role that is no
-// phase worker before it reads the issue (isPhaseWorker), so the architect never reaches
-// Options.RoleFor, whatever phase its issue stands in — admitted here, which phase.RoleFor
-// answers the architect for.
+// R2: an operator's retry of an architect whose issue stands at no step or retro of its own
+// builds no phase restart and relaunches the claim through its machine, on the session it
+// recorded: admitted here, which phase.RoleFor answers the architect for, is no place the owner
+// works, so no phase start reaches the architect. (The retry of the issue's own architect at a
+// step or a retro it does as the owner also tells it that step again, one more owner-step.)
 func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *testing.T) {
 	facts := &phaseRestarter{}
 	h := newHarness(t)
@@ -881,7 +881,7 @@ func TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine(t *test
 		t.Fatalf("retry of a stopped architect = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if applied := facts.recorded(); len(applied) != 0 {
-		t.Errorf("the retry applied %#v, want nothing: no phase start reaches an architect", applied)
+		t.Errorf("the retry applied %#v, want nothing: no phase start reaches an architect outside a step of its own", applied)
 	}
 	if after := h.stored(token); after.State != supervise.StateLaunching || after.Budgets != (supervise.Budgets{}) {
 		t.Errorf("the retried architect is %+v, want a launching claim with fresh budgets", after)

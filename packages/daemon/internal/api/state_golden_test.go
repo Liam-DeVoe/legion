@@ -486,7 +486,8 @@ func populatedState(t *testing.T) State {
 				// every phase it stands in (internal/projection), so they say when the task of the
 				// architect's last entry was queued to its claim and when a turn of it confirmed it.
 				// LEGION-210, LEGION-212 and LEGION-207 carry none of the four. The projection writes
-				// neither number because no role works held, awaiting_person or done (phase.RoleFor).
+				// neither number because no role works held, awaiting_person or done
+				// (record.Issue.RoleAt answers none there, as phase.RoleFor does).
 				// It writes neither time because the times are an architect claim's, which it shows
 				// as the issue's `architect`, and none of the three carries one. The fixture gives an
 				// architect claim to LEGION-208 alone: LEGION-210 and LEGION-211 hold none in the
@@ -842,9 +843,9 @@ func populatedState(t *testing.T) State {
 					},
 					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_218", State: "idle"}, Pass: 1},
 				},
-				// Reviewing names the reviewer, so the issue carries its entry numbers as every
-				// issue whose phase names a phase worker role does: its reviewer was handed the
-				// round's one entry and holds it.
+				// Reviewing names the reviewer on this issue with no plan rows, so the issue carries
+				// its entry numbers as every issue whose working role (record.Issue.RoleAt) is a
+				// phase worker does: its reviewer was handed the round's one entry and holds it.
 				PhaseEntry: 1,
 				GivenEntry: 1,
 				PullRequest: &PullRequestView{
@@ -978,8 +979,9 @@ func populatedState(t *testing.T) State {
 		// state's read builds it (PauseStateTx). LEGION-208's implementer is still in the turn the
 		// pause found it in, so the pause waits on its stop. Two rows are held for the pause: the
 		// start of LEGION-211's released implementer that a wake queued, which names its claim, and
-		// a notice for LEGION-209's architect, which names none (the tree walk routes a notice at
-		// run time), so it carries no `claim`.
+		// a notice for LEGION-209's architect, which names none (a notice is routed at run time:
+		// an owner-step to its issue's own architect, every other by the tree walk), so it carries
+		// no `claim`.
 		Paused: pausedViewOf(store.Pause{
 			ID: 7, Project: "LEGION", Since: pausedSince, Reason: "the model provider is refusing every turn",
 			By: store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"},
