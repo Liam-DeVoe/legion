@@ -172,6 +172,7 @@ func (r *newsPathRig) sweepNews() {
 // that answer is the take's turn start (supervise's answerView), and the turn carried no
 // opening, so its start makes the take's credit stand, version 4 taken, and leaves the opening owed.
 func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -220,6 +221,7 @@ func TestARestartsConfirmationOfATaskSentWithoutTheOpeningLeavesTheOpeningOwed(t
 //     run; the record ends at version 4 with the opening cleared, and the worker still holds the
 //     retake's text.
 func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		retakeFirst bool
@@ -327,6 +329,7 @@ func TestALateTurnOfAFirstPromptLeavesTheOpeningABusyResendRenderedOwed(t *testi
 // reopening by a task of its own, which the sweep's reconcile queues once the reviewer holds no
 // task, and that task's confirmation clears it.
 func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwedAndItIsTold(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -371,6 +374,7 @@ func TestAConfirmationOfAnOpeningACloseAndReopeningReplacedLeavesTheReopeningOwe
 // task's, so it confirms nothing and raises nothing. At the turn's end the worker takes the task,
 // and the turn the take starts makes its credit stand.
 func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		adoption bool
@@ -440,6 +444,7 @@ func TestARestartNeverConfirmsANewsTaskWhoseSendFailedBeforeItsPrompt(t *testing
 // it as stale and nothing takes the news back there. The retirement gave it back: the reviewer is
 // owed the news again, and once its operator's task is done, the sweep's reconcile sends it again.
 func TestAConfirmedNewsTaskANewerTaskReplacedBeforeItsTurnsResultGivesItsNewsBack(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -505,6 +510,7 @@ func (r *newsPathRig) checksEvent(kind intake.DispatchArtifactKind, version int)
 // opening too. A version of the spec that changes decision blocks alone, which Dispatch carries
 // approved, then sends the reviewer nothing: the reconcile raises what it took.
 func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNothing(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing},
 		pathMember{key: pathChild, parent: pathRoot, at: phase.Testing})
 	r.inTx(func(tx pgx.Tx) error {
@@ -601,6 +607,7 @@ func TestAnOpenedMessageAndACloseSettleTheOpeningSoADecisionOnlyVersionSendsNoth
 // and a clean one is the proof the turn ran). The sweep's reconcile then queues a task that tells
 // the reopening alone, and the finish of its take's turn clears it.
 func TestARestartBetweenAReopeningAndTheTurnOfATaskThatCarriedTheEarlierOpening(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)

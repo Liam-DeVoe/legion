@@ -23,6 +23,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
+// toldAs is a start's told that tells task alone, whatever the standing.
+func toldAs(task string) func(Standing) string {
+	return func(Standing) string { return task }
+}
+
+// startTold is e.start of role on issue's walk with task as its whole text, as a transition's
+// start of no move back writes it.
+func startTold(ctx context.Context, tx pgx.Tx, e *Engine, issue record.Issue, role claim.Role, task string) error {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	return e.start(ctx, tx, issue, w, role, toldAs(task), false)
+}
+
 // Each constructor of a start that carries a task names the origin decision 7 gives it: a
 // transition's start, the held phase's retry (the fresh-session one too), an owed entry's work,
 // the promotion's start of a mid-phase worker and the boot's and a ready's send of an owed entry
@@ -41,13 +56,13 @@ func TestEveryWorkflowTaskNamesTheOriginItsValueLogCarries(t *testing.T) {
 		queue func(t *testing.T) (*pgxpool.Pool, string)
 	}{
 		{"a transition's start", supervise.OriginPhaseStart, inLevelTester(func(ctx context.Context, tx pgx.Tx, e *Engine) error {
-			return e.start(ctx, tx, resumeRuleIssue, claim.RoleTester, "Test the head.", false)
+			return startTold(ctx, tx, e, resumeRuleIssue, claim.RoleTester, "Test the head.")
 		})},
 		{"the held phase's retry", supervise.OriginPhaseStart, inLevelTester(func(ctx context.Context, tx pgx.Tx, e *Engine) error {
-			return e.restart(ctx, tx, resumeRuleIssue, claim.RoleTester, "Test it again: the architect retried the phase.", false)
+			return e.restart(ctx, tx, resumeRuleIssue, claim.RoleTester, toldAs("Test it again: the architect retried the phase."), false)
 		})},
 		{"the fresh-session retry", supervise.OriginPhaseStart, inLevelTester(func(ctx context.Context, tx pgx.Tx, e *Engine) error {
-			return e.restart(ctx, tx, resumeRuleIssue, claim.RoleTester, "Test it again in a new session.", true)
+			return e.restart(ctx, tx, resumeRuleIssue, claim.RoleTester, toldAs("Test it again in a new session."), true)
 		})},
 		{"an owed entry's work", supervise.OriginPhaseStart, inLevelTester(func(ctx context.Context, tx pgx.Tx, e *Engine) error {
 			return e.SendOwedEntry(ctx, tx, resumeRuleIssue, claim.RoleTester, record.PhaseRow{Issue: entryIssue, Role: claim.RoleTester,

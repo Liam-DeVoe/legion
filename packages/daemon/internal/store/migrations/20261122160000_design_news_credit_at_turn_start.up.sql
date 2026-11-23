@@ -34,20 +34,25 @@
 --
 -- The way back is the block below, run with the daemon stopped before the earlier image is pinned,
 -- and before the way back of 20261113175649_task_numbers, which drops turn_started (at a rollback
--- to a release before cybermonklabs/legion#4903, the way back in the header of
--- 20261121170714_dispatch_issue_applied_seq runs between the two): it writes
--- design_news_told_in back as 20261119203047 wrote it, drops the comment this file set (that
--- migration set none), and deletes this migration's version row, so the roll forward runs this file
--- again. The release before this one, contract 217 (the one whose internal/api/version.go carries
--- the entry for dispatch://INFRA-3531 and dispatch://INFRA-4567) as main releases it with
--- cybermonklabs/legion#4903, whose newest migration is 20261121170714_dispatch_issue_applied_seq,
--- carries 20261119203047 and not the task numbers, and then reads the function it wrote; a
--- rollback to contract 213 or before crosses 217 and takes that release's own steps too
--- (docs/kubernetes.md, "Rolling back below the release that guards the controller's pod's
--- memory"). Nothing else is reversed: no row changes here, and a copy on a confirmed row that the
--- earlier function counts at once, its take's turn not yet started, is the credit that release
--- would have written at the confirmation of the same turn. docs/kubernetes.md gives this block
--- under "Rolling back the release that credits a holder's news at its take's turn".
+-- to contract 217 or to any release before it, the way back in the header of
+-- 20261117034837_issue_plans runs between the two, and at a rollback to a release before
+-- cybermonklabs/legion#4903, the way back in the header of
+-- 20261121170714_dispatch_issue_applied_seq runs between the two as well, before that one): it
+-- writes design_news_told_in back as 20261119203047 wrote it, drops the comment this file set
+-- (that migration set none), and deletes this migration's version row, so the roll forward runs
+-- this file again. The release before this one, contract 219 (the one whose
+-- internal/api/version.go carries the entry for cybermonklabs/legion#4611's owner plan) as main
+-- releases it with #4611 and cybermonklabs/legion#5161, whose newest migration is still #4903's
+-- 20261121170714_dispatch_issue_applied_seq, carries 20261119203047 and not the task numbers, and
+-- then reads the function it wrote; a rollback to contract 217 or before crosses 219 and takes
+-- that release's own steps too (docs/kubernetes.md, "Rolling back the release that runs a task's
+-- steps in any order", and the way back of 20261117034837_issue_plans), and a rollback to
+-- contract 213 or before also crosses 217 and takes that release's own steps (docs/kubernetes.md,
+-- "Rolling back below the release that guards the controller's pod's memory"). Nothing else is
+-- reversed: no row changes here, and a copy on a confirmed row that the earlier function counts
+-- at once, its take's turn not yet started, is the credit that release would have written at the
+-- confirmation of the same turn. docs/kubernetes.md gives this block under "Rolling back the
+-- release that credits a holder's news at its take's turn".
 --
 -- begin;
 -- create or replace function design_news_told_in(tree text)

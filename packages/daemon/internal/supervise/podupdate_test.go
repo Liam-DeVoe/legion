@@ -125,7 +125,7 @@ func (h *harness) olderDaemonsAsk(round string, set ...func(*Delivery)) Delivery
 	if c.Pending != nil {
 		h.t.Fatalf("the claim already holds %+v; the older daemon queued its ask into a free slot", *c.Pending)
 	}
-	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour)),
+	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(claim.RoleImplementer, round, testReasons, epoch.Add(time.Hour)),
 		QueuedAt: h.clock.Now(), Number: c.TaskWritten + 1}
 	for _, change := range set {
 		change(&ask)
@@ -828,7 +828,7 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // turn, or that only the background jobs of the turn in progress go with the pod.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
-	text := UpdateTask(testRound, `image "sha256:1"`, endsAt)
+	text := UpdateTask(claim.RoleImplementer, testRound, `image "sha256:1"`, endsAt)
 	for _, want := range []string{
 		"The round is " + testRound + ".",
 		`The reasons are: image "sha256:1".`,

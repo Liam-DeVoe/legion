@@ -53,6 +53,9 @@ type readyWorkerRig struct {
 	conn    *fake.Conn
 	token   claim.Token
 	issue   record.Issue
+	// engine is the workflow engine the ready's fact is applied through, which composes the task
+	// the phase holder is given again (resumeTaskOf).
+	engine *workflow.Engine
 }
 
 // newReadyWorkerRig starts the tester of a testing issue and queues it the start's task.
@@ -89,7 +92,7 @@ func newStartedTesterRig(t *testing.T, task string) *readyWorkerRig {
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: issue.Project, Repositories: testRepositories}, quietLogger())
 	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
-	rig := &readyWorkerRig{t: t, pool: pool, st: st, sup: sup, rt: rt, issue: issue,
+	rig := &readyWorkerRig{t: t, pool: pool, st: st, sup: sup, rt: rt, issue: issue, engine: engine,
 		runner: &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
 			trees: st, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), handlers: []intake.Handler{engine},
 			// The outbox reads the clock to lease rows; a minute on runs every row the ready
@@ -256,6 +259,7 @@ var comeBacks = map[string]func(r *readyWorkerRig, session string){
 // restart — and the issue waited for as long as the worker did; a new session has no reminder of
 // its own to wake it.
 func TestEveryComeBackInANewSessionGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing.T) {
+	t.Parallel()
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
 			rig := newReadyWorkerRig(t)
@@ -273,7 +277,7 @@ func TestEveryComeBackInANewSessionGivesAPhaseHolderItsTaskWithinTwoMinutes(t *t
 			}
 			rig.run()
 			held, last := rig.claim().Pending, rig.claim().LastReady
-			if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Phase != phase.Testing ||
+			if held == nil || held.Task != resumeTaskOf(t, rig.pool, rig.engine, rig.issue.Key) || held.Phase != phase.Testing ||
 				held.Origin != supervise.OriginResume {
 				t.Fatalf("after the come-back the tester holds %+v, want the testing phase's resume task", held)
 			}
@@ -320,6 +324,7 @@ func TestEveryComeBackInTheSessionThatFinishedItsTaskGivesThePhaseHolderNothing(
 // it holds is the one its worker takes, under the same delivery, which is the relaunch's own
 // resend, not a task of its own.
 func TestAComeBackWithATaskStillPendingGivesNoSecondCopy(t *testing.T) {
+	t.Parallel()
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
 			rig := newReadyWorkerRig(t)

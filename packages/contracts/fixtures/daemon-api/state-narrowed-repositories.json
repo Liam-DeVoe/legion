@@ -1053,6 +1053,13 @@
         },
         "experiments": [],
         "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
         "deploys": []
       },
       "WIDGETS": {
@@ -1062,6 +1069,10 @@
         },
         "experiments": [],
         "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
         "deploys": []
       }
     },

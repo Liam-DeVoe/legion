@@ -254,7 +254,7 @@ func TestTakeDropTestRunsWhenANewerTaskArrives(t *testing.T) {
 				Kinds: []string{"subagent"}, Reported: true},
 			dropped: "the issue has left the phase this task was queued for; it is dropped rather than taken"},
 		{name: "an older daemon's ask of an update round",
-			held:    Delivery{ID: updateTaskID(testRound), Task: UpdateTask(testRound, testReasons, epoch.Add(time.Hour))},
+			held:    Delivery{ID: updateTaskID(testRound), Task: UpdateTask(claim.RoleImplementer, testRound, testReasons, epoch.Add(time.Hour))},
 			holds:   true,
 			dropped: "this task is an ask an older daemon queued for an update round; it is dropped and never taken"},
 		{name: "the delivery of a relaunch's record that no longer tells",

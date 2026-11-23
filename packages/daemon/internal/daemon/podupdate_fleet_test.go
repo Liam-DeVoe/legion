@@ -649,6 +649,7 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 // is replaced after, which is what the round is for. And nothing of any of it moves a root out
 // of the workflow: no root waits on a person, none is parked, and no architect is suspended.
 func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T) {
+	t.Parallel()
 	rig := newFleetRig(t,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}},
@@ -762,6 +763,7 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 // the round (supervise.StaleRefusesCalls, staleForTheLane), and its completion meets the 409 that
 // says so.
 func TestPodUpdateRoundServesAWorkerOnAnotherContractWhosePluginTakesTasks(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		contract int
@@ -845,6 +847,7 @@ func TestPodUpdateRoundServesAWorkerOnAnotherContractWhosePluginTakesTasks(t *te
 // as the daemon wires its supervisor (adoptingAsTheDaemonDoes), so who is in a turn is the
 // daemon's own answer (claimInTurn), read from the machines the round posts to.
 func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testing.T) {
+	t.Parallel()
 	rig := newWiredFleetRig(t, adoptingAsTheDaemonDoes,
 		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
 			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer}},

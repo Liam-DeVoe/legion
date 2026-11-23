@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -23,6 +25,7 @@ import (
 // wait directly, as answeredResumePath puts it. The resume's start reaches the relaunching claim,
 // and the first task the architect takes once it comes up is the resume's task, not entry 1's.
 func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -77,6 +80,7 @@ func TestTheResumeOfAnAnsweredRootIsSentBeforeAnUnconfirmedTaskOfALowerEntry(t *
 // the generation-1 start names that decision, its task is written and never taken, the root is
 // parked and its architect suspended, and the hand-back re-admits it at generation 2.
 func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	ref := r.decide(mainPathAsk)
@@ -136,7 +140,7 @@ func TestADecisionASupersededTaskNamedIsToldToTheReadmittedArchitect(t *testing.
 	if err := r.runner.execute(r.ctx, catchUp); err != nil {
 		t.Fatalf("run the catch-up %d: %v", catchUp.ID, err)
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.FinishOutbox(r.ctx, tx, catchUp.ID, catchUp.LeaseToken)
 	}); err != nil {
 		t.Fatalf("finish the catch-up %d: %v", catchUp.ID, err)

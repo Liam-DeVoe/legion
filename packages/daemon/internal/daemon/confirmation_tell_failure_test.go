@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -26,6 +28,7 @@ import (
 // (the architect's decision on #2163, review round cap, 31 October 2026), and here it reaches the
 // architect in the very task the failed take was of.
 func TestAFailedConfirmationTellLeavesTheDecisionKeptAndToldAgain(t *testing.T) {
+	t.Parallel()
 	values := supervisetest.NewTaskValues()
 	log := &testlog.Buffer{}
 	r := newHeldTaskRig(t, func(r *heldTaskRig) {
@@ -90,7 +93,7 @@ func TestAFailedConfirmationTellLeavesTheDecisionKeptAndToldAgain(t *testing.T) 
 	// the decision the take told.
 	r.readmit()
 	var task string
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		task, _, err = r.engine.ParkedDecisionTask(r.ctx, tx, r.root)
 		return err

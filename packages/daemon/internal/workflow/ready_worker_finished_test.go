@@ -186,8 +186,8 @@ func wantResumeTask(t *testing.T, pool *pgxpool.Pool, what string) {
 	if len(starts) != 1 {
 		t.Fatalf("after %s the outbox holds the starts %+v, want the one resume task", what, starts)
 	}
-	start := starts[0]
-	if start.Role != claim.RoleTester || start.Task != ResumePhaseTask(resumeRuleIssue) || !start.ResumeTask ||
+	start, resume := starts[0], phaseResumeTask(t, pool, testEngine(config.DesignGateRootIssues, nil), entryIssue)
+	if start.Role != claim.RoleTester || start.Task != resume || !start.ResumeTask ||
 		start.Phase != phase.Testing || start.Entry != 0 || start.Origin != supervise.OriginResume {
 		t.Fatalf("after %s the start = %+v, want the tester's testing resume task at no entry, under origin %q", what, start, supervise.OriginResume)
 	}
@@ -379,7 +379,7 @@ func TestReadyWorkerTaskStillWritesAPhaseStartAndAWakeTaskOnce(t *testing.T) {
 		engine := testEngine(config.DesignGateRootIssues, nil)
 		const task = "Test the head the implementer pushed."
 		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-			return engine.start(ctx, tx, resumeRuleIssue, claim.RoleTester, task, false)
+			return startTold(ctx, tx, engine, resumeRuleIssue, claim.RoleTester, task)
 		})
 		wantOnlyTask(t, pool, entryIssue, task, supervise.OriginPhaseStart, "the phase start")
 
@@ -593,14 +593,16 @@ func TestWaitingWorkerSilenceRepairWritesOriginSilenceInBothBranches(t *testing.
 		given int64
 		// task is the task the repair's start must carry, entry its entry, and resume whether it
 		// is marked the phase's resume task.
-		task   func(record.Issue) string
+		task   func(t *testing.T, pool *pgxpool.Pool, issue record.Issue) string
 		entry  int64
 		resume bool
 	}{
 		{name: "behind the entry its row names", given: silenceEntry - 1,
-			task: func(record.Issue) string { return silenceEntryTask }, entry: silenceEntry},
+			task: func(*testing.T, *pgxpool.Pool, record.Issue) string { return silenceEntryTask }, entry: silenceEntry},
 		{name: "level with the entry its row names", given: silenceEntry,
-			task: ResumePhaseTask, entry: 0, resume: true},
+			task: func(t *testing.T, pool *pgxpool.Pool, issue record.Issue) string {
+				return phaseResumeTask(t, pool, testEngine(config.DesignGateRootIssues, nil), issue.Key)
+			}, entry: 0, resume: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -619,10 +621,10 @@ func TestWaitingWorkerSilenceRepairWritesOriginSilenceInBothBranches(t *testing.
 			if len(starts) != 1 {
 				t.Fatalf("the silence queued %+v, want the one start it writes for the silent claim", starts)
 			}
-			start := starts[0]
-			if start.Task != tc.task(issue) || start.Entry != tc.entry || start.ResumeTask != tc.resume {
+			start, want := starts[0], tc.task(t, pool, issue)
+			if start.Task != want || start.Entry != tc.entry || start.ResumeTask != tc.resume {
 				t.Fatalf("the silence of a claim given entry %d sent %q at entry %d, resume task %t; want %q at entry %d, resume task %t",
-					tc.given, start.Task, start.Entry, start.ResumeTask, tc.task(issue), tc.entry, tc.resume)
+					tc.given, start.Task, start.Entry, start.ResumeTask, want, tc.entry, tc.resume)
 			}
 			if start.Origin != supervise.OriginSilence {
 				t.Fatalf("the silence repair's start names origin %q, want %q: neither %q nor %q, so its writes are counted apart",

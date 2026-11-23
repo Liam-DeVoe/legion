@@ -24,7 +24,7 @@ import (
 // whose take's turn has started (turn_started) is itself the credit of what the accepted take's
 // text carried; final, the write folds that credit into the told rows (design_news_told.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
-	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
 
 // putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
@@ -100,27 +100,20 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 // written again and the phase waits. It is also where an accepted take tells the decisions its
 // delivery holds, in that same transaction and for the same reason.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		queued, err = s.PutClaimAndDeliveryTx(ctx, tx, c, d)
-		return err
-	}); err != nil {
-		return err
-	}
-	s.CommittedClaim(c, queued)
-	return nil
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return s.PutClaimAndDeliveryTx(ctx, tx, c, d)
+	})
 }
 
 // PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
-// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers whether
-// the claim's write queued the publication of its issue's role sessions, for the caller's
-// CommittedClaim once its transaction has committed.
-func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (bool, error) {
-	queued, err := s.putClaim(ctx, tx, c)
-	if err != nil {
-		return false, err
+// project's pause makes of a claim that holds a pending delivery (PutClaimTx). The publication of
+// the issue's role sessions the claim's write queues is woken once the caller's transaction
+// commits, as every claim write's is (putClaim).
+func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) error {
+	if err := s.putClaim(ctx, tx, c); err != nil {
+		return err
 	}
-	return queued, putDelivery(ctx, tx, c.Token, d)
+	return putDelivery(ctx, tx, c.Token, d)
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
@@ -149,9 +142,8 @@ func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervis
 // only be read from the row, so it is read here, in the same transaction as the delete that
 // found nothing.
 func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
-	var queued bool
-	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		if queued, err = s.putClaim(ctx, tx, c); err != nil {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := s.putClaim(ctx, tx, c); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx,
@@ -177,11 +169,7 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 			}
 		}
 		return releaseKeptDecisions(ctx, tx, c.Token, deliveryID)
-	}); err != nil {
-		return err
-	}
-	s.CommittedClaim(c, queued)
-	return nil
+	})
 }
 
 // keptDecisions is a delivery's kept-decision record as the column holds it and as the delivery

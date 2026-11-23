@@ -76,6 +76,7 @@ func theReopeningIsToldByTheNextTake(t *testing.T, r *newsPathRig, machine *supe
 // take of X sent again is answered that same text, with no opening. X's turn and its report make
 // X's credit final, version 4 taken and the opening owed, and the next take tells the opening.
 func TestARestartsResendTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRead(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -105,6 +106,7 @@ func TestARestartsResendTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRea
 // text it kept, with no opening. X's turn and its report make X's credit final, version 4 taken and
 // the opening owed, and the next take tells the opening.
 func TestAResendAfterALostAnswerTheShimAnswersFromItsRecordRecordsNoNewsTheAgentNeverRead(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
