@@ -10,10 +10,12 @@ body: |-
   as well. A push of a ref to a commit, directly or through annotated tags, is read as before.
 
   The pass also reads every file a pushed commit adds as text. Before, a file that holds a NUL
-  byte, or one a `-diff` attribute or a diff driver with `binary = true` covers, came out of the
-  diff as "Binary files … differ" with no line, so its text reached the destination unread. The
-  pass now reads it with `--text --no-textconv --no-ext-diff`, and no attributes file outside the
-  repository applies to any of its reads (`core.attributesFile` is pinned to `/dev/null`).
+  byte, or one a `-diff` attribute (from any attributes source) or a diff driver with `binary =
+  true` covers, came out of the diff as "Binary files … differ" with no line, so its text reached
+  the destination unread. The pass now reads it with `--text --no-textconv --no-ext-diff`. A
+  merge's combined diff prints such a file as binary whatever `--text` says, so each file a merge's
+  combined diff prints so is read again against the merge's first parent, as text. A diff that
+  still prints a file as binary refuses the push as a setup error.
 
   `legion leak-check pre-push` refuses an update line whose sha is not the 40 or 64 lowercase hex
   digits git writes, without quoting it.

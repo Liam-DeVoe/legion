@@ -16,17 +16,14 @@ import (
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
 // file-system monitor runs, whatever the repository's own configuration names; no replacement
-// object stands in for a commit, so the records read are the commits the push would send; a
+// object stands in for a commit, so the records read are the commits the push would send; and a
 // path is printed as it is, rather than with its non-ASCII bytes escaped, so that what the rules
-// read is the path the destination would hold; and no attributes file outside the repository
-// applies (core.attributesFile), so a person's global `-diff` cannot reach a read. A `-c` here
-// outranks the repository's configuration and GIT_CONFIG_COUNT and GIT_CONFIG_PARAMETERS alike.
+// read is the path the destination would hold.
 var gitPins = []string{
 	"--no-replace-objects",
 	"-c", "core.quotePath=false",
 	"-c", "core.hooksPath=/dev/null",
 	"-c", "core.fsmonitor=false",
-	"-c", "core.attributesFile=/dev/null",
 }
 
 // gitArgv is one git command with the pins in front of it, which is how every git of this
@@ -385,21 +382,66 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int,
 //
 // Every file is read as text (--text). Without it git prints "Binary files … differ" and no line
 // at all for a file that holds a NUL byte, or whose path a `-diff` attribute or a driver with
-// `binary = true` covers, from the commit's own .gitattributes, .git/info/attributes or
-// core.attributesFile alike; the destination still gets the file, so its text would pass unread.
-// --text puts a file's bytes in the diff whatever the attributes say, which leaves them one way to
-// change what is read, a driver's textconv or an external diff command, and diff-tree runs
-// neither unless asked; --no-textconv and --no-ext-diff say so here rather than leave it to a
-// default.
+// `binary = true` covers, from any attributes source (the commit's own .gitattributes,
+// .git/info/attributes, core.attributesFile, the system file); the destination still gets the
+// file, so its text would pass unread. --text puts a file's bytes in the diff whatever the
+// attributes say, which leaves them one way to change what is read, a driver's textconv or an
+// external diff command, and diff-tree runs neither unless asked; --no-textconv and --no-ext-diff
+// say so here rather than leave it to a default.
+//
+// A merge's combined diff does not honour --text: for such a file it still prints "Binary files
+// differ" under its "diff --combined <path>" header. Each path it prints so is read again on its
+// own, as the diff against the merge's first parent (mergeBinaryLines), which does honour --text.
+// Every line of the merge's own resolution stands in neither parent, so it is a line the path
+// gains against the first parent; the read also takes the lines the path gains from the other
+// parents, which is more than the resolution, but only for those paths, and each line once. A
+// "Binary files" line anywhere else, or one whose path cannot be read, is an error, so a git that
+// leaves a file unread refuses the push rather than passing it.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
-	width := max(parents, 1)
-	path, header := "", false
+	binary, err := g.diffLines(ctx, dir, commit, parents > 1, max(parents, 1), emit,
+		diffTree(parents, "--unified=0", "--no-color", "--text", "--no-textconv", "--no-ext-diff", commit)...)
+	if err != nil {
+		return err
+	}
+	for _, path := range binary {
+		if err := g.mergeBinaryLines(ctx, dir, commit, path, emit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mergeBinaryLines hands emit the lines path gains in the merge commit against its first parent,
+// read as text: the read of a file the merge's combined diff printed as binary. ":(literal)"
+// keeps git from reading the path as a pathspec of any other kind.
+func (g *Guard) mergeBinaryLines(ctx context.Context, dir, commit, path string, emit func(Record) error) error {
+	_, err := g.diffLines(ctx, dir, commit, false, 1, emit,
+		"diff-tree", "-r", "--no-commit-id", "--unified=0", "--no-color", "--text", "--no-textconv", "--no-ext-diff",
+		commit+"^1", commit, "--", ":(literal)"+path)
+	return err
+}
+
+// diffLines runs the diff-tree args name and hands emit each line it marks as added, the first
+// width characters of a line being its marks. Where combined, it answers the paths whose combined
+// diff printed "Binary files differ", for the caller to read again; anywhere else such a line is
+// an error. The error names the commit and never the path, which is the push's own text.
+func (g *Guard) diffLines(ctx context.Context, dir, commit string, combined bool, width int, emit func(Record) error, args ...string) ([]string, error) {
+	var binary []string
+	path, header, headerPath, readable := "", false, "", false
 	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
 		return eachField(out, '\n', func(line []byte) error {
 			line = bytes.TrimRight(line, "\r\n")
 			switch {
 			case bytes.HasPrefix(line, []byte("diff --")):
 				path, header = "", true
+				if combined {
+					headerPath, readable = combinedPath(string(line))
+				}
+			case header && bytes.HasPrefix(line, []byte("Binary files ")):
+				if !combined || !readable {
+					return fmt.Errorf("git diff-tree printed a file of commit %s as binary despite --text", short(commit))
+				}
+				binary = append(binary, headerPath)
 			case header && bytes.HasPrefix(line, []byte("+++ ")):
 				path = diffPath(string(line[len("+++ "):]))
 			case bytes.HasPrefix(line, []byte("@@")):
@@ -412,8 +454,26 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 			}
 			return nil
 		})
-	}, diffTree(parents, "--unified=0", "--no-color", "--text", "--no-textconv", "--no-ext-diff", commit)...)
-	return err
+	}, args...)
+	return binary, err
+}
+
+// combinedPath is the path a combined diff's "diff --combined <path>" header names, with the C
+// quoting of a path holding a byte git will not print raw undone, and whether it could be read.
+// The header carries no a/ or b/ prefix and no trailing tab.
+func combinedPath(line string) (string, bool) {
+	field, ok := strings.CutPrefix(line, "diff --combined ")
+	if !ok {
+		field, ok = strings.CutPrefix(line, "diff --cc ")
+	}
+	if !ok || field == "" {
+		return "", false
+	}
+	if strings.HasPrefix(field, `"`) {
+		unquoted, err := strconv.Unquote(field)
+		return unquoted, err == nil && unquoted != ""
+	}
+	return field, true
 }
 
 // eachField hands each field of r that ends in delim to fn, delim included where it has one, as

@@ -651,6 +651,12 @@ func TestAPushOfARefToNoCommitIsRefused(t *testing.T) {
 // names a host, with the working tree at that commit as a push leaves it, and the rules must
 // refuse that file. Each case's control shows its mechanism is live, that the read the case is
 // about (git's default, or the textconv or external diff turned on) prints no line naming the host.
+//
+// A merge is read through its combined diff, which prints "Binary files differ" for such a file
+// whatever --text says. Each merge case resolves one file to a line naming a host, both parents
+// already on the destination so the merge is the whole of what the push adds, and the rules must
+// refuse it: a file holding a NUL byte, and one a -diff covers, whose combined diff the control
+// shows prints no line naming the host; and, the control of the merge read itself, a text file.
 func TestAPushedCommitsFilesAreReadAsText(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
@@ -766,5 +772,102 @@ func TestAPushedCommitsFilesAreReadAsText(t *testing.T) {
 				t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
 			}
 		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		// path is the file the merge resolves and the record the report names; lead is the
+		// first line of every version of it, a NUL byte where the case is a binary file.
+		path, lead string
+		// hidden is whether the combined diff hides the file: false for the text control.
+		hidden bool
+	}{
+		{name: "a merge that resolves a file holding a NUL byte", path: "m.bin", lead: "base\x00\n", hidden: true},
+		{name: "a merge that resolves a file a -diff covers", path: "m.lock", lead: "base\n", hidden: true},
+		{name: "a merge that resolves a text file", path: "m.txt", lead: "base\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := strings.ReplaceAll(tc.name, " ", "-")
+			side, ours := branch+"-side", branch+"-ours"
+			commitAs := func(name, content string) {
+				t.Helper()
+				write(t, filepath.Join(repo, tc.path), content)
+				fixture.Run(repo, "git", "add", "-A")
+				fixture.Run(repo, "git", "commit", "--quiet", "-m", name)
+			}
+			fixture.Run(repo, "git", "checkout", "--quiet", "-B", branch, base)
+			// The -diff case's attribute, committed with the file every side starts from.
+			write(t, filepath.Join(repo, ".gitattributes"), "*.lock -diff\n")
+			commitAs("the file both sides start from", tc.lead)
+			fork := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			fixture.Run(repo, "git", "checkout", "--quiet", "-B", side, fork)
+			commitAs("the side's version", tc.lead+"a line of the side\n")
+			fixture.Run(repo, "git", "checkout", "--quiet", "-B", ours, fork)
+			commitAs("our version", tc.lead+"a line of ours\n")
+			tip := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			// The destination holds both sides, on remote-tracking refs of this repository.
+			fixture.Run(repo, "git", "push", "--quiet", "origin", side, ours)
+			// The sides conflict, and the resolution is a line of the merge's own.
+			if _, err := fixture.Try(repo, "git", "merge", "--quiet", "--no-commit", side); err == nil {
+				t.Fatalf("the merge of %s did not conflict, so its resolution is not the merge's own", side)
+			}
+			commitAs("the merge", tc.lead+named)
+			merge := fixture.Run(repo, "git", "rev-parse", "HEAD")
+			if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", merge); len(strings.Fields(parents)) != 3 {
+				t.Fatalf("the fixture's merge is %q, want a commit of two parents", parents)
+			}
+			control := []string{"git", "diff-tree", "-r", "-c", "-p", "--text", "--no-commit-id", merge}
+			out := fixture.Out(repo, control...)
+			if prints := strings.Contains(out, theHost); prints == tc.hidden {
+				t.Fatalf("%s prints the host: %t, want %t, so the case is not the one it names:\n%s", strings.Join(control, " "), prints, !tc.hidden, out)
+			}
+			ref := "refs/heads/" + ours
+			err := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public).Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  "origin",
+				URL:     "https://github.com/invented-org/invented-repo.git",
+				Updates: []Update{{LocalRef: ref, LocalSHA: merge, RemoteRef: ref, RemoteSHA: tip}},
+			})
+			want := []string{tc.path + ": " + theClass}
+			if refused := refusal(t, err); refused.By != byRules || !slices.Equal(refused.Lines, want) {
+				t.Errorf("the refusal is by %q with the report %q, want this repository's own rules and %q", refused.By, refused.Lines, want)
+			}
+		})
+	}
+}
+
+// A diff that still prints "Binary files … differ" for a file, despite --text, refuses the push:
+// the file would otherwise pass unread. The stand-in git prints that header for every diff-tree
+// of a commit's lines and runs the real git for every other command; the push is of a commit that
+// names nothing, which the control, the same push with the real git, passes. The refusal names the
+// commit and not the file, whose path is the push's own text.
+func TestABinaryFileInADiffReadAsTextRefusesThePush(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	repo := filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", "a commit of nothing in particular")
+	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	standIn := t.TempDir()
+	script := "#!/bin/sh\ncase \" $* \" in\n*\" diff-tree \"*\" --unified=0 \"*) printf 'diff --git a/" + theHost + " b/" + theHost + "\\nBinary files a/" + theHost + " and b/" + theHost + " differ\\n'; exit 0 ;;\nesac\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(standIn, "git"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	push := func(t *testing.T, extra ...string) error {
+		t.Helper()
+		return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, extra...).Push(bound(t), PushRequest{
+			Dir:     repo,
+			Remote:  "origin",
+			URL:     "https://github.com/invented-org/invented-repo.git",
+			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+		})
+	}
+	if err := push(t); err != nil {
+		t.Fatalf("the control, the push with the real git: %v", err)
+	}
+	failed := setupFailure(t, push(t, "PATH="+standIn+string(os.PathListSeparator)+os.Getenv("PATH")))
+	says(t, failed, "the push's commits", "git diff-tree printed a file of commit "+short(head)+" as binary despite --text")
+	if strings.Contains(failed.Error(), theHost) {
+		t.Fatalf("the setup failure names the file's path: %v", failed)
 	}
 }
