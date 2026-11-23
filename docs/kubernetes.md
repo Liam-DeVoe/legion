@@ -5351,8 +5351,9 @@ the script runs the install twice, so two waits take two thirds of the deadline 
 That remainder holds at every configuration but the smallest, where the floor takes over:
 under a three-second deadline two floored waits of a second consume it, deliberately, since being serialised and then retired is no worse than racing
 — an unserialised cold fill fails the launch anyway.
-Above that floor the bound is also long enough for the last of six roles to queue behind five serialised installs of the pair, 24 seconds each at the defaults
-— the half of the bound a smaller divisor would break, which `TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline` holds against the installs rather than against the derivation.
+Above that floor the bound is also long enough for the last slot of the pod to queue behind the installs of every slot before it: five in a pod of Legion's six roles, and one more for each role the deployment defines and for each agent a plan runs beside its role's own, such as `implementer-2`, in a slot of its own name.
+The defaults' 120 seconds give the five installs 24 seconds each, and a queue of 120 installs a second each, where a cold install of the pair measured about half a second
+— the half of the bound a smaller divisor would break, which `TestTheInstallLockWaitIsABoundInProportionToTheRegistrationDeadline` holds against the installs of the slots of a pod the runtime builds rather than against the derivation.
 A wait that times out exits 1, so it takes the retry and then the script's named failure
 — that one bump's launch fails the way it did before the lock existed, rather than hanging.
 `flock` is advisory and per-inode, which holds exactly where this needs it
