@@ -4880,13 +4880,13 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
-      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (url.Error.URL, Unanswered), never the URL GitHub's Link header wrote",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Unanswered",
+      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (redact.Unanswered), never the URL GitHub's Link header wrote",
+      "function": "(github.com/sjawhar/legion/daemon/internal/githubrest.Client).call",
       "capture": "githubrest.answer-words/next-page-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
-        "preimage": "failed.URL = shown",
-        "replacement": "_ = shown"
+        "preimage": "redact.Unanswered(err, request, shown)",
+        "replacement": "err"
       }
     },
     {
@@ -7344,12 +7344,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-unanswered",
-      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (githubrest.Unanswered, url.Error.URL), never by the URL it asked, which holds the slug as it came",
+      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (redact.Unanswered), never by the URL it asked, which holds the slug as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
       "capture": "appauth.answer-words/viewer-app-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/appauth/tokencommand.go",
-        "preimage": "githubrest.Unanswered(err, \"/apps/\"+shown)",
+        "preimage": "redact.Unanswered(err, request, \"/apps/\"+shown)",
         "replacement": "err"
       }
     },
@@ -7400,12 +7400,12 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/user-unanswered",
-      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (githubrest.Unanswered, url.Error.URL), never by the URL it asked, which holds the login as it came",
+      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (redact.Unanswered), never by the URL it asked, which holds the login as it came",
       "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).botIdentity",
       "capture": "appauth.answer-words/viewer-user-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/appauth/appauth.go",
-        "preimage": "githubrest.Unanswered(err, shown)",
+        "preimage": "redact.Unanswered(err, request, shown)",
         "replacement": "err"
       }
     },
