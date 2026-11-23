@@ -14,20 +14,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// planGiven is the plan an owner gave with register_plan, stored at the generation the route gave
-// it at: the issue's own, or 0 for an issue the daemon had not recorded, whose plan waits there for
-// the issue's first step. It has three parts, each its own function: the judgement of the version
-// (versionRefusal), its write (writeVersion), and what the write starts on a recorded issue
-// (afterVersion). Each refusal writes nothing and leaves the fact unspent, so the same
-// registration, whose id names the issue, the generation, the document and the version (api's
-// registerPlan), applies when it is given again: a version refused while its task ran is taken
-// after stop_task, and the owner's plan given again at the generation the record holds meets the
-// rules of a later version there.
+// planGiven is the plan an owner, or the sub-owner of one of its tasks, gave with register_plan,
+// stored at the generation the route gave it at: the issue's own, or 0 for an issue the daemon had
+// not recorded, whose plan waits there for the issue's first step. It has three parts, each its
+// own function: the judgement of the version (versionRefusal), its write (writeVersion), and what
+// the write starts on a recorded issue (afterVersion). Each refusal writes nothing and leaves the
+// fact unspent, so the same registration, whose id names the issue, the generation, the document
+// and the version (api's registerPlan), applies when it is given again: a version refused while
+// its task ran is taken after stop_task, and the owner's plan given again at the generation the
+// record holds meets the rules of a later version there.
 //
-// Apply judged the plan already on the record as the fact reads it, since the route read the
-// record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue no
-// longer is refused ISSUE_OUTSIDE_TREE there, and a plan of a run the issue has left
-// PLAN_STALE_GENERATION.
+// Apply judged an architect's plan already on the record as the fact reads it, since the route
+// read the record, or Dispatch, before the fact lock (requestRefusal): a giver that owns the issue
+// no longer is refused ISSUE_OUTSIDE_TREE there, and a plan of a run the issue has left
+// PLAN_STALE_GENERATION. A sub-owner's version is judged here (giverOf).
 func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven) (intake.Result, error) {
 	given, refusal, err := e.versionRefusal(ctx, tx, fact)
 	if err != nil || refusal != nil {
@@ -65,9 +65,13 @@ type givenVersion struct {
 // with no plan rows at its own generation (waitsAtZero); once its first step took a plan, it is of
 // a run that started without it, and is refused PLAN_STALE_GENERATION.
 //
-// A later version is compared, task by task, with the version in force as its owner gave it
+// A later version is compared, task by task, with the version in force as it was given
 // (heldPlan, plan.ChangedTasks). A version of another document than the one in force is refused,
-// but over the default steps, and so is a version at or below it (laterVersionRefusal). A task the
+// but over the default steps, and so is a version at or below it (laterVersionRefusal). Each task
+// the version changes, adds or removes must be its giver's (giverOf, plan.OwnershipRefusals),
+// before any rule of the task's state: the owner of the issue changes the tasks of the top level,
+// and the sub-owner of a task changes its parts. A first version is held to it over no plan, so
+// the owner's first version that writes a part is refused as a later one is. A task the
 // version changes or removes must wait or be stopped: a running task is refused, and so is a held
 // task, one reason for each, and so is a task that is done or left the workflow. A version that
 // adds a need of the task that merges is refused while that task stands at its retro or its merge
@@ -97,14 +101,24 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if given.stored, err = e.store.Plan(ctx, tx, fact.Issue, fact.Generation); err != nil {
 		return givenVersion{}, nil, err
 	}
+	giver, refusal, err := giverOf(fact, issue, given.stored)
+	if err != nil || refusal != nil {
+		return givenVersion{}, refusal, err
+	}
 	if given.stored == nil && given.recorded && !beforeItsWork(*issue) {
 		return givenVersion{}, intake.PlanRefused([]plan.Refusal{intake.StartedBeforePlans(issue.Key)}), nil
 	}
+	// A first version is held to the tasks its giver writes as a later one is, over no plan.
+	held := plan.Plan{}
 	if given.stored != nil {
 		if refusal := laterVersionRefusal(fact.Issue, given.stored.Version, fact.Plan); refusal != nil {
 			return givenVersion{}, refusal, nil
 		}
-		given.changed = plan.ChangedTasks(heldPlan(given.stored), fact.Plan)
+		held = heldPlan(given.stored)
+		given.changed = plan.ChangedTasks(held, fact.Plan)
+	}
+	if refused := plan.OwnershipRefusals(held, fact.Plan, giver); len(refused) > 0 {
+		return givenVersion{}, intake.PlanRefused(refused), nil
 	}
 	given.version, given.tasks, given.steps = givenRows(fact, given.stored, given.changed, e.cfg.DefaultSteps, e.cfg.Deployment, e.now())
 	if given.stored != nil {
@@ -164,6 +178,44 @@ func refusalUnless(err error, refusal *intake.Refusal) *intake.Refusal {
 		return nil
 	}
 	return refusal
+}
+
+// giverOf is who gives fact's version (plan.Giver), read in the fact's transaction from the claim
+// that gave it and stored, the plan in force at the fact's generation (nil for none). An
+// architect's version is the owner's, "", whose claim requestRefusal judged. A sub-owner's
+// (intake.PlanGiven.SubOwner) is the task of stored that names a sub-owner and whose sub-owner's
+// claim, its agent (record.SubOwnerAgent) on issue, gave it: the agent's name alone does not give
+// the task back, since a long id is hashed. requestRefusal judges no sub-owner, so its version of a
+// run the issue has left is refused PLAN_STALE_GENERATION here, and one whose claim is the
+// sub-owner of no task of stored intake.NoSubOwnedTask. A sub-owner starts only once its task runs,
+// so its route gives its version at the generation of the recorded issue.
+func giverOf(fact intake.PlanGiven, issue *record.Issue, stored *record.StoredPlan) (plan.Giver, *intake.Refusal, error) {
+	agent, ok := fact.SubOwner()
+	if !ok {
+		return "", nil, nil
+	}
+	if issue != nil && fact.Generation != issue.Generation {
+		return "", intake.PlanStaleGeneration(fact.Issue, fact.Generation, issue.Generation), nil
+	}
+	if issue != nil && stored != nil {
+		project, err := claim.ProjectToken(issue.Project)
+		if err != nil {
+			return "", nil, err
+		}
+		for _, task := range stored.Tasks {
+			if task.OwnerRole == "" {
+				continue
+			}
+			token, err := claim.AgentToken(project, issue.Key, record.SubOwnerAgent(task.Task))
+			if err != nil {
+				return "", nil, err
+			}
+			if token == fact.GivenBy {
+				return plan.Giver(task.Task), nil, nil
+			}
+		}
+	}
+	return "", intake.PlanRefused([]plan.Refusal{intake.NoSubOwnedTask(fact.Issue, agent)}), nil
 }
 
 // writtenVersion is what writeVersion read of the version in force before it wrote fact's over

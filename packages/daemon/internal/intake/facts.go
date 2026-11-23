@@ -1208,25 +1208,29 @@ type GateRegistered struct {
 
 func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 
-// PlanGiven is the plan the owner of an issue gave Legion with register_plan (api's
-// registerPlan): the blocks of one version of its plan document, as the route read them from
-// Dispatch at that version and held them to plan.Supported and plan.Validate, so a plan either
-// check refuses never reaches the workflow. Generation is the issue's generation the route read,
-// and 0 for an issue the daemon has not recorded, whose plan waits at generation 0 until the
-// issue's first step takes the newest plan its owner gave. GivenBy is the claim of the
-// architect whose grant gave it, which is how the first step tells its owner's plan from an
-// earlier owner's.
+// PlanGiven is the plan the owner of an issue, or the sub-owner of one of its tasks, gave Legion
+// with register_plan (api's registerPlan): the blocks of one version of its plan document, as the
+// route read them from Dispatch at that version and held them to plan.Supported and plan.Validate,
+// so a plan either check refuses never reaches the workflow. Generation is the issue's generation
+// the route read, and 0 for an issue the daemon has not recorded, whose plan waits at generation 0
+// until the issue's first step takes the newest plan its owner gave. GivenBy is the claim whose
+// grant gave it: an architect's, which is how the first step tells its owner's plan from an earlier
+// owner's, or a sub-owner's (SubOwner), whose version is its owner's plan.
 //
 // The workflow judges the giver and the generation again in the fact's own transaction, since
-// the route read them before the fact lock: a giver that owns the issue no longer is refused
+// the route read them before the fact lock: an architect that owns the issue no longer is refused
 // ISSUE_OUTSIDE_TREE (IssueOutsideTree), and a plan of a run the issue has left
 // PLAN_STALE_GENERATION, a plan given at generation 0 among them once the daemon recorded the
-// issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
-// has not started, and applies the rules of a later version. It answers PLAN_REFUSED
-// (RunningTaskChanged; StartedTaskBaseMoved; StartedBeforePlans for an issue that ran before
-// Legion took plans; or AgentUnnamed for a version in which a fresh agent would need the name of
-// its role that another agent of the plan holds from an earlier version, refused before anything
-// is written),
+// issue and its first step took a plan. A sub-owner's version is no architect's request (Request):
+// the workflow reads the task the sub-owner gives for from the plan in force, and refuses one of
+// no task of it (NoSubOwnedTask). It holds each version to the tasks its giver writes
+// (plan.OwnershipRefusals): the owner of the issue the tasks of the top level, and the sub-owner
+// of a task its parts. It stores the plan (workflow's planGiven) where its task has not started,
+// and applies the rules of a later version. It answers PLAN_REFUSED (NoSubOwnedTask; the reasons of
+// plan.OwnershipRefusals; RunningTaskChanged; StartedTaskBaseMoved; StartedBeforePlans for an
+// issue that ran before Legion took plans; or AgentUnnamed for a version in which a fresh agent
+// would need the name of its role that another agent of the plan holds from an earlier version,
+// refused before anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE and TREE_LINGERING, and it leaves each of those
 // refusals unspent (Result.Unspent). The route names one registration by the issue, the
@@ -1240,6 +1244,13 @@ type PlanGiven struct {
 }
 
 func (f PlanGiven) namedIssue() (string, bool) { return f.Issue, true }
+
+// SubOwner is the name of the agent whose claim gave the version where that agent is the
+// sub-owner of a task (record.IsSubOwnerAgent), and false where an architect gave it.
+func (f PlanGiven) SubOwner() (claim.Agent, bool) {
+	_, agent, named := f.GivenBy.Cut()
+	return agent, named && record.IsSubOwnerAgent(agent)
+}
 
 // TaskStopped is the owner's stop_task of one task of a recorded issue (api's stopTask), by the
 // claim of the architect whose grant asked for it, at Generation, the issue's generation the route
@@ -1290,7 +1301,8 @@ func (f TaskJoined) namedIssue() (string, bool) { return f.Issue, true }
 type ArchitectRequest interface {
 	Fact
 	// Request is the request the fact carries; ok is false where the fact is no architect's
-	// request: a phase worker's backward move, or the operator's retry.
+	// request: a phase worker's backward move, the operator's retry, or a sub-owner's version of
+	// the plan (PlanGiven.SubOwner), whose giver and generation the workflow's planGiven judges.
 	Request() (request Request, ok bool)
 	// StaleGeneration is the refusal of the request where the issue is on generation now, and
 	// not on the one its route read.
@@ -1323,6 +1335,9 @@ type Request struct {
 }
 
 func (f PlanGiven) Request() (Request, bool) {
+	if _, ok := f.SubOwner(); ok {
+		return Request{}, false
+	}
 	return Request{Issue: f.Issue, By: f.GivenBy, Generation: f.Generation, Owners: record.OwnerOfTree, Operation: "register_plan"}, true
 }
 
@@ -1850,19 +1865,27 @@ type Refusal struct {
 	Reasons []plan.Refusal
 }
 
-// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
-// cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running or held task (RunningTaskChanged,
-// HeldTaskChanged), one that needs the task that merges where it merges (NeedOfMergingTask), one
-// that moves the base of a running or held task (StartedTaskBaseMoved), or one whose agent this
-// release cannot name (AgentUnnamed). The message holds every reason in its order, so a reader of
-// the sentence alone reads every cause.
+// PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner or a sub-owner gave, with one
+// reason for each cause: register_plan answers it for a plan that plan.Supported or plan.Validate
+// refuses, and the workflow for a version of a sub-owner of no task (NoSubOwnedTask), one that
+// changes a task its giver does not write (plan.OwnershipRefusals), one that changes or removes a
+// running or held task (RunningTaskChanged, HeldTaskChanged), one that needs the task that merges
+// where it merges (NeedOfMergingTask), one that moves the base of a running or held task
+// (StartedTaskBaseMoved), or one whose agent this release cannot name (AgentUnnamed). The message
+// holds every reason in its order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {
 		texts[i] = reason.Reason
 	}
 	return &Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + strings.Join(texts, " "), Reasons: reasons}
+}
+
+// NoSubOwnedTask is the reason a version of issue's plan is refused when agent, the sub-owner's
+// agent whose claim gave it (PlanGiven.SubOwner), is the sub-owner of no task of the plan in force
+// (record.SubOwnerAgent): the plan in force names each task a sub-owner gives the parts of.
+func NoSubOwnedTask(issue string, agent claim.Agent) plan.Refusal {
+	return plan.Refusal{Reason: fmt.Sprintf("%s is the sub-owner of no task of the plan in force of %s.", agent, issue)}
 }
 
 // RunningTaskChanged is the reason a later version of the plan is refused when it changes or
