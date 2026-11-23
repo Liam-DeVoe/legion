@@ -49,10 +49,11 @@ const (
 	ClaimSession = "session"
 	// ClaimPerson is the person the session acts for.
 	ClaimPerson = "person"
-	// ClaimService is the service a token that names no person is, a machine's fleet or the
-	// service a read entry names, and is empty for every token that names one. It is written
-	// always, for the reason ClaimProjectScope is: a reader of the row never has to take an
-	// absent service as either "no service" or "a claim this build of the broker did not write".
+	// ClaimService is the service a token that names no person is, a machine's fleet, the service
+	// a read entry names, or a job entry's listed identity (exchange.Claims.Service), and is empty
+	// for every token that names one. It is written always, for the reason ClaimProjectScope is: a
+	// reader of the row never has to take an absent service as either "no service" or "a claim
+	// this build of the broker did not write".
 	ClaimService = "service"
 	// ClaimMachine is the machine a person signed in on acted through: the Google account the
 	// trade's actor token named (exchange.Claims.Actor). It is set only beside ClaimPerson, and
@@ -62,17 +63,23 @@ const (
 	// the name an introspection can answer and a reader can act on.
 	ClaimMachine = "machine"
 	// ClaimProjectScope is what ClaimProjects means, one of oauthwire.ProjectScopeNamed,
-	// oauthwire.ProjectScopePerson or oauthwire.ProjectScopeNone, the last for a read entry's
-	// token alone, which is granted oauthwire.ScopeRead beside it (writeProjectScope). It is
-	// written always, so a reader never has to take an absent list as "every project", "no
-	// project at all" or a claim nobody decided.
+	// oauthwire.ProjectScopePerson, oauthwire.ProjectScopeNone or oauthwire.ProjectScopePublic: the
+	// none scope for a read entry's token alone, which is granted oauthwire.ScopeRead beside it, and
+	// the public scope for a job entry's alone (writeProjectScope). A job's token is named or public
+	// as its entry's list is, and asks Dispatch nothing (projectAccess), because the operator's
+	// entry chose its list and it names no person whose sight of a project there is to check. It is
+	// written always, so a reader never has to take an absent list as "every project", "no project
+	// at all" or a claim nobody decided.
 	ClaimProjectScope = "project_scope"
 	// ClaimProjects is the token's list of projects in its stored spelling: the keys separated by
 	// one space (oauthwire.JoinProjects), and the empty string for none, which is all a token of
-	// the none scope ever carries. It is written always, for the reason ClaimProjectScope is. It
-	// is a string and not a list because the session's extra claims are stored as JSON and read
-	// back as map[string]any, so a []string written here would come back as []any and read as no
-	// projects at all; one grammar serves the form parameter, this claim and
+	// the none scope ever carries. A job's token carries its entry's whole list, whatever the trade
+	// named, with no question to Dispatch, since the operator's entry chose it: one project under
+	// the named scope, and the private projects under the public scope, beside which it reaches
+	// every public project, which no list names. It is written always, for the reason
+	// ClaimProjectScope is. It is a string and not a list because the session's extra claims are
+	// stored as JSON and read back as map[string]any, so a []string written here would come back as
+	// []any and read as no projects at all; one grammar serves the form parameter, this claim and
 	// AGENT_SECRETS_PROJECTS. An introspection answers it as a list.
 	ClaimProjects = "projects"
 )
@@ -712,7 +719,10 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 // ClaimProjectScope; the list of projects under ClaimProjects, which is empty for every token of
 // the none scope; a named token's one project under claimLegacyProject too, and none for any
 // other; and oauthwire.ScopeRead for exchange.ProjectScopeNone, the read entry's decision, and
-// no scope for any other.
+// no scope for any other. exchange.ProjectScopePublic, a job entry's decision, is written as
+// oauthwire.ProjectScopePublic with the entry's whole list, no legacy claim, which holds a named
+// token's one project alone, and no scope, since oauthwire.ScopeRead is a read entry's and a
+// job's token writes.
 //
 // The entry decides the scope, and the request's own scope parameter never does. The exchange
 // client is registered for oauthwire.Scope alone (oauthstore.exchangeClient), so the library
@@ -727,7 +737,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 // any scope. Read as the person scope, as a build before exchange.ProjectScopeNone read every
 // value that was not named, a Claims nobody filled in would mint a token that acts as its person.
 // No path through decide hands it one today, since ExchangeConfig.Policy is a concrete
-// *exchange.Set and each of its decisions sets one of the three values below, so the refusal is
+// *exchange.Set and each of its decisions sets one of the four values below, so the refusal is
 // what keeps a value that package adds later from being minted as one of them before this switch
 // learns its word.
 func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSession, claims exchange.Claims) error {
@@ -739,6 +749,8 @@ func writeProjectScope(request oauth2.Requester, session *oauthstore.ExchangeSes
 	case exchange.ProjectScopeNone:
 		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopeNone
 		request.GrantScope(oauthwire.ScopeRead)
+	case exchange.ProjectScopePublic:
+		session.Extra[ClaimProjectScope] = oauthwire.ProjectScopePublic
 	default:
 		return oauth2.ErrServerError.WithDebugf("the exchange decided project scope %d (%s) for %s, which this broker writes no word for", int(claims.Scope), claims.Scope, claims.Principal)
 	}
@@ -792,12 +804,12 @@ func dispatchUnreachable(err error) error {
 // kind at all, since the broker verified its account against BROKER_SIGNIN_DOMAIN itself; every
 // other trade acting as its person asks.
 //
-// A token an operator's entry maps: its one project must be one Dispatch says the entry's person
-// sees, and a pairing Dispatch refuses is refused invalid_request naming both. An account entry
-// that names no project (the shared public-session account's) is refused when Dispatch calls its
-// person a restricted member, who sees only the projects that name them (projectaccess.ListAllowed).
-// With no check configured an entry's token mints as it always has, since the operator's own
-// setting is what chose the project, or chose none.
+// A token an operator's entry maps to its person: its one project must be one Dispatch says the
+// entry's person sees, and a pairing Dispatch refuses is refused invalid_request naming both. An
+// account entry that names no project (the shared public-session account's) is refused when
+// Dispatch calls its person a restricted member, who sees only the projects that name them
+// (projectaccess.ListAllowed). With no check configured an entry's token mints as it always has,
+// since the operator's own setting is what chose the project, or chose none.
 //
 // Either way, a list that names no project mints as it always has when Dispatch answers anything
 // but restricted, and when the broker has no check configured; while Dispatch cannot be asked
@@ -810,7 +822,11 @@ func dispatchUnreachable(err error) error {
 // not know (unknownMemberKind) refuse every trade that meets them server_error: each is a
 // misconfiguration, never an outage to mint through.
 //
-// A token that names no person names no project (exchange.ErrProjectsNoPerson) and asks nothing.
+// A token that names no person asks Dispatch nothing. A machine's whose entry names no person and
+// a read entry's name no project (exchange.ErrProjectsNoPerson). A job entry's names its entry's
+// whole list, under the named scope or the public one, and that is not asked either: the
+// operator's entry chose the list, and there is no person whose sight of a project to check, so
+// the token mints the same whether Dispatch is configured, reachable or neither.
 func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, session *oauthstore.ExchangeSession) error {
 	person, _ := session.Extra[ClaimPerson].(string)
 	scope, _ := session.Extra[ClaimProjectScope].(string)

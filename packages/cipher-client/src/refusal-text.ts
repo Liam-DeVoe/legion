@@ -45,6 +45,8 @@ const WORKFLOW_REF = "[A-Za-z0-9_./@-]{1,400}";
 const IDENTITY = `(?:${K8S_ACCOUNT}|${REPOSITORY}/${WORKFLOW_PATH}|${EMAIL})`;
 const FIXED_SESSION = "[A-Za-z0-9._:@/+-]{1,200}";
 const PROJECT_LIST = `${PROJECT_SLOT}(?: ${PROJECT_SLOT}){0,31}`;
+/** A job entry's list as its setting spells it: one key, or `public` and up to 16 private keys. */
+const JOB_LIST = `(?:public(?:,${PROJECT_SLOT}){0,16}|${PROJECT_SLOT})`;
 const SERVICE = "[A-Za-z0-9._-]{1,100}";
 const CLOUD_PROJECT = "[a-z][a-z0-9-]{4,29}";
 const INSTANCE = "[a-z0-9][a-z0-9-]{0,62}";
@@ -233,6 +235,15 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     IDENTITY,
     PROJECT_SLOT,
     PROJECT_LIST
+  ),
+  // A job entry's list (`exchange.JobProjects`, as its setting spells it): one project key, or
+  // `public` and its private keys; the request named one key the list does not name.
+  policy(
+    "projectsFixed",
+    "%s's entry gives its token the projects %s, and the request named %s, which that list does not name",
+    IDENTITY,
+    JOB_LIST,
+    PROJECT_SLOT
   ),
   // The broker's own audience check (`oauth/exchange.go`, `audience`), which wraps no sentinel.
   `${escapeRegExp("The subject token was refused: ")}${formatPattern("the subject token was not minted for %s, which is the audience this broker accepts from %s", [URI, URI])}\\.`,

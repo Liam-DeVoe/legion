@@ -18,51 +18,51 @@ import (
 // switch decide writes a token's project scope through, to one word per value of
 // exchange.ProjectScope. Each known value writes its word and its list of projects, the one
 // project under the legacy claim only for a named token, and the OAuth scope read only for the
-// none scope; each session starts holding projects from an earlier decision, so a scope that
-// names none is seen to drop them. A value the switch does not know, the zero value and one past
-// the last included, is a server error that names the value, and the session is left as it was:
-// no project scope, no projects and no scope granted. No path through decide can hand it such a
-// value today (ExchangeConfig.Policy is a concrete *exchange.Set, every decision of which sets
-// one of the three), so this test is the only thing that reaches the refusal, and it is what
-// stops it from falling back to the person scope as the switch did before the none scope
-// existed.
+// none scope: a public token, a job's, writes its whole list and neither of the other two. Each
+// session starts holding projects from an earlier decision, so a scope that names none is seen to
+// drop them. A value the switch does not know, the zero value and one past the last included, is
+// a server error that names the value, and the session is left as it was: no project scope, no
+// projects and no scope granted. No path through decide can hand it such a value today
+// (ExchangeConfig.Policy is a concrete *exchange.Set, every decision of which sets one of the
+// four), so this test is the only thing that reaches the refusal, and it is what stops it from
+// falling back to the person scope as the switch did before the none scope existed.
 func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T) {
 	const project, stale = "ACME", "STALE"
 	for _, c := range []struct {
-		name    string
-		scope   exchange.ProjectScope
-		word    string
-		project string
-		granted []string
+		name     string
+		scope    exchange.ProjectScope
+		projects []string
+		word     string
+		// stored is ClaimProjects as written, and legacy claimLegacyProject, empty for absent.
+		stored, legacy string
+		granted        []string
 	}{
-		{name: "named", scope: exchange.ProjectScopeNamed, word: oauthwire.ProjectScopeNamed, project: project},
+		{name: "named", scope: exchange.ProjectScopeNamed, projects: []string{project}, word: oauthwire.ProjectScopeNamed, stored: project, legacy: project},
 		{name: "person", scope: exchange.ProjectScopePerson, word: oauthwire.ProjectScopePerson},
 		{name: "none", scope: exchange.ProjectScopeNone, word: oauthwire.ProjectScopeNone, granted: []string{oauthwire.ScopeRead}},
+		{name: "public", scope: exchange.ProjectScopePublic, projects: []string{"PRIVA", "PRIVB"}, word: oauthwire.ProjectScopePublic, stored: "PRIVA PRIVB"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			session := oauthstore.NewExchangeSession()
 			session.Extra[ClaimProjects] = stale
 			session.Extra[claimLegacyProject] = stale
 			request := &oauth2.Request{Session: session}
-			claims := exchange.Claims{Scope: c.scope}
-			if c.scope == exchange.ProjectScopeNamed {
-				claims.Projects = []string{project}
-			}
+			claims := exchange.Claims{Scope: c.scope, Projects: c.projects}
 			if err := writeProjectScope(request, session, claims); err != nil {
 				t.Fatalf("writeProjectScope(%v) = %v, want it written", c.scope, err)
 			}
 			if got := session.Extra[ClaimProjectScope]; got != c.word {
 				t.Errorf("%s = %v, want %q", ClaimProjectScope, got, c.word)
 			}
-			if got := session.Extra[ClaimProjects]; got != c.project {
-				t.Errorf("%s = %v, want %q", ClaimProjects, got, c.project)
+			if got := session.Extra[ClaimProjects]; got != c.stored {
+				t.Errorf("%s = %v, want %q", ClaimProjects, got, c.stored)
 			}
 			got, named := session.Extra[claimLegacyProject]
-			if c.project == "" && named {
-				t.Errorf("%s = %v, want it absent: the %s scope names no project", claimLegacyProject, got, c.word)
+			if c.legacy == "" && named {
+				t.Errorf("%s = %v, want it absent: only a named token stores its one project there, and a %s token is not one", claimLegacyProject, got, c.word)
 			}
-			if c.project != "" && got != c.project {
-				t.Errorf("%s = %v, want %q", claimLegacyProject, got, c.project)
+			if c.legacy != "" && got != c.legacy {
+				t.Errorf("%s = %v, want %q", claimLegacyProject, got, c.legacy)
 			}
 			if granted := []string(request.GetGrantedScopes()); !slices.Equal(granted, c.granted) {
 				t.Errorf("granted scopes = %q, want %q: the entry's decision grants read and nothing else does", granted, c.granted)

@@ -118,6 +118,8 @@ var policyRefusals = []policyRefusal{
 	{"%w: the subject token's %s claim is not a non-empty string", []any{exchange.ErrClaimMissing, "sub"}, policySource},
 	{"%w: %s's entry names no project, and the request named %s", []any{exchange.ErrProjectsFixed, corpusAccount, oauthwire.JoinProjects([]string{"DSP", "INFRA"})}, policySource},
 	{"%w: %s writes the project %s that its entry names, and the request named %s", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "INFRA"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusAccount, "public,DSP,OPS", "PUB"}, policySource},
+	{"%w: %s's entry gives its token the projects %s, and the request named %s, which that list does not name", []any{exchange.ErrProjectsFixed, corpusRepository + "/" + corpusWorkflow, "DSP", "PUB"}, policySource},
 	{"the subject token was not minted for %s, which is the audience this broker accepts from %s", []any{"legion-broker", "https://kubernetes.default.svc"}, "exchange.go"},
 }
 

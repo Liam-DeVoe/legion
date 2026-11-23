@@ -144,6 +144,49 @@ func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
 	}
 }
 
+// TestThePodSessionRouteRegistersAJobAccountsPod: a BROKER_EXCHANGE_JOB_ACCOUNTS entry that fixes
+// no session has its pods registered as a person's account entry does, since its pods write under
+// the names their registrar gives them, and the registration is stored; one that fixes a session
+// is refused 409 SESSION_FIXED naming that session, and nothing is written for its pod.
+func TestThePodSessionRouteRegistersAJobAccountsPod(t *testing.T) {
+	job := func(text string) exchange.JobProjects {
+		t.Helper()
+		list, err := exchange.ParseJobProjects(text)
+		if err != nil {
+			t.Fatalf("exchange.ParseJobProjects(%q): %v", text, err)
+		}
+		return list
+	}
+	const fixed = "example-sweeper"
+	policy, err := exchange.NewSet([]exchange.AccountEntry{
+		{Account: workerAccount, Job: job(ciphertest.ExchangeProject)},
+		{Account: otherAccount, Job: job("public,PRIVA"), Session: fixed},
+	}, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	ts := newTestServerWith(t, withProvider(t, func(config *oauth.Config) {
+		config.Exchange = oauth.ExchangeConfig{Policy: policy}
+	}))
+	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
+
+	status, body := ts.registerPodSession(t, registrar, ts.accountToken(t, workerAccount, "pod-uid-job", time.Hour), "example-job-1")
+	if got := decode[wirePodSession](t, body); status != http.StatusOK || got.PodUID != "pod-uid-job" || got.Session != "example-job-1" {
+		t.Fatalf("registering a pod of the job account that fixes no session = %d %s, want 200 answering pod-uid-job under example-job-1", status, body)
+	}
+	if rows := ts.column(t, `select session from oauth_pod_sessions where pod_uid = 'pod-uid-job'`); !slices.Equal(rows, []string{"example-job-1"}) {
+		t.Fatalf("the job pod's registration stored %v, want [example-job-1]", rows)
+	}
+
+	status, body = ts.registerPodSession(t, registrar, ts.accountToken(t, otherAccount, "pod-uid-sweeper", time.Hour), fixed)
+	if code := decode[wireError](t, body).Code; status != http.StatusConflict || code != "SESSION_FIXED" || !strings.Contains(string(body), fixed) {
+		t.Fatalf("registering a pod of the job account that fixes %s = %d %s, want 409 SESSION_FIXED naming %s: its pods write under that name with no registration", fixed, status, body, fixed)
+	}
+	if rows := ts.column(t, `select session from oauth_pod_sessions where pod_uid = 'pod-uid-sweeper'`); len(rows) != 0 {
+		t.Fatalf("the refused registration wrote %v", rows)
+	}
+}
+
 // withExchangeAccounts is withProvider with a token exchange that lists accounts, none of them
 // fixing a session, as withOAuth is withProvider with the machine-login routes' device login.
 // The rig's own entry fixes a session (ciphertest.ExchangeSession), and a registration is
