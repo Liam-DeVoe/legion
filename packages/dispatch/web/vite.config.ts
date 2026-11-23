@@ -225,6 +225,13 @@ export default defineConfig({
     // document holds a mermaid block; Vite emits it as an asset and holds it to no chunk limit.
     // The editor's lazy chunk (`lib-*.js`, 188,972 bytes) carries none of the renderer.
     chunkSizeWarningLimit: 1200,
+    // No modulepreload polyfill: Vite's copy of it is 710 bytes of the entry chunk, and it returns
+    // at once in every browser that has `<link rel=modulepreload>` - Chrome 66+, Safari 17+,
+    // Firefox 115+, which covers every browser the browser suite runs - so those are unchanged
+    // without it. In Safari 14-16 and Firefox 78-114 a chunk's dependencies then load after the
+    // chunk that imports them rather than beside it, which is slower and still runs the app: the
+    // architect's performance trade for the entry's budget (dispatch://INFRA-1109, 2026-11-23).
+    modulePreload: { polyfill: false },
     emptyOutDir: true,
   },
   server: {
