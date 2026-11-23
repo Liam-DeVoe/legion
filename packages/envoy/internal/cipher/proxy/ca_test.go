@@ -12,23 +12,32 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// TestTheAuthorityRefusesFilesItCannotSignWith: a key that is not the certificate's, and a
-// certificate that is no authority at all.
+// TestTheAuthorityRefusesFilesItCannotSignWith: a key that is not the certificate's, a
+// certificate that is no authority at all, a file that is not there, and a chain whose second
+// certificate is no certificate, which the refusal numbers as the file holds it.
 func TestTheAuthorityRefusesFilesItCannotSignWith(t *testing.T) {
 	certFile, keyFile := writeCAFiles(t)
 	_, otherKeyFile := writeCAFiles(t)
 	leafCertFile, leafKeyFile := writeLeafFiles(t)
+	first, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokenChainFile := filepath.Join(t.TempDir(), "chain.crt")
+	writeFile(t, brokenChainFile, append(first, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("no certificate")})...))
 
 	for _, row := range []struct{ name, certFile, keyFile, want string }{
 		{"a key that is not this certificate's", certFile, otherKeyFile, "private key does not match"},
 		{"a certificate that is not an authority", leafCertFile, leafKeyFile, "not a certificate authority"},
 		{"a certificate file that is not there", filepath.Join(t.TempDir(), "absent.crt"), keyFile, "absent.crt"},
+		{"a chain whose second certificate is no certificate", brokenChainFile, keyFile, "chain.crt: certificate 2:"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			authority, err := NewAuthority(row.certFile, row.keyFile, AuthorityOptions{})

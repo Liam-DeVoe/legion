@@ -149,12 +149,12 @@ func NewAuthority(certFile, keyFile string, o AuthorityOptions) (*Authority, err
 	if err != nil {
 		return nil, fmt.Errorf("proxy certificate authority (%s, %s): %w", certFile, keyFile, err)
 	}
-	// LoadX509KeyPair parses the first certificate only far enough to compare the two public
-	// keys, so each certificate is parsed here.
+	// LoadX509KeyPair hands back the first certificate parsed, as Leaf, and the rest as DER.
 	certs := make([]*x509.Certificate, len(pair.Certificate))
-	for i, der := range pair.Certificate {
-		if certs[i], err = x509.ParseCertificate(der); err != nil {
-			return nil, fmt.Errorf("proxy certificate authority %s: certificate %d: %w", certFile, i+1, err)
+	certs[0] = pair.Leaf
+	for i, der := range pair.Certificate[1:] {
+		if certs[i+1], err = x509.ParseCertificate(der); err != nil {
+			return nil, fmt.Errorf("proxy certificate authority %s: certificate %d: %w", certFile, i+2, err)
 		}
 	}
 	key, ok := pair.PrivateKey.(crypto.Signer)
