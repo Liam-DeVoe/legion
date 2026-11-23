@@ -146,19 +146,19 @@ func TestTheSpecImportRouteDescriptionNamesEachRefusal(t *testing.T) {
 	slices.Sort(union)
 	for _, code := range union {
 		var holds, lacks []string
-		for _, set := range sets {
+		for index, set := range sets {
+			name := set.name
+			if index == 0 && set.codes[code] {
+				name += " (" + strings.Join(answered[code], ", ") + ")"
+			}
 			if set.codes[code] {
-				holds = append(holds, set.name)
+				holds = append(holds, name)
 			} else {
-				lacks = append(lacks, set.name)
+				lacks = append(lacks, name)
 			}
 		}
 		if len(lacks) > 0 {
-			cases := ""
-			if len(answered[code]) > 0 {
-				cases = " (" + strings.Join(answered[code], ", ") + ")"
-			}
-			t.Errorf("409 %s: %s%s, and not: %s", code, strings.Join(holds, "; "), cases, strings.Join(lacks, "; "))
+			t.Errorf("409 %s: %s, and not: %s", code, strings.Join(holds, "; "), strings.Join(lacks, "; "))
 		}
 	}
 }

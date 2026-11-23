@@ -2607,11 +2607,21 @@ export const dispatchToolSpecs = [
       "notes names its notes document, whose kinds, abouts and supports count only at a version a person's " +
       "approval names: the version the level's approval request names, else the version of the person's " +
       "newest approval of the notes document. With no such approval no statement takes a field from the notes. " +
+      "A field that a statement's note does not write, or writes with no value, is a field that the statement " +
+      "lacks. An About or a Supports of none is a relation to nothing. " +
       "Each component and interface, and each statement whose kind, about, supports and parent resolve, is " +
       "written with that approval as its provenance; each other statement is held with the fields it lacks, " +
       "and the holds no repair issue names get one child issue of the level, assigned to its assignee, whose " +
-      "spec lists them, opened and named on them in one act. A node already approved is left as it stands, so " +
-      "a second run writes only what the first could not. It prints what it wrote, each hold, and the repair issue.",
+      "spec lists them, opened and named on them in one act. It answers 409 REPAIR_ISSUE_RACED when another " +
+      "writer names a repair issue on one of the holds, or clears a hold, during each of three opens of the " +
+      "child. Then run it again. A node already approved is left as it stands, so a second run writes only " +
+      "what the first could not. It refuses a level that the approved spec cannot hold, and writes nothing. " +
+      "It answers 409 SPEC_NODE_INVALID when the approved spec cannot hold a node of the level. The causes are " +
+      "a row of the Components table that is no component, one id on two nodes of the level, an id that is no " +
+      "id, an id longer than an address of the store, and a node that breaks a rule of its kind. It answers " +
+      "409 SPEC_PARENT_MISSING when a statement is under a statement of the level that the approved spec " +
+      "removed or holds as another kind of node. It answers 409 SPEC_LOOP when the parent and supports " +
+      "relations make a loop. It prints what it wrote, each hold, and the repair issue.",
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       notes: z
