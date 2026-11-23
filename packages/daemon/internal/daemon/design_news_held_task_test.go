@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -175,8 +177,16 @@ func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *tes
 		t.Fatalf("the architect's news task carries %+v, want the holder item of %s", news, pathChild)
 	}
 
-	// In that turn the architect signs the child off, and the child's retro completes.
-	applyFact(t, r.pool, "api", "sign-off-"+pathChild, intake.SignOff{Issue: pathChild}, r.engine, r.admission)
+	// In that turn the architect signs the child off, and the child's retro completes. The sign-off
+	// is the root architect's, the agent the child's accepting start names (the child's own
+	// architect has no claim), on the step it stands in and at the head it read.
+	var entry record.StepEntry
+	r.inTx(func(tx pgx.Tx) (err error) {
+		entry, err = r.records.OpenStep(r.ctx, tx, pathChild)
+		return err
+	})
+	applyFact(t, r.pool, "api", "sign-off-"+pathChild, intake.SignOff{Issue: pathChild, By: architectToken, Generation: 1, Entry: entry,
+		Commit: pathHead(pathChild)}, r.engine, r.admission)
 	r.complete(pathChild)
 	if issue := readIssue(t, r.pool, pathChild); issue.Phase != phase.Merging {
 		t.Fatalf("%s stands in %s after its retro's completion, want merging", pathChild, issue.Phase)

@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,8 +150,9 @@ func (r *newsPathRig) inTx(write func(pgx.Tx) error) {
 	}
 }
 
-// pathHead is the head of key's pull request.
-func pathHead(key string) string { return "head-" + strings.ToLower(key) }
+// pathHead is the head of key's pull request: a 40-character lower-case commit of key's own, as a
+// head is, since Dispatch's check states name their head as one (checkstatetest.Decoded).
+func pathHead(key string) string { return fmt.Sprintf("%x", sha1.Sum([]byte(key))) }
 
 // member records m, the i-th member of the tree, with its pull request open and mergeable at its
 // head, and the phases row of the role its phase names: a reviewer's holding its approval of that
@@ -241,8 +243,11 @@ func (r *newsPathRig) dispatchEvent(kind intake.DispatchArtifactKind, version in
 }
 
 // complete applies the completion of key's phase by the role its phase names, as the handoff route
-// applies one once it has read the handoff record back: the tester's with a pass. It reports the
-// run the issue stands in, its generation, and names a handoff record of that run.
+// applies one once it has read the handoff record back. A tester's completion names the head it
+// tested, and its move reads Dispatch's check states at that head and at no other (workflow's
+// decideTesting), so a pass of the head's check is applied first, as the live consumer applies
+// Dispatch's event ahead of the completion it decides (testedAs). It reports the run the issue
+// stands in, its generation, and names a handoff record of that run.
 func (r *newsPathRig) complete(key string) {
 	r.t.Helper()
 	issue := readIssue(r.t, r.pool, key)
@@ -251,14 +256,16 @@ func (r *newsPathRig) complete(key string) {
 	fact := intake.HandoffComplete{Generation: issue.Generation, Issue: key, Role: role, Claim: mustClaimToken(r.t, key, role), Summary: "done",
 		Commit: pathHead(key), HandoffRecord: fmt.Sprintf("%s-%d", word, issue.Generation), HandoffVersion: 1}
 	if role == claim.RoleTester {
-		fact.Verdict = "pass"
+		testedAs(r.t, r.pool, key, pathHead(key), true, r.engine, r.admission)
 	}
 	applyFact(r.t, r.pool, "api", fmt.Sprintf("complete-%s-%s-%d", key, issue.Phase, issue.Generation), fact, r.engine, r.admission)
 }
 
 // completeThroughTheRoute is machine's worker completing its phase through the daemon's handoff
 // route, as its `legion` tool does, naming the handoff record it wrote under its own session; it
-// answers the route's status and body.
+// answers the route's status and body. A tester's completion names the head it tested, which the
+// route requires (TESTED_HEAD_REQUIRED), and a pass of the head's check is applied first, as
+// complete applies it.
 func (r *newsPathRig) completeThroughTheRoute(machine *supervise.Machine, verdict string) (int, string) {
 	r.t.Helper()
 	held := machine.Claim()
@@ -275,7 +282,12 @@ func (r *newsPathRig) completeThroughTheRoute(machine *supervise.Machine, verdic
 	if err != nil {
 		r.t.Fatalf("mint the grant %s completes with: %v", held.Token, err)
 	}
-	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the work is done", Verdict: verdict,
+	commit := ""
+	if held.Role == claim.RoleTester {
+		commit = pathHead(held.Issue)
+		testedAs(r.t, r.pool, held.Issue, commit, true, r.engine, r.admission)
+	}
+	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the work is done", Verdict: verdict, Commit: commit,
 		HandoffID: handoffs.write(held.Issue, word, held.Session), HandoffVersion: 1})
 	if err != nil {
 		r.t.Fatal(err)
