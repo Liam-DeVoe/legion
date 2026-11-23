@@ -770,10 +770,10 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 // is the machine's to answer (machineRetry), relaunched on its own with whatever task it still
 // holds. An architect is the machine's to relaunch in every case, since no phase start starts it;
 // where it is the owner of its issue's task standing at a place of its own (ownersOwnPlace), the
-// phase's restart then tells it its step again with one more owner-step, which a relaunch alone
-// would not, and the answer is that restart's 202. A restart refused after the relaunch is logged
-// and the relaunch answered: the claim runs again, and its catch-up at its ready tells it the step
-// it owes (workflow's owedOwnersStep). It is how an operator relaunches the claims a runtime failed
+// phase's restart then tells it its step again with one more owner-step, and the answer is that
+// restart's 202. A restart refused after the relaunch is logged and the relaunch answered: the
+// claim runs again, and is told the step it owes when it does (workflow's owedOwnersStep, where no
+// owner-step of it is still queued). It is how an operator relaunches the claims a runtime failed
 // to launch — every failed claim in turn, with `legion claims retry --failed` — once the cause is
 // gone.
 //

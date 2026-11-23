@@ -56,8 +56,7 @@ func ownerStepsOf(t *testing.T, h *harness, issue string) int {
 
 // The operator's retry of the owner's failed claim while its issue stands at a step of its own
 // (`tester:owner`) relaunches the claim and tells the owner its step again: one more owner-step,
-// with the retry's task, and 202, as a retry that restarts a phase answers. Nothing else would
-// tell it: the owner-step that started the step finished undelivered when the claim failed.
+// with the retry's task, and 202, as a retry that restarts a phase answers.
 //
 // The control is the owner's retry where its issue stands at admitted, which is no step of its
 // own: the claim is relaunched through its machine alone, 200, and no owner-step is queued.
