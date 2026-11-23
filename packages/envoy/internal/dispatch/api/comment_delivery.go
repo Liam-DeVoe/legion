@@ -250,7 +250,10 @@ func (s *server) sendResolvedDelivery(
 	if target.redirect != nil && queued {
 		return sendOutcome{failure: target.redirect.listenerAnswer.ResolveError, refused: &target.redirect.listenerAnswer}
 	}
-	// A duplicate names an envelope JetStream discarded, so the attempt records none.
+	// A duplicate stored nothing new. Its envelope id names the copy the stream holds under the
+	// same key on a listener of this release, which may be an earlier attempt's or another
+	// sender's, and the discarded envelope on an older one; the answer tells none of these apart,
+	// so the attempt records none (dispatchenvoy.SendResult).
 	if send.Duplicate {
 		return sendOutcome{duplicate: true, queued: queued}
 	}

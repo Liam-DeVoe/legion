@@ -46,8 +46,10 @@ func refuseRoleMark(w http.ResponseWriter, r *http.Request, d *listenerDeps, rec
 // holder, as a role publish that finds no live holder is - unless the send asked connected_only,
 // for a session running now, which is the 409 a stopped target gives, with nothing kept, since a
 // message kept for the role would reach another session at a later time. A claim read that failed
-// is its 503, or the unreadable claim's answer (refuseRoleClaimRead).
-func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, request listenerwire.SendRequest, target string) bool {
+// is its 503, or the unreadable claim's answer (refuseRoleClaimRead). sender is who the request
+// speaks for, which decides how much of a copy the stream or the kept lane already held the answer
+// may carry (handOffOrKeepRoleSend, keepRoleSend).
+func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target string) bool {
 	if item.Role == "" {
 		return false
 	}
@@ -61,7 +63,7 @@ func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps,
 		record.refuse(w, http.StatusConflict, outcomeSessionStopped,
 			fmt.Sprintf("the session no longer holds role %s, and a send that asks for a running session keeps nothing", item.Role))
 	default:
-		handOffOrKeepRoleSend(ctx, w, d, record, charge, item, request, target, holder)
+		handOffOrKeepRoleSend(ctx, w, d, record, charge, item, sender, request, target, holder)
 	}
 	return true
 }
@@ -121,7 +123,8 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // finished, and whose newest session's daemon answers for it, takes the message through that
 // daemon (handOffToLegion on the role token, under the conditions its comment names), answered 200
 // as the send route answers a send it handed off: the envelope handed off, that session as
-// recipient, and duplicate when the stream already held the hand-off. No next holder of such a
+// recipient, and for a repeat whose hand-off the stream already held, that hand-off's envelope,
+// with duplicate where it is another request's (answerHandedOff). No next holder of such a
 // role is coming, so a copy kept for one would wait for nobody. Dispatch marks a role's message it
 // sends to that stopped session whenever its recheck of the session pinned on the attempt finds
 // the listener's own record of it, a known-session record among them, which names no registry
@@ -130,7 +133,7 @@ func roleMarkRefusal(r *http.Request, dispatchPrincipal string) string {
 // off. A hand-off whose publish failed is the bus-unavailable 503, which the sender retries under
 // the same key, and the hand-off's MsgId stores that message once. Every other role's message is
 // kept (keepRoleSend).
-func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, request listenerwire.SendRequest, target, holder string) {
+func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, request listenerwire.SendRequest, target, holder string) {
 	live := false
 	if holder != "" {
 		resolved, err := roles.ResolveHolder(ctx, d.registry, roleHolderSessions{d.sessions}, item.Role)
@@ -152,29 +155,38 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 			return
 		}
 		if handed != nil {
+			duplicate, err := answerHandedOff(ctx, d.client, record, sender, handed, item)
+			if err != nil {
+				record.refuseBusUnavailable(w, err)
+				return
+			}
 			record.accept(w, listenerwire.SendResponse{
-				Envelope:     handed.Envelope,
-				ExpectsReply: expectsReplyAnswer(request.ExpectsReply),
+				Envelope:     *item,
+				ExpectsReply: expectsReplyAnswer(request.ExpectsReply, item.ExpectsReply),
 				Recipient:    handed.TargetSession,
-				Duplicate:    handed.duplicate,
+				Duplicate:    duplicate,
 			})
 			return
 		}
 	}
-	keepRoleSend(w, d, record, charge, item, target, holder, expectsReplyAnswer(request.ExpectsReply))
+	keepRoleSend(w, d, record, charge, item, sender, target, holder, request.ExpectsReply)
 }
 
 // keepRoleSend keeps item, a send marked with its role whose claim names holder rather than the
 // target the send names, for the role's next live holder, with the keep the publish route's role
 // send takes (keepForNextHolder), which also hands the role's kept lane to whoever holds the role
 // now: a live holder that took the role while the send was on its way receives it at once. It
-// answers the 202 listenerwire.KeptSendResponse, with the copy the lane holds as the record's
-// envelope. A copy the keep stored costs the sender one; one the lane already held inside its
-// hour costs nothing (senderCharge). A keep that stored nothing is the bus-unavailable 503, which
-// the sender retries under the same key, and the lane stores that message once (bus.KeptMsgID); a
-// keep whose publish went unacknowledged may have stored the copy, so its 503 says so
-// (writeBusUnavailable, listenerwire.CodeMaybeStored) and it costs the sender as a stored one.
-func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, target, holder string, expectsReply json.RawMessage) {
+// answers the 202 listenerwire.KeptSendResponse with the copy the lane holds, which the record's
+// line names too, as the publish route's kept answer does (roleSend.kept): whole for its own
+// sender, and for anyone else the key-taken answer or the envelope this send built
+// (requestSender.answer), with duplicate where it is another request's copy, and its expects_reply
+// the answered envelope's (expectsReplyAnswer). A copy the keep stored costs the sender one; one
+// the lane already held inside its hour costs nothing (senderCharge). A keep that stored nothing is
+// the bus-unavailable 503, which the sender retries under the same key, and the lane stores that
+// message once (bus.KeptMsgID); a keep whose publish went unacknowledged may have stored the copy,
+// so its 503 says so (writeBusUnavailable, listenerwire.CodeMaybeStored) and it costs the sender
+// as a stored one.
+func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, sender requestSender, target, holder string, expectsReply json.RawMessage) {
 	kept, err := keepForNextHolder(*d.delivery, item.Role, *item)
 	if err != nil {
 		charge.published(bus.StoredAck{}, err)
@@ -186,14 +198,15 @@ func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord,
 	} else {
 		charge.stored()
 	}
-	*item = kept.item
+	duplicate := record.answerStored(item, kept.item, sender)
 	record.holder = holder
 	record.acceptWith(w, http.StatusAccepted, listenerwire.KeptSendResponse{
-		Envelope:     kept.item,
-		ExpectsReply: expectsReply,
+		Envelope:     *item,
+		ExpectsReply: expectsReplyAnswer(expectsReply, item.ExpectsReply),
 		Recipient:    target,
 		Holder:       holder,
 		Kept:         true,
 		KeptUntil:    kept.until,
+		Duplicate:    duplicate,
 	})
 }

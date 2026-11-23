@@ -62,13 +62,19 @@ type legionHandoff struct {
 	logger   *logging.Logger
 }
 
-// legionHandedOff is a hand-off handOffToLegion published: the body, and whether the stream
-// already held a copy under its MsgId (bus.Client.PublishRetained), so it stored nothing new. A
-// send repeated under one idempotency key, a role publish repeated under one key, and every
-// listener's copy of one bus message after the first all find one.
+// legionHandedOff is a hand-off handOffToLegion published: the body, the subject it was published
+// on, and the stream's verdict on it (bus.Client.PublishRetained): whether the stream already held
+// a copy under its MsgId, so it stored nothing new, the sequence of the copy it holds, and whether
+// that verdict answers a resend, which may name this very hand-off's own copy
+// (bus.StoredAck.Resent). A send repeated under one idempotency key, a role publish repeated under
+// one key, and every listener's copy of one bus message after the first all find one. A request
+// a hand-off answers is answered the copy the stream holds (answerHandedOff).
 type legionHandedOff struct {
 	listenerwire.LegionHandoff
+	subject   string
 	duplicate bool
+	sequence  uint64
+	resent    bool
 }
 
 // handOffToLegion publishes target to its agent's daemon in place of the answer a message no
@@ -148,11 +154,65 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	if err != nil {
 		return nil, fmt.Errorf("publish legion hand-off to %s: %w", subject, err)
 	}
-	handoff.duplicate = ack.Duplicate
+	handoff.subject, handoff.duplicate, handoff.sequence, handoff.resent = subject, ack.Duplicate, ack.Sequence, ack.Resent
 	h.logger.Info("listener handed a message to its legion daemon",
 		slog.String("session_id", agent.SessionID), slog.String("topic", handoff.OriginalTopic), slog.String("event_id", handoff.Envelope.EventID), slog.String("subject", subject),
 		slog.Bool("duplicate", handoff.duplicate))
 	return &handoff, nil
+}
+
+// answerHandedOff makes *item, the envelope a route built for its request, the answer of handed,
+// the hand-off handOffToLegion published for it, as publishHeld answers a send's own publish. A
+// hand-off the stream stored as a new copy answers the envelope it handed off, with the sender's
+// stamp a send gets at its hand-off, and duplicate false. A duplicate verdict names the hand-off
+// the stream already holds under the same MsgId, at its sequence, and *item becomes the answer of
+// the envelope that hand-off carries, read back (storedCopy through handoffCopies), as sender may
+// read it (requestRecord.answerStored): whole for its own sender, and for anyone else the
+// key-taken answer or the envelope handed off for this request. duplicate is whether that copy is
+// another request's, which is when its event_id is not this request's, so a verdict that answers
+// a resend with this request's own hand-off answers no duplicate. The copy is read on the
+// hand-off's own subject, notifications.legion.<project>.agents.<session>, where the hand-off's
+// MsgId stored it, never on the agent subject a send's own copy is read on: a message handed off
+// is stored nowhere else.
+//
+// A copy that cannot be read is an error wrapping errStoredCopyUnread, with *item untouched, which
+// each route answers as it answers a hand-off whose publish failed, here the 503 with Retry-After:
+// 1 under storedCopyUnreadablePrefix. After a resend (bus.StoredAck.Resent) the copy may be this
+// request's own, so that error is bus.ErrUnacknowledged too (mayBeOwnUnread), and the 503 says
+// maybe_stored. The charge is the wake the route reported, which neither answer changes.
+func answerHandedOff(ctx context.Context, reader storedReader, record *requestRecord, sender requestSender, handed *legionHandedOff, item *contracts.Envelope) (duplicate bool, err error) {
+	if !handed.duplicate {
+		*item = handed.Envelope
+		return false, nil
+	}
+	held, err := storedCopy(ctx, handoffCopies{reader}, handed.subject, handed.Envelope, handed.sequence)
+	if err != nil {
+		if handed.resent {
+			return false, mayBeOwnUnread{err}
+		}
+		return false, err
+	}
+	*item = handed.Envelope
+	return record.answerStored(item, held, sender), nil
+}
+
+// handoffCopies reads a message the stream holds as the envelope a hand-off carries
+// (listenerwire.LegionHandoff's envelope field), so storedCopy reads the copy a duplicate verdict on
+// a hand-off names under every check it makes of a send's copy. A message that does not decode as a
+// hand-off reads as no envelope at all, which storedCopy refuses as a message that does not decode.
+type handoffCopies struct{ storedReader }
+
+func (r handoffCopies) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
+	stored, err := r.storedReader.NextStoredMessage(ctx, subject, seq)
+	if err != nil {
+		return stored, err
+	}
+	var handoff struct {
+		Envelope json.RawMessage `json:"envelope"`
+	}
+	_ = json.Unmarshal(stored.Data, &handoff)
+	stored.Data = handoff.Envelope
+	return stored, nil
 }
 
 // answeringAgent is the registry's entry for target whose project last said it answers, nil when
