@@ -103,12 +103,13 @@ test("a worker's first step reads the issue, its task and the handoffs, and no o
   );
 });
 
-// A fresh agent that read only the sentence above still read another document of the issue before
-// it acted, because one of its items named the agent's role: it took the item for work, not for a
-// decision. So the worker skill says it reads no other document for work either, even one that
-// names it. The words name no such document, since no skill names it (pi-envoy's skills guard).
-test("a worker reads no other document for work, even one that names it", () => {
-  countedOncePerFile("Read no other document for work, even one naming you.", [
+// A fresh agent that read only the sentence above still read a list on the issue before it acted,
+// because one of its items named the agent's role: it took the item for work, not for a decision.
+// So the worker skill says it reads no list for its work, even one that names it. A ban of every
+// other document for work made a reader skip the spec its task names, so the ban names a list.
+// The words name no list of one kind, since no skill names it (pi-envoy's skills guard).
+test("a worker reads no list for its work, even one that names it", () => {
+  countedOncePerFile("Read no list for your work, even one naming you.", [
     "skills/legion-worker/SKILL.md",
   ]);
 });
