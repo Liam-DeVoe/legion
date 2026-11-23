@@ -105,7 +105,6 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/roleholder/*'
   # why: .github/ci-notes/ci.md#daemon_envoy_deps-the-daemon-reads-the-envoy-session-timings-heartbeat
   - 'packages/envoy/sessiontiming/*'
-  - 'packages/envoy/httpoutage/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
   - 'packages/envoy/testnatsimages/*'
