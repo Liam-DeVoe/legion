@@ -65,7 +65,7 @@ A release refused with a code below writes nothing: release the rest again witho
 
 - Where the project has architecture components, give each child a `check` for the update of `.dispatch/architecture/<id>.md` of each component its pull request changes.
 
-- A role token is `legion-<project>-<key>-<role>` with the daemon's project and the key lower-cased: `legion-acme-legion-41-architect`.
+- A role token (`legion-acme-legion-41-architect`) comes from your addressing line or `roleToken` (`@legion/contracts`): never type one.
 
 ## Reviewing a child's spec
 
