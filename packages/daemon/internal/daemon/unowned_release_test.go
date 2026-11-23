@@ -512,7 +512,7 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		sandbox func(name, tree, issue string) map[string]any
-		// secrets is whether the Sandbox still owns its seven Secrets.
+		// secrets is whether the Sandbox still owns its Secrets (issueSandboxSecrets).
 		secrets bool
 		// release is whether the pass releases the pod. keeps is whether that release's teardown
 		// keeps the Sandbox, Suspended, deletes its Secrets and records the delete, so the next
@@ -613,10 +613,11 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 	}
 }
 
-// issueSandboxSecrets are the Secrets an issue's Sandbox owns where the deployment defines no role,
-// as here, named as the sandbox runtime names them: the provisioning Secret `<sandbox>-boot`
-// (secretName) and the Secret `<sandbox>-<slot>-boot` of each of its six slots (roleSecretName),
-// one for each of Legion's six roles, each the slot of the agent named for that role.
+// issueSandboxSecrets are the Secrets an issue's Sandbox owns where the deployment defines no role
+// and the issue's plan names no agent beside its roles, as here, named as the sandbox runtime names
+// them: the provisioning Secret `<sandbox>-boot` (secretName) and the Secret `<sandbox>-<slot>-boot`
+// of each slot of its pod (roleSecretName over podSlots), here one for each of Legion's six roles,
+// each the slot of the agent named for that role.
 func issueSandboxSecrets(sandbox string) []string {
 	secrets := []string{sandbox + "-boot"}
 	for _, role := range claim.Roles {
@@ -652,8 +653,9 @@ const secretsReleased = "legion.dev/secrets-released"
 func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
 	ctx := context.Background()
 	// overKeptSandbox is the idle rig whose issue's kept Sandbox the test API holds, Running, with
-	// its seven Secrets, behind a recorder of every write, and the real runtime of a deployment
-	// whose microVM pods keep their volumes, with the issue's teardowns made by that runtime.
+	// its Secrets (issueSandboxSecrets), behind a recorder of every write, and the real runtime of
+	// a deployment whose microVM pods keep their volumes, with the issue's teardowns made by that
+	// runtime.
 	overKeptSandbox := func(t *testing.T) (*idleRig, *apiWrites, *sandbox.Runtime, string) {
 		t.Helper()
 		rig := newIdleRig(t)
@@ -710,9 +712,9 @@ func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
 				hold, marked, queued, workflow.IdleHoldUnownedSandboxGone)
 		}
 	}
-	// recordedAfterDeletes fails the test unless writes delete each of the seven Secrets of the
-	// Sandbox name, each delete answered status, and then write the release's record, answered OK,
-	// once and after the last delete.
+	// recordedAfterDeletes fails the test unless writes delete each Secret of the Sandbox name
+	// (issueSandboxSecrets), each delete answered status, and then write the release's record,
+	// answered OK, once and after the last delete.
 	recordedAfterDeletes := func(t *testing.T, writes []apiWrite, name string, status int) {
 		t.Helper()
 		secrets := issueSandboxSecrets(name)

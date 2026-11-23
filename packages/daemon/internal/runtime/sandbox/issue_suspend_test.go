@@ -220,8 +220,9 @@ func TestChildIssueSuspensionKeepsItsParentRunning(t *testing.T) {
 // authorized, not the store's check.
 func authorized(context.Context) (bool, error) { return true, nil }
 
-// issueSecrets are the seven Secrets an issue's Sandbox owns: its provisioning Secret and the role
-// Secret of each of the issue's six roles.
+// issueSecrets are the Secrets an issue's Sandbox owns where its pod's slots are Legion's six roles
+// alone: its provisioning Secret and the Secret of each slot of its pod (podSlots), one for each of
+// the six roles.
 func issueSecrets(sandbox string) []string {
 	secrets := []string{secretName(sandbox)}
 	for _, role := range claim.Roles {

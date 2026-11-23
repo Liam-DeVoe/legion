@@ -2112,7 +2112,7 @@ Each item below names a check, then what it does and what it requires.
 
   the whole of the change on an issue of its own:
   its role runs, its session is in the table, and `SuspendIssue` closes it as the daemon's durable close effect does
-  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the six role Secrets it owned.
+  — the Sandbox `Suspended`, its pod waited out, then the Sandbox deleted with the Secrets it owned.
   Nothing of the issue is left: `get sandbox` is `NotFound` and `get pvc <pod>-issue` answers none.
   The resume that follows is a launch from nothing:
   a new Sandbox, a new pod, and that pod's own disk under the same name with a new uid and the new pod as its owner, the agent carrying on from the table with `LEGION_WORKSPACE_RECREATED=true` and a marker holding its resumed incarnation alone
@@ -2611,7 +2611,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
   while tree 1 keeps running: the proof human sets child 1 `done`, and its Sandbox and pod are gone (`kubectl get sandboxes,pods -l legion.dev/issue=<child 1>` lists nothing) and so is the disk that pod owned, the daemon logged `sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned` for it exactly once and no lost volume, every claim of child 1, its own architect's among them, is `retired` with its session kept for a reopen, and the root's Sandbox stays Running, its pod's own disk Bound and its pod the same uid.
   The proof human then sets child 2 `backlog`, and within 600 s it has no Sandbox, no pod and no disk (`kubectl get sandboxes,pods -l legion.dev/issue=<child 2>` lists nothing, and `<pod>-issue` answers none):
-  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the six role Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
+  a park reaches the same durable suspend effect as a close, which deletes the Sandbox with the Secrets it owned once the pod is gone, so nothing of the parked child is kept and its next `todo` makes the Sandbox afresh.
   Each of these waits reads the disk inside it, since a pod's own claim is reaped a moment after the pod object goes.
   The two slots those children held are freed with them, and tree 3, waiting since `issue-independence`, takes one: a child's slot going to a root is the cap counting issues
 
