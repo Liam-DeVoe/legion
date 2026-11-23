@@ -213,8 +213,9 @@ const SUMMARY_LEGEND =
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
   "admission cap; active/waiting/trees/blocked/held, trees <root>... naming the root of every " +
-  "live tree and held <issue> <reason> [by <issue>...] one per issue the workflow holds that is " +
-  "neither active nor waiting; wakes waiting <count> [next <earliest due time>], the " +
+  "live tree and held <issue> <reason> [by <holder>...] one per issue the workflow holds that is " +
+  "neither active nor waiting, a holder being an issue, a head or a check's name, quoted as JSON " +
+  "where it holds a space or a quote mark; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
@@ -263,7 +264,12 @@ function stateSummary(state: LegionState): string {
       lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy?.join(" ") ?? "(none)"}`);
     }
     for (const held of admission.held ?? []) {
-      const by = held.heldBy === undefined ? "" : ` by ${held.heldBy.join(" ")}`;
+      // A holder is an issue key, a head, or a check a CI job runs, by its name (contract 236),
+      // and a check's name may hold a space: such a holder is written quoted, so it reads as one.
+      const holders = held.heldBy?.map((holder) =>
+        /[\s"]/.test(holder) ? JSON.stringify(holder) : holder
+      );
+      const by = holders === undefined ? "" : ` by ${holders.join(" ")}`;
       lines.push(`held ${held.issue ?? "-"} ${held.reason ?? "-"}${by}`);
     }
   }
