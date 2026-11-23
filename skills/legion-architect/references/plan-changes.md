@@ -1,7 +1,8 @@
 # Stopped tasks, later plans and their notices
 
 Part of `skill://legion-architect`, section 1.
-Read it before you stop a task or give a later version of a plan Legion runs, before you decide something for an agent of a task, and on a `task-stopped`, `retro-held` or `plan-not-taken` notice.
+Read it before you stop a task or give a later version of a plan Legion runs, and on a `task-stopped`, `retro-held` or `plan-not-taken` notice.
+Read it also before you decide something for an agent of a task.
 A plan's text, its steps and when to give it first: `skill://legion-architect/references/plan.md`.
 
 ## Stopping and changing a task
@@ -19,7 +20,8 @@ Put each decision for an agent of a task into the task's text, in a later versio
 Every later start of the task holds that text, a new session's start included.
 The agent at work now reads no new start.
 So when the answer of `register_plan` names the step the decision is for, in `running`, also send that step's agent the decision by message.
-On an issue that started its work before Legion took plans, record the decision in a comment on the issue, and send it to the agent by message.
+An issue that started its work before Legion took plans has no task text.
+On such an issue, put the decision in a comment on the issue, and send it to the agent by message.
 These rules hold also where a general skill offers another place for a decision.
 The issue and its plan are the record of the work to be done.
 

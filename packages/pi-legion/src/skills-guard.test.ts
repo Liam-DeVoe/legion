@@ -754,7 +754,8 @@ test("a decision for an agent goes into its task's text, and a message reaches t
       /Every later start of the task holds that text[^.;]*new session/,
       /agent at work now reads no new start/,
       /answer of `register_plan` names the step[^.;]*`running`[^.;]*send that step's agent[^.;]*by message/,
-      /started its work before Legion took plans[^.;]*comment on the issue[^.;]*by message/,
+      /started its work before Legion took plans has no task text/,
+      /such an issue[^.;]*comment on the issue[^.;]*by message/,
       /hold also where a general skill offers another place/,
       /issue and its plan are the record of the work to be done/,
     ])

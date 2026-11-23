@@ -30,7 +30,9 @@ import (
 // hold.
 //
 // It is the machine that asks, because the machine owns the pending delivery, in a short read-only
-// transaction of its own, as rootHears and designNews are asked.
+// transaction of its own, as rootHears and designNews are asked. The issue and its plan are
+// separate reads, so the transaction reads one snapshot (repeatable read): a version taken between
+// them is read whole or not at all.
 func (w *workflowRuntime) taskText(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
 	own := d.Task
 	var carried record.DeliveryNews
@@ -40,12 +42,12 @@ func (w *workflowRuntime) taskText(ctx context.Context, c supervise.Claim, d sup
 		}
 		own = carried.Task
 	}
-	if _, holds := workflow.WithTaskText(own, ""); !holds {
+	if !workflow.HoldsTaskText(own) {
 		return d.Task, d.News, nil
 	}
 	var text string
 	var found bool
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		issue, err := w.records.Issue(ctx, tx, c.Issue)
 		if err != nil || issue == nil || issue.Generation != d.Generation {
 			return err

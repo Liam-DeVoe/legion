@@ -91,8 +91,11 @@ func TestTheOwnersPromptListsTheRolesAndTheNewNotices(t *testing.T) {
 				// reads; it refuses any other change of the running task, and takes its block
 				// unchanged. Its answer names the running step (`running`).
 				{"later version", "waits", "stopped", "running task", "text alone"},
-				{"only the running task's text", "goes on at its step", "later start", "new text", "sent nothing"},
-				{"removes the running task", "`PLAN_REFUSED`", "task <id> is running, so a later version can change only its text."},
+				{"only the running task's text", "goes on at its step"},
+				{"Every later start of the task holds the new text"},
+				{"sends the agent at work nothing"},
+				{"removes the running task", "`PLAN_REFUSED`"},
+				{"Its reason is", "task <id> is running, so a later version can change only its text."},
 				{"running task's block", "goes on"},
 				{"answer", "running task", "role whose agent works it", "`running`"},
 				// A refusal changes nothing, so the same version is given again, and an issue

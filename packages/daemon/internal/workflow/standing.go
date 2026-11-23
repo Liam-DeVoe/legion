@@ -58,6 +58,13 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 // puts what a task adds after the owner's part, the reviewer's round (namingTheReviewRound), on a
 // line of its own, since a line that holds more than backticks closes no fence.
 func ownersText(text string) string {
+	fence := strings.Repeat("`", fenceLength(text))
+	return ownersOpening + fence + "\n" + text + "\n" + fence + "\n"
+}
+
+// fenceLength is the length of the fence ownersText writes around text: one longer than the
+// longest run of backticks text holds, and three at the least.
+func fenceLength(text string) int {
 	longest, run := 0, 0
 	for _, r := range text {
 		if r != '`' {
@@ -67,8 +74,7 @@ func ownersText(text string) string {
 		run++
 		longest = max(longest, run)
 	}
-	fence := strings.Repeat("`", max(3, longest+1))
-	return ownersOpening + fence + "\n" + text + "\n" + fence + "\n"
+	return max(3, longest+1)
 }
 
 // ownersOpening is the sentence the owners part of a standing opens with (ownersText), the
@@ -78,40 +84,62 @@ const ownersOpening = " " + taskTextLabel + ": the text of the task's block, whi
 
 // WithTaskText is task, a start's task as a store keeps it, with the owners part it ends with
 // holding text, the text of the task's block as the plan in force gives it now, in place of the
-// text it was composed with, and whether task holds an owners part at all. It is the one rewrite
-// of a start's task whose task's text a later version of the plan changed while the task ran
-// (plan.RunningChange takes such a version): the stored task of the running step's entry
+// text it was composed with, and whether task holds an owners part at all (ownersPart). It is the
+// one rewrite of a start's task whose task's text a later version of the plan changed while the
+// task ran (plan.RunningChange takes such a version): the stored task of the running step's entry
 // (record.PhaseRow.EntryTask, retext), which the send of an owed entry sends again, and a task a
 // claim holds that is sent again (the daemon's send-time read of a held task, supervise's
-// Deps.TaskText). A task composed after the version holds the new text already and is answered as
-// it is.
-//
-// The owners part is the last of what a task composes (task, resumeText), and only the two
-// sentences of a reviewer's round follow it (namingTheReviewRound), which the rewrite keeps after
-// the new part (reviewround.Split). So it is read from the end: the closing fence is the last line
-// of the task before those sentences, a line of three backticks or more and nothing else, and the
-// opening is the last ownersOpening followed by that same fence line before it. The text between
-// holds no run of backticks as long as the fence (ownersText), so no line of it is that fence, and
-// the part found must be exactly what ownersText writes of that text. A task that does not end so
-// holds no owners part, and is answered whole: the task of an issue with no plan rows, of the
-// merge, of an architect, and every task an operator wrote.
+// Deps.TaskText). A task that holds text already, as a task composed after the version does, is
+// answered as it is, with no copy made.
 func WithTaskText(task, text string) (string, bool) {
-	body, round, _ := reviewround.Split(task)
-	closed, ok := strings.CutSuffix(body, "\n")
+	before, held, round, ok := ownersPart(task)
 	if !ok {
 		return task, false
 	}
+	if text = strings.TrimSpace(text); text == held {
+		return task, true
+	}
+	return before + ownersText(text) + round, true
+}
+
+// HoldsTaskText says whether task ends with an owners part (ownersPart), the part WithTaskText
+// rewrites: false for a task that names no task's text, which a later version of the plan never
+// changes.
+func HoldsTaskText(task string) bool {
+	_, _, _, ok := ownersPart(task)
+	return ok
+}
+
+// ownersPart reads the owners part task ends with (ownersText): what stands before it, the
+// owner's text inside its fence, and the two sentences of a reviewer's round after it, which only
+// follow it (namingTheReviewRound, reviewround.Split). The owners part is the last of what a task
+// composes (task, resumeText), so it is read from the end: the closing fence is the last line of
+// the task before those sentences, a line of three backticks or more and nothing else, and the
+// opening is the last ownersOpening followed by that same fence line before it. The text between
+// must be one ownersText fences with that fence (fenceLength), so it holds no run of backticks as
+// long as the fence and no line of it is that fence. A task that does not end so holds no owners
+// part: the task of an issue with no plan rows, of the merge, of an architect, and every task an
+// operator wrote.
+func ownersPart(task string) (before, text, round string, ok bool) {
+	body, round, _ := reviewround.Split(task)
+	closed, ok := strings.CutSuffix(body, "\n")
 	end := strings.LastIndexByte(closed, '\n')
+	if !ok || end < 0 {
+		return "", "", "", false
+	}
 	fence := closed[end+1:]
-	if end < 0 || len(fence) < 3 || strings.Trim(fence, "`") != "" {
-		return task, false
+	if len(fence) < 3 || strings.Trim(fence, "`") != "" {
+		return "", "", "", false
 	}
 	opening := ownersOpening + fence + "\n"
 	at := strings.LastIndex(closed[:end], opening)
-	if at < 0 || ownersText(closed[at+len(opening):end]) != body[at:] {
-		return task, false
+	if at < 0 {
+		return "", "", "", false
 	}
-	return body[:at] + ownersText(strings.TrimSpace(text)) + round, true
+	if text = closed[at+len(opening) : end]; fenceLength(text) != len(fence) {
+		return "", "", "", false
+	}
+	return body[:at], text, round, true
 }
 
 // standingPart is where the work of a worker started in issue's phase stands, the part of its

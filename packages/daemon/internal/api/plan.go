@@ -202,12 +202,14 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 
 // runningAt is each running task of the plan of issue at generation and where it stands, as the
 // record holds it now (record.StoredPlan.Running), read in one short read-only transaction; none
-// where the generation holds no plan.
+// where the generation holds no plan. The plan's version, tasks and steps are separate reads, and
+// a version taken between two of them would pair a task's place with steps it does not stand on,
+// so the transaction reads one snapshot (repeatable read), as handoffPosition does.
 func (s *server) runningAt(ctx context.Context, issue string, generation uint64) ([]record.RunningStep, error) {
 	if s.pool == nil || s.records == nil {
 		return nil, errors.New("record dependencies are unavailable")
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return nil, err
 	}
