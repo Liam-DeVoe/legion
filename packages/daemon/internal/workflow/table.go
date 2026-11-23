@@ -43,8 +43,9 @@ const (
 
 // Snapshot is the record state a row guard reads. Guards are pure and contain no side effects.
 // HasOpenOrMergedPR is whether the issue's pull request record is open or merged. A merged record
-// counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. A
-// completion never moves an issue on a pull request closed without merging, nor with none recorded.
+// counts: the work landed, the merge told the architect (pr-merged), and the workflow runs on. Only
+// the implementer's move on reads it (hasOpenOrMergedPR), so that completion never moves an issue on
+// a pull request closed without merging, nor with none recorded; no other step's row asks for one.
 // HasPullRequest is whether the issue has a pull request record in any state, which the retro's
 // end reads: a task with one goes to its merge, a task with none is done.
 type Snapshot struct {
@@ -127,9 +128,10 @@ var stepRows = []struct {
 // implementing stands before the step
 // that fails, and a step with no implementing before it has none. Each row carries the places of
 // its two positions (placeAt), so a line that holds a phase at two places, two steps of roles the
-// deployment defines, has a row for each. Every row into a phase of the line starts the agent of
-// the place it enters (startEffects). No row carries a status of its own: every status a row
-// writes is its target phase's, which PhaseStatus holds.
+// deployment defines, has a row for each. Every row into a phase of the line starts the place it
+// enters (startEffects): its agent, or, where that agent is the owner, the owner's step, which
+// starts no claim and tells the owner with an owner-step notice (Engine.start). No row carries a
+// status of its own: every status a row writes is its target phase's, which PhaseStatus holds.
 func TableOf(line []phase.Phase) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], ToPlace: placeAt(line, 0),
 		Effects: startEffects}}

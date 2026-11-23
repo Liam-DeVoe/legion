@@ -77,7 +77,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //
 //   - A worker of its issue's phase: the role that works the phase its worker works
 //     (record.Issue.WorkingPhase), which a held issue keeps from the phase it left, as
-//     record.Issue.RoleAt reads it (at step, the role of the running step). Only a start
+//     record.Issue.RoleAt reads it: the role of the claim that works the task's place (at step,
+//     the role of the running step), and no worker at a place the owner works. Only a start
 //     of that phase brings back a failed or a retired worker, so either is stranded once no such
 //     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when an
 //     operator suspended it, or when its suspension was recorded before migration 0038 (unknown)
@@ -124,7 +125,8 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // It names no other claim: a worker whose phase is not its own is started again when its phase
 // comes, and a tree that is not running runs nothing yet. Nor does it name a child's own
 // architect: while that claim does not hold its role (the daemon's holdsRole), the architect
-// above it takes the child's notices, and a later start of the role brings it back, as
+// above it takes the child's notices, all but an owner-step, which waits for the child's own
+// architect (the daemon's noticeArchitect), and a later start of the role brings it back, as
 // supervise's table decides for the state it stands in. The workflow queues such a start itself
 // at its child's first phase start and, for a failed one, at each later phase start
 // (StartFirstPhase, reviveArchitect); others come from elsewhere, an operator's retry or the

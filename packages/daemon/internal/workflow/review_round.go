@@ -18,7 +18,8 @@ import (
 // is raised. Outside reviewing they name `none` for both: a wake queued there is no task of the
 // round, and the outbox can deliver it after the issue is back in reviewing, since a wake names no
 // phase (wakeRow). The entry's sentence is the task's last, the shape the reviewer reads it in.
-// For any other role it is task as it is.
+// For any other role it is task as it is, with one sentence more where its step is of the type
+// review and its row holds a commit (the last paragraph).
 //
 // The two sentences are the task's last two whatever the row holds, so no text of the task can
 // stand where one of the daemon's sentences stands: a retry's reason or a title that ends with the
@@ -70,9 +71,10 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 }
 
 // namesTheRound says whether namingTheReviewRound can add a sentence to a task of role: the
-// reviewer's, and a role the deployment defines, whose review step names its commit. So a stored
-// task of such a role is marked as named (record.SuperviseRequest.RoundNamed), and the queue names
-// the others (queuedRow).
+// reviewer's, and the task of each role that is none of Legion's six claim roles
+// (claim.IsBuiltin), whose review step names its commit: a role the deployment or the plan
+// defines, and acceptance. So a stored task of such a role is marked as named
+// (record.SuperviseRequest.RoundNamed), and the queue names the others (queuedRow).
 func namesTheRound(role claim.Role) bool {
 	return role == claim.RoleReviewer || !claim.IsBuiltin(role)
 }
