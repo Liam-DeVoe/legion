@@ -122,7 +122,8 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 // issue the fact wrote whose plan holds several tasks, each step of a running task that waits for
 // its agent, the one that waited longest first (by the moment its wait began, then by task id), is
 // started through Engine.start where no running step of the issue holds its agent, which starts it
-// in that agent's session. An issue of a tree that lingers starts nothing, as no move does there.
+// in that agent's session. An issue of a tree that lingers starts nothing, as no move does there,
+// and an issue the record does not hold has no step to start: the hand-on goes on to the next.
 func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) error {
 	var order []string
 	for _, key := range keys {
@@ -132,8 +133,11 @@ func (e *Engine) handOnAgents(ctx context.Context, tx pgx.Tx, keys []string) err
 	}
 	for _, key := range order {
 		issue, err := e.store.Issue(ctx, tx, key)
-		if err != nil || issue == nil {
+		if err != nil {
 			return err
+		}
+		if issue == nil {
+			continue
 		}
 		stored, err := e.store.Plan(ctx, tx, key, issue.Generation)
 		if err != nil {

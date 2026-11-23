@@ -403,3 +403,35 @@ func TestAStepThatWaitsIsNoRunningStep(t *testing.T) {
 		assertTask(t, tasks, "a", record.TaskRunning, atStep(1))
 	})
 }
+
+// The hand-on goes on to each issue a fact wrote after one the record does not hold: the fact
+// writes LEGION-999, which the daemon records nothing of, and then LEGION-208, whose task p waits
+// for agent k, which no step holds. The settle starts p's step for k.
+//
+// The fault it catches is a hand-on that stops at the first issue with no record, so the agents of
+// every later issue the same fact wrote are handed on to nobody (its control: the hand-on that
+// returns at such an issue, under which p keeps its wait).
+func TestTheHandOnGoesOnPastAnIssueWithNoRecord(t *testing.T) {
+	pool := migratedPool(t)
+	engine, _ := tickingEngine()
+	root := stepRoot(t, pool, phase.Implementing)
+	seedTasks(t, pool, root.Key, root.Generation,
+		planTask{id: "p", steps: []string{"implementer:k"}, agents: []claim.Agent{"k"}, state: record.TaskRunning, place: atStep(1)},
+		planTask{id: "z", steps: []string{"tester"}, agents: []claim.Agent{"tester"}, needs: []string{"p"}, state: record.TaskWaiting})
+	since := stepClock.Add(-time.Hour)
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().SetStepWait(t.Context(), tx, root.Key, root.Generation, "p", record.StepWaitAgent, &since)
+	})
+
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		for _, key := range []string{"LEGION-999", root.Key} {
+			if err := engine.store.DeleteHandover(ctx, tx, key); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	assertWaits(t, tasksOf(t, pool, engine, root.Key), "p", atStep(1), record.StepWaitNone)
+	assertStartOf(t, newestStart(t, pool, root.Key, claim.RoleImplementer), root.Key, "p", "k")
+}
