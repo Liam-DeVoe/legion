@@ -4641,8 +4641,9 @@ func (r *outbox) openTaskPullRequest(ctx context.Context, issue record.Issue, ta
 }
 
 // closeTaskPullRequests closes each pull request the row names, of tasks of the row's issue (the
-// other tasks' at the merge, a removed task's at the version that removed it), as branchClient
-// makes each write of a branch (the implement App), within branchRowTimeout:
+// other tasks' at the merge, a removed task's at the version that removed it, an earlier run's at
+// the first step of a run started again), as branchClient makes each write of a branch (the
+// implement App), within branchRowTimeout:
 // the row's comment is written on each, then it is closed (ghbranch.ClosePullRequest). A pull
 // request GitHub shows closed already is done, so a row that runs again, or one that a failure cut
 // short and that runs again on its backoff, closes only those still open. A row of a generation the

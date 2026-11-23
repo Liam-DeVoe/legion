@@ -15,8 +15,9 @@ import (
 
 // startTaskCopy gives task of issue's plan its branch at a start of the task, in the transaction
 // that starts it (record.Store.AssignTaskBranch: once, the issue's own branch for the first task of
-// the generation to start, else the first give of the task's slug no task of the generation took),
-// and answers whether it queued the join of the task's needs. A task whose branch is not the
+// the generation to start where no earlier generation gave it, or the one task of a plan of one,
+// else the first give of the task's slug no generation of the issue gave), and answers whether it
+// queued the join of the task's needs. A task whose branch is not the
 // issue's own, or that needs other tasks, gets one task_branch row (record.TaskBranch), which makes
 // its branch on GitHub at the joined work of its needs and ends with the fact that starts its step
 // (intake.TaskJoined). The task that holds the issue's own branch and needs none queues nothing:

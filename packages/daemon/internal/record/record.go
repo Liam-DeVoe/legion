@@ -2049,6 +2049,9 @@ type Store interface {
 	// transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
+	// EarlierRunOf says whether an earlier run of issue ran a step: a phases row of a role other
+	// than the architect's, which a new generation keeps. A run's first step asks it.
+	EarlierRunOf(ctx context.Context, tx pgx.Tx, issue Issue) (bool, error)
 	// PullRequestOfTask is the pull request of task of issue, the one on the branch task holds
 	// (PullRequest.Task), nil for none ("" is the task of an issue with no plan rows).
 	PullRequestOfTask(ctx context.Context, tx pgx.Tx, issue, task string) (*PullRequest, error)
@@ -2301,8 +2304,8 @@ type Store interface {
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
 	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands,
 	// with its branch and the needs whose join conflicted, and every name from gave a task; without,
-	// each task waiting at no act with its counts at 0 and no branch. It writes nothing where from
-	// has no plan rows.
+	// each task waiting at no act with its counts at 0 and no branch, the names from gave staying
+	// given to the issue (AssignTaskBranch). It writes nothing where from has no plan rows.
 	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
 	// DeletePlan deletes the plan of issue at generation from its three tables.
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
@@ -2336,11 +2339,15 @@ type Store interface {
 	// AgentWaiter is the running task whose step has waited longest for agent (its wait agent, by
 	// the moment it began, then by task id), "" where no step waits for it.
 	AgentWaiter(ctx context.Context, tx pgx.Tx, issue string, generation uint64, agent claim.Agent) (string, error)
-	// AssignTaskBranch gives task its GitHub branch, once, and answers it: the issue's own branch
-	// for the first task of the generation to start, else the first give of the task's slug that
-	// the generation has given no task, even one a later version removed. The generation's task
-	// rows are locked first, so two starts at one time never take one name.
+	// AssignTaskBranch gives task its GitHub branch, once, and answers it: the issue's own branch,
+	// else the first give of the task's slug, that no generation of the issue has given, even to a
+	// task a later version removed (RecordBranchGiven among them); the one task of a plan of one
+	// takes the issue's own branch whatever an earlier generation gave. The generation's task rows
+	// are locked first, so two starts at one time never take one name.
 	AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (string, error)
+	// RecordBranchGiven records branch among the names generation of issue gave, so no task of the
+	// issue takes it again: the branch of a pull request of an earlier run whose row is deleted.
+	RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error
 	// SetJoinConflicts writes the needs of task whose merge GitHub refused as a conflict, into the
 	// branch the join of its needs is made on, in place of what the task held.
 	SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error
