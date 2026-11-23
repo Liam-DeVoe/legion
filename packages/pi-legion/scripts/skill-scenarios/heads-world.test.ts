@@ -202,7 +202,7 @@ test("the ci-check-fail worlds: k1 passes from both roles, and k2's job fails at
     [head]: [{ name: "usage-test", status: "completed", conclusion: "failure" }],
   });
   for (const [scenario, which, pulls, runs, results, records] of [
-    ["reviewer-own-head", "ci-check-fail", ["702", "703"], failed("a".repeat(40)), ["702", "702"], ["test"]],
+    ["reviewer-own-head", "ci-check-fail", ["702", "703"], failed("a".repeat(40)), ["702", "702", "703", "703"], ["test"]],
     [
       "reviewer-own-head",
       "ci-check-fail-other-head",
