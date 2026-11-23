@@ -32,6 +32,17 @@
 // prints a record's label, a path, a repository slug or an option on one line and bounded
 // (shownText): as it was written, where that is printable text of at most 200 bytes.
 //
+// The rule pass of a push reads git's output as git writes it, the added paths and the diff, and
+// scans each record as it arrives (pass), and a refusal shows at most maxLinesShown lines,
+// counting the rest (shownReport). So the pass holds one line of git's output, the record in hand,
+// the detector's cost of scanning it, and one commit's author, committer and message, whatever the
+// number and size of the push's files; what grows with the push is the list of its commits, about
+// one line of a commit's id each. One line is held whole, a few times over (the reader's buffer,
+// the record's text, the detector's lower-cased copy), however long it is: a line is neither
+// split, since a match could cross the split and pass unread, nor refused for its length, which
+// would refuse pushes the rules pass. A push of a 73 MB line took 416 MiB; a hook the kernel
+// stops for its memory refuses the push.
+//
 // The guard sets neither PUBLIC_LEAK_CHECK_REPO_NAMES nor PUBLIC_LEAK_CHECK_INTERNAL for the
 // shared check. That is a decision of this issue's approved spec, not an omission: with those two
 // switches on, the shared check refuses a dispatch:// link, and 786 tracked files of this
@@ -45,6 +56,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -105,6 +117,15 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
+	// waitDelay, where it is not 0, stands in for procgroup.WaitDelay in every child of the guard,
+	// as exec's WaitDelay and as the wait readOutput gives a child's output after it exits
+	// (Guard.exitDelay). This package's own tests set it to an hour, so that the end after the
+	// exit never comes first and the end a test checks is the one the read takes.
+	waitDelay time.Duration
+	// onWait, where it is not nil, is handed the argv of each child whose output the guard reads as
+	// it is written (Guard.readOutput) and what that child's Wait answered. This package's own
+	// tests set it, to see which error a child's exit gave the read's end (readEndDelay).
+	onWait func(argv []string, waitErr error)
 }
 
 // New is a guard with opts' seams. It resolves no check: the shared check publishes often, and a
@@ -242,7 +263,7 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	defer check.remove()
 	if check.path != "" {
 		if err := g.shared(ctx, what, child{
-			argv:  []string{check.path, "check-public-text", "-"},
+			argv:  modeArgv(check.path, "check-public-text", "-"),
 			stdin: strings.NewReader(req.Text),
 		}); err != nil {
 			return err

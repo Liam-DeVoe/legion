@@ -93,11 +93,11 @@ func TestTheFixtureRulesMatchWhatTheyAreWrittenFor(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			lines, err := fixtureRules(t).scan(context.Background(), []Record{tc.record})
-			if err != nil {
+			var rep shownReport
+			if err := fixtureRules(t).scan(context.Background(), tc.record, &rep); err != nil {
 				t.Fatal(err)
 			}
-			reports(t, lines, tc.want...)
+			reports(t, rep.lines(), tc.want...)
 		})
 	}
 }
@@ -299,15 +299,17 @@ func TestACutLabelShowsAsTheWholeLabel(t *testing.T) {
 // findings, where DetectSource would hand the detector's whole run back and report the first
 // record's finding against every later one.
 func TestARecordIsReportedAgainstItselfAlone(t *testing.T) {
-	lines, err := fixtureRules(t).scan(context.Background(), []Record{
+	pass := fixtureRules(t).newPass(context.Background())
+	for _, record := range []Record{
 		{Label: "the first record", Text: "a host at " + leakguardtest.RulesHost},
 		{Label: "the second record", Text: "nothing of ours"},
 		{Label: "the third record", Text: "nothing of ours either"},
-	})
-	if err != nil {
-		t.Fatal(err)
+	} {
+		if err := pass.add(record); err != nil {
+			t.Fatal(err)
+		}
 	}
-	reports(t, lines, "the first record: "+leakguardtest.RulesHostClass)
+	reports(t, pass.report.lines(), "the first record: "+leakguardtest.RulesHostClass)
 }
 
 // A context that has run out is a setup failure, never a record read as clean: the detector's own
@@ -316,7 +318,7 @@ func TestARecordIsReportedAgainstItselfAlone(t *testing.T) {
 func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := fixtureRules(t).scan(ctx, []Record{{Label: "the title", Text: "a host at " + leakguardtest.RulesHost}}); err == nil {
+	if err := fixtureRules(t).scan(ctx, Record{Label: "the title", Text: "a host at " + leakguardtest.RulesHost}, &shownReport{}); err == nil {
 		t.Fatal("a scan under a context that ended answered no error")
 	}
 	if err := fixtureRules(t).Check(ctx, "the write", Record{Label: "the title", Text: "nothing of ours"}); err == nil {

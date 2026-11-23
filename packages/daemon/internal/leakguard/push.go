@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -115,6 +116,9 @@ func PushName(remote string) string {
 // author, the committer, the message, each added or renamed path, and each added line. Where no
 // rule is named, no visibility is read and no git reads a commit. Under a deployment that runs no
 // shared check (sharedCheck) the rules are the whole of it.
+//
+// The records are scanned one at a time as git writes them (pass), so the rule pass never holds
+// the push's whole diff.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.sharedCheck(what)
@@ -152,41 +156,41 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if !public {
 		return nil
 	}
-	records, err := g.pushRecords(ctx, req)
-	if err != nil {
+	pass := rules.newPass(ctx)
+	if err := g.pushRecords(ctx, req, pass.add); err != nil && pass.err == nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	return rules.Check(ctx, what, records...)
+	return pass.end(what)
 }
 
-// pushRecords is everything a push would publish, as records: one per ref name, and for each
-// commit the push would add, one for the author identity, one for the committer identity, one
-// for the message, one for each added or renamed path and one for each added line. A commit
-// reached by two of the push's refs is read once.
-func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, error) {
-	var records []Record
+// pushRecords hands emit everything a push would publish, as records: one per ref name, and for
+// each commit the push would add, one for the author identity, one for the committer identity,
+// one for the message, one for each added or renamed path and one for each added line. A commit
+// reached by two of the push's refs is read once. An error of emit stops the read and is the
+// answer.
+func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
-			records = append(records, RefRecord(ref))
+			if err := emit(RefRecord(ref)); err != nil {
+				return err
+			}
 		}
 		commits, err := g.commits(ctx, req, update)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, commit := range commits {
 			if read[commit] {
 				continue
 			}
 			read[commit] = true
-			of, err := g.commitRecords(ctx, req.Dir, commit)
-			if err != nil {
-				return nil, err
+			if err := g.commitRecords(ctx, req.Dir, commit, emit); err != nil {
+				return err
 			}
-			records = append(records, of...)
 		}
 	}
-	return records, nil
+	return nil
 }
 
 // commits are the commits one update would add to the destination, oldest first: the commits
@@ -242,14 +246,14 @@ func zeroSHA(sha string) bool {
 	return sha != "" && strings.Trim(sha, "0") == ""
 }
 
-// commitRecords is one commit as records. The identities and the message come from the commit
-// itself; the added and renamed paths and the added lines come from its diff, read in the shape
-// its number of parents calls for (diffTree).
+// commitRecords hands emit one commit as records. The identities and the message come from the
+// commit itself; the added and renamed paths and the added lines come from its diff, read in the
+// shape its number of parents calls for (diffTree).
 //
 // A record about a file carries that file's path as its label and as its Path, which is what the
 // engine's path rules and a rule file's path-scoped allowlist read, and the path or the line as its
 // text; an added line carries the line of the file it is added at as its FirstLine (addedLines).
-func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
+func (g *Guard) commitRecords(ctx context.Context, dir, commit string, emit func(Record) error) error {
 	// git writes the separator for itself, as %x00 in the format: an argument of this process's
 	// own holding a zero byte is a child that cannot be started at all. %P comes before the
 	// body, which is the one field that can hold a newline, so the parents are read without a
@@ -258,30 +262,26 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color",
 		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%P"+separator+"%B"+separator, commit)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	parts := strings.Split(out, "\x00")
 	if len(parts) < 5 {
-		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
+		return fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
 	parents := len(strings.Fields(parts[3]))
-	records := []Record{
+	for _, record := range []Record{
 		{Label: "commit " + short(commit) + " author", Text: parts[1]},
 		{Label: "commit " + short(commit) + " committer", Text: parts[2]},
 		{Label: "commit " + short(commit) + " message", Text: parts[4]},
+	} {
+		if err := emit(record); err != nil {
+			return err
+		}
 	}
-	paths, err := g.addedPaths(ctx, dir, commit, parents)
-	if err != nil {
-		return nil, err
+	if err := g.addedPaths(ctx, dir, commit, parents, emit); err != nil {
+		return err
 	}
-	for _, path := range paths {
-		records = append(records, Record{Label: path, Text: path, Path: path})
-	}
-	added, err := g.addedLines(ctx, dir, commit, parents)
-	if err != nil {
-		return nil, err
-	}
-	return append(records, added...), nil
+	return g.addedLines(ctx, dir, commit, parents, emit)
 }
 
 // diffTree is a diff-tree of one commit, in the shape its parents call for: --root for a root
@@ -311,44 +311,49 @@ func diffTree(parents int, args ...string) []string {
 	return append(argv, args...)
 }
 
-// addedPaths are the paths one commit adds or renames a file to, which are the paths the
-// destination would hold that it does not hold already.
+// addedPaths hands emit, as a record of each, the paths one commit adds or renames a file to,
+// which are the paths the destination would hold that it does not hold already. They are read as
+// git writes them, one field at a time (eachField).
 //
 // A merge's combined diff writes one status letter per parent and one path, with no path a
 // rename came from, where an ordinary diff writes one letter and, for a rename, the two paths.
 // Both are read here: a status of as many letters as the commit has parents is the combined
 // shape.
-func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int) ([]string, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
-	if err != nil {
-		return nil, err
-	}
+func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
 	combined := parents > 1
-	fields := strings.Split(out, "\x00")
-	var paths []string
-	for i := 0; i < len(fields); i++ {
-		switch status := fields[i]; {
-		case status == "":
-		case !combined && strings.HasPrefix(status, "R"):
-			// A rename is three fields: the status, the path it was at, and the path it is at.
-			// The destination learns the new path alone.
-			if i+2 < len(fields) {
-				paths = append(paths, fields[i+2])
+	// pending is how many paths of the current entry are still to come; the last is the one the
+	// destination learns. Zero is a field that is a status.
+	pending := 0
+	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
+		return eachField(out, 0, func(field []byte) error {
+			field = bytes.TrimSuffix(field, []byte{0})
+			if pending == 0 {
+				switch status := string(field); {
+				case status == "":
+				case !combined && strings.HasPrefix(status, "R"):
+					// A rename is three fields: the status, the path it was at, and the path it
+					// is at. The destination learns the new path alone.
+					pending = 2
+				default:
+					pending = 1
+				}
+				return nil
 			}
-			i += 2
-		default:
-			if i+1 < len(fields) {
-				paths = append(paths, fields[i+1])
+			pending--
+			if pending > 0 {
+				return nil
 			}
-			i++
-		}
-	}
-	return paths, nil
+			path := string(field)
+			return emit(Record{Label: path, Text: path, Path: path})
+		})
+	}, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
+	return err
 }
 
-// addedLines are the lines one commit adds, each as a record of the file it is added to and of the
-// line of that file it stands at. The diff is read with no context lines, so every line of it that
-// a patch marks as added is one.
+// addedLines hands emit the lines one commit adds, each as a record of the file it is added to and
+// of the line of that file it stands at. The diff is read with no context lines, so every line of
+// it that a patch marks as added is one, and it is read as git writes it, one line held at a time
+// (eachField).
 //
 // A merge's combined diff marks each line with one column per parent, so a line added against
 // any of them begins with that many characters, one of which is a "+" ("++text" for a line of
@@ -364,41 +369,77 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 // of whose columns is a "-", since a "-" in a column is a line of that parent the result does not
 // hold. A context line would count too, though no context is asked for, and "\ No newline at end
 // of file" is no line of the file at all.
-func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
-	if err != nil {
-		return nil, err
-	}
+func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
 	width := max(parents, 1)
-	var records []Record
 	path, header := "", false
 	// next is the line of the new file the hunk's next line of that file stands at.
 	next := 0
-	for line := range strings.Lines(out) {
-		line = strings.TrimRight(line, "\r\n")
-		switch {
-		case strings.HasPrefix(line, "diff --"):
-			path, header = "", true
-		case header && strings.HasPrefix(line, "+++ "):
-			path = diffPath(strings.TrimPrefix(line, "+++ "))
-		case strings.HasPrefix(line, "@@"):
-			header = false
-			if next, err = hunkStart(line, width); err != nil {
-				return nil, fmt.Errorf("git diff-tree %s: %w", short(commit), err)
+	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
+		return eachField(out, '\n', func(line []byte) error {
+			line = bytes.TrimRight(line, "\r\n")
+			switch {
+			case bytes.HasPrefix(line, []byte("diff --")):
+				path, header = "", true
+			case header && bytes.HasPrefix(line, []byte("+++ ")):
+				path = diffPath(string(line[len("+++ "):]))
+			case bytes.HasPrefix(line, []byte("@@")):
+				header = false
+				start, err := hunkStart(string(line), width)
+				if err != nil {
+					return fmt.Errorf("git diff-tree %s: %w", short(commit), err)
+				}
+				next = start
+			case header || path == "" || len(line) < width:
+			case len(bytes.Trim(line[:width], " +-")) != 0:
+				// "\ No newline at end of file": no line of either side.
+			case bytes.Contains(line[:width], []byte("-")):
+				// A line of a parent that the new file does not hold.
+			default:
+				if text := line[width:]; bytes.Contains(line[:width], []byte("+")) && len(bytes.TrimSpace(text)) != 0 {
+					if err := emit(Record{Label: path, Text: string(text), Path: path, FirstLine: next}); err != nil {
+						return err
+					}
+				}
+				next++
 			}
-		case header || path == "" || len(line) < width:
-		case strings.Trim(line[:width], " +-") != "":
-			// "\ No newline at end of file": no line of either side.
-		case strings.Contains(line[:width], "-"):
-			// A line of a parent that the new file does not hold.
-		default:
-			if text := line[width:]; strings.Contains(line[:width], "+") && strings.TrimSpace(text) != "" {
-				records = append(records, Record{Label: path, Text: text, Path: path, FirstLine: next})
+			return nil
+		})
+	}, diffTree(parents, "--unified=0", "--no-color", commit)...)
+	return err
+}
+
+// eachField hands each field of r that ends in delim to fn, delim included where it has one, as
+// a slice fn must copy what it keeps of: a line of a diff for '\n', a field of a -z listing for 0.
+// It holds one field at a time, however long: a field longer than its buffer is gathered whole
+// before fn sees it. An error of fn stops the read and is the answer.
+func eachField(r io.Reader, delim byte, fn func(field []byte) error) error {
+	in := bufio.NewReaderSize(r, 64<<10)
+	var long []byte
+	for {
+		chunk, err := in.ReadSlice(delim)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			long = append(long, chunk...)
+			continue
+		}
+		field := chunk
+		if len(long) > 0 {
+			long = append(long, chunk...)
+			field = long
+		}
+		if len(field) > 0 {
+			if err := fn(field); err != nil {
+				return err
 			}
-			next++
+		}
+		// A long field's buffer is let go rather than kept for the rest of the read.
+		long = nil
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
 		}
 	}
-	return records, nil
 }
 
 // hunkStart is the line of the new file a hunk header says its first line of that file stands
@@ -452,9 +493,22 @@ func short(commit string) string {
 // failed on its standard error. Reading the two apart also keeps a warning git writes on its
 // standard error out of the records parsed from its output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
-	argv := gitArgv(args...)
+	return g.gitWith(ctx, dir, nil, args...)
+}
+
+// gitWith is git with its standard output read by stdout as git writes it (Guard.readOutput),
+// where stdout is not nil, rather than answered whole: a push's added paths and diff are read so.
+func (g *Guard) gitWith(ctx context.Context, dir string, stdout func(io.Reader) error, args ...string) (string, error) {
 	var stderr bytes.Buffer
-	status, out, err := g.run(ctx, child{argv: argv, dir: dir, stderr: &stderr})
+	c := child{argv: gitArgv(args...), dir: dir, stderr: &stderr}
+	var status int
+	var out string
+	var err error
+	if stdout == nil {
+		status, out, err = g.run(ctx, c)
+	} else {
+		status, err = g.readOutput(ctx, c, stdout)
+	}
 	if err != nil {
 		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}

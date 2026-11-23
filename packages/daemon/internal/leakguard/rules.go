@@ -228,23 +228,63 @@ func withoutPath(err error) error {
 // Check is the rule pass over records and nothing else: no shared check, no visibility read, and
 // no read of any environment. It answers nil where no rule matches, a *Refusal of what, the write
 // in the caller's words, whose report is RuleSet.scan's, and a *SetupFailure of what where the
-// pass could not finish. It is the last step of every write of the guard's that runs a rule
-// (Push, GhCall, Text), and the whole of the check of a write with no repository behind it: the
-// daemon's branch create (internal/ghbranch's Create), which holds a ref name and no checkout at
-// all, and runs the set the daemon compiled at boot, so that the create depends on no rule file
-// its process's environment may name.
+// pass could not finish. It is the last step of a gh call and of a text the guard runs a rule over
+// (GhCall, Text) — a push runs the same pass a record at a time, as git writes them (Guard.Push) —
+// and the whole of the check of a write with no repository behind it: the daemon's branch create
+// (internal/ghbranch's Create), which holds a ref name and no checkout at all, and runs the set
+// the daemon compiled at boot, so that the create depends on no rule file its process's
+// environment may name.
 func (r *RuleSet) Check(ctx context.Context, what string, records ...Record) error {
-	lines, err := r.scan(ctx, records)
-	if err != nil {
-		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: err}
+	pass := r.newPass(ctx)
+	for _, record := range records {
+		if pass.add(record) != nil {
+			break
+		}
 	}
+	return pass.end(what)
+}
+
+// pass is one rule pass of a set over records that arrive one at a time, as a push's diff is read:
+// it scans each record as it arrives and keeps nothing of it but its report, so its memory is the
+// record in hand, the detector's own cost of scanning it, and the report (shownReport): at most
+// maxLinesShown lines and a count of the rest. Whatever reads the records holds one line of its
+// own beside that. None of it grows with the size of the push's files.
+type pass struct {
+	ctx    context.Context
+	rules  *RuleSet
+	report shownReport
+	// err is a scan that did not finish: the context ended under it. Every add after it answers
+	// it, so that the reader of the records stops.
+	err error
+}
+
+// newPass is a rule pass of the set under ctx, for records read one at a time.
+func (r *RuleSet) newPass(ctx context.Context) *pass {
+	return &pass{ctx: ctx, rules: r}
+}
+
+// add scans one record.
+func (p *pass) add(record Record) error {
+	if p.err == nil {
+		p.err = p.rules.scan(p.ctx, record, &p.report)
+	}
+	return p.err
+}
+
+// end answers the pass as a write of what: nil where no record matched, a refusal whose report is
+// the pass's (shownReport.lines), and a setup failure where a scan did not finish.
+func (p *pass) end(what string) error {
+	if p.err != nil {
+		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: p.err}
+	}
+	lines := p.report.lines()
 	if len(lines) == 0 {
 		return nil
 	}
 	return &Refusal{What: what, By: byRules, Lines: lines}
 }
 
-// scan is the report of records: one line per finding,
+// scan adds the report of one record to rep: one line per finding,
 //
 //	<record>: <class>: matched "<match>" on line <n>: "<line>"
 //
@@ -260,67 +300,62 @@ func (r *RuleSet) Check(ctx context.Context, what string, records ...Record) err
 // nothing in it to hide from the agent the refusal is shown to, and this repository's public CI
 // never prints the guard's report.
 //
-// A line is written once however many findings write it: a path rule matches every record of a
-// file, and two refs of one push can carry two commits that add one line at one place. Lines come
+// A line the report shows is written once however many findings write it (shownReport): a path
+// rule matches every record of a file, and two refs of one push can carry two commits that add one
+// line at one place. Past the report's bound, each line is counted each time it comes. Lines come
 // in the order of the records, then of the line in a record, then of the class and of the match,
 // since the engine reads its rules out of a map and would otherwise order two findings of one line
 // differently from one run to the next.
 //
-// Each record is scanned on its own, with Detect of a fragment rather than DetectSource of a
+// The record is scanned on its own, with Detect of a fragment rather than DetectSource of a
 // source: the detector accumulates the findings of a source, and a scan of several records
 // through it would report the first record's finding against every record after it.
-func (r *RuleSet) scan(ctx context.Context, records []Record) ([]string, error) {
-	var shown shownReport
-	for _, record := range records {
-		findings := r.detector.DetectContext(ctx, detect.Fragment{Raw: record.Text, FilePath: record.Path})
-		// A context that ended stops the detector's own scan loop and leaves it answering no
-		// findings, which would read as a record that holds nothing. A bound that ran out is a
-		// setup failure instead, so the write is refused rather than passed.
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if len(findings) == 0 {
-			continue
-		}
-		text := newRecordText(record.Text)
-		places := make([]placed, len(findings))
-		for i := range findings {
-			places[i] = r.place(text, &findings[i])
-		}
-		slices.SortFunc(places, func(a, b placed) int {
-			return cmp.Or(
-				cmp.Compare(a.line, b.line),
-				strings.Compare(a.finding.Description, b.finding.Description),
-				strings.Compare(a.finding.Match, b.finding.Match),
-				cmp.Compare(a.at, b.at),
-			)
-		})
-		for _, p := range places {
-			shown.add(text.reportLine(record, p))
-		}
+func (r *RuleSet) scan(ctx context.Context, record Record, rep *shownReport) error {
+	findings := r.detector.DetectContext(ctx, detect.Fragment{Raw: record.Text, FilePath: record.Path})
+	// A context that ended stops the detector's own scan loop and leaves it answering no
+	// findings, which would read as a record that holds nothing. A bound that ran out is a setup
+	// failure instead, so the write is refused rather than passed.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return shown.lines(), nil
+	if len(findings) == 0 {
+		return nil
+	}
+	text := newRecordText(record.Text)
+	places := make([]placed, len(findings))
+	for i := range findings {
+		places[i] = r.place(text, &findings[i])
+	}
+	slices.SortFunc(places, func(a, b placed) int {
+		return cmp.Or(
+			cmp.Compare(a.line, b.line),
+			strings.Compare(a.finding.Description, b.finding.Description),
+			strings.Compare(a.finding.Match, b.finding.Match),
+			cmp.Compare(a.at, b.at),
+		)
+	})
+	for _, p := range places {
+		rep.add(text.reportLine(record, p))
+	}
+	return nil
 }
 
-// shownReport is a report being written: the lines it shows, a sum of every line written so far,
-// so that a line is written once, and the count of the lines past maxLinesShown. It keeps a sum of
-// each line rather than the line, so that a write of many thousand findings holds a sum, and not
-// a line, of each it leaves out.
+// shownReport is a report being written: the lines it shows and the count of the lines past
+// maxLinesShown. A line already among the shown lines is not written or counted again, which needs
+// only those lines, so a path rule's finding that every line of a file repeats is one line of the
+// report. A line past the bound is counted each time it comes and nothing of it is kept, so the
+// count is of matches, not of distinct lines, and the report holds at most maxLinesShown lines and
+// one count however many findings a write has: a rule pass over a push keeps nothing of a record
+// it has scanned beyond them (pass).
 type shownReport struct {
 	shown []string
-	seen  map[[sha256.Size]byte]bool
 	left  int
 }
 
 func (s *shownReport) add(line string) {
-	sum := sha256.Sum256([]byte(line))
-	if s.seen[sum] {
+	if slices.Contains(s.shown, line) {
 		return
 	}
-	if s.seen == nil {
-		s.seen = map[[sha256.Size]byte]bool{}
-	}
-	s.seen[sum] = true
 	if len(s.shown) < maxLinesShown {
 		s.shown = append(s.shown, line)
 		return
