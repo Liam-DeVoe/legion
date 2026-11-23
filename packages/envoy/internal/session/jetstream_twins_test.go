@@ -17,10 +17,20 @@ type watchingKV interface {
 	watching(inner jetstream.KeyValue) jetstream.KeyValue
 }
 
+// watchingTwin is a wrapper of another package with a jetstream twin, testnats.RacedKeyValue
+// among them: its method is exported, since an unexported one is no method of another package's
+// type.
+type watchingTwin interface {
+	Watching(inner jetstream.KeyValue) jetstream.KeyValue
+}
+
 // watchHandleFor is inner wrapped in kv's jetstream twin when kv has one, and inner otherwise.
 func watchHandleFor(kv any, inner jetstream.KeyValue) jetstream.KeyValue {
-	if twin, ok := kv.(watchingKV); ok {
+	switch twin := kv.(type) {
+	case watchingKV:
 		return twin.watching(inner)
+	case watchingTwin:
+		return twin.Watching(inner)
 	}
 	return inner
 }
