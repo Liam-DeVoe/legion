@@ -23,6 +23,9 @@ body: |-
 
   `legion leak-check pre-push` refuses an update line whose sha is not the 40 or 64 lowercase hex
   digits git writes, without quoting it.
+
+  A leak guard answer runs its URL rule again after escaping its control bytes, so a credential in
+  a URL that a tab, a no-break space, a U+202E or a control byte split in two is not printed.
 time: 2026-11-22T18:23:29Z
 custom:
   Issue: leak-guard-non-commit-push
