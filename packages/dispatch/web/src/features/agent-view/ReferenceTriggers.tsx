@@ -26,7 +26,7 @@ import {
   textOptionDescription,
 } from "../../theme/classes";
 import { RefKindIcon } from "../refs/kind-icons";
-import { RefPartsControl, RefPickerNotes, RefRowLabel } from "../refs/RefPickerList";
+import { RefPartsControl, RefPickerNotes, RefRowDetail, RefRowLabel } from "../refs/RefPickerList";
 import {
   insertionText,
   isCompositionKey,
@@ -117,7 +117,9 @@ function RefRow({
     // The item draws as a `div` rather than assistant-ui's own button, for the reason
     // `RefPickerList`'s row is one: a row that holds parts carries the control that lists them,
     // and a button inside a button is no button at all. The item's own props - its option role,
-    // its highlight and the click that takes it - land on the `div`.
+    // its highlight and the click that takes it - land on the `div`. A session's row has the
+    // session's full id as its title, as `RefPickerList`'s does: its name can be the short form
+    // `session:<8>…`, which two sessions may share.
     <ComposerPrimitive.Unstable_TriggerPopoverItem asChild index={index} item={item}>
       <div
         aria-selected={highlighted}
@@ -130,6 +132,7 @@ function RefRow({
         ref={element}
         role="option"
         tabIndex={-1}
+        title={row.kind === "agent" ? row.agent?.sessionId : undefined}
       >
         <RefKindIcon kind={row.kind} />
         <span className="flex min-w-0 flex-1 flex-col">
@@ -139,7 +142,7 @@ function RefRow({
               className={`self-stretch text-xs ${textOptionDescription}`}
               title={item.description}
             >
-              {item.description}
+              <RefRowDetail row={row} />
             </TruncatedText>
           )}
         </span>

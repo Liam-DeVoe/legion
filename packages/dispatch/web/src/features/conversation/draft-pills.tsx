@@ -103,7 +103,7 @@ export function useDraftPills(draft: string, source: DraftSource): readonly Refe
   // The issue the draft is written on, which every pill's reference is read against.
   const issue =
     source === undefined ? undefined : "needsSpecOf" in source ? source.needsSpecOf : source.issue;
-  const engine = useLoadedEngine();
+  const { engine } = useLoadedEngine();
   return useMemo(() => {
     // The pills read the draft through the parse (`draftReading`), so none is drawn until the
     // engine has loaded: a load state, as a question's label reads raw until its engine loads.

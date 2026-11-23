@@ -31,6 +31,7 @@ import {
   type ParentLine,
   type TreeNode,
 } from "../issue-tree";
+import { FirstLine } from "../node-line";
 import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
@@ -41,7 +42,13 @@ import {
   PLAN_WORDS,
   STATE_LINES,
 } from "../page-words";
-import { blockReads, Publisher, publishedChips, publishedNames } from "../projection-fixture";
+import {
+  blockReads,
+  Publisher,
+  publishedChips,
+  publishedNames,
+  publishingNames,
+} from "../projection-fixture";
 import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
@@ -249,10 +256,10 @@ function Place(): ReactNode {
 /** What the page publishes for `tasks`, by its own rule (`issue-tree.ts`'s `chipNaming`, as
  *  `targetNaming` names the read's targets): each task, and each statement a task serves as its
  *  parent, by the chip the tree names it by from the reads the page names them from
- *  (`tasksReads`, `treeContext`'s `chipOf`), whose reading the names store projects the line the
- *  chart names it by from (`KnownReferences.lines`); each chip the tasks hold, a `needs` chip and
- *  one of a statement a task is also under, by the reading it carries; and every one of their
- *  addresses as one the page asks for. */
+ *  (`tasksReads`, `treeContext`'s `chipOf`), whose reading the names store projects the line a
+ *  chip of the chart names it by from (`KnownReferences.lines`); each chip the tasks hold, a
+ *  `needs` chip and one of a statement a task is also under, by the reading it carries; and every
+ *  one of their addresses as one the page asks for. */
 function publishedPlan(tasks: readonly TreeNode[]): PublishedReferences {
   const { chipOf } = treeContext(tasksReads(tasks));
   return publishedChips(
@@ -541,11 +548,11 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   }
 });
 
-// A task is named by the line the names store projects from its words (`taskLine`), not by its
-// stored text: the cycle line names a task whose words hold markdown by those words as they read,
-// with no syntax of the source. Every other row's tasks have plain words, which read the same
-// either way.
-test("a cycle names a task by the line the store projects, not its stored marks", async () => {
+// A task is named by its own one line, projected from its words as the outline projects its
+// folded line (`useTaskLine`), not by its stored text: the cycle line names a task whose words
+// hold markdown by those words as they read, with no syntax of the source. Every other row's
+// tasks have plain words, which read the same either way.
+test("a cycle names a task by its projected line, not its stored marks", async () => {
   setViewport(1440);
   const view = renderBody(
     issue([
@@ -561,6 +568,48 @@ test("a cycle names a task by the line the store projects, not its stored marks"
     );
   } finally {
     view.unmount();
+  }
+});
+
+// A step's line is the task's own one line, read as the outline reads the same task's folded
+// line (`useTaskLine`, `node-line.tsx`'s `useNodeLine`), and no title over one record: an
+// address of another node in it reads by the name the page published for that node from its
+// batched read - an issue, once named, by its key alone, as plain text writes an issue reference
+// (INFRA-4009 R6) - and not as the address its author wrote, as the line the names store projects
+// beside the task's name reads it (`KnownReferences.lines`).
+test("a step's line reads a reference by its target's name, as the task's folded line does", async () => {
+  setViewport(1440);
+  const cited = "dispatch://CORE-2";
+  const names = new Map([[cited, "Ship the release"]]);
+  const words = `Wait for ${cited} to land.`;
+  const tree = displayTree(words);
+  const waiting: TreeNode = { ...task("t1"), text: words, ...(tree === undefined ? {} : { tree }) };
+  const root = issue([waiting]);
+  // What the page publishes for the plan, and the name its batched read gave the issue the task
+  // cites, as one value, as the page's one read publishes both.
+  const plan = publishedPlan(root.children);
+  const issueName = publishedNames(names);
+  const published: PublishedReferences = {
+    ...plan,
+    asked: new Set([...plan.asked, ...issueName.asked]),
+    readings: new Map([...plan.readings, ...issueName.readings]),
+  };
+  const line = "Wait for CORE-2 to land.";
+  const view = renderBody(root, { published });
+  try {
+    await waitFor(() =>
+      expect(rowOf(view, "t1").querySelector("[data-node-words]")?.textContent).toBe(line)
+    );
+  } finally {
+    view.unmount();
+  }
+  const folded = render(<FirstLine node={waiting} />, { wrapper: publishingNames(names) });
+  try {
+    await waitFor(() =>
+      expect(folded.container.querySelector("[data-node-first-line]")?.textContent).toBe(line)
+    );
+  } finally {
+    folded.unmount();
   }
 });
 
@@ -844,6 +893,51 @@ test("a task that serves a statement with no worded block draws a serves chip na
         [NODE_TYPE_NAMES.requirement, `/issues/${KEY}/spec#b-r2`],
       ])
     );
+  } finally {
+    view.unmount();
+  }
+});
+
+// The chart's chips, a step's needs and the statements it serves, each name a block as a tie's
+// chip names one (`chipLine`, the reading list's `node-row-chip`): by the line the names store
+// projects for it, the first block of its words that holds any, so a heading is never run into
+// the paragraph after it and no mark the author typed is drawn, cut at a word to a chip's room
+// with an ellipsis (`chipName`). A need is words alone, and a serves chip a link to its statement.
+test("a step's needs and serves chips name each block by its first worded block, cut to a chip's room", async () => {
+  setViewport(1440);
+  const root = issue([
+    { ...task("t1"), text: "# Stand the **harness** up\n\nThen read the rows." },
+    { ...task("t2"), text: "Read every row of the harness and say which one failed." },
+    {
+      ...task("t3", {
+        needs: ["t1", "t2"],
+        parentLine: serves("r1", "# Draw the **chart**\n\nThen the rest."),
+      }),
+      alsoUnder: [alsoUnder(serves("r2", "Draw each bar of the chart after every bar it needs."))],
+    },
+  ]);
+  const view = renderBody(root);
+  try {
+    await waitFor(() => {
+      expect(
+        [...rowOf(view, "t3").querySelectorAll("[data-plan-need]")].map((one) => [
+          one.getAttribute("data-plan-need"),
+          one.textContent,
+        ])
+      ).toEqual([
+        [D("t1"), "Stand the harness up"],
+        [D("t2"), "Read every row of the harness…"],
+      ]);
+      expect(
+        [...rowOf(view, "t3").querySelectorAll("[data-plan-serve]")].map((one) => [
+          one.textContent,
+          one.querySelector("a")?.getAttribute("href"),
+        ])
+      ).toEqual([
+        ["Draw the chart", `/issues/${KEY}/spec#b-r1`],
+        ["Draw each bar of the chart…", `/issues/${KEY}/spec#b-r2`],
+      ]);
+    });
   } finally {
     view.unmount();
   }

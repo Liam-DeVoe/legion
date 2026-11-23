@@ -1512,7 +1512,7 @@ test("Enter in an ask option takes the picker's row, and adds an option once it 
     await user.click(label);
     await user.paste("@");
     await screen.findByTestId("ref-picker");
-    await screen.findByText("Planner");
+    await screen.findByRole("option", { name: /^Planner\b/ });
     // The row Enter takes with no arrow pressed is the first the list drew, the live agent:
     // this issue's collaborators name no person.
     await user.keyboard("{Enter}");
