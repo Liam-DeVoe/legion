@@ -731,12 +731,15 @@ change to it must start the build.
 
 ## envoy_smoke: The Envoy module, which the image's Go stage copies whole
 
-The Envoy module, which the image's Go stage copies whole, and the envoy-infra
-module under it, which the held-port image's build copies whole with it
+The Envoy module, which the image's Go stage copies whole (its own ignore file,
+packages/envoy/docker/Dockerfile.dockerignore, which BuildKit reads in place of the
+root .dockerignore, lets in of envoy-infra the module files and Go sources the image
+builds envoy-infra from), and the envoy-infra module under it, which the held-port
+image's build copies whole with it
 (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore) and
 envoy-infra's host live tests and plugin build compile in packages/envoy/infra's own
 workspace. The envoy_smoke filter's two hand-written `!` patterns, `'!packages/envoy/deploy/**'` and `'!packages/envoy/.changes/**'`, leave out deploy and the changelog fragments,
-which neither .dockerignore lets in; the generated block leaves out the test files
+which no ignore file of the two builds lets in; the generated block leaves out the test files
 (internal/integration holds nothing else).
 
 ## envoy_e2e_local: And @legion/cipher-client with it: the tsc program of
@@ -761,9 +764,8 @@ install copies; the packages it copies whole (the daemon with the Dockerfile, th
 plugins and the workspace packages they inline, the Claude Code plugin, whose source
 the plugin stage builds into the image's dist/ and legion/ with the .bun-version that
 build is pinned to, the skills and the prepack that stages them); the Go workspace; packages/envoy, copied whole for its agent-secrets
-binary, so each of its top-level directories is named, and of packages/envoy/infra the
-module and workspace files and the Go sources, all the .dockerignore lets in of it (the
-Envoy image builds envoy-infra from them); the scripts that write the image's
+binary but for packages/envoy/infra, which the .dockerignore drops, so each of its
+top-level directories but infra is named; the scripts that write the image's
 third-party notices; the Oh My Pi pin; and the context's .dockerignore. Then a `!`
 pattern for each .dockerignore line that drops part of those packages, of
 packages/envoy or of skills/, which the step's some-with-excludes reads as an

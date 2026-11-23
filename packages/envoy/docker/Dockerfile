@@ -105,8 +105,9 @@ COPY packages/envoy/infra/go.mod packages/envoy/infra/go.sum ./infra/
 RUN cd infra && GOWORK=off go mod download
 
 # The whole module, so a binary that imports a new package of it builds here with no edit to this
-# file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. The root
-# .dockerignore leaves out what no image compiles: test files, internal/integration,
+# file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. This
+# Dockerfile's own ignore file, Dockerfile.dockerignore beside it, which BuildKit reads in place of
+# the root .dockerignore, leaves out what no image compiles: test files, internal/integration,
 # internal/smoke, deploy, the changelog fragments, and of infra (the envoy-infra module) all but
 # its module files and Go sources.
 COPY packages/envoy ./

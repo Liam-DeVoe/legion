@@ -2353,7 +2353,6 @@ envoy_smoke:
   - *ci_filters_data
   # why: .github/ci-notes/ci.md#envoy_smoke-the-jobs-steps-which-build-the-image-and-smoke-it
   - '.github/workflows/ci-job-envoy-smoke.yaml'
-  - '.dockerignore'
   - '.bun-version'
   - 'package.json'
   - 'bun.lock'
@@ -2560,11 +2559,6 @@ worker_image:
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
   - 'packages/envoy/testnatsinprocess/**'
-  - 'packages/envoy/infra/go.mod'
-  - 'packages/envoy/infra/go.sum'
-  - 'packages/envoy/infra/go.work'
-  - 'packages/envoy/infra/go.work.sum'
-  - 'packages/envoy/infra/**/*.go'
   - '.omp-pin'
   - '.bun-version'
   - '.dockerignore'
@@ -2582,6 +2576,7 @@ worker_image:
   - '!packages/envoy/internal/integration/**'
   - '!packages/envoy/internal/smoke/**'
   - '!packages/envoy/deploy/**'
+  - '!packages/envoy/infra/**'
   # why: .github/ci-notes/ci.md#worker_image-changelog-fragments-which-worker_images-package-patterns-match-and
   - '!packages/*/.changes/**'
 # why: .github/ci-notes/ci.md#browser_image-every-file-the-browser-images-build-reads-for-the-browser-image

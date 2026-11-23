@@ -3,15 +3,16 @@ name: Release Envoy Listener
 on:
   push:
     branches: [main]
-    # Every file packages/envoy/docker/Dockerfile builds from: the Go module and the Dockerfile
-    # (packages/envoy/**), the web stage's frozen install (the root manifest, lockfile, patches and
-    # every root workspace's package.json), the Bun pin that stage holds its own Bun to, the
-    # sources it builds the SPA and the Go contracts from, the context's .dockerignore, and this
-    # workflow. A commit touching only one of them would otherwise publish no image, so no pin
-    # could name it. .github/scripts/check-image-trigger-paths.sh fails the build when this list
-    # misses a file the image build reads. Of the envoy-infra module (packages/envoy/infra), which
+    # Every file packages/envoy/docker/Dockerfile builds from: the Go module, the Dockerfile and its
+    # own ignore file, Dockerfile.dockerignore, which BuildKit reads in place of the root
+    # .dockerignore (packages/envoy/**), the web stage's frozen install (the root manifest,
+    # lockfile, patches and every root workspace's package.json), the Bun pin that stage holds its
+    # own Bun to, the sources it builds the SPA and the Go contracts from, and this workflow. A
+    # commit touching only one of them would otherwise publish no image, so no pin could name it.
+    # .github/scripts/check-image-trigger-paths.sh fails the build when this list misses a file the
+    # image build reads. Of the envoy-infra module (packages/envoy/infra), which
     # release-envoy-infra.yaml releases, the image builds /usr/local/bin/envoy-infra from its
-    # module and workspace files and its Go sources but its tests, the files the .dockerignore
+    # module and workspace files and its Go sources but its tests, the files that ignore file
     # lets in.
     paths:
       - "packages/envoy/**"
@@ -36,7 +37,6 @@ on:
       - "packages/claude-envoy/package.json"
       - "packages/test-fixtures/package.json"
       - "docs/site/package.json"
-      - ".dockerignore"
       - ".bun-version"
       - ".github/workflows/release-envoy-listener.yaml"
       # The image's and the binaries' third-party notices, and the archives' target list.
