@@ -66,12 +66,11 @@ func (e *Engine) owedOwnersStep(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return owedStep{}, false, err
 	}
-	// The row is the one the step's start raised (startOwnersStep): its role is the plan's step's
-	// role at a step and the retro's role at the retro, at the step's own place of the task.
-	role := w.RoleAt(w.Place)
-	if planned, ok := w.planStepAt(w.Place); ok {
-		role = claim.Role(planned.Role)
-	}
+	// The row is the one the step's start raised (startOwnersStep): its role is the role of the
+	// place's worker (record.PlaceWorker), the plan's step's role at a step and the retro's role at
+	// the retro, at the step's own place of the task.
+	worker, _ := w.workerAt(w.Place)
+	role := worker.Role
 	var task string
 	for _, row := range rows {
 		if row.Role == role && row.StepTask == step.place.Task && row.StepPlace == step.place.Place {
