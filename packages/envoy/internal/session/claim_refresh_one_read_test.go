@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 	"slices"
 	"sync"
 	"testing"
@@ -111,13 +110,11 @@ func TestAClaimRefreshReplacesAServerWrittenRecordWithOneNamingItsKey(t *testing
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	decided, mine, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
+	prior, own, err := r.PutClearingGap(ctx, sessionID, "edge-a", true, []string{"PRIV"})
 	if err != nil {
 		t.Fatalf("PutClearingGap(%s) over the record republished at %d: %v", sessionID, stored, err)
 	}
-	if mine || !reflect.DeepEqual(decided, SessionEntry{}) {
-		t.Errorf("PutClearingGap(%s) answered the RePublish as %+v (own %t), want the zero entry and false", sessionID, decided, mine)
-	}
+	requireNoOwnRecord(t, prior, own, "over the RePublish")
 	requireClearedClaimRefresh(t, r, sessionID, "after the refresh over the RePublish")
 }
 

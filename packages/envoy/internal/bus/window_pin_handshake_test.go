@@ -133,7 +133,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 }
 
 // heardReconnects returns a channel that takes a value each time client has heard of a reconnect:
-// its reconnect hooks run after it has reported the reconnect (onReconnect, ConnectionChanged).
+// its reconnect hooks run after it has reported the reconnect (queueReconnect, ConnectionChanged).
 func heardReconnects(client *Client) <-chan struct{} {
 	heard := make(chan struct{}, 4)
 	client.AddReconnectHook(func(context.Context, *nats.Conn) error {
@@ -150,7 +150,7 @@ func heardReconnects(client *Client) <-chan struct{} {
 // that reconnect, keeps its pin once the client hears of it; and a window pinned before the drop
 // refuses the reconnected connection before the client has heard of the drop, before it has heard of
 // the reconnect, and after. nats.go marks a reconnected connection connected before its callback
-// goroutine runs the client's onDisconnect and onReconnect, and onDisconnect waits for the client's
+// goroutine runs the client's onDisconnect and queueReconnect, and onDisconnect waits for the client's
 // lock, which a caller of Client.Connected holds while nats.go's lock keeps it waiting. So a check
 // that waited for the client to hear of an event let the old window send on the reconnected
 // connection in that gap, and a check that took any client event since the pin for a loss refused

@@ -119,6 +119,7 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // while another read younger than 2 s is in flight, and a read can fail: in each case the lane is
 // judged on the subjects the client holds, and an exception on a lane only a newer build's subjects
 // capture can still be that second copy.
+//
 // A clustered stream still storing another listener's copy refuses this one as still in process
 // under that publish (bus.ErrDuplicateInProcess), which applyDeliveryOutcome logs apart from a
 // failure (exceptionPublishInProcessLine).

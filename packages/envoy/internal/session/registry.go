@@ -1181,14 +1181,14 @@ func (r *SessionRegistry) rewriteStoredEntry(ctx context.Context, sessionID, wha
 // (machineID, selfSubscribed, no port), and answers ErrWriteConflict otherwise. An
 // empty machineID is refused with ErrEntryUnbound.
 //
-// It answers the record it decided on, as that read found it and so as it stood before this
-// write, with true, where that record is the session's own writer's record naming its key (the
+// It answers prior, the record it decided on, as that read found it and so as it stood before this
+// write, and own true, where that record is the session's own writer's record naming its key (the
 // first case above): the record of the pass whose write landed, or the record the read after the
 // last lost write found already carrying the change. Any other record answers the zero entry and
 // false, and so does an error. A caller that needs a field of the session's own registration as it
 // stood before the refresh takes it from here rather than reading the record again: cmd/listener's
 // roleSetHandler takes the claimant's registered client instance id from it.
-func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machineID string, selfSubscribed bool, projects []string) (SessionEntry, bool, error) {
+func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machineID string, selfSubscribed bool, projects []string) (prior SessionEntry, own bool, err error) {
 	if machineID == "" {
 		return SessionEntry{}, false, fmt.Errorf("write session %s to the bucket: %w: the entry names no machine", sessionID, ErrEntryUnbound)
 	}
@@ -1206,7 +1206,7 @@ func (r *SessionRegistry) PutClearingGap(ctx context.Context, sessionID, machine
 		// a reap took that consumer, in the stream for the one the registration creates at its
 		// resume point; the registration writes the full record and the relay delivers the message
 		// then (cmd/listener's TestARoleClaimOverAMissingRecordHoldsAMessageUntilTheHeartbeat).
-		own := found && stored.SessionID == sessionID
+		own = found && stored.SessionID == sessionID
 		entry := SessionEntry{MachineID: machineID, SelfSubscribed: selfSubscribed, Projects: projects}
 		switch {
 		case own:

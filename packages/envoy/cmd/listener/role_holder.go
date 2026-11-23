@@ -153,14 +153,12 @@ func liveSessionEntry(
 // a predecessor, which reads that predecessor's id to decide whether the role passes to the
 // claimant (POST /v1/roles/set, roleSupersessionVerdict), and the registration view of
 // GET /v1/registry/<session_id> (writeSessionRegistration), whose caller names that id in the
-// delete that follows. That claim's own claimant is not read here: the route takes the
-// claimant's id from the stream leader's read of its record that the refresh of its registration
-// makes anyway (session.SessionRegistry.PutClearingGap), so the claimant costs no read of its own.
-// It asks the cache nothing, not even as a first answer the way liveSessionEntry does, because the
-// cache follows the bucket through a watcher and so trails it: the entry it still holds can carry
-// an instance id that session has since replaced, or no id at all where the bucket has one, and a
-// stale entry would then decide who keeps a role - handing it to a client instance the predecessor
-// no longer belongs to, which is the whole point of reading the id.
+// delete that follows. It asks the cache nothing, not even as a first answer the way
+// liveSessionEntry does, because the cache follows the bucket through a watcher and so trails it:
+// the entry it still holds can carry an instance id that session has since replaced, or no id at
+// all where the bucket has one, and a stale entry would then decide who keeps a role - handing it
+// to a client instance the predecessor no longer belongs to, which is the whole point of reading
+// the id.
 //
 // nats.ErrKeyNotFound is the bucket's word that the session is gone, and the caller acts on it;
 // any other error is a read that did not answer, on which nothing is taken from a holder. The read

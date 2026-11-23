@@ -60,11 +60,12 @@ func (c *Client) queueReconnect(nc *nats.Conn) {
 
 // countConnectionEvent records a connection event of nc that the client's own state must take in
 // the order nats.go reports it, before the work of the event is queued: the hooks are due for it,
-// the publish denials and the refusal of the core subscription are the connection's past, and a
-// refusal of what nats.go re-sent is reported after this callback and marks the subscription
-// again (onAsyncError, where the order is what keeps the mark from outliving its refusal). It
-// runs on nats.go's callback goroutine, so it takes the client's locks and nothing else: no
-// request, no wait.
+// the publish denials and the refusal of the core subscription are the connection's past, the core
+// subscription is recorded as sent on this session (sentOn, sentReconnects), and a refusal of
+// what nats.go re-sent is reported after this callback and marks the subscription again
+// (onAsyncError, where the order is what keeps the mark from outliving its refusal). It runs on
+// nats.go's callback goroutine, so it takes the client's locks and nothing else: no request, no
+// wait.
 //
 // nc is the connection already in c.Conn, reconnected in place, and the JetStream context taken
 // from it keeps working, so neither field is reassigned here. A callback nats.go delivers late

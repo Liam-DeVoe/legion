@@ -25,8 +25,8 @@ import (
 // the client's error callback sets after it.
 const roleLaneProbePeriod = 10 * time.Millisecond
 
-// roleLaneHealthMachine is the rig's machine id, which names the machine's queue group, the second
-// group the role lane may subscribe in (bus.ListenerQueue).
+// roleLaneHealthMachine is the role lane's machine id, which names the lane's machine queue group,
+// the second group the role lane may subscribe in (bus.ListenerQueue).
 const roleLaneHealthMachine = "role-lane-health"
 
 // roleLaneInactiveText is the error /healthz answers, and the self-health probe fails with, while
@@ -60,7 +60,7 @@ type roleLaneHealthRig struct {
 	gate             sync.Mutex
 }
 
-func newRoleLaneHealthRig(t *testing.T, machineID string) *roleLaneHealthRig {
+func newRoleLaneHealthRig(t *testing.T, podMachineID string) *roleLaneHealthRig {
 	t.Helper()
 	rig := &roleLaneHealthRig{received: make(chan string, 16), logs: &lockedBuffer{}, busLogs: &lockedBuffer{}}
 	logtest.SetDefault(t, slog.NewJSONHandler(rig.busLogs, nil))
@@ -82,7 +82,7 @@ func newRoleLaneHealthRig(t *testing.T, machineID string) *roleLaneHealthRig {
 	t.Cleanup(lane.Close)
 	rig.lane = lane
 
-	pod := startReceiverRig(t, testnats.URL(t), machineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
+	pod := startReceiverRig(t, testnats.URL(t), podMachineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
 	pod.awaitState(t, receiveActive, 10*time.Second)
 	deps := openHealthzDeps(t, pod.client, pod.receiver)
 	deps.roleLane = lane

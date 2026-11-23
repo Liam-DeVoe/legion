@@ -1890,6 +1890,39 @@ func TestRoleSetHandlerSoftClaimPredecessorInstance(t *testing.T) {
 	})
 }
 
+// A soft claim that states no client instance is weighed against its named predecessor with the
+// instance the claimant's registration carries, read from the record the refresh of that
+// registration read from the stream leader (session.SessionRegistry.PutClearingGap), not from the
+// entry a trailing cache still holds. The observer cached the claimant registered under one
+// instance; the claimant then registered again, through the other listener, under the instance its
+// live predecessor runs in, which the observer's cache has not followed. The predecessor gives the
+// role up to the instance it runs in. Control: with the fallback taken from the cached entry alone
+// (roleSetHandler's `if own` block deleted), the claimant reads as another instance and the live
+// predecessor keeps the role, a 409 naming it.
+func TestASoftClaimFallsBackToTheClaimantsInstanceTheRefreshReadNotATrailingCache(t *testing.T) {
+	const (
+		cachedInstance = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+		bucketInstance = "2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b"
+	)
+	claimant, observer := trailingListeners(t)
+	claimRole(t, claimant, "ses_pred", "trailing-claimant")
+	registerInstance(t, claimant.sessions, "ses_pred", bucketInstance)
+	registerInstance(t, observer.sessions, "ses_claimant", cachedInstance)
+	registerInstance(t, claimant.sessions, "ses_claimant", bucketInstance)
+	if cached, _ := observer.sessions.Lookup("ses_claimant"); cached.ClientInstanceID != cachedInstance {
+		t.Fatalf("the observer's cached claimant carries instance %q, want %q: its cache does not trail the bucket, so this test proves nothing", cached.ClientInstanceID, cachedInstance)
+	}
+	recorder := httptest.NewRecorder()
+	roleSetHandler(observer, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set",
+		strings.NewReader(`{"session_id":"ses_claimant","role":"trailing-claimant","soft":true,"previous_session_id":"ses_pred"}`)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("soft claim naming a predecessor live in the instance the claimant's registration carries, through a listener whose cache holds the claimant's earlier instance: status %d %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if holder, err := claimant.registry.RoleHolder("trailing-claimant"); err != nil || holder != "ses_claimant" {
+		t.Fatalf("holder after the claim = %q, %v; want ses_claimant", holder, err)
+	}
+}
+
 func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)

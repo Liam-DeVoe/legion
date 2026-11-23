@@ -2194,28 +2194,19 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// registration per session id is a non-goal, and a process that wants a registration of
 		// its own registers (POST /v1/sessions/subscribe). A leader read that did not answer is the
 		// bus-unavailable 503, so a hiccup never wipes a session's projects.
-		registration, own, err := d.sessions.PutClearingGap(ctx, body.SessionID, machineID, true, registeringProjects(r))
+		prior, own, err := d.sessions.PutClearingGap(ctx, body.SessionID, machineID, true, registeringProjects(r))
 		if err != nil {
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
 			return
 		}
-		// The claimant's registered client instance id, which the predecessor rule falls back
-		// to, is the id its registration carried before the refresh wrote it. liveSessionEntry
-		// answers from the cache first, and the cache follows the session bucket through a
-		// watcher and so trails it. A trailing cache would decide this claim: it would read an
-		// empty client instance id from an entry this listener has not caught up with, demoting a
-		// claim weighed against a predecessor to the "no instance id" case below. So the id is
-		// taken from the record the refresh read from the stream leader where that record is the
-		// session's own registration naming its key, which the refresh writes back with that same
-		// id: the bucket's record, at no read of its own. Any other record the refresh found -
-		// none, a marker, one the server wrote, or one naming no key or another key - keeps the
-		// entry liveSessionEntry found, so this claim is never worse off than it was without the
-		// bucket's record. The id is the client's own, and the bucket is shared by every pod of the
-		// machine, so the pod this claim reached reads the same id as the pod that accepted the
-		// registration.
+		// The claimant's registered client instance id, which the predecessor rule falls back to, is
+		// the one PutClearingGap's leader read found, as the record stood before the refresh, where
+		// that record is the session's own registration naming its key; any other record keeps the
+		// id of entry, liveSessionEntry's read. session.SessionRegistry.PutClearingGap says what each
+		// record answers, and bucketSessionEntry why a cached entry decides no instance id.
 		registeredInstanceID := entry.ClientInstanceID
 		if own {
-			registeredInstanceID = registration.ClientInstanceID
+			registeredInstanceID = prior.ClientInstanceID
 		}
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
 		// over, so the handovers of a claimant this refresh made live again leave that role out.

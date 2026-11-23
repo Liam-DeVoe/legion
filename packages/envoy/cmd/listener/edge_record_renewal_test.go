@@ -139,15 +139,13 @@ func TestARenewalBindsNoCopiedRecord(t *testing.T) {
 	rig.requireShown(t, token, priv, "after S_heir's renewal under its own PRIV token", heir)
 }
 
-// D1-T: the role-claim refresh keeps the projects of the one record the stream's leader returns
-// (session.SessionRegistry.PutClearingGap's leader read), never the direct get's. A direct get and
-// the leader read are two reads of one key, and a writer's write landing between them makes them
-// diverge. The registry's leader-read seam forces that divergence from a handler row: the route's
-// own read of the claimant (liveSessionEntry: the cache, or a direct get) reads its record naming
-// its key and listing [PRIV PUB], while the leader read answers a writer's record of that key
-// listing [PRIV]. After the claim the stored record lists [PRIV], the leader's. Control: with
-// PutClearingGap's own-record case writing the claim token's projects in place of the record's,
-// the refresh stores the bare claim's [].
+// D1-T: the role-claim refresh keeps the projects of the record the stream's leader returns
+// (session.SessionRegistry.PutClearingGap's leader read), not those of the [PRIV PUB] registration
+// the claimant has in the bucket and the cache. The registry's leader-read seam answers a writer's
+// record of the claimant's key listing [PRIV] while that registration lists [PRIV PUB]. After the
+// claim the stored record lists [PRIV], the leader's. Control: with PutClearingGap's own-record
+// case writing the claim token's projects in place of the record's, the refresh stores the bare
+// claim's [].
 func TestARoleClaimRefreshKeepsTheLeaderRecordsProjects(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_d1t_claimant"
@@ -158,17 +156,17 @@ func TestARoleClaimRefreshKeepsTheLeaderRecordsProjects(t *testing.T) {
 	defer restore()
 	renewed := rig.claimThrough(t, bare, "", claimant, "renewal-d1t-reviewer")
 	if !slices.Equal(renewed.Projects, []string{"PRIV"}) {
-		t.Errorf("the claim refresh stored projects %v, want the leader's [PRIV], not the direct get's [PRIV PUB]", renewed.Projects)
+		t.Errorf("the claim refresh stored projects %v, want the leader's [PRIV], not the registration's [PRIV PUB]", renewed.Projects)
 	}
 }
 
-// D1-r: "names its key" is judged on the record the leader returns, not on the route's own read of
-// the claimant (liveSessionEntry: the cache, or a direct get), which reads its record naming its
-// key and listing [PRIV PUB]; the leader read answers a writer's record that names NO key
-// (session.DecodeEntry reads an empty SessionID) listing [PUB]. A record naming no key is no
-// registration of this key, so its projects are not kept: the refresh writes the claim token's
-// projects (registeringProjects, [PRIV] here). Control: PutClearingGap's case of a record naming
-// no key keeping that record's projects keeps the no-key record's [PUB].
+// D1-r: "names its key" is judged on the record the stream leader returns, not on the [PRIV PUB]
+// registration naming its key that the claimant has in the bucket and the cache: the leader read
+// answers a writer's record that names NO key (session.DecodeEntry reads an empty SessionID)
+// listing [PUB]. A record naming no key is no registration of this key, so its projects are not
+// kept: the refresh writes the claim token's projects (registeringProjects, [PRIV] here). Control:
+// PutClearingGap's case of a record naming no key keeping that record's projects keeps the no-key
+// record's [PUB].
 func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_d1r_claimant"
@@ -191,10 +189,11 @@ func TestARoleClaimRefreshDropsALeaderRecordNamingNoKey(t *testing.T) {
 // PluginVersion); the refresh must write none of them back as the session's own registration, as the
 // gap and renewal writes carry back nothing of a server-written record (the F3 rule). The
 // leader-read seam answers no writer's record, as the leader does over a RePublish, while the
-// route's own read of the claimant (liveSessionEntry: the cache, or a direct get) still reads the
-// forged fields. The whole written entry is compared, so a field left uncleared, or a new field
-// added to SessionEntry later, fails the row. Control: carrying any one field in PutClearingGap's
-// case of a record no writer's stands for fails the compare.
+// registration the claimant has in the bucket and the cache still carries the forged fields: the
+// refresh clears from the record the leader returns, not from that registration. The whole written
+// entry is compared, so a field left uncleared, or a new field added to SessionEntry later, fails
+// the row. Control: carrying any one field in PutClearingGap's case of a record no writer's stands
+// for fails the compare.
 func TestARoleClaimRefreshClearsAForgedRecordsFields(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant = "ses_h1_claimant"
