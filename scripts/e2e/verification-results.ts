@@ -415,7 +415,10 @@ async function setDefaultRepository(key: string, repo: string): Promise<"project
     return "project";
   }
   if (served.has("PUT /api/v1/settings/repo-projects/{owner}/{repo}")) {
-    await asSession("PUT", `/api/v1/settings/repo-projects/${repo}`, { default: true, project: key });
+    await asSession("PUT", `/api/v1/settings/repo-projects/${repo}`, {
+      default: true,
+      project: key,
+    });
     return "mapping";
   }
   throw new Error(
