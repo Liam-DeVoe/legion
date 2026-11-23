@@ -15,7 +15,11 @@
 #       and runs nothing, in a subshell that keeps set -e as the callers' do;
 #   (d) a stack broker whose environment holds SHELLOPTS and BASHOPTS, bash's own readonly
 #       variables, still gives an extra broker that starts, holding neither;
-#   (e) under bash -x, broker_env_of and with_broker_env trace nothing of what they copy.
+#   (e) under bash -x, broker_env_of and with_broker_env trace nothing of what they copy;
+#   (f) k10's base-control guard (k10_base_control) reports UNKNOWN, naming JUDGE_CHECK_BASE, and
+#       builds nothing, for a base whose policy.go defines TagJudge: that broker reads the judge
+#       from the key's tags, so it is no control, whatever its profiles.go holds. A base that
+#       reads the judge from the proxy block and defines no TagJudge passes the guard and is built.
 # Each function is read out of the script that defines it and run in this shell. Needs bash, jq
 # and Linux's /proc.
 set -euo pipefail
@@ -158,6 +162,53 @@ traced="$(grep -n not-a-secret "$work/trace" | cut -c1-160 || true)"
 check "under bash -x, broker_env_of and with_broker_env trace no line holding a setting of the environment they copy" \
   test -z "$traced"
 [[ -z "$traced" ]] || printf 'trace lines holding the password: %s\n' "$traced"
+
+# --- (f) k10_base_control's guard, against two fixture bases in a git repository of their own,
+# read through JUDGE_CHECK_BASE. Each base holds the two files the guard reads; the stand-in go
+# records that a build was started and fails it, so neither case goes on to start a broker. ---
+definition="$(sed -n '/^k10_base_control() {/,/^}/p' "$script_dir/judge-check.sh")"
+[[ -n "$definition" ]] || { printf 'FAIL: judge-check.sh defines no k10_base_control()\n'; exit 1; }
+eval "$definition"
+base_repo="$work/base-repo"
+mkdir -p "$base_repo/internal/cipher/policy" "$work/base-bin"
+git -C "$base_repo" init -q
+cat >"$work/base-bin/go" <<EOF
+#!/usr/bin/env bash
+touch "$work/base-go-ran"
+exit 1
+EOF
+chmod +x "$work/base-bin/go"
+base_commit() { # <policy.go's text> <profiles.go's text>
+  printf '%s\n' "$1" >"$base_repo/internal/cipher/policy/policy.go"
+  printf '%s\n' "$2" >"$base_repo/internal/cipher/policy/profiles.go"
+  git -C "$base_repo" add -A
+  git -C "$base_repo" -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -q -m base
+  git -C "$base_repo" rev-parse HEAD
+}
+guard_run() { # <base commit>: the guard's control lines, after a run of k10_base_control
+  rm -f "$work/base-go-ran" "$work/base-control"
+  rm -rf "$work/base-work"
+  mkdir -p "$work/base-work"
+  (
+    # shellcheck disable=SC2329 # k10_base_control, eval'd above, calls both
+    control() { printf '%s\n' "$*" >>"$work/base-control"; }
+    # shellcheck disable=SC2329 # as control above
+    fail() { printf 'FAIL-CALLED: %s\n' "$*" >>"$work/base-control"; }
+    WORK_DIR="$work/base-work" ENVOY_DIR="$base_repo" JUDGE_CHECK_BASE="$1" PATH="$work/base-bin:$PATH" k10_base_control
+  ) >/dev/null 2>&1 || true
+  cat "$work/base-control" 2>/dev/null || true
+}
+# shellcheck disable=SC2016 # Go source text, with its backquotes, written as it is
+tagged_base="$(base_commit 'const TagJudge = "judge"' 'Judge json.RawMessage `json:"judge"`')"
+said="$(guard_run "$tagged_base")"
+# shellcheck disable=SC2016 # the bash -c text is expanded by the inner shell, from its arguments
+check "k10's base control reports UNKNOWN, naming JUDGE_CHECK_BASE, for a base that reads the key's judge tag, and builds nothing" \
+  bash -c '[[ "$1" == *UNKNOWN* && "$1" == *JUDGE_CHECK_BASE* && "$1" == *TagJudge* && "$1" == *FAIL-CALLED* && ! -e "$2" ]]' _ "$said" "$work/base-go-ran"
+# shellcheck disable=SC2016 # Go source text, with its backquotes, written as it is
+file_base="$(base_commit 'const TagOwner = "owner"' 'Judge *uint32 `json:"judge"`')"
+said="$(guard_run "$file_base")"
+check "k10's base control builds a base that reads the judge from the proxy block and defines no TagJudge" \
+  test -e "$work/base-go-ran"
 
 if [[ "$failed" -ne 0 ]]; then
   printf 'judge-check.test: %s failed\n' "$failed"

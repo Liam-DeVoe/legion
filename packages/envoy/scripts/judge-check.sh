@@ -868,8 +868,17 @@ k10_base_control() {
 	fi
 	mkdir -p "$tree"
 	git -C "$ENVOY_DIR" archive "$base" | tar -xf - -C "$tree"
+	# The guard reads what the base broker reads the judge from. A base whose policy.go defines
+	# TagJudge reads it from the key's tags, as this branch does, whatever its profiles.go holds -
+	# the field name is still there once this change merges, to refuse an old file - so it is no
+	# control. A base with no json:"judge" field reads no judge from a proxy block at all.
+	if grep -q 'TagJudge *=' "$tree/internal/cipher/policy/policy.go" 2>/dev/null; then
+		control "UNKNOWN: the base tree at $base defines TagJudge (internal/cipher/policy/policy.go), so its broker reads the judge from the key's tags, as this branch does, and is not the broker this control is about; set JUDGE_CHECK_BASE to a commit from before a key's judge became its own tag"
+		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
+		return
+	fi
 	if ! grep -q 'json:"judge"' "$tree/internal/cipher/policy/profiles.go" 2>/dev/null; then
-		control "UNKNOWN: the base tree at $base reads no judge from a proxy block (no json:\"judge\" field in internal/cipher/policy/profiles.go), so it is not the broker this control is about"
+		control "UNKNOWN: the base tree at $base reads no judge from a proxy block (no json:\"judge\" field in internal/cipher/policy/profiles.go), so it is not the broker this control is about; set JUDGE_CHECK_BASE to a commit whose profiles file sets the judge"
 		fail "negative control: a broker that reads the judge from the profiles file gives the first request to a person — UNKNOWN, the control was not run"
 		return
 	fi
