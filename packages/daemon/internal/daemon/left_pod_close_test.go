@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -221,6 +222,38 @@ func holdsOf(t *testing.T, rig *idleRig, reason workflow.IdleHold) []store.PodHo
 	return held
 }
 
+// queuedLeftPodCheck brings the rig's child to the close of a left pod with a live role, as
+// TestALeftPodWithALiveRoleIsReadBeforeItsClose does: the child parked and its stop run, its pod
+// built again and its planner brought back by an operator, and the idle passes queue the close's
+// workspace check alone. It answers that check as the outbox lists it.
+func queuedLeftPodCheck(t *testing.T, rig *idleRig) (record.OutboxRow, record.IssueWorkspaceCheck) {
+	t.Helper()
+	parkChild(t, rig)
+	rig.drain(t)
+	leftPodGone(rig)
+	resumeAsOperator(t, rig)
+	if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
+		t.Fatalf("the passes queued %v, want the close's workspace check alone", queued)
+	}
+	var row record.OutboxRow
+	var kind string
+	var payload []byte
+	if err := rig.pool.QueryRow(context.Background(), `select id, kind, issue, payload, lease_token from outbox where issue = $1 and kind = $2`,
+		rig.issue.Key, string(record.OutboxKindIssueBundle)).Scan(&row.ID, &kind, &row.Issue, &payload, &row.LeaseToken); err != nil {
+		t.Fatalf("read the close's workspace check: %v", err)
+	}
+	row.Kind, row.Payload = record.OutboxKind(kind), payload
+	decoded, err := record.DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decode the close's workspace check: %v", err)
+	}
+	check, ok := decoded.(record.IssueWorkspaceCheck)
+	if !ok || len(check.CloseRoles) == 0 {
+		t.Fatalf("the queued check = %#v, want a close's workspace check", decoded)
+	}
+	return row, check
+}
+
 // A child a park took out of the workflow while its tree runs on had its one close at that park:
 // the park suspended its claims and deleted its Sandbox, and nothing of its running tree closes
 // it again. A role that runs there after that park runs in a pod built again for it — an
@@ -420,6 +453,55 @@ func TestALeftPodWithALiveRoleIsReadBeforeItsClose(t *testing.T) {
 	if got := rig.machine.Claim(); got.State == supervise.StateSuspended {
 		t.Fatalf("the planner after the passes = %s, want it still live", got.State)
 	}
+}
+
+// A close's check whose lease another lane holds now (this run's lapsed, and the row was claimed
+// again) writes nothing of what its read found: what the check records commits with the finish of
+// its own row, which fences on the lease (record's FinishLeasedOutbox), so the lane that holds the
+// row now decides the close. A read that finds work records no decline, no hold and no message to
+// the role; a read that finds nothing forgets no decline on record and queues no stop.
+func TestALeftPodCloseCheckWhoseLeaseWasLostWritesNothing(t *testing.T) {
+	// run hands the check's lease to another lane and runs the check under the lease it had.
+	run := func(t *testing.T, rig *idleRig, row record.OutboxRow, check record.IssueWorkspaceCheck) {
+		t.Helper()
+		row.LeaseToken = "this-run"
+		if _, err := rig.pool.Exec(context.Background(), `update outbox set lease_token = 'another-lane',
+			lease_until = now() + interval '5 minutes' where id = $1`, row.ID); err != nil {
+			t.Fatalf("hand the check's lease to another lane: %v", err)
+		}
+		before := rig.rows(t)
+		if err := rig.runner.checkIssueWorkspace(context.Background(), row, check); !errors.Is(err, record.ErrOutboxLeaseLost) {
+			t.Errorf("the check whose lease was lost = %v, want %v", err, record.ErrOutboxLeaseLost)
+		}
+		if after := rig.rows(t); !slices.Equal(after, before) {
+			t.Errorf("rows after the check = %v, want %v as before it", after, before)
+		}
+	}
+	t.Run("a read that finds work", func(t *testing.T) {
+		rig := newLeftPodRig(t, false)
+		rig.rt.ScriptWorkspaceWork(rig.issue.Key, idleRigUnpushed)
+		row, check := queuedLeftPodCheck(t, rig)
+		run(t, rig, row, check)
+		if rig.declined(t) {
+			t.Error("the check whose lease was lost recorded a decline")
+		}
+		if held := holdsOf(t, rig, workflow.IdleHoldUnpushedWork); len(held) != 0 {
+			t.Errorf("holds = %+v, want no %s", held, workflow.IdleHoldUnpushedWork)
+		}
+	})
+	t.Run("a read that finds nothing", func(t *testing.T) {
+		rig := newLeftPodRig(t, false)
+		row, check := queuedLeftPodCheck(t, rig)
+		// A decline on record, which this clean read would forget if it held the lease.
+		if _, err := rig.st.DeclineLeftPodClose(context.Background(), "legion", rig.issue.Key, store.IdleReleaseDecline{
+			At: time.Now().UTC(), Role: claim.RolePlanner, Reason: pods.DeclineWorkspaceUnread}); err != nil {
+			t.Fatalf("record a decline: %v", err)
+		}
+		run(t, rig, row, check)
+		if !rig.declined(t) {
+			t.Error("the check whose lease was lost forgot the decline on record")
+		}
+	})
 }
 
 // turnedBeforeQuiet runs a turn of the rig's planner through its machine, started and ended forty

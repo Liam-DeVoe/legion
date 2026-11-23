@@ -342,6 +342,13 @@ func newCancelRig(t *testing.T) *cancelRig {
 		rig.issue.Key); err != nil {
 		t.Fatalf("record a turn after the mark: %v", err)
 	}
+	return faultedRig(t, rig)
+}
+
+// faultedRig swaps the outbox's store and pool of rig together to faulted (faultedStoreOf), and
+// its log to one the test reads.
+func faultedRig(t *testing.T, rig *idleRig) *cancelRig {
+	t.Helper()
 	faulted, fault := faultedStoreOf(t, rig.st)
 	rig.runner.trees, rig.runner.pool, rig.runner.supervisor.store = faulted, faulted.Pool(), faulted
 	logs, log := watchedLog()
@@ -475,36 +482,9 @@ type leftCloseRig struct {
 
 func newLeftCloseRig(t *testing.T) *leftCloseRig {
 	t.Helper()
-	ctx := context.Background()
 	rig := newLeftPodRig(t, false)
-	parkChild(t, rig)
-	rig.drain(t)
-	leftPodGone(rig)
-	resumeAsOperator(t, rig)
-	if queued := rig.queuedBy(t, func() { idlePasses(rig) }); !slices.Equal(queued, []string{"issue_bundle"}) {
-		t.Fatalf("the passes queued %v, want the close's workspace check alone", queued)
-	}
-	var row record.OutboxRow
-	var kind string
-	var payload []byte
-	if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload, lease_token from outbox where issue = $1 and kind = $2`,
-		rig.issue.Key, string(record.OutboxKindIssueBundle)).Scan(&row.ID, &kind, &row.Issue, &payload, &row.LeaseToken); err != nil {
-		t.Fatalf("read the close's workspace check: %v", err)
-	}
-	row.Kind, row.Payload = record.OutboxKind(kind), payload
-	decoded, err := record.DecodeOutboxPayload(row)
-	if err != nil {
-		t.Fatalf("decode the close's workspace check: %v", err)
-	}
-	check, ok := decoded.(record.IssueWorkspaceCheck)
-	if !ok || len(check.CloseRoles) == 0 {
-		t.Fatalf("the queued check = %#v, want a close's workspace check", decoded)
-	}
-	faulted, fault := faultedStoreOf(t, rig.st)
-	rig.runner.trees, rig.runner.pool, rig.runner.supervisor.store = faulted, faulted.Pool(), faulted
-	logs, log := watchedLog()
-	rig.runner.log = log
-	return &leftCloseRig{cancelRig: &cancelRig{idleRig: rig, fault: fault, logs: logs}, row: row, payload: check}
+	row, check := queuedLeftPodCheck(t, rig)
+	return &leftCloseRig{cancelRig: faultedRig(t, rig), row: row, payload: check}
 }
 
 // leftPodCloseOwner is the clean close's check, run as the lane runs its row. A close that

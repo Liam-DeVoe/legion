@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -85,4 +86,46 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 
 	unlock()
 	testwait.Eventually(t, "the row finished once the lock went", func() bool { return outboxRows(t, pool) == 0 })
+}
+
+// A renewal tick that finds its row gone logs no lost lease. A row's own effect may finish the row
+// inside its run: a left pod's clean close finishes its check row in the close's transaction
+// (checkLeftPodWorkspace), and a tick that waited on that transaction's lock finds the row gone
+// once it commits, a row no other lane holds. A tick that finds the row under another lane's lease
+// logs the loss.
+func TestALeaseRenewalThatFindsItsRowGoneLogsNoLostLease(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	row := mustOutboxRow(t, "LEGION-208", record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), now)
+	enqueueOutbox(t, pool, records, row)
+	row.ID, row.LeaseToken = outboxIDs(t, pool)[0], "this-run"
+	logs, log := watchedLog()
+	runner := &outbox{pool: pool, records: records, log: log}
+	lease := func(token string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `update outbox set lease_token = $2, lease_until = now() + interval '5 minutes'
+			where id = $1`, row.ID, token); err != nil {
+			t.Fatalf("lease the row to %s: %v", token, err)
+		}
+	}
+	const lostLine = "outbox row lease lost"
+
+	lease("another-lane")
+	runner.renewOnce(ctx, row, &leaseRenewal{warned: map[int64]bool{}}, now)
+	if got := count(logs, lostLine); got != 1 {
+		t.Fatalf("lost-lease lines after a tick that found another lane's lease = %d, want 1: %s", got, logs.String())
+	}
+
+	lease(row.LeaseToken)
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken)
+	}); err != nil {
+		t.Fatalf("finish the row as its own effect does: %v", err)
+	}
+	runner.renewOnce(ctx, row, &leaseRenewal{warned: map[int64]bool{}}, now)
+	if got := count(logs, lostLine); got != 1 {
+		t.Errorf("lost-lease lines after a tick that found its row finished = %d, want still 1: %s", got, logs.String())
+	}
 }
