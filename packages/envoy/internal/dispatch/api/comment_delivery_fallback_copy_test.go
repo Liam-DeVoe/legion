@@ -250,20 +250,12 @@ func (claimedRole) TTL() time.Duration { return 5 * time.Minute }
 // 10 s.
 func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, issueKey, commentID string) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: deps.Store, Publisher: publisher, Broker: events.NewBroker(),
-			Listen:     deps.Store.Pool.Listener,
-			RoleClaims: claimedRole{}, Sessions: claimedRole{},
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		testwait.Receive(t, "the outbox to return once cancelled", stopped)
-	}()
+	stop := runOutbox(t, outbox.Deps{
+		Store: deps.Store, Publisher: publisher, Broker: events.NewBroker(),
+		Listen:     deps.Store.Pool.Listener,
+		RoleClaims: claimedRole{}, Sessions: claimedRole{},
+	})
+	defer stop()
 	testwait.Until(t, "the outbox to publish every event of "+issueKey+" and settle every held copy of "+commentID, func() (string, bool) {
 		var unpublished, unsettled int
 		if err := deps.Store.Pool.QueryRow(context.Background(), `

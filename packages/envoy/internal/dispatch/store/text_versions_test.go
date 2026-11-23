@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // searchTextVersionsVersion creates the keyword table and its fill's cursor row's table.
@@ -311,8 +313,8 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 
 	store := migratedEmptyStore(t)
 	// The reach is a moment of the database's clock, which stamps events and computes a reach
-	// (databaseNow), so both moments the row judges are read there.
-	reach := databaseNow(t, store).UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	// (testdb.Now), so both moments the row judges are read there.
+	reach := testdb.Now(t, store.Pool).UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	past := reach.Add(time.Microsecond)
 
 	// No cursor row: the fill has reached no time.
@@ -378,7 +380,7 @@ func TestTextVersionsAtRefusesACutPastTheReach(t *testing.T) {
 		t.Fatalf("TextVersionsAt one microsecond past the stored reach, with nothing left unwritten: %v", err)
 	}
 	computed, reached, err := store.TextVersionsReach(ctx)
-	if err != nil || !reached || !computed.After(past) || !computed.Before(databaseNow(t, store)) {
+	if err != nil || !reached || !computed.After(past) || !computed.Before(testdb.Now(t, store.Pool)) {
 		t.Fatalf("TextVersionsReach with nothing left unwritten = %s, reached %v, %v; want a time after %s and before the database's now",
 			computed, reached, err, past)
 	}

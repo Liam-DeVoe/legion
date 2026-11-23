@@ -90,19 +90,11 @@ func TestASilentListenerStillLeavesTheSessionOneCopyOfTheComment(t *testing.T) {
 // published to the session's own topic.
 func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID string) bool {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
-			Listen: deps.Store.Pool.Listener,
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		testwait.Receive(t, "the outbox to return once cancelled", stopped)
-	}()
+	stop := runOutbox(t, outbox.Deps{
+		Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+		Listen: deps.Store.Pool.Listener,
+	})
+	defer stop()
 	testwait.Until(t, "the outbox to publish every event of "+issueKey, func() (string, bool) {
 		var unpublished int
 		if err := deps.Store.Pool.QueryRow(context.Background(),
@@ -293,19 +285,11 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	_ = state.holdLookups("/v1/registry/s1")
 
 	// The outbox runs from here on; it gets the comment before the next process's first pass.
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
-			Listen: deps.Store.Pool.Listener,
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		testwait.Receive(t, "the outbox to return once cancelled", stopped)
-	}()
+	stopOutbox := runOutbox(t, outbox.Deps{
+		Store: deps.Store, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+		Listen: deps.Store.Pool.Listener,
+	})
+	defer stopOutbox()
 	testwait.Eventually(t, "the outbox to publish the comment.created of "+claimed.ID, func() bool {
 		var published bool
 		if err := database.Pool.QueryRow(context.Background(), `

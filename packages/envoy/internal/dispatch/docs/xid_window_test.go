@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -173,7 +173,7 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 	} {
 		t.Run(entry.name, func(t *testing.T) {
 			tracer := storetest.NewXidTracer()
-			caught := &recordedFailures{TB: t}
+			caught := &collabtest.RecordedFailures{TB: t}
 			database := &store.Store{Pool: storetest.Traced(caught, storetest.Open(t).Pool, tracer, nil)}
 			report := tracer.Measure(t, database.Pool, func() {
 				runRigTransactionDoing(t, database, func() {
@@ -182,7 +182,7 @@ func TestXidWindowCatchesADocumentCallInsideTheWindow(t *testing.T) {
 					}
 				})
 			})
-			failures := caught.reported()
+			failures := caught.Reported()
 			prefix := "document work (" + entry.kind + ") ran inside a transaction's xid window"
 			named := slices.IndexFunc(failures, func(failure string) bool { return strings.HasPrefix(failure, prefix) })
 			switch {
@@ -233,7 +233,7 @@ func (noReferences) Items([]text.Prefix) (map[int]string, error) { return nil, n
 func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
-	caught := &recordedFailures{TB: t}
+	caught := &collabtest.RecordedFailures{TB: t}
 	people := checkedIdentity(caught, signedIn("alice@example.com"))
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
@@ -248,14 +248,14 @@ func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
 		}
 	}
 	login("before the write")
-	if failures := caught.reported(); len(failures) != 0 {
+	if failures := caught.Reported(); len(failures) != 0 {
 		t.Fatalf("a collaborator call before the transaction's first write was reported: %q", failures)
 	}
 	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	login("after the write")
-	failures := caught.reported()
+	failures := caught.Reported()
 	if len(failures) != 1 || !strings.HasPrefix(failures[0], "identity.Identity.Login was called while its caller holds a connection of the pool") {
 		t.Fatalf("a collaborator call after the transaction's first write was reported as %q, want one failure naming identity.Identity.Login", failures)
 	}
@@ -273,7 +273,7 @@ func (s signedIn) Login(*http.Request) (string, error) { return string(s), nil }
 // follow work across goroutines, this row would fail and its doc and that gap would be rewritten.
 func TestXidWindowLeavesDocumentWorkHandedToAnotherGoroutineUnseen(t *testing.T) {
 	tracer := storetest.NewXidTracer()
-	caught := &recordedFailures{TB: t}
+	caught := &collabtest.RecordedFailures{TB: t}
 	database := &store.Store{Pool: storetest.Traced(caught, storetest.Open(t).Pool, tracer, nil)}
 	spec, _ := storetest.XidSpec("DOC", 1)
 	report := tracer.Measure(t, database.Pool, func() {
@@ -288,34 +288,13 @@ func TestXidWindowLeavesDocumentWorkHandedToAnotherGoroutineUnseen(t *testing.T)
 			}
 		})
 	})
-	if failures := caught.reported(); len(failures) != 0 {
+	if failures := caught.Reported(); len(failures) != 0 {
 		t.Fatalf("the document-work check reported a parse it cannot see on another goroutine: %q; "+
 			"the gap storetest's package doc names is closed, so rewrite it and this row", failures)
 	}
 	if err := report.Err(); err != nil {
 		t.Fatalf("the rig could not judge the transaction: %v", err)
 	}
-}
-
-// recordedFailures is a testing.TB that records what a check reports through Errorf instead of
-// failing the test, so a control can assert that the check fires and on what. Everything else -
-// Cleanup, Helper, Fatalf - is the test's own.
-type recordedFailures struct {
-	testing.TB
-	mu       sync.Mutex
-	failures []string
-}
-
-func (r *recordedFailures) Errorf(format string, args ...any) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.failures = append(r.failures, fmt.Sprintf(format, args...))
-}
-
-func (r *recordedFailures) reported() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.failures)
 }
 
 // The tracer opens a transaction's xid window, which the collaborator and document-work checks

@@ -592,10 +592,7 @@ func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 		read <- err
 	}()
 	testwait.Receive(t, "the cold fold to reach LoadDocument", persistence.started)
-	bound := foldClock.Now().Add(coldReadTimeout)
-	waitFor(t, "the cold fold to arm its coldReadTimeout bound on the service's clock", func() bool {
-		return slices.Contains(foldClock.Armed(), bound)
-	})
+	foldClock.AwaitArmedAt(t, "the cold fold's coldReadTimeout bound on the service's clock", foldClock.Now().Add(coldReadTimeout))
 	// The load waits for the fold's context, which ends only at that bound: the read is waiting.
 	select {
 	case err := <-read:

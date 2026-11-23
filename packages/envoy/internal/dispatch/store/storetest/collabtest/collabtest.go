@@ -14,14 +14,17 @@
 // (docs/collaborators_check_test.go: the document store and identity). The docs and api
 // interfaces cannot be wrapped here without an import cycle for those packages' own tests, and
 // this package imports no collaborator's package, so a rig's test binary reads none it does not
-// already read. What they share is here: Check, and the HTTP client for the Envoy listener and
-// GitHub App clients.
+// already read. What they share is here: Check, the HTTP client for the Envoy listener and
+// GitHub App clients, and RecordedFailures, the test a control hands Check in place of its own.
 package collabtest
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"runtime/debug"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -57,4 +60,26 @@ type checkedTransport struct {
 func (c checkedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	Check(c.t, request.Context(), "HTTP "+request.URL.Host, request.Method+" "+request.URL.Path)
 	return c.next.RoundTrip(request)
+}
+
+// RecordedFailures is a testing.TB that records what a check reports through Errorf instead of
+// failing the test, so a control can assert that the check fires and on what. Everything else -
+// Cleanup, Helper, Fatalf - is the test's own: a control makes one as &RecordedFailures{TB: t}.
+type RecordedFailures struct {
+	testing.TB
+	mu       sync.Mutex
+	failures []string
+}
+
+func (r *RecordedFailures) Errorf(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+// Reported is every failure Errorf recorded so far, in order, as a copy the caller may keep.
+func (r *RecordedFailures) Reported() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.failures)
 }

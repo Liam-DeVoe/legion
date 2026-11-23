@@ -481,9 +481,7 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 		defer close(caught)
 		service.catchUps.catchUp(ctx, artifactID, catchUpAsked)
 	}()
-	waitFor(t, "the catch-up to confirm its verdict under the document's lock", func() bool {
-		return waitingAdvisoryLocks(t, database) > 0
-	})
+	awaitVerdictUnderLock(t, database, "the catch-up")
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
@@ -534,9 +532,7 @@ func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing
 			defer close(caught)
 			service.catchUps.catchUp(context.Background(), artifactID, catchUpAsked)
 		}()
-		waitFor(t, "the catch-up to confirm its verdict under the document's lock", func() bool {
-			return waitingAdvisoryLocks(t, database) > 0
-		})
+		awaitVerdictUnderLock(t, database, "the catch-up")
 	}
 	settleCurrentGeneration(t, service, artifactID)
 	testwait.Receive(t, "the catch-up to finish once the settlement committed", caught)
@@ -564,6 +560,16 @@ func waitingAdvisoryLocks(t *testing.T, database *store.Store) int {
 		t.Fatalf("read the advisory locks waited for: %v", err)
 	}
 	return waiting
+}
+
+// awaitVerdictUnderLock waits through the shared wait until catchUp, the catch-up a row drives
+// into this process's own write, waits for the document's lock (waitingAdvisoryLocks): there it
+// confirms its verdict.
+func awaitVerdictUnderLock(t *testing.T, database *store.Store, catchUp string) {
+	t.Helper()
+	waitFor(t, catchUp+" to confirm its verdict under the document's lock", func() bool {
+		return waitingAdvisoryLocks(t, database) > 0
+	})
 }
 
 // A catch-up whose read fails is tried again, the first time one catchUpRetryInterval later and

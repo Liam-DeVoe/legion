@@ -328,7 +328,7 @@ func TestAnAgentViewHoldsFramesWithinTheViewersBudget(t *testing.T) {
 			_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 			stream := newGatedStream()
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-			t.Cleanup(func() { testwait.Returns(t, "the agent subscription's goroutine to return once stopped", running.stop) })
+			stopOnCleanup(t, "agent", running)
 			testwait.Eventually(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 			for index := range test.frames {
@@ -356,7 +356,7 @@ func TestAnAgentViewThatFallsPastItsBudgetEndsAsBehind(t *testing.T) {
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{agentStream: source})
 	stream := newGatedStream()
 	running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-	t.Cleanup(func() { testwait.Returns(t, "the agent subscription's goroutine to return once stopped", running.stop) })
+	stopOnCleanup(t, "agent", running)
 	testwait.Eventually(t, "the view arms the session", func() bool { return source.Watches(plannerSessionID) >= 1 })
 
 	// The whole budget, and then one frame more than it holds.
@@ -618,7 +618,7 @@ func TestAnAgentViewWhoseRelayFailsEndsAsDropped(t *testing.T) {
 			close(stream.gate)
 			retry := fake.Now().Add(agentStreamRetry)
 			running := served.startAgentSubscription(t.Context(), stream, "agent", plannerSessionID)
-			t.Cleanup(func() { testwait.Returns(t, "the agent subscription's goroutine to return once stopped", running.stop) })
+			stopOnCleanup(t, "agent", running)
 			fake.AwaitArmedAt(t, "the failed view's retry", retry)
 			// The view waits its retry with the session's frames already let go and nothing sent.
 			if got := source.Viewers(plannerSessionID); got != 0 {

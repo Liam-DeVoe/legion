@@ -239,14 +239,18 @@ func TestAwaitArmedReturnsThePendingDeadlines(t *testing.T) {
 
 // AwaitArmedAt returns once a timer due at the one deadline it names is pending, whatever else is
 // pending beside it: here a timer due earlier, and the one it waits for, armed on a goroutine of
-// its own.
+// its own. It returns the deadlines pending at that reading, both of them, earliest first.
 func TestAwaitArmedAtWaitsForItsOneDeadline(t *testing.T) {
 	c := clocktest.New(epoch)
 	c.AfterFunc(time.Minute, func() {})
 	go c.AfterFunc(2*time.Minute, func() {})
 
-	c.AwaitArmedAt(t, "the timer armed on a goroutine of its own", epoch.Add(2*time.Minute))
-	if armed, want := c.Armed(), []time.Time{epoch.Add(time.Minute), epoch.Add(2 * time.Minute)}; !slices.Equal(armed, want) {
+	held := c.AwaitArmedAt(t, "the timer armed on a goroutine of its own", epoch.Add(2*time.Minute))
+	want := []time.Time{epoch.Add(time.Minute), epoch.Add(2 * time.Minute)}
+	if !slices.Equal(held, want) {
+		t.Fatalf("AwaitArmedAt returned %v, want %v", held, want)
+	}
+	if armed := c.Armed(); !slices.Equal(armed, want) {
 		t.Fatalf("armed once AwaitArmedAt returned: %v, want %v", armed, want)
 	}
 }

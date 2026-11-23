@@ -50,7 +50,7 @@ func TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored(t *testing.T) 
 		}); err != nil {
 			t.Fatalf("subscribe %s's relay subject: %v", target, err)
 		}
-		if err := plugin.Flush(); err != nil {
+		if err := plugin.FlushWithContext(testnats.Context(t)); err != nil {
 			t.Fatalf("flush the relay subscription: %v", err)
 		}
 		status, body, err := sendThroughDispatch(t, rig.mux, target)

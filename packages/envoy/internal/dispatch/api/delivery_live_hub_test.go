@@ -1881,7 +1881,7 @@ func TestAFreshHubServesDeliveryChangesWhileATransactionHoldsTheEventHorizon(t *
 	key := createHubIssue(t, rig.handler, map[string]any{"title": "Ship widgets"})
 	upsertPR(t, rig.database, prNaming(1, rig.clock.Now().Add(-3*time.Hour), key))
 
-	release := holdClusterTransactionID(t)
+	release := storetest.HoldClusterTransactionID(t)
 	// The page's subscribe starts the hub's generation.
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("t", presetView(deliveryLiveTimeline, 7, "")))

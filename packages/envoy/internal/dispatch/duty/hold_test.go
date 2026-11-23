@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -591,7 +592,7 @@ func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
 	}
 
 	mustTakeHold(t, database.Pool, uuid.New(), opts)
-	before := databaseNow(t, database)
+	before := testdb.Now(t, database.Pool)
 	remaining, held, err := duty.Expiry(ctx, database.Pool, holdName)
 	if err != nil || !held {
 		t.Fatalf("Expiry of a live hold: held %v, error %v", held, err)
@@ -614,16 +615,6 @@ func TestHoldExpiryMatchesTheDatabaseClock(t *testing.T) {
 	lapsedExpiry(t, database)
 }
 
-// databaseNow is the database's own clock now, the one every bound in this test is read on.
-func databaseNow(t *testing.T, database *store.Store) time.Time {
-	t.Helper()
-	var now time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
-	return now
-}
-
 // lapsedExpiry rewrites holdName's row to a holder that lapsed two seconds ago, as a killed
 // holder's row reads, and checks Expiry reports it held with the negative remainder.
 func lapsedExpiry(t *testing.T, database *store.Store) {
@@ -643,7 +634,7 @@ func lapsedExpiry(t *testing.T, database *store.Store) {
 	// Expiry ran after the write and before this read, so its answer is -2 s less whatever of the
 	// window had passed: exactly -2 s if it ran at the write's instant, and never below -2 s less
 	// the whole window. The window's two ends are the database's clock, as the remainder is.
-	window := databaseNow(t, database).Sub(wrote)
+	window := testdb.Now(t, database.Pool).Sub(wrote)
 	if remaining > -2*time.Second || remaining < -2*time.Second-window {
 		t.Fatalf("Expiry of a row lapsed 2 s ago = %s, while the database's clock moved %s between the write and the read after it: want a remainder in [%s, -2s]",
 			remaining, window, -2*time.Second-window)

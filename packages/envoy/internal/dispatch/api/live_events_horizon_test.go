@@ -229,7 +229,7 @@ func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	since := eventHead(t, rig.database)
 
-	release := holdClusterTransactionID(t)
+	release := storetest.HoldClusterTransactionID(t)
 	first := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, first, "events", &since)
 	awaitHeartbeat(t, first, "while the horizon is held")
@@ -298,7 +298,7 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 	// notification's among them - can land between the two and find the log empty: one that did
 	// would take a cursor of 0 with nothing left to prove, and so reset before the subscription this
 	// test is about ever finds the relay on the replaced log.
-	release := holdClusterTransactionID(t)
+	release := storetest.HoldClusterTransactionID(t)
 	resetEventLog(t, rig.database, rig.served.deps.Events, issue.Key)
 	afterReset := eventHead(t, rig.database)
 	for i := 0; climbPast && afterReset <= old; i++ {
@@ -374,7 +374,7 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 		},
 		func(read model.GraphReferences) bool { return len(read.Edges) == 1 })
 
-	release := holdClusterTransactionID(t)
+	release := storetest.HoldClusterTransactionID(t)
 	// An event committed before the subscribe but above the proven horizon, which the hold keeps
 	// from being proven: a first cursor awaited after it must wait for the hold to end.
 	renameIssue(t, rig.handler, issue.Key, "Renamed before the subscribe")
@@ -400,7 +400,7 @@ func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRe
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat, liveSocketClock: clocktest.Held()}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 
-	release := holdClusterTransactionID(t)
+	release := storetest.HoldClusterTransactionID(t)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
 	awaitRelayStart(t, rig.served)
@@ -641,7 +641,7 @@ func TestShutdownEndsAnEventsSubscriptionWaitingOnTheHorizon(t *testing.T) {
 	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	since := eventHead(t, rig.database)
 
-	holdClusterTransactionID(t)
+	storetest.HoldClusterTransactionID(t)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", &since)
 	awaitHeartbeat(t, client, "while the horizon is held")

@@ -117,11 +117,7 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 	}
 	awaitMarkWait := func(what string) {
 		t.Helper()
-		due := fake.Now().Add(markWait)
-		testwait.Until(t, what+": VerifyMark's wait armed at "+due.String(), func() ([]time.Time, bool) {
-			armed := fake.Armed()
-			return armed, slices.ContainsFunc(armed, due.Equal)
-		})
+		fake.AwaitArmedAt(t, what+": VerifyMark's wait", fake.Now().Add(markWait))
 	}
 
 	found := verify("b1")
@@ -185,11 +181,7 @@ func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
 		anchored, err := service.VerifyMark(context.Background(), artifactID, MarkComment, "b1")
 		done <- verified{anchored: anchored, err: err}
 	}()
-	due := fake.Now().Add(markWait)
-	testwait.Until(t, "VerifyMark's wait, its first read having found nothing, armed at "+due.String(), func() ([]time.Time, bool) {
-		armed := fake.Armed()
-		return armed, slices.ContainsFunc(armed, due.Equal)
-	})
+	fake.AwaitArmedAt(t, "VerifyMark's wait, its first read having found nothing,", fake.Now().Add(markWait))
 	browserMark(t, service, artifactID, "proofComment", "b1", "brown")
 	fake.Advance(markWait)
 	got := testwait.Receive(t, "VerifyMark to return once its wait's deadline passed", done)

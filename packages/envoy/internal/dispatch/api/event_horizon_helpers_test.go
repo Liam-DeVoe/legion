@@ -2,15 +2,11 @@ package api
 
 import (
 	"context"
-	"sync"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // appendOutOfOrder appends two events through broker so they commit out of id order: tx A
@@ -60,36 +56,4 @@ func appendOutOfOrder(t *testing.T, database *store.Store, broker *events.Broker
 			t.Fatalf("commit the lower id: %v", err)
 		}
 	}
-}
-
-// holdClusterTransactionID opens a transaction in a second database of the test binary's own on
-// the test cluster (storetest.OtherDatabase) and takes a transaction id, as a job in another
-// database or another package's test does. Snapshots are instance-wide, so until it ends no
-// horizon on the cluster proves an observation taken after it began. It commits when release
-// runs, and the test's cleanup runs release; release returns once it has committed.
-func holdClusterTransactionID(t *testing.T) (release func()) {
-	t.Helper()
-	conn, err := pgx.Connect(t.Context(), storetest.OtherDatabase(t))
-	if err != nil {
-		t.Fatalf("connect to the binary's other database: %v", err)
-	}
-	tx, err := conn.Begin(t.Context())
-	if err != nil {
-		_ = conn.Close(context.Background())
-		t.Fatalf("begin the transaction that holds the horizon: %v", err)
-	}
-	var xid string
-	if err := tx.QueryRow(t.Context(), `select pg_current_xact_id()::text`).Scan(&xid); err != nil {
-		_ = conn.Close(context.Background())
-		t.Fatalf("take a transaction id: %v", err)
-	}
-	var once sync.Once
-	release = func() {
-		once.Do(func() {
-			_ = tx.Commit(context.Background())
-			_ = conn.Close(context.Background())
-		})
-	}
-	t.Cleanup(release)
-	return release
 }

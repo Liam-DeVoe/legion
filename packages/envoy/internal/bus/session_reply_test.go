@@ -64,7 +64,7 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe the watcher: %v", err)
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watcher: %v", err)
 	}
 	var mu sync.Mutex
@@ -97,7 +97,7 @@ func TestASessionsReplyGrantAdmitsItsOwnReplySubjectsAlone(t *testing.T) {
 			t.Fatalf("publish to %s: %v", subject, err)
 		}
 	}
-	if err := session.Flush(); err != nil {
+	if err := session.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the session: %v", err)
 	}
 	for _, want := range []string{own, marker} {

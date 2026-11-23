@@ -25,6 +25,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -196,7 +197,7 @@ func (r *sessionRig) prepare(t *testing.T, writer *dispatchProcess, issues int) 
 	}
 	subscribe(contracts.LegacyAgentSubject(holder), loadRole)
 	t.Cleanup(target.unsubscribe)
-	if err := r.conn.Flush(); err != nil {
+	if err := r.conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the test session's subscriptions: %v", err)
 	}
 	r.registerHolder(t, target.role, holder)

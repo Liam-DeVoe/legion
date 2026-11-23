@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -41,16 +42,6 @@ func ageKeyLease(t *testing.T, database *store.Store, key string, age time.Durat
 		t.Fatalf("set the lease of %s %v old: %d rows, want the one the dead process holds", key, age, rows)
 	}
 	return end
-}
-
-// databaseNow is the database's clock now, the clock a repeat judges a lease by.
-func databaseNow(t *testing.T, database *store.Store) time.Time {
-	t.Helper()
-	var now time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
-	return now
 }
 
 // leaseMargin is how far short of its end the row first sets the dead run's lease: leaseMargin
@@ -132,7 +123,7 @@ func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.
 	end := ageKeyLease(t, pair.database, "killed-press", contracts.IdempotencyLease-leaseMargin)
 	answer = repeat()
 	if answer.status != http.StatusConflict || answer.code() != contracts.IdempotencyKeyInFlight {
-		if checked := databaseNow(t, pair.database); checked.Before(end) {
+		if checked := testdb.Now(t, pair.database.Pool); checked.Before(end) {
 			t.Fatalf("a repeat %v before the dead run's lease ends: %v, want 409 %s: the key is still the dead run's "+
 				"until its %v lease is out (the database's clock read %s once it answered, before the lease's end at %s)",
 				leaseMargin, answer, contracts.IdempotencyKeyInFlight, contracts.IdempotencyLease,

@@ -361,16 +361,23 @@ func (c *Fake) AwaitArmed(t testing.TB, what string, n int) []time.Time {
 	return armed
 }
 
-// AwaitArmedAt waits until a timer due at at is pending on the fake. It looks for the one deadline
+// AwaitArmedAt waits until a timer due at at is pending on the fake, and returns the deadline of
+// every timer pending then, earliest first: the reading that held at. It looks for the one deadline
 // rather than a count, since the code's other timers on the fake may be pending beside it. what
 // names what the test waits to see armed; a failure prints it with at and what the last try read
 // (armedReading).
-func (c *Fake) AwaitArmedAt(t testing.TB, what string, at time.Time) {
+func (c *Fake) AwaitArmedAt(t testing.TB, what string, at time.Time) []time.Time {
 	t.Helper()
+	var held []time.Time
 	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() (string, bool) {
 		armed, reading := c.armedReading()
-		return reading, slices.ContainsFunc(armed, at.Equal)
+		if !slices.ContainsFunc(armed, at.Equal) {
+			return reading, false
+		}
+		held = armed
+		return reading, true
 	})
+	return held
 }
 
 // armedReading is one reading of what is armed, for the waits on it: the deadline of every pending

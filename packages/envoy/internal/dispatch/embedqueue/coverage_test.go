@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -310,18 +311,12 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 		t.Fatalf("coverage before Run: items %d current %d lacking %d oldest %v, want %d, 0, %d and an age", items, current, lacking, oldest, seeded, seeded)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
 	// The row moves the queue's clock only to the timers the scan loop reports it armed, a gap
 	// after a wake or a row's due time once the database's clock has passed it (moveToArmed),
 	// which holds the coverage loop's ten-minute recheck off: the items are made current by the
 	// pass Run makes at boot, the scans its rows wake, and nothing that comes later.
-	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: &scanClock{Fake: fake}}
-	go func() {
-		defer close(done)
-		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
-	}()
+	fake, waits := newScanWaits(t, database)
+	stop := startQueue(t, context.Background(), Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	reached := databasePassed(t, database)
 	testwait.Until(t, "every item current under Run", func() (coverageReading, bool) {
 		items, current, lacking, failed, oldest := coverage(t, database, configuredIdentity)
@@ -332,8 +327,7 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 		}
 		return read, made
 	})
-	cancel()
-	testwait.Receive(t, "Run to return once its context ended", done)
+	stop()
 }
 
 // The row the pass adds for an issue that has none carries that issue's project, as the row
@@ -434,10 +428,7 @@ func TestCoverRepairsAStaleRow(t *testing.T) {
 
 	// The pass's own writes are stamped by the database, so the window they must fall in is read
 	// from the database's clock too.
-	var started time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&started); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
+	started := testdb.Now(t, database.Pool)
 	cover(t, deps)
 	var text, hash, wantHash string
 	var attempts, confirmed int
@@ -701,10 +692,7 @@ func TestCoverDropsAnotherIdentitysVectors(t *testing.T) {
 	deps := Deps{Store: database, Embedder: embedder}
 	// The pass's writes are stamped by the database, so the window they must fall in is read
 	// from the database's clock too.
-	var started time.Time
-	if err := database.Pool.QueryRow(ctx, `select now()`).Scan(&started); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
+	started := testdb.Now(t, database.Pool)
 	cover(t, deps)
 	read := func(id string) (hasVector bool, model, embeddedHash *string, attempts int, next, pending time.Time) {
 		t.Helper()
@@ -896,16 +884,10 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	// on Run's clock only once that pass has returned, so the row waits for that timer (on a
 	// fake it never moves, so the recheck never runs) before it ends Run; the scan loop's timers on
 	// that clock are seconds ahead, the recheck minutes (awaitRecheckArmed).
-	ctx, cancel := context.WithCancel(context.Background())
-	ran := make(chan struct{})
 	recheck := clocktest.Held()
-	go func() {
-		defer close(ran)
-		Run(ctx, Deps{Store: database, Embedder: client, Clock: recheck})
-	}()
+	stop := startQueue(t, context.Background(), Deps{Store: database, Embedder: client, Clock: recheck})
 	awaitRecheckArmed(t, recheck)
-	cancel()
-	testwait.Receive(t, "Run to return once its context ended", ran)
+	stop()
 	requireUnchanged("Run while the deployment is missing")
 	requireOneCanary("Run while the deployment is missing")
 
@@ -1086,8 +1068,7 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	seedIssue(t, database, "ROLL", "ROLL-2", "Embedded before the roll")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
 	mustExec(t, database.Pool, `update embeddings set embedding = null, model = null, embedded_hash = null, next_attempt_at = now() where id = 'ROLL-1'`)
-	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: &scanClock{Fake: fake}}
+	fake, waits := newScanWaits(t, database)
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here.
 	eventually(t, "the boot pass and the boot drain", func() bool {
@@ -1112,8 +1093,7 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "CLEAN", "CLEAN-1", "Embedded here at boot")
-	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: &scanClock{Fake: fake}}
+	fake, waits := newScanWaits(t, database)
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
 	// finds none: the database holds one row and this process made its vector.
@@ -1144,8 +1124,7 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	// embed wakes. ANSR-1's retry is due at its next_attempt_at, a moment of the database's clock:
 	// the row moves the queue's clock to the timer the scan loop armed for it once the database's
 	// clock has passed it (moveToArmed), as the real clock would reach it.
-	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: &scanClock{Fake: fake}}
+	fake, waits := newScanWaits(t, database)
 	runQueue(t, Deps{Store: database, Embedder: embedder, Clock: waits.clock, scanWaiting: waits.report})
 	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
 	// ANSR-2 keeps the foreign vector throughout: nothing drops it before the embedder answers.
@@ -1508,20 +1487,15 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
 	// The row moves the queue's clock only to the timers the scan loop reports it armed (the gap
 	// it holds the pass's wake to), which holds the coverage loop's ten-minute recheck off, so the
 	// items current at the end are the pass's and no later one's.
-	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: &scanClock{Fake: fake}}
-	go func() {
-		defer close(done)
-		Run(runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
-	}()
+	fake, waits := newScanWaits(t, database)
+	stop := startQueue(t, runCtx, Deps{Store: proxied, Embedder: newPlaceEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	defer func() {
 		cancel()
 		releaseProxy()
-		testwait.Receive(t, "Run to return once its context ended", done)
+		stop()
 	}()
 
 	testwait.Receive(t, "the scan loop's claim of SIDE-2 to reach the client", proxy.paused)

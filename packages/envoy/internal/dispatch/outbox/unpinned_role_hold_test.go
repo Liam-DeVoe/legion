@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The second road to one host, which TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce
@@ -67,9 +68,9 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	// because only the sender's own resolution learns which session holds the role.
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
-	before := databaseNow(t, rig.database)
+	before := testdb.ClockTimestamp(t, rig.database.Pool)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := databaseNow(t, rig.database)
+	after := testdb.ClockTimestamp(t, rig.database.Pool)
 
 	recv.settle(t)
 	if forwards := recv.received(); len(forwards) > 0 {

@@ -45,17 +45,11 @@ func TestANotifiedCatchUpThatMeetsThisProcessesOwnWriteRecordsTheHead(t *testing
 		t.Fatalf("announce another process's change: %v", err)
 	}
 	waitNote(t, notes.reads, artifactID, "the notified catch-up's read")
-	waitFor(t, "the notified catch-up to confirm its verdict under the document's lock", func() bool {
-		return waitingAdvisoryLocks(t, database) > 0
-	})
+	awaitVerdictUnderLock(t, database, "the notified catch-up")
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
-	waitNote(t, notes.reads, artifactID, "the catch-up asked again once the locked read found the room's own history")
-	awaitCatchUpLane(t, service)
-	if service.srv.GetDoc(artifactID) != room {
-		t.Fatal("the catch-up closed the room this process was writing")
-	}
+	requireRoomKeptOnceAskedAgain(t, service, notes.reads, artifactID, room)
 	if head := requireRoomCounters(t, service, artifactID).NotifiedHead; head != int64(version) {
 		t.Fatalf("the notified head is %d once the catch-up asked again in place of the close has run, want %d, the head the room holds", head, version)
 	}
@@ -75,18 +69,12 @@ func TestASweptCatchUpThatMeetsThisProcessesOwnWriteRecordsTheHead(t *testing.T)
 	notes := watchCatchUps(t, service)
 	listening, _ := startRoomSync(t, newListenerHub(service), newRoomSync(service))
 	waitNote(t, notes.reads, artifactID, "the first LISTEN's sweep's read")
-	waitFor(t, "the sweep's catch-up to confirm its verdict under the document's lock", func() bool {
-		return waitingAdvisoryLocks(t, database) > 0
-	})
+	awaitVerdictUnderLock(t, database, "the sweep's catch-up")
 	if err := tx.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
 	testwait.Receive(t, "the first LISTEN's sweep to end", listening)
-	waitNote(t, notes.reads, artifactID, "the catch-up asked again once the locked read found the room's own history")
-	awaitCatchUpLane(t, service)
-	if service.srv.GetDoc(artifactID) != room {
-		t.Fatal("the catch-up closed the room this process was writing")
-	}
+	requireRoomKeptOnceAskedAgain(t, service, notes.reads, artifactID, room)
 	counters := requireRoomCounters(t, service, artifactID)
 	if counters.SweptHead != int64(version) || counters.NotifiedHead != 0 {
 		t.Fatalf("the swept head is %d and the notified head %d once the catch-up asked again in place of the close has run, want %d, the head the room holds, and 0: no notification asked for it",
@@ -122,9 +110,7 @@ func TestARetryOfANotifiedOrSweptCatchUpRecordsTheHead(t *testing.T) {
 				defer close(caught)
 				catchUps.catchUp(ctx, artifactID, asked.cause)
 			}()
-			waitFor(t, "the catch-up to confirm its verdict under the document's lock", func() bool {
-				return waitingAdvisoryLocks(t, database) > 0
-			})
+			awaitVerdictUnderLock(t, database, "the catch-up")
 			cancel()
 			testwait.Receive(t, "the catch-up to return once its context ended under the locked read", caught)
 			wake := catchUps.wakeIn()
@@ -162,11 +148,7 @@ func TestARetryOfANotifiedOrSweptCatchUpRecordsTheHead(t *testing.T) {
 // fake the test moves only once the room is published, so no real moment brings the look again
 // or ends it (catchUpLoadingTimeout).
 func TestANotifiedCatchUpOfARoomStillLoadingRecordsTheHeadOnceTheRoomIsPublished(t *testing.T) {
-	database := storetest.Open(t)
-	artifactID := createDocument(t, database, "# First")
-	service, _ := newTestServiceInstance(t, database)
-	service.hooks = newTestHooks()
-	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
+	service, database, artifactID := newHookedService(t)
 	fake := clocktest.New(time.Now())
 	catchUps := service.catchUps
 	catchUps.now = fake.Now
@@ -263,11 +245,7 @@ type heldLoad struct {
 // instance's catch-up scheduled, and read nothing: the window the rows that call it drive.
 func holdLoadPastANotification(t *testing.T) heldLoad {
 	t.Helper()
-	database := storetest.Open(t)
-	artifactID := createDocument(t, database, "# First")
-	service, _ := newTestServiceInstance(t, database)
-	service.hooks = newTestHooks()
-	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
+	service, database, artifactID := newHookedService(t)
 	fake := clocktest.New(time.Now())
 	catchUps := service.catchUps
 	catchUps.now = fake.Now
@@ -430,18 +408,12 @@ func TestANotifiedRetryAnsweredByASweptCatchUpRecordsBothHeads(t *testing.T) {
 		notes := watchCatchUps(t, service)
 		listening, _ := startRoomSync(t, newListenerHub(service), newRoomSync(service))
 		waitNote(t, notes.reads, artifactID, "the first LISTEN's sweep's read")
-		waitFor(t, "the sweep's catch-up to confirm its verdict under the document's lock", func() bool {
-			return waitingAdvisoryLocks(t, database) > 0
-		})
+		awaitVerdictUnderLock(t, database, "the sweep's catch-up")
 		if err := tx.Commit(context.Background()); err != nil {
 			t.Fatalf("commit the write: %v", err)
 		}
 		testwait.Receive(t, "the first LISTEN's sweep to end", listening)
-		waitNote(t, notes.reads, artifactID, "the catch-up asked again once the locked read found the room's own history")
-		awaitCatchUpLane(t, service)
-		if service.srv.GetDoc(artifactID) != room {
-			t.Fatal("the catch-up closed the room this process was writing")
-		}
+		requireRoomKeptOnceAskedAgain(t, service, notes.reads, artifactID, room)
 		requireBothHeads(t, service, artifactID, int64(version))
 	})
 }
@@ -451,16 +423,37 @@ func TestANotifiedRetryAnsweredByASweptCatchUpRecordsBothHeads(t *testing.T) {
 // sync is not started.
 func newHookedResidentRoom(t *testing.T) (*Service, *store.Store, string, *crdt.Doc) {
 	t.Helper()
-	database := storetest.Open(t)
-	artifactID := createDocument(t, database, "# First")
-	service, _ := newTestServiceInstance(t, database)
-	service.hooks = newTestHooks()
-	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
+	service, database, artifactID := newHookedService(t)
 	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the room: %v", err)
 	}
 	waitForLandedAppends(t, service, artifactID)
 	return service, database, artifactID, service.srv.GetDoc(artifactID)
+}
+
+// newHookedService is a service of its own, on a database of its own, with the test hooks on, and
+// a document of its own whose text the service has seeded; no room of it is loaded yet.
+func newHookedService(t *testing.T) (*Service, *store.Store, string) {
+	t.Helper()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	service, _ := newTestServiceInstance(t, database)
+	service.hooks = newTestHooks()
+	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
+	return service, database, artifactID
+}
+
+// requireRoomKeptOnceAskedAgain waits for the read of the catch-up asked again in place of the
+// close the locked read did not confirm (on reads, a catchUpNotes' own) and for the catch-up lane
+// to drain (awaitCatchUpLane), and fails t unless artifactID's room is still room: the catch-up
+// closed nothing this process was writing.
+func requireRoomKeptOnceAskedAgain(t *testing.T, service *Service, reads chan string, artifactID string, room *crdt.Doc) {
+	t.Helper()
+	waitNote(t, reads, artifactID, "the catch-up asked again once the locked read found the room's own history")
+	awaitCatchUpLane(t, service)
+	if service.srv.GetDoc(artifactID) != room {
+		t.Fatal("the catch-up closed the room this process was writing")
+	}
 }
 
 // holdOwnWrite holds a write of service's own to artifactID in the window between its cursor

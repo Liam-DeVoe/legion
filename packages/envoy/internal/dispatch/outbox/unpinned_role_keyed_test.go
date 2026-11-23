@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -131,9 +132,9 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "pending")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "pending")
 
-	before := databaseNow(t, rig.database)
+	before := testdb.ClockTimestamp(t, rig.database.Pool)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := databaseNow(t, rig.database)
+	after := testdb.ClockTimestamp(t, rig.database.Pool)
 
 	recv.settle(t)
 	if forwards := recv.received(); len(forwards) != 0 {

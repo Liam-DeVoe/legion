@@ -115,20 +115,31 @@ func failedKeep(client *bus.Client) *takenKeeps {
 	}}
 }
 
-// claimedUnderTheKeep is a client that runs the nth of claims before its nth kept publish, so
-// each claim lands inside the window that keep's own race leaves open: after the batch resolved
-// the role unheld and before the copy is on its lane (handOverKept). A batch whose keeps of one
-// role sit on one chain makes them in turn, each after the handover behind the one before it, so
-// a second claim named here is one that lands between two handovers.
-func claimedUnderTheKeep(client *bus.Client, claims ...func()) *takenKeeps {
-	takers := make([]func(func() <-chan error) <-chan error, 0, len(claims))
-	for _, claim := range claims {
+// claimedUnderTheKeep is a client on the rig's that claims role for the nth of holders, each
+// self-subscribed, before its nth kept publish, so each claim lands inside the window that keep's
+// own race leaves open: after the batch resolved the role unheld and before the copy is on its
+// lane (handOverKept). A batch whose keeps of one role sit on one chain makes them in turn, each
+// after the handover behind the one before it, so a second holder named here is one whose claim
+// lands between two handovers. It returns that client and the join of the claims: the shared
+// wait for each claim's answer in turn, which fails t with made and the error of a claim refused.
+func (r *roleRig) claimedUnderTheKeep(role string, holders ...string) (*takenKeeps, func(t *testing.T, made string)) {
+	claimed := make(chan error, len(holders))
+	takers := make([]func(func() <-chan error) <-chan error, 0, len(holders))
+	for _, holder := range holders {
 		takers = append(takers, func(publish func() <-chan error) <-chan error {
-			claim()
+			claimed <- r.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 			return publish()
 		})
 	}
-	return &takenKeeps{Client: client, takers: takers}
+	joinClaims := func(t *testing.T, made string) {
+		t.Helper()
+		for range holders {
+			if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
+				t.Fatalf("%s: %v", made, err)
+			}
+		}
+	}
+	return &takenKeeps{Client: r.client, takers: takers}, joinClaims
 }
 
 // keptPublish is one stored publish a test publisher took, with the subject and the Nats-Msg-Id it
@@ -480,10 +491,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	recv := rig.receiver(t, holder)
 	kept := rig.routedEvent(t, key, role, model.Actor{Kind: "user", ID: "alice"})
-	claimed := make(chan error, 1)
-	publisher := claimedUnderTheKeep(rig.client, func() {
-		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
-	})
+	publisher, joinClaims := rig.claimedUnderTheKeep(role, holder)
 	// The keep reads its moment on a fake the row names, so the kept_at its handover carries is
 	// that moment exactly.
 	keptAt := time.Now().Truncate(time.Millisecond)
@@ -495,9 +503,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	outbox.scan(context.Background(), unfenced{})
 	keptScan := time.Since(started)
 
-	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-		t.Fatalf("the claim made under the keep: %v", err)
-	}
+	joinClaims(t, "the claim made under the keep")
 	if publishedAt(t, rig.database, kept.ID) == nil {
 		attempts, failure, _ := eventState(t, rig.database, kept.ID)
 		t.Fatalf("the kept event was not published: attempt_count %d, publish_error %v", attempts, failure)
@@ -587,16 +593,11 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 		IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "6c1d9f20-7a83-4f15-8de4-19b70c3a5e88", IssueKey: new(key), Body: "the issue's later event"},
 	})
-	claimed := make(chan error, 1)
-	publisher := claimedUnderTheKeep(rig.client, func() {
-		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
-	})
+	publisher, joinClaims := rig.claimedUnderTheKeep(role, holder)
 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
-	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-		t.Fatalf("the claim made under the keep: %v", err)
-	}
+	joinClaims(t, "the claim made under the keep")
 	if publishedAt(t, rig.database, later.ID) == nil {
 		attempts, failure, _ := eventState(t, rig.database, later.ID)
 		t.Fatalf("the later event was not kept: attempt_count %d, publish_error %v", attempts, failure)
@@ -643,18 +644,13 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "b7d3c6a1-0f52-4a39-8e77-9c4215db60fa", IssueKey: new(key), Body: "the issue's second event"},
 	})
-	claimed := make(chan error, 1)
-	publisher := claimedUnderTheKeep(rig.client, func() {
-		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
-	})
+	publisher, joinClaims := rig.claimedUnderTheKeep(role, holder)
 
 	started := time.Now()
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 	scanned := time.Since(started)
 
-	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-		t.Fatalf("the claim made under the first keep: %v", err)
-	}
+	joinClaims(t, "the claim made under the first keep")
 	firstKey, secondKey := fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)
 	for _, event := range []struct {
 		id  int64
@@ -720,18 +716,11 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 		IssueKey: new(key), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "d41f8a93-2b6e-4c18-9f05-7ae3061b24cd", IssueKey: new(key), Body: "the issue's second event"},
 	})
-	claimed := make(chan error, 2)
-	publisher := claimedUnderTheKeep(rig.client,
-		func() { claimed <- rig.claimUnder(role, firstHolder, session.SessionEntry{SelfSubscribed: true}) },
-		func() { claimed <- rig.claimUnder(role, secondHolder, session.SessionEntry{SelfSubscribed: true}) })
+	publisher, joinClaims := rig.claimedUnderTheKeep(role, firstHolder, secondHolder)
 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
-	for range 2 {
-		if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-			t.Fatalf("a claim made under one of the keeps: %v", err)
-		}
-	}
+	joinClaims(t, "a claim made under one of the keeps")
 	firstKey, secondKey := fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)
 	for _, event := range []struct {
 		id  int64

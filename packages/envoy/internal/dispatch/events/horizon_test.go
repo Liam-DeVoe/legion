@@ -861,6 +861,26 @@ func heldScriptedHorizonDB(script ...scriptedObservation) (db *scriptedHorizonDB
 	return db, observations, entered, release
 }
 
+// startFirstSafe calls horizon.Safe on a goroutine of its own, the first caller, whose observation
+// a heldScriptedHorizonDB holds, and waits through the shared wait for that observation to reach
+// the database (entered). It returns the join of that call: the shared wait for it to return,
+// which fails t with the error it returned.
+func startFirstSafe(t *testing.T, ctx context.Context, horizon *Horizon, entered <-chan struct{}) (join func()) {
+	t.Helper()
+	first := make(chan error, 1)
+	go func() {
+		_, err := horizon.Safe(ctx)
+		first <- err
+	}()
+	testwait.Receive(t, "the first caller's observation to reach the database", entered)
+	return func() {
+		t.Helper()
+		if err := testwait.Receive(t, "the Safe that ran the first observation to return", first); err != nil {
+			t.Fatalf("Safe that ran the first observation: %v", err)
+		}
+	}
+}
+
 // A caller that waited out an observation and wakes only after the next one has ended takes that
 // one as it ended, since it started after the call, and runs none of its own. The test holds six
 // of the seven late callers in the parking hook, before they wait on the observation in flight,
@@ -934,12 +954,7 @@ func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T)
 		close(parked)
 		<-late
 	}
-	first := make(chan error, 1)
-	go func() {
-		_, err := horizon.Safe(ctx)
-		first <- err
-	}()
-	testwait.Receive(t, "the first caller's observation to reach the database", entered)
+	joinFirst := startFirstSafe(t, ctx, horizon, entered)
 	waiter := make(chan error, 1)
 	go func() {
 		_, err := horizon.Safe(ctx)
@@ -947,9 +962,7 @@ func TestHorizonACallerThatWokeLateTakesNoOtherCallersCancellation(t *testing.T)
 	}()
 	testwait.Receive(t, "the second caller to park on the held observation", parked)
 	close(release)
-	if err := testwait.Receive(t, "the Safe that ran the first observation to return", first); err != nil {
-		t.Fatalf("Safe that ran the first observation: %v", err)
-	}
+	joinFirst()
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err := horizon.Safe(cancelled); !errors.Is(err, context.Canceled) {
@@ -1034,12 +1047,7 @@ func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEnded
 		scriptedObservation{newest: 8, xmin: 103, xid: 103, selfProves: true},
 	)
 	horizon := NewHorizon(db)
-	first := make(chan error, 1)
-	go func() {
-		_, err := horizon.Safe(ctx)
-		first <- err
-	}()
-	testwait.Receive(t, "the first caller's observation to reach the database", entered)
+	joinFirst := startFirstSafe(t, ctx, horizon, entered)
 	counted, late := make(chan struct{}), make(chan struct{})
 	var boundaries atomic.Int32
 	horizon.afterObservationBoundary = func() {
@@ -1063,9 +1071,7 @@ func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEnded
 	}()
 	testwait.Receive(t, "the other call to park on the first observation", parked)
 	close(release)
-	if err := testwait.Receive(t, "the Safe that ran the first observation to return", first); err != nil {
-		t.Fatalf("Safe that ran the first observation: %v", err)
-	}
+	joinFirst()
 	if err := testwait.Receive(t, "the Safe that ran the next observation to return", other); err != nil {
 		t.Fatalf("Safe that ran the next observation: %v", err)
 	}
@@ -1275,12 +1281,7 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 			<-late
 		}
 	}
-	first := make(chan error, 1)
-	go func() {
-		_, err := horizon.Safe(ctx)
-		first <- err
-	}()
-	testwait.Receive(t, "the first caller's observation to reach the database", entered)
+	joinFirst := startFirstSafe(t, ctx, horizon, entered)
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
@@ -1292,9 +1293,7 @@ func TestHorizonALateCallerTakesTheNextObservationPastAnotherCallersCancellation
 		testwait.Receive(t, fmt.Sprintf("caller %d of 2 to park on the first observation", i+1), parked)
 	}
 	close(release)
-	if err := testwait.Receive(t, "the Safe that ran the first observation to return", first); err != nil {
-		t.Fatalf("Safe that ran the first observation: %v", err)
-	}
+	joinFirst()
 	if err := testwait.Receive(t, "the Safe that ran the next observation to return", errs); err != nil {
 		t.Fatalf("Safe that ran the next observation: %v", err)
 	}
@@ -1353,18 +1352,11 @@ func TestHorizonAwaitBacksOffOnceForObservationsItsGapCheckRead(t *testing.T) {
 		awaited <- err
 	}()
 	testwait.Receive(t, "Await to read the count at its boundary", counted) // 0: it looks only once the first observation is in flight
-	first := make(chan error, 1)
-	go func() {
-		_, err := horizon.Safe(ctx)
-		first <- err
-	}()
-	testwait.Receive(t, "the first caller's observation to reach the database", entered)
+	joinFirst := startFirstSafe(t, ctx, horizon, entered)
 	close(looks)
 	testwait.Receive(t, "Await to park on the first observation", parked)
 	close(release)
-	if err := testwait.Receive(t, "the Safe that ran the first observation to return", first); err != nil {
-		t.Fatalf("Safe that ran the first observation: %v", err)
-	}
+	joinFirst()
 	if _, err := horizon.Safe(ctx); err != nil {
 		t.Fatalf("Safe that ran the second observation: %v", err)
 	}
@@ -1676,19 +1668,7 @@ func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 	ctx := testwait.Context(t)
 	horizon := NewHorizon(database.Pool)
 
-	conn, err := pgx.Connect(ctx, storetest.OtherDatabase(t))
-	if err != nil {
-		t.Fatalf("connect to the binary's other database: %v", err)
-	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
-	elsewhere, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the other database's transaction: %v", err)
-	}
-	t.Cleanup(func() { _ = elsewhere.Rollback(context.Background()) })
-	if _, err := elsewhere.Exec(ctx, `select pg_current_xact_id()`); err != nil {
-		t.Fatalf("take the other database's transaction id: %v", err)
-	}
+	storetest.HoldClusterTransactionID(t)
 
 	newest := commitHorizonEvent(ctx, t, database)
 	mark, err := horizon.Mark(ctx)

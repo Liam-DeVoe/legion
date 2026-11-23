@@ -268,10 +268,7 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	// so the next tick armed says the refresh is done, and the claims it wrote are read then.
 	refresh := rig.refreshes.AwaitArmed(t, "the sender's first claim refresh", 1)[0]
 	rig.refreshes.Set(refresh)
-	testwait.Until(t, "the sender's claim refresh after the one the row ran", func() ([]time.Time, bool) {
-		armed := rig.refreshes.Armed()
-		return armed, slices.ContainsFunc(armed, refresh.Add(mentionClaimRefresh).Equal)
-	})
+	rig.refreshes.AwaitArmedAt(t, "the sender's claim refresh after the one the row ran", refresh.Add(mentionClaimRefresh))
 	rig.mu.Lock()
 	firstWritten, secondWritten := rig.written[first.key()], rig.written[second.key()]
 	rig.mu.Unlock()

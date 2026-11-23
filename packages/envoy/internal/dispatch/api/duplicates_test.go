@@ -7,7 +7,6 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -662,10 +661,7 @@ func TestCreateIssueGoesInUncheckedWhenTheGateRunsPastItsBound(t *testing.T) {
 	}()
 	testwait.Receive(t, "the gate's read to begin", standIn.began)
 	bound := checkStart.Add(duplicateGateTimeout)
-	testwait.Until(t, fmt.Sprintf("the gate's bound, armed for %v", bound), func() ([]time.Time, bool) {
-		armed := fake.Armed()
-		return armed, slices.ContainsFunc(armed, bound.Equal)
-	})
+	fake.AwaitArmedAt(t, "the gate's bound", bound)
 	select {
 	case early := <-responded:
 		t.Fatalf("the create answered (status %d) before the clock reached the gate's bound, its read held", early.Code)

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -607,7 +608,7 @@ func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
 	ctx := context.Background()
 	renewal := newClaimRenewal(Deps{Store: database}, []pendingRow{{kind: "issue", id: "RNWL-1", contentHash: contentHashOf(t, database, "issue", "RNWL-1")}})
 	renewal.last = renewal.clock.Now().Add(-renewClaimInterval - time.Second)
-	before := databaseNow(t, database)
+	before := testdb.Now(t, database.Pool)
 	renewal.renew(ctx)
 	var nextAttempt time.Time
 	if err := database.Pool.QueryRow(ctx,
@@ -618,17 +619,6 @@ func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
 	if nextAttempt.Before(before.Add(claimWindow)) {
 		t.Errorf("next_attempt_at = %v, want at least claimWindow (%v) past %v, the database's clock before the renewal", nextAttempt, claimWindow, before)
 	}
-}
-
-// databaseNow is the database's clock now: what a statement's now() stamps, which a row's due
-// times are read on.
-func databaseNow(t *testing.T, database *store.Store) time.Time {
-	t.Helper()
-	var now time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
-	return now
 }
 
 // TestReserveTokensSharesItsBudgetAcrossConnections proves the cross-process design:
@@ -729,7 +719,7 @@ func TestWaitOutDebtRenewsTheClaimMidWaitSoNoSecondWorkerClaimsIt(t *testing.T) 
 	const segment = 300 * time.Millisecond
 	const slices = 4
 	before := fake.Now()
-	databaseBefore := databaseNow(t, database)
+	databaseBefore := testdb.Now(t, database.Pool)
 	waited := make(chan struct{})
 	go func() {
 		defer close(waited)
@@ -777,7 +767,7 @@ func TestClaimRenewalResolveStopsRenewingACommittedRow(t *testing.T) {
 	})
 	renewal.resolve([]pendingRow{{kind: "issue", id: "RSLV-1"}})
 	renewal.last = renewal.clock.Now().Add(-renewClaimInterval - time.Second)
-	before := databaseNow(t, database)
+	before := testdb.Now(t, database.Pool)
 	renewal.renew(ctx)
 
 	var rslv1Next, rslv2Next time.Time
@@ -1495,16 +1485,25 @@ func eventually(t *testing.T, what string, done func() bool) {
 // promptly once its context ends.
 func runQueue(t *testing.T, deps Deps) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(startQueue(t, context.Background(), deps))
+}
+
+// startQueue runs Run with deps on a goroutine of its own, on a context of its own derived from
+// ctx, and returns its stop: the cancel of that context, then the shared wait for Run to return.
+// A row whose stop needs a step between the two (a held proxy let go) cancels ctx itself first, so
+// the stop's own cancel finds Run's context already ended.
+func startQueue(t *testing.T, ctx context.Context, deps Deps) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		Run(ctx, deps)
 	}()
-	t.Cleanup(func() {
+	return func() {
 		cancel()
 		testwait.Receive(t, "Run to return once its context ended", done)
-	})
+	}
 }
 
 // runHub runs hub until the test ends.
@@ -1553,6 +1552,16 @@ type scanWaits struct {
 	clock   *scanClock
 	mu      sync.Mutex
 	waits   []scanWait
+}
+
+// newScanWaits is the queue's clock for a row that moves it only to the timers the scan loop
+// reports it armed (moveToArmed): a fake standing at the database's clock now, the clock a row's
+// due times are read on, wrapped to count the queue's readings of it (scanClock), and the
+// recorder of the loop's waits on it, which counts no statements.
+func newScanWaits(t *testing.T, database *store.Store) (*clocktest.Fake, *scanWaits) {
+	t.Helper()
+	fake := clocktest.New(testdb.Now(t, database.Pool))
+	return fake, &scanWaits{clock: &scanClock{Fake: fake}}
 }
 
 // scanWait is one wait of Run's scan loop: at is the moment its timer is armed for, and armed is
@@ -1617,7 +1626,7 @@ func (w *scanWaits) moveToArmed(fake *clocktest.Fake, reached func(time.Time) bo
 
 // databasePassed reports whether the database's clock has passed at.
 func databasePassed(t *testing.T, database *store.Store) func(time.Time) bool {
-	return func(at time.Time) bool { return !databaseNow(t, database).Before(at) }
+	return func(at time.Time) bool { return !testdb.Now(t, database.Pool).Before(at) }
 }
 
 // awaitIdle waits until Run, on fake from start, has gone idle: its coverage loop waits for its
@@ -1674,7 +1683,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	insertCommentWithWindow(t, database.Pool, "IDLE-1", "A comment its indexer windowed")
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	fake := clocktest.New(databaseNow(t, database))
+	fake := clocktest.New(testdb.Now(t, database.Pool))
 	start := fake.Now()
 	waits := &scanWaits{counter: counter, clock: &scanClock{Fake: fake}}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
@@ -1706,7 +1715,7 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	hub.OnConnected(sync.OnceFunc(func() { close(connected) }))
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
-	fake := clocktest.New(databaseNow(t, database))
+	fake := clocktest.New(testdb.Now(t, database.Pool))
 	start := fake.Now()
 	waits := &scanWaits{counter: counter, clock: &scanClock{Fake: fake}}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity), Wake: wake, Clock: waits.clock, scanWaiting: waits.report})
@@ -1755,9 +1764,9 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 	// The other process's scan claims the row until claimWindow past its own transaction's now(),
 	// which falls between two readings of the database's clock around it: the row reads that
 	// claim before it moves it, so a scan that claimed for less, or for more, fails here.
-	before := databaseNow(t, database)
+	before := testdb.Now(t, database.Pool)
 	claimed, _, err := scanPending(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
-	after := databaseNow(t, database)
+	after := testdb.Now(t, database.Pool)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("the other process's claim = %v, %v; want CLAM-1", claimed, err)
 	}
@@ -1776,8 +1785,7 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 		returning next_attempt_at`).Scan(&lapses); err != nil {
 		t.Fatalf("move the claim's lapse: %v", err)
 	}
-	fake := clocktest.New(databaseNow(t, database))
-	waits := &scanWaits{clock: &scanClock{Fake: fake}}
+	fake, waits := newScanWaits(t, database)
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), Clock: waits.clock, scanWaiting: waits.report})
 	reached := databasePassed(t, database)
 	var embeddedAt time.Time
@@ -1827,7 +1835,7 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "DUE", "DUE-1", "Drained at once")
-	fake := clocktest.New(databaseNow(t, database))
+	fake := clocktest.New(testdb.Now(t, database.Pool))
 	deps := Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity), Clock: fake}
 	if next := scanPass(ctx, deps); !next.IsZero() {
 		t.Errorf("after draining every row: due %v, want none", next)
@@ -1841,14 +1849,14 @@ func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, `select next_attempt_at from embeddings where id = 'DUE-2'`).Scan(&lapses); err != nil {
 		t.Fatalf("read the claim's lapse: %v", err)
 	}
-	fake.Set(databaseNow(t, database))
+	fake.Set(testdb.Now(t, database.Pool))
 	if next := scanPass(ctx, deps); !next.Equal(lapses) {
 		t.Errorf("with DUE-2 claimed elsewhere: due %v, want the claim's lapse %v", next, lapses)
 	}
 
 	requireFloor := func(when string) {
 		t.Helper()
-		fake.Set(databaseNow(t, database))
+		fake.Set(testdb.Now(t, database.Pool))
 		floor := fake.Now().Add(retryInterval)
 		if next := scanPass(ctx, deps); !next.Equal(floor) {
 			t.Errorf("%s: due %v, want %v, retryInterval after the pass on the queue's clock", when, next, floor)

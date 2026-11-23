@@ -507,7 +507,7 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = subscription.Unsubscribe() })
 	}
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 	state := harness.publishDeps(t)
@@ -578,7 +578,7 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 		t.Fatalf("subscribe to publish subject without sending an ack: %v", err)
 	}
 	t.Cleanup(func() { _ = noAck.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush no-ack subscription: %v", err)
 	}
 
@@ -655,7 +655,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		t.Fatalf("subscribe to the role lane: %v", err)
 	}
 	t.Cleanup(func() { _ = laneProbe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush role subscriptions: %v", err)
 	}
 	if harness.client.SubOK() {
@@ -3087,7 +3087,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 		t.Fatalf("boot migrated role lane: %v", err)
 	}
 	t.Cleanup(func() { _ = roleSub.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush migrated listener subscriptions: %v", err)
 	}
 	if _, err := client.JS().Publish("notifications.github.acme.widgets.migration", []byte("durable")); err != nil {
@@ -3165,7 +3165,7 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder
 		t.Fatalf("subscribe core role handler: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush subscriptions: %v", err)
 	}
 
@@ -3203,7 +3203,7 @@ func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAndItsMessageIsKept(t *
 		t.Fatalf("subscribe role handler: %v", err)
 	}
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush role subscriptions: %v", err)
 	}
 
@@ -3260,7 +3260,7 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3300,7 +3300,7 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3356,7 +3356,7 @@ func TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode(t *t
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3411,7 +3411,7 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3490,7 +3490,7 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 				t.Fatalf("subscribe exception probe: %v", err)
 			}
 			t.Cleanup(func() { _ = probe.Unsubscribe() })
-			if err := harness.client.Conn.Flush(); err != nil {
+			if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush exception probe: %v", err)
 			}
 
@@ -3547,7 +3547,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 				t.Fatalf("start listener subscription: %v", err)
 			}
 			t.Cleanup(func() { _ = sub.Unsubscribe() })
-			if err := harness.client.Conn.Flush(); err != nil {
+			if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush listener subscription: %v", err)
 			}
 
@@ -3604,7 +3604,7 @@ func fanoutRefusesUnadvertisedDeliveryMode(t *testing.T, lane clockLane) {
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 
@@ -3615,7 +3615,7 @@ func fanoutRefusesUnadvertisedDeliveryMode(t *testing.T, lane clockLane) {
 	if lane == onTheClock && elapsed >= 4*time.Second {
 		t.Fatalf("capability refusal took %s, want less than 4s", elapsed)
 	}
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush delivery exception: %v", err)
 	}
 
@@ -3719,20 +3719,20 @@ func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *t
 		t.Fatalf("subscribe exception probe: %v", err)
 	}
 	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush exception probe: %v", err)
 	}
 	data := marshalListenerEnvelope(t, item)
 
 	harness.coreHandler(&natsgo.Msg{Data: data})
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush first refusal exception: %v", err)
 	}
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != incapable {
 		t.Fatalf("first exception recipient = %q, want %q", recipient, incapable)
 	}
 	harness.coreHandler(&natsgo.Msg{Data: data})
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush duplicate refusal: %v", err)
 	}
 	requireMarkerNext(t, harness.client.Conn, probe, probe.Subject, "duplicate terminal refusal emitted another exception")
@@ -3778,7 +3778,7 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 	probe := exceptionProbe(t, harness.client)
 
 	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-	if err := harness.client.Conn.Flush(); err != nil {
+	if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush what the fan-out published: %v", err)
 	}
 
@@ -3822,7 +3822,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 				t.Fatalf("subscribe exception probe: %v", err)
 			}
 			t.Cleanup(func() { _ = probe.Unsubscribe() })
-			if err := harness.client.Conn.Flush(); err != nil {
+			if err := harness.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush exception probe: %v", err)
 			}
 
@@ -5259,7 +5259,7 @@ func consumerCreates(t *testing.T, conn *natsgo.Conn, consumer string) *createWa
 		}
 		t.Cleanup(func() { _ = sub.Unsubscribe() })
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	return watch

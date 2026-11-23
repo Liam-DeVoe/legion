@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1228,16 +1229,11 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 	rig.silent(t, contracts.RoleTopicPrefix+role)
 	recv := rig.receiver(t, holder)
 	commentID := seedHeldRoleFallbackCopy(ctx, t, rig.deps(), role)
-	claimed := make(chan error, 1)
-	publisher := claimedUnderTheKeep(rig.client, func() {
-		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
-	})
+	publisher, joinClaims := rig.claimedUnderTheKeep(role, holder)
 
 	publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
 
-	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-		t.Fatalf("the claim made under the keep: %v", err)
-	}
+	joinClaims(t, "the claim made under the keep")
 	held := readHeldCopy(t, rig.database, commentID, contracts.RoleTopicPrefix+role)
 	if !held.published || !held.settled || held.attempts != 0 {
 		t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it kept and settled by the one pass",
@@ -1410,16 +1406,11 @@ func TestAKeptCopyHandedToTheSecondMentionedHolderCarriesItsOwnMentionsKey(t *te
 	seedMentionDelivery(t, rig.database, commentID, second, "failed")
 	// The second mentioned session, not the first, is the one that claims the role, and it claims
 	// it inside the window the keep's own race leaves open.
-	claimed := make(chan error, 1)
-	publisher := claimedUnderTheKeep(rig.client, func() {
-		claimed <- rig.claimUnder(role, second, session.SessionEntry{SelfSubscribed: true})
-	})
+	publisher, joinClaims := rig.claimedUnderTheKeep(role, second)
 
 	holding(t, rig.publisherOn(publisher)).scan(ctx, unfenced{})
 
-	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-		t.Fatalf("the claim made under the keep: %v", err)
-	}
+	joinClaims(t, "the claim made under the keep")
 	if publishedAt(t, rig.database, event.ID) == nil {
 		attempts, failure, _ := eventState(t, rig.database, event.ID)
 		t.Fatalf("the event whose only route is the unheld role was not published: attempt_count %d, publish_error %v",
@@ -1488,16 +1479,11 @@ func TestAKeptCopyHandedToAHolderWhoseMentionLandedCarriesItsOwnMentionsKey(t *t
 	seedMentionDelivery(t, rig.database, commentID, second, "sent")
 	// The second mentioned session claims the role inside the window the keep's own race leaves
 	// open, so the handover behind the keep is what hands it the copy.
-	claimed := make(chan error, 1)
-	publisher := claimedUnderTheKeep(rig.client, func() {
-		claimed <- rig.claimUnder(role, second, session.SessionEntry{SelfSubscribed: true})
-	})
+	publisher, joinClaims := rig.claimedUnderTheKeep(role, second)
 
 	holding(t, rig.publisherOn(publisher)).scan(ctx, unfenced{})
 
-	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-		t.Fatalf("the claim made under the keep: %v", err)
-	}
+	joinClaims(t, "the claim made under the keep")
 	if publishedAt(t, rig.database, event.ID) == nil {
 		attempts, failure, _ := eventState(t, rig.database, event.ID)
 		t.Fatalf("the event whose only route is the unheld role was not published: attempt_count %d, publish_error %v",
@@ -1594,9 +1580,9 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 	t.Run("a live mention holds the keep until it settles", func(t *testing.T) {
 		database, publisher, commentID, event, deps := keptFor(t, "pending")
 
-		before := databaseNow(t, database)
+		before := testdb.ClockTimestamp(t, database.Pool)
 		holding(t, deps).scan(ctx, unfenced{})
-		after := databaseNow(t, database)
+		after := testdb.ClockTimestamp(t, database.Pool)
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the outbox kept %d copies while the comment's mentions were still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming no mentioned session shows the comment a second time to whichever of them claims the role",
@@ -1693,9 +1679,9 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 		t.Fatalf("the later event does not notify, so it takes no role route and proves nothing: %#v", update)
 	}
 
-	before := databaseNow(t, database)
+	before := testdb.ClockTimestamp(t, database.Pool)
 	holding(t, deps).scan(ctx, unfenced{})
-	after := databaseNow(t, database)
+	after := testdb.ClockTimestamp(t, database.Pool)
 
 	if kept := publisher.keeps(); len(kept) > 0 {
 		t.Fatalf("the outbox kept %d copies while the comment's copy waited on its mention, the first of event %s under %q, want none: the role's next holder would be handed the issue's later event first",
@@ -1785,9 +1771,9 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID, event := heldBy(t, "pending")
 
-		before := databaseNow(t, rig.database)
+		before := testdb.ClockTimestamp(t, rig.database.Pool)
 		holding(t, deps).scan(ctx, unfenced{})
-		after := databaseNow(t, rig.database)
+		after := testdb.ClockTimestamp(t, rig.database.Pool)
 
 		recv.settle(t)
 		if forwards := recv.received(); len(forwards) > 0 {
@@ -1926,9 +1912,9 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 			comment.Notify, edit.Notify)
 	}
 
-	before := databaseNow(t, rig.database)
+	before := testdb.ClockTimestamp(t, rig.database.Pool)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := databaseNow(t, rig.database)
+	after := testdb.ClockTimestamp(t, rig.database.Pool)
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -2258,16 +2244,11 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 		rig.silent(t, roleTopic)
 		recv := rig.receiver(t, second)
 		commentID := seedHeldRoleFallbackCopyMentioningTwo(ctx, t, rig.deps(), role, first, second, "failed")
-		claimed := make(chan error, 1)
-		publisher := claimedUnderTheKeep(rig.client, func() {
-			claimed <- rig.claimUnder(role, second, session.SessionEntry{SelfSubscribed: true})
-		})
+		publisher, joinClaims := rig.claimedUnderTheKeep(role, second)
 
 		publishFallbackCopies(ctx, rig.publisherOn(publisher), unfenced{}, holdingProcess(t, rig.database))
 
-		if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
-			t.Fatalf("the claim made under the keep: %v", err)
-		}
+		joinClaims(t, "the claim made under the keep")
 		held := readHeldCopy(t, rig.database, commentID, roleTopic)
 		if !held.published || !held.settled || held.attempts != 0 {
 			t.Fatalf("the role route's held copy is attempts=%d settled=%v published=%v, want it kept and settled by the one pass",
@@ -2339,9 +2320,9 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 		ctx := store.WithTransactionTracking(context.Background())
 		database, publisher, deps, commentID := keptFor(ctx, t, "pending")
 
-		before := databaseNow(t, database)
+		before := testdb.ClockTimestamp(t, database.Pool)
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := databaseNow(t, database)
+		after := testdb.ClockTimestamp(t, database.Pool)
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the pass kept %d copies while the comment's mention of %s was still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming that session nowhere shows it the comment a second time when it claims the role",
@@ -2457,9 +2438,9 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		ctx := store.WithTransactionTracking(context.Background())
 		rig, recv, deps, commentID := heldFor(ctx, t, "pending")
 
-		before := databaseNow(t, rig.database)
+		before := testdb.ClockTimestamp(t, rig.database.Pool)
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := databaseNow(t, rig.database)
+		after := testdb.ClockTimestamp(t, rig.database.Pool)
 
 		recv.settle(t)
 		if forwards := recv.received(); len(forwards) > 0 {
@@ -2536,8 +2517,8 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 // heldPendingCopy holds what one pass that reached no holder left of the copy held for
 // destination: the row unsettled and unpublished with its one attempt and its back-off, one
 // logged failure naming why the holder was not reached, and that destination counted under its
-// holder alone. before and after bracket the pass on the database's own clock (databaseNow), as
-// every reading of a row's back-off brackets the pass that wrote it.
+// holder alone. before and after bracket the pass on the database's own clock
+// (testdb.ClockTimestamp), as every reading of a row's back-off brackets the pass that wrote it.
 func heldPendingCopy(t *testing.T, rig *roleRig, registry *metrics.Registry, logged *lockedBuffer,
 	commentID, destination, why string, before, after time.Time,
 ) {
@@ -2594,9 +2575,9 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		deps, registry := rig.countingDeps(t)
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-		before := databaseNow(t, rig.database)
+		before := testdb.ClockTimestamp(t, rig.database.Pool)
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := databaseNow(t, rig.database)
+		after := testdb.ClockTimestamp(t, rig.database.Pool)
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "has not heartbeated", before, after)
 		if claimed, err := rig.registry.RoleHolder(role); err != nil || claimed != holder {
@@ -2622,9 +2603,9 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		unreadable := deps
 		unreadable.RoleClaims = unreadableRoleClaims{}
 
-		before := databaseNow(t, rig.database)
+		before := testdb.ClockTimestamp(t, rig.database.Pool)
 		publishFallbackCopies(ctx, unreadable, unfenced{}, holdingProcess(t, rig.database))
-		after := databaseNow(t, rig.database)
+		after := testdb.ClockTimestamp(t, rig.database.Pool)
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "resolve the role's holder", before, after)
 	})

@@ -745,7 +745,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	defer cancel()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(ctx) }()
-	waitFor(t, "Shutdown to have scanned the room", func() bool { return service.shuttingDown(artifactID) })
+	awaitShutdownScanned(t, service, artifactID)
 	callerClock.Advance(400 * time.Millisecond)
 	if err := testwait.Receive(t, "Shutdown to return at its caller's deadline", shutdown); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown with an editor connected and an append locked = %v, want deadline exceeded", err)

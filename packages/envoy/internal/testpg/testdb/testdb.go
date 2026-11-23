@@ -6,10 +6,11 @@
 // Server.Database is an empty database on the server a variable names, which the caller migrates
 // itself, skipping the test when the variable is unset. DatabaseOn is the helper for a test that
 // already holds the URL of the server it runs on: it reads no variable and starts nothing.
-// WithParameter sets a query parameter on any of these URLs. Template is a migrated database a
-// binary makes once and copies for each test; Dispatch's and the broker's storetest packages give
-// out its clones as migrated stores, and a test of either store that wants one calls its storetest
-// instead. Every URL a Server hands out carries the test binary's deadline as its connect bound
+// WithParameter sets a query parameter on any of these URLs, and Now and ClockTimestamp read the
+// clock of a database a test holds. Template is a migrated database a binary makes once and copies
+// for each test; Dispatch's and the broker's storetest packages give out its clones as migrated
+// stores, and a test of either store that wants one calls its storetest instead. Every URL a
+// Server hands out carries the test binary's deadline as its connect bound
 // (WithConnectDeadline), and every drop of a database here waits out the backends still attached
 // to it until that same deadline (dropDatabase).
 //
@@ -185,4 +186,36 @@ func randomSuffix() (string, error) {
 		return "", fmt.Errorf("random database name: %w", err)
 	}
 	return hex.EncodeToString(suffix[:]), nil
+}
+
+// Querier is what Now and ClockTimestamp need of a pool, a connection or a transaction: one row.
+type Querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// Now is the database's clock now as now() reads it: the moment the transaction db runs the
+// statement in began, the clock that stamps what a statement, a default or a trigger writes with
+// now(). On a pool that is the moment of the one statement it runs. A moment a test judges such a
+// stamp against is read here, not off the test's own clock.
+func Now(t testing.TB, db Querier) time.Time {
+	t.Helper()
+	return readClock(t, db, `select now()`)
+}
+
+// ClockTimestamp is the database's clock at the moment the statement reads it (clock_timestamp()),
+// not the start of a transaction: two readings of it around a pass bracket the moment the pass
+// stamped with its own now(), at the precision the database writes stamps with, which a reading
+// of the test process's own clock does not.
+func ClockTimestamp(t testing.TB, db Querier) time.Time {
+	t.Helper()
+	return readClock(t, db, `select clock_timestamp()`)
+}
+
+func readClock(t testing.TB, db Querier, query string) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := db.QueryRow(context.Background(), query).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
 }

@@ -2,12 +2,9 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -393,7 +390,7 @@ func (c checkedStream) Watch(sessionID string) error { return c.next.Watch(sessi
 func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
 	tracer := storetest.NewXidTracer()
 	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
-	caught := &recordedFailures{TB: t}
+	caught := &collabtest.RecordedFailures{TB: t}
 	people := checkedIdentity(caught, loginAs("alice@example.com"))
 	ctx := storetest.MarkXid(context.Background())
 	tx, err := database.Pool.Begin(ctx)
@@ -408,14 +405,14 @@ func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
 		}
 	}
 	login("before the write")
-	if failures := caught.reported(); len(failures) != 0 {
+	if failures := caught.Reported(); len(failures) != 0 {
 		t.Fatalf("a collaborator call before the transaction's first write was reported: %q", failures)
 	}
 	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	login("after the write")
-	failures := caught.reported()
+	failures := caught.Reported()
 	if len(failures) != 1 || !strings.HasPrefix(failures[0], "identity.Identity.Login was called while its caller holds a connection of the pool") {
 		t.Fatalf("a collaborator call after the transaction's first write was reported as %q, want one failure naming identity.Identity.Login", failures)
 	}
@@ -425,24 +422,3 @@ func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
 type loginAs string
 
 func (l loginAs) Login(*http.Request) (string, error) { return string(l), nil }
-
-// recordedFailures is a testing.TB that records what a check reports through Errorf instead of
-// failing the test, so a control can assert that the check fires and on what. Everything else -
-// Cleanup, Helper, Fatalf - is the test's own.
-type recordedFailures struct {
-	testing.TB
-	mu       sync.Mutex
-	failures []string
-}
-
-func (r *recordedFailures) Errorf(format string, args ...any) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.failures = append(r.failures, fmt.Sprintf(format, args...))
-}
-
-func (r *recordedFailures) reported() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return slices.Clone(r.failures)
-}

@@ -660,11 +660,7 @@ func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.
 			unpark := testwait.Receive(t, "the first send's park", timers)
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-			testwait.Eventually(t, "both sends on the issue's held lane", func() bool {
-				sender.mu.Lock()
-				defer sender.mu.Unlock()
-				return len(sender.lanes[held]) == 2
-			})
+			awaitBothSendsHeld(t, sender, held)
 			clock.Advance(row.wait)
 			publishIssueEvents(t, database, issue.Key)
 			unpark()

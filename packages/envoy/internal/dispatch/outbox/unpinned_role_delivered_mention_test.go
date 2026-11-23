@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // A role route's forward whose holder a mention of the comment delivered to carries that
@@ -189,9 +190,9 @@ func TestAForwardKeyedByAFailedMentionStillWaitsForAnUnnamedMention(t *testing.T
 		},
 	})
 
-	before := databaseNow(t, rig.database)
+	before := testdb.ClockTimestamp(t, rig.database.Pool)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := databaseNow(t, rig.database)
+	after := testdb.ClockTimestamp(t, rig.database.Pool)
 	recv.settle(t)
 
 	failedKey := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, holderTarget, "steer"))

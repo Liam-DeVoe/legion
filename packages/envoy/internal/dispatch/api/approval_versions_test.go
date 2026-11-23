@@ -950,23 +950,15 @@ type eventDelivery struct {
 // is id (an ask's, or a comment's), and returns what each one reached, oldest first.
 func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) []eventDelivery {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
-			Listen: database.Pool.Listener,
-			// No role is claimed here, so a role route counts as reached with nothing sent and the
-			// role's topic is what the event records (unclaimedRoles). An outbox with no reader at
-			// all leaves every role route pending, which would leave a routed event unpublished.
-			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		testwait.Receive(t, "the outbox to return once cancelled", stopped)
-	}()
+	stop := runOutbox(t, outbox.Deps{
+		Store: database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+		Listen: database.Pool.Listener,
+		// No role is claimed here, so a role route counts as reached with nothing sent and the
+		// role's topic is what the event records (unclaimedRoles). An outbox with no reader at
+		// all leaves every role route pending, which would leave a routed event unpublished.
+		RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
+	})
+	defer stop()
 	const about = `from events where type = $1 and payload->>'id' = $2`
 	type publishing struct{ unpublished, total int }
 	testwait.Until(t, fmt.Sprintf("the outbox to publish every %s event for %s", eventType, id), func() (publishing, bool) {

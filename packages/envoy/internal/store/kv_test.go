@@ -3314,7 +3314,7 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 		t.Fatalf("watch stream message gets: %v", err)
 	}
 	defer func() { _ = legacyGets.Unsubscribe() }()
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watches: %v", err)
 	}
 
@@ -3323,7 +3323,7 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 		t.Fatalf("Open failed: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush after Open: %v", err)
 	}
 	if sent := pending(t, gets) + pending(t, legacyGets); sent != 0 {
@@ -3713,7 +3713,7 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	// fails every build, main by its per-key Gets timing out, so this run could not tell them
 	// apart. Assert it rather than trusting the hold, since load can end a run before the release
 	// too.
-	if err := stalled.Flush(); err != nil {
+	if err := stalled.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("the link never came back after the hold, so this run cannot tell a build that fails the stalled scan from one that returns part of the bucket: %v", err)
 	}
 	if err == nil {

@@ -173,9 +173,7 @@ func TestAMentionWaitsBehindAnEarlierEventWhoseRouteMovedToItsSession(t *testing
 	state.landed = view.mentionLanded
 	state.mu.Unlock()
 	runOutboxBeside(t, deps, view)
-	testwait.Eventually(t, "the issue's first events published", func() bool {
-		return unpublishedEvents(t, database, issue.Key) == 0
-	})
+	awaitFirstEventsPublished(t, database, issue.Key)
 
 	view.mu.Lock()
 	view.refused = contracts.LegacyAgentSubject("s2")

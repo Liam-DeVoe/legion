@@ -312,10 +312,7 @@ func suggestionsBehindLock(
 	if s, early := storetest.WaitForQueuedBehind(t, lockTx, callPID, answered); early {
 		t.Fatalf("the related-item check answered %+v before its query waited behind the lock on %s, want its allowance to end while it waits", s, table)
 	}
-	// The allowance the check armed on the fake, and the move that reaches it: what ends the call
-	// is the deadline the code set, read from the clock it set it on, and never real time.
-	allowanceEnds := checkStart.Add(relatedCheckAllowance)
-	clock.AwaitArmedAt(t, "the check's allowance", allowanceEnds)
+	allowanceEnds := awaitCheckAllowance(t, clock, checkStart, relatedCheckAllowance)
 	clock.Set(allowanceEnds)
 	return testwait.Receive(t, "the related-item check's answer once its allowance ended", answered)
 }

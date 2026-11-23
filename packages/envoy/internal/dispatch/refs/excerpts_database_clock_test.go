@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // A backoff is written and judged on the database's clock wherever the caller passes no moment,
@@ -25,10 +26,7 @@ func TestABackoffIsWrittenAndJudgedOnTheDatabasesClock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	var now time.Time
-	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
+	now := testdb.Now(t, tx)
 	due := func() time.Time {
 		t.Helper()
 		var at time.Time

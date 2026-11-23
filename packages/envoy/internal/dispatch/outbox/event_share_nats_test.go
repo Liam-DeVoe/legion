@@ -84,9 +84,7 @@ func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	testwait.Eventually(t, "the event marked published", func() bool {
-		return publishedAt(t, database, event.ID) != nil
-	})
+	awaitPublished(t, database, event.ID)
 	_, payload := eventPayload(t, received, issueTopic)
 	t.Logf("a body of %d UTF-16 units arrived against a maximum payload of %d",
 		contracts.DispatchEventBodyMax, subscriber.MaxPayload())
@@ -126,9 +124,7 @@ func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	testwait.Eventually(t, "the event marked published", func() bool {
-		return publishedAt(t, database, event.ID) != nil
-	})
+	awaitPublished(t, database, event.ID)
 	_, payload := eventPayload(t, received, issueTopic)
 	t.Logf("an answered ask of %d question units, a %d-unit label and a %d-unit answer arrived against a maximum payload of %d",
 		contracts.DispatchEventBodyMax-1_000, 1_000, contracts.DispatchEventBodyMax, subscriber.MaxPayload())
@@ -173,9 +169,7 @@ func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	testwait.Eventually(t, "the event marked published", func() bool {
-		return publishedAt(t, database, event.ID) != nil
-	})
+	awaitPublished(t, database, event.ID)
 	envelope, payload := eventPayload(t, received, issueTopic)
 	if envelope.Topic != issueTopic {
 		t.Fatalf("the stand-in arrived on %s, want %s", envelope.Topic, issueTopic)
@@ -242,9 +236,7 @@ func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	testwait.Eventually(t, "the event marked published", func() bool {
-		return publishedAt(t, database, event.ID) != nil
-	})
+	awaitPublished(t, database, event.ID)
 	_, payload := eventPayload(t, received, issueTopic)
 	if payload["payload_omitted"] != true {
 		t.Fatalf("the copy does not say its payload was left out, so it is no stand-in: %v", payload["payload_omitted"])
@@ -307,9 +299,7 @@ func TestRunStandInKeepsTheDocumentOfADocumentAsksReplyWholeThroughNATS(t *testi
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	testwait.Eventually(t, "the event marked published", func() bool {
-		return publishedAt(t, database, event.ID) != nil
-	})
+	awaitPublished(t, database, event.ID)
 	_, payload := eventPayload(t, received, documentTopic)
 	if payload["payload_omitted"] != true {
 		t.Fatalf("the copy does not say its payload was left out, so it is no stand-in: %v", payload["payload_omitted"])

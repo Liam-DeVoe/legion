@@ -171,6 +171,15 @@ func unpublishedEvents(t *testing.T, database *store.Store, issueKey string) int
 	return count
 }
 
+// awaitFirstEventsPublished waits through the shared wait until the outbox beside the row has
+// published every event of issueKey written before it (unpublishedEvents).
+func awaitFirstEventsPublished(t *testing.T, database *store.Store, issueKey string) {
+	t.Helper()
+	testwait.Eventually(t, "the issue's first events published", func() bool {
+		return unpublishedEvents(t, database, issueKey) == 0
+	})
+}
+
 // A session takes a mention's copy only after each earlier event of the same issue that targets
 // it, on both roads a mention's copy takes: the API's own send of the mention, and the outbox's
 // comment_fallback_copies row, which it publishes when that send does not settle. Session s1
@@ -222,9 +231,7 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			state.landed = view.mentionLanded
 			state.mu.Unlock()
 			runOutboxBeside(t, deps, view)
-			testwait.Eventually(t, "the issue's first events published", func() bool {
-				return unpublishedEvents(t, database, issue.Key) == 0
-			})
+			awaitFirstEventsPublished(t, database, issue.Key)
 
 			view.refuseTopics(tc.backsOff)
 			firstComment := decodeMentionedComment(t, sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{

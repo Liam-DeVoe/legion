@@ -14,7 +14,10 @@ package storetest
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
@@ -104,6 +107,41 @@ func Main(run func() int) int {
 func OtherDatabase(t testing.TB) string {
 	t.Helper()
 	return template.Other(t)
+}
+
+// HoldClusterTransactionID opens a transaction in the binary's other database on the test cluster
+// (OtherDatabase) and takes a transaction id, as a job in another database or another package's
+// test does. Snapshots are instance-wide, so until it ends no horizon on the cluster proves an
+// observation taken after it began, while only a transaction in Dispatch's own database can write
+// its event log. It commits when release runs, and by the time the test ends; release returns once
+// it has. Nothing else ends it. Its round trips run on the shared wait's context
+// (testwait.Context), so one the server never answers fails t by name.
+func HoldClusterTransactionID(t testing.TB) (release func()) {
+	t.Helper()
+	ctx := testwait.Context(t)
+	conn, err := pgx.Connect(ctx, OtherDatabase(t))
+	if err != nil {
+		t.Fatalf("connect to the binary's other database: %v", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		_ = conn.Close(context.Background())
+		t.Fatalf("begin the transaction that holds the horizon: %v", err)
+	}
+	var xid string
+	if err := tx.QueryRow(ctx, `select pg_current_xact_id()::text`).Scan(&xid); err != nil {
+		_ = conn.Close(context.Background())
+		t.Fatalf("take a transaction id: %v", err)
+	}
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			_ = tx.Commit(context.Background())
+			_ = conn.Close(context.Background())
+		})
+	}
+	t.Cleanup(release)
+	return release
 }
 
 // Available reports whether DISPATCH_TEST_DATABASE_URL is set: whether Open would give a database

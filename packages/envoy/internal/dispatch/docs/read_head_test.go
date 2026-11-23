@@ -2,7 +2,6 @@ package docs
 
 import (
 	"context"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +99,15 @@ type readPair struct {
 func newReadPair(t *testing.T) readPair {
 	t.Helper()
 	return newReadPairOn(t, nil)
+}
+
+// awaitReaderCaughtUp waits through the shared wait until the reader's room no longer stands
+// behind the document's head (roomBehind): its catch-up, let go, has applied what it read.
+func (pair readPair) awaitReaderCaughtUp(t *testing.T) {
+	t.Helper()
+	waitFor(t, "the reader's room to catch up", func() bool {
+		return !roomBehind(t, pair.reader, pair.artifactID)
+	})
 }
 
 // newReadPairOn is newReadPair with readerClock as the reader's clock (Deps.Clock), the real one
@@ -246,9 +254,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 	}
 
 	pair.gate.open()
-	waitFor(t, "the reader's room to catch up", func() bool {
-		return !roomBehind(t, pair.reader, pair.artifactID)
-	})
+	pair.awaitReaderCaughtUp(t)
 	before = pair.loads.loads.Load()
 	if text, err := pair.reader.Text(ctx, pair.artifactID); err != nil || !strings.Contains(text, written) {
 		t.Fatalf("the reader's read once caught up = %q, %v; want the edit", text, err)
@@ -354,9 +360,7 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 	}
 
 	pair.gate.open()
-	waitFor(t, "the reader's room to catch up", func() bool {
-		return !roomBehind(t, pair.reader, pair.artifactID)
-	})
+	pair.awaitReaderCaughtUp(t)
 	warmed := make(chan struct{}, 1)
 	pair.reader.afterReadWarm = func(string) {
 		select {
@@ -374,9 +378,7 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 		result <- verified{anchored, err}
 	}()
 	testwait.Receive(t, "VerifyMark to subscribe to the reader's room", warmed)
-	waitFor(t, "VerifyMark to arm its MarkWait on the reader's clock", func() bool {
-		return slices.Contains(readerClock.Armed(), readerClock.Now().Add(pair.reader.markWait))
-	})
+	readerClock.AwaitArmedAt(t, "VerifyMark's MarkWait on the reader's clock", readerClock.Now().Add(pair.reader.markWait))
 	browserMark(t, pair.writer, pair.artifactID, "proofComment", "late-mark", "fox")
 	waitForLandedAppends(t, pair.writer, pair.artifactID)
 	got := testwait.Receive(t, "VerifyMark to find the mark the writer stored while it waited, its MarkWait never ending", result)
@@ -449,9 +451,7 @@ func TestTheTokenOfARoomBehindTheHeadHoldingItsOwnUpdateIsTheWholeDocuments(t *t
 	// stands is the one that token was taken over, and nothing else has written it.
 	land()
 	pair.gate.open()
-	waitFor(t, "the reader's room to catch up", func() bool {
-		return !roomBehind(t, pair.reader, pair.artifactID)
-	})
+	pair.awaitReaderCaughtUp(t)
 	outcome, err := joinedApplyOps(pair.reader, pair.artifactID, nil, actor, &model.EditPrecondition{Document: token})
 	if err != nil {
 		t.Fatalf("a conditional edit on the reader with the token read while its room was behind the head: %v; want it accepted: that token is the document's", err)

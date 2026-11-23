@@ -75,7 +75,7 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 	if _, err := watcher.Subscribe("$JS.API.STREAM.CREATE."+stream, watch); err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
 	t.Cleanup(thawRoutes)

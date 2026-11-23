@@ -626,10 +626,7 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 	// The silent holder sends the event, NATS acknowledges nothing, and the holder probes its
 	// connection: a flush timed on its fake, armed probeTimeout past the fake's present.
 	probeEnds := silenceStart.Add(probeTimeout)
-	testwait.Until(t, fmt.Sprintf("the silent holder's probe of its connection, armed on its fake %s past the take", probeTimeout), func() ([]time.Time, bool) {
-		armed := silentClock.Armed()
-		return armed, slices.ContainsFunc(armed, probeEnds.Equal)
-	})
+	silentClock.AwaitArmedAt(t, fmt.Sprintf("the silent holder's probe of its connection, on its fake %s past the take,", probeTimeout), probeEnds)
 	// One tick of the fake short of the probe's bound the probe still waits, and the hold is still
 	// the silent holder's.
 	silentClock.Set(probeEnds.Add(-time.Nanosecond))

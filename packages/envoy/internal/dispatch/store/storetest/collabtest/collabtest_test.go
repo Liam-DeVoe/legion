@@ -2,35 +2,13 @@ package collabtest
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// recordedFailures is a test that keeps the failures Check reports, so a row can read them rather
-// than fail on them.
-type recordedFailures struct {
-	testing.TB
-	mu       sync.Mutex
-	failures []string
-}
-
-func (r *recordedFailures) Errorf(format string, args ...any) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.failures = append(r.failures, fmt.Sprintf(format, args...))
-}
-
-func (r *recordedFailures) reported() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]string(nil), r.failures...)
-}
 
 // windowContext is a context whose caller holds one of the pool's connections
 // (store.HoldsConnection), with the release that lets it go: the state a transaction is in from
@@ -48,24 +26,24 @@ func windowContext(t *testing.T) (context.Context, func()) {
 // window is open, and none once the connection is let go. This row is the check's own control in
 // every run: a Check that stopped reporting would pass every rig row that wraps a collaborator.
 func TestCheckReportsACallInsideTheXidWindowAlone(t *testing.T) {
-	caught := &recordedFailures{TB: t}
+	caught := &RecordedFailures{TB: t}
 	ctx, release := windowContext(t)
 
 	Check(caught, ctx, "embed.Embedder", "Embed")
-	if failures := caught.reported(); len(failures) != 0 {
+	if failures := caught.Reported(); len(failures) != 0 {
 		t.Fatalf("a call before the transaction's first write was reported: %q", failures)
 	}
 	if !store.OpenXidWindow(ctx) {
 		t.Fatal("a context holding a connection of the pool took no xid window mark")
 	}
 	Check(caught, ctx, "embed.Embedder", "Embed")
-	failures := caught.reported()
+	failures := caught.Reported()
 	if len(failures) != 1 || !strings.HasPrefix(failures[0], "embed.Embedder.Embed was called while its caller holds a connection of the pool") {
 		t.Fatalf("a call inside the xid window was reported as %q, want one failure naming embed.Embedder.Embed", failures)
 	}
 	release()
 	Check(caught, ctx, "embed.Embedder", "Embed")
-	if after := caught.reported(); len(after) != 1 {
+	if after := caught.Reported(); len(after) != 1 {
 		t.Fatalf("a call once the connection was let go was reported: %q", after[1:])
 	}
 }
@@ -78,7 +56,7 @@ func TestHTTPClientChecksEachRequestItSends(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(server.Close)
-	caught := &recordedFailures{TB: t}
+	caught := &RecordedFailures{TB: t}
 	client := HTTPClient(caught)
 	ctx, _ := windowContext(t)
 	send := func(when string) {
@@ -98,13 +76,13 @@ func TestHTTPClientChecksEachRequestItSends(t *testing.T) {
 	}
 
 	send("before the first write")
-	if failures := caught.reported(); len(failures) != 0 {
+	if failures := caught.Reported(); len(failures) != 0 {
 		t.Fatalf("a request before the transaction's first write was reported: %q", failures)
 	}
 	store.OpenXidWindow(ctx)
 	send("inside the window")
 	host := strings.TrimPrefix(server.URL, "http://")
-	failures := caught.reported()
+	failures := caught.Reported()
 	if len(failures) != 1 || !strings.HasPrefix(failures[0], "HTTP "+host+".GET /v1/agents was called while") {
 		t.Fatalf("a request inside the xid window was reported as %q, want one failure naming HTTP %s.GET /v1/agents", failures, host)
 	}

@@ -53,6 +53,19 @@ func (stream *gatedStream) feedNext(t *testing.T, database *store.Store, what st
 	return horizontest.WaitInProcess(t, what, stream.frames, database)
 }
 
+// stopOnCleanup registers the stop of running on t's cleanup and returns it: the subscription's
+// cancel, then the shared wait for its goroutine to return, whose text names the subscription by
+// kind ("the events subscription's goroutine to return once stopped"). A row that ends the
+// subscription itself calls what this returns; the cleanup's stop then finds it returned.
+func stopOnCleanup(t *testing.T, kind string, running liveSubscription) (stop func()) {
+	t.Helper()
+	stop = func() {
+		testwait.Returns(t, "the "+kind+" subscription's goroutine to return once stopped", running.stop)
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
 // A subscription the relay drops, because it fell more than the relay holds for one subscriber
 // behind, is caught up from the event log when what it missed is within the replay's bounds: it
 // sends what its channel still held and what it missed, each event once and in id order, and goes
@@ -67,9 +80,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 	}
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
-	t.Cleanup(func() {
-		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
-	})
+	stopOnCleanup(t, "events", running)
 	relay := served.eventRelay
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
@@ -121,9 +132,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	}
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
-	t.Cleanup(func() {
-		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
-	})
+	stopOnCleanup(t, "events", running)
 	relay := served.eventRelay
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
@@ -167,9 +176,7 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	again := newGatedStream()
 	close(again.gate)
 	resubscribed := served.startEventsSubscription(ctx, again, "feed", new(last))
-	t.Cleanup(func() {
-		testwait.Returns(t, "the resubscribed events subscription's goroutine to return once stopped", resubscribed.stop)
-	})
+	stopOnCleanup(t, "resubscribed events", resubscribed)
 	start, ok := again.feedNext(t, database, "the resubscribe's events_start").(LiveEventsStart)
 	if since, err := strconv.ParseInt(start.Since, 10, 64); !ok || err != nil || since < last || start.ReplayComplete {
 		t.Fatalf("the resubscribe's first frame = %+v, want its events_start at or above %d, not complete", start, last)
@@ -197,9 +204,7 @@ func TestAnEventsSubscriptionWhoseReadFailsEndsAsBehind(t *testing.T) {
 	close(stream.gate)
 	retry := fake.Now().Add(eventRelayRetry)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
-	t.Cleanup(func() {
-		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
-	})
+	stopOnCleanup(t, "events", running)
 	fake.AwaitArmedAt(t, "the failed subscription's retry", retry)
 	if queued := len(stream.frames); queued != 0 {
 		t.Fatalf("the subscription whose read failed sent %d frames before its retry", queued)
@@ -226,9 +231,7 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 	}
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
-	t.Cleanup(func() {
-		testwait.Returns(t, "the events subscription's goroutine to return once stopped", running.stop)
-	})
+	stopOnCleanup(t, "events", running)
 	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})

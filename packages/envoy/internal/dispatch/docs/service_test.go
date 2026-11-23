@@ -5284,7 +5284,7 @@ func TestShutdownBoundsAdvisoryLockedAppendAndPreservesUpdate(t *testing.T) {
 	defer cancel()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(ctx) }()
-	waitFor(t, "Shutdown to have scanned the room", func() bool { return service.shuttingDown(artifactID) })
+	awaitShutdownScanned(t, service, artifactID)
 	callerClock.Advance(400 * time.Millisecond)
 	if err := testwait.Receive(t, "Shutdown to return at its caller's deadline", shutdown); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown while append lock held = %v, want deadline exceeded", err)
@@ -5371,10 +5371,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	// Set ends at its target whatever moved the fake meanwhile, which would put the fake back behind
 	// that deadline.
 	settleAt := callerClock.Now().Add(service.settle)
-	testwait.Until(t, fmt.Sprintf("the edit's settlement armed on the service's clock at %v", settleAt), func() ([]time.Time, bool) {
-		armed := callerClock.Armed()
-		return armed, slices.Contains(armed, settleAt)
-	})
+	callerClock.AwaitArmedAt(t, "the edit's settlement on the service's clock", settleAt)
 	joinSettlement := callerClock.StartMove("the move that ran the settlement", settleAt)
 	t.Cleanup(func() { joinSettlement(t) })
 	waitForDatabaseLock(t, service.store)
@@ -5384,7 +5381,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	defer cancel()
 	result := make(chan error, 1)
 	go func() { result <- service.Shutdown(ctx) }()
-	waitFor(t, "Shutdown to have scanned the room", func() bool { return service.shuttingDown(artifactID) })
+	awaitShutdownScanned(t, service, artifactID)
 	callerClock.Advance(50 * time.Millisecond)
 	if err := testwait.Receive(t, "Shutdown to return at its caller's deadline rather than wait on the blocked settlement", result); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown error = %v, want deadline exceeded", err)

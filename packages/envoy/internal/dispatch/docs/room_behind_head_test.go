@@ -246,10 +246,7 @@ func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 	// The settlement stopped short once the close took its room, and armed its retry a settle
 	// delay on.
 	retry := armed.Add(pair.taskA.settle)
-	testwait.Until(t, fmt.Sprintf("the retry of the settlement that stopped short, armed on task A's clock at %v", retry), func() ([]time.Time, bool) {
-		pending := settleClock.Armed()
-		return pending, slices.Contains(pending, retry)
-	})
+	settleClock.AwaitArmedAt(t, "the retry of the settlement that stopped short, on task A's clock,", retry)
 	settleClock.Set(retry)
 	waitFor(t, "the document whose room closed under its settlement's catch-up to settle", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)

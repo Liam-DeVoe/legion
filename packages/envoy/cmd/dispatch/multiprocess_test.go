@@ -75,6 +75,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -2198,10 +2199,7 @@ func aPublisherKilledMidBatchAndRestartedPublishesTheIssuesCommentsInOrderWithin
 	killed.WaitExit(t, "SIGKILL")
 	// The database's clock once the killed process has exited: nothing of that process stamps a
 	// row after it, so a publication stamped later is the restart's.
-	var killedBy time.Time
-	if err := pair.database.Pool.QueryRow(context.Background(), `select now()`).Scan(&killedBy); err != nil {
-		t.Fatalf("read the database's clock once the killed process had exited: %v", err)
-	}
+	killedBy := testdb.Now(t, pair.database.Pool)
 	proxy.Cut()
 	proxy.Restore()
 	// Nothing the killed process sent reached the stream, so neither comment is marked published

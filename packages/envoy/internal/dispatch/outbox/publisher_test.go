@@ -1978,6 +1978,14 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 	return value
 }
 
+// awaitPublished waits through the shared wait for the event eventID names to be marked published.
+func awaitPublished(t *testing.T, database *store.Store, eventID int64) {
+	t.Helper()
+	testwait.Eventually(t, "the event marked published", func() bool {
+		return publishedAt(t, database, eventID) != nil
+	})
+}
+
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
 func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {

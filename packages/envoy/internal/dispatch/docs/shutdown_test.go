@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -147,9 +146,7 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 		shutdown <- err
 	}()
 	budget := drainClock.Now().Add(ShutdownDrainBudget)
-	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
-		return slices.Contains(drainClock.Armed(), budget)
-	})
+	drainClock.AwaitArmedAt(t, "Shutdown's drain budget on the service's clock", budget)
 	drainClock.Advance(ShutdownDrainBudget)
 	// Its budget over, Shutdown still has to wait for the held settlement, through its room's close
 	// and its join of the settlements under way, and the budget's end readies no join that does.
@@ -241,9 +238,7 @@ func TestShutdownJoinsATimersSettlementUnderWay(t *testing.T) {
 	// The drain budget runs on the service's clock, so the test ends it: that frees the join's
 	// first, budgeted wait, and leaves the wait after the gate closes.
 	budget := drainClock.Now().Add(ShutdownDrainBudget)
-	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
-		return slices.Contains(drainClock.Armed(), budget)
-	})
+	drainClock.AwaitArmedAt(t, "Shutdown's drain budget on the service's clock", budget)
 	drainClock.Advance(ShutdownDrainBudget)
 	// Its budget over, Shutdown still has to join the timer's settlement, and the budget's end
 	// readies no join that does. The test lets the settlement go only once Shutdown is blocked in a
@@ -335,9 +330,7 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 	// The drain budget runs on the service's clock: the test ends it once the quiet room has
 	// settled inside it, while the held room's append is still outstanding.
 	budget := drainClock.Now().Add(ShutdownDrainBudget)
-	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
-		return slices.Contains(drainClock.Armed(), budget)
-	})
+	drainClock.AwaitArmedAt(t, "Shutdown's drain budget on the service's clock", budget)
 	waitFor(t, "the quiet document's settlement to commit inside the drain budget", func() bool {
 		owed, err := settlementPending(context.Background(), database.Pool, quiet)
 		return err == nil && !owed
@@ -404,9 +397,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(testwait.Context(t)) }()
-	waitFor(t, "Shutdown to have scanned the room", func() bool {
-		return service.shuttingDown(artifactID)
-	})
+	awaitShutdownScanned(t, service, artifactID)
 
 	// Only now, deterministically after the scan, does a second write land - the already-connected
 	// editor's own keystroke, which Shutdown's inject refusal never reaches.
@@ -418,9 +409,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	// inside the 9 s per-room budget this round widened it to: the budget runs on the service's
 	// clock, which the test moves seven seconds before it lets the appends go.
 	budget := drainClock.Now().Add(ShutdownDrainBudget)
-	waitFor(t, "Shutdown to arm its drain budget on the service's clock", func() bool {
-		return slices.Contains(drainClock.Armed(), budget)
-	})
+	drainClock.AwaitArmedAt(t, "Shutdown's drain budget on the service's clock", budget)
 	drainClock.Advance(7 * time.Second)
 	first.let()
 	testwait.Receive(t, "the second append to reach the store once the first let go", second.entered)
@@ -563,6 +552,13 @@ func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends Versi
 	// s.stopping guard returns it almost instantly), so it is a harmless no-op, not a race.
 	t.Cleanup(func() { _ = docstest.Shutdown(t, testwait.Context(t), service) })
 	return service
+}
+
+// awaitShutdownScanned waits through the shared wait until a Shutdown of service in flight has
+// scanned artifactID's room, which Service.shuttingDown reads.
+func awaitShutdownScanned(t *testing.T, service *Service, artifactID string) {
+	t.Helper()
+	waitFor(t, "Shutdown to have scanned the room", func() bool { return service.shuttingDown(artifactID) })
 }
 
 // peerMarkdown renders the peer's copy of the document, read under its lock while the room's

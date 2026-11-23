@@ -1148,23 +1148,31 @@ func TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight(t *testing.T) {
 	}
 }
 
-// runOutboxBeside runs the outbox beside the test, as a Dispatch process runs it beside its API,
-// publishing through publisher every event it decides on, until the test ends.
-func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
+// runOutbox runs an outbox with deps on a goroutine of its own, as a Dispatch process runs it
+// beside its API, and returns its stop: the cancel of the outbox's context, then the shared wait
+// for its Run to return.
+func runOutbox(t *testing.T, deps outbox.Deps) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: deps.Store, Publisher: publisher, Broker: events.NewBroker(),
-			Listen: deps.Store.Pool.Listener,
-		}).Run(ctx)
+		outbox.New(deps).Run(ctx)
 	}()
-	t.Cleanup(func() {
+	return func() {
 		cancel()
 		testwait.Receive(t, "the outbox to return once cancelled", stopped)
-	})
+	}
+}
+
+// runOutboxBeside runs the outbox beside the test, as a Dispatch process runs it beside its API,
+// publishing through publisher every event it decides on, until the test ends.
+func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
+	t.Helper()
+	t.Cleanup(runOutbox(t, outbox.Deps{
+		Store: deps.Store, Publisher: publisher, Broker: events.NewBroker(),
+		Listen: deps.Store.Pool.Listener,
+	}))
 }
 
 // withMentionClaimRefresh gives served a mention sender whose claim refreshes (keepClaims) run on

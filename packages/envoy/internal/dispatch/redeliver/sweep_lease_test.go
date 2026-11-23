@@ -47,6 +47,25 @@ func redeliverTestLeases(t *testing.T) duty.Leases {
 	return storetest.Leases(t, storetest.Open(t).Pool)
 }
 
+// startSweep runs sweeper's loop (Sweeper.Run) every interval under leases, on a goroutine of its
+// own and a context of its own, and returns its stop: the cancel of that context, then the shared
+// wait for the loop to return. The test's cleanup cancels the context too, so a row that fails
+// before it stops the loop leaves no sweep running past it.
+func startSweep(t *testing.T, sweeper *redeliver.Sweeper, interval time.Duration, leases duty.Leases) (stop func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sweeper.Run(ctx, interval, leases)
+	}()
+	return func() {
+		cancel()
+		testwait.Receive(t, "the running sweep to return once its context ended", done)
+	}
+}
+
 // captureDefaultLogs collects what the lease itself logs, which goes to the default logger rather
 // than to the sweeper's own.
 func captureDefaultLogs(t *testing.T) *lockedBuffer {
@@ -77,9 +96,6 @@ func (g *countingGitHub) Redeliver(context.Context, int64) error {
 func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 	leases := redeliverTestLeases(t)
 	logs := captureDefaultLogs(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	// 0: this caller stands for the other process's sweep while it is inside it, which is all
 	// this row is about, and records no sweep of its own -- so the running sweep below skips for
 	// the lease and for nothing else. It holds the lease on a context of its own, not the test's:
@@ -103,16 +119,11 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 	// State is the zero KV: a sweep that ran would reach into it for its cursor and panic,
 	// which fails this test louder still than the count below.
 	sweeper := &redeliver.Sweeper{GitHub: github, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sweeper.Run(ctx, time.Hour, leases)
-	}()
+	stop := startSweep(t, sweeper, time.Hour, leases)
 	testwait.Until(t, "the running sweep to report skipping the "+webhookRedeliveryLease+" lease", func() (*lockedBuffer, bool) {
 		return logs, logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease) > 0
 	})
-	cancel()
-	testwait.Receive(t, "the running sweep to return once its context ended", done)
+	stop()
 	releaseHolder()
 	if !testwait.Receive(t, "the other caller's pass to return", held) {
 		t.Fatal("the other caller never held the lease, so the sweep was free to list")
@@ -383,17 +394,11 @@ func TestNoSweepOfALoneProcessIsSkippedAsAPeriodAlreadyServed(t *testing.T) {
 		Open:   func(context.Context) (bus.KeyValue, error) { return h.state, nil },
 		Logger: slog.New(slog.NewTextHandler(io.MultiWriter(events, swept), nil)),
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		sweeper.Run(ctx, interval, leases)
-	}()
+	stop := startSweep(t, sweeper, interval, leases)
 	testwait.Until(t, fmt.Sprintf("%d sweeps of the running sweep to end", sweeps), func() (string, bool) {
 		return fmt.Sprintf("%q with the lease's log %s", events.list(), logs), events.count("end") >= sweeps
 	})
-	cancel()
-	testwait.Receive(t, "the running sweep to return once its context ended", done)
+	stop()
 
 	// Each attempt either swept or is one of these, and each of these is a fixture of this row
 	// failing rather than the loop choosing: such an attempt ran no sweep and still left a wait,

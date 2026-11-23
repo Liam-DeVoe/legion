@@ -141,11 +141,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 		t.Fatalf("%d WARN lines before either send's wait ended, want none: no park saw the threshold pass", got)
 	}
 	letRetryGo()
-	testwait.Eventually(t, "A-1's two sends gone", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.held) == 0
-	})
+	awaitA1SendsGone(t, sender)
 	// A send leaves held (claimedDuring) before its goroutine logs its late WARN (reportLate):
 	// join that goroutine before reading the log.
 	stop()
@@ -254,11 +250,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 		})
 		proceed <- struct{}{}
 	}
-	testwait.Eventually(t, "A-1's two sends gone", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.held) == 0
-	})
+	awaitA1SendsGone(t, sender)
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("sent %v; at most %d sends in flight at once", sent, most.Load())
@@ -324,11 +316,7 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 		})
 		fire()
 	}
-	testwait.Eventually(t, "A-1's two sends gone", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.held) == 0
-	})
+	awaitA1SendsGone(t, sender)
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("goroutines serving lanes as each park's timer started: %v", servingAtStart)
@@ -601,4 +589,15 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// awaitA1SendsGone waits through the shared wait until sender holds no send (mentionSender.held):
+// both of A-1's sends have left it.
+func awaitA1SendsGone(t *testing.T, sender *mentionSender) {
+	t.Helper()
+	testwait.Eventually(t, "A-1's two sends gone", func() bool {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		return len(sender.held) == 0
+	})
 }

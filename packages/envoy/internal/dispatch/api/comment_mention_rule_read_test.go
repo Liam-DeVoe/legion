@@ -51,11 +51,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	unpark := testwait.Receive(t, "the first send's park", timers)
 	second := postMentionOfS1(t, handler, issue.Key, "the second")
 	held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-	testwait.Eventually(t, "both sends on the issue's held lane", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		return len(sender.lanes[held]) == 2
-	})
+	awaitBothSendsHeld(t, sender, held)
 
 	publishIssueEvents(t, database, issue.Key)
 	failer.stage.Store(ruleReadArmed)
@@ -169,11 +165,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			unpark := testwait.Receive(t, "the first send's park", timers)
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-			testwait.Eventually(t, "both sends on the issue's held lane", func() bool {
-				sender.mu.Lock()
-				defer sender.mu.Unlock()
-				return len(sender.lanes[held]) == 2
-			})
+			awaitBothSendsHeld(t, sender, held)
 			gauged("once the first send parked,")
 			publishIssueEvents(t, database, issue.Key)
 			failer.failing.Store(true)
@@ -303,4 +295,15 @@ func (f *ruleReadsFail) take() (reads, statements, writes int) {
 	reads, statements, writes = f.reads, f.statements, f.writes
 	f.reads, f.statements, f.writes = 0, 0, 0
 	return reads, statements, writes
+}
+
+// awaitBothSendsHeld waits through the shared wait until held, the issue's held lane on sender,
+// holds both of the row's sends: the first parked and the second queued behind it.
+func awaitBothSendsHeld(t *testing.T, sender *mentionSender, held laneKey) {
+	t.Helper()
+	testwait.Eventually(t, "both sends on the issue's held lane", func() bool {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		return len(sender.lanes[held]) == 2
+	})
 }

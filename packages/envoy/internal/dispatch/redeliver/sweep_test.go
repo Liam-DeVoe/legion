@@ -2371,17 +2371,11 @@ func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
 	}
 	h.clock.advance(redeliver.Interval)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		h.sweeper().Run(ctx, time.Hour, leases)
-	}()
+	stop := startSweep(t, h.sweeper(), time.Hour, leases)
 	testwait.Until(t, "the running sweep's summary line", func() (*lockedBuffer, bool) {
 		return h.logs, h.logs.count("webhook redelivery sweep") > 0
 	})
-	cancel()
-	testwait.Receive(t, "the running sweep to return once its context ended", done)
+	stop()
 
 	want := []string{
 		" failed_attempts=1", " deliveries=1",

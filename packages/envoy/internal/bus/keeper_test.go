@@ -550,7 +550,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 			t.Fatalf("watch %s: %v", subject, err)
 		}
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watch: %v", err)
 	}
 
@@ -616,7 +616,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if _, err := watcher.ChanSubscribe(marker, markers); err != nil {
 		t.Fatalf("watch the marker: %v", err)
 	}
-	if err := watcher.Flush(); err != nil {
+	if err := watcher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watch: %v", err)
 	}
 	sent := func() int {

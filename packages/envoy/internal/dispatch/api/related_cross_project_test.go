@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -742,10 +741,7 @@ func TestCrossProjectRelatedQueryOverrunningKeepsTheOneProjectAnswer(t *testing.
 	}()
 	leg := held.next(t)
 	grace := checkStart.Add(crossProjectGrace)
-	testwait.Until(t, fmt.Sprintf("the check's grace timer for the leg, armed for %v", grace), func() ([]time.Time, bool) {
-		armed := clock.Armed()
-		return armed, slices.ContainsFunc(armed, grace.Equal)
-	})
+	clock.AwaitArmedAt(t, "the check's grace timer for the leg", grace)
 	select {
 	case early := <-responded:
 		t.Fatalf("the write answered (status %d) before the clock reached its grace, the leg held: the check did not wait for the leg at all", early.Code)
@@ -911,10 +907,7 @@ func TestCrossProjectRelatedAnswersWithLessThanTheGraceLeft(t *testing.T) {
 	leg := held.next(t)
 	meaningDeadline := checkStart.Add(relatedMeaningAllowance)
 	graceEnd := clock.Now().Add(crossProjectGrace)
-	armed := testwait.Until(t, fmt.Sprintf("the check's grace timer for the leg, armed for %v", graceEnd), func() ([]time.Time, bool) {
-		armed := clock.Armed()
-		return armed, slices.ContainsFunc(armed, graceEnd.Equal)
-	})
+	armed := clock.AwaitArmedAt(t, "the check's grace timer for the leg", graceEnd)
 	if !slices.ContainsFunc(armed, meaningDeadline.Equal) || !graceEnd.After(meaningDeadline) {
 		t.Fatalf("the check armed %v, want its meaning deadline %v among them, before its grace for the leg ends at %v", armed, meaningDeadline, graceEnd)
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -46,17 +47,6 @@ type craftedHistory struct {
 	artifactID string
 	doc        *crdt.Doc
 	next       int64
-}
-
-// databaseNow is the database's clock now, the clock that stamps each version's created_at, which
-// a check's window (CheckStoredOrder's since) is judged against.
-func (h *craftedHistory) databaseNow() time.Time {
-	h.t.Helper()
-	var now time.Time
-	if err := h.database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
-		h.t.Fatalf("read the database's clock: %v", err)
-	}
-	return now
 }
 
 // newCraftedHistory is a document whose first stored update writes markdown, stored as content.
@@ -303,7 +293,7 @@ func TestStoredOrderChecker(t *testing.T) {
 
 	t.Run("versions on both sides of a base compacted inside the window", func(t *testing.T) {
 		history := newCraftedHistory(t, seed)
-		since := history.databaseNow().Add(-time.Minute)
+		since := testdb.Now(history.t, history.database.Pool).Add(-time.Minute)
 		history.version(history.markdown(), 1)
 		edited := history.store(history.edit(replaceRun("Second.", "Second, edited.")), true)
 		history.version(history.markdown(), edited)
@@ -321,7 +311,7 @@ func TestStoredOrderChecker(t *testing.T) {
 
 	t.Run("every version inside the window below the base", func(t *testing.T) {
 		history := newCraftedHistory(t, seed)
-		since := history.databaseNow().Add(-time.Minute)
+		since := testdb.Now(history.t, history.database.Pool).Add(-time.Minute)
 		history.version(history.markdown(), 1)
 		folded := history.store(history.edit(replaceRun("Second.", "Second, edited.")), true)
 		history.store(history.edit(replaceRun("First.", "First, edited.")), true)

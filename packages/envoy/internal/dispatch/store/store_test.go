@@ -43,18 +43,6 @@ func openEmptyTestStore(t *testing.T) *Store {
 	return store
 }
 
-// databaseNow is the database's clock now, the clock that stamps what a migration, a default or a
-// trigger writes with now(): a moment a test judges such a stamp against is read here, not off the
-// test's own clock.
-func databaseNow(t *testing.T, store *Store) time.Time {
-	t.Helper()
-	var now time.Time
-	if err := store.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
-	return now
-}
-
 func randomDatabaseSuffix(t *testing.T) string {
 	t.Helper()
 	var bytes [8]byte

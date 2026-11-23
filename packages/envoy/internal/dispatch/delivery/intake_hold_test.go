@@ -337,10 +337,7 @@ func bringTries(t *testing.T, tries *clocktest.Fake, start time.Time, n int) {
 	armedAt := func(k int, what string) {
 		t.Helper()
 		due := start.Add(time.Duration(k) * durableBindInterval)
-		testwait.Until(t, fmt.Sprintf("%s, armed %s past the intake's start", what, due.Sub(start)), func() ([]time.Time, bool) {
-			armed := tries.Armed()
-			return armed, slices.ContainsFunc(armed, due.Equal)
-		})
+		tries.AwaitArmedAt(t, fmt.Sprintf("%s, %s past the intake's start,", what, due.Sub(start)), due)
 	}
 	armedAt(1, "the intake's first try for the hold after its start")
 	for try := 1; try <= n; try++ {

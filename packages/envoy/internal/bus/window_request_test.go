@@ -53,7 +53,7 @@ func responder(t *testing.T, url, subject string) {
 	if _, err := conn.Subscribe(subject, func(message *natsgo.Msg) { _ = message.Respond(nil) }); err != nil {
 		t.Fatalf("subscribe the responder: %v", err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the responder's subscription: %v", err)
 	}
 }

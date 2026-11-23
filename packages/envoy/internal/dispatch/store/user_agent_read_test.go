@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // A database that already holds direct messages when 0051 lands has replies nobody ever marked
@@ -28,7 +30,7 @@ func TestUserAgentReadBackfillMarksEveryExistingDirectConversationRead(t *testin
 	`); err != nil {
 		t.Fatalf("seed messages: %v", err)
 	}
-	before := databaseNow(t, store)
+	before := testdb.Now(t, store.Pool)
 	migrateThrough(t, store, 51)
 
 	rows, err := store.Pool.Query(ctx, `select login, session_id, read_through from user_agent_read order by 1, 2`)

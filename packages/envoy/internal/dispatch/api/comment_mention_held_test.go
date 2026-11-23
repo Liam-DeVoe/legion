@@ -96,9 +96,7 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	outboxDeps := deps
 	outboxDeps.Store = database
 	runOutboxBeside(t, outboxDeps, view)
-	testwait.Eventually(t, "the issue's first events published", func() bool {
-		return unpublishedEvents(t, database, issue.Key) == 0
-	})
+	awaitFirstEventsPublished(t, database, issue.Key)
 	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
 		t.Fatalf("the gauges read %q before any mention, want no held send", heldLines(body))
 	}

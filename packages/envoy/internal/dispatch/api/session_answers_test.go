@@ -216,20 +216,12 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 // what each topic was handed (recordingOutboxPublisher).
 func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Publisher) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		outbox.New(outbox.Deps{
-			Store: f.database, Publisher: publisher, Broker: events.NewBroker(),
-			Listen:     f.database.Pool.Listener,
-			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
-		}).Run(ctx)
-	}()
-	defer func() {
-		cancel()
-		testwait.Receive(t, "the outbox to return once cancelled", stopped)
-	}()
+	stop := runOutbox(t, outbox.Deps{
+		Store: f.database, Publisher: publisher, Broker: events.NewBroker(),
+		Listen:     f.database.Pool.Listener,
+		RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
+	})
+	defer stop()
 	testwait.Until(t, "the outbox to publish every event", func() (int, bool) {
 		var unpublished int
 		if err := f.database.Pool.QueryRow(context.Background(), `

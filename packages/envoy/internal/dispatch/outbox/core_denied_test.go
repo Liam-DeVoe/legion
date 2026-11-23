@@ -252,9 +252,7 @@ func TestRunForwardsAGrantedRoleRoute(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	testwait.Eventually(t, "the event marked published", func() bool {
-		return publishedAt(t, database, event.ID) != nil
-	})
+	awaitPublished(t, database, event.ID)
 	destinations, attempts := publishedDestinations(t, database, event.ID)
 	if !slices.Contains(destinations, roleTopic) || attempts != 0 {
 		t.Fatalf("published_destinations = %v after %d retries, want the role topic on the first attempt", destinations, attempts)

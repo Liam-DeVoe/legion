@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -379,10 +380,7 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 	// clock says.
 	aged := func(project string, age time.Duration) {
 		t.Helper()
-		var now time.Time
-		if err := database.Pool.QueryRow(t.Context(), `select now()`).Scan(&now); err != nil {
-			t.Fatalf("read the database's clock: %v", err)
-		}
+		now := testdb.Now(t, database.Pool)
 		if _, err := RecordRead(t.Context(), database.Pool, project, now.UTC().Add(-age), 2048, nil); err != nil {
 			t.Fatalf("record a read of %s: %v", project, err)
 		}

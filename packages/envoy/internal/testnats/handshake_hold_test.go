@@ -27,7 +27,7 @@ func TestHoldWriteLockReturnsHoldingTheConnectionLock(t *testing.T) {
 	if _, err := direct.ChanSubscribe("testnats.held", received); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := direct.Flush(); err != nil {
+	if err := direct.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 

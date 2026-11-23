@@ -325,7 +325,7 @@ func WatchStreamWrites(t testing.TB, uri string) *StreamWrites {
 	if err != nil {
 		t.Fatalf("watch stream writes: %v", err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("watch stream writes: %v", err)
 	}
 	return &StreamWrites{conn: conn, sub: sub}
@@ -336,7 +336,7 @@ func WatchStreamWrites(t testing.TB, uri string) *StreamWrites {
 // writer's answer, leaves every one queued here.
 func (w *StreamWrites) Take(t testing.TB) []string {
 	t.Helper()
-	if err := w.conn.Flush(); err != nil {
+	if err := w.conn.FlushWithContext(Context(t)); err != nil {
 		t.Fatalf("flush the stream-write watch: %v", err)
 	}
 	var subjects []string
