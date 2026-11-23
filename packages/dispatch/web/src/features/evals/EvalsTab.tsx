@@ -1,12 +1,12 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import type { ReactNode } from "react";
 
 import { type EvalKind, evalsViewQuery, legionDaemonQuery } from "../../api/queries";
 import type { EvalListResponse } from "../../api/types";
-import { compareRange, liveWindow } from "../delivery/lib/window";
 import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
+import { useEvalsScope } from "./useEvalsScope";
 import type { EvalsScope } from "./useEvalsViews";
 
 /** The views each section reads, by kind: the target cards read the delivery and the Legion evals
@@ -78,23 +78,14 @@ function LiveHeader({
  * decides whether the Legion section and cards show; until that read answers they show, so their
  * view is opened with the others rather than after it.
  *
- * The compare range a preset's default names is taken when the window or the compare choice is
- * set, from the days of that moment; a tab left open past midnight keeps the range it opened with
- * until the reader sets either again.
+ * The compare range a preset's default names moves at each UTC midnight the tab stays open past,
+ * with the window the server moves (`useEvalsScope`).
  */
 export function EvalsTab({ project }: { project: string }): ReactNode {
   const [state, setState] = useEvalsUrlState();
   const daemon = useQuery(legionDaemonQuery(project));
   const legion = daemon.data !== null;
-  const scope = useMemo(
-    (): EvalsScope => ({
-      project,
-      window: liveWindow(state.window),
-      compare: compareRange(state.compare, state.window, Date.now()),
-      repos: state.repos,
-    }),
-    [project, state]
-  );
+  const scope = useEvalsScope(project, state);
   const sections = sectionsOf(legion);
   const kinds = [...new Set(sections.flatMap((section) => section.kinds))];
   return (
