@@ -135,6 +135,7 @@ func TestTheOwnerIsToldTheRolesOfItsDeployment(t *testing.T) {
 		holdsAndRetires(t, fmt.Sprintf("the composed architect prompt (root %t)", isRoot), composedText(t, composer, claim.RoleArchitect, isRoot), []string{
 			"A role of this deployment runs where its step stands in your plan, at the phase `step` whatever its type, and reports pass or fail.",
 			`A task that stops with the reason "step <i> names the role <role>, which the deployment no longer defines" goes on in one of two ways: you give a later version of your plan, or the operator defines the role again and a person's todo restarts the task.`,
+			`A task that stops with the reason "step <i> is the work of the agent <agent>, which runs in the slot of the role <agent>, which the deployment no longer defines", or "the retro is the work of the agent <agent>, …", goes on in the same two ways, except that a later version of your plan ends that stop only where it gives that work an agent of another name, a step with another key or with none: a key keeps the name an earlier version gave its agent.`,
 		}, []string{"Legion's step roles, each with the type of its step, are", "A role of this deployment runs where its step stands in your plan, and reports"})
 	}
 }
