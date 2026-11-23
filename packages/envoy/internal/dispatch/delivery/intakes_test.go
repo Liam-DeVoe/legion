@@ -232,7 +232,6 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
 	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
-	t.Cleanup(held.release)
 
 	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 	runCtx, cancel := context.WithCancel(ctx)
@@ -245,8 +244,12 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		cancel()
-		stop()
+		testwait.Returns(t, "the intakes' stop to return once ctx ended", stop)
 	})
+	// The held fetch is let go as the row ends, before the stop above (registered after it, so run
+	// first): a row that fails while the handler is held then has its stop find the handler
+	// answered, rather than wait for it on stopClock, which nothing moves once the row has ended.
+	t.Cleanup(held.release)
 	awaitBoundDurable(t, publisher)
 	publishPullRequestEnvelope(t, publisher, "acme", "widgets", 1, mergedPullRequest(1))
 	held.awaitEntered(t)

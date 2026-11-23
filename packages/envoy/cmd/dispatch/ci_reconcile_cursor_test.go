@@ -98,9 +98,12 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 	requireCIReconcileRecordedRun(t, natsURL, process)
 
 	// A rate limit partway through one head's reads: GitHub gives that head's check runs and
-	// refuses its check suites, so the head was not read whole.
-	github.rateLimitNext(ciReconcileCursorSuitesPath(ciReconcileLimitedHead), 2*time.Second)
+	// refuses its check suites, so the head was not read whole. The passes are counted before the
+	// limit is armed: passes run back to back, so one can meet the limit the moment it is armed,
+	// and a count taken after that would hold its line and leave the wait below a pass that never
+	// comes once the reset has passed.
 	before := len(ciReconcilePasses(process.Output.String()))
+	github.rateLimitNext(ciReconcileCursorSuitesPath(ciReconcileLimitedHead), 2*time.Second)
 	after := waitForCIReconcilePasses(t, process, "a pass GitHub's rate limit stopped",
 		func(passes []map[string]string) bool {
 			for _, pass := range passes[min(before, len(passes)):] {

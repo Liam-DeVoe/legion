@@ -32,7 +32,9 @@ func TestTheBackgroundWaitHoldsForWorkARequestLeftRunning(t *testing.T) {
 			defer close(waited)
 			served.waitBackground()
 		}()
-		synctest.Wait()
+		// An hour on the bubble's clock (idleAnHour): a wait that a bound of its own lets return
+		// while the worker runs has returned by the read.
+		idleAnHour()
 		select {
 		case <-waited:
 			t.Fatal("the background wait returned while a detached worker was still running")

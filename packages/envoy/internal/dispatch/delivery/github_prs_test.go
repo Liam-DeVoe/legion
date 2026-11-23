@@ -213,6 +213,17 @@ func mustEncode(t *testing.T, w http.ResponseWriter, v any) {
 	}
 }
 
+// refuseRequest answers a request a fake GitHub's handler cannot serve: it fails the test with
+// t.Errorf, naming what the handler could not read, and answers 400, githubtest.Unexpected's form.
+// A handler runs on the fake server's goroutine, where t.Fatal would end that goroutine alone, so
+// the handler returns after it, and the product's call then fails on the 400.
+func refuseRequest(t *testing.T, w http.ResponseWriter, format string, args ...any) {
+	t.Helper()
+	message := fmt.Sprintf(format, args...)
+	t.Error(message)
+	http.Error(w, message, http.StatusBadRequest)
+}
+
 func ptrTime(s string) *time.Time {
 	v, err := time.Parse(time.RFC3339, s)
 	if err != nil {
@@ -350,17 +361,19 @@ func TestFetchPullRequestUpstream500IsWrapped(t *testing.T) {
 }
 
 // decodeGraphQLRequest reads a POST /graphql request's {query, variables} body, the shape every
-// search test below asserts against instead of REST search's URL query parameters.
-func decodeGraphQLRequest(t *testing.T, r *http.Request) (query string, variables map[string]any) {
+// search test below asserts against instead of REST search's URL query parameters. A body it
+// cannot decode is refused (refuseRequest), and ok is false: the handler returns.
+func decodeGraphQLRequest(t *testing.T, w http.ResponseWriter, r *http.Request) (query string, variables map[string]any, ok bool) {
 	t.Helper()
 	var decoded struct {
 		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&decoded); err != nil {
-		t.Fatalf("decode GraphQL request body: %v", err)
+		refuseRequest(t, w, "decode GraphQL request body: %v", err)
+		return "", nil, false
 	}
-	return decoded.Query, decoded.Variables
+	return decoded.Query, decoded.Variables, true
 }
 
 func searchNodeJSON(number int, title, author string, createdAt, mergedAt string) map[string]any {
@@ -393,8 +406,10 @@ func TestSearchMergedPullRequestsBuildsTheQuery(t *testing.T) {
 	fake := newFakeGitHub(t)
 	var gotQuery string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		var variables map[string]any
-		_, variables = decodeGraphQLRequest(t, r)
+		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		gotQuery, _ = variables["q"].(string)
 		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
 	})
@@ -417,7 +432,10 @@ func TestSearchMergedPullRequestsAcrossInstallationScopesToInstallationRepos(t *
 	fake.installationRepos = []string{"acme/widgets", "acme/other-widgets"}
 	var gotQuery string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		gotQuery, _ = variables["q"].(string)
 		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
 	})
@@ -453,7 +471,10 @@ func TestSearchMergedPullRequestsAcrossInstallationSearchesEveryInstallation(t *
 	var mu sync.Mutex
 	var queriesSeen []string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		q, _ := variables["q"].(string)
 		mu.Lock()
 		queriesSeen = append(queriesSeen, q)
@@ -486,7 +507,10 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 	fake := newFakeGitHub(t)
 	var cursorsSeen []string
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		after, _ := variables["after"].(string)
 		cursorsSeen = append(cursorsSeen, after)
 		switch after {
@@ -495,7 +519,7 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 		case "cursor-100":
 			mustEncode(t, w, searchResponseJSON(150, repeatSearchNodes(50, 101), false, ""))
 		default:
-			t.Fatalf("unexpected cursor %q", after)
+			refuseRequest(t, w, "unexpected cursor %q", after)
 		}
 	})
 	client := fake.newTestClient()
@@ -561,7 +585,10 @@ func TestSearchMergedPullRequestsAcrossInstallationAsksForATokenPerPage(t *testi
 		if refuse(w, r) {
 			return
 		}
-		_, variables := decodeGraphQLRequest(t, r)
+		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		if after, _ := variables["after"].(string); after == "" {
 			fake.expire(r)
 			mustEncode(t, w, searchResponseJSON(150, repeatSearchNodes(100, 1), true, "cursor-100"))
@@ -593,18 +620,23 @@ func TestSearchMergedPullRequestsHalvesOnOverflowWithoutGapOrOverlap(t *testing.
 	type window struct{ since, until string }
 	var windows []window
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		_, variables := decodeGraphQLRequest(t, r)
+		_, variables, ok := decodeGraphQLRequest(t, w, r)
+		if !ok {
+			return
+		}
 		q, _ := variables["q"].(string)
 		// q contains "merged:<since>..<until>"; extract it for the window assertion.
 		const marker = "merged:"
 		idx := strings.Index(q, marker)
 		if idx < 0 {
-			t.Fatalf("query %q has no merged: qualifier", q)
+			refuseRequest(t, w, "query %q has no merged: qualifier", q)
+			return
 		}
 		rangeText := strings.Fields(q[idx+len(marker):])[0]
 		parts := strings.SplitN(rangeText, "..", 2)
 		if len(parts) != 2 {
-			t.Fatalf("merged range %q is not a..b", rangeText)
+			refuseRequest(t, w, "merged range %q is not a..b", rangeText)
+			return
 		}
 		windows = append(windows, window{parts[0], parts[1]})
 

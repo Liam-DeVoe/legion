@@ -315,7 +315,13 @@ func TestHorizonRunsOneStallDiagnosisAtATime(t *testing.T) {
 			now = now.Add(horizonWarnEvery)
 			observe(fmt.Sprintf("at step %d, while a diagnosis is in flight,", step))
 		}
+		// synctest.Wait returns before the bubble's clock moves, which it does only once every
+		// goroutine is blocked, so the read waits an hour on that clock after it, which costs
+		// nothing: a second diagnosis that a timer of its own starts late has started by then. The
+		// bubble's only other timer is the first diagnosis's bound (horizonDiagnosisTimeout), which
+		// the scripted holder does not watch, so the first diagnosis is still in flight.
 		synctest.Wait()
+		time.Sleep(time.Hour)
 		select {
 		case <-entered:
 			t.Fatalf("a second stall diagnosis started while the first was in flight; %d have run", diagnoses.Load())

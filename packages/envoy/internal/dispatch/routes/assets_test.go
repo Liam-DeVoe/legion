@@ -862,15 +862,27 @@ func TestStaticHandlerHoldsTheReservationOfAnAbandonedRequestUntilItsReadEnds(t 
 		}
 		// Abandon each request as its read reaches the store, until every request is blocked
 		// with no read left to arrive: past the cap's room, the rest wait for a reservation and
-		// reach the store no more.
-		for arrived := true; arrived; {
+		// reach the store no more. synctest.Wait returns before the bubble's clock moves, which it
+		// does only once every goroutine is blocked, so once no read arrives the clock moves on to
+		// just short of the requests' fetch bound (retainedAssetFetchTimeout, from their start at
+		// the bubble's first moment), and what arrived meanwhile is abandoned in turn: a
+		// reservation that a timer of its own gives back before its read ends lets a waiting
+		// request's read reach the store inside that span. An hour, which costs nothing elsewhere,
+		// would end the waiting requests first, at their bound, with a 503 that reads nothing.
+		moved := false
+		for {
 			synctest.Wait()
 			select {
 			case key := <-store.arrived:
 				cancels[key]()
+				continue
 			default:
-				arrived = false
 			}
+			if moved {
+				break
+			}
+			time.Sleep(retainedAssetFetchTimeout - time.Nanosecond)
+			moved = true
 		}
 		for _, cancel := range cancels {
 			cancel()

@@ -188,7 +188,7 @@ func TestListWorkflowRunsPaginatesAcrossPages(t *testing.T) {
 		case "2":
 			mustEncode(t, w, map[string]any{"total_count": 120, "workflow_runs": repeatRunItems(20, 101)})
 		default:
-			t.Fatalf("unexpected page %q", page)
+			refuseRequest(t, w, "unexpected page %q", page)
 		}
 	})
 	client := fake.newTestClient()
@@ -232,7 +232,8 @@ func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
 		created := r.URL.Query().Get("created")
 		parts := strings.SplitN(created, "..", 2)
 		if len(parts) != 2 {
-			t.Fatalf("created %q is not a..b", created)
+			refuseRequest(t, w, "created %q is not a..b", created)
+			return
 		}
 		windows = append(windows, window{parts[0], parts[1]})
 
@@ -377,7 +378,7 @@ func TestListWorkflowRunJobsPaginatesAcrossPages(t *testing.T) {
 		case "2":
 			mustEncode(t, w, map[string]any{"total_count": 110, "jobs": repeatJobItems(10)})
 		default:
-			t.Fatalf("unexpected page %q", page)
+			refuseRequest(t, w, "unexpected page %q", page)
 		}
 	})
 	client := fake.newTestClient()

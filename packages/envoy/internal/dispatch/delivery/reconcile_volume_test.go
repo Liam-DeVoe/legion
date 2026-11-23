@@ -83,15 +83,21 @@ func maximalRun(id int64, created time.Time) map[string]any {
 
 // runsPage serves one page of a runs listing the way GitHub does: the runs created inside the
 // request's own created=A..B window, newest first, cut to its per_page and page, with the
-// window's whole count as total_count.
+// window's whole count as total_count. A request whose window it cannot read is refused
+// (refuseRequest): it runs on the fake server's goroutine.
 func runsPage(t *testing.T, w http.ResponseWriter, r *http.Request, runs []map[string]any) {
 	t.Helper()
-	since, until := parseCreatedWindow(t, r.URL.Query().Get("created"))
+	since, until, err := parseCreatedWindow(r.URL.Query().Get("created"))
+	if err != nil {
+		refuseRequest(t, w, "%v", err)
+		return
+	}
 	var inWindow []map[string]any
 	for _, run := range runs {
 		created, err := time.Parse(time.RFC3339, run["created_at"].(string))
 		if err != nil {
-			t.Fatalf("parse fixture created_at: %v", err)
+			refuseRequest(t, w, "parse fixture created_at: %v", err)
+			return
 		}
 		if !created.Before(since) && !created.After(until) {
 			inWindow = append(inWindow, run)
@@ -113,22 +119,21 @@ func runsPage(t *testing.T, w http.ResponseWriter, r *http.Request, runs []map[s
 	mustEncode(t, w, map[string]any{"total_count": len(inWindow), "workflow_runs": inWindow[start:end]})
 }
 
-// parseCreatedWindow reads back the created=ISO..ISO qualifier the run listing sends.
-func parseCreatedWindow(t *testing.T, created string) (time.Time, time.Time) {
-	t.Helper()
+// parseCreatedWindow reads back the created=ISO..ISO qualifier the run listing sends, and answers
+// an error naming what it could not read: a fake's handler refuses the request with it
+// (refuseRequest), since it runs on the server's goroutine.
+func parseCreatedWindow(created string) (since, until time.Time, err error) {
 	bounds := strings.SplitN(created, "..", 2)
 	if len(bounds) != 2 {
-		t.Fatalf("created qualifier = %q, want ISO..ISO", created)
+		return since, until, fmt.Errorf("created qualifier = %q, want ISO..ISO", created)
 	}
-	since, err := time.Parse(time.RFC3339, bounds[0])
-	if err != nil {
-		t.Fatalf("parse created since %q: %v", bounds[0], err)
+	if since, err = time.Parse(time.RFC3339, bounds[0]); err != nil {
+		return since, until, fmt.Errorf("parse created since %q: %w", bounds[0], err)
 	}
-	until, err := time.Parse(time.RFC3339, bounds[1])
-	if err != nil {
-		t.Fatalf("parse created until %q: %v", bounds[1], err)
+	if until, err = time.Parse(time.RFC3339, bounds[1]); err != nil {
+		return since, until, fmt.Errorf("parse created until %q: %w", bounds[1], err)
 	}
-	return since, until
+	return since, until, nil
 }
 
 // TestListWorkflowRunsPagesABusyDeployRepositoryUnderTheResponseLimit is the deploy-run failure
@@ -247,7 +252,8 @@ func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *t
 			Variables map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode GraphQL request: %v", err)
+			refuseRequest(t, w, "decode GraphQL request: %v", err)
+			return
 		}
 		after, _ := body.Variables["after"].(string)
 		mu.Lock()
@@ -339,7 +345,11 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 	failing := true
 	var windowStarts []time.Time
 	fake.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
-		since, _ := parseCreatedWindow(t, r.URL.Query().Get("created"))
+		since, _, err := parseCreatedWindow(r.URL.Query().Get("created"))
+		if err != nil {
+			refuseRequest(t, w, "%v", err)
+			return
+		}
 		mu.Lock()
 		windowStarts = append(windowStarts, since)
 		refuse := failing && !since.Before(failFrom)

@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -3203,7 +3204,6 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	waitForHandled(t, pair, fake, before)
 	requireHandledBy(t, pair, fake, before, frozen, "before the freeze")
 	waitForDurableDrained(t, pair, js, bus.DispatchDeliveryDurable, "before the freeze")
-	reconciledBefore := countLease(pair.a, leaseRan, "delivery-reconcile") + countLease(pair.b, leaseRan, "delivery-reconcile")
 
 	// What each process has bound when the holder is frozen: how many binds of each durable
 	// each has logged -- the frozen process's so that it logs no more, the standby's so that
@@ -3269,6 +3269,22 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	}
 	waitForHandled(t, pair, fake, afterResume)
 	requireHandledBy(t, pair, fake, afterResume, standby, "after the frozen process resumed")
+	// A delivery reconcile pass ran with every pull request of the row stored, and re-read none
+	// of them: one that did would have read a pull request through the very call that counts a
+	// handling below (delivery.FetchPullRequest), and the counts would say so. An intake
+	// acknowledges a message once it has handled it, so once the durable is drained every pull
+	// request of the row is stored. Passes of the lease never overlap, and each logs its line
+	// while it still holds the lease (duty.Exclusive), so of the passes logged from there on at
+	// most the first was under way then, and the second began with every pull request of the row
+	// stored. Each process ticks at most ten seconds after its last pass ended, and a tick in a
+	// period another process's pass has served skips, so the passes come a period or so apart.
+	waitForDurableDrained(t, pair, js, bus.DispatchDeliveryDurable, "once every published pull request was handled")
+	reconciled := countLease(pair.a, leaseRan, "delivery-reconcile") + countLease(pair.b, leaseRan, "delivery-reconcile")
+	testwait.Until(t, fmt.Sprintf("the second delivery reconcile pass logged after pass %d was, the first to begin with the row's pull requests stored", reconciled),
+		func() (int, bool) {
+			logged := countLease(pair.a, leaseRan, "delivery-reconcile") + countLease(pair.b, leaseRan, "delivery-reconcile")
+			return logged, logged >= reconciled+2
+		})
 
 	published := slices.Concat(before, whileFrozen, afterTakeOver, afterResume)
 	handled := fake.handled()
@@ -3319,18 +3335,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 				durable, bindings[durable], binding, time.Since(resumedAt).Round(time.Millisecond), pair.buffers())
 		}
 	}
-	waitForDurableDrained(t, pair, js, bus.DispatchDeliveryDurable, "once every published pull request was handled")
 	requireOneHoldPerDurable(t, pair)
-	// A delivery reconcile pass ran with the row's own pull requests stored, and re-read none
-	// of them: one that did would have read a pull request through the very call that counts a
-	// handling above (delivery.FetchPullRequest), and the counts would say so. Each process ticks
-	// at most ten seconds after its last pass ended and more than nine seconds after its last tick,
-	// nine seconds being the lease's period (duty.LeasePeriod of the ten), so its second tick from
-	// here is due in a period that began after this wait did: that tick runs, or another process's
-	// pass has served that period, and either is a pass counted here.
-	testwait.Eventually(t, "a delivery reconcile pass with the row's pull requests stored", func() bool {
-		return countLease(pair.a, leaseRan, "delivery-reconcile")+countLease(pair.b, leaseRan, "delivery-reconcile") > reconciledBefore
-	})
 	pair.requireRunning(t)
 }
 
@@ -4452,10 +4457,12 @@ func waitForPassAfter(t *testing.T, process *dispatchProcess, loop string, since
 // of the test's own, as a writer that is taking its time would, and rolls it back when the test
 // ends if the test has not. A maintenance pass whose first statement writes one of them - or, in
 // access exclusive mode, reads one - waits there, inside its lease, which is the moment the lease
-// is about: both processes' loops firing while one is still in its pass.
+// is about: both processes' loops firing while one is still in its pass. Its statements run on the
+// shared wait's context (testwait.Context), so a lock another transaction still holds is waited for
+// until the give-up and then fails naming the table.
 func lockTables(t *testing.T, database *store.Store, mode string, tables ...string) pgx.Tx {
 	t.Helper()
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	gate, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("open the transaction holding %v: %v", tables, err)
@@ -4669,7 +4676,9 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 // test holds the row with a lock of its own to see both arrive. Once the lock lets go, one pass
 // judges the page and advances the cursor and the other, which was waiting on the row, reads the
 // cursor that pass advanced: no wake is lost to another process's pass, and neither process
-// judges what the other judged.
+// judges what the other judged. Neither boot pass failed: the row reads each process's output
+// once that process's sweep is in its next pass, a minute after its boot pass began (the loop's
+// gap), which orders each boot pass's end, and any failure it logged, before the read.
 func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *testing.T) {
 	pair := newPair(t)
 	gate := lockTables(t, pair.database, "exclusive", "suggestion_outcome_cursor")
@@ -4697,6 +4706,18 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 		return cursor != nil
 	})
 
+	// The second pass out of the lock ends on its own goroutine after the cursor shows, and logs
+	// a failure only as it ends, which nothing the processes write orders before a read of their
+	// output. A process's sweep runs one pass at a time and logs a pass's failure before the pass
+	// returns (api.RunSuggestionOutcomeSweep), so once each process's next pass waits on the row
+	// again, behind a lock the test takes once both boot passes let it go, each boot pass has
+	// ended and logged what it failed. A notification on the events channel owes each process
+	// that next pass, which its loop starts no sooner than its gap after the boot pass's start.
+	next := lockTables(t, pair.database, "exclusive", "suggestion_outcome_cursor")
+	if _, err := pair.database.Pool.Exec(testwait.Context(t), `select pg_notify($1, '')`, api.EventsChannel); err != nil {
+		t.Fatalf("wake both processes' suggestion-outcome sweeps: %v", err)
+	}
+	storetest.WaitForLockWaiters(t, next, 2)
 	for name, process := range map[string]*dispatchProcess{"A": pair.a, "B": pair.b} {
 		if failed := strings.Count(process.Output.String(), "suggestion outcome sweep failed"); failed != 0 {
 			t.Errorf("process %s logged %d failed suggestion-outcome passes:\n%s", name, failed, process.Output.String())

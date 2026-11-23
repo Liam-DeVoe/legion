@@ -236,6 +236,10 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
 		t.Fatalf("the gauges read %q once the send landed, want no held send", heldLines(body))
 	}
+	// A second WARN would come from reportLate, which the lane runs after the try that wrote the
+	// sent attempt the wait above read, so nothing orders it before a count read now: stop the
+	// sender and join its lanes first (wait stops it, and returns once they have).
+	testwait.Returns(t, "the mention sender's lanes, their late WARNs logged, and its claim refresh to return once it stopped", served.mentions.wait)
 	if got := strings.Count(logs.String(), warning); got != 1 {
 		t.Fatalf("%d WARN lines in all, want the one", got)
 	}

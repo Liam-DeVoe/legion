@@ -84,7 +84,9 @@ func TestAKeyedRunnerRunsOneKeyInOrderAndKeysAtOnce(t *testing.T) {
 		if item := awaitStart(t, recorder.start); item.n != 3 {
 			t.Fatalf("start while a1 is held = %+v, want b3 (a2 waits behind a1)", item)
 		}
-		// awaitStart waited for every goroutine to block, so anything else that started is there.
+		// awaitStart waited for every goroutine to block, so anything else that started is there,
+		// and an hour on (idleAnHour) so is anything a timer of its own let start later.
+		idleAnHour()
 		select {
 		case item := <-recorder.start:
 			t.Fatalf("%+v started while a1 was still in its handler", item)
