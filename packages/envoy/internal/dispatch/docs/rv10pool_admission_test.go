@@ -5,8 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +12,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Review 10's finding 4. A socket's admission takes one whole slot of the pool before it reads the
@@ -70,10 +68,7 @@ func TestRV10PoolAnAdmissionHoldingAWholeSlotWaitsOnAnEvictionThatWaitsForThatSl
 		state := service.lockExistingState(artifactID)
 		recovered = state.failedDone
 		service.unlockState(artifactID, state)
-		deadline := time.Now().Add(10 * time.Second)
-		for service.srv.GetDoc(artifactID) != nil && time.Now().Before(deadline) {
-			time.Sleep(5 * time.Millisecond)
-		}
+		testwait.Holds(10*time.Second, 5*time.Millisecond, func() bool { return service.srv.GetDoc(artifactID) == nil })
 		close(gone)
 	})
 	// The eviction's closing compaction goes on only once the admission holds its slot, so it
@@ -89,8 +84,7 @@ func TestRV10PoolAnAdmissionHoldingAWholeSlotWaitsOnAnEvictionThatWaitsForThatSl
 	})
 
 	const browserPatience = 8 * time.Second
-	url := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID +
-		"?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
+	url := socketURL(httpServer.URL, artifactID)
 	type dialed struct {
 		err     error
 		status  int
@@ -100,7 +94,7 @@ func TestRV10PoolAnAdmissionHoldingAWholeSlotWaitsOnAnEvictionThatWaitsForThatSl
 		ctx, cancel := context.WithTimeout(context.Background(), patience)
 		defer cancel()
 		began := time.Now()
-		connection, response, err := gws.DefaultDialer.DialContext(ctx, url, http.Header{"X-Dispatch-User": []string{"alice"}})
+		connection, response, err := gws.DefaultDialer.DialContext(ctx, url, pageHeader("alice"))
 		got := dialed{err: err, elapsed: time.Since(began)}
 		if response != nil {
 			got.status = response.StatusCode

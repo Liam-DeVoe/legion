@@ -810,7 +810,7 @@ func forgetStoredClientID(t *testing.T, service *Service, artifactID string, cli
 }
 
 // An update is compared only where it carries structs at clocks the room holds under at most
-// maxComparedClaims ids other people claimed. Bob's legacy socket claims five ids. A page of this
+// maxComparedIDs ids other people claimed. Bob's legacy socket claims five ids. A page of this
 // build sending structs at their clocks that differ from bob's is refused for four of the ids, as
 // a resend under them is compared, and not for all five, which is a whole-state handoff of the
 // history and is neither compared nor refused for it. A legacy socket sending bob's own structs
@@ -821,7 +821,7 @@ func TestAnUpdateUnderMoreClaimedIDsThanTheComparedFewIsNotComparedOrIsRefusedFr
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
 	bob := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("bob"), artifactID, crdt.New(crdt.WithClientID(1_234_568_200)))
 	awaitAnswer(t, bob, "the document")
-	claimed := make([]crdt.ClientID, maxComparedClaims+1)
+	claimed := make([]crdt.ClientID, maxComparedIDs+1)
 	bobs := make([][]byte, len(claimed))
 	for i := range claimed {
 		claimed[i] = crdt.ClientID(1_234_568_201 + i)
@@ -847,13 +847,13 @@ func TestAnUpdateUnderMoreClaimedIDsThanTheComparedFewIsNotComparedOrIsRefusedFr
 	requireConnected(t, handoff, "carol's page sending structs under five claimed ids")
 	resend := openPage(t, serverURL, artifactID, "carol")
 	awaitAnswer(t, resend, "the document")
-	if err := resend.Write(ygsync.EncodeUpdate(differing(resend, claimed[:maxComparedClaims]))); err != nil {
+	if err := resend.Write(ygsync.EncodeUpdate(differing(resend, claimed[:maxComparedIDs]))); err != nil {
 		t.Fatal(err)
 	}
 	awaitRefused(t, resend, "carol's page sending differing structs under four claimed ids")
 	few := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("dave"), artifactID, crdt.New(crdt.WithClientID(1_234_568_300)))
 	awaitAnswer(t, few, "the document")
-	if err := few.Write(ygsync.EncodeUpdate(mergeStoredOrder(t, bobs[:maxComparedClaims]...))); err != nil {
+	if err := few.Write(ygsync.EncodeUpdate(mergeStoredOrder(t, bobs[:maxComparedIDs]...))); err != nil {
 		t.Fatal(err)
 	}
 	requireConnected(t, few, "dave's legacy socket handing back bob's structs under four ids")

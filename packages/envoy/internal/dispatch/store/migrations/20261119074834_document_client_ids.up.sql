@@ -50,11 +50,14 @@
 -- another of the person's that holds it, such as a page replaying a closed tab's saved edits,
 -- leaves the document holding an edit under the id - integrated, not only parked behind a clock
 -- the room lacks - or once the document has stored a later edit that landed what such a socket
--- had parked under the id, whether that socket was still open or had closed by then. A person
--- holds at most 64 rows of minted ids in a document that never landed an edit: an admission past
--- that deletes, in the statement that writes its own row, the person's one there presented least
--- recently, and only one no socket has presented for 15 minutes, which no open socket's is; where
--- none is that old, the admission is refused for the editor to retry. A row whose id never
+-- had parked under the id, whether that socket was still open or had closed by then, unless it
+-- had closed and the room let go of what it kept of it first, which the room does to the oldest
+-- such socket once it keeps more of them still waiting than its queue of parked edits holds.
+-- A person holds at most 64 rows of minted ids in a document that never landed an edit: an
+-- admission past that deletes, in the statement that writes its own row, the person's one
+-- there presented least recently, and only one no socket has presented for 15 minutes, which
+-- no open socket's is; where none is that old, the admission is refused for the editor to
+-- retry. A row whose id never
 -- landed an edit and that nothing has presented for 30 days is deleted by the
 -- hourly compaction sweep. A page that comes back after either deletion and presents the id is
 -- given it again, its row written afresh, where no other row names it by then, and so is another

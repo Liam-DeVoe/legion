@@ -442,9 +442,15 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	connection.clients = clients
-	// An open socket presents its page's id again while its row records no edit landed under it, so
-	// no mint of its person's gives that id back while the socket is open (keepPresenting).
-	defer s.keepPresenting(room, actor, clients)()
+	// An open socket presents each id it holds whose row records no edit landed under it - its
+	// page's own, and each other id it holds whose row awaits its mark - so no mint of its person's
+	// gives one of them back while the socket is open (keepPresenting). A read-only socket holds no
+	// other id, since ygo hands the hook none of its updates, and its admission only narrows to
+	// read-only, never widens (authorize), so one whose own row is not one it presents - none, or
+	// one an edit landed under, which no mark unlands - never presents anything and runs no timer.
+	if connection.admission.writable || clients.stored && !clients.landed.Load() {
+		defer s.keepPresenting(room, actor, clients)()
+	}
 	// The state the admission read is offered to the room's load only now, once the budget has
 	// made room for that load: a socket refused above makes no room and leaves nothing behind
 	// for one (offerPreload, takePreload).

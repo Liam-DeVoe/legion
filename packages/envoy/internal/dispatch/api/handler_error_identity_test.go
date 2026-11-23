@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/auth"
-	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -63,28 +61,11 @@ func TestAStepKeyedByItsCallerLogsItsFailureWithoutTheCaller(t *testing.T) {
 		}},
 		{"reading a cookie's session generation", func(t *testing.T) (*httptest.ResponseRecorder, string, string) {
 			database := storetest.Open(t)
-			sessions := store.NewPgSessionStore(database.Pool)
-			handler, _, _ := newTestServer(t, testServerOptions{
-				store:    database,
-				identity: identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
-			})
-			const person = "dana@example.com"
-			generation, err := sessions.EnsureSession(context.Background(), person)
-			if err != nil {
-				t.Fatalf("establish %s's session: %v", person, err)
-			}
-			cookie, err := http.ParseSetCookie(auth.IssueSessionCookie(person, generation, testSigningKey, false))
-			if err != nil {
-				t.Fatalf("parse the session cookie: %v", err)
-			}
+			_, _, _, request, _ := newCookieServerOn(t, database, 0)
 			if _, err := database.Pool.Exec(context.Background(), `alter table user_sessions rename column generation to generation_moved`); err != nil {
 				t.Fatalf("make the session generation unreadable: %v", err)
 			}
-			request := httptest.NewRequest(http.MethodGet, "/api/v1/whoami", nil)
-			request.AddCookie(cookie)
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, request)
-			return response, person, "SQLSTATE 42703"
+			return request(http.MethodGet, "/api/v1/whoami", nil), "alice@d.example", "SQLSTATE 42703"
 		}},
 		{"following an ask as a broker-proven session", func(t *testing.T) (*httptest.ResponseRecorder, string, string) {
 			rig := newBrokerTokenRig(t)

@@ -262,8 +262,10 @@ func TestR9RegALegacySocketKeepsItsRefusalOfAFreedID(t *testing.T) {
 // replays the closed tab's saved edit, 6 clocks under the same id, as the dashboard does. The rule
 // says the second is refused with a true notice: 4413 DOC_CLIENT_ID_REFUSED, answered not
 // applied, so the dashboard tells her the edit was not saved. Her structs fall wholly at clocks
-// the room holds, mallory's, so the judgement asks nothing about the id (beyondHeld) and compares
-// nothing (heldDuplicates takes ids below 2^32 only); the apply drops them as duplicates.
+// the room holds, mallory's, so the judgement asks nothing about the id (beyondHeld), and compares
+// them with the room's from clock 0, since the row names another person (heldDuplicates,
+// refusedDuplicates). Before, heldDuplicates took ids below 2^32 only, so nothing compared them,
+// and the apply dropped them as duplicates.
 func TestR9RegASecondPersonsReplayAtClocksTheFirstWroteIsRefusedNotSwallowed(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }

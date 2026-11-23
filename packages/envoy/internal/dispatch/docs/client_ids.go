@@ -137,7 +137,7 @@ import (
 // passes. The row keeps a claimed id's clock in the document as the claim was made
 // (claimed_from), so only clocks the claim could have written are compared, never the tab's own
 // history before it. Each comparison decodes the whole update, under the apply's own value limit,
-// so an update is compared only where it carries such structs under at most maxComparedClaims
+// so an update is compared only where it carries such structs under at most maxComparedIDs
 // such ids, as a keystroke in flight, a resend or a saved row replayed does; a whole-state handoff
 // of the history, which carries the structs of every id the room holds, is not compared, and is
 // refused whole from a legacy socket alone, since an honest legacy tab writes under one id. Only an
@@ -286,11 +286,11 @@ const (
 	// back.
 	clientPresenceInterval = 5 * time.Minute
 	clientPresenceLapses   = 3
-	// maxComparedClaims is the most ids another person claimed or was given whose structs at
+	// maxComparedIDs is the most ids another person claimed or was given whose structs at
 	// clocks the room holds one update has compared (refusedDuplicates): a keystroke in flight, a
 	// resend or a saved row replayed carries one. An update past it is a whole-state handoff of
 	// the history, which would otherwise pay a read of itself for every such id the room holds.
-	maxComparedClaims = 4
+	maxComparedIDs = 4
 	// unusedClientIDAge is how long a row whose id never landed an edit stays after the last
 	// admission that presented it.
 	unusedClientIDAge = 30 * 24 * time.Hour
@@ -719,31 +719,36 @@ func (s *Service) releaseClaims(room string, actor model.Actor, claims []uint64)
 	}
 }
 
-// recordLanded marks the row of client, actor's id in room - the one room's socket was given, or
-// one from mintedClientFloor up its updates wrote under besides, such as a closed tab's whose
-// saved rows the page replays - as having landed an edit, so no mint gives it back and the sweep
-// never deletes it (storeMint, sweepUnusedClientIDs), and reports whether the mark was written. A
-// row the sweep or a give-back took while the socket stayed open is written again for its
+// recordLanded marks the rows of clients, actor's ids in room - the one room's socket was given,
+// or one from mintedClientFloor up its updates wrote under besides, such as a closed tab's whose
+// saved rows the page replays - as having landed an edit, in one statement, so no mint gives one
+// back and the sweep never deletes it (storeMint, sweepUnusedClientIDs), and reports whether the
+// marks were written. clients names each id once: a statement updating one row twice is refused.
+// A row the sweep or a give-back took while the socket stayed open is written again for its
 // person. It runs off the peer's read loop, one mark at a time for each id of a socket, after an
-// apply of the socket's that stood and left the room holding a struct under client
+// apply of the socket's that stood and left the room holding a struct under the id
 // (settleClients) - not one whose structs under it only parked - or once the room has stored a
 // later commit that landed what the socket's frames parked under it, the socket open
-// (markParkedLanded) or ended (markEndedLanded) by then, and only where the row did not say an
-// edit had landed as the socket was admitted or confirmed the id, which a claimed row does. A
-// write that fails is logged; an open socket goes on presenting the row (keepPresenting), and its
-// next such apply under the id marks it.
-func (s *Service) recordLanded(room string, actor model.Actor, client crdt.ClientID) bool {
+// (markParkedLanded) or ended (markEndedLanded, every id of one person's ended sockets at once)
+// by then, and only where the row did not say an edit had landed as the socket was admitted or
+// confirmed the id, which a claimed row does. A write that fails is logged; an open socket goes
+// on presenting the row (keepPresenting), and its next such apply under the id marks it.
+func (s *Service) recordLanded(room string, actor model.Actor, clients ...crdt.ClientID) bool {
+	ids := make([]int64, len(clients))
+	for i, client := range clients {
+		ids[i] = int64(client)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()
 	if _, err := s.store.Pool.Exec(ctx, `
 		insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted, landed)
-		values ($1, $2, $3, $4, true, true)
+		select $1, mark.client, $3, $4, true, true from unnest($2::bigint[]) as mark (client)
 		on conflict (artifact_id, client_id) do update set landed = true
 		where document_client_ids.actor_kind = excluded.actor_kind and document_client_ids.actor_id = excluded.actor_id
 			and not document_client_ids.landed
-	`, room, int64(client), actor.Kind, actor.ID); err != nil {
+	`, room, ids, actor.Kind, actor.ID); err != nil {
 		slog.Warn("dispatch: could not mark a client id as having landed an edit; its socket's next landing under it marks it again",
-			"room", room, "client", uint64(client), "error", err)
+			"room", room, "clients", ids, "error", err)
 		return false
 	}
 	return true

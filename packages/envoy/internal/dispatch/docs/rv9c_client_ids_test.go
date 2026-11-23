@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -12,22 +13,10 @@ import (
 )
 
 // fillCapUntilGone opens and leaves alice's pages until the row of gone is given back, and
-// returns how many opens that took.
+// returns how many opens that took (fillCapUntilGoneWithin, with no bound on the opens).
 func fillCapUntilGone(t *testing.T, service *Service, artifactID, serverURL string, gone crdt.ClientID) int {
 	t.Helper()
-	url := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "="
-	opens := 0
-	deadline := time.Now().Add(2 * time.Minute)
-	for storedClientIDs(t, service, artifactID, gone) != 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("after %d opens the row of %d is still stored", opens, gone)
-		}
-		if _, busy := openAndLeave(t, url, "alice"); busy {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-		opens++
-	}
+	opens, _ := fillCapUntilGoneWithin(t, service, artifactID, serverURL, gone, math.MaxInt)
 	return opens
 }
 

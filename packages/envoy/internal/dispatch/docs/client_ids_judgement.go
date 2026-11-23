@@ -10,6 +10,8 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/encoding"
 	"github.com/reearth/ygo/provider/websocket"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // This file holds the client id rule's judgement of each browser update (client_ids.go): the
@@ -55,8 +57,8 @@ func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
 }
 
 // judgeClients is the rule above for one browser update: it returns the refusal of an update
-// carrying structs under a client id that is not its sender's, or carrying, under a claimed id
-// that is not its sender's, an edit at clocks the room holds that differs from what it holds
+// carrying structs under a client id that is not its sender's, or carrying, under an id another
+// person claimed or was given, an edit at clocks the room holds that differs from what it holds
 // there, or carrying structs under ids its socket does not hold yet that would make it hold more
 // than maxConfirmedClients besides its own, and otherwise what it decided (clientJudgement). An
 // update whose context names no socket of this service's admission - a test's call of the hook -
@@ -80,7 +82,10 @@ func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
 // the ids its socket has not shown before that carry clocks the room lacks, and about the ids its
 // socket does not hold whose structs fall wholly at clocks the room holds (heldDuplicates,
 // refusedDuplicates). An update of one client's structs under another id the socket holds asks
-// the socket, besides, whether that id's row awaits its mark (socketClients.unmarked).
+// the socket, besides, whether that id's row awaits its mark (socketClients.unmarked). An id the
+// socket takes up whose row names its person and says no edit landed is presented as it is taken
+// up, in one statement for all of them (presentRows), so the socket holds no row older than its
+// take-up.
 func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudgement, refusal error) {
 	connection := connectionOf(info.Context)
 	if connection == nil || connection.clients == nil {
@@ -172,6 +177,33 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 		return clientJudgement{}, s.refuseClient(info, connection, claims[0],
 			fmt.Sprintf("its socket holds claims of %d ids, the most it may", maxClaimsASocket))
 	}
+	// An id the socket takes up whose row names its person and says no edit landed (unmarked, the
+	// bound ids alone so far) is presented now, with the statement keepPresenting runs from the
+	// socket's next interval on (presentRows): the row of a closed tab's id its page replays is
+	// likely older than clientPresenceLapses intervals by then, and a mint of the person's could
+	// otherwise give it back before that interval while this socket writes under the id. A row the
+	// statement does not present was marked landed since the read - another of the person's
+	// sockets marked it, and no give-back takes it - or was given back, and only for the second is
+	// the update refused for a retry, which reads it afresh; the table is read again only where
+	// the statement presents fewer rows than it was given. A row a mint below stores, or one
+	// another socket's mint stored since the read (mintForSender), was presented as it was stored.
+	if len(unmarked) > 0 {
+		presented, err := s.presentRows(ctx, info.Room, connection.actor, clientIDs(unmarked))
+		if err == nil && presented < int64(len(unmarked)) {
+			var now map[uint64]clientOwner
+			if now, err = s.clientOwners(ctx, info.Room, unmarked); err == nil {
+				for _, client := range unmarked {
+					if owner, bound := now[client]; !bound || !owner.is(connection.actor) {
+						err = fmt.Errorf("client id %d was given back while an update under it was judged", client)
+						break
+					}
+				}
+			}
+		}
+		if err != nil {
+			return clientJudgement{}, s.clientCheckFailed(info, err)
+		}
+	}
 	for _, client := range mints {
 		awaitsMark, refusal := s.mintForSender(ctx, info, connection, client)
 		if refusal != nil {
@@ -250,11 +282,11 @@ func (s *Service) mintForSender(ctx context.Context, info websocket.PeerUpdateIn
 // first, which the apply would drop as duplicates and say nothing of: a closed tab's saved row
 // replayed under its freed id once another person was minted the id and wrote there first
 // (mintForSender), or a keystroke of the earlier build's under an id someone else claimed. Where
-// the update carries them under at most maxComparedClaims ids - a keystroke in flight, a saved row
+// the update carries them under at most maxComparedIDs ids - a keystroke in flight, a saved row
 // replayed, a resend - each is compared (refusedDuplicate). Past that it is a whole-state handoff
 // of the history, which carries what the room relayed: a page of this build's is neither compared
 // nor refused for it, and a legacy socket's is refused whole, since an honest legacy tab writes
-// under one id. So no update pays more than maxComparedClaims comparisons, whatever the room's
+// under one id. So no update pays more than maxComparedIDs comparisons, whatever the room's
 // rows.
 func (s *Service) refusedDuplicates(info websocket.PeerUpdateInfo, connection *connectionState, owners map[uint64]clientOwner, duplicated []uint64, from, to crdt.StateVector) error {
 	var compared []uint64
@@ -264,7 +296,7 @@ func (s *Service) refusedDuplicates(info websocket.PeerUpdateInfo, connection *c
 			compared = append(compared, client)
 		}
 	}
-	if len(compared) > maxComparedClaims {
+	if len(compared) > maxComparedIDs {
 		if !connection.clients.legacy {
 			return nil
 		}
@@ -298,7 +330,7 @@ func (s *Service) refusedDuplicate(info websocket.PeerUpdateInfo, connection *co
 	if errors.Is(err, crdt.ErrValueLimit) {
 		refusal := ruleDecodedValues.refusal(false)
 		logRefusal(info, refusal, "dispatch: refused a browser's update its apply may not take", "rule", ruleDecodedValues.why(),
-			"decode_limit", maxDecodedValuesPerApply, "decoded_by", "the comparison of a claimed id's structs with the room's")
+			"decode_limit", maxDecodedValuesPerApply, "decoded_by", "the comparison of another person's id's structs with the room's")
 		return refusedWith(refusal, err)
 	}
 	if err != nil || !differs {
@@ -403,9 +435,8 @@ func (s *Service) markParkedLanded(room string, live *crdt.Doc, connection *conn
 	if connection == nil || connection.clients == nil {
 		return
 	}
-	clients := connection.clients
-	_, reachesOwn := reached[clients.own]
-	s.markLanded(room, live, connection, reachesOwn && clients.isOwn(clients.own), clients.awaitingMarks(reached))
+	own, marks := connection.clients.reachedMarks(reached)
+	s.markLanded(room, live, connection, own, marks)
 }
 
 // parkedMarks is the ids of reached, what a browser connection's parked frames reach past the room
@@ -419,25 +450,35 @@ func parkedMarks(connection *connectionState, reached crdt.StateVector) []crdt.C
 		return nil
 	}
 	clients := connection.clients
-	marks := clients.awaitingMarks(reached)
-	if _, reachesOwn := reached[clients.own]; reachesOwn && clients.isOwn(clients.own) && !clients.landed.Load() {
+	own, marks := clients.reachedMarks(reached)
+	if own && !clients.landed.Load() {
 		marks = append(marks, clients.own)
 	}
 	return marks
 }
 
-// markEndedLanded marks the rows of sender's ids (endedSender.marks), a browser connection's that
-// ended before the room stored the commit that landed what its frames parked under them, as
-// having landed an edit, for the person it was signed in as (recordLanded), off the caller's
-// goroutine. The room holds each of them to the clock those frames reached, which is what made
-// the commit their landing (coverParked). Its socket is gone, so no apply of its marks them and
-// nothing presents their rows: unmarked, a give-back or the sweep would take a row while the
-// stored history names its id, and the person's next page replaying the closed tab's saved rows
-// under it would be refused (judgeClients) and drop them.
-func (s *Service) markEndedLanded(room string, sender *endedSender) {
+// markEndedLanded marks, off the caller's goroutine, the rows of the ids ended's records wait on
+// (parkedWait.needs) - each a browser connection's that ended before the room stored the commit
+// that landed what its frames parked under them (parkedWaits.end) - as having landed an edit, for
+// the person each was signed in as: one statement for each person, naming each of that person's
+// ids once (recordLanded), however many records a landing takes out. The room holds each id to
+// the clock those frames reached, which is what made the commit their landing (coverParked).
+// Their sockets are gone, so no apply of theirs marks them and nothing presents their rows:
+// unmarked, a give-back or the sweep would take a row while the stored history names its id, and
+// the person's next page replaying the closed tab's saved rows under it would be refused
+// (judgeClients) and drop them.
+func (s *Service) markEndedLanded(room string, ended []*parkedWait) {
 	go func() {
-		for _, client := range sender.marks {
-			s.recordLanded(room, sender.actor, client)
+		marks := map[model.Actor][]crdt.ClientID{}
+		for _, wait := range ended {
+			person := model.Actor{Kind: wait.ended.actor.Kind, ID: wait.ended.actor.ID}
+			for client := range wait.needs {
+				marks[person] = append(marks[person], client)
+			}
+		}
+		for person, clients := range marks {
+			slices.Sort(clients)
+			s.recordLanded(room, person, slices.Compact(clients)...)
 		}
 	}()
 }

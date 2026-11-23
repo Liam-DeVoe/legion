@@ -9,16 +9,20 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // alice's tab typed after an edit of bob's that the room relayed and then lost (here: one the
 // room has not received yet), so her frame parks and is answered not applied, and her tab keeps
 // the row. Her socket ends, she types once more offline, and the tab closes. Bob's page sends his
 // edit again; it lands, and its drain lands alice's parked frame, which the room stores. Alice's
-// socket ended before the landing, so markParkedLanded marks nothing and her row stays unlanded
-// while the stored history names her id. Her later page loads give the row back, and her next
-// page's restore of the two saved rows under that id is refused DOC_CLIENT_ID_REFUSED - on which
-// the dashboard deletes every saved row under the id (dropClientRows), her offline edit with them.
+// socket ended before the landing, so the room kept her person and her id (parkedWaits.end), and
+// the store of the landing marks her row landed (markEndedLanded): her later page loads do not
+// give the row back, and her next page's restore of the two saved rows under that id lands.
+// Before, markParkedLanded marked nothing and her row stayed unlanded while the stored history
+// named her id, her later page loads gave the row back, and the restore was refused
+// DOC_CLIENT_ID_REFUSED - on which the dashboard deletes every saved row under the id
+// (dropClientRows), her offline edit with them.
 func TestPCAClosedTabsParkedFrameLandedAfterItClosedLeavesItsRowUnlandedAndItsReplayRefused(t *testing.T) {
 	presenceIntervalForTest.Store(int64(300 * time.Millisecond))
 	t.Cleanup(func() { presenceIntervalForTest.Store(0) })
@@ -74,6 +78,17 @@ func TestPCAClosedTabsParkedFrameLandedAfterItClosedLeavesItsRowUnlandedAndItsRe
 			t.Fatal(err)
 		}
 	}
+	// The page's read loop takes the two frames in order, so the room renders OFFLINE only once
+	// neither was refused, and a refusal closes the page before that.
+	testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+		select {
+		case <-next.Ended:
+			return true
+		default:
+		}
+		rendering, _ := renderDocument(room())
+		return strings.Contains(rendering, "OFFLINE")
+	})
 	select {
 	case <-next.Ended:
 		closed := next.Closed()
@@ -83,7 +98,7 @@ func TestPCAClosedTabsParkedFrameLandedAfterItClosedLeavesItsRowUnlandedAndItsRe
 				a, closed.Code, closed.Text, rendering)
 		}
 		t.Fatalf("alice's next page was closed %v", closed)
-	case <-time.After(3 * time.Second):
+	default:
 	}
 	waitForRoomRendering(t, room, func(r string) bool { return strings.Contains(r, "OFFLINE") }, "alice's offline row")
 }

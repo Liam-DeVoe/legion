@@ -46,9 +46,13 @@ import (
 // (socketClients.announces, client_ids_admission.go): a page given its client id by the socket's
 // admission announces its presence under that id alone, so the filter drops every other entry -
 // another reader's cursor sent under that reader's id, as much as the echo of it an honest
-// provider sends back - and a page of an earlier build may name no id Dispatch gave anyone. A
-// cursor or a presence is the same act under a client id as an edit is, and the same rule
-// refuses it.
+// provider sends back. For such a page a cursor or a presence is the same act under a client id
+// as an edit is, and the same rule refuses it. A page of an earlier build has no id here, and is
+// held to less: it may name no id from mintedClientFloor up, which only a mint gives out, and
+// under an id below that the filter refuses nothing, an id another person claimed included,
+// since a claim is known to the table alone and the filter reads no table for an awareness frame.
+// Such a page can show a cursor or a presence under another person's claimed id, though its edit
+// under that id is refused (judgeClients).
 //
 // A read-only socket's awareness is decoded by nothing at all. ygo answers a read-only peer's
 // awareness message with a reply of its own and applies and relays none of it

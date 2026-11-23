@@ -528,7 +528,7 @@ func TestTheCostOfAClaimOnALongHistory(t *testing.T) {
 // tenth of the ids claimed): 1,001 ids in a 16,251-byte handoff, 100 claimed, the lookup 1.5 ms and
 // the judgement 47.8 ms; 5,001 ids in 80,251 bytes, 500 claimed, 3.2 ms and 1.25 s, since each
 // comparison reads the whole update (crdt.HeldStructsDifferV1). Now an update past
-// maxComparedClaims claims is not compared (refusedDuplicates): measured the same day, a 75,256-byte
+// maxComparedIDs claims is not compared (refusedDuplicates): measured the same day, a 75,256-byte
 // handoff of 5,002 ids with 1, 4, 100, 1,000 and 5,001 claimed, the judgement 4.6 to 10.0 ms from a
 // page of this build and 5.0 to 11.5 ms from a legacy socket, refused past 4 claims, and the lookup
 // 1.8 to 8.1 ms, growing with the rows it finds.
@@ -572,7 +572,7 @@ func TestTheCostOfAHandoffsJudgementWhateverTheRoomsClaims(t *testing.T) {
 		{name: "a legacy socket", clients: &socketClients{legacy: true}},
 	}
 	claimedSoFar := 0
-	for _, claims := range []int{1, maxComparedClaims, 100, 1000, ids} {
+	for _, claims := range []int{1, maxComparedIDs, 100, 1000, ids} {
 		if _, err := service.store.Pool.Exec(ctx, `
 			insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted, landed, claimed_from)
 			select $1, 1800000001 + g, 'user', 'bob', false, true, 0 from generate_series($2, $3 - 1) g
@@ -600,7 +600,7 @@ func TestTheCostOfAHandoffsJudgementWhateverTheRoomsClaims(t *testing.T) {
 				_, refusal = service.judgeClients(info)
 				judgements = append(judgements, time.Since(started))
 			}
-			if refused := refusal != nil; refused != (socket.clients.legacy && claims > maxComparedClaims) {
+			if refused := refusal != nil; refused != (socket.clients.legacy && claims > maxComparedIDs) {
 				t.Fatalf("%s's handoff with %d claims: refused %t (%v)", socket.name, claims, refused, refusal)
 			}
 			t.Logf("%s's handoff of %d bytes, %d ids at held clocks, %d claimed by bob: the judgement %v (refused %t), its lookup %v",

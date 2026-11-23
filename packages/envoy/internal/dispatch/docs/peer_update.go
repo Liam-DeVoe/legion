@@ -1520,6 +1520,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 // (crdt.StructStore.noteAppend, crdt/store.go:162-174 in cybermonklabs/ygo v1.55.1-legion.1,
 // marks what such a struct releases for the next drain). Nothing says the edit is too large
 // then, so the honest answer is the one the editor keeps the edit and sends it again for, and its
+// resend is weighed whole, its gap now filled. A sender already gone is closed by nothing, and its
 // saved row is weighed the same way when it comes back. The close is safe from any goroutine and
 // goes out after the answers the sender is still owed (websocket.Server.ClosePeer). Each sender
 // is dropped from applies' list of senders whose parked frames await their landing first
@@ -1563,10 +1564,11 @@ func (s *Service) serverApplyError(room string, live *crdt.Doc, update []byte, e
 	if !errors.Is(err, crdt.ErrApplyCheckDrain) {
 		return err
 	}
+	weighing := s.roomWeighingOf(live)
 	if discarded := (*crdt.DrainDiscardedError)(nil); errors.As(err, &discarded) {
-		s.closeDiscardedSenders(room, s.roomWeighingOf(live).applies(), update, discarded)
+		s.closeDiscardedSenders(room, weighing.applies(), update, discarded)
 	}
-	s.roomWeighingOf(live).weighPending(live, live.PendingStats())
+	weighing.weighPending(live, live.PendingStats())
 	return nil
 }
 
@@ -1927,10 +1929,11 @@ func documentUpdateRefused() *websocket.PeerClose {
 // mintedClientFloor up that no row names while the document holds a struct under it, under one
 // another person was given first as both updates' mints of it met (mintForSender), under one it
 // may not claim or past the claims' bounds, or under more ids than its socket may hold
-// (judgeClients); structs at clocks another person claimed that differ from what the room holds
+// (judgeClients); structs at clocks another person claimed, or at clocks the room holds under an
+// id from mintedClientFloor up given to another person, that differ from what the room holds
 // there, and a legacy socket's update carrying structs at such clocks under more than
-// maxComparedClaims claimed ids (refusedDuplicates); and a delete range that would park under a
-// client its socket does not hold (parkJudge, refusedByApply). Permanent as documentTooLarge is
+// maxComparedIDs such ids (refusedDuplicates); and a delete range that would park under a client
+// its socket does not hold (parkJudge, refusedByApply). Permanent as documentTooLarge is
 // and under the same code, with a reason of its own: the editor drops the refused edit and
 // rebuilds its document under a fresh client id.
 func documentClientIDRefused() *websocket.PeerClose {

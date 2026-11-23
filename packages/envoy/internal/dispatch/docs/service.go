@@ -3641,10 +3641,8 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 // pool (servicePersistenceAdapter.Compact, compactRoom, foldRead), and at the calibration's one
 // slot those can be the very bytes the caller holds: the wait would be hold-and-wait, which no
 // holder of the pool makes (loadSlots). A transaction's grant is refused above with the
-// transaction; the caller met here is a socket's admission whose read holds its whole slot,
-// taken for a room no server held here, and whose room failed after the admission's own wait
-// for recovery (ServeHTTP, readSlot). It answers 503, which the editor's backoff retries, and the
-// retry waits for the recovery at that first wait, holding nothing.
+// transaction; the caller met here is a socket admission's read under the whole slot it took
+// (ServeHTTP, readSlot), whose comment says how its 503 is retried.
 //
 // A room's own load never calls this: the eviction it would wait for waits for that load
 // (onLoadDocument).

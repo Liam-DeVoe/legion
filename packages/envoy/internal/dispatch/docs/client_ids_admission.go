@@ -145,6 +145,16 @@ func (c *socketClients) awaitingMarks(writes crdt.StateVector) []crdt.ClientID {
 	return awaiting
 }
 
+// reachedMarks is what of reached, the clients a browser connection's parked frames reach past
+// the room (parkedNeeds), awaits this socket's mark, read once for markParkedLanded and
+// parkedMarks: own, whether reached names the socket's own id, and marks, each other id of
+// reached whose row awaits the mark (awaitingMarks). Whether own's mark is written is the
+// caller's to read (landed).
+func (c *socketClients) reachedMarks(reached crdt.StateVector) (own bool, marks []crdt.ClientID) {
+	_, reachesOwn := reached[c.own]
+	return reachesOwn && c.isOwn(c.own), c.awaitingMarks(reached)
+}
+
 // presenting is the ids this socket presents again each interval while it is open
 // (keepPresenting), as the table's queries take them: own, where a row names it as the socket's
 // person's and the socket has not written its mark (stored, landed), and each id whose row awaits
@@ -214,8 +224,11 @@ func (c *socketClients) countClaims(n int) {
 // (awarenessLimitConn.allowed): a page announces its presence under its own client id alone, so
 // a socket given one carries awareness for that id and no other, and the echo of another
 // reader's state a provider sends back is dropped with the rest. A page of an earlier build has
-// no id here, and carries awareness only for ids below mintedClientFloor, which no admission
-// gives out: never for an id Dispatch gave anyone.
+// no id here, and carries awareness only for ids below mintedClientFloor, which no mint gives
+// out: never for an id a mint gave anyone. Below it nothing is refused, an id another person
+// claimed included - a claim is known to the table alone, which nothing reads for an awareness
+// frame - so such a page can show a cursor under another person's claimed id, though its edit
+// under that id is refused (judgeClients).
 func (c *socketClients) announces(client uint64) bool {
 	if c.legacy {
 		return client < mintedClientFloor
@@ -469,15 +482,17 @@ func (s *Service) storeMint(ctx context.Context, room string, actor model.Actor,
 // other id whose row awaits its mark (socketClients.unmarked) - a closed tab's id its page replays
 // saved rows under, minted for it by that replay (mintForSender) or named its person's
 // (judgeClients) - so each such row stays live and no mint gives it back (storeMint), on this
-// process or another, while the socket that writes under it is open. Otherwise the row of such an
-// id would lapse while the socket kept writing under it, a mint of its person's would give it
-// back, and another person's update could be minted the id. A socket whose own id no row names -
-// a legacy socket, a read-only admission's drawn id - presents no own id, and a read-only socket
-// holds no other id to present, since ygo hands the hook none of its updates. Each presentation
-// is one timer and, where any id awaits it, one statement for all of them; the timer is set again
-// only once the statement has returned, while the socket is open, since an id it holds can await
-// a mark whatever it held before: a mark in flight, or one the store refused, leaves the id
-// presented. It returns what the socket's end runs, which stops it.
+// process or another, while the socket that writes under it is open; the judgement presents such
+// an id as the socket takes it up (presentRows), so its row is live from then to the first
+// interval. Otherwise the row of such an id would lapse while the socket kept writing under it,
+// a mint of its person's would give it back, and another person's update could be minted the id.
+// A socket whose own id no row names - a legacy socket, a read-only admission's drawn id -
+// presents no own id, and a read-only socket holds no other id to present, since ygo hands the
+// hook none of its updates, so ServeHTTP starts this for a read-only socket only where it presents
+// its own id. Each presentation is one timer and, where any id awaits it, one statement for all
+// of them; the timer is set again only once the statement has returned, while the socket is open,
+// since an id it holds can await a mark whatever it held before: a mark in flight, or one the
+// store refused, leaves the id presented. It returns what the socket's end runs, which stops it.
 func (s *Service) keepPresenting(room string, actor model.Actor, clients *socketClients) (end func()) {
 	interval := presenceInterval()
 	var mu sync.Mutex
@@ -504,17 +519,27 @@ func (s *Service) keepPresenting(room string, actor model.Actor, clients *socket
 }
 
 // presentClients records that an open socket still holds clients, actor's ids in room that no
-// edit landed under, as the table's queries take them, as an admission that gives an id back
-// records it (presented_at), in one statement. A row an edit has landed under since is left as
-// it is. A write that fails is logged, and the next interval presents the rows again.
+// edit landed under, as the table's queries take them (presentRows). A write that fails is
+// logged, and the next interval presents the rows again.
 func (s *Service) presentClients(room string, actor model.Actor, clients []int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), clientCheckTimeout)
 	defer cancel()
-	if _, err := s.store.Pool.Exec(ctx, `
-		update document_client_ids set presented_at = now()
-		where artifact_id = $1 and client_id = any($2) and actor_kind = $3 and actor_id = $4 and not landed
-	`, room, clients, actor.Kind, actor.ID); err != nil {
+	if _, err := s.presentRows(ctx, room, actor, clients); err != nil {
 		slog.Warn("dispatch: could not present an open socket's client ids again; the next interval presents them",
 			"room", room, "clients", len(clients), "error", err)
 	}
+}
+
+// presentRows records that a socket holds clients, actor's ids in room that no edit landed under,
+// as an admission that gives an id back records it (presented_at), in one statement, and returns
+// how many rows it moved: a row an edit has landed under since is left as it is, and a row a
+// give-back took is not there to move. An open socket's presentation each interval runs it
+// (presentClients), and so does the judgement of the update a socket takes an id up with
+// (judgeClients).
+func (s *Service) presentRows(ctx context.Context, room string, actor model.Actor, clients []int64) (int64, error) {
+	tag, err := s.store.Pool.Exec(ctx, `
+		update document_client_ids set presented_at = now()
+		where artifact_id = $1 and client_id = any($2) and actor_kind = $3 and actor_id = $4 and not landed
+	`, room, clients, actor.Kind, actor.ID)
+	return tag.RowsAffected(), err
 }

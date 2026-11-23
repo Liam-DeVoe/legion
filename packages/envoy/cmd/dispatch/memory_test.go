@@ -33,8 +33,8 @@ const (
 	requestMemoryBound    = 256 << 20
 	concurrentMemoryBound = 512 << 20
 	documentCap           = 1 << 20
-	// documentReadBudgetForTest mirrors docs.documentReadBudget, the cold reads' cache budget of a
-	// process with no Go memory limit, which the server this test starts runs under and reports
+	// documentReadBudgetForTest mirrors docs.documentReadBudget, the cold reads' cache budget, a
+	// fixed 256 MiB in every process, which the server this test starts runs under and reports
 	// (TestColdReadCacheEvictionPlateaus reads it back). The cache's test hook supplies each
 	// entry's real accounting weight, so this process can build two complete cache fills.
 	documentReadBudgetForTest = 256 << 20

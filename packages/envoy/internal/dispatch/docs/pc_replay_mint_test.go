@@ -10,11 +10,12 @@ import (
 )
 
 // An id a replaying socket's update minted (mintForSender) is held by that socket (confirmed)
-// but never presented again: keepPresenting presents clients.own alone. So while the socket is
-// open its row lapses, a later mint of the same person gives it back, another person's update
-// under the id is then minted for that person, and the first socket - which no longer asks the
-// table about an id it holds - writes under the same id. Its frame at clocks the second person
-// took is answered applied while the room keeps the second person's text.
+// and presented every interval while the socket is open (keepPresenting,
+// socketClients.presenting). Before, keepPresenting presented clients.own alone, so while the
+// socket was open its row lapsed, a later mint of the same person gave it back, another person's
+// update under the id was then minted for that person, and the first socket - which no longer
+// asks the table about an id it holds - wrote under the same id. Its frame at clocks the second
+// person took was answered applied while the room kept the second person's text.
 func TestPCAReplayMintedIDOfAnOpenSocketIsGivenBackAndMintedToAnotherPerson(t *testing.T) {
 	presenceIntervalForTest.Store(int64(300 * time.Millisecond))
 	t.Cleanup(func() { presenceIntervalForTest.Store(0) })
@@ -61,7 +62,7 @@ func TestPCAReplayMintedIDOfAnOpenSocketIsGivenBackAndMintedToAnotherPerson(t *t
 	t.Logf("step 3: alice's replay under %d answered %q; row owner %q; the room holds %d of it",
 		a, heard[0], clientIDOwner(t, service, artifactID, a), room().StateVector()[a])
 
-	// The row lapses while the second tab stays open, and alice's next page loads give it back.
+	// Alice's next page loads give the row back only if the open second tab stops presenting it.
 	time.Sleep(time.Second)
 	opens, gone := fillCapUntilGoneWithin(t, service, artifactID, serverURL, a, 2*maxUnlandedMintsADocument)
 	requireConnected(t, second, "alice's second tab")
@@ -97,15 +98,7 @@ func TestPCAReplayMintedIDOfAnOpenSocketIsGivenBackAndMintedToAnotherPerson(t *t
 	heard = awaitHeardStatus(t, second, 1, "alice's second tab")
 	time.Sleep(500 * time.Millisecond)
 	rendering, _ := renderDocument(room())
-	_, closed := func() (bool, bool) {
-		select {
-		case <-second.Ended:
-			return true, true
-		default:
-			return false, false
-		}
-	}()
-	t.Logf("step 6: alice's row under %d answered %q, socket closed=%t; the room renders %q", a, heard[0], closed, rendering)
+	t.Logf("step 6: alice's row under %d answered %q, socket %s; the room renders %q", a, heard[0], connectionEnd(second), rendering)
 	if strings.HasPrefix(heard[0], "SyncStatus 1") && !strings.Contains(rendering, "OFF") {
 		t.Fatalf("alice's edit under %d, an id whose row now names bob, was answered applied while the room keeps bob's text at those clocks and none of hers: two people's sockets write under one id, and alice's edit is dropped in silence", a)
 	}

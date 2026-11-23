@@ -519,9 +519,10 @@ export const DOCUMENT_UPDATE_REFUSED_CLOSE_REASON = "DOC_UPDATE_REFUSED";
  *  document since, or one past the bounds every claim is held to on every socket, 64 a socket and
  *  64 a person in one document in one UTC day. It is the same close for an update that would
  *  take its socket past the 128 client ids one socket may write under besides its own, its claims
- *  among them, for an edit at clocks another person claimed first that differs from what the
- *  document holds there, and for a socket presenting no client id whose update carries such clocks
- *  under more than 4 claimed ids. Nothing of it is stored or relayed. Permanent like the size
+ *  among them, for an edit at clocks another person claimed first, or at clocks the document holds
+ *  under an id from 2^32 up given to another person, that differs from what the document holds
+ *  there, and for a socket presenting no client id whose update carries such clocks under more
+ *  than 4 such ids. Nothing of it is stored or relayed. Permanent like the size
  *  refusal: the browser that sent it would send it again on every reconnect, so the dashboard
  *  drops the refused edit, re-reads the document and takes a fresh client id with it. Generated
  *  into Go as
