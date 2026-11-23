@@ -103,8 +103,9 @@ what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow; nothing after it is
-yours (`skill://legion-architect/references/acceptance.md`, "The close").
+The merge closes the issue once every issue beneath it has left the workflow, except one held at
+`admitted`, which starts after the close, under a root only when the linger hands it over; nothing
+after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
 
 ## Wake routing
 
