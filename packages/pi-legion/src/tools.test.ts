@@ -262,7 +262,9 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "in force (PLAN_DOCUMENT_CHANGED), a document of another issue (ARTIFACT_NOT_ON_ISSUE), an issue outside your tree " +
   "(ISSUE_OUTSIDE_TREE), an issue the daemon has not recorded whose Dispatch status is not triage, backlog, icebox or todo " +
   "(ISSUE_ALREADY_RELEASED), a version that changes a task that is done (TASK_DONE), and a plan given for a run of the issue " +
-  "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). ";
+  "that ended before Legion applied it: give it again (PLAN_STALE_GENERATION). " +
+  "Legion takes no plan for a recorded issue whose experiment's group runs the project's default steps (PLAN_NOT_TAKEN, naming " +
+  "the group): it records nothing, and the same plan given again gets the same answer. ";
 
 /** `stop_task`'s part of the description, by its terms rather than its sentences: it opens with the
  * tool's name and its parameters, and names the hold it leaves, that a stop before the issue's
@@ -278,6 +280,7 @@ const STOP_TASK_TERMS = {
     "(TASK_NOT_FOUND",
     "(TASK_DONE)",
     "(TREE_LINGERING)",
+    "(PLAN_NOT_TAKEN)",
     "(ISSUE_OUTSIDE_TREE)",
     "(TASK_STALE_GENERATION)",
     "(TASK_AWAITING_PERSON",
