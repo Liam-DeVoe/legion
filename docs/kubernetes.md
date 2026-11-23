@@ -7971,12 +7971,15 @@ Then tell the roles of each such issue, through Dispatch, where their copied wor
 The release before reads and writes `workspace_bundles` at every idle pass and every role start, so a rollback to it runs this block first, with every daemon of the database stopped, before the earlier image is pinned.
 A workspace check that a left pod's close queued (an `issue_bundle` row whose payload names `closeRoles`), and one that a launcher reads (whose payload names `launcher` or `close`), is no row the release before can read, and nor is that close's `suspend` or `issue_suspend`, whose payload names `turnStart`, so let the outbox run dry of them first: `select count(*) from outbox where kind = 'issue_bundle' or payload ? 'turnStart'` prints 0.
 Nor does the release before decode the notice kind `workspace-kept`, which a later release added with no migration of its own, so delete the unsent ones before the block: `delete from outbox where kind = 'notice' and payload->>'kind' = 'workspace-kept'`.
-A rollback to the release that keeps no saved workspace but whose launcher makes no read (contract 217) takes those two steps for the launcher's check rows and the `workspace-kept` notices, and not the block.
-The block below is the last paragraph of the migration's header, and the two say the same statements:
+A later migration, `20261123231000_idle_release_declines_told_pod.up.sql`, adds `idle_release_declines.told_pod`, the pod the issue's architect was told of by its `workspace-kept` notice; the release before it reads no such column and writes its rows without it, so a rollback to the release that keeps no saved workspace but whose launcher makes no read (contract 217) takes those two steps for the launcher's check rows and the `workspace-kept` notices, and neither block.
+A rollback past both runs the two migrations' way backs in one transaction, the newer first.
+The block below is the last paragraph of each migration's header, newest first, and they say the same statements:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
+alter table public.idle_release_declines drop column if exists told_pod;
+delete from public.schema_version where version = 20261123231000;
 create table public.workspace_bundles (issue text primary key, bundle bytea not null, size_bytes bigint not null, at timestamptz not null, head text not null, tips jsonb not null default '[]'::jsonb, bookmarks jsonb not null default '{}'::jsonb, release_id bigint not null check (release_id > 0), attempt_pod_uid text, attempt_at timestamptz, source_pod_uid text not null check (source_pod_uid <> ''), attempt_outcome text, constraint workspace_bundles_attempt_whole check ((attempt_pod_uid is null) = (attempt_at is null)), constraint workspace_bundles_attempt_outcome check (case when attempt_pod_uid is null then attempt_outcome is null else attempt_outcome in ('sent', 'refused_older') end));
 drop table public.idle_release_declines;
 alter table public.issue_releases drop column if exists turn_start;
@@ -7985,7 +7988,7 @@ commit;
 SQL
 ```
 
-It makes `workspace_bundles` again, empty and in the shape the release before reads, drops `idle_release_declines` and `issue_releases.turn_start`, which the release before never reads, and deletes the migration's version row, so the next start of this release runs the migration again.
+It drops `idle_release_declines.told_pod` and deletes that migration's version row, makes `workspace_bundles` again, empty and in the shape the release before reads, drops `idle_release_declines` and `issue_releases.turn_start`, which the release before never reads, and deletes the version row of `20261123050533`, so the next start of this release runs both migrations again.
 Every daemon that shares the database moves together, on the way up and on the way back, since these tables hold every project's rows.
 A bundle the earlier daemon saves after the rollback is dropped by that roll forward, so copy it out first as above.
 A pod this release started still runs a launcher with no restore: the earlier daemon's `launcher_bundle` slices close that launcher's connection, its start fails once, and the retry starts the role with the workspace the pod has, since the earlier daemon spent the bundle's one attempt on the first send.

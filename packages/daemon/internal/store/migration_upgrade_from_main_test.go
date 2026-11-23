@@ -140,10 +140,12 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these but one and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its
 // default, 0, on every row it finds.
-// The release that keeps no saved workspace (20261123050533) is applied after all of these and
-// touches no outbox_kind_check: it drops workspace_bundles, which main's own 20261101222725 made,
-// with whatever rows main's releases saved in it, and makes idle_release_declines, empty. So the
-// design news stays the last word of that check.
+// The release that keeps no saved workspace (20261123050533) is applied after all of these but one
+// and touches no outbox_kind_check: it drops workspace_bundles, which main's own 20261101222725
+// made, with whatever rows main's releases saved in it, and makes idle_release_declines, empty.
+// The told pod of a decline (20261123231000), applied last, adds idle_release_declines.told_pod,
+// null, and touches no outbox_kind_check either. So the design news stays the last word of that
+// check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -155,6 +157,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
 	20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714, 20261123050533,
+	20261123231000,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -172,8 +175,9 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
 // dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
-// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, and the
-// release that keeps no saved workspace's 20261123050533. That is why the loop below holds the
+// dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the
+// release that keeps no saved workspace's 20261123050533, and the told pod of its decline,
+// 20261123231000. That is why the loop below holds the
 // list rather than counting it, so that a version added above any of them is named here rather
 // than read as main's.
 const mainsNewestMigration = 20261111212544
