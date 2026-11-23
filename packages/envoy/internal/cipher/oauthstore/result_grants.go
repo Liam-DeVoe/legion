@@ -36,10 +36,11 @@ type ResultGrant struct {
 	// projects, which a token minted for the grant carries.
 	Extra map[string]any
 	// EntryDigest is the results entry the grant was made under: the hex SHA-256 of the profile
-	// DISPATCH_RESULTS_TOKEN's fingerprint and the private destination's scheme and host, as the
-	// granting broker computed it at boot (cmd/cipherd's resultEntryDigest). A broker pod serves
-	// the grant only when its own digest is this one (requests.Machine.ResultEntryDigest); the
-	// column refuses a digest that is not 64 hex digits, so no grant holds an empty one.
+	// DISPATCH_RESULTS_TOKEN's fingerprint and the private destination's scheme, host name and
+	// port, not the address that name resolves to, as the granting broker computed it at boot
+	// (cmd/cipherd's resultEntryDigest). A broker pod serves the grant only when its own digest is
+	// this one (requests.Machine.ResultEntryDigest); the column refuses a digest that is not 64 hex
+	// digits, so no grant holds an empty one.
 	EntryDigest string
 	// ExpiresAt is the grant's end: the database's now() past it, the grant reads as not live and
 	// the sweep deletes it.

@@ -42,11 +42,14 @@ type AirlockSettings struct {
 	// ResultHosts are the hosts DISPATCH_RESULTS_TOKEN's entry binds.
 	ResultHosts []string
 	// EntryDigest is this broker's results entry: the hex SHA-256 of the profile
-	// DISPATCH_RESULTS_TOKEN's fingerprint and the private destination's scheme and host, which
-	// cmd/cipherd computes once at boot (resultEntryDigest) and hands the request machine too
-	// (requests.Machine.ResultEntryDigest). Every grant records it (oauthstore.ResultGrant), and a
-	// broker pod whose own digest differs refuses the grant, so a run's token goes only where the
-	// broker that granted it would have sent it.
+	// DISPATCH_RESULTS_TOKEN's fingerprint and the private destination's scheme, host name and
+	// port, which cmd/cipherd computes once at boot (resultEntryDigest) and hands the request
+	// machine too (requests.Machine.ResultEntryDigest). Every grant records it
+	// (oauthstore.ResultGrant), and a broker pod whose own digest differs refuses the grant, so a
+	// run's token goes only to a destination of the same text as the granting broker's. The digest
+	// binds the destination's name, not an address: where the URL's host is a name, the address
+	// each pod's resolver gives that name is each pod's own, and the proxy holds it to the
+	// destination's address rule (netaddr.DestinationRefusal) at every dial.
 	EntryDigest string
 	// GrantLifetime is BROKER_RESULT_GRANT_TEST_SECONDS, a local stack's own grant lifetime in
 	// place of resultGrantLifetime's; zero for every production start, which refuses the setting.

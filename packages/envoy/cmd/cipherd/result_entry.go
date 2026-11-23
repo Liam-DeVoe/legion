@@ -14,10 +14,12 @@ import (
 // grant's with before it mints the grant's token (requests.Machine.ResultEntryDigest): the hex
 // SHA-256 of the profile DISPATCH_RESULTS_TOKEN's fingerprint (policy.Profiles.Digest), a newline,
 // and the private destination's scheme, "://" and host with its port (BROKER_AIRLOCK_PRIVATE_UPSTREAM,
-// url.URL.Scheme and url.URL.Host). A run's token goes to the destination's address, not to the
-// bound host's, so a pod of the same profile and another destination is another entry. The URL
-// holds no credential (config refuses a user, a path, a query and a fragment), and only the hash
-// leaves this process.
+// url.URL.Scheme and url.URL.Host). A run's token goes to the destination, not to the bound host,
+// so a pod of the same profile and another destination's scheme, host name or port is another
+// entry. It binds the destination's text and not an address: where the host is a name, each pod
+// resolves it with its own resolver at each dial, so two pods whose resolvers answer that name
+// differently are one entry. The URL holds no credential (config refuses a user, a path, a query
+// and a fragment), and only the hash leaves this process.
 //
 // It is "" when the profiles hold no DISPATCH_RESULTS_TOKEN with a proxy block or no destination
 // is set: such a broker grants no run a placeholder and serves no result grant. The boot computes
