@@ -342,13 +342,19 @@ func (s *Store) subtreeCloseDays(ctx context.Context, keys []string) ([]projectD
 	return days, nil
 }
 
-// firstDays is the first day of project's all-repositories rows of each eval rows names, by eval
-// and deploy repository (evalKey), among the computation's rows before before (every row, where
-// before is nil): the earliest over the series rows names of the eval and deploy repository (a
-// zero day's rows, which name each series an eval's builder writes on every day it has input, for
-// each deploy repository whose rows are kept), each the first entry of one range of the primary
-// key, which the bound ends. An eval with no such row has no entry.
+// firstDays is firstDaysIn on the pool.
 func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow, before *time.Time) (map[evalKey]time.Time, error) {
+	return firstDaysIn(ctx, s.database.Pool, project, rows, before)
+}
+
+// firstDaysIn reads in q the first day of project's all-repositories rows of each eval rows names,
+// by eval and deploy repository (evalKey), among the computation's rows before before (every row,
+// where before is nil): the earliest over the series rows names of the eval and deploy repository
+// (a zero day's rows, which name each series an eval's builder writes on every day it has input,
+// for each deploy repository whose rows are kept), each the first entry of one range of the
+// primary key, which the bound ends. An eval with no such row has no entry. The refresher reads it
+// on the pool (firstDays), and the read-time path in its read's snapshot (ComputeAtRead).
+func firstDaysIn(ctx context.Context, q delivery.Querier, project string, rows []DayRow, before *time.Time) (map[evalKey]time.Time, error) {
 	first := map[evalKey]time.Time{}
 	if len(rows) == 0 {
 		return first, nil
@@ -357,7 +363,7 @@ func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow, be
 	for i, row := range rows {
 		evals[i], deployRepos[i], series[i] = row.EvalID, row.DeployRepo, row.Series
 	}
-	read, err := s.database.Pool.Query(ctx, `
+	read, err := q.Query(ctx, `
 		select given.eval_id, given.deploy_repo, min(stored.day)
 		from unnest($2::text[], $5::text[], $3::text[]) as given(eval_id, deploy_repo, series)
 		cross join lateral (

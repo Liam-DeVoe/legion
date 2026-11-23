@@ -899,7 +899,7 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 	if len(narrowed) > 0 {
 		read.applied = narrowing.applied
 		if read.atRead, err = evals.ComputeAtRead(ctx, tx, evals.AtRead{
-			Entries: narrowed, Firsts: read.firsts, Repos: repos, Window: ranges.window, Compare: ranges.compare, Narrow: narrowing.keep,
+			Entries: narrowed, DeployRepos: deployRepos, Repos: repos, Window: ranges.window, Compare: ranges.compare, Narrow: narrowing.keep,
 		}); err != nil {
 			return evalValues{}, err
 		}

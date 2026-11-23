@@ -11,18 +11,21 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // The read-time path of the delivery and CI evals (dispatch://INFRA-2918, D7a; R21): an eval's
 // rows of each day of a read's window and compare range, built when the list is read from the
-// stored single records of that day (its pull requests, its deploy runs, its CI runs and their
-// jobs) by the day builders the refresher writes the eval's stored rows with (deliveryReadOf,
-// DeliveryDay.Rows), under the rules the refresher keeps a series' first input day and its zero
-// rows by (dropUnshipped, zerosFrom, ProjectDay.WithZeros), so the fold of them the stored rows are
-// folded with (SeriesValuesOf) answers what the stored rows answer. A read takes it where it is
-// narrowed by what no stored row is kept by: the delivery timeline's facets and its search, which
-// select pull requests (Narrowing), so such a read builds the evals that count pull requests this
-// way (CountsPullRequests) and states every other eval from its stored rows.
+// stored single records of that day (its pull requests, its deploy runs, its posted deploys, its
+// CI runs and their jobs) by the day builders the refresher writes the eval's stored rows with
+// (deliveryReadOf, DeliveryDay.Rows), for each key a project's read folds the rows of (its own and
+// the owner keys of its published default repository, eval_project_owners), under the rules the
+// refresher keeps a series' first input day and its zero rows by (dropUnshipped, zerosFrom,
+// ProjectDay.WithZeros), so the fold of them the stored rows are folded with (SeriesValuesOf)
+// answers what the stored rows answer. A read takes it where it is narrowed by what no stored row
+// is kept by: the delivery timeline's facets and its search, which select pull requests
+// (Narrowing), so such a read builds the evals that count pull requests this way
+// (CountsPullRequests) and states every other eval from its stored rows.
 //
 // unowned-p0 has no read-time path: its row is the count of open P0 issues with no owner at the
 // moment the refresher wrote it (WriteUnownedP0Day), which no stored record of a past day holds.
@@ -34,9 +37,10 @@ type atReadFamily int
 
 const (
 	// atReadPullRequests is the day's pull requests, each shipped by its first shipping apply
-	// among the deploy repository's apply runs.
+	// among its repository's apply runs, or by the first posted deploy that names it.
 	atReadPullRequests atReadFamily = iota + 1
-	// atReadDeploys is the day's deploy runs on main, each with the pull requests it ships first.
+	// atReadDeploys is the day's deploy runs on main and posted deploys, each with the pull
+	// requests it ships first.
 	atReadDeploys
 	// atReadChecks is the day's PR-checks runs, each with every job.
 	atReadChecks
@@ -91,10 +95,10 @@ type AtRead struct {
 	// Entries is the evals built, each with a read-time path (ComputedAtRead); with Narrow set,
 	// evals that count pull requests alone (CountsPullRequests).
 	Entries []Entry
-	// Firsts is each series' first day, by eval id and then by series, as FirstDaysIn reads it in
-	// the same snapshot: the first input day a series' rows begin on, which decides which days
-	// hold its zero rows and its lead times to production, as it decides the refresher's.
-	Firsts map[string]map[string]time.Time
+	// DeployRepos is the repositories the stored rows stand recorded under, as the caller read
+	// them in the same snapshot (DeployReposIn): the rows of the deploy repositories each eval's
+	// stored read reads (DeployRepoOf) are the rows kept.
+	DeployRepos *DeployRepos
 	// Repos is the repositories whose rows are kept, as DayWindowIn keeps them: none for each
 	// project's own rows.
 	Repos []string
@@ -107,14 +111,21 @@ type AtRead struct {
 }
 
 // NarrowInput is what a Narrowing selects from: every pull request merged on a day a read-time
-// computation builds, in ListPullRequestsInWindow's order, with the delivery settings the rows are
-// built under and the deploy repository's apply runs from the first such day on, with the jobs
-// each is judged by, which ship them as the rows ship them.
+// computation builds, in ListPullRequestsInWindow's order, and each deploy source repository the
+// rows are built for (Sources), whose apply runs ship a pull request of that repository as the
+// rows ship it (delivery.ContainingRun). A pull request of no such repository is shipped by none.
 type NarrowInput struct {
-	Settings     delivery.DeliverySettings
 	PullRequests []delivery.DeliveryPullRequest
-	ApplyRuns    []delivery.DeliveryRun
-	ApplyJobs    map[int64][]delivery.DeliveryRunJob
+	Sources      []NarrowSource
+}
+
+// NarrowSource is one deploy source repository of a NarrowInput: the rule the rows of it are built
+// under (Settings, its DeployRepo the repository as its rows are keyed), and its apply runs from
+// the first day built on, with the jobs each is judged by.
+type NarrowSource struct {
+	Settings  delivery.DeliverySettings
+	ApplyRuns []delivery.DeliveryRun
+	ApplyJobs map[int64][]delivery.DeliveryRunJob
 }
 
 // Narrowing answers, reading what it selects by in q (the computation's snapshot), which of
@@ -124,23 +135,29 @@ type Narrowing func(ctx context.Context, q delivery.Querier, input NarrowInput) 
 // ComputeAtRead builds, reading in q (one read's snapshot, BeginSnapshot), the rows of read's
 // evals on each day of its window and its compare range, as DayWindowIn answers the stored rows
 // of those days: for each day, the day's pull requests (one read of each span of consecutive days,
-// split by the day each merged), and, where an eval needs them, the day's deploys and CI runs, each
-// read as the refresher's read of a day reads them (readDeliveryDay), with the deploy repository's
-// apply runs read once from the first day on (delivery.ApplyRows.Since), as the refresher's walk
-// reads them; attributed to their projects by one read of what attributes every day's rows
-// (readAttribution); built into each project's rows of the day by the refresher's day builders
-// (deliveryReadOf, deliveryRead.Rows); less each lead time to production that counts no pull
-// request before its first input day (dropUnshipped); and with the zero row of each series the day
-// holds no input of from its first input day on, on each day the stored rows are whole through
-// (eval_days_serving), as the refresher writes them (zerosFrom). Each row kept is of an eval read
-// names, of the deploy repository its read reads (DeployRepoOf, under the delivery settings the
-// rows are built under, BuiltSettingsIn), listed, and of one of read.Repos (each project's own row
-// where it names none), answered once for each range whose days hold it.
+// split by the day each merged), and, where an eval needs them, each repository's deploys and CI
+// runs of the day, read as the refresher's read of a day reads them (readDeliveryDay), with each
+// repository the rows stand built for, under the rule recorded with its rows (eval_days_rules,
+// keptOf); each repository's apply runs read once from the first day on
+// (delivery.ApplyRows.Since), as the refresher's walk reads them, and each events repository's
+// posted deploys once from the first day on (postedDeploys), which hold every one a day's rows
+// read; attributed to their projects by one read of what attributes every day's rows
+// (readAttribution); built into the rows of the day of each key the read's projects fold the rows
+// of (ownersIn) by the refresher's day builders (deliveryReadOf, deliveryRead.Rows); less each lead
+// time to production that counts no pull request before its first input day (dropUnshipped); and
+// with the zero row of each series the day holds no input of from its first input day on, on each
+// day the stored rows are whole through (eval_days_serving), as the refresher writes them
+// (zerosFrom), each key's first input days read from its stored rows as the refresher reads them
+// (firstDaysIn). Each row kept is of an eval read names, under the project's eval id of its slug
+// (asReader), of a deploy repository its stored read reads (DeployRepoOf), listed, and of one of
+// read.Repos (each project's own row where it names none), answered once for each range whose days
+// hold it.
 //
 // With read.Narrow set, the pull requests are narrowed to those it keeps before anything is built,
 // and only the evals that count pull requests are built: a deploy counts what it ships whatever a
-// filter keeps. A deployment with no delivery settings has no delivery or CI row, as the refresher
-// writes none, and answers none.
+// filter keeps. A deployment whose refresher records no rule of a deploy source (no delivery-on
+// project with a source) has no delivery or CI row, as the refresher writes none, and answers
+// none.
 func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]WindowRow, error) {
 	if len(read.Entries) == 0 {
 		return nil, nil
@@ -158,8 +175,8 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		families[family] = true
 		keyed = keyed || KeyedByDeployRepo(entry.Definition)
 	}
-	settings, err := BuiltSettingsIn(ctx, q)
-	if err != nil || settings == nil {
+	recorded, err := builtUnderIn(ctx, q)
+	if err != nil || len(recorded) == 0 {
 		return nil, err
 	}
 	ranges := []Range{read.Window}
@@ -175,35 +192,48 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		return nil, err
 	}
 
+	// The evals keyed by the deploy repository read each repository the rows stand built for;
+	// the others read the day's pull requests alone.
+	all := keptOf(recorded)
 	var kept []keptRepo
-	if keyed && settings.DeployRepo != "" {
-		repos, err := readDeployRepos(ctx, q)
-		if err != nil {
-			return nil, err
-		}
-		if index := slices.IndexFunc(repos, func(repo keptRepo) bool { return repo.name == settings.DeployRepo }); index >= 0 {
-			kept = repos[index : index+1]
-		}
+	if keyed {
+		kept = all
 	}
 	needDeploys := families[atReadDeploys] || families[atReadPushes]
 	needCI := families[atReadChecks] || families[atReadPushes]
-	// The apply runs ship the pull requests of the evals that read the deploy repository and say
-	// which a deploy ships; a narrowing reads them too, since a pull request's deploy is among what
-	// it selects by (the timeline's deployed facet).
-	var applies delivery.ApplyRows
-	if settings.DeployRepo != "" && (read.Narrow != nil || len(kept) > 0 && (families[atReadPullRequests] || needDeploys)) {
-		if applies, err = delivery.ReadApplyRows(ctx, q, *settings, days[0]); err != nil {
-			return nil, fmt.Errorf("read the deploy runs of %s from %s on: %w", settings.DeployRepo, days[0].Format(time.DateOnly), err)
+	// The apply runs and the posted deploys ship the pull requests of the evals that read the
+	// deploy repository and say which a deploy ships; a narrowing reads each source's apply runs
+	// too, since a pull request's deploy is among what it selects by (the timeline's deployed
+	// facet).
+	shipping := len(kept) > 0 && (families[atReadPullRequests] || needDeploys)
+	applies := map[string]delivery.ApplyRows{}
+	posted := map[string][]prodevents.Event{}
+	var sources []NarrowSource
+	for _, repo := range all {
+		if _, events := eventsProject(repo.name); events {
+			if shipping {
+				if posted[repo.name], err = postedDeploys(ctx, q, repo.rule.Project, days[0], postedEnd); err != nil {
+					return nil, err
+				}
+			}
+			continue
 		}
+		if read.Narrow == nil && !shipping {
+			continue
+		}
+		rows, err := delivery.ReadApplyRows(ctx, q, repo.rule, days[0])
+		if err != nil {
+			return nil, fmt.Errorf("read the deploy runs of %s from %s on: %w", repo.name, days[0].Format(time.DateOnly), err)
+		}
+		applies[repo.name] = rows
+		sources = append(sources, NarrowSource{Settings: repo.rule, ApplyRuns: rows.Runs, ApplyJobs: rows.Jobs})
 	}
 	if read.Narrow != nil {
-		if prs, err = narrowedPullRequests(ctx, q, read.Narrow, *settings, applies, days, prs); err != nil {
+		if prs, err = narrowedPullRequests(ctx, q, read.Narrow, sources, days, prs); err != nil {
 			return nil, err
 		}
 	}
 
-	cards := measures.DeployCards(*settings)
-	cardNames := measures.DeployCardJobNames(cards)
 	reads := make([][]repoReads, len(days))
 	var issueKeys []string
 	var checks []delivery.DeliveryRun
@@ -216,28 +246,39 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		if len(kept) == 0 {
 			continue
 		}
-		one := repoReads{settings: *settings, since: kept[0].since}
-		if one.applies, err = applies.Since(day); err != nil {
-			return nil, err
-		}
 		end := day.AddDate(0, 0, 1)
-		if needDeploys {
-			if one.deploys, err = delivery.ReadDeploys(ctx, q, *settings, day, end); err != nil {
-				return nil, fmt.Errorf("read the deploys of %s on %s: %w", settings.DeployRepo, day.Format(time.DateOnly), err)
+		reads[i] = make([]repoReads, len(kept))
+		for k, repo := range kept {
+			one := &reads[i][k]
+			one.settings, one.since = repo.rule, repo.since
+			one.settings.DeployRepo = repo.name
+			if _, events := eventsProject(repo.name); events {
+				one.posted = posted[repo.name]
+				continue
 			}
-			for _, pr := range one.deploys.Earlier.PullRequests {
-				if pr.IssueKey != nil {
-					issueKeys = append(issueKeys, *pr.IssueKey)
+			if held, found := applies[repo.name]; found {
+				if one.applies, err = held.Since(day); err != nil {
+					return nil, err
 				}
 			}
-		}
-		if needCI {
-			if one.ci, err = delivery.ReadCIRows(ctx, q, settings.DeployRepo, day, end, cardNames); err != nil {
-				return nil, fmt.Errorf("read the CI runs of %s on %s: %w", settings.DeployRepo, day.Format(time.DateOnly), err)
+			if needDeploys {
+				if one.deploys, err = delivery.ReadDeploys(ctx, q, one.settings, day, end); err != nil {
+					return nil, fmt.Errorf("read the deploys of %s on %s: %w", repo.name, day.Format(time.DateOnly), err)
+				}
+				for _, pr := range one.deploys.Earlier.PullRequests {
+					if pr.IssueKey != nil {
+						issueKeys = append(issueKeys, *pr.IssueKey)
+					}
+				}
 			}
-			checks = append(checks, one.ci.Checks.Runs...)
+			if needCI {
+				cardNames := measures.DeployCardJobNames(measures.DeployCards(one.settings))
+				if one.ci, err = delivery.ReadCIRows(ctx, q, repo.name, day, end, cardNames); err != nil {
+					return nil, fmt.Errorf("read the CI runs of %s on %s: %w", repo.name, day.Format(time.DateOnly), err)
+				}
+				checks = append(checks, one.ci.Checks.Runs...)
+			}
 		}
-		reads[i] = []repoReads{one}
 	}
 	attribute, err := readAttribution(ctx, q, issueKeys, checks)
 	if err != nil {
@@ -248,22 +289,33 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 		return nil, err
 	}
 
-	deployRepoOf := make(map[string]string, len(read.Entries))
+	definitions := make(map[string]Definition, len(read.Entries))
 	var projects []string
-	firsts := map[string]map[evalKey]time.Time{}
 	for _, entry := range read.Entries {
-		definition := entry.Definition
-		key := evalKey{eval: definition.EvalID, deployRepo: DeployRepoOf(definition, settings.DeployRepo)}
-		deployRepoOf[key.eval] = key.deployRepo
-		if firsts[definition.ProjectKey] == nil {
-			projects = append(projects, definition.ProjectKey)
-			firsts[definition.ProjectKey] = map[evalKey]time.Time{}
+		definitions[entry.Definition.EvalID] = entry.Definition
+		if !slices.Contains(projects, entry.Definition.ProjectKey) {
+			projects = append(projects, entry.Definition.ProjectKey)
 		}
-		for _, day := range read.Firsts[key.eval] {
-			if first, held := firsts[definition.ProjectKey][key]; !held || day.Before(first) {
-				firsts[definition.ProjectKey][key] = day
+	}
+	owners, err := ownersIn(ctx, q, projects)
+	if err != nil {
+		return nil, err
+	}
+	rules := keptRules(kept)
+	firsts := map[string]map[evalKey]time.Time{}
+	for _, project := range projects {
+		for _, owner := range owners[project] {
+			if _, held := firsts[owner]; held {
+				continue
+			}
+			if firsts[owner], err = firstDaysIn(ctx, q, owner, ZeroDeliveryDay(owner, days[0], rules).Rows, nil); err != nil {
+				return nil, err
 			}
 		}
+	}
+	deployRepoOf := make(map[string][]string, len(definitions))
+	for id, definition := range definitions {
+		deployRepoOf[id] = DeployRepoOf(definition, read.DeployRepos)
 	}
 	repos := read.Repos
 	if len(repos) == 0 {
@@ -271,26 +323,30 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	}
 	rows := []WindowRow{}
 	for i, day := range days {
-		built := deliveryReadOf(day, cards, kept, prs[i], reads[i], attribute)
+		built := deliveryReadOf(day, kept, prs[i], reads[i], attribute)
 		for _, project := range projects {
-			first := firsts[project]
-			own := ProjectDay{Project: project, Day: day, Rows: dropUnshipped(built.Rows(project).Rows, first, day)}
-			if next != nil && day.Before(*next) {
-				own = own.WithZeros(zerosFrom(ZeroDeliveryDay(*settings, project, day, built.repos).Rows, first, day))
-			}
-			for _, row := range own.Rows {
-				if deployRepo, held := deployRepoOf[row.EvalID]; !held || row.DeployRepo != deployRepo || !row.Listed || !slices.Contains(repos, row.Repo) {
-					continue
+			for _, owner := range owners[project] {
+				first := firsts[owner]
+				own := built.Rows(owner)
+				own.Rows = dropUnshipped(own.Rows, first, day)
+				if next != nil && day.Before(*next) {
+					own = own.WithZeros(zerosFrom(ZeroDeliveryDay(owner, day, rules).Rows, first, day))
 				}
-				for r, of := range ranges {
-					if day.Before(of.From) || !day.Before(of.To) {
+				for _, row := range own.Rows {
+					id := asReader(owner, project, row.EvalID)
+					if deployRepos, held := deployRepoOf[id]; !held || !slices.Contains(deployRepos, row.DeployRepo) || !row.Listed || !slices.Contains(repos, row.Repo) {
 						continue
 					}
-					in := RangeWindow
-					if r > 0 {
-						in = RangeCompare
+					for r, of := range ranges {
+						if day.Before(of.From) || !day.Before(of.To) {
+							continue
+						}
+						in := RangeWindow
+						if r > 0 {
+							in = RangeCompare
+						}
+						rows = append(rows, WindowRow{Range: in, EvalID: id, Part: row.DayPart, owner: owner})
 					}
-					rows = append(rows, WindowRow{Range: in, EvalID: row.EvalID, Part: row.DayPart})
 				}
 			}
 		}
@@ -339,10 +395,10 @@ func atReadPullRequestsOf(ctx context.Context, q delivery.Querier, days []time.T
 }
 
 // narrowedPullRequests is prs, each day's pull requests, with only those narrow keeps, which it is
-// given in day order with the settings and the apply runs the rows ship them by (NarrowInput).
-func narrowedPullRequests(ctx context.Context, q delivery.Querier, narrow Narrowing, settings delivery.DeliverySettings, applies delivery.ApplyRows,
+// given in day order with the deploy source repositories the rows ship them by (NarrowInput).
+func narrowedPullRequests(ctx context.Context, q delivery.Querier, narrow Narrowing, sources []NarrowSource,
 	days []time.Time, prs [][]delivery.DeliveryPullRequest) ([][]delivery.DeliveryPullRequest, error) {
-	input := NarrowInput{Settings: settings, PullRequests: slices.Concat(prs...), ApplyRuns: applies.Runs, ApplyJobs: applies.Jobs}
+	input := NarrowInput{PullRequests: slices.Concat(prs...), Sources: sources}
 	keep, err := narrow(ctx, q, input)
 	if err != nil {
 		return nil, err

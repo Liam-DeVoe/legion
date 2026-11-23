@@ -88,8 +88,9 @@ func newNarrowedEvalsRig(t *testing.T, options testServerOptions) *narrowedEvals
 }
 
 // atRead is each of entries' series over window and compare as the read-time path states them:
-// their rows built in one snapshot (evals.ComputeAtRead, with no narrowing), with each series' first
-// day read in it, and folded by the fold of the stored rows (evals.SeriesValuesOf), by eval id.
+// their rows built in one snapshot (evals.ComputeAtRead, with no narrowing), with the deploy
+// repositories the stored rows stand recorded under and each series' first day read in it, and
+// folded by the fold of the stored rows (evals.SeriesValuesOf), by eval id.
 func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window evals.Range, compare *evals.Range) map[string][]evals.SeriesValues {
 	t.Helper()
 	ctx := t.Context()
@@ -98,15 +99,15 @@ func (r *narrowedEvalsRig) atRead(t *testing.T, entries []evals.Entry, window ev
 		t.Fatalf("begin the read-time read: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	deployRepo, err := evals.DeployRepoIn(ctx, tx)
+	deployRepos, err := evals.DeployReposIn(ctx, tx)
 	if err != nil {
-		t.Fatalf("read the deploy repository: %v", err)
+		t.Fatalf("read the deploy repositories: %v", err)
 	}
-	firsts, err := evals.FirstDaysIn(ctx, tx, entries, deployRepo)
+	firsts, err := evals.FirstDaysIn(ctx, tx, entries, deployRepos)
 	if err != nil {
 		t.Fatalf("read the first days: %v", err)
 	}
-	rows, err := evals.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, Firsts: firsts, Window: window, Compare: compare})
+	rows, err := evals.ComputeAtRead(ctx, tx, evals.AtRead{Entries: entries, DeployRepos: deployRepos, Window: window, Compare: compare})
 	if err != nil {
 		t.Fatalf("build the rows at read time: %v", err)
 	}
