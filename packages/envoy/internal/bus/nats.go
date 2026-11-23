@@ -58,7 +58,8 @@ type connectOpts struct {
 	inboxPrefix                 string
 	streamMessageReads          bool
 	// logger is where the client and its connections write their lines (WithLogger):
-	// slog.Default() when no option names one, read once by parseConnectOptions.
+	// followsDefault, which writes where slog.Default() points at each line, when no option names
+	// one.
 	logger *slog.Logger
 }
 
@@ -89,7 +90,7 @@ func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 	for _, o := range options {
 		o.apply(&opts)
 	}
-	opts.logger = cmp.Or(opts.logger, slog.Default())
+	opts.logger = cmp.Or(opts.logger, followsDefault)
 	return opts
 }
 
@@ -219,11 +220,12 @@ func WithName(name string) ConnectOption {
 // recovery and reconnect hooks, its keeper's passes, its stream's ensure, the bucket calls made on
 // its connection (EnsureKeyValue, SetKeyValueMaxAge, OpenKeyValue and WrapKeyValue find it through
 // the connection, loggerOwning) and ConnectRoleLane's fall back to the machine's queue group.
-// Without it the client writes where slog.Default() pointed when it was built. A program passes
+// Without it the client writes where slog.Default() points as each line is written
+// (followsDefault), as it did before it took a logger. A program passes
 // its own JSON logger rather than setting the default (store.WithLogger says why), and a test
 // passes a logger over a handler of its own, so it reads the lines of its own client alone and can
 // run beside other tests. Dial honours it too, for its connection's lifecycle lines: a connection
-// Dial returns is no client's, so a bucket call made on it writes to slog.Default().
+// Dial returns is no client's, so a bucket call made on it writes where slog.Default() points.
 func WithLogger(logger *slog.Logger) DialOption {
 	return func(o *connectOpts) { o.logger = logger }
 }
@@ -376,8 +378,8 @@ type Client struct {
 	js   nats.JetStreamContext
 	urls []string
 	name string
-	// logger is where the client writes its lines: the WithLogger option, or slog.Default() as it
-	// was when the client was built.
+	// logger is where the client writes its lines: the WithLogger option, or followsDefault, which
+	// writes where slog.Default() points at each line.
 	logger                      *slog.Logger
 	connectionSettings          nats.Option
 	dialer                      *socks5Dialer
