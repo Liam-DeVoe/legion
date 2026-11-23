@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -1242,17 +1243,8 @@ const (
 // the issue reaches merging (cybermonklabs/legion#4979), and an ask made before stands there until
 // it lands.
 func MergeForwardStands(issue record.Issue, line []phase.Phase) bool {
-	at := record.StandsAt(issue)
-	implementing, here := -1, -1
-	for i, p := range line {
-		switch p {
-		case phase.Implementing:
-			implementing = i
-		case at:
-			here = i
-		}
-	}
-	return at == phase.Implementing && implementing >= 0 || implementing >= 0 && here > implementing
+	implementing := slices.Index(line, phase.Implementing)
+	return implementing >= 0 && slices.Index(line, record.StandsAt(issue)) >= implementing
 }
 
 // MergeStateReadOwed is the gate of the read of GitHub's merge state for an issue's open pull
@@ -1288,7 +1280,7 @@ func MergeStateReadOwed(issue record.Issue, line []phase.Phase, fact MergeStateF
 	case MergeStateFactHeadMove:
 		return MergeForwardStands(issue, line)
 	case MergeStateFactBasePush:
-		return MergeForwardStands(issue, line) && record.StandsAt(issue) != phase.Implementing
+		return phase.MovesBackOn(line, record.StandsAt(issue), phase.Implementing)
 	}
 	return false
 }
@@ -1353,8 +1345,8 @@ func ConflictNeedsMerge(issue record.Issue, line []phase.Phase, rules *record.Ba
 
 // MergeComesNext says whether the merge is the next step for issue, whose task walks line (one
 // phase for each step, then retro and merging): the issue stands in its retro or its merge, or in
-// accepting where no step of the task follows the acceptance, or is held from one of them
-// merges. In the default steps these are accepting, retro and merging. In merging the merger
+// accepting where no step of the task follows the acceptance, or is held from one of them. In
+// the default steps these are accepting, retro and merging. In merging the merger
 // merges the base forward itself, and before it the conflict waits for merging
 // (ConflictNeedsMerge, cybermonklabs/legion#4979). Where a step of the task follows the
 // acceptance, that step runs at the head before the merge, as a tester or a reviewer does after
@@ -1365,11 +1357,8 @@ func MergeComesNext(issue record.Issue, line []phase.Phase) bool {
 	case phase.Retro, phase.Merging:
 		return true
 	case phase.Accepting:
-		for at, p := range line {
-			if p == phase.Accepting {
-				return at+1 < len(line) && line[at+1] == phase.Retro
-			}
-		}
+		at := slices.Index(line, phase.Accepting)
+		return at >= 0 && at+1 < len(line) && line[at+1] == phase.Retro
 	}
 	return false
 }

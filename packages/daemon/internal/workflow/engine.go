@@ -2434,15 +2434,15 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 
 // acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
 // the acceptance's place on the task of its walk, by place and never by type, so the step after
-// the sign-off reads the report the owner read. An issue with no plan rows walks today's line,
-// where the review stands before accepting.
+// the sign-off reads the report the owner read. An issue with no plan rows walks today's line on
+// today's steps (todaysWalk), where the review stands before accepting.
 func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
 	w, err := e.walk(ctx, tx, issue)
-	if err != nil || !w.Stored {
-		return claim.RoleReviewer, err
+	if err != nil {
+		return "", err
 	}
 	place, ok := w.PlaceOf(phase.Accepting)
-	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
+	if !ok || place.Position < 2 {
 		return "", fmt.Errorf("sign off %s: task %s of its line %v has no step before its acceptance", issue.Key, w.Task, w.Line)
 	}
 	return claim.Role(w.Steps[place.Position-2].Role), nil
