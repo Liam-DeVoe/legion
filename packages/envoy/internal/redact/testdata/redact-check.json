@@ -2108,6 +2108,22 @@
         "capture": "mcpbridge.endpoint-url/unreachable"
       },
       {
+        "row": "dispatch-plan-block-range-not-printed",
+        "base": "bdc06e05d9d400ab032554c271f4d056371523ce",
+        "files": [
+          "packages/daemon/internal/dispatch/plan_block_words_test.go"
+        ],
+        "capture": "dispatch.answer-words/plan-block-range"
+      },
+      {
+        "row": "dispatch-plan-block-unfenced-not-printed",
+        "base": "bdc06e05d9d400ab032554c271f4d056371523ce",
+        "files": [
+          "packages/daemon/internal/dispatch/plan_block_words_test.go"
+        ],
+        "capture": "dispatch.answer-words/plan-block-unfenced"
+      },
+      {
         "row": "githubrest-redirect-unparsed",
         "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
         "files": [
@@ -7773,6 +7789,34 @@
       }
     },
     {
+      "id": "dispatch-plan-block-range-not-printed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestAPlanBlockDispatchCannotCutIsRefusedWithoutItsText/range",
+      "production": "daemon dispatch HTTPClient.PlanDocument: a block whose byte range does not index the answer's markdown is refused naming its place in the answer, never its id, which is Dispatch's words",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).PlanDocument",
+      "capture": "dispatch.answer-words/plan-block-range",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "block %d of the answer spans %d to %d of %d bytes\", artifactID, version, i+1,",
+        "replacement": "block %s spans %d to %d of %d bytes\", artifactID, version, block.ID,"
+      }
+    },
+    {
+      "id": "dispatch-plan-block-unfenced-not-printed",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestAPlanBlockDispatchCannotCutIsRefusedWithoutItsText/unfenced",
+      "production": "daemon dispatch HTTPClient.PlanDocument: a block that is not a fenced block of the answer's markdown is refused naming its place in the answer, never its id or its text, which are Dispatch's words",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).PlanDocument",
+      "capture": "dispatch.answer-words/plan-block-unfenced",
+      "mutation": {
+        "file": "packages/daemon/internal/dispatch/client.go",
+        "preimage": "block %d of the answer is not a fenced block (its text is not printed)\", artifactID, version, i+1)",
+        "replacement": "block %d of the answer is %q, not a fenced block\", artifactID, version, i+1, rendering)"
+      }
+    },
+    {
       "id": "dispatch-sentence-as-it-came",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
@@ -10777,6 +10821,11 @@
       "site": "daemon dispatch Approval: time.Parse's error, quoting Dispatch's approval time, printed with %w",
       "source": "the decoder-error class search of round 6",
       "guard": "dispatch-approval-at-not-printed"
+    },
+    {
+      "site": "daemon dispatch PlanDocument (main's #5161): a block Dispatch's answer could not cut printed the block's id, and its text with %q, in the read's error, which the daemon's plan route answers and logs",
+      "source": "the class search of round 8, at the merge of main 7cb1f22936",
+      "guard": "dispatch-plan-block-range-not-printed"
     },
     {
       "site": "workflow mergeability: the head a dropped merge-state read answered for, logged as GitHub wrote it",

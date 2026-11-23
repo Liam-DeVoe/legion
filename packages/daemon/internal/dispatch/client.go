@@ -538,6 +538,8 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 // its opening line and its closing fence. A Dispatch that answers no blocks key predates that read
 // and gives ErrNoBlocks. An answer for another version, or a block whose range is not a fenced
 // block of its markdown, is an error naming it; a refusal of Dispatch's passes through (Missing).
+// A block is named by its place in the answer, never by its id or its text: both are Dispatch's
+// words, or the words of whatever answers in its place, which can echo the bearer the read carried.
 func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error) {
 	if version < 1 {
 		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: a version is 1 or more", artifactID, version)
@@ -554,15 +556,15 @@ func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, versio
 		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: Dispatch answered version %d", artifactID, version, response.Number)
 	}
 	document := DocumentVersion{ArtifactID: artifactID, Version: version, Blocks: make([]DocumentBlock, 0, len(*response.Blocks))}
-	for _, block := range *response.Blocks {
+	for i, block := range *response.Blocks {
 		if block.From < 0 || block.To < block.From || block.To > len(response.Markdown) {
-			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s spans %d to %d of %d bytes", artifactID, version, block.ID, block.From, block.To, len(response.Markdown))
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %d of the answer spans %d to %d of %d bytes", artifactID, version, i+1, block.From, block.To, len(response.Markdown))
 		}
 		rendering := response.Markdown[block.From:block.To]
 		_, rest, opened := strings.Cut(rendering, "\n")
 		closing := strings.LastIndexByte(rest, '\n')
 		if !opened || closing < 0 {
-			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s is %q, not a fenced block", artifactID, version, block.ID, rendering)
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %d of the answer is not a fenced block (its text is not printed)", artifactID, version, i+1)
 		}
 		attributes := make(map[string]string, len(block.Attributes))
 		for _, attribute := range block.Attributes {
