@@ -46,7 +46,7 @@ a change that cannot be written that way is split into releases that can, so no 
 The node and tuple store's migrations of lenses and runs of the command bar expand alone:
 `20261116123354_lens_catalogue` and `20261116123355_lens_catalogue_further_kinds` write type nodes and catalogue nodes with their tuples, `20261116205055_interaction_nodes` writes the interaction node and `frame` values of every run recorded before it, `20261116081010_block_pointer_targets_present` and `20261117042519_block_moved_to_lens` restate a function that answers every call the release before makes as it did, and `20261117020856_graph_edges_asks_and_store_class` restates `graph_edges` with every arm the release before reads.
 During a roll the release before records a run with no node, appends its frames with no `frame` value and no lock on the node, and deletes a run an hour old.
-A frame of this release takes the run's interaction node row `for no key update` before the run's `going_requests` row, the order the erase of a run takes them in; a run with none gets its node from its row first, under that row, and no frame waits on a node's row while it holds the run's (`api/going.go`'s `lockGoingRun`).
+A frame of this release takes the run's interaction node row `for no key update` before the run's `going_requests` row, so frames of one run queue at the node; a run with none gets its node from its row first, under that row, and no frame waits on a node's row while it holds the run's (`api/going.go`'s `lockGoingRun`).
 The `going_events_terminal` index and the frame's `on conflict do nothing` settle a frame both releases write at one sequence, and `backfill-graph-store` mends what the release before wrote.
 The same rule holds for everything else the two builds share (request bodies and routes, query values, socket frames, response members, stored documents, NATS stream and consumer settings and subjects, messages, and settings), and the two-build test checks it (`go test -tags twobuild ./cmd/dispatch`).
 **Messages:** envelope and payload members are additive, and every consumer ignores a member it does not know;
@@ -59,7 +59,7 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
-A row is never updated, a new version being a new row, but for the erase (`envoy-dispatch erase`): it deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted (`textversions.RestateIssueVectors`).
+A row is never updated: a new version is a new row.
 `search_text_versions_fill` holds the one cursor row of the keyword fill (`internal/dispatch/textversions`): every event at or below its `event_id` has its rows.
 The fill writes both tables from the event log while Dispatch serves, under the hold `search-text-versions-fill`.
 It pauses while an answers read that its process serves takes longer than 800 ms (`../../../cmd/dispatch/README.md`, "Background loops").

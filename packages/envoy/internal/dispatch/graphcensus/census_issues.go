@@ -128,7 +128,7 @@ func writeIssueLinkBatch(ctx context.Context, database *store.Store, batch []iss
 		issues := make([]string, len(batch))
 		targets := make([]string, len(batch))
 		for index, link := range batch {
-			owners.Add(link.issue, "", "issue "+link.issue)
+			owners.Add(link.issue, "")
 			issues[index], targets[index] = link.issue, link.target
 		}
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {

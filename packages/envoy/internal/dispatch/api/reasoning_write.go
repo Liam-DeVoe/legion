@@ -85,7 +85,7 @@ func lockIssueOwner(ctx context.Context, tx pgx.Tx, key string) (string, error) 
 // that does not exist.
 func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []string) error {
 	owners := events.OwnerRows{}
-	owners.Add(issue, "", "the issue "+issue)
+	owners.Add(issue, "")
 	documents := make(map[string]string, len(checks))
 	for _, check := range checks {
 		kind, id, ok := decodeNodeAddress(check)
@@ -108,7 +108,7 @@ func lockReasoningOwners(ctx context.Context, tx pgx.Tx, issue string, checks []
 		}
 		var refKey, id, issueKey string
 		if _, err := pgx.ForEachRow(rows, []any{&refKey, &id, &issueKey}, func() error {
-			owners.Add(issueKey, id, "the check "+documents[refKey])
+			owners.Add(issueKey, id)
 			return nil
 		}); err != nil {
 			return fmt.Errorf("read the documents of the checks the write names: %w", err)

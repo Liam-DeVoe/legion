@@ -513,12 +513,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //
 // Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
 // updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
-// and invariant 3 is about which rows exist, not about which are held. The one exception is the
-// erase (`envoy-dispatch erase`, R1 and R5 of this change), which deletes a node's
-// tuples and its node row, and takes this same order to do it: the lock of every owner it writes
-// under, then the node row, then the rest of the rows it locks before it reads (its projection
-// rows), and after them the keyword fill's cursor row, which holds the fill back until the erase
-// ends (grapherase's lockInStoreOrder, textversions.HoldFillBack). A writer owning no
+// and invariant 3 is about which rows exist, not about which are held. A writer owning no
 // issue and no document - an operator's own write, a session-addressed event - takes no owner
 // lock at all, and invariant 1 says nothing about it. graphstore's
 // TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.
@@ -554,11 +549,10 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // recorded with no node gets its node there first: graphstore.WriteRun takes the run's
 // going_requests row `for no key update`, writes the node and its tuples in one graphstore.Write,
 // and the frame then takes the node's row, which is its own and no other transaction's. Where
-// another write committed the node in between and another transaction holds it - an erase of the
-// run, which takes the node's row and then the run's (grapherase's lockProjectionRows) - the frame
-// takes that row without waiting, finds it held, lets its transaction go and begins again once,
-// taking the node's row first (lockGoingRun, errGoingRunNodeHeld), so no frame waits on a node's
-// row while it holds the run's. Then the frame takes the run's going_requests row `for key share`,
+// another write committed the node in between and another transaction holds it, the frame takes
+// that row without waiting, finds it held, lets its transaction go and begins again once, taking
+// the node's row first (lockGoingRun, errGoingRunNodeHeld), so no frame waits on a node's row
+// while it holds the run's. Then the frame takes the run's going_requests row `for key share`,
 // the lock the going_events foreign key takes, appends the frame value tuple and writes the
 // going_events row. No frame takes the revision fence.
 //

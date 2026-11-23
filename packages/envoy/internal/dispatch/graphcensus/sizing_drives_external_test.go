@@ -8,14 +8,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
-	"github.com/sjawhar/envoy/internal/dispatch/grapherase"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// externalDrives are the drives of the sites of api, docs and grapherase the register of the
-// store's writers lists and no drive before them runs, each the real site reached as its own
+// externalDrives are the drives of the sites of api and docs the register of the store's writers
+// lists and no drive before them runs, each the real site reached as its own
 // lock-step driver reaches it, over the rig the drives before them wrote (importedDrives). They
 // run in this order: alice's run of the command bar and its one frame; her writes made for that
 // run - a PATCH of the issue's labels, an edit of an ask's words and one of a comment's; a PATCH
@@ -23,8 +22,8 @@ import (
 // the spec with a finding, a second lens's triggered_by of it, and the first lens stated
 // overtaken; a result of a check of the issue's Verification document and its retraction; an
 // accept that finds a suggestion's mark gone; an upload that takes a suggestion's quote out of
-// its document; the anchor block backfill of a comment written with no block; a settlement of an
-// issue's room; and the erase of a block a version held.
+// its document; the anchor block backfill of a comment written with no block; and a settlement of
+// an issue's room.
 func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -32,10 +31,10 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// What a drive or its Ready writes for itself and the drives after it: alice's run, the ask and
 	// the comment her run edits, the issue the PATCH waits on and the comment it is filed from, the
 	// first lens and the second, the result, the suggestion the accept finds orphaned and the one
-	// the refresh orphans, the comment the backfill pins, the issue whose room a settlement settles
-	// with its spec, and the document of the block the erase takes, with that block.
+	// the refresh orphans, the comment the backfill pins, and the issue whose room a settlement
+	// settles with its spec.
 	var run, ask, edited, target, filedFrom, lens, chained, result, orphaned, refreshed, pinned string
-	var roomIssue, roomSpec, erasedDocument, erased string
+	var roomIssue, roomSpec string
 	// The token of the version refreshed.md's second upload replaces, read before its drive.
 	var refreshedBase map[string]string
 	return []graphcensus.StoreDrive{{
@@ -359,36 +358,6 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			`, roomSpec)
 		},
 		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, versionCounted, queryVersionCounted),
-	}, {
-		// The erase of a paragraph inside a callout of a document of its own (grapherase.Erase):
-		// the one version that held it goes, its node stated gone (endErasedVersions), which the
-		// term erased_version counts, and the callout's text value, which quotes it, is rewritten in
-		// place (redactBlocks), which appends nothing.
-		Name: "grapherase/erase.go#endErasedVersions, the erase of a block a version held", Database: r.database,
-		Sites: []string{"grapherase/erase.go#endErasedVersions", "grapherase/redaction.go#redactBlocks", "grapherase/erase.go#apply"},
-		Ready: func(t *testing.T) {
-			erasedDocument = r.uploaded(t, "erased.md", ":::callout{#holder}\nWords the erase takes.\n:::\n")
-			if err := r.database.Pool.QueryRow(ctx, `
-				select node_id from document_blocks where artifact_id = $1::uuid and type = 'paragraph'
-			`, erasedDocument).Scan(&erased); err != nil {
-				t.Fatalf("read the node of the paragraph of erased.md: %v", err)
-			}
-		},
-		Drive: func(t *testing.T) {
-			url := r.database.Pool.Config().ConnString()
-			listing, err := grapherase.Erase(ctx, url, "block", erased, "", 10*time.Millisecond)
-			if err != nil {
-				t.Fatalf("list the erase of block %s: %v", erased, err)
-			}
-			if len(listing.Blockers) > 0 {
-				t.Fatalf("the erase of block %s is blocked by %v", erased, listing.Blockers)
-			}
-			erasure, err := grapherase.Erase(ctx, url, "block", erased, listing.Digest, 10*time.Millisecond)
-			if err != nil || !erasure.Applied || len(erasure.Versions) != 1 {
-				t.Fatalf("erase block %s (applied %v, versions %+v): %v", erased, erasure != nil && erasure.Applied, erasure, err)
-			}
-		},
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindVersion, graphstore.AttributeState}: {"erased_version"}},
 	}}
 }
 

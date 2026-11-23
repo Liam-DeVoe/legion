@@ -224,7 +224,7 @@ var readsWithoutAViewer = map[string]string{
 	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
 	"QueueAskPartIDs":    nodeDetail,
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
-	"ReadBlockRefKinds":  serverWork + " - a version write's block index plan and the erase's blockers read bind the tuple kinds the block index writes into block_refs, which name no node",
+	"ReadBlockRefKinds":  serverWork + " - a version write's block index plan binds the tuple kinds the block index writes into block_refs, which name no node",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
 	"RecordExcerpts":     serverWork,

@@ -848,33 +848,9 @@ var indexPasses = map[string]string{
 	// the value the lens's row held. It states the lens's own next fact from its own placement, and
 	// mends neither side of a projection, so it is no repair.
 	"graphstore/reasoning.go#queueLensArtifactIDs": "the part_of tuples the write places lenses by, the artifacts row at the address of the document each names, and the artifact_id each lens holds",
-	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
-	// the operator named and what the store itself holds about it, which is neither side of a
-	// projection read to mend the other: it deletes both sides together, the store's through
-	// graphstore.EraseNode, rather than bringing one into line with the other, so it is no repair.
-	"grapherase/erase.go#apply": "the node the operator named",
-	// The same erase's end of the versions it deletes (dispatch://INFRA-1253): the node of each
-	// version the listing named, read off the store and stated gone with the supertag and
-	// attributes the store holds of it. Its input is that listing and the store's own node, so it
-	// never reads one side of a projection to mend the other.
-	"grapherase/erase.go#endErasedVersions": "the versions the listing of the node the operator named holds",
-	// The same erase's rewrite of the rows it may take no row out of, which is the other half
-	// of that one input: the text of the node the operator named, read before any delete
-	// (readTexts). It writes back the block text and the excerpt cut from it as one read
-	// computed both (readAncestors), so it never reads either to decide what the other should
-	// say.
-	"grapherase/redaction.go#redactBlocks": "the text of the node the operator named",
-	"graphstore/arms.go#nodeArm":           "the nodes its caller states",
-	"graphstore/arms.go#claimArms":         "the claims its caller states",
-	"graphstore/arms.go#tupleInsert":       "the tuples its caller states",
-	// EraseNode is the erase's delete of a node and the tuples its caller listed: it reads the
-	// tuples left of the node to refuse a run whose set moved, and deletes the node its one
-	// caller names.
-	"graphstore/erase.go#EraseNode": "the node its caller names",
-	// RedactValues is the erase's rewrite of the quote of an erased block in the text values of the
-	// blocks holding it: it reads nothing, and writes the values its one caller computed from the
-	// listing of the node the operator named (grapherase's readAncestorValues).
-	"graphstore/erase.go#RedactValues": "the redacted values its caller names, by seq",
+	"graphstore/arms.go#nodeArm":                   "the nodes its caller states",
+	"graphstore/arms.go#claimArms":                 "the claims its caller states",
+	"graphstore/arms.go#tupleInsert":               "the tuples its caller states",
 	// The two seeds other packages' tests share (graphstoretest), which no deployment builds. Each
 	// writes rows the store's writers refuse - a node reserved for its author of a kind no read
 	// registry flags, the type of a kind only a test writes - from the nodes or the names its test

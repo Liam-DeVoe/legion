@@ -111,10 +111,10 @@ var versionBackfills = []backfillPass{oneKind(backfillVersions)}
 
 // presentVersionNode is the predicate that a version node the store holds present, at any state but
 // gone, stands at the address of the artifact_versions row v of the document a. A node held gone
-// is no present node: a removal or an erase states it gone in the transaction that deletes its
-// row, so a row standing at a gone node's address is a later row at a freed address - the next
-// version after an erase took the newest, or the first version of a document made again under a
-// removed one's name - that an older build wrote with no node of its own.
+// is no present node: a removal states it gone in the transaction that deletes its row, so a row
+// standing at a gone node's address is a later row at a freed address - the first version of a
+// document made again under a removed one's name - that an older build wrote with no node of its
+// own.
 const presentVersionNode = `exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindVersion +
 	`' and n.id = ` + versionAddress + ` and n.state <> '` + graphstore.StateGone + `')`
 
@@ -303,8 +303,8 @@ type MissingVersionNodes struct {
 // room the tree artifact's issue, which every document of the room stands under), from before the
 // read to its commit, and every writer of a version node of theirs takes that lock before it: a
 // version's insert (docs.WriteVersionNode, under the owner lock its write holds), the version pass
-// (writeVersionBatch, through lockObjectOwners, the same lock), a removal (api's removeArtifact,
-// the issue's) and the erase (the owner locks it takes first). So while the caller holds the lock
+// (writeVersionBatch, through lockObjectOwners, the same lock) and a removal (api's
+// removeArtifact, the issue's). So while the caller holds the lock
 // no other transaction holds one of these version node rows or waits to take one: a row the read
 // finds with no present node keeps none until the caller commits, and the node rows the queued
 // write takes after the nodes of the caller's own pass wait on no transaction that waits on the
@@ -420,9 +420,10 @@ func owedVersionNodes(ctx context.Context, q graphstore.Queryer, rows string, li
 // are differences, the first reportedDifferences of them each at the version's address with its
 // cause. A version whose stored markdown is not its render is one: the stored markdown of such a
 // version is the rendering cache, and the render is what the version is, so the two agree byte for
-// byte. A row whose version the store no longer holds is one too: every delete of a version row
-// deletes its version_renders row beside it (docs.ForgetVersionRenders), and a row left behind
-// would render a version that is gone, or one written later at its number. A version that holds no
+// byte. A row whose version the store no longer holds is one too: no path deletes a version row
+// while its document stands (a removal takes the version_renders rows with the document by their
+// foreign key), and a row left behind would render a version that is gone, or one written later
+// at its number. A version that holds no
 // row answers its stored bytes, which no render describes, and is none of this census.
 type VersionRenderCensus struct {
 	Versions, Differences int64

@@ -24,8 +24,7 @@ const (
 )
 
 // resultLinkKinds are the relations out of a result node, each of which its check_results row
-// states (graphstore.ResultLinkKinds): the census digests them against the row, and an erase of
-// the node one of them points at is refused while the row stands (DigestedTuple, ProjectedResult).
+// states (graphstore.ResultLinkKinds): the census digests them against the row.
 var resultLinkKinds = graphstore.ResultLinkKinds()
 
 // resultCheckAddress is the address of the check block's node that the check_results row aliased
@@ -180,17 +179,6 @@ var resultProjections = []projection{{
 	emptyAgrees: true,
 }}
 
-// ProjectedResult is true of a tuple t (an alias of graph_tuples) out of a result node whose
-// check_results row stands: a node a row projects, as a node of comments, document_blocks,
-// block_refs, asks or ask_followers is one a row names by its node columns, which check_results
-// does not carry. The erase holds a tuple of a kind that row digests (DigestedTuple) into the node
-// it erases to that row, as it holds those tables' (grapherase's readBlockers): erasing the check,
-// the recorder or a screenshot of a recorded result would delete a tuple its row still states.
-func ProjectedResult(t string) string {
-	return `(` + t + `.from_kind = '` + graphstore.KindResult + `' and exists (select 1 from check_results projected
-		where projected.id = case when ` + t + `.from_kind = '` + graphstore.KindResult + `' then ` + t + `.from_id::uuid end))`
-}
-
 // resultBackfills are the backfill's passes over the results recorded against a check
 // (backfillPasses), after the project passes, so every issue and document a result names holds its
 // node: the node of each result an earlier release recorded (backfillResults), then the retracted
@@ -248,7 +236,7 @@ func lockResultOwners(ctx context.Context, tx pgx.Tx, batch []resultKey) ([]stri
 	owners := events.OwnerRows{}
 	ids := make([]string, len(batch))
 	for index, key := range batch {
-		owners.Add(key.issue, "", "the results of "+key.issue)
+		owners.Add(key.issue, "")
 		ids[index] = key.id
 	}
 	return ids, events.LockOwnerRows(ctx, tx, owners)

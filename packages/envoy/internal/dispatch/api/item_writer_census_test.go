@@ -169,11 +169,6 @@ var itemRowWriters = map[string]map[string]string{
 		"writeAskBatch": "the owner locks of the batch's asks, taken first in the transaction it " +
 			"opens (lockAskOwners, events.LockOwnerRows)",
 	},
-	"internal/dispatch/grapherase/erase.go": {
-		"apply": "the owner lock of every owner the erase writes under, which its transaction takes " +
-			"before the node's row (lockInStoreOrder, events.LockOwnerRows); it writes a table this " +
-			"scan cannot read, which may be a comments row the erase deletes",
-	},
 	"internal/dispatch/refs/comment_nodes.go": {
 		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
 			"reads the rows (LockCommentOwners): the backfill's comment batch (graphcensus's " +
@@ -413,7 +408,6 @@ var itemRowLockNoRow = map[string]map[string]string{
 			"holds it behind both owners' locks (graphcensus' " +
 			"TestTheAskBatchesTakeEveryOwnerRowBeforeTheirRows)",
 	},
-	"internal/dispatch/grapherase/erase.go":   {"apply": itemRowCallersTransaction},
 	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,

@@ -254,8 +254,8 @@ func retiredDocumentSQL(document string) string {
 // names, since the block index states a block's membership of each document it moves into and
 // retracts none when the block is dropped. An artifact that is no issue's tree holds no record
 // here. Every reader that takes the document of a room's block that may have left the room - an
-// ask's block (AskBlockDocumentSQL), an erased block (grapherase), a block a write's event names
-// (CountedChanges) - takes it from here.
+// ask's block (AskBlockDocumentSQL), a block a write's event names (CountedChanges) - takes it
+// from here.
 func RoomBlockDocumentSQL(tree, block string) string {
 	// The node's address is read first, behind a fence, and the tuples are read in a lateral keyed
 	// on it, so they are probed on the node (from_id) and never scanned by kind. An in_document
@@ -3016,8 +3016,7 @@ type heldLink struct{ kind, toKind, toID string }
 // declare. It is a read of its own, through q, for a statement that binds the kinds rather than
 // selects them: inside that statement the read of the attribute nodes, which no key of
 // graph_nodes names but their kind, would be its one read of graph_nodes that probes no node by
-// its key (TestTheHeldDocumentReadProbesEachMembersNodeOnce, grapherase's
-// TestTheBlockersReadProbesEachStatingNodeOnce).
+// its key (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
 func ReadBlockRefKinds(ctx context.Context, q Queryer) ([]string, error) {
 	rows, err := q.Query(ctx, BlockRefKindsSQL)
 	if err != nil {
@@ -3034,7 +3033,7 @@ func ReadBlockRefKinds(ctx context.Context, q Queryer) ([]string, error) {
 // whose links the release before this one drops by deleting their rows: a mention and a pointer
 // of each `block[]` attribute the store's type nodes declare (ReadBlockRefKinds), and a decision's
 // ties, its decided_by, from_ask and shaped (typedKinds, TypedFacts.pairs). It is the census's own
-// reading of the tuples a block_refs row states (graphcensus's DigestedTuple).
+// reading of the tuples a block_refs row states (graphcensus's blockRefKinds and tieKinds).
 func heldLinkKinds(ctx context.Context, q Queryer) ([]string, error) {
 	kinds, err := ReadBlockRefKinds(ctx, q)
 	if err != nil {

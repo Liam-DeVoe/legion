@@ -47,7 +47,7 @@ func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testi
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	owner := events.OwnerRows{}
-	owner.Add(rig.otherIssue, "", "the document of "+rig.otherIssueCheck)
+	owner.Add(rig.otherIssue, "")
 	if err := events.LockOwnerRows(ctx, tx, owner); err != nil {
 		t.Fatalf("take the owner lock of the check's document: %v", err)
 	}

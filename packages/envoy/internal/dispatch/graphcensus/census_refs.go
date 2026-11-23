@@ -199,7 +199,7 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 			if move.issue == "" {
 				owner = move.document
 			}
-			owners.Add(move.issue, owner, "the references of document "+move.document)
+			owners.Add(move.issue, owner)
 			if len(documents) == 0 || documents[len(documents)-1] != move.document {
 				documents = append(documents, move.document)
 			}

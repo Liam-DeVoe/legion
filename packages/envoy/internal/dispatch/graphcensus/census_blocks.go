@@ -138,16 +138,15 @@ var blockProjections = []projection{{
 	note: "the text of every block of a document that owes no block index: the row side is each document_blocks row" +
 		" that names its node, and the digest is the sha256 of the newest text its document_block_texts rows hold, or" +
 		" the row's text_sha256 where none holds one, against the sha256 of the text value its node holds now, so a" +
-		" block with no text, or with another text than the one its rows hold, is a difference, and an erase that" +
-		" rewrites both alike reads none; a block of a document still owed its index, or of an issue room any" +
+		" block with no text, or with another text than the one its rows hold, is a difference; a block of a document" +
+		" still owed its index, or of an issue room any" +
 		" artifact of which is, is on neither side, since the reconciliation writes its text, and a census of" +
 		" documents that all owe theirs reads none of this kind; and a block of a document of an issue that has not" +
 		" converted which no pass of this build's rule has stated, as the release before leaves every document it" +
 		" indexed, is on neither side and counted as unstated_rows, since only this build's pass writes its text",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
 	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
-	// text of: the erase rewrites the quote of an erased block in both a holding block's rows and
-	// its text values (grapherase's redactBlocks) and leaves text_sha256 as the version stated it.
+	// text of.
 	rows: `
 		select 'block_text ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || coalesce((

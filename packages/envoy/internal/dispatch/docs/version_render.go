@@ -678,24 +678,6 @@ func (s *Service) ReviseQueries(ctx context.Context, tx pgx.Tx, issueKey string,
 	return graphstore.Joined(nodes...), nil
 }
 
-// ForgetVersionRenders deletes, in tx, the version_renders row of each version a statement of
-// tx deletes without deleting its document - version numbers[i] of the document artifacts[i] -
-// and answers how many it deleted. A delete of a version row runs it beside that delete, in the
-// same transaction (grapherase's erase), so no row is left naming a version that is gone; a
-// delete of the document takes the rows by their foreign key. The census of the rendered versions
-// reads a row whose version is gone as a difference (graphcensus.CompareVersionRenders).
-func ForgetVersionRenders(ctx context.Context, tx pgx.Tx, artifacts []string, numbers []int32) (int64, error) {
-	tag, err := tx.Exec(ctx, `
-		delete from version_renders where exists (
-			select 1 from unnest($1::uuid[], $2::int[]) as doomed (artifact, number)
-			where doomed.artifact = version_renders.artifact_id and doomed.number = version_renders.number)`,
-		artifacts, numbers)
-	if err != nil {
-		return 0, fmt.Errorf("delete the version_renders rows of %d versions: %w", len(artifacts), err)
-	}
-	return tag.RowsAffected(), nil
-}
-
 // versionRenderAt renders the document artifactID as of at for the census of the rendered
 // versions: RenderAt's markdown, as the server reads the store.
 func versionRenderAt(ctx context.Context, q graphstore.Queryer, artifactID string, at time.Time) (string, error) {

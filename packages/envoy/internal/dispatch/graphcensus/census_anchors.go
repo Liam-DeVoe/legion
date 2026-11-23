@@ -153,7 +153,7 @@ func writeAnchorBatch(ctx context.Context, database *store.Store, batch []anchor
 		owners := events.OwnerRows{}
 		ids := make([]string, len(batch))
 		for index, comment := range batch {
-			owners.Add(comment.issue, comment.artifact, "comment "+comment.id)
+			owners.Add(comment.issue, comment.artifact)
 			ids[index] = comment.id
 		}
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
