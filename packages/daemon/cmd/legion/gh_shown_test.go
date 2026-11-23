@@ -337,7 +337,7 @@ var ghFormattedValues = map[string]string{
 	"parseGhHelp: %s strings.Join(cmd.path, \" \")":                       "the command path gh's help names",
 	"parseGhHelp: %s strings.Join(slices.Sorted(maps.Keys(ghPassedOnPlaceholders)), \", \")": "a table's placeholders",
 	"parseGhHelp: %s what (9 places)":                                       "the command as ghWalk.named names it, help-listed words or places",
-	"printGhRefusal: %s shown.String()":                                     "the refusal through the URL rule",
+	"printGhRefusal: %s redact.URLCredentials(err.Error())":                 "the refusal through the URL rule",
 	"readGhCommand: %s what":                                                "the command as ghWalk.named names it, help-listed words or places",
 	"readGhHelp: %s bound (2 places)":                                       "a duration",
 	"readGhHelp: %v context.Cause(ctx) (2 places)":                          "the cause of a stop: a signal or a deadline",

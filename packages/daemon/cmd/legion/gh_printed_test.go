@@ -138,8 +138,8 @@ func TestLegionGhNamesAStrayArgumentOrOptionWithoutItsValue(t *testing.T) {
 	}
 }
 
-// An SSH login printGhRefusal leaves as it is stands at the start of the text or after a
-// separator: an ssh URL glued to a URL holding a token goes through the URL rule with it.
+// An ssh URL glued to a URL holding a token goes through the URL rule with it, so no part of the
+// token prints.
 func TestPrintGhRefusalLeavesNoLoginGluedToAToken(t *testing.T) {
 	at := "@"
 	for _, text := range []string{
@@ -226,18 +226,19 @@ func TestReadGitRemotesNamesAnUnreadableLineByItsRemoteAlone(t *testing.T) {
 	}
 }
 
-// An ssh remote's user name alone (`git@host:owner/repo`, `ssh://git@host/…`) is an SSH login,
-// not a credential: legion gh prints it with the host, the one the alias-host refusal is about,
-// and leaves it so through the URL rule it writes refusals through. It prints the URL as gh reads
-// it, which drops a port and reads git+ssh as ssh. A password in an ssh remote is a credential,
-// and that remote prints as the mark.
-func TestLegionGhPrintsAnSSHLoginsUserAndHost(t *testing.T) {
+// An ssh remote's user name alone (`git@host:owner/repo`, `ssh://git@host/…`) prints as the mark,
+// its host with it, as every other user info does: the rule cannot tell an SSH login from a token
+// written as the user (`<token>@gh-work:owner/repo`), and newRoot passes every command's stderr
+// through the URL rule whatever remoteShown writes. remoteShown reads the URL as gh reads it,
+// which drops a port and reads git+ssh as ssh, and keeps the path, the repository it names.
+func TestLegionGhPrintsAnSSHRemotesLoginAsTheMark(t *testing.T) {
 	at := "@"
 	for raw, want := range map[string]string{
-		"git" + at + "gh-work:sjawhar/legion.git":                  "ssh://git" + at + "gh-work/sjawhar/legion.git",
-		"ssh://git" + at + "github.com/sjawhar/legion.git":         "ssh://git" + at + "github.com/sjawhar/legion.git",
-		"ssh://git" + at + "ghe.example.com:2222/acme/widgets":     "ssh://git" + at + "ghe.example.com/acme/widgets",
-		"git+ssh://deploy" + at + "github.com/acme/widgets":        "ssh://deploy" + at + "github.com/acme/widgets",
+		"git" + at + "gh-work:sjawhar/legion.git":                  "ssh://[a URL with credentials]/sjawhar/legion.git",
+		madeUpGhToken + at + "gh-work:sjawhar/legion.git":          "ssh://[a URL with credentials]/sjawhar/legion.git",
+		"ssh://git" + at + "github.com/sjawhar/legion.git":         "ssh://[a URL with credentials]/sjawhar/legion.git",
+		"ssh://git" + at + "ghe.example.com:2222/acme/widgets":     "ssh://[a URL with credentials]/acme/widgets",
+		"git+ssh://deploy" + at + "github.com/acme/widgets":        "ssh://[a URL with credentials]/acme/widgets",
 		"ssh://git:zqpass0123" + at + "gh-work/sjawhar/legion.git": "ssh://[a URL with credentials]/sjawhar/legion.git",
 	} {
 		if got := remoteShown(raw); got != want {
@@ -246,28 +247,28 @@ func TestLegionGhPrintsAnSSHLoginsUserAndHost(t *testing.T) {
 	}
 	s := &selectors{}
 	err := s.fromWorkingDirectory(func() ([]ghRemote, error) {
-		return []ghRemote{{name: "work", url: "git" + at + "gh-work:sjawhar/legion.git"}}, nil
+		return []ghRemote{{name: "work", url: madeUpGhToken + at + "gh-work:sjawhar/legion.git"}}, nil
 	}, false)
 	if err == nil {
 		t.Fatal("fromWorkingDirectory = nil, want the alias-host refusal")
 	}
-	if want := `remote "work" (ssh://git` + at + `gh-work/sjawhar/legion.git)`; !strings.Contains(ghPrinted(err), want) {
-		t.Errorf("legion gh printed %q, want it to name %q, the host the refusal is about", ghPrinted(err), want)
+	if printed := ghPrinted(err); strings.Contains(printed, madeUpGhToken) || !strings.Contains(printed, `remote "work" (ssh://[a URL with credentials]/sjawhar/legion.git)`) {
+		t.Errorf("legion gh printed %q, want the remote named with its user info as the mark and no token", printed)
 	}
 }
 
-// printGhRefusal writes every URL through the URL rule but an SSH login: a URL with user info and
-// a password, one with a query, and an ssh URL whose user holds a password or whose path runs on
-// past a character the rule ends a URL at, each lose their credential; the SSH login stays.
-func TestPrintGhRefusalLeavesOnlyAnSSHLogin(t *testing.T) {
+// printGhRefusal writes every URL through the URL rule: a URL with user info and a password, one
+// with a query, an ssh URL whose user holds a password, and an ssh URL whose user is a name alone,
+// each lose their user info and query.
+func TestPrintGhRefusalWritesEveryURLThroughTheRule(t *testing.T) {
 	at := "@"
 	text := "a https://u:" + madeUpGhToken + at + "h.example/x, b https://h.example/x?t=" + madeUpGhToken +
-		", c ssh://u:" + madeUpGhToken + at + "h.example/x, d ssh://git" + at + "h.example/o/r.git and e ssh://git" + at + "h.example/o?t=" + madeUpGhToken
+		", c ssh://u:" + madeUpGhToken + at + "h.example/x, d ssh://" + madeUpGhToken + at + "h.example/o/r.git and e ssh://git" + at + "h.example/o?t=" + madeUpGhToken
 	printed := ghPrinted(errors.New(text))
 	if strings.Contains(printed, madeUpGhToken) {
 		t.Errorf("printGhRefusal wrote %q, which holds the token", printed)
 	}
-	if want := "d ssh://git" + at + "h.example/o/r.git and"; !strings.Contains(printed, want) {
-		t.Errorf("printGhRefusal wrote %q, want the SSH login %q kept", printed, want)
+	if want := "d ssh://[a URL with credentials]/o/r.git and"; !strings.Contains(printed, want) {
+		t.Errorf("printGhRefusal wrote %q, want %q", printed, want)
 	}
 }

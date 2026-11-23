@@ -631,14 +631,14 @@ func (r ghRemote) what() string {
 
 // remoteShown is a remote's URL as legion gh prints it: read as gh reads it (ghParseGitURL, which
 // makes an scp-like `git@host:owner/repo` an ssh URL), its query and fragment not at all, its path,
-// the repository it names, as written. An ssh URL's user name alone (`ssh://git@host/owner/repo`,
-// the scp-like `git@host:…`) is an SSH login, not a credential, so it prints with the host, which
-// the alias-host refusal is about (sshLogin). Any other URL prints through redact.URL, so its user
-// info, a password above all, prints as the mark: a token written into a remote URL
-// (`https://x-access-token:<token>@github.com/owner/repo`, which a CI checkout writes) printed
-// whole. A local path, with no ":", "@", "?" or "#", prints as written: it holds no scheme, user
-// info, query or fragment. Anything else gh's parser reads as no URL with a host prints as
-// redact.URLNotPrinted.
+// the repository it names, as written, all through redact.URL, so its user info prints as the
+// mark: a token written into a remote URL (`https://x-access-token:<token>@github.com/owner/repo`,
+// which a CI checkout writes) printed whole. An ssh URL's user name alone (`ssh://git@host/…`, the
+// scp-like `git@host:…`) prints as the mark too, its host with it: the rule cannot tell an SSH
+// login from a token written as the user (`<token>@gh-work:owner/repo`), and every command's
+// stderr passes the URL rule (newRoot) whatever this writes. A local path, with no ":", "@", "?"
+// or "#", prints as written: it holds no scheme, user info, query or fragment. Anything else gh's
+// parser reads as no URL with a host prints as redact.URLNotPrinted.
 func remoteShown(raw string) string {
 	if !strings.ContainsAny(raw, ":@?#") {
 		return raw
@@ -647,45 +647,14 @@ func remoteShown(raw string) string {
 	if err != nil {
 		return redact.URLNotPrinted
 	}
-	_, password := u.User.Password()
-	if login := u.Scheme + "://" + u.User.Username() + "@" + u.Host + u.EscapedPath(); (u.Scheme == "ssh" || u.Scheme == "git+ssh") &&
-		u.User != nil && !password && sshLogin.FindString(login) == login {
-		return login
-	}
 	return redact.URL(u.String())
 }
 
-// sshLogin is an ssh URL whose user info is a user name alone, of the characters an SSH login
-// takes, and whose host, port and path hold no "@", "?", "#" or space: remoteShown prints one
-// whole, and printGhRefusal leaves one as it is. A password, a user holding any other character
-// and an "@" past the host are no SSH login's, and print as the URL rule writes them.
-var sshLogin = regexp.MustCompile("(?:git\\+)?ssh://[A-Za-z0-9._-]+@[A-Za-z0-9.\\-\\[\\]:]+(?:/[^\\s\"'`<>?#@]*)?")
-
 // printGhRefusal writes err to stderr as `legion gh: <err>`, through redact.URLCredentials as
 // printRefusal writes every other command's refusal, a URL a person put in a selector (GH_REPO,
-// -R), a git config key or a remote's marker included, but for an SSH login remoteShown printed
-// (sshLogin), which the URL rule would write as the mark: its user is no credential. A login is
-// left only where remoteShown writes one, at the start of the text or after a space, a quote, a
-// backtick, "(" or "<", and up to a space, a quote, a backtick, ")", ">", "," or ";": an ssh URL
-// glued to the text before it (`https://u:<token>ssh://git@h/o/r`) goes through the URL rule with
-// that text, which masks the credential before it.
+// -R), a git config key or a remote's marker included.
 func printGhRefusal(stderr io.Writer, err error) {
-	text := err.Error()
-	var shown strings.Builder
-	last := 0
-	for _, match := range sshLogin.FindAllStringIndex(text, -1) {
-		if match[0] > 0 && !strings.ContainsRune(" \t\n\"'`(<", rune(text[match[0]-1])) {
-			continue
-		}
-		if match[1] < len(text) && !strings.ContainsRune(" \t\n\")'`<>,;", rune(text[match[1]])) {
-			continue
-		}
-		shown.WriteString(redact.URLCredentials(text[last:match[0]]))
-		shown.WriteString(text[match[0]:match[1]])
-		last = match[1]
-	}
-	shown.WriteString(redact.URLCredentials(text[last:]))
-	fmt.Fprintf(stderr, "legion gh: %s\n", shown.String())
+	fmt.Fprintf(stderr, "legion gh: %s\n", redact.URLCredentials(err.Error()))
 }
 
 // ghRemoteSchemes are the URL schemes gh's git.ParseURL reads as they are; a remote with no such
