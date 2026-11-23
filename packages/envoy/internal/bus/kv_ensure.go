@@ -252,8 +252,9 @@ func openKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js 
 			// end the start the create above has just carried through.
 			createdElsewhere = err != nil
 			kv, err = awaitBucketApplied(ctx, config.Bucket, bucketMissing, lookUpBucket)
-		case unanswered(err) || ctx.Err() != nil:
-			// No answer, or the wait ended: the server refused nothing, so no setting is named.
+		case unanswered(err) || ctx.Err() != nil || errors.Is(err, ErrNoServerVersion):
+			// No answer, the wait ended, or no server version to choose the stream by: the
+			// server refused nothing, so no setting is named.
 			err = namedRequest(create, err)
 		default:
 			err = namedRequest(create, refusedSettings(err, nil, &nats.StreamConfig{Replicas: config.Replicas}))

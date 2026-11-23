@@ -757,7 +757,7 @@ func TestEveryRecreateAndCheckPrintsTheBestEffortWarning(t *testing.T) {
 			if code != c.code || !strings.HasPrefix(stderr, bestEffortWarning) {
 				t.Fatalf("%v = %d, want %d with the warning first on standard error:\n%s", c.args, code, c.code, stderr)
 			}
-			for _, way := range []string{"an omitted host, dev box or namespace", "--namespace, --host and --this-machine you name", "a renamed binary", "a pod deleted with --force", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
+			for _, way := range []string{"an omitted host, dev box or namespace", "--namespace, --host and --this-machine you name", "a renamed binary", "a program a pod's launcher picks from what the pod does not show", "a pod deleted with --force", "a writer that starts between the final scan and the create", "an unheld restore", "confirm on each host that it has ended"} {
 				if !strings.Contains(stderr, way) {
 					t.Fatalf("the warning does not name %q:\n%s", way, stderr)
 				}

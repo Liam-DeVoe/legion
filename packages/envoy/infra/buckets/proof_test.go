@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -487,23 +489,42 @@ func TestAContainerWhoseEnvFromMaySetTheMapsVariablesBlocksWhatTheyCouldSelect(t
 // the listener buckets when its env makes it a listener. At 65a488fe53 the map read the command's
 // first word alone, so each of these mapped to no bucket and the recreate went on; at 02facfa07d it
 // read shells alone, so env, tini, dumb-init and the entrypoint still mapped to none, and a listener
-// by its env whose shell named envoy-dispatch wrote the CI state bucket alone. The controls do not
-// block a bucket they do not write: a launcher or a shell running another program, a shell given a
-// script file, and envoy-dispatch whose flags name the listener, which is no launcher.
+// by its env whose shell named envoy-dispatch wrote the CI state bucket alone.
+//
+// A launcher's program can come from its environment: a shell's $PROGRAM or ${PROGRAM}, and a
+// $(PROGRAM) reference the kubelet fills in from the container's env before it starts the
+// container, in the command or in args. The writer map reads each such variable the pod's env sets
+// with its value: [$(PROGRAM)] with PROGRAM=envoy-dispatch runs envoy-dispatch, and a shell running
+// "$PROGRAM" with PROGRAM=/usr/local/bin/envoy-dispatch names it. One whose value the pod does not
+// show - from a Secret, or one an envFrom source may set - may start any writer, so it writes every
+// copied bucket, the blocker naming the expansion; so does a shell exporting ENVOY_MACHINE_ID, the
+// variable every listener needs, for a listener its env names. At 69cde74210 each of these mapped
+// to no bucket, or to envoy-dispatch's alone, and the recreate of a bucket it writes went on, the
+// proof saying no pod runs a writer of it.
+//
+// The controls do not block a bucket they do not write: a launcher or a shell running another
+// program, envoy-dispatch whose flags name the listener, which is no launcher, a launcher whose
+// variable the pod's env sets to another program, a shell expanding only variables its pod does not
+// set (its own, and TMPDIR), and a shell expanding its pod's own name, from a field of the pod.
 func TestAWriterStartedThroughALauncherBlocksWhatItWrites(t *testing.T) {
 	pod := func(container fakeContainer) fakePod {
 		return fakePod{namespace: "envoy", name: "pod-launched", containers: []fakeContainer{container}}
 	}
 	const script = "ENVOY_MACHINE_ID=x exec envoy-listener"
-	listenerNote := func(through string) string {
-		return " (its command or args name envoy-listener, run through " + through + ", which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)"
+	listenerNote := func(named, through string) string {
+		return " (its command or args name " + named + ", run through " + through + ", which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)"
 	}
-	dispatchNote := func(through string) string {
-		return " (its command or args name envoy-dispatch, run through " + through + ")"
+	dispatchNote := func(named, through string) string {
+		return " (its command or args name " + named + ", run through " + through + ")"
 	}
-	listenerBlocks := func(through string) map[string]string {
-		return map[string]string{bus.KnownSessionBucket: listenerNote(through), bus.CIStateBucket: listenerNote(through)}
+	unreadNote := func(expansion string) string {
+		return ` (its command or args expand "` + expansion + `", whose value the pod does not show, so it may start any writer)`
 	}
+	both := func(note string) map[string]string {
+		return map[string]string{bus.KnownSessionBucket: note, bus.CIStateBucket: note}
+	}
+	listenerBlocks := func(through string) map[string]string { return both(listenerNote("envoy-listener", through)) }
+	fromSecret := map[string]any{"name": "PROGRAM", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "launch", "key": "program"}}}
 	neither := []string{bus.KnownSessionBucket, bus.CIStateBucket}
 	for _, c := range []struct {
 		name      string
@@ -514,41 +535,72 @@ func TestAWriterStartedThroughALauncherBlocksWhatItWrites(t *testing.T) {
 		passes []string
 	}{
 		{"sh -c", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", script}},
-			bus.CopiedBuckets(), listenerBlocks("sh"), nil},
+			bus.CopiedBuckets(), listenerBlocks(`"sh"`), nil},
 		{"bash -c", fakeContainer{Name: "app", Command: []string{"bash", "-c", script}},
-			bus.CopiedBuckets(), listenerBlocks("bash"), nil},
+			bus.CopiedBuckets(), listenerBlocks(`"bash"`), nil},
 		{"sh -c with its script in args", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c"}, Args: []string{script}},
-			bus.CopiedBuckets(), listenerBlocks("sh"), nil},
+			bus.CopiedBuckets(), listenerBlocks(`"sh"`), nil},
 		{"env", fakeContainer{Name: "app", Command: []string{"/usr/bin/env", "ENVOY_MACHINE_ID=x", "envoy-listener"}},
-			bus.CopiedBuckets(), listenerBlocks("env"), nil},
+			bus.CopiedBuckets(), listenerBlocks(`"env"`), nil},
 		{"tini --", fakeContainer{Name: "app", Command: []string{"tini", "--", "/usr/local/bin/envoy-listener"}},
-			bus.CopiedBuckets(), listenerBlocks("tini"), nil},
+			bus.CopiedBuckets(), listenerBlocks(`"tini"`), nil},
 		{"dumb-init", fakeContainer{Name: "app", Command: []string{"/usr/bin/dumb-init", "envoy-listener"}},
-			bus.CopiedBuckets(), listenerBlocks("dumb-init"), nil},
+			bus.CopiedBuckets(), listenerBlocks(`"dumb-init"`), nil},
 		{"args alone, under the image's entrypoint", fakeContainer{Name: "app", Args: []string{"envoy-listener"}},
 			bus.CopiedBuckets(), listenerBlocks("the image's entrypoint"), nil},
 		{"sh -c running envoy-dispatch", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec /usr/local/bin/envoy-dispatch"}},
-			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote("sh")}, []string{bus.KnownSessionBucket}},
+			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote("envoy-dispatch", `"sh"`)}, []string{bus.KnownSessionBucket}},
 		{"tini -- envoy-dispatch", fakeContainer{Name: "app", Command: []string{"tini", "--", "envoy-dispatch"}},
-			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote("tini")}, []string{bus.KnownSessionBucket}},
+			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote("envoy-dispatch", `"tini"`)}, []string{bus.KnownSessionBucket}},
 		{"a listener by its env whose shell names envoy-dispatch", fakeContainer{Name: "app", Env: env("ENVOY_MACHINE_ID", "x"),
 			Command: []string{"/bin/sh", "-c", "exec /app/start --dispatch=http://envoy-dispatch:8080"}},
-			bus.CopiedBuckets(), map[string]string{bus.KnownSessionBucket: "", bus.CIStateBucket: dispatchNote("sh")}, nil},
+			bus.CopiedBuckets(), map[string]string{bus.KnownSessionBucket: "", bus.CIStateBucket: dispatchNote("envoy-dispatch", `"sh"`)}, nil},
+		{`a shell running "$PROGRAM", its env setting PROGRAM to envoy-dispatch`, fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec "$PROGRAM"`},
+			Env: env("PROGRAM", "/usr/local/bin/envoy-dispatch")},
+			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: dispatchNote(`envoy-dispatch through "$PROGRAM", which the pod's env sets`, `"sh"`)}, []string{bus.KnownSessionBucket}},
+		{"a shell running ${PROGRAM}, its env setting PROGRAM from a Secret", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec ${PROGRAM} --serve"},
+			Env: []map[string]any{fromSecret}},
+			bus.CopiedBuckets(), both(unreadNote("${PROGRAM}")), nil},
+		{"a shell exporting ENVOY_MACHINE_ID and running a listener its env names", fakeContainer{Name: "app",
+			Command: []string{"/bin/sh", "-c", `export ENVOY_MACHINE_ID=gke ENVOY_WEBHOOKS=github; exec "$LISTENER"`}, Env: env("LISTENER", "/usr/local/bin/envoy-listener")},
+			bus.CopiedBuckets(), both(listenerNote("ENVOY_MACHINE_ID", `"sh"`)), nil},
+		{"[$(PROGRAM)], its env setting PROGRAM to envoy-dispatch", fakeContainer{Name: "app", Command: []string{"$(PROGRAM)"}, Env: env("PROGRAM", "/usr/local/bin/envoy-dispatch")},
+			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: ""}, []string{bus.KnownSessionBucket}},
+		{"[tini, --] with args [$(PROGRAM)], its env setting PROGRAM to envoy-listener", fakeContainer{Name: "app", Command: []string{"tini", "--"}, Args: []string{"$(PROGRAM)"},
+			Env: env("PROGRAM", "/usr/local/bin/envoy-listener")},
+			bus.CopiedBuckets(), listenerBlocks(`"tini"`), nil},
+		{"[$(PROGRAM)], its env setting PROGRAM from a Secret", fakeContainer{Name: "app", Command: []string{"$(PROGRAM)"}, Env: []map[string]any{fromSecret}},
+			bus.CopiedBuckets(), both(unreadNote("$(PROGRAM)")), nil},
+		{"args [$(APP_PROGRAM)] under the image's entrypoint, an envFrom source of prefix APP_ setting it", fakeContainer{Name: "app", Args: []string{"$(APP_PROGRAM)"},
+			EnvFrom: []map[string]any{{"prefix": "APP_", "configMapRef": map[string]any{"name": "launch"}}}},
+			bus.CopiedBuckets(), both(unreadNote("$(APP_PROGRAM)")), nil},
 		{"control: a launcher running another program", fakeContainer{Name: "app", Command: []string{"tini", "--", "nats-server", "--config", "/etc/nats/nats.conf"}},
 			nil, nil, neither},
 		{"control: a shell whose script names neither", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", "exec nats-server --config /etc/nats/nats.conf"}},
 			nil, nil, neither},
-		{"control: a shell given a script file", fakeContainer{Name: "app", Command: []string{"/bin/bash", "/opt/start.sh"}},
-			nil, nil, neither},
 		{"control: envoy-dispatch whose flags name the listener", fakeContainer{Name: "app", Command: []string{"/usr/local/bin/envoy-dispatch", "--listener-url=http://envoy-listener:8080"}},
 			[]string{bus.CIStateBucket}, map[string]string{bus.CIStateBucket: ""}, []string{bus.KnownSessionBucket}},
+		{`control: a shell running "$PROGRAM", its env setting PROGRAM to another program`, fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec "$PROGRAM"`},
+			Env: env("PROGRAM", "/usr/local/bin/nats-server")},
+			nil, nil, neither},
+		{"control: [tini, --] with args [$(PROGRAM)], its env setting PROGRAM to another program", fakeContainer{Name: "app", Command: []string{"tini", "--"}, Args: []string{"$(PROGRAM)"},
+			Env: env("PROGRAM", "nats-server")},
+			nil, nil, neither},
+		{"control: a shell expanding only variables its pod does not set", fakeContainer{Name: "app",
+			Command: []string{"/bin/sh", "-c", `err=${TMPDIR:-/tmp}/run.err; for f in /etc/nats/*.conf; do test -r "$f"; done; exec nats-server 2>"$err"`}},
+			nil, nil, neither},
+		{"control: a shell expanding its pod's own name", fakeContainer{Name: "app", Command: []string{"/bin/sh", "-c", `exec nats-server --name "$POD"`},
+			Env: []map[string]any{{"name": "POD", "valueFrom": map[string]any{"fieldRef": map[string]any{"fieldPath": "metadata.name"}}}}},
+			nil, nil, neither},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var pods podList
 			if err := json.Unmarshal([]byte(podsJSON(t, pod(c.container))), &pods); err != nil {
 				t.Fatalf("decode the pod: %v", err)
 			}
-			if got := pods.Items[0].Spec.Containers[0].writes(); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(c.writes))) {
+			container := pods.Items[0].Spec.Containers[0]
+			container.pod = &pods.Items[0]
+			if got := container.writes(); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(c.writes))) {
 				t.Errorf("the container writes %v, want %v", got, c.writes)
 			}
 			w := &world{podsIn: map[string]string{"envoy": podsJSON(t, pod(c.container))}}
@@ -564,6 +616,101 @@ func TestAWriterStartedThroughALauncherBlocksWhatItWrites(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A blocker's launcher is printed quoted (%q): a pod's command can hold any bytes, and whoever may
+// create pods in a named namespace could otherwise put terminal control sequences on the
+// operator's terminal that hide or forge the lines around it. At 69cde74210 the launcher's base
+// name was printed as it is. The control is a launcher of plain letters, printed with its quotes.
+func TestABlockersLauncherIsPrintedQuoted(t *testing.T) {
+	for _, c := range []struct{ name, launcher, printed string }{
+		{"a launcher holding a terminal control sequence", "/bin/sh\x1b[2K\rhidden", `"sh\x1b[2K\rhidden"`},
+		{"control: a launcher of plain letters", "/bin/sh", `"sh"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := &world{podsIn: map[string]string{"envoy": podsJSON(t, fakePod{namespace: "envoy", name: "pod-launched", containers: []fakeContainer{
+				{Name: "app", Command: []string{c.launcher, "-c", "exec envoy-listener"}}}})}}
+			code, stdout, stderr := recreateIn(t, w, bus.SessionBucket, "envoy")
+			if want := "run through " + c.printed + ", which may set"; code != 1 || !strings.Contains(stderr, want) || strings.ContainsRune(stderr, '\x1b') {
+				t.Errorf("recreate beside a launcher %q = %d, want 1 naming it as %s and no escape byte\n%s%q", c.launcher, code, c.printed, stdout, stderr)
+			}
+		})
+	}
+}
+
+// BEST EFFORT - INVERT WHEN THE SERVER-SIDE HOLD LEAVES NO WRITER A CONNECTION. A launcher that
+// picks its program from what the pod does not show - a script file, a command's output it runs,
+// a variable of the image's own environment, which the pod's env does not set - names no writer
+// the proof can read, so recreate goes ahead beside it. The hold refuses that writer's connection
+// whatever the pod shows. The control is the shell of the last row with PROGRAM set to
+// envoy-listener in the pod's own env, which refuses, so the passes come from what the pod hides,
+// not from a fake that hides the pod.
+func TestBestEffortProofMissesAProgramALauncherPicksFromWhatThePodDoesNotShowUntilTheServerSideHoldLands(t *testing.T) {
+	pod := func(container fakeContainer) map[string]string {
+		return map[string]string{"envoy": podsJSON(t, fakePod{namespace: "envoy", name: "pod-launched", containers: []fakeContainer{container}})}
+	}
+	shell := func(script string) []string { return []string{"/bin/sh", "-c", script} }
+	shown := &world{podsIn: pod(fakeContainer{Name: "app", Command: shell(`exec "$PROGRAM"`), Env: env("PROGRAM", "/usr/local/bin/envoy-listener")})}
+	if code, _, stderr := recreateIn(t, shown, bus.SessionBucket, "envoy"); code != 1 || !strings.Contains(stderr, "pod-launched") {
+		t.Fatalf("control: recreate beside a shell whose pod's env names envoy-listener = %d, want refused naming it:\n%s", code, stderr)
+	}
+	for _, c := range []struct {
+		name      string
+		container fakeContainer
+	}{
+		{"a script file", fakeContainer{Name: "app", Command: []string{"/bin/sh", "/opt/start.sh"}}},
+		{"a command's output", fakeContainer{Name: "app", Command: shell(`exec "$(cat /etc/program)"`)}},
+		{"a variable of the image's environment", fakeContainer{Name: "app", Command: shell(`exec "$PROGRAM"`)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hidden := &world{podsIn: pod(c.container)}
+			if code, stdout, stderr := recreateIn(t, hidden, bus.SessionBucket, "envoy"); code != 0 || !strings.Contains(stdout, "created "+bus.SessionBucket) {
+				t.Fatalf("recreate beside a launcher picking its program from %s = %d, want today's best-effort outcome, the bucket recreated:\n%s%s", c.name, code, stdout, stderr)
+			}
+		})
+	}
+}
+
+// The pods this repository's components render - the clustered hub's tailnet host and its session
+// listener, and Dispatch's front door - write what they run and nothing else: the session listener
+// writes the listener buckets, and no tailnet or front-door container writes any, though their
+// shell scripts expand their own variables (socket, err), the image's (TMPDIR), commands' output
+// ($(date -u +%s)) and the pod's own name (HOSTNAME, from metadata.name). So a recreate naming the
+// namespaces they run in is not refused for them. The scripts are each component's golden render
+// (gcp/testdata). A rule that took every expansion in a launcher's words for an unread one would
+// block on each of those scripts: with launch's "not set by the pod" read as unread, the tailnet
+// and front-door rows fail. The test fails too when it reads no container, or no script that
+// expands a variable, since it would then prove nothing.
+func TestTheRenderedPodsWriteOnlyWhatTheyRun(t *testing.T) {
+	for file, want := range map[string]map[string][]string{
+		"clustered-hub-tailnet-pod":  {},
+		"dispatch-tailnet-pod":       {},
+		"clustered-hub-listener-pod": {"listener": listenerBuckets},
+	} {
+		raw, err := os.ReadFile(filepath.Join("..", "gcp", "testdata", file+".golden"))
+		if err != nil {
+			t.Fatalf("read %s's render: %v", file, err)
+		}
+		var pod listedPod
+		if err := json.Unmarshal(raw, &pod); err != nil {
+			t.Fatalf("decode %s's render: %v", file, err)
+		}
+		read, expanding := 0, 0
+		for _, container := range slices.Concat(pod.Spec.InitContainers, pod.Spec.Containers) {
+			container.pod = &pod
+			read++
+			if shellExpansion.MatchString(strings.Join(slices.Concat(container.Command, container.Args), "\n")) {
+				expanding++
+			}
+			if got := container.writes(); !slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want[container.Name]))) {
+				t.Errorf("%s's container %s writes %v, want %v", file, container.Name, got, want[container.Name])
+			}
+		}
+		if read == 0 || (len(want) == 0 && expanding == 0) {
+			t.Fatalf("%s: read %d containers, %d of them a script expanding a variable: the render proves nothing", file, read, expanding)
+		}
+		t.Logf("%s: %d containers, %d of them a script expanding a variable", file, read, expanding)
 	}
 }
 

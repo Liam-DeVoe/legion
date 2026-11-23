@@ -29,8 +29,9 @@ import (
 // It answers the errors CreateKeyValue answers, and no handle: nats.go builds the handle from the
 // stream's info with a function it does not export, so EnsureKeyValue looks the bucket up once the
 // stream is there (awaitBucketApplied). The checks nats.go makes before it sends anything are made
-// first, in its order, and answer its errors; the server's version is read where nats.go reads it.
-// No request is sent once ctx has ended (addBucketStream).
+// first, in its order, and answer its errors; the server's version is read where nats.go reads it,
+// and a read of no version answers ErrNoServerVersion (ServerVersion). No request is sent once ctx
+// has ended (addBucketStream).
 func createBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) error {
 	stream, err := addBucketStream(ctx, conn, js, config)
 	if errors.Is(err, nats.ErrStreamNameAlreadyInUse) && ctx.Err() == nil {
@@ -56,8 +57,19 @@ func createBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamC
 // (sentAgain, through Bounded) leaves this call running on its own goroutine, and without the read
 // that call would still send the create after its caller had answered, such as an operator's
 // `envoy-infra buckets create` interrupted while the account's info was in flight.
+//
+// The server's version is read twice, where nats.go reads it: before anything is sent, for the
+// oldest server a bucket takes, and after the account's info, for the stream's discard policy. A
+// connection can drop and start reconnecting between the two, and one that is not connected
+// reports no version, which nats.go reads as a server too old for a discard policy of new, so each
+// read goes through ServerVersion and a read of no version ends the call with ErrNoServerVersion,
+// sending nothing more.
 func addBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (*nats.StreamConfig, error) {
-	if !natsServerMinVersion(conn.ConnectedServerVersion(), 2, 6, 2) {
+	version, err := ServerVersion(conn)
+	if err != nil {
+		return nil, err
+	}
+	if !natsServerMinVersion(version, 2, 6, 2) {
 		return nil, errKeyValueServerTooOld
 	}
 	if config == nil {
@@ -72,7 +84,10 @@ func addBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamCont
 	if _, err := js.AccountInfo(); err != nil {
 		return nil, err
 	}
-	stream, err := bucketStreamConfig(config, conn.ConnectedServerVersion())
+	if version, err = ServerVersion(conn); err != nil {
+		return nil, err
+	}
+	stream, err := bucketStreamConfig(config, version)
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +98,27 @@ func addBucketStream(ctx context.Context, conn *nats.Conn, js nats.JetStreamCont
 	return stream, err
 }
 
+// ErrNoServerVersion is a connection that reports no server version where a configuration is
+// chosen by the version (ServerVersion).
+var ErrNoServerVersion = errors.New("the connection reports no server version, as one that is not connected does")
+
+// ServerVersion is the version of the server conn is connected to, for a read that chooses a
+// configuration by it: the stream a bucket's create makes (addBucketStream) and the one
+// `envoy-infra buckets create` judges a bucket against (bus.CopiedBucketStreamConfig). A connection
+// that is not connected - reconnecting, or closed - reports none (nats.go@v1.55.0
+// nats.go:2820-2832), and nats.go and natsServerMinVersion read none as a version older than any
+// minimum, so a configuration chosen by it would be one made for a server older than any the
+// deployment runs. No version is ErrNoServerVersion instead.
+func ServerVersion(conn *nats.Conn) (string, error) {
+	if version := conn.ConnectedServerVersion(); version != "" {
+		return version, nil
+	}
+	return "", ErrNoServerVersion
+}
+
 // errKeyValueServerTooOld is the error nats.go's CreateKeyValue answers, before it sends anything,
-// on a connection whose server reports a version before 2.6.2, or none (nats.go@v1.55.0
-// kv.go:423-425).
+// on a connection whose server reports a version before 2.6.2 (nats.go@v1.55.0 kv.go:423-425). It
+// answers the same for no version; addBucketStream answers ErrNoServerVersion for that.
 var errKeyValueServerTooOld = errors.New("nats: key-value requires at least server version 2.6.2")
 
 // natsBucketName copies nats.go's validBucketRe (nats.go@v1.55.0 kv.go:391), the names

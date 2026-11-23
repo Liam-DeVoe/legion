@@ -33,7 +33,9 @@
 //     (podContainer.writes). A namespace the API does not hold blocks. The pods are read through
 //     the API alone, which GKE Autopilot allows; no node's kubelet runtime list is read (Autopilot
 //     refuses nodes/proxy), so a pod deleted with --force whose containers still run is one way a
-//     writer gets past.
+//     writer gets past. A program a container's launcher picks from what the pod does not show -
+//     a script file, a file or a command's output it reads, a variable of the image's own
+//     environment - is another (podContainer.launch).
 //   - Hosts, for each --host, through ssh (or --ssh, a program taking ssh's arguments): no process
 //     on the host is named envoy-listener (or envoy-dispatch). An unreachable host blocks, and so
 //     does a query that did not run to its end or enumerated no process at all.
@@ -156,9 +158,10 @@ func Grant() (publish, subscribe []string) {
 // change. Each way it names is a test that asserts today's outcome and must flip then
 // (buckets_test.go, TestBestEffort...). create takes no proof, and its run needs no writer stopped
 // (createBuckets), so the warning and its instruction are not its to print.
-const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it five ways:
+const bestEffortWarning = `envoy-infra buckets: WARNING: this proof is best effort. A writer gets past it six ways:
   - an omitted host, dev box or namespace: only the --kube-context, --namespace, --host and --this-machine you name are checked;
   - a renamed binary: a host is checked by process name (envoy-listener, listener, dispatch, ...);
+  - a program a pod's launcher picks from what the pod does not show: a script file, a file or a command's output it reads, or a variable of the image's own environment;
   - a pod deleted with --force: a cluster is checked by the pods its API lists, not its nodes' runtimes;
   - a writer that starts between the final scan and the create: nothing holds writers out;
   - an unheld restore: check holds nothing through a later nats stream restore.
@@ -569,22 +572,25 @@ func createCommand(ctx context.Context, stdout, stderr io.Writer, natsURL string
 // The server's version decides the stream a create makes (bus.CopiedBucketStreamConfig: its
 // discard policy, new from nats-server 2.7.2 on), so it is read once, before the first read, and a
 // connection that reports none - ConnectedServerVersion answers "" while it is not connected -
-// refuses the run with its own line and reads nothing: nats.go and the bus read "" as a server too
-// old for a bucket, and every present bucket would be judged against a stream made for such a
-// server, discard old, and refused naming its discard policy as a difference.
+// refuses the run with its own line and reads nothing (bus.ServerVersion): nats.go and the bus read
+// "" as a server too old for a bucket, and every present bucket would be judged against a stream
+// made for such a server, discard old, and refused naming its discard policy as a difference. The
+// create reads the version again where nats.go does, after the account's info (bus's
+// addBucketStream), and a connection that reconnects in between reports none there: that create
+// sends no STREAM.CREATE and the run is refused with the same line, where it would have made a
+// stream of discard old.
 //
 // A read or a create the server refuses under the connection's grant is sent again until
 // refusalWait has passed since the run began (untilGranted). Once ctx has ended the run stops where
-// it is, sends no create after it and fails naming ctx's cause (stopped): every read and wait ends
+// it is, starts no create after it and fails naming ctx's cause (stopped): every read and wait ends
 // with ctx, the check before each create reads it, and the create sends no request once it has
 // ended. A create it had already sent when ctx ended is not called back, and lands: the line says
 // so.
 func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Conn, js nats.JetStreamContext, buckets []string, replicas int, announce func(bucket string)) int {
 	deadline := time.Now().Add(refusalWait)
-	version := conn.ConnectedServerVersion()
-	if version == "" {
-		fmt.Fprintln(stderr, "envoy-infra buckets create: refused: the connection reports no server version, as one that is not connected does, and each bucket is judged against the stream its create makes on the hub's version; nothing is read or created: run create again")
-		return 1
+	version, err := bus.ServerVersion(conn)
+	if err != nil {
+		return noServerVersion(stderr, "nothing is read or created")
 	}
 	var absent, differ []string
 	for _, bucket := range buckets {
@@ -628,6 +634,9 @@ func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Con
 		if ctx.Err() != nil {
 			return stopped(ctx, stderr)
 		}
+		if errors.Is(err, bus.ErrNoServerVersion) {
+			return noServerVersion(stderr, "KV_"+bucket+" is not created")
+		}
 		if !errors.Is(err, bus.ErrBucketExists) {
 			fmt.Fprintf(stderr, "envoy-infra buckets: create %s: %v\n", bucket, err)
 			return 1
@@ -652,13 +661,21 @@ func createBuckets(ctx context.Context, stdout, stderr io.Writer, conn *nats.Con
 	return 0
 }
 
+// noServerVersion refuses a create whose connection reports no server version where the version
+// chooses the stream a bucket is judged against or created as (bus.ServerVersion), saying what the
+// run left undone: a bucket a line above says was created stays.
+func noServerVersion(stderr io.Writer, undone string) int {
+	fmt.Fprintf(stderr, "envoy-infra buckets create: refused: the connection reports no server version, as one that is not connected does, and each bucket is judged against the stream its create makes on the hub's version; %s: run create again\n", undone)
+	return 1
+}
+
 // stopped fails a create whose ctx has ended, naming ctx's cause: main ends ctx on an interrupt or
-// SIGTERM, whose cause names the signal. The run sends no create after it. A create it had sent
-// before - the create of the bucket it was on, whose answer it stops waiting for - still reaches the
-// hub and lands, so the line says so and that create run again reads what the hub holds. A bucket a
-// line above says was created stays.
+// SIGTERM, whose cause names the signal. The run starts no create after it. A create it had sent
+// before - the create of the bucket it was on, whose answer it stops waiting for - still reaches
+// the hub and lands, so the line says so and that create run again reads what the hub holds. A
+// bucket a line above says was created stays.
 func stopped(ctx context.Context, stderr io.Writer) int {
-	fmt.Fprintf(stderr, "envoy-infra buckets create: stopped: %v; it sends no create after this, but one it had sent may still land: run create again to see what the hub holds\n", context.Cause(ctx))
+	fmt.Fprintf(stderr, "envoy-infra buckets create: stopped: %v; it starts no create after this, but one it had sent may still land: run create again to see what the hub holds\n", context.Cause(ctx))
 	return 1
 }
 
@@ -827,7 +844,7 @@ type podContainer struct {
 	Name    string   `json:"name"`
 	Command []string `json:"command"`
 	// Args are the words Kubernetes appends to Command, or to the image's entrypoint when Command is
-	// empty: a launcher's program or a shell's script among them (launches).
+	// empty: a launcher's program or a shell's script among them (launch).
 	Args []string `json:"args"`
 	Env  []envVar `json:"env"`
 	// EnvFrom are the Secrets and ConfigMaps each of whose keys becomes a variable of the
@@ -835,25 +852,37 @@ type podContainer struct {
 	EnvFrom []struct {
 		Prefix string `json:"prefix"`
 	} `json:"envFrom"`
+	// pod is the pod the container is listed in, whose fields a variable of its env may take
+	// (fieldRef); nil for a container read alone, whose such variables are then unread.
+	pod *listedPod
 }
 
-// envVar is one variable of a container's env: a value, or one taken from elsewhere (valueFrom),
-// which the pod does not show.
+// envVar is one variable of a container's env: a value, or one taken from elsewhere (valueFrom).
 type envVar struct {
-	Name      string          `json:"name"`
-	Value     string          `json:"value"`
-	ValueFrom json.RawMessage `json:"valueFrom"`
+	Name      string     `json:"name"`
+	Value     string     `json:"value"`
+	ValueFrom *valueFrom `json:"valueFrom"`
+}
+
+// valueFrom is where a variable takes its value when the pod does not give it as text: a field of
+// the pod (fieldRef) or a resource of a container (resourceFieldRef), which the proof reads, or a
+// key of a Secret or a ConfigMap, which the pod does not show.
+type valueFrom struct {
+	FieldRef *struct {
+		FieldPath string `json:"fieldPath"`
+	} `json:"fieldRef"`
+	ResourceFieldRef json.RawMessage `json:"resourceFieldRef"`
 }
 
 // writes is the copied buckets container c may write, read from its configuration by the writer
 // map:
 //
-//   - a listener started through a launcher - a command whose first word is not one of the two
-//     writer binaries (a shell, env, tini, dumb-init or any other program, or the image's
-//     entrypoint when the container sets args alone) and whose later words name envoy-listener
-//     (launches), such as [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec envoy-listener'] or [tini, --,
-//     envoy-listener] - writes every copied bucket: the launcher may set ENVOY_MACHINE_ID and
-//     ENVOY_WEBHOOKS itself, which the pod does not show, so the proof fails closed;
+//   - a launcher (launch) whose words name a listener - envoy-listener, or ENVOY_MACHINE_ID or
+//     ENVOY_WEBHOOKS, which it may set - such as [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
+//     envoy-listener'] or [tini, --, envoy-listener], writes every copied bucket: the launcher may
+//     set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS itself, which the pod does not show, so the proof
+//     fails closed. So does a container whose command or args expand a variable the pod's env sets
+//     but does not show (launch's unread), which may start any writer;
 //   - envoy-dispatch - named so, or running envoy-dispatch - writes the CI state bucket;
 //   - a listener - a container whose environment sets ENVOY_MACHINE_ID, which every listener
 //     requires, or that is named or runs as a listener (listener, envoy-listener, or a command
@@ -868,22 +897,22 @@ type envVar struct {
 //     every copied bucket: the proof fails closed;
 //   - a container whose launcher's words name envoy-dispatch writes the CI state bucket too,
 //     beside whatever the rest of the map reads it to write;
-//   - any other container writes none, a launcher whose words name neither binary among them.
+//   - any other container writes none: the launcher rule adds none for a launcher whose words name
+//     neither binary, nor for one that picks its program from what the pod does not show, such as
+//     a script file, a file or a command's output it reads, or a variable the image's own
+//     environment sets (bestEffortWarning).
 //
 // The proof reads only the namespaces the operator names, so a container elsewhere that is named
 // listener, such as an Actions runner's, is never read.
 func (c podContainer) writes() []string {
-	if c.launches("envoy-listener") {
+	started := c.launch()
+	if started.unread != "" || started.listener() {
 		return bus.CopiedBuckets()
 	}
-	command := ""
-	if len(c.Command) > 0 {
-		command = path.Base(c.Command[0])
-	}
-	if c.Name == "envoy-dispatch" || command == "envoy-dispatch" {
+	if c.Name == "envoy-dispatch" || started.binary == dispatchBinary {
 		return []string{bus.CIStateBucket}
 	}
-	listener := c.Name == "listener" || c.Name == "envoy-listener" || command == "envoy-listener" || command == "envoy-listener-heldport"
+	listener := c.Name == "listener" || c.Name == "envoy-listener" || started.binary == listenerBinary
 	github := false
 	// Kubernetes sets the last of two variables of one name, so the last one is read.
 	for _, env := range c.Env {
@@ -891,7 +920,7 @@ func (c podContainer) writes() []string {
 		case "ENVOY_MACHINE_ID":
 			listener = true
 		case "ENVOY_WEBHOOKS":
-			github = len(env.ValueFrom) > 0 || namesGitHub(env.Value)
+			github = env.ValueFrom != nil || namesGitHub(env.Value)
 		}
 	}
 	listener = listener || c.envFromMaySet("ENVOY_MACHINE_ID")
@@ -900,50 +929,282 @@ func (c podContainer) writes() []string {
 	if listener {
 		written = slices.Clone(listenerBuckets)
 	}
-	if (listener && github) || c.launches("envoy-dispatch") {
+	if (listener && github) || started.names == dispatchBinary {
 		written = append(written, bus.CIStateBucket)
 	}
 	return written
 }
 
-// launches reports whether c starts program through a launcher: c's command's first word, by its
-// base name, is not one of the two writer binaries, envoy-listener and envoy-dispatch - a shell,
-// env, tini, dumb-init or any other program, or the image's entrypoint when c sets args alone, which
-// Kubernetes appends to it - and a later word of the command, or one of its args, holds program,
-// such as the script of [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec envoy-listener'], the program of
-// [env, ENVOY_MACHINE_ID=x, envoy-listener], or args [envoy-listener] under an entrypoint of
-// [tini, --]. Any word that holds the name counts, so a launcher that only mentions the program,
-// such as a probe that reads the listener's URL, blocks too: the proof fails closed. A launcher
-// given a script file names no program, and is read as any other container. A writer binary's own
-// command is no launcher: the later words of [envoy-dispatch, --listener=http://envoy-listener] are
-// its flags.
-func (c podContainer) launches(program string) bool {
-	words := c.Args
-	if len(c.Command) > 0 {
-		switch path.Base(c.Command[0]) {
-		case "envoy-listener", "envoy-dispatch":
-			return false
-		}
-		words = slices.Concat(c.Command[1:], c.Args)
-	}
-	return slices.ContainsFunc(words, func(word string) bool { return strings.Contains(word, program) })
+// The writer binaries a container's command runs or a launcher's words name, by the name the writer
+// map reads.
+const (
+	listenerBinary = "envoy-listener"
+	dispatchBinary = "envoy-dispatch"
+)
+
+// launch is what a container's command and args start, worked out once for the writer map (writes)
+// and for its blockers (launchNote).
+type launch struct {
+	// binary is the writer binary the command's first word runs, by its base name: listenerBinary
+	// for envoy-listener and for the held-port wrapper envoy-listener-heldport, which runs it;
+	// dispatchBinary for envoy-dispatch. Its later words and its args are its own flags, so such a
+	// command has no launcher.
+	binary string
+	// launcher is the program that runs the launcher's words: the command's first word, by its base
+	// name, or "" for the image's entrypoint when the container sets args alone.
+	launcher string
+	// names is the writer the launcher's words name, read with the value of each variable they
+	// expand that the pod's env sets: listenerBinary for a word holding envoy-listener, or
+	// ENVOY_MACHINE_ID or ENVOY_WEBHOOKS, which a launcher sets for a listener it starts
+	// (marker says which); dispatchBinary for one holding envoy-dispatch; "" for neither.
+	names, marker string
+	// via is the expansion whose value names the writer, "" when a word itself does.
+	via string
+	// unread is the first expansion in the launcher's words, or in the command's first word, of a
+	// variable the pod's env sets from a Secret, a ConfigMap or an envFrom source, whose value the
+	// pod does not show: the program it starts may be any writer.
+	unread string
 }
 
-// launchNote is what a blocker on c, which writes written of the buckets, adds when a launcher is
-// what makes c a writer of them (launches): the binary the launcher's words name and the launcher,
+// listener reports whether the launcher's words name a listener.
+func (l launch) listener() bool { return l.names == listenerBinary }
+
+// launch reads what c's command and args start, as the kubelet runs them. Each word is first
+// expanded as the kubelet expands it (kubeExpand): a $(VAR) reference becomes the value of VAR
+// where c's env sets it (environment), and $$ becomes $. A command whose first word is no writer
+// binary - a shell, env, tini, dumb-init or any other program, or the image's entrypoint when c
+// sets args alone, which Kubernetes appends to it - is a launcher, and its later words and its
+// args are what it runs, such as the script of [/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
+// envoy-listener'], the program of [env, ENVOY_MACHINE_ID=x, envoy-listener], or args
+// [envoy-listener] under an entrypoint of [tini, --]. A shell expands its own $VAR and ${VAR}
+// from the same environment, so the value of each variable c's env sets that those words expand is
+// read beside them: [/bin/sh, -c, 'exec "$PROGRAM"'] with PROGRAM=/usr/local/bin/envoy-dispatch
+// names envoy-dispatch. Any word or value holding a writer's name counts, so a launcher that only
+// mentions it, such as a probe that reads the listener's URL, blocks too: the proof fails closed.
+//
+// An expansion of a variable c's env sets but whose value the pod does not show - one from a
+// Secret or a ConfigMap, or one an envFrom source may set - is unread, and may start any writer,
+// such as [$(PROGRAM)] or [tini, --] with args [$(PROGRAM)] where PROGRAM comes from a Secret:
+// the proof fails closed on it. A variable c's env and envFrom do not set at all - a shell's own,
+// such as a script's loop variable, or one the image's environment sets, such as TMPDIR - is the
+// script's or the image's, which the proof does not read, as it does not read the image's
+// entrypoint: a program a launcher picks from one, from a script file, or from a file or a
+// command's output it reads gets past the proof (bestEffortWarning).
+func (c podContainer) launch() launch {
+	lookup := c.environment()
+	var l launch
+	var unread []string
+	expand := func(words []string) []string {
+		expanded := make([]string, len(words))
+		for i, word := range words {
+			var refs []string
+			expanded[i], refs = kubeExpand(word, lookup)
+			unread = append(unread, refs...)
+		}
+		return expanded
+	}
+	command, words := expand(c.Command), expand(c.Args)
+	if len(command) > 0 {
+		l.launcher = path.Base(command[0])
+		switch l.launcher {
+		case "envoy-listener", "envoy-listener-heldport":
+			l.binary = listenerBinary
+			return l
+		case "envoy-dispatch":
+			l.binary = dispatchBinary
+			return l
+		}
+		words = slices.Concat(command[1:], words)
+	}
+	if len(unread) > 0 {
+		l.unread = unread[0]
+		return l
+	}
+	// Each text the launcher runs: its words, then the value of each variable they expand that c's
+	// env sets, and of each such variable those values expand in turn (an eval reads them again).
+	// The loop reads texts it appends to, so it ranges by index.
+	type text struct{ via, value string }
+	texts := []text{{value: strings.Join(words, "\n")}}
+	seen := map[string]bool{}
+	for i := 0; i < len(texts); i++ {
+		for _, match := range shellExpansion.FindAllStringSubmatch(texts[i].value, -1) {
+			// The expansion as a blocker names it: $NAME, or ${NAME} for any braced form.
+			expansion := "$" + match[1]
+			if strings.HasPrefix(match[0], "${") {
+				expansion = "${" + match[1] + "}"
+			}
+			variable := lookup(match[1])
+			switch {
+			case !variable.set || seen[match[1]]:
+			case !variable.read:
+				l.unread = expansion
+				return l
+			default:
+				seen[match[1]] = true
+				texts = append(texts, text{via: expansion, value: variable.value})
+			}
+		}
+	}
+	for _, t := range texts {
+		for _, marker := range []struct{ marker, binary string }{
+			{"envoy-listener", listenerBinary}, {"ENVOY_MACHINE_ID", listenerBinary}, {"ENVOY_WEBHOOKS", listenerBinary}, {"envoy-dispatch", dispatchBinary},
+		} {
+			if strings.Contains(t.value, marker.marker) && (l.names == "" || l.names == dispatchBinary && marker.binary == listenerBinary) {
+				l.names, l.marker, l.via = marker.binary, marker.marker, t.via
+			}
+		}
+	}
+	return l
+}
+
+// shellExpansion is a shell's expansion of a variable, $VAR or ${VAR...}, the variable's name
+// captured. A special parameter ($1, $@, $?, $$ and the rest) takes its value from the words the
+// shell is given or from the shell itself, which the proof reads already, so it is not one.
+var shellExpansion = regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)`)
+
+// variable is a variable of a container as the kubelet sets it (environment): set when c's env or
+// envFrom sets it, and read when the pod shows its value, value.
+type variable struct {
+	value     string
+	set, read bool
+}
+
+// environment is how the kubelet sets c's variables, as far as the pod shows them
+// (k8s.io/kubernetes pkg/kubelet/kubelet_pods.go, makeEnvironmentVariables): each envFrom source's
+// keys, then each env entry in order, a later one of a name taking its place. An entry's value is
+// expanded against the variables set before it (kubeExpand), and read only when every reference it
+// holds is; one from a field of the pod is read from the pod (field), and one from a resource is a
+// quantity, which names no program. One from a Secret or a ConfigMap, and any name an envFrom
+// source may set that no entry sets, is set but not read. Any other name is not set by the pod.
+func (c podContainer) environment() func(name string) variable {
+	vars := map[string]variable{}
+	lookup := func(name string) variable {
+		if v, ok := vars[name]; ok {
+			return v
+		}
+		for _, source := range c.EnvFrom {
+			if strings.HasPrefix(name, source.Prefix) {
+				return variable{set: true}
+			}
+		}
+		return variable{}
+	}
+	for _, env := range c.Env {
+		v := variable{set: true}
+		switch {
+		case env.ValueFrom == nil:
+			var unread []string
+			v.value, unread = kubeExpand(env.Value, lookup)
+			v.read = len(unread) == 0
+		case env.ValueFrom.FieldRef != nil:
+			v.value, v.read = c.field(env.ValueFrom.FieldRef.FieldPath)
+		case len(env.ValueFrom.ResourceFieldRef) > 0:
+			v.read = true
+		}
+		vars[env.Name] = v
+	}
+	return lookup
+}
+
+// field is the value the kubelet gives a variable from fieldPath, a field of c's pod (the downward
+// API's fields a variable may take): its name, namespace, uid, a label or an annotation, its
+// node, its service account, or an address, which names no program. read is false for any other
+// path, and for a container read with no pod.
+func (c podContainer) field(fieldPath string) (value string, read bool) {
+	if c.pod == nil {
+		return "", false
+	}
+	metadata := c.pod.Metadata
+	switch fieldPath {
+	case "metadata.name":
+		return metadata.Name, true
+	case "metadata.namespace":
+		return metadata.Namespace, true
+	case "metadata.uid":
+		return metadata.UID, true
+	case "spec.nodeName":
+		return c.pod.Spec.NodeName, true
+	case "spec.serviceAccountName":
+		return c.pod.Spec.ServiceAccountName, true
+	case "status.hostIP", "status.hostIPs", "status.podIP", "status.podIPs":
+		return "", true
+	}
+	for prefix, values := range map[string]map[string]string{"metadata.labels": metadata.Labels, "metadata.annotations": metadata.Annotations} {
+		if key, ok := strings.CutPrefix(fieldPath, prefix+"['"); ok {
+			if key, ok = strings.CutSuffix(key, "']"); ok {
+				return values[key], true
+			}
+		}
+	}
+	return "", false
+}
+
+// kubeExpand is word as the kubelet expands a container's command, args and env values
+// (k8s.io/kubernetes third_party/forked/golang/expansion, Expand): $$ becomes $, and $(NAME)
+// becomes NAME's value where lookup says the pod sets it. A reference to a name the pod does not
+// set, and one incomplete, stays as it is. unread is each reference to a variable the pod sets but
+// whose value it does not show, which stays as it is too. The loop steps over what each $ starts,
+// so it moves its own index.
+func kubeExpand(word string, lookup func(name string) variable) (expanded string, unread []string) {
+	var out strings.Builder
+	for i := 0; i < len(word); i++ {
+		if word[i] != '$' || i+1 == len(word) {
+			out.WriteByte(word[i])
+			continue
+		}
+		switch word[i+1] {
+		case '$':
+			out.WriteByte('$')
+		case '(':
+			end := strings.IndexByte(word[i+2:], ')')
+			if end < 0 {
+				out.WriteString("$(")
+				break
+			}
+			reference := word[i : i+3+end]
+			switch v := lookup(word[i+2 : i+2+end]); {
+			case v.set && v.read:
+				out.WriteString(v.value)
+			case v.set:
+				unread = append(unread, reference)
+				out.WriteString(reference)
+			default:
+				out.WriteString(reference)
+			}
+			i += 2 + end
+			continue
+		default:
+			out.WriteByte('$')
+			out.WriteByte(word[i+1])
+		}
+		i++
+	}
+	return out.String(), unread
+}
+
+// launchNote is what a blocker on c, which writes written of the buckets, adds when its launch is
+// what makes c a writer of them (launch): the expansion whose value the pod does not show, or the
+// writer the launcher's words name and the launcher, quoted since a pod's words can hold any bytes,
 // and for a listener that the launcher may set the variables the writer map reads, which the pod
 // does not show. envoy-dispatch is named only on a blocker of the CI state bucket, the one bucket
 // it adds. It is "" for any other container.
 func (c podContainer) launchNote(written []string) string {
+	started := c.launch()
 	through := "the image's entrypoint"
-	if len(c.Command) > 0 {
-		through = path.Base(c.Command[0])
+	if started.launcher != "" {
+		through = fmt.Sprintf("%q", started.launcher)
+	}
+	named := started.marker
+	if started.via != "" {
+		named = fmt.Sprintf("%s through %q, which the pod's env sets", started.marker, started.via)
 	}
 	switch {
-	case c.launches("envoy-listener"):
-		return fmt.Sprintf(" (its command or args name envoy-listener, run through %s, which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)", through)
-	case c.launches("envoy-dispatch") && slices.Contains(written, bus.CIStateBucket):
-		return fmt.Sprintf(" (its command or args name envoy-dispatch, run through %s)", through)
+	case started.unread != "":
+		return fmt.Sprintf(" (its command or args expand %q, whose value the pod does not show, so it may start any writer)", started.unread)
+	case started.listener():
+		return fmt.Sprintf(" (its command or args name %s, run through %s, which may set ENVOY_MACHINE_ID and ENVOY_WEBHOOKS where the pod does not show them)", named, through)
+	case started.names == dispatchBinary && slices.Contains(written, bus.CIStateBucket):
+		return fmt.Sprintf(" (its command or args name %s, run through %s)", named, through)
 	}
 	return ""
 }
@@ -1088,28 +1349,35 @@ func (f fence) kubectl(ctx context.Context, kube string, args ...string) ([]byte
 // gcp's lives in a package of Pulumi components this command does not link.
 var namespaceName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
 
-// podList is the part of a Kubernetes PodList the fence reads: each pod's init containers (native
-// sidecars, restartPolicy Always, run beside its containers), containers and ephemeral containers,
-// and their statuses. A pod's containers of every kind hold names no other of them holds.
+// podList is the part of a Kubernetes PodList the fence reads.
 type podList struct {
-	Items []struct {
-		Metadata struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
-			UID       string `json:"uid"`
-		} `json:"metadata"`
-		Spec struct {
-			NodeName            string         `json:"nodeName"`
-			InitContainers      []podContainer `json:"initContainers"`
-			Containers          []podContainer `json:"containers"`
-			EphemeralContainers []podContainer `json:"ephemeralContainers"`
-		} `json:"spec"`
-		Status struct {
-			InitContainerStatuses      []containerStatus `json:"initContainerStatuses"`
-			ContainerStatuses          []containerStatus `json:"containerStatuses"`
-			EphemeralContainerStatuses []containerStatus `json:"ephemeralContainerStatuses"`
-		} `json:"status"`
-	} `json:"items"`
+	Items []listedPod `json:"items"`
+}
+
+// listedPod is the part of a pod the fence reads: its init containers (native sidecars,
+// restartPolicy Always, run beside its containers), containers and ephemeral containers, and their
+// statuses, and the fields a container's variable may take (podContainer.field). A pod's containers
+// of every kind hold names no other of them holds.
+type listedPod struct {
+	Metadata struct {
+		Name        string            `json:"name"`
+		Namespace   string            `json:"namespace"`
+		UID         string            `json:"uid"`
+		Labels      map[string]string `json:"labels"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
+	Spec struct {
+		NodeName            string         `json:"nodeName"`
+		ServiceAccountName  string         `json:"serviceAccountName"`
+		InitContainers      []podContainer `json:"initContainers"`
+		Containers          []podContainer `json:"containers"`
+		EphemeralContainers []podContainer `json:"ephemeralContainers"`
+	} `json:"spec"`
+	Status struct {
+		InitContainerStatuses      []containerStatus `json:"initContainerStatuses"`
+		ContainerStatuses          []containerStatus `json:"containerStatuses"`
+		EphemeralContainerStatuses []containerStatus `json:"ephemeralContainerStatuses"`
+	} `json:"status"`
 }
 
 // containerStatus is the part of a container's status the fence reads: whether it has terminated.
@@ -1127,7 +1395,8 @@ func among(written, buckets []string) []string {
 
 // envFromNote is what a blocker on c adds when c's envFrom is what makes it a writer of more of
 // buckets: the variables the writer map reads that the envFrom may set, which the pod does not
-// show. It is "" when c's env and command alone name what it writes of buckets.
+// show. It is "" when c's env and command alone name what it writes of buckets, and when the
+// envFrom sets neither variable, but one c's command or args expand (launchNote names that).
 func (c podContainer) envFromNote(buckets []string) string {
 	shown := c
 	shown.EnvFrom = nil
@@ -1139,6 +1408,9 @@ func (c podContainer) envFromNote(buckets []string) string {
 		if c.envFromMaySet(name) {
 			maySet = append(maySet, name)
 		}
+	}
+	if len(maySet) == 0 {
+		return ""
 	}
 	return fmt.Sprintf(" (its envFrom may set %s, which the pod does not show)", strings.Join(maySet, " and "))
 }
@@ -1185,6 +1457,7 @@ func (f fence) provePods(ctx context.Context, out io.Writer, kube string) []stri
 				{"ephemeral container", pod.Spec.EphemeralContainers},
 			} {
 				for _, container := range kind.containers {
+					container.pod = &pod
 					written := among(container.writes(), f.buckets)
 					if len(written) == 0 || slices.ContainsFunc(statuses, func(status containerStatus) bool {
 						return status.Name == container.Name && status.State.Terminated != nil

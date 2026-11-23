@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -582,7 +584,7 @@ func TestACreateInterruptedInItsRefusalWaitCreatesNothing(t *testing.T) {
 	select {
 	case code := <-done:
 		took := time.Since(interrupted)
-		want := "envoy-infra buckets create: stopped: interrupt signal received; it sends no create after this"
+		want := "envoy-infra buckets create: stopped: interrupt signal received; it starts no create after this"
 		if code != 1 || !strings.Contains(stderr.String(), want) || stdout.String() != "" || took > 2*time.Second {
 			t.Fatalf("the interrupted run = %d after %s, want 1 within 2 s naming %q\nstdout: %s\nstderr: %s", code, took.Round(time.Millisecond), want, stdout, stderr)
 		}
@@ -598,160 +600,197 @@ func TestACreateInterruptedInItsRefusalWaitCreatesNothing(t *testing.T) {
 }
 
 // heldJetStream is the JetStream context a create is given, which holds the first request of one
-// kind the create sends through it until release is closed, and then sends it on: holds names the
-// account's JetStream info ("INFO", AccountInfo, the first request of a bucket's create, which
-// bus.CreateMissingCopiedBucket sends before its STREAM.CREATE) or the stream's create
-// ("STREAM.CREATE", AddStream). reached is closed when the held request arrives and answered once
-// the server has answered it; every other request goes to the server at once. creates counts the
-// STREAM.CREATEs sent through it, held or not.
+// kind the create sends through it until the test lets it go (let), and then sends it on: holds
+// names the account's JetStream info ("INFO", AccountInfo, the first request of a bucket's create,
+// which bus.CreateMissingCopiedBucket sends before its STREAM.CREATE) or the stream's create
+// ("STREAM.CREATE", AddStream). reached is closed when the held request arrives; every other
+// request goes to the server at once. creates counts the STREAM.CREATEs sent through it, held or
+// not.
 type heldJetStream struct {
 	natsgo.JetStreamContext
-	holds                      string
-	reached, release, answered chan struct{}
-	held                       sync.Once
-	creates                    atomic.Int32
+	holds            string
+	reached, release chan struct{}
+	held, released   sync.Once
+	creates          atomic.Int32
 }
 
 func holdFirst(js natsgo.JetStreamContext, holds string) *heldJetStream {
-	return &heldJetStream{JetStreamContext: js, holds: holds, reached: make(chan struct{}), release: make(chan struct{}), answered: make(chan struct{})}
+	return &heldJetStream{JetStreamContext: js, holds: holds, reached: make(chan struct{}), release: make(chan struct{})}
 }
 
-// hold waits for the release when kind is the first request of the kind h holds, and answers the
-// func the request calls once the server has answered it.
-func (h *heldJetStream) hold(kind string) (answered func()) {
+// hold waits for the release when kind is the first request of the kind h holds.
+func (h *heldJetStream) hold(kind string) {
 	first := false
 	if kind == h.holds {
 		h.held.Do(func() { first = true })
 	}
-	if !first {
-		return func() {}
+	if first {
+		close(h.reached)
+		<-h.release
 	}
-	close(h.reached)
-	<-h.release
-	return func() { close(h.answered) }
 }
 
+// let lets the held request go, once however often it is called.
+func (h *heldJetStream) let() { h.released.Do(func() { close(h.release) }) }
+
 func (h *heldJetStream) AccountInfo(opts ...natsgo.JSOpt) (*natsgo.AccountInfo, error) {
-	answered := h.hold("INFO")
-	defer answered()
+	h.hold("INFO")
 	return h.JetStreamContext.AccountInfo(opts...)
 }
 
 func (h *heldJetStream) AddStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
 	h.creates.Add(1)
-	answered := h.hold("STREAM.CREATE")
-	defer answered()
+	h.hold("STREAM.CREATE")
 	return h.JetStreamContext.AddStream(cfg, opts...)
 }
 
-// An interrupt while a create's request is in flight ends the run at once, and the run's last line
-// says what the hub may still do with that request. The JetStream context the run is given holds
-// one request of the create until the test releases it, after the interrupt (heldJetStream).
-//
-//   - Held at the account's JetStream info, the create's first request, the run ends within 5 s of
-//     the interrupt, and no STREAM.CREATE follows the release: the create reads its context before
-//     it (bus's addBucketStream), so the bucket stays absent. With that read removed, the create
-//     goes out once the account info is answered and makes the bucket; with the run's context not
-//     passed to the create (bus.CreateMissingCopiedBucket(context.Background(), ...)), the run waits
-//     the held request out, makes the bucket and exits 0.
-//   - Held at the STREAM.CREATE, the create already sent lands after the run has stopped, as the
-//     line says ("one it had sent may still land"), and create run again finds the bucket present.
-//     At 65a488fe53 that line said "nothing more is created".
-//
-// The control holds the account info and releases it while the run's context is live: the create
-// goes on and makes the bucket, so the hold is on the create's path and a create sent after the
-// release is seen within the 2 s the first row waits.
-func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
+// heldCreate is a create run (createBuckets) of the known-session bucket on a server of the test's
+// own, through a connection made as the run makes its own and a JetStream context that holds the
+// first request of one kind (heldJetStream): uri is the server's, js the test's own context on it,
+// interrupt ends the run's context with a cause, and done answers the run's exit code.
+type heldCreate struct {
+	uri            string
+	js             natsgo.JetStreamContext
+	held           *heldJetStream
+	interrupt      context.CancelCauseFunc
+	stdout, stderr *syncBuffer
+	done           chan int
+}
+
+// startHeldCreate starts a heldCreate whose context holds the first request of the kind holds, and
+// returns once that request has arrived. The hold is let go when the test ends, whatever it did.
+func startHeldCreate(t *testing.T, holds string) *heldCreate {
+	t.Helper()
 	t.Setenv(bus.ReplicasEnvVar, "")
-	const stoppedLine = "envoy-infra buckets create: stopped: interrupt signal received; it sends no create after this, but one it had sent may still land: run create again to see what the hub holds\n"
-	stream := "KV_" + bus.KnownSessionBucket
+	uri, js := server(t)
+	client, err := bus.Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("connect as the run does: %v", err)
+	}
+	t.Cleanup(client.Close)
+	ctx, interrupt := context.WithCancelCause(context.Background())
+	run := &heldCreate{uri: uri, js: js, held: holdFirst(client.JS(), holds), interrupt: interrupt, stdout: &syncBuffer{}, stderr: &syncBuffer{}, done: make(chan int, 1)}
+	t.Cleanup(func() {
+		interrupt(nil)
+		run.held.let()
+	})
+	go func() {
+		run.done <- createBuckets(ctx, run.stdout, run.stderr, client.Conn, run.held, []string{bus.KnownSessionBucket}, 1, func(string) {})
+	}()
+	select {
+	case <-run.held.reached:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the create sent no %s in 30 s\nstdout: %s\nstderr: %s", holds, run.stdout, run.stderr)
+	}
+	return run
+}
+
+// createInBus is the function a bucket's create runs in, as a goroutine's stack names it: bus's
+// addBucketStream, on the goroutine bus.Bounded starts, which runs on to its own end once the run
+// stops waiting for it.
+const createInBus = "github.com/sjawhar/envoy/internal/bus.addBucketStream("
+
+// goroutines is every goroutine's stack (runtime.Stack).
+func goroutines() string {
+	for size := 1 << 20; ; size *= 2 {
+		stacks := make([]byte, size)
+		if n := runtime.Stack(stacks, true); n < size {
+			return string(stacks[:n])
+		}
+	}
+}
+
+// awaitCreatesEnded waits until no goroutine runs a bucket's create (createInBus), so what a create
+// the run stopped waiting for sends has been sent, failing t after 30 s. No test of the package runs
+// in parallel with another, so a create still running is one of the test's own.
+func awaitCreatesEnded(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); strings.Contains(goroutines(), createInBus); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("a bucket's create still ran 30 s after its held request was let go:\n%s", goroutines())
+		}
+	}
+}
+
+// An interrupt while a create's request is in flight ends the run at once, and the run's last line
+// says what the hub may still do with that request (stopped). The JetStream context the run is
+// given holds one request of the create until the test lets it go, after the interrupt
+// (startHeldCreate). The test then waits for the create the run stopped waiting for to end on its
+// own goroutine (awaitCreatesEnded) before it reads what that create sent, and runs create again:
+//
+//   - held at the account's JetStream info, the create's first request, no STREAM.CREATE follows:
+//     the create reads its context before it (bus's addBucketStream), so the bucket stays absent
+//     and create run again makes it. With that read replaced by a 3 s sleep, the STREAM.CREATE goes
+//     out once the sleep ends and makes the bucket, after the run stopped; at 69cde74210 this row
+//     waited a fixed 2 s for it instead, and passed that change. With the run's context not passed
+//     to the create (bus.CreateMissingCopiedBucket(context.Background(), ...)), the run waits the
+//     held request out and has not ended 5 s after the interrupt.
+//   - held at the STREAM.CREATE, the create already sent lands after the run has stopped, as the
+//     line says ("one it had sent may still land"), and create run again finds the bucket present.
+//
+// Before the interrupt each row checks that a goroutine runs the create, so the wait for it to end
+// is not a wait for nothing. The control is TestACreateWhoseAccountInfoIsHeldAndLetGoGoesOn.
+func TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand(t *testing.T) {
+	const stoppedLine = "envoy-infra buckets create: stopped: interrupt signal received; it starts no create after this, but one it had sent may still land: run create again to see what the hub holds\n"
 	for _, c := range []struct {
-		name      string
-		holds     string
-		interrupt bool
-		code      int
-		stdout    string
-		stderr    string
-		lands     bool
+		name, holds string
+		creates     int32
+		lands       bool
+		again       string
 	}{
-		{"interrupted while its account info is held", "INFO", true, 1, "", stoppedLine, false},
-		{"interrupted while its STREAM.CREATE is held", "STREAM.CREATE", true, 1, "", stoppedLine, true},
-		{"control: its account info held and released while the run is live", "INFO", false, 0, "created " + bus.KnownSessionBucket + " (1 copies)\n", "", true},
+		{"interrupted while its account info is held", "INFO", 0, false, "created " + bus.KnownSessionBucket + " (1 copies)\n"},
+		{"interrupted while its STREAM.CREATE is held", "STREAM.CREATE", 1, true, bus.KnownSessionBucket + " present at 1 copies with its own configuration: left as it is\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			uri, js := server(t)
-			client, err := bus.Connect([]string{uri})
-			if err != nil {
-				t.Fatalf("connect as the run does: %v", err)
+			run := startHeldCreate(t, c.holds)
+			if !strings.Contains(goroutines(), createInBus) {
+				t.Fatalf("no goroutine runs %s while the create's %s is held, so the wait for the create to end would wait for nothing", createInBus, c.holds)
 			}
-			t.Cleanup(client.Close)
-			held := holdFirst(client.JS(), c.holds)
-			ctx, interrupt := context.WithCancelCause(context.Background())
-			defer interrupt(nil)
-			stdout, stderr := &syncBuffer{}, &syncBuffer{}
-			done := make(chan int, 1)
-			go func() {
-				done <- createBuckets(ctx, stdout, stderr, client.Conn, held, []string{bus.KnownSessionBucket}, 1, func(string) {})
-			}()
+			run.interrupt(errors.New("interrupt signal received"))
+			var code int
 			select {
-			case <-held.reached:
-			case <-time.After(30 * time.Second):
-				close(held.release)
-				t.Fatalf("the create sent no %s in 30 s\nstdout: %s\nstderr: %s", c.holds, stdout, stderr)
+			case code = <-run.done:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("the run had not ended 5 s after the interrupt, with its %s held: it waited the request out", c.holds)
 			}
-
-			code, ended := 0, false
-			if c.interrupt {
-				interrupt(errors.New("interrupt signal received"))
-				select {
-				case code = <-done:
-					ended = true
-				case <-time.After(5 * time.Second):
-				}
+			run.held.let()
+			awaitCreatesEnded(t)
+			if code != 1 || run.stdout.String() != "" || run.stderr.String() != stoppedLine {
+				t.Fatalf("the run = %d, want 1\nstdout: %q\nstderr: %q\nwant:   %q", code, run.stdout, run.stderr, stoppedLine)
 			}
-			close(held.release)
-			if !ended {
-				select {
-				case code = <-done:
-				case <-time.After(30 * time.Second):
-					t.Fatalf("the run had not ended 30 s after its held %s was released\nstdout: %s\nstderr: %s", c.holds, stdout, stderr)
-				}
+			if creates := run.held.creates.Load(); creates != c.creates {
+				t.Fatalf("the create sent %d STREAM.CREATE once it had ended, want %d", creates, c.creates)
 			}
-			if c.interrupt && !ended {
-				t.Errorf("the run had not ended 5 s after the interrupt, with its %s held: it waited the request out", c.holds)
+			if _, err := run.js.StreamInfo("KV_" + bus.KnownSessionBucket); (err == nil) != c.lands {
+				t.Fatalf("KV_%s once the stopped run's create had ended: %v, want it there: %t", bus.KnownSessionBucket, err, c.lands)
 			}
-			select {
-			case <-held.answered:
-			case <-time.After(30 * time.Second):
-				t.Fatalf("the held %s drew no answer 30 s after its release", c.holds)
-			}
-			if code != c.code || stdout.String() != c.stdout || stderr.String() != c.stderr {
-				t.Fatalf("the run = %d, want %d\nstdout: %q\nwant:   %q\nstderr: %q\nwant:   %q", code, c.code, stdout, c.stdout, stderr, c.stderr)
-			}
-
-			if !c.lands {
-				// What follows the account info's answer runs at once on the call the run
-				// stopped waiting for: a STREAM.CREATE would be sent within milliseconds.
-				time.Sleep(2 * time.Second)
-				if creates := held.creates.Load(); creates != 0 {
-					t.Fatalf("the create sent %d STREAM.CREATE after the run stopped, want none", creates)
-				}
-				if _, err := js.StreamInfo(stream); !errors.Is(err, natsgo.ErrStreamNotFound) {
-					t.Fatalf("%s after the stopped run: %v, want it absent", stream, err)
-				}
-				return
-			}
-			if info := streamOf(t, js, bus.KnownSessionBucket); info.Config.MaxAge != bus.KnownSessionBucketMaxAge {
-				t.Fatalf("%s after the release: %+v, want the bucket's own configuration", stream, info.Config)
-			}
-			if !c.interrupt {
-				return
-			}
-			code, out, errOut := runCreate(t, "create", "--nats", uri, "--bucket", bus.KnownSessionBucket)
-			if want := bus.KnownSessionBucket + " present at 1 copies with its own configuration: left as it is\n"; code != 0 || out != want {
-				t.Fatalf("create run again after the stopped run = %d, want 0 and %q\nstdout: %s\nstderr: %s", code, want, out, errOut)
+			if code, out, errOut := runCreate(t, "create", "--nats", run.uri, "--bucket", bus.KnownSessionBucket); code != 0 || out != c.again {
+				t.Fatalf("create run again after the stopped run = %d, want 0 and %q\nstdout: %s\nstderr: %s", code, c.again, out, errOut)
 			}
 		})
+	}
+}
+
+// A create whose account info is held and let go while the run is live goes on and makes the
+// bucket, and the wait for the create to end sees its STREAM.CREATE: the hold is on the create's
+// path, so the first row of TestACreateInterruptedWithItsRequestInFlightSaysWhatMayLand holds the
+// request the create sends before its STREAM.CREATE, and a STREAM.CREATE sent after that request
+// is answered is counted there.
+func TestACreateWhoseAccountInfoIsHeldAndLetGoGoesOn(t *testing.T) {
+	run := startHeldCreate(t, "INFO")
+	run.held.let()
+	var code int
+	select {
+	case code = <-run.done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the run had not ended 30 s after its held account info was let go\nstdout: %s\nstderr: %s", run.stdout, run.stderr)
+	}
+	awaitCreatesEnded(t)
+	if want := "created " + bus.KnownSessionBucket + " (1 copies)\n"; code != 0 || run.stdout.String() != want || run.stderr.String() != "" {
+		t.Fatalf("the run = %d, want 0 and %q\nstdout: %q\nstderr: %q", code, want, run.stdout, run.stderr)
+	}
+	if creates := run.held.creates.Load(); creates != 1 {
+		t.Fatalf("the create sent %d STREAM.CREATE, want 1", creates)
 	}
 }
 
@@ -804,6 +843,118 @@ func TestACreateOnAConnectionReportingNoServerVersionIsRefusedForThat(t *testing
 			}
 			if _, err := js.StreamInfo("KV_" + bus.KnownSessionBucket); !c.present && !errors.Is(err, natsgo.ErrStreamNotFound) {
 				t.Fatalf("the refused run made KV_%s: %v", bus.KnownSessionBucket, err)
+			}
+		})
+	}
+}
+
+// heldDial is a connection's dialer whose dials fail while it is held, so a reconnect that has
+// failed one dial waits its ReconnectWait before the next, until a ForceReconnect wakes it. A dial
+// that blocked instead would hold the connection's lock, which ConnectedServerVersion takes too.
+type heldDial struct{ held atomic.Bool }
+
+func (d *heldDial) Dial(network, address string) (net.Conn, error) {
+	if d.held.Load() {
+		return nil, errors.New("this dial is held by the test")
+	}
+	return net.Dial(network, address)
+}
+
+// reconnectingJetStream is the JetStream context a create is given on conn, a connection dialled
+// through dial. Once the account's JetStream info is answered, it holds dial and drops the
+// connection (ForceReconnect), so the connection is reconnecting, and reports no server version,
+// until the create's STREAM.CREATE, which lets dial go and wakes the reconnect first. With no dial
+// (the control) nothing is dropped. version is what the connection reported when the account info
+// returned, and creates counts the STREAM.CREATEs sent through it.
+type reconnectingJetStream struct {
+	natsgo.JetStreamContext
+	conn    *natsgo.Conn
+	dial    *heldDial
+	version atomic.Pointer[string]
+	creates atomic.Int32
+}
+
+func (r *reconnectingJetStream) AccountInfo(opts ...natsgo.JSOpt) (*natsgo.AccountInfo, error) {
+	info, err := r.JetStreamContext.AccountInfo(opts...)
+	if r.dial != nil {
+		r.dial.held.Store(true)
+		if dropped := r.conn.ForceReconnect(); dropped != nil {
+			return nil, dropped
+		}
+	}
+	version := r.conn.ConnectedServerVersion()
+	r.version.Store(&version)
+	return info, err
+}
+
+func (r *reconnectingJetStream) AddStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+	r.creates.Add(1)
+	if r.dial != nil {
+		r.dial.held.Store(false)
+		_ = r.conn.ForceReconnect()
+	}
+	return r.JetStreamContext.AddStream(cfg, opts...)
+}
+
+// A create whose connection drops after its account info, and reconnects only later, sends no
+// STREAM.CREATE and is refused for the server version it cannot read. The create reads the
+// server's version a second time after the account info (bus's addBucketStream), as nats.go does,
+// for the stream's discard policy; a connection that is reconnecting reports none, which nats.go
+// reads as a server too old for a discard policy of new. The run's own read, before its first read
+// of a stream, found the version; the connection is dropped once the account info is answered and
+// its reconnect held until a STREAM.CREATE (reconnectingJetStream). At 69cde74210 that create sent a
+// STREAM.CREATE of discard old once the connection was back, the run exited 0 ("created
+// envoy_known_sessions (1 copies)"), and the server held a bucket every present-bucket check of
+// create then refuses for its discard policy. The control is the same run with no drop, which
+// makes the bucket with a discard policy of new.
+func TestACreateWhoseConnectionReconnectsAfterItsAccountInfoSendsNoCreate(t *testing.T) {
+	t.Setenv(bus.ReplicasEnvVar, "")
+	const refusal = "envoy-infra buckets create: refused: the connection reports no server version, as one that is not connected does, and each bucket is judged against the stream its create makes on the hub's version; KV_" + bus.KnownSessionBucket + " is not created: run create again\n"
+	for _, c := range []struct {
+		name           string
+		drops          bool
+		code           int
+		stdout, stderr string
+		creates        int32
+	}{
+		{"dropped after its account info, its reconnect held", true, 1, "", refusal, 0},
+		{"control: not dropped", false, 0, "created " + bus.KnownSessionBucket + " (1 copies)\n", "", 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			uri, js := server(t)
+			dial := &heldDial{}
+			conn, err := natsgo.Connect(uri, natsgo.SetCustomDialer(dial), natsgo.ReconnectWait(time.Hour), natsgo.MaxReconnects(-1))
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(conn.Close)
+			t.Cleanup(func() { dial.held.Store(false) })
+			connJS, err := conn.JetStream()
+			if err != nil {
+				t.Fatalf("open JetStream: %v", err)
+			}
+			reconnecting := &reconnectingJetStream{JetStreamContext: connJS, conn: conn}
+			if c.drops {
+				reconnecting.dial = dial
+			}
+			var stdout, stderr strings.Builder
+			code := createBuckets(t.Context(), &stdout, &stderr, conn, reconnecting, []string{bus.KnownSessionBucket}, 1, func(string) {})
+			version := reconnecting.version.Load()
+			if version == nil || (*version == "") != c.drops {
+				t.Fatalf("the connection reported server version %v when the account info returned, want none: %t: this row holds nothing", version, c.drops)
+			}
+			if code != c.code || stdout.String() != c.stdout || stderr.String() != c.stderr {
+				t.Fatalf("the run = %d, want %d\nstdout: %q\nwant:   %q\nstderr: %q\nwant:   %q", code, c.code, stdout.String(), c.stdout, stderr.String(), c.stderr)
+			}
+			if creates := reconnecting.creates.Load(); creates != c.creates {
+				t.Fatalf("the create sent %d STREAM.CREATE, want %d", creates, c.creates)
+			}
+			info, err := js.StreamInfo("KV_" + bus.KnownSessionBucket)
+			switch {
+			case c.drops && !errors.Is(err, natsgo.ErrStreamNotFound):
+				t.Fatalf("the refused run made KV_%s: %v", bus.KnownSessionBucket, err)
+			case !c.drops && (err != nil || info.Config.Discard != natsgo.DiscardNew):
+				t.Fatalf("control: KV_%s = %v, %v, want it made with a discard policy of new", bus.KnownSessionBucket, info, err)
 			}
 		})
 	}

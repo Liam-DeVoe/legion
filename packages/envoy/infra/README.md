@@ -3404,16 +3404,18 @@ envoy-dispatch when `envoy_ci_state` is among the buckets. `create` takes no suc
 only a bucket that is absent, which holds no write to lose.
 
 **The check is best effort.** Every `recreate` and `check` prints so first, on standard error. A
-writer gets past it five ways: a host, dev box or namespace you do not name, a binary renamed to a
-name the check does not know, a pod deleted with `--force` whose containers still run (a cluster is
-read through its API, not its nodes' runtimes), a writer that starts between the final scan and
-the create, and a restore after `check` that nothing holds. So before every `recreate` or `check`,
-stop every listener of the deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm
-on each host that it has ended; the check confirms what you did, and does not replace it. `create`
-needs no listener stopped and prints no warning.
+writer gets past it six ways: a host, dev box or namespace you do not name, a binary renamed to a
+name the check does not know, a program a pod's launcher picks from what the pod does not show (a
+script file, a file or a command's output it reads, a variable of the image's own environment), a
+pod deleted with `--force` whose containers still run (a cluster is read through its API, not its
+nodes' runtimes), a writer that starts between the final scan and the create, and a restore after
+`check` that nothing holds. So before every `recreate` or `check`, stop every listener of the
+deployment (and every envoy-dispatch, for `envoy_ci_state`) and confirm on each host that it has
+ended; the check confirms what you did, and does not replace it. `create` needs no listener
+stopped and prints no warning.
 The coming server-side hold will exclude writers at the server instead: while it holds,
 the auth callout refuses every connection but the operator's, every other connection is kicked,
-every server's connz shows the operator alone, and a server it cannot reach stops the hold. Five
+every server's connz shows the operator alone, and a server it cannot reach stops the hold. Six
 tests (`TestBestEffort...`) assert today's outcome of each way, and must be inverted when the
 hold leaves no writer a connection.
 
@@ -3462,7 +3464,11 @@ named bucket first, and changes no bucket that is there, so it can run again:
 - a connection that reports no server version, as one that is not connected does, refuses the run
   with exit 1 before any read (`refused: the connection reports no server version`), and nothing
   is created: each bucket is judged against the stream its create makes on the hub's version, and
-  nats.go reads no version as a server too old for a bucket. Run `create` again.
+  nats.go reads no version as a server too old for a bucket. The create reads the version again
+  after the account's JetStream info, where nats.go reads it for the stream's discard policy, and a
+  connection that drops and is reconnecting there refuses the run the same way, naming the bucket
+  it did not create, where it used to create that bucket with a discard policy of old. Run
+  `create` again.
 
 Each absent bucket is then created with no writer proof (`bus.CreateMissingCopiedBucket`), and
 the run prints `created <bucket> (<n> copies)`. The create sends no stream update, on any server
@@ -3485,8 +3491,8 @@ says so once, on standard error, at the first refusal of each request, and its c
 no line for each refused send.
 
 An interrupt or SIGTERM stops `create` where it is, its wait included: it exits 1 with
-`envoy-infra buckets create: stopped: <the signal>; it sends no create after this, but one it had
-sent may still land: run create again to see what the hub holds`, and sends no create after it. A
+`envoy-infra buckets create: stopped: <the signal>; it starts no create after this, but one it had
+sent may still land: run create again to see what the hub holds`, and starts no create after it. A
 `STREAM.CREATE` it had already sent when the signal came is not called back: the hub still
 applies it, so the bucket the run was on may be there although no `created` line names it. Run
 `create` again to see what the hub holds: that bucket is then present, or absent and made. A bucket
@@ -3518,21 +3524,32 @@ without one:
   as the listener reads it: split at commas, each entry trimmed of white space), holds a `$(VAR)`
   reference, or comes from a Secret, a ConfigMap or a field; `envoy-dispatch` writes
   `envoy_ci_state`. A container started through a launcher - a command whose first word is not
-  `envoy-listener` or `envoy-dispatch`, such as a shell, `env`, `tini` or `dumb-init`, or the
-  image's entrypoint when the container sets `args` alone - whose later words (of the command or
-  its `args`) name `envoy-listener`, such as `[/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
+  `envoy-listener`, the held-port wrapper `envoy-listener-heldport` or `envoy-dispatch`, such as a
+  shell, `env`, `tini` or `dumb-init`, or the image's entrypoint when the container sets `args`
+  alone - whose later words (of the command or its `args`) name `envoy-listener`, or
+  `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS`, such as `[/bin/sh, -c, 'ENVOY_MACHINE_ID=x exec
   envoy-listener']` or `[tini, --, envoy-listener]`, counts as a writer of every bucket, since the
   launcher may set `ENVOY_MACHINE_ID` and `ENVOY_WEBHOOKS` where the pod does not show them, and its
-  blocker says so. One whose later words name `envoy-dispatch` writes `envoy_ci_state` too, and a
-  launcher whose words name neither writes none. Any word holding the name counts, a probe that
-  reads the listener's URL among them, so the check fails closed. A container whose `envFrom` may
+  blocker says so, naming the launcher quoted. One whose later words name `envoy-dispatch` writes
+  `envoy_ci_state` too; for a launcher whose words name neither, the launcher rule adds none. The
+  words are read as the kubelet runs them: a `$(VAR)` reference becomes the value the container's
+  `env` gives `VAR`, so `[$(PROGRAM)]` with `PROGRAM=envoy-dispatch` runs envoy-dispatch, and the
+  value of each variable of the container's `env` a shell expands (`$PROGRAM`, `${PROGRAM}`) is read
+  beside the words. A reference or an expansion of a variable whose value the pod does not show -
+  from a Secret or a ConfigMap, or one an `envFrom` source may set - counts as a writer of every
+  bucket, its blocker naming the expansion; a variable from a field of the pod is read from the pod.
+  A variable the container's `env` and `envFrom` do not set - the script's own, or one the image's
+  environment sets - is not read, and a program a launcher picks from one, from a script file, or
+  from a file or a command's output it reads gets past the check: that is the third way the warning
+  names. Any word or value holding a writer's name counts, a probe that reads the listener's URL
+  among them, so the check fails closed. A container whose `envFrom` may
   set `ENVOY_MACHINE_ID` or `ENVOY_WEBHOOKS` (a source with no prefix, or a prefix that starts the
   name, and no `env` entry of that name, which takes precedence) counts as a writer of each bucket
   that variable could select, and its blocker says so: one nothing else names a writer, with a
   source of no prefix, blocks every bucket. No other container writes any. A pod of another
   namespace is never read, so an Actions runner's container named `listener` does not block. No
   node's kubelet runtime list is read (Autopilot refuses `nodes/proxy`), so a pod deleted with
-  `--force` whose containers still run gets past the check: that is the third way the warning
+  `--force` whose containers still run gets past the check: that is the fourth way the warning
   names, and `--connz` still sees its open connection.
 - `--host <target>`, once for each machine, through `ssh -o BatchMode=yes` (`--ssh <program>`
   names another program taking ssh's arguments, such as a wrapper over SSM): no process on the
