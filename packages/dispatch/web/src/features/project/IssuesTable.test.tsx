@@ -3647,7 +3647,9 @@ function phaseCard(key: string, since: string): LegionBoardCard {
 // `useDraggable` once, and on the Board nothing else does either, so their calls name the bodies
 // and the shells a change drew. Of the 100 cards with Legion facts, 50 have been in their phase
 // under a day, which reads anew each minute, and 50 between one and two days, ten minutes past
-// an hour, which reads the same 61 s on.
+// an hour, which reads the same 61 s on. Those 50 are at work too (k13, found by INFRA-3221's
+// goal red team): their Work time grows an hour an hour from 30 h 10 m, which reads 1 d 6 h at
+// the start and 61 s on, so no text those cards draw changes and none of them draws again.
 test("a live read that moves one card of 600 draws at most 5 card bodies and 5 card shells", async () => {
   const start = new Date("2026-11-17T12:00:30Z");
   setSystemTime(start);
@@ -3661,7 +3663,10 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
   const steady = rows.slice(50, 100).map((row) => row.key);
   const { client } = table(rows, "?layout=board", {}, {}, Promise.resolve(DAEMON));
   await answerBoard(sockets, {
-    ...legionBoard(Object.fromEntries([...ticking, ...steady].map((key) => [key, boardFacts(3)]))),
+    ...legionBoard({
+      ...Object.fromEntries(ticking.map((key) => [key, boardFacts(3)])),
+      ...Object.fromEntries(steady.map((key) => [key, openFacts(ago(29 * 60 + 10))])),
+    }),
     columns: [
       {
         id: "implementing",
@@ -3680,6 +3685,14 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
     },
     { timeout: 30_000 }
   );
+  /** The Work time each of the 50 steady cards draws. */
+  const steadyWork = () =>
+    steady.map(
+      (key) =>
+        document.querySelector(`[data-board-card="${key}"] [data-legion-fact=work-time]`)
+          ?.textContent
+    );
+  expect(steadyWork()).toEqual(steady.map(() => expect.stringContaining("1 d 6 h")));
   const bodies = spyOn(routeReach, "UnreachableRouteMarker");
   const shells = spyOn(dndCore, "useDraggable");
   restores.push(() => {
@@ -3739,6 +3752,7 @@ test("a live read that moves one card of 600 draws at most 5 card bodies and 5 c
     expect(others).toContain(nextMinute.key);
     expect(others.length).toBeLessThanOrEqual(5);
   }
+  expect(steadyWork()).toEqual(steady.map(() => expect.stringContaining("1 d 6 h")));
 }, 120_000);
 
 // The live view sends a board entry again only when its stored row moves, so the page grows an
