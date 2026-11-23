@@ -152,3 +152,104 @@ func TestTheReadAfterACompletionJudgesTheCompletingTasksPullRequest(t *testing.T
 			read, listed, github.counts())
 	}
 }
+
+// The daemon's start reads the open pull request of each task of an issue (readIssuesAtStart), not
+// one pull request of the issue: GitHub can lose the deliveries of either task's pull request while
+// the daemon is down. CAPTURE-1's task a has its pull request #86 open on legion/CAPTURE-1, and its
+// task b its #87 open on legion/CAPTURE-1.b, and the start reads each of them once.
+//
+// The fault it catches is a start read queued by the issue alone, which judges the task the
+// implementer's phases row names, b, and leaves a's pull request as its lost webhooks left it (its
+// control: the start queuing each issue's key alone).
+func TestTheStartReadReadsTheOpenPullRequestOfEachTask(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	seedTwoTasks(t, pool)
+	b := record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets", Number: 87, Branch: "legion/CAPTURE-1.b", HeadSHA: "pushed", Failing: []string{}}
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error { return record.NewStore().PutPullRequest(context.Background(), tx, b) }); err != nil {
+		t.Fatalf("record b's pull request: %v", err)
+	}
+	github := newIssueReadStandIn(t, time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC))
+	w := readRuntime(pool, github.URL, quietLogger())
+
+	w.readIssuesAtStart(context.Background())
+	if a, b := github.count("/repos/acme/widgets/pulls/86"), github.count("/repos/acme/widgets/pulls/87"); a != 1 || b != 1 {
+		t.Fatalf("the start read a's #86 %d times and b's #87 %d times, want each once: GitHub was read %v", a, b, github.counts())
+	}
+}
+
+// The read applies a missing pull request (intake.PullRequestMissing) only for a task whose step
+// stands at implementing unheld: a held task waits on its owner, whose decision restarts its
+// implementer, and no step works on the pull request the fact would ask its architect for.
+// CAPTURE-1's task b, whose implementer completed at handoff-b with no pull request open on
+// legion/CAPTURE-1.b, is held; the read of b's pull request lists b's branch, applies no fact and
+// tells nobody. The workflow tells nothing for such a fact either (its pullRequestMissing reads the
+// task held), so the fact the read no longer applies is what this test reads.
+//
+// The fault it catches is a held step read as implementing, so the read applies a fact for a task
+// that waits on its owner (its control: the read of implementing that takes a held step).
+func TestAHeldTaskIsNotToldItsPullRequestIsMissing(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	seedTwoTasks(t, pool)
+	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+		return record.NewStore().HoldTask(context.Background(), tx, "CAPTURE-1", 1, "b", record.HoldEscalated)
+	}); err != nil {
+		t.Fatalf("hold task b: %v", err)
+	}
+	var listed []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.URL.Path, "/repos/acme/widgets/pulls") && r.URL.Query().Get("state") == "open" {
+			listed = append(listed, r.URL.Query().Get("head"))
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	w := readRuntime(pool, server.URL, quietLogger())
+
+	_, err := w.readIssuePullRequest(context.Background(), "CAPTURE-1", "b")
+	if err != nil || len(listed) != 1 || listed[0] != "acme:legion/CAPTURE-1.b" {
+		t.Fatalf("the read listed the open pull requests on %v, %v; want b's branch alone, no error", listed, err)
+	}
+	if applied, reasons := headReads(t, pool, "pull-request-missing"), noticeReasons(t, pool, "pull-request-missing"); applied != 0 || len(reasons) != 0 {
+		t.Fatalf("the read applied %d missing pull requests and told %q, want none: task b is held", applied, reasons)
+	}
+}
+
+// The read of an issue's pull request judges, of a plan of any count of tasks, the task a
+// completion names, else the task of the step its implementer's phases row runs
+// (record.PhaseRow.StepTask), else, for a row raised before the plan, which names no step, the task
+// that merges (record.StoredPlan.MergingTask); and the issue's own work, the zero task, where the
+// issue has no plan rows. A named task the plan does not hold judges none, and so does a row naming
+// no step of a plan in which no task merges.
+//
+// The fault it catches is a plan of one task judged by its count of tasks rather than by the task
+// named, and a row raised before a plan of several tasks judging none, so the read of such an issue
+// reads no pull request (its control: the read with no fallback to the task that merges).
+func TestTheReadJudgesTheNamedTaskElseTheImplementersElseTheOneThatMerges(t *testing.T) {
+	one := &record.StoredPlan{Tasks: []record.PlanTask{{Task: "a"}}}
+	chain := &record.StoredPlan{Tasks: []record.PlanTask{{Task: "a"}, {Task: "b", Needs: []string{"a"}}}}
+	apart := &record.StoredPlan{Tasks: []record.PlanTask{{Task: "a"}, {Task: "b"}}}
+	for _, tc := range []struct {
+		name             string
+		stored           *record.StoredPlan
+		row, named, want string
+		judged           bool
+	}{
+		{"no plan rows: the issue's own work", nil, "", "", "", true},
+		{"one task, named", one, "a", "a", "a", true},
+		{"one task, the row raised before the plan", one, "", "", "a", true},
+		{"one task, a task the plan does not hold named", one, "a", "z", "", false},
+		{"two tasks, named", chain, "a", "b", "b", true},
+		{"two tasks, the implementer's row", chain, "a", "", "a", true},
+		{"two tasks, the row raised before the plan: the task that merges", chain, "", "", "b", true},
+		{"two tasks that no task needs, the row raised before the plan: none merges", apart, "", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task, judged := judgedTask(tc.stored, record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleImplementer, StepTask: tc.row}, tc.named)
+			if task.Task != tc.want || judged != tc.judged {
+				t.Fatalf("the read judges task %q (%t), want %q (%t)", task.Task, judged, tc.want, tc.judged)
+			}
+		})
+	}
+}

@@ -36,10 +36,10 @@ import (
 // (intake.BehindEntryClause). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
-// HANDOFF_NO_PULL_REQUEST), and for a task of a plan of several to an open one against the base
-// the plan gives the task (HANDOFF_PULL_REQUEST_BASE). A check report carries no commit and no
-// record (nothing was pushed or written) and a Verdict of pass, pending or fail; a tester's
-// completion a Verdict of pass or fail.
+// HANDOFF_NO_PULL_REQUEST), and for an issue with plan rows, a plan of one task among them, to an
+// open one against the base the plan gives the task (HANDOFF_PULL_REQUEST_BASE); an issue with no
+// plan rows reads no base. A check report carries no commit and no record (nothing was pushed or
+// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
@@ -231,9 +231,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			grant.Issue, whose))
 		return
 	}
-	// A completion of a plan of several tasks is of the task of the step its claim's agent runs
-	// (handoffPosition), and issue stands in that task's own phase from here on. An agent that runs
-	// no step of such a plan completes no phase of it, and nothing is recorded.
+	// A completion of an issue with plan rows is of one task of its plan (handoffPosition: the task
+	// of the step its claim's agent runs, else of the step the latest phases row naming its claim
+	// runs, else the task that merges), and issue stands where it stands for that task from here
+	// on. A completion of no task of the plan completes no phase of it, and nothing is recorded.
 	if position.noStep {
 		refusal := intake.NotCurrentPhase(grant.Role, issue.Phase, grant.Issue)
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
@@ -418,12 +419,12 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// child's completion refused before (while the tree lingered, or while the old gate was closed)
 	// would otherwise take the new generation's key.
 	//
-	// For an issue with plan rows the pass is its running task's (completionPosition), and the
+	// For an issue with plan rows the pass is the completing task's (completionPosition), and the
 	// task is in the key before it, so a new task at pass 0 takes no key an earlier task of the
-	// issue used. Of a plan of several tasks that task is the one the claim's agent runs a step of,
-	// and the phase in the key is that task's own, so two tasks' completions of one role and one
-	// pass take two keys. An issue with no plan rows keeps today's key, so a completion retried
-	// across the upgrade keeps its key.
+	// issue used. The phase in the key is that task's own, so two tasks' completions of one role and
+	// one pass take two keys, and for a plan of one task it is the issue's, as before tasks. An
+	// issue with no plan rows keeps today's key, so a completion retried across the upgrade keeps
+	// its key.
 	//
 	// The step a fail names its task's return to (returnTo) ends the key when the completion
 	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
@@ -642,13 +643,13 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
 // read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
 // the completion is applied, the open pull request on the branch of the completion's task
-// (position.branch: the issue's own, claim.IssueBranch, but for a task of a plan of several,
-// completionPosition), is read as the implement App, minted for the owner of the issue's
-// repository in GitHub's spelling (record.Issue.GitHubRepo, which the webhook's facts name it by),
-// and it says whether the completion goes on:
+// (position.branch: the task's own, record.PlanTask.BranchOf, and the issue's, claim.IssueBranch,
+// for an issue with no plan rows, completionPosition), is read as the implement App, minted for the
+// owner of the issue's repository in GitHub's spelling (record.Issue.GitHubRepo, which the
+// webhook's facts name it by), and it says whether the completion goes on:
 //
 //   - one open against the base the plan gives the task (position.base, record.StoredPlan.BaseOf),
-//     or against any base where none is read (a plan of one task, or none): when the record does
+//     or against any base where none is read (an issue with no plan rows): when the record does
 //     not already hold it open, the intake.PullRequestOpened its webhook would have carried is
 //     applied first, a reopen when the record holds the same pull request closed, under the
 //     read's stable id (intake.OpenedRead). The completion then moves the issue to testing. A
