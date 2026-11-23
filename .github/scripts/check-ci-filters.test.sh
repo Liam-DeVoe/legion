@@ -695,12 +695,12 @@ check "and the command nothing claims" "$(contains "$out" 'runs `go test ./...`,
 echo "case: a RULES why that cites a line of its own file the call is not on"
 root=$(fixture own-call-line)
 replace "$root/.github/scripts/ci_job_reads.py" '"lib_test.go reads ../../fixtures/data.json"' \
-  '"lib_test.go:100 calls os.ReadFile on ../../fixtures/data.json"'
+  '"lib_test.go:8 calls os.ReadFile on ../../fixtures/data.json"'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the row, the cited line and the line the call is on" \
-  "$(contains "$out" "RULES' row for mod/lib/lib_test.go cites lib_test.go:100 as calling os.ReadFile, which that line does not; the call is at :101")"
-replace "$root/.github/scripts/ci_job_reads.py" 'lib_test.go:100 calls' 'lib_test.go:101 calls'
+  "$(contains "$out" "RULES' row for mod/lib/lib_test.go cites lib_test.go:8 as calling os.ReadFile, which that line does not; the call is at :9")"
+replace "$root/.github/scripts/ci_job_reads.py" 'lib_test.go:8 calls' 'lib_test.go:9 calls'
 run_check "$root"
 check "passes once the why cites the line the call is on" "$(is "$status" 0)"
 

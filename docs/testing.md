@@ -645,8 +645,9 @@ with a lock type such as `'advisory'`, and each of those with the column qualifi
   holder's `Client/ClientRead`, which a signal blanks the same way. Such a test reads the
   sample again, within a bound, until it holds.
 
-A read of one lock from `pg_locks`, by relation or by advisory key, and a read of one backend's
-request by its pid, do not write the predicate out, and the check leaves them alone.
+A read of one lock from `pg_locks`, by relation or by advisory key, a read of one backend's
+request by its pid, and a read of the waiters behind one backend (`pg_blocking_pids`) do not write
+the predicate out, and the check leaves them alone.
 
 ## A file a test runs
 

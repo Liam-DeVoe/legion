@@ -41,9 +41,10 @@ var (
 	lockWaitEvent = regexp.MustCompile(`(?i)` + lockWaitTerm + lockWaitOperator + lockWaitValue +
 		`|` + lockWaitValue + lockWaitOperator + lockWaitTerm +
 		`|` + lockWaitTerm + `\s+(?:not\s+)?in\s*\([^)]*` + lockWaitValue)
-	// lockWaitPredicate is lockwaittest's predicate written out: the backends pg_locks holds an
-	// ungranted request of, with or without a lock type.
-	lockWaitPredicate = regexp.MustCompile(`(?i)select\s+pid\s+from\s+pg_locks\s+where\s+not\s+granted`)
+	// lockWaitPredicate is lockwaittest's predicate written out: the subquery of the backends
+	// pg_locks holds an ungranted request of, with or without one lock type, and no other
+	// condition. A read of the waiters behind one backend (pg_blocking_pids) is another read.
+	lockWaitPredicate = regexp.MustCompile(`(?i)select\s+pid\s+from\s+pg_locks\s+where\s+not\s+granted(?:\s+and\s+locktype\s*=\s*'\w+')?\s*\)`)
 )
 
 // No Go file of the three modules reads whether a backend waits on a lock from pg_stat_activity's
@@ -67,9 +68,10 @@ func TestEveryTestReadsALockWaitThroughLockwaittest(t *testing.T) {
 // The check names a wait event compared with a lock as SQL writes it plainly, reversed, in a list,
 // qualified, in a coalesce and cast, and by like, and the predicate written out, each at the line
 // it is on, in a raw literal across lines too. It leaves alone a wait event read for a diagnosis
-// or compared with another wait, a comment, the helper file, and a module below the root. A root
-// that holds no go.mod, and one in which it reads no Go file, is an error. The planted source
-// splits each form across two literals, so this file holds none of them whole.
+// or compared with another wait, a read of the waiters behind one backend, a comment, the helper
+// file, and a module below the root. A root that holds no go.mod, and one in which it reads no Go
+// file, is an error. The planted source splits each form across two literals, so this file holds
+// none of them whole.
 func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 	root := t.TempDir()
 	plant := func(path string, lines ...string) string {
@@ -96,7 +98,8 @@ func TestTheLockWaitCheckSeesWhatItGuards(t *testing.T) {
 		"var liked = \""+typed+" not like 'Lock'\"",
 		"var spelled = `select count(*) from pg_stat_activity",
 		"\twhere "+"pid in (select pid from pg_"+"locks where not granted)`",
-		"var typedSpelled = \"select pid from pg_"+"locks where not granted and locktype = 'advisory'\"",
+		"var typedSpelled = \"pid in (select pid from pg_"+"locks where not granted and locktype = 'advisory')\"",
+		"var behind = \"select pid from pg_"+"locks where not granted and pg_backend_pid() = any(pg_blocking_pids(pid))\"",
 		"var diagnosis = \"select "+typed+", "+event+" from pg_stat_activity\"",
 		"var other = \""+typed+" = 'IO' and "+event+" = 'WalSync'\"",
 		"",
