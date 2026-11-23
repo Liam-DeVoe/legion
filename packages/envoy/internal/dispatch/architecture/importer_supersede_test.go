@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -141,7 +142,7 @@ func TestAHeldGitHubRateLimitEmitsOneSyncFailedEvent(t *testing.T) {
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL, githubapp.WithLimits(limits),
-		githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+		githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}

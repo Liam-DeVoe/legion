@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -380,7 +381,7 @@ func awaitTakeOver(t *testing.T, tries *clocktest.Fake, taken func() bool, failu
 // called. Its GitHub answers every pull request 404 after counting it, which the intake logs and
 // acknowledges, and holds the fetch of each number block reports true until the handler's context
 // ends or the test's end. The client's own bound on that fetch is past any run
-// (requestTimeoutPastTheRun), so a row stages its next step while the fetch is held.
+// (githubapptest.RequestTimeoutPastTheRun), so a row stages its next step while the fetch is held.
 func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool) *intakeProcess {
 	t.Helper()
 	return startIntakeProcessWith(t, pool, natsURL, block, nil)
@@ -419,7 +420,7 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 		}
 		w.WriteHeader(http.StatusNotFound)
 	})
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	// Registered after the fake's server, so it runs first: the server's Close waits for the
 	// handler it holds.
 	process.release = sync.OnceFunc(func() { close(held) })
@@ -1490,7 +1491,7 @@ func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 // the test opens and closes itself, so a pass reaches every moment of that window it can and none
 // is left to a pace.
 type previousBuild struct {
-	// t is the test whose wait names the join of the passes (stop).
+	// t is the test a give-up of the join of the passes (stop) is reported to, through t.Error.
 	t      *testing.T
 	leases duty.Leases
 	client *bus.Client
@@ -1564,19 +1565,24 @@ func (p *previousBuild) reconcile() {
 	}()
 	p.end = func() {
 		close(quit)
-		testwait.Receive(p.t, "the previous build's passes to end once quit closed", ended)
+		// stop runs on the intake's goroutine (the second create, failCreatesWhile) as well as the
+		// test's, so the wait is the form for a goroutine that is not the test's: a give-up fails the
+		// test through t.Error, which ends no goroutine, and the wait returns.
+		if _, err := testwait.ReceiveInHelper("previousBuild.stop", "the previous build's passes to end once quit closed", ended); err != nil {
+			p.t.Error(err)
+		}
 	}
 }
 
-// stop ends the passes reconcile started, once the pass in flight has returned. It clears end
-// before it waits: a stop on the intake's goroutine (the second create, failCreatesWhile) whose
-// wait gave up leaves end called, and the cleanup's stop then finds nothing to end.
+// stop ends the passes reconcile started, once the pass in flight has returned. Its wait returns
+// whether the passes ended or it gave up (reconcile's end), so whichever of the intake's stop and
+// the cleanup's comes second finds nothing to end.
 func (p *previousBuild) stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if end := p.end; end != nil {
+	if p.end != nil {
+		p.end()
 		p.end = nil
-		end()
 	}
 }
 
@@ -1607,10 +1613,13 @@ func TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconcile
 		case 1:
 			// The failing create returns only once the previous build has made a pass, so a pass
 			// falls inside the window whatever the take-over's retry wait is on the machine's
-			// clock. A pass that never comes holds the take-over, and the row fails at
-			// requireDeliveredFromTheFloor's wait by name.
+			// clock. The hook runs on the intake's goroutine, so it waits in the form for a goroutine
+			// that is not the test's: a pass that never comes fails the row through t.Error at the
+			// shared wait's give-up, naming it, and the create fails and goes on.
 			previous.reconcile()
-			<-previous.passed
+			if _, err := testwait.ReceiveInHelper("failCreatesWhile", "the previous build's first pass", previous.passed); err != nil {
+				t.Error(err)
+			}
 			return true
 		case 2:
 			previous.stop()

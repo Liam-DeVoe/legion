@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -175,8 +176,8 @@ const (
 // The counting fakes of this file's other rows answer 500, which writes nothing and so says
 // nothing about what a person sees. It counts every fetch of that pull request and, when hold is
 // set, holds the first one until the row releases it or the handler making it is abandoned. The
-// client's own bound on a fetch is past any run (requestTimeoutPastTheRun), so that bound is not
-// what abandons the held fetch while the row stages its next step.
+// client's own bound on a fetch is past any run (githubapptest.RequestTimeoutPastTheRun), so that
+// bound is not what abandons the held fetch while the row stages its next step.
 func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func(), github *githubapp.Client) {
 	t.Helper()
 	fetches = &atomic.Int64{}
@@ -213,7 +214,7 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 			"message": "feat: a widget", "author": map[string]any{"date": "2024-01-01T00:00:00Z"},
 		}}})
 	})
-	return fetches, release, fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	return fetches, release, fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 }
 
 // A handler that finishes while its process is cut off from NATS has its work redone by the
@@ -602,8 +603,8 @@ func (count fetchCount) Load() int64 { return count() }
 // holding a handler through a lost hold needs: the stop a lost hold runs abandons a handler by
 // cancelling it, waits for every handler to return before it hands the messages back, and a
 // handler returns only once the fetch it is inside does. The holding fake's client has a bound
-// past any run (requestTimeoutPastTheRun), so it is that stop, and not the client's own bound,
-// that abandons the held fetch.
+// past any run (githubapptest.RequestTimeoutPastTheRun), so it is that stop, and not the client's
+// own bound, that abandons the held fetch.
 func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPullRequests, *githubapp.Client) {
 	t.Helper()
 	if which == holderCountsItsFetches {
@@ -612,7 +613,7 @@ func holderFakeGitHub(t *testing.T, which holderGitHubFake) (fetchCount, *heldPu
 	}
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	return func() int64 { return heldFetches(held, "1") }, held, fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	return func() int64 { return heldFetches(held, "1") }, held, fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 }
 
 // heldFetches is how many fetches of pull request number a holding fake GitHub was asked for: one

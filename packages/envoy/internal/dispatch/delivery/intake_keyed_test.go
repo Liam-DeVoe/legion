@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -56,9 +57,9 @@ type pullRequestHold struct {
 // until that number is released (release, releaseNumber). A row that needs two handlers inside
 // their fetches at once names the second number here rather than installing a fake of its own.
 // The held fetch does not watch the request's context, so a row's client of this fake takes a
-// bound past any run (requestTimeoutPastTheRun): at githubapp.RequestTimeout (20 s) the client
-// would give the held fetch up and ask again, unheld, and the handler would finish while the row
-// stages a step that needs it held.
+// bound past any run (githubapptest.RequestTimeoutPastTheRun): at githubapp.RequestTimeout (20 s)
+// the client would give the held fetch up and ask again, unheld, and the handler would finish
+// while the row stages a step that needs it held.
 func holdPullRequestOne(fake *fakeGitHub, also ...string) *heldPullRequests {
 	held := newHeldPullRequests(append([]string{"1"}, also...))
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +209,7 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	// After the fake's server, so it runs first: the server's Close waits for the fetch it holds.
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
@@ -288,7 +289,7 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
 	stopFirst := runIntake(t, ackWaitPastTheRun(newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))))
@@ -328,8 +329,8 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 // holdPullRequestOneUntilAbandoned is holdPullRequestOne, except that the held fetch also ends when
 // the intake abandons it (the request's context ends), so its end is recorded as soon as the
 // intake stops waiting on it, by a release or by giving the call up. A row's client of this fake
-// takes a bound past any run (requestTimeoutPastTheRun) too, so the client's own bound is not
-// what gives the call up.
+// takes a bound past any run (githubapptest.RequestTimeoutPastTheRun) too, so the client's own
+// bound is not what gives the call up.
 func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
 	held := newHeldPullRequests([]string{"1"})
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
@@ -373,7 +374,7 @@ func TestAHandOverKeepsAPullRequestsMessagesInOrder(t *testing.T) {
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
 	first := ackWaitPastTheRun(newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
@@ -468,7 +469,7 @@ func TestAStoppingIntakeDoesNotWaitOutAGitHubCallThatDoesNotAnswer(t *testing.T)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
 	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
@@ -513,7 +514,7 @@ func TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal(t *testing.
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
 	intake := ackWaitPastTheRun(newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
@@ -636,7 +637,7 @@ func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
 	// counts whatever another row left behind as well.
 	_, uri := testnats.Start(t)
 	natsClient := reconnectTestClient(t, uri)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun)), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun)), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
 	// The stop has to be waiting for pull request 1's handler still while the counts below are
 	// read, and it is this row that releases that handler: the intake's clock is a fake the row
 	// never moves, so the stop's budget never gives the handler up first.
@@ -811,7 +812,7 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOne(fake)
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	t.Cleanup(held.release)
 	natsClient := intakeTestClient(t)
 	hooked := make(chan struct{}, 8)

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -353,19 +354,11 @@ func writeStatus(w http.ResponseWriter, status int) {
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m.Run)) }
 
-// requestTimeoutPastTheRun is the GitHub client's own bound on each call it sends
-// (githubapp.WithRequestTimeout): past any run, so a read the fake holds (releasableHold) ends
-// only where the row releases it, moves the importer's clock to the flight's deadline, closes the
-// importer, or ends. At githubapp.RequestTimeout (20 s) of the wall clock, a held read would end on
-// its own whenever the row's next step came later than that, and the flight would take that end
-// for GitHub's own failure: a held sync would fail before its release or record a failure before
-// Close, a try a save superseded would be retried, and reach GitHub, before the flight's deadline,
-// and a flight held to its deadline would end before it, on the client's (moveToTheFlightsDeadline).
-const requestTimeoutPastTheRun = 24 * time.Hour
-
 // newGitHubClient serves handler as the GitHub API and returns an App client
 // pointed at it, whose own bound on each call is past any run
-// (requestTimeoutPastTheRun).
+// (githubapptest.RequestTimeoutPastTheRun): so a read the fake holds (releasableHold) ends only
+// where the row releases it, moves the importer's clock to the flight's deadline, closes the
+// importer, or ends.
 func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -375,7 +368,7 @@ func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	base := githubtest.Server(t, githubtest.Spec{Handle: handler.ServeHTTP})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base,
-		githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+		githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}
@@ -419,8 +412,17 @@ func newImporterFixtureOn(t *testing.T, fake *fakeSource) (*Importer, *store.Sto
 	importer := NewImporterOn(clock, database, client, events.NewBroker())
 	// Cleanups run last registered first, and the pool's is storetest.Open's
 	// above, so this one ends the flights before the pool closes under them.
-	t.Cleanup(importer.Close)
+	t.Cleanup(func() { closeImporter(t, importer) })
 	return importer, database, clock
+}
+
+// closeImporter closes process and waits for its Close to return. Close ends the importer's
+// flights and push workers and waits for them (Importer.Close), so a flight or a worker that never
+// returns holds Close for good: through the shared wait the row then fails naming the wait, where
+// a bare call would hang the test binary to its timeout.
+func closeImporter(t *testing.T, process *Importer) {
+	t.Helper()
+	testwait.Returns(t, "the importer's Close to end its flights and push workers", process.Close)
 }
 
 func projectEvents(t *testing.T, database *store.Store) []string {
@@ -1514,7 +1516,7 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 		}
 		return lastError != nil
 	})
-	importer2.Close()
+	closeImporter(t, importer2)
 	if err := database2.Pool.QueryRow(context.Background(),
 		`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
 		t.Fatalf("read row: %v", err)
@@ -1533,8 +1535,8 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 // A flight stops its deadline as it ends (flight's cancel), so a deadline still pending is a
 // flight nothing ended before the move, whose held read then ends on that deadline. A read that
 // ended first on another bound, such as the GitHub client's own on each call
-// (requestTimeoutPastTheRun), ends the flight with context.DeadlineExceeded too, and with
-// "deadline" in last_error, so only this check tells that end from the flight's own.
+// (githubapptest.RequestTimeoutPastTheRun), ends the flight with context.DeadlineExceeded too,
+// and with "deadline" in last_error, so only this check tells that end from the flight's own.
 func moveToTheFlightsDeadline(t *testing.T, clock *clocktest.Fake, deadline time.Time, flight string) {
 	t.Helper()
 	pending, moved := clock.SetWhen(func(_ time.Time, armed []time.Time) (time.Time, bool) {
@@ -2234,8 +2236,8 @@ func twoProcessesOn(t *testing.T, branch *movingBranch, c clock.Clock) (a, b *Im
 	a, b = NewImporterOn(c, database, client, events.NewBroker()), NewImporterOn(c, database, client, events.NewBroker())
 	// Cleanups run last registered first, and the pool's is storetest.Open's above, so these end
 	// the flights before the pool closes under them.
-	t.Cleanup(a.Close)
-	t.Cleanup(b.Close)
+	t.Cleanup(func() { closeImporter(t, a) })
+	t.Cleanup(func() { closeImporter(t, b) })
 	return a, b, database
 }
 

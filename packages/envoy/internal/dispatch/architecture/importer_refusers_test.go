@@ -73,7 +73,7 @@ func newRefusersRig(t *testing.T, held int32) *refusersRig {
 		t.Fatalf("seed: %v", err)
 	}
 	rig.process = NewImporter(rig.database, client, events.NewBroker())
-	t.Cleanup(rig.process.Close)
+	t.Cleanup(func() { closeImporter(t, rig.process) })
 	rig.releaseLate = sync.OnceFunc(func() { close(rig.late) })
 	// Cleanups run last registered first: a test that fails while a refuser is held lets it go
 	// before Close waits for the flights.

@@ -176,7 +176,7 @@ func TestAPushAfterCloseStartsNothing(t *testing.T) {
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, _ := newImporterFixture(t, fake)
 	logged := capturePushLogs(t)
-	importer.Close()
+	closeImporter(t, importer)
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -305,7 +305,7 @@ func TestCoverPushesLetsNoAnswerCloseMayHaveCutShortCoverAPush(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			importer := NewImporter(nil, nil, nil)
-			t.Cleanup(importer.Close)
+			t.Cleanup(func() { closeImporter(t, importer) })
 			key := seedPush(importer, pushed)
 			if c.stopping {
 				importer.abandon()
@@ -330,7 +330,7 @@ func TestCoverPushesLetsNoAnswerCloseMayHaveCutShortCoverAPush(t *testing.T) {
 func TestARefusedBeginSaysThePushIsDropped(t *testing.T) {
 	importer := NewImporter(nil, nil, nil)
 	logged := capturePushLogs(t)
-	importer.Close()
+	closeImporter(t, importer)
 
 	importer.recordPush(EnabledSource{Project: "CORE", Repo: archRepo}, "main")
 	if left := pendingPushes(importer); left != 0 {
@@ -355,7 +355,7 @@ func TestAPushDuringAWorkersLastLookIsNotLost(t *testing.T) {
 	// head lookups.
 	heads := &headClock{next: fake.handler()}
 	importer := NewImporter(database, newGitHubClient(t, heads), events.NewBroker())
-	t.Cleanup(importer.Close)
+	t.Cleanup(func() { closeImporter(t, importer) })
 	// After the first import every import is the unchanged-head refresh, a short one, so a round
 	// holds several imports and several last looks for the pushes to race.
 	if _, err := importer.Sync(ctx, "CORE", archRepo); err != nil {
@@ -423,7 +423,9 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	if err != nil {
 		t.Fatalf("connect the publisher: %v", err)
 	}
-	t.Cleanup(publisher.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the push publisher's NATS client to close and its stream keeper to end", publisher.Close)
+	})
 	callers, err := database.Pool.Leases()
 	if err != nil {
 		t.Fatalf("open the lease pool: %v", err)
@@ -448,7 +450,7 @@ func startPushBus(t *testing.T, importer *Importer, database *store.Store) *push
 	}
 	t.Cleanup(func() {
 		cancel()
-		stop()
+		testwait.Returns(t, "the delivery intakes to stop: their Runs returned, their NATS clients closed and their hand-back finalizers settled", stop)
 	})
 	pushes := &pushBus{publisher: publisher}
 	testwait.Until(t, "the delivery intake to bind its durable", func() (string, bool) {

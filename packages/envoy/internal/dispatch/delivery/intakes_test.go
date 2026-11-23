@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -220,8 +221,8 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 // fake reaches it the stop gives the held handler up (its WARN line says so) and returns. Every
 // intake of the row takes a message timeout past the run (startIntakes, ackWaitPastTheRun), so
 // only the hand-back brings the message to the next process inside the run, and the GitHub
-// client's own bound is past the run (requestTimeoutPastTheRun), so only the stop gives the held
-// fetch up.
+// client's own bound is past the run (githubapptest.RequestTimeoutPastTheRun), so only the stop
+// gives the held fetch up.
 func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
@@ -230,7 +231,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	publisher := intakeTestClient(t)
 	fake := newFakeGitHub(t)
 	held := holdPullRequestOneUntilAbandoned(fake)
-	github := fake.newTestClient(githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+	github := fake.newTestClient(githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	t.Cleanup(held.release)
 
 	stopClock := clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))

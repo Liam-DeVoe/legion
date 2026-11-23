@@ -429,13 +429,16 @@ func queryNumber(values url.Values, name string, fallback int) int {
 // client is a githubapp.Client on a throwaway key, pointed at this stand-in, obeying and
 // recording the shared rate limits as every Dispatch process's client does. It reads a limit's
 // wait against the passes' clock and bounds the limit's write on recordClock (limitClock), and
-// its own bound on each call is past any run (requestTimeoutPastTheRun).
+// its own bound on each call is past any run (githubapptest.RequestTimeoutPastTheRun): so a call
+// the stand-in holds (hold, holdQuery) ends only where the test moves the passes' clock to the
+// pass's bound or a caller's deadline, or where the caller cancels it.
 func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
 	_, text := githubapptest.Key(f.t)
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits),
-		githubapp.WithRateLimitClock(limitClock{Fake: f.recordClock, passes: f.clock}), githubapp.WithRequestTimeout(requestTimeoutPastTheRun))
+		githubapp.WithRateLimitClock(limitClock{Fake: f.recordClock, passes: f.clock}),
+		githubapp.WithRequestTimeout(githubapptest.RequestTimeoutPastTheRun))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)
 	}
@@ -444,14 +447,6 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	}
 	return client
 }
-
-// requestTimeoutPastTheRun is the client's own bound on each call it sends
-// (githubapp.WithRequestTimeout): past any run, so a call the stand-in holds (hold, holdQuery)
-// ends only where the test moves the passes' clock to the pass's bound or a caller's deadline, or
-// where the caller cancels it. At githubapp.RequestTimeout (20 s) of the wall clock, a held call
-// would end on its own whenever the test's move came later than that, and the pass would read
-// the end as the head's own failure (cutShort) and go on past the hold.
-const requestTimeoutPastTheRun = 24 * time.Hour
 
 // limitClock is the clock the stand-in's client reads a limit GitHub answered against and bounds
 // the write of that limit to the shared ledger on (githubapp.WithRateLimitClock). Its moment is
@@ -462,6 +457,14 @@ const requestTimeoutPastTheRun = 24 * time.Hour
 // the write is in flight -- to a wait the pass armed, or to the pass's own bound -- and end a write
 // the row never held: a limit GitHub answered as the pass's bound fell would then not reach the
 // ledger (TestALimitAnsweredAsTheBoundFallsIsALimit).
+//
+// It is two fakes in one, and sound only for the two uses githubapp makes of its rate-limit
+// clock: limitRecordContext (client.go) arms a relative timeout, WithTimeout, which the embedded
+// Fake reckons from recordClock's own moment; and limitNow (deliveries.go) reads Now, which
+// passes answers. No other method of it is called. A use that mixed the two -- a deadline taken
+// from Now and armed through WithDeadline, or a span reckoned from Now and armed as a timer --
+// would set one fake's moment against the other's, so a new use of that clock in githubapp needs
+// this type read again.
 type limitClock struct {
 	*clocktest.Fake
 	passes *clocktest.Fake

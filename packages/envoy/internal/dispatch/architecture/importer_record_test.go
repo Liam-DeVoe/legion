@@ -135,7 +135,7 @@ func TestSyncsOfRepositoriesNoSourceReadsLeaveNoEntryOnceAnswered(t *testing.T) 
 		t.Fatalf("seed: %v", err)
 	}
 	process := NewImporter(database, client, events.NewBroker())
-	t.Cleanup(process.Close)
+	t.Cleanup(func() { closeImporter(t, process) })
 
 	const syncs = 8
 	for n := range syncs {
