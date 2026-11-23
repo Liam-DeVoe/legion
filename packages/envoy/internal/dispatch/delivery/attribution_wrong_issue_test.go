@@ -153,7 +153,7 @@ func pr2808Envelope() map[string]string {
 func storePR2808AsAnOlderRuleJudgedIt(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	updated := time.Date(2026, 11, 12, 0, 49, 50, 0, time.UTC)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: pr2808Repo, Number: pr2808Number, HeadSHA: pr2808Head, HeadRef: pr2808Branch,
 		BaseRef: "main", State: "merged", Title: pr2808Title, URL: pr2808URL, EventAt: &updated,
 		Texts: &PullRequestTexts{HeadRepo: pr2808Repo, BaseRef: "main", Title: pr2808Title, Body: pr2808Body,
@@ -173,7 +173,7 @@ func storePR2808AsAnOlderRuleJudgedIt(t *testing.T, ctx context.Context, pool *s
 // (PullRequestIssues), "none" for nobody.
 func pr2808Credit(t *testing.T, ctx context.Context, pool *store.Pool) (string, string) {
 	t.Helper()
-	head := readHead(t, ctx, pool, pr2808Repo, pr2808Number)
+	head := readHead(t, unrenamed(), ctx, pool, pr2808Repo, pr2808Number)
 	if head.IssueKey == nil {
 		return "none", head.AttributionSource
 	}
@@ -204,24 +204,24 @@ func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
 		write func(t *testing.T)
 	}{
 		{"the pull_request envelope of the merge", func(t *testing.T) {
-			intake := newIntake(nil, pool, nil, client, broker, nil)
+			intake := newIntake(nil, pool, nil, client, broker, nil, unrenamed())
 			if _, err := intake.recordPullRequestHead(ctx, pr2808Envelope(), pr2808Number); err != nil {
 				t.Fatalf("record the envelope's head: %v", err)
 			}
 		}},
 		{"the read-through of the head commit, which a recorded result makes", func(t *testing.T) {
-			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, pr2808Repo, pr2808Head, time.Now()); err != nil {
+			if _, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, client, pr2808Repo, pr2808Head, time.Now()); err != nil {
 				t.Fatalf("read the head commit through: %v", err)
 			}
 		}},
 		{"the read-through of an earlier commit of the branch, which a results read makes", func(t *testing.T) {
-			if _, _, err := ReadThroughCommitPulls(ctx, pool, client, pr2808Repo, pr2808Earlier, time.Now()); err != nil {
+			if _, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, client, pr2808Repo, pr2808Earlier, time.Now()); err != nil {
 				t.Fatalf("read the earlier commit through: %v", err)
 			}
 		}},
 		{"the reconcile, judging again the row an older rule credited", func(t *testing.T) {
 			storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
-			if err := NewReconcile(pool, client, broker).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
+			if err := NewReconcile(pool, client, broker, unrenamed()).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
 				t.Fatalf("reconcile the pull request heads: %v", err)
 			}
 		}},
@@ -254,7 +254,7 @@ func TestPR2808AnEnvelopeWithoutItsBranchStillGivesTheBranchsIssue(t *testing.T)
 	pool, ctx := deliveryTestPool(t)
 	seedPR2808Issues(t, ctx, pool)
 	fake, _ := pr2808GitHub(t)
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil)
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 
 	envelope := pr2808Envelope()
 	delete(envelope, "head_ref")
@@ -332,7 +332,7 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) pr2808Pass {
 	})
 	earlier := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	for number := 1; number <= ahead; number++ {
-		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: pr2808Repo, Number: number, HeadSHA: fmt.Sprintf("%040d", number), HeadRef: fmt.Sprintf("chore/tidy-%d", number),
 			BaseRef: "main", State: "merged",
 			Texts: &PullRequestTexts{HeadRepo: pr2808Repo, BaseRef: "main", CommitMessages: []string{}, MessagesRead: true},
@@ -347,7 +347,7 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) pr2808Pass {
 	}
 	storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
 
-	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
+	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget()); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
 	var pass pr2808Pass
@@ -356,7 +356,7 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) pr2808Pass {
 	pass.factsQueries = fake.factsQueries.Load()
 	t.Logf("with %d older-rule rows read before it, after one pass #2808 credits %s from %s; the pass made %d REST reads and %d batched queries",
 		ahead, pass.issue, pass.source, pass.restReads, pass.factsQueries)
-	wrongHeads, err := HeadsAttributedTo(ctx, pool, pr2808Wrong)
+	wrongHeads, err := unrenamed().HeadsAttributedTo(ctx, pool, pr2808Wrong)
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", pr2808Wrong, err)
 	}
@@ -384,7 +384,7 @@ func TestPR2808TheTwoStoredAttributionsOfOnePullRequestAgree(t *testing.T) {
 	storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
 
 	day := time.Date(merged.Year(), merged.Month(), merged.Day(), 0, 0, 0, 0, time.UTC)
-	window, err := ListPullRequestsInWindow(ctx, pool, day, day.AddDate(0, 0, 1))
+	window, err := unrenamed().ListPullRequestsInWindow(ctx, pool, day, day.AddDate(0, 0, 1))
 	if err != nil {
 		t.Fatalf("read the delivery timeline of %s: %v", day.Format(time.DateOnly), err)
 	}
@@ -394,7 +394,7 @@ func TestPR2808TheTwoStoredAttributionsOfOnePullRequestAgree(t *testing.T) {
 			timeline = pr2808KeyOf(pr.IssueKey)
 		}
 	}
-	heads, err := HeadsAttributedTo(ctx, pool, pr2808Right)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, pr2808Right)
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", pr2808Right, err)
 	}

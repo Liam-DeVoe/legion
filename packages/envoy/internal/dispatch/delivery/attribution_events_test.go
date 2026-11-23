@@ -98,7 +98,7 @@ func attributedHeadRow(number int, issue *string, source attributionSource) Pull
 func attributionPass(t *testing.T, ctx context.Context, pool *store.Pool, broker *events.Broker) (AttributionSync, int) {
 	t.Helper()
 	synced := syncAttributions(t, ctx, pool)
-	appended, err := AppendAttributionEvents(ctx, pool, broker)
+	appended, err := unrenamed().AppendAttributionEvents(ctx, pool, broker)
 	if err != nil {
 		t.Fatalf("AppendAttributionEvents: %v", err)
 	}
@@ -108,7 +108,7 @@ func attributionPass(t *testing.T, ctx context.Context, pool *store.Pool, broker
 // syncAttributions is SyncAttributions, and it stops the test where the sync fails.
 func syncAttributions(t *testing.T, ctx context.Context, pool *store.Pool) AttributionSync {
 	t.Helper()
-	synced, err := SyncAttributions(ctx, pool)
+	synced, err := unrenamed().SyncAttributions(ctx, pool)
 	if err != nil {
 		t.Fatalf("SyncAttributions: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 	left := seedHeadIssue(t, ctx, pool, 70)
 	reached := seedHeadIssue(t, ctx, pool, 71)
 
-	if err := UpsertPullRequestHead(ctx, pool, attributedHeadRow(170, &left, sourceTitleBody)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, attributedHeadRow(170, &left, sourceTitleBody)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", left, err)
 	}
 	if found := attributionEvents(t, ctx, pool, left); len(found) != 0 {
@@ -234,7 +234,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 			first[0].Actor, first[0].Notify, first[0].Seq)
 	}
 
-	if err := UpsertPullRequestHead(ctx, pool, attributedHeadRow(170, &reached, sourceBranch)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, attributedHeadRow(170, &reached, sourceBranch)); err != nil {
 		t.Fatalf("move the head to %s: %v", reached, err)
 	}
 	if before, beside := attributionEvents(t, ctx, pool, left), attributionEvents(t, ctx, pool, reached); len(before) != 1 || len(beside) != 0 {
@@ -272,7 +272,7 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 	}
 
 	// A pull request that reaches nobody records that too, on the issue it left alone.
-	if err := UpsertPullRequestHead(ctx, pool, attributedHeadRow(170, nil, sourceNone)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, attributedHeadRow(170, nil, sourceNone)); err != nil {
 		t.Fatalf("uncredit the head: %v", err)
 	}
 	if _, appended := attributionPass(t, ctx, pool, broker); appended != 1 {
@@ -300,7 +300,7 @@ func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 	broker := events.NewBroker()
 	issue := seedHeadIssue(t, ctx, pool, 72)
 
-	if err := UpsertPullRequestHead(ctx, pool, attributedHeadRow(172, &issue, sourceBranch)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, attributedHeadRow(172, &issue, sourceBranch)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", issue, err)
 	}
 	if _, appended := attributionPass(t, ctx, pool, broker); appended != 1 {
@@ -318,7 +318,7 @@ func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 		// A higher source names a held issue, so the messages decide nothing.
 		{"the branch's issue with the messages not read", notRead},
 	} {
-		if err := UpsertPullRequestHead(ctx, pool, again.head); err != nil {
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, again.head); err != nil {
 			t.Fatalf("write %s: %v", again.what, err)
 		}
 		if _, appended := attributionPass(t, ctx, pool, broker); appended != 0 {
@@ -334,7 +334,7 @@ func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 	if stored := storedAttributionOf(t, ctx, pool, "acme/widgets", 172); stored != issue+" by branch" {
 		t.Errorf("the results row stores %s, want %s by branch", stored, issue)
 	}
-	if stored := readHead(t, ctx, pool, "acme/widgets", 172); stored.IssueKey == nil || *stored.IssueKey != issue {
+	if stored := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 172); stored.IssueKey == nil || *stored.IssueKey != issue {
 		t.Fatalf("the row = %+v, want it still credited to %s", stored, issue)
 	}
 }
@@ -503,7 +503,6 @@ func TestASyncWritesNothingForAnAnswerThatIsNotKnown(t *testing.T) {
 			pool, ctx := deliveryTestPool(t)
 			broker := events.NewBroker()
 			seedProjectRepository(t, ctx, pool, "PRNT", "PRNT", "acme/prnt-main")
-			mapRepository(t, ctx, pool, "acme/prnt-side", "PRNT", false, nil)
 			insertProjectIssue(t, ctx, pool, "PRNT", "PRNT-180", 180)
 			insertProjectIssue(t, ctx, pool, "PRNT", "PRNT-581", 581)
 			insertProjectIssue(t, ctx, pool, "PRNT", "PRNT-582", 582)
@@ -552,10 +551,10 @@ func TestASyncWritesNothingForAnAnswerThatIsNotKnown(t *testing.T) {
 				state: "merged", head: headOf(581), branch: "legion/PRNT-581", title: "no key",
 				updatedAt: time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC), messages: []string{"Work for PRNT-582."},
 			})
-			if _, err := NewReconcile(pool, fake.newTestClient(), broker).readFactsLine(ctx, &passInstallations{}, &passRateLimit{}); err != nil {
+			if _, err := NewReconcile(pool, fake.newTestClient(), broker, unrenamed()).readFactsLine(ctx, &passInstallations{}, &passRateLimit{}); err != nil {
 				t.Fatalf("readFactsLine: %v", err)
 			}
-			wantAnswer(t, ctx, pool, "acme/prnt-side", 581, "PRNT-582 from commit_message")
+			wantAnswer(t, unrenamed(), ctx, pool, "acme/prnt-side", 581, "PRNT-582 from commit_message")
 			want := []string{"acme/prnt-side#581 PRNT-581 -> PRNT-582 by commit_message"}
 			for i, wantChanges := range []int{1, 0} {
 				if synced := syncAttributions(t, ctx, pool); synced.Changes != wantChanges {
@@ -565,7 +564,7 @@ func TestASyncWritesNothingForAnAnswerThatIsNotKnown(t *testing.T) {
 					t.Errorf("after sync %d of the facts line the queue holds %v, want %v", i+1, moves, want)
 				}
 			}
-			if appended, err := AppendAttributionEvents(ctx, pool, broker); err != nil || appended != 2 {
+			if appended, err := unrenamed().AppendAttributionEvents(ctx, pool, broker); err != nil || appended != 2 {
 				t.Errorf("AppendAttributionEvents = %d, %v; want 2 events: one on PRNT-581 and one on PRNT-582", appended, err)
 			}
 			if found := attributionEvents(t, ctx, pool, "PRNT-582"); len(found) != 1 || nobodyOr(found[0].Payload.From) != "PRNT-581" {
@@ -613,7 +612,7 @@ func TestAMoveAndBackBeforeItsEventAppendsNothing(t *testing.T) {
 		t.Errorf("after the move back the results row stores %s, want %s by branch", stored, home)
 	}
 
-	if appended, err := AppendAttributionEvents(ctx, pool, broker); err != nil || appended != 0 {
+	if appended, err := unrenamed().AppendAttributionEvents(ctx, pool, broker); err != nil || appended != 0 {
 		t.Errorf("AppendAttributionEvents = %d, %v; want 0 events: the pull request is where it was", appended, err)
 	}
 	for _, issue := range []string{home, away} {
@@ -794,7 +793,7 @@ func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
 	}
 	moved := make(chan answer, 1)
 	go func() {
-		appended, err := AppendAttributionEvents(ctx, pool, events.NewBroker())
+		appended, err := unrenamed().AppendAttributionEvents(ctx, pool, events.NewBroker())
 		moved <- answer{appended, err}
 	}()
 	if early, answered, _ := storetest.AwaitOwnerLockWaiter(t, &store.Store{Pool: pool}, "the attribution move", moved); answered {

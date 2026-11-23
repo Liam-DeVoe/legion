@@ -2,15 +2,15 @@ package delivery
 
 import "testing"
 
-// wantAnswers asks PullRequestIssues for every key of want in one statement, and wants each
+// wantAnswers asks a.PullRequestIssues for every key of want in one statement, and wants each
 // answer (answerOf's words).
-func wantAnswers(t *testing.T, q Querier, want map[PullRequestKey]string) {
+func wantAnswers(t *testing.T, a *Attributor, q Querier, want map[PullRequestKey]string) {
 	t.Helper()
 	keys := make([]PullRequestKey, 0, len(want))
 	for key := range want {
 		keys = append(keys, key)
 	}
-	answers, err := PullRequestIssues(t.Context(), q, keys)
+	answers, err := a.PullRequestIssues(t.Context(), q, keys)
 	if err != nil {
 		t.Fatalf("PullRequestIssues(%v): %v", keys, err)
 	}
@@ -38,7 +38,7 @@ func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 	})
 	storeStatementRow(t, ctx, pool, statementRow{repo: "Acme/Widgets", number: 201, branch: "main", title: "no key", texts: readTexts("")})
 	storeStatementRow(t, ctx, pool, statementRow{repo: "Acme/Widgets", number: 202, branch: "main", title: "no key", texts: readTexts("Closes #277")})
-	wantAnswers(t, pool, map[PullRequestKey]string{
+	wantAnswers(t, unrenamed(), pool, map[PullRequestKey]string{
 		{Repo: "Acme/Widgets", Number: 201}: "ATTR-201 from external_link",
 		{Repo: "Acme/Widgets", Number: 202}: "ATTR-202 from github_issue_link",
 	})
@@ -80,7 +80,7 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 			texts: &statementTexts{body: row.body, messages: row.messages}})
 		want[PullRequestKey{Repo: "acme/widgets", Number: row.number}] = row.want
 	}
-	wantAnswers(t, pool, want)
+	wantAnswers(t, unrenamed(), pool, want)
 }
 
 // TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn: the statement
@@ -94,51 +94,97 @@ func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsIts
 	own := seedGadgetsIssue(t, ctx, pool, 9)
 	storeStatementRow(t, ctx, pool, statementRow{repo: "acme/gadgets", number: 220, branch: "main",
 		title: foreign + ": the other repository's issue, and " + own + " (this one)", texts: readTexts("")})
-	wantAnswers(t, pool, map[PullRequestKey]string{{Repo: "acme/gadgets", Number: 220}: own + " from title_body"})
+	wantAnswers(t, unrenamed(), pool, map[PullRequestKey]string{{Repo: "acme/gadgets", Number: 220}: own + " from title_body"})
 }
 
 // TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue: the pull-request side
 // of the renaming rule. A results row and its texts stored under the name its repository was
 // renamed away from are held to an issue recorded under the new name, because every side of the
-// statement goes through refs.CanonicalRepoSQL: the pull request answers its issue under both
-// names, and a read by the issue lists it.
+// statement reads a repository through the pairs the Attributor holds (refs.CanonicalRepoSQL,
+// renameTerms): the pull request answers its issue under both names, and a read by the issue
+// lists it. The pair is seeded by SQL and the Renames read after it, as a boot reads it.
 func TestAttributingAStoredPullRequestUnderARepositorysOldNameCreditsItsIssue(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
 	own := seedGadgetsIssue(t, ctx, pool, 11)
 	storeStatementRow(t, ctx, pool, statementRow{repo: gadgetsOldRepo, number: 240, branch: "main",
 		title: own + ": the work, merged before the rename was recorded", texts: readTexts("")})
-	wantAnswers(t, pool, map[PullRequestKey]string{
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	wantAnswers(t, attributor, pool, map[PullRequestKey]string{
 		{Repo: gadgetsOldRepo, Number: 240}: own + " from title_body",
 		{Repo: gadgetsRepo, Number: 240}:    own + " from title_body",
 	})
-	wantListed(t, ctx, pool, own, "#240")
+	wantListed(t, attributor, ctx, pool, own, "#240")
 }
 
-// TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneRepository: the
-// renaming rule answers one name however many rows name it. repo_projects' primary key is the
-// repository's own spelling, so two mappings whose names differ only by case can exist — direct
-// SQL or a hand repair, which 20261105075455_repo_projects_renamed_to expects — and the rule is
-// spliced into the statement as an expression (refs.CanonicalRepoSQL): a scalar subquery over
-// both rows would fail the whole statement with `more than one row returned by a subquery`, and
-// every reader with it.
-func TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneRepository(t *testing.T) {
+// TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGreaterNewName: the
+// renaming rule answers one new name for an old name, however many rename pairs name it.
+// repo_projects' primary key is the repository's own spelling, so two rows whose names differ only
+// by case can rename one old name to two new names — direct SQL or a hand repair, which
+// 20261105075455_repo_projects_renamed_to expects. The boot keeps the pair with the greater new
+// name (store.ReadRepoRenames), and the statement holds the pull request to that name alone
+// (attributionHeld). The title names the issue under the lesser new name first, so a rule that
+// kept the other pair credits that issue.
+func TestAttributingAStoredPullRequestUnderAnOldNameOfTwoRenamePairsTakesTheGreaterNewName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedRenamedGadgets(t, ctx, pool)
-	own := seedGadgetsIssue(t, ctx, pool, 12)
-	// The second mapping of the same name, as only direct SQL writes it: the route canonicalises
-	// a mapping's path, so it would land on the row above instead.
+	lesser := seedGadgetsIssue(t, ctx, pool, 12)
+	// The second rename pair of the same old name, as only direct SQL writes it: the route
+	// canonicalised a row's path, so it would have landed on the row above instead. Its new name
+	// sorts after gadgetsRepo, and an issue of project GZMO resolves to it.
+	const greaterRepo = "acme/gizmos"
+	const greater = "GZMO-12"
+	seedProjectRepository(t, ctx, pool, "GZMO", "Gizmos", greaterRepo)
+	if _, err := pool.Exec(ctx, `
+		insert into issues (key, project_key, number, title, status, created_by, rank)
+		values ($1, 'GZMO', 12, $1, 'todo', '{"kind":"system","id":"test"}'::jsonb, $1)
+	`, greater); err != nil {
+		t.Fatalf("seed issue %s: %v", greater, err)
+	}
 	if _, err := pool.Exec(ctx, `
 		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
-		values ('OldCo/Gadgets', 'GDGT', '{"kind":"system","id":"delivery-test"}'::jsonb, false, $1)
-		on conflict (repo) do update set renamed_to = excluded.renamed_to
-	`, gadgetsRepo); err != nil {
-		t.Fatalf("record a second mapping of %s: %v", gadgetsOldRepo, err)
+		values ('OldCo/Gadgets', 'GZMO', '{"kind":"system","id":"delivery-test"}'::jsonb, false, $1)
+	`, greaterRepo); err != nil {
+		t.Fatalf("record a second rename pair of %s: %v", gadgetsOldRepo, err)
 	}
 	storeStatementRow(t, ctx, pool, statementRow{repo: gadgetsOldRepo, number: 241, branch: "main",
-		title: own + ": the work, under a twice-mapped old name", texts: readTexts("")})
-	wantAnswers(t, pool, map[PullRequestKey]string{{Repo: gadgetsOldRepo, Number: 241}: own + " from title_body"})
-	wantListed(t, ctx, pool, own, "#241")
+		title: lesser + " and " + greater + ": the work, under an old name two pairs rename", texts: readTexts("")})
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	wantAnswers(t, attributor, pool, map[PullRequestKey]string{{Repo: gadgetsOldRepo, Number: 241}: greater + " from title_body"})
+	wantListed(t, attributor, ctx, pool, greater, "#241")
+	wantListed(t, attributor, ctx, pool, lesser)
+}
+
+// TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName: the cited-issue
+// source compares every spelling of each URL the body cites (refs.URLSpellingsSQL), so a pull
+// request on the new name whose body cites an issue under the old name, in any case, credits the
+// Dispatch issue that links it under the new name. A bare #N in a pull request stored under the
+// old name cites the issue of that name, which the same comparison finds under the new name. The
+// titles name nothing.
+func TestAStoredPullRequestOnTheNewNameIsCreditedByAnIssueItCitesUnderTheOldName(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedRenamedGadgets(t, ctx, pool)
+	own := seedGadgetsIssue(t, ctx, pool, 13)
+	for _, url := range []string{"https://github.com/" + gadgetsRepo + "/issues/600", "https://github.com/" + gadgetsRepo + "/issues/601"} {
+		if _, err := pool.Exec(ctx, `
+			insert into issue_external_links (issue_key, url, kind) values ($1, $2, 'github')
+		`, own, url); err != nil {
+			t.Fatalf("link %s to its GitHub issue %s under the new name: %v", own, url, err)
+		}
+	}
+	storeStatementRow(t, ctx, pool, statementRow{repo: gadgetsRepo, number: 242, branch: "main",
+		title: "Work that names no issue", texts: readTexts("Fixes https://github.com/OldCo/Gadgets/issues/600.")})
+	storeStatementRow(t, ctx, pool, statementRow{repo: gadgetsOldRepo, number: 243, branch: "main",
+		title: "Work that names no issue", texts: readTexts("Fixes #601.")})
+	wantAnswers(t, NewAttributor(renamesOf(t, ctx, pool)), pool, map[PullRequestKey]string{
+		{Repo: gadgetsRepo, Number: 242}:    own + " from github_issue_link",
+		{Repo: gadgetsOldRepo, Number: 243}: own + " from github_issue_link",
+	})
+	// The control: with no pairs, neither citation names a URL the issue links.
+	wantAnswers(t, unrenamed(), pool, map[PullRequestKey]string{
+		{Repo: gadgetsRepo, Number: 242}:    "nobody from none",
+		{Repo: gadgetsOldRepo, Number: 243}: "nobody from none",
+	})
 }
 
 // TestAttributingABatchPicksEachRowsOwnRepositorysIssue: the statement resolves every candidate
@@ -155,7 +201,7 @@ func TestAttributingABatchPicksEachRowsOwnRepositorysIssue(t *testing.T) {
 	for repo, number := range map[string]int{"acme/widgets": 230, "acme/gadgets": 231} {
 		storeStatementRow(t, ctx, pool, statementRow{repo: repo, number: number, branch: "main", title: title, texts: readTexts("")})
 	}
-	wantAnswers(t, pool, map[PullRequestKey]string{
+	wantAnswers(t, unrenamed(), pool, map[PullRequestKey]string{
 		{Repo: "acme/widgets", Number: 230}: widgets + " from title_body",
 		{Repo: "acme/gadgets", Number: 231}: gadgets + " from title_body",
 	})
@@ -171,5 +217,5 @@ func TestAStoredPullRequestTitledAfterTwoOfItsOwnIssuesTakesTheFirst(t *testing.
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-221", "ATTR-222"}, nil)
 	storeStatementRow(t, ctx, pool, statementRow{repo: "acme/widgets", number: 221, branch: "main",
 		title: "ATTR-221 and ATTR-222, both of this repository", texts: readTexts("")})
-	wantAnswers(t, pool, map[PullRequestKey]string{{Repo: "acme/widgets", Number: 221}: "ATTR-221 from title_body"})
+	wantAnswers(t, unrenamed(), pool, map[PullRequestKey]string{{Repo: "acme/widgets", Number: 221}: "ATTR-221 from title_body"})
 }

@@ -238,7 +238,7 @@ func TestALaterEventOfAClosedPullRequestLeavesItClosed(t *testing.T) {
 	issue := seedHeadIssue(t, ctx, pool, 71)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil)
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const head = "7171717171717171717171717171717171717171"
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	at := func(hour int) time.Time { return time.Date(2026, 2, 4, hour, 0, 0, 0, time.UTC) }
@@ -249,10 +249,10 @@ func TestALaterEventOfAClosedPullRequestLeavesItClosed(t *testing.T) {
 		}
 	}
 	// The control: the close itself is stored as closed, and its head is no basis.
-	if got := readHead(t, ctx, pool, "acme/widgets", 71); got.State != "closed" {
+	if got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 71); got.State != "closed" {
 		t.Fatalf("#71 after its close = %+v, want state closed", got)
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, head); err != nil || attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head); err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(%s) after the close = %v, %v; want false", issue, attributed, err)
 	}
 	for i, action := range []string{"labeled", "unlabeled", "edited", "assigned"} {
@@ -260,10 +260,10 @@ func TestALaterEventOfAClosedPullRequestLeavesItClosed(t *testing.T) {
 		if _, err := intake.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", 71, action, head, branch, body, at(2+i))); err != nil {
 			t.Fatalf("handle the %s envelope: %v", action, err)
 		}
-		if got := readHead(t, ctx, pool, "acme/widgets", 71); got.State != "closed" {
+		if got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 71); got.State != "closed" {
 			t.Errorf("#71 after a %s event of the closed pull request = state %q, want closed", action, got.State)
 		}
-		if attributed, err := HeadAttributedTo(ctx, pool, issue, head); err != nil || attributed {
+		if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head); err != nil || attributed {
 			t.Errorf("HeadAttributedTo(%s) after a %s event of the closed pull request = %v, %v; want false: a pass at the head of a closed pull request stands", issue, action, attributed, err)
 		}
 	}
@@ -281,7 +281,7 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 	issue := seedHeadIssue(t, ctx, pool, 72)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil)
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const (
 		real   = "7272727272727272727272727272727272727272"
 		forged = "7070707070707070707070707070707070707070"
@@ -292,7 +292,7 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 	if _, err := intake.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", 72, "opened", real, branch, body, opened)); err != nil {
 		t.Fatalf("handle GitHub's own opened envelope: %v", err)
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, GitHub's head) = %v, %v; want true (the control)", issue, attributed, err)
 	}
 
@@ -300,11 +300,11 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 		if _, err := intake.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", 72, step.action, step.head, branch, body, opened.Add(time.Hour))); err != nil {
 			t.Fatalf("handle the %s envelope GitHub never sent: %v", step.action, err)
 		}
-		got := readHead(t, ctx, pool, "acme/widgets", 72)
+		got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 72)
 		if got.HeadSHA != real || got.State != "open" {
 			t.Errorf("#72 after a %s envelope naming %s = head %s, state %s; want GitHub's %s, open", step.action, step.head[:12], got.HeadSHA, got.State, real)
 		}
-		if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
+		if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
 			t.Errorf("HeadAttributedTo(%s, the envelope's head) after the %s = %v, %v; want false", issue, step.action, attributed, err)
 		}
 	}
@@ -315,7 +315,7 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 	if count := headRowCount(t, ctx, intake, "acme/widgets", 79); count != 0 {
 		t.Errorf("an envelope naming a pull request GitHub does not have wrote %d head rows, want none", count)
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
 		t.Errorf("HeadAttributedTo(%s, the unknown pull request's head) = %v, %v; want false", issue, attributed, err)
 	}
 }
@@ -338,7 +338,7 @@ func TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond(t *te
 	fake := newFakeGitHub(t)
 	const repo = "acme/backlog"
 	github := serveGitHubPulls(t, fake, repo)
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil)
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const pulls = 200
 	latest := time.Now().Add(-time.Hour).Truncate(time.Second)
 	head := func(number, push int) string { return fmt.Sprintf("%02x%038d", push, number) }
@@ -361,7 +361,7 @@ func TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond(t *te
 		t.Errorf("600 envelopes of %d pull requests read GitHub's pull request %d times and its commits %d times; want %d and %d", pulls, reads, commits, 2*pulls, pulls)
 	}
 	t.Logf("600 envelopes: %d pull request reads, %d commit reads", github.reads.Load(), github.commitReads.Load())
-	if got := readHead(t, ctx, pool, repo, pulls); got.HeadSHA != head(pulls, 2) {
+	if got := readHead(t, unrenamed(), ctx, pool, repo, pulls); got.HeadSHA != head(pulls, 2) {
 		t.Errorf("#%d's head = %s, want GitHub's %s", pulls, got.HeadSHA, head(pulls, 2))
 	}
 }
@@ -375,7 +375,7 @@ func TestARateLimitedPullRequestReadWritesNoRowAndIsAHeadNotStored(t *testing.T)
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil)
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 	const head = "7474747474747474747474747474747474747474"
 	at := time.Now().Truncate(time.Second)
 	github.set("acme/widgets", 74, "open", head, "feature/74", "", at)
@@ -400,7 +400,7 @@ func TestARateLimitedPullRequestReadWritesNoRowAndIsAHeadNotStored(t *testing.T)
 	if _, err := intake.handlePullRequestEnvelope(ctx, nil, envelope); err != nil {
 		t.Fatalf("the envelope read again once the limit ended: %v", err)
 	}
-	if got := readHead(t, ctx, pool, "acme/widgets", 74); got.HeadSHA != head {
+	if got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 74); got.HeadSHA != head {
 		t.Errorf("#74 after the limit = %+v, want head %s", got, head)
 	}
 }
@@ -435,7 +435,7 @@ func TestAGitHubOutageLosesNoHead(t *testing.T) {
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	before := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	github.set("acme/widgets", pushed, "open", headBefore, branch, body, before)
-	if _, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil,
+	if _, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 		prEnvelope("acme/widgets", pushed, "opened", headBefore, branch, body, before)); err != nil {
 		t.Fatalf("handle #%d's opening before the outage: %v", pushed, err)
 	}
@@ -448,7 +448,7 @@ func TestAGitHubOutageLosesNoHead(t *testing.T) {
 	github.mu.Unlock()
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", opened,
 		prEnvelope("acme/widgets", opened, "opened", openedHead, "feature/y", "", during))
@@ -469,13 +469,13 @@ func TestAGitHubOutageLosesNoHead(t *testing.T) {
 	if count := headRowCount(t, ctx, &Intake{pool: pool}, "acme/widgets", opened); count != 0 {
 		t.Fatalf("#%d has %d head rows while GitHub answers nothing, want none: no read of GitHub answered for it", opened, count)
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, headPushed); err != nil || attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, headPushed); err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(%s, the pushed head) while GitHub answers nothing = %v, %v; want false", issue, attributed, err)
 	}
 	github.mu.Lock()
 	github.failing = false
 	github.mu.Unlock()
-	NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	stored := func(number int, head string) int {
 		var count int
@@ -489,10 +489,10 @@ func TestAGitHubOutageLosesNoHead(t *testing.T) {
 		return fmt.Sprintf("after GitHub answers again and the reconcile's next pass, acme/widgets#%d has %d head rows at %s and #%d %d at %s, want one each: the envelopes that named them were acknowledged with their reads owed during the outage; the durable is %+v",
 			opened, stored(opened, openedHead), openedHead[:12], pushed, stored(pushed, headPushed), headPushed[:12], deliveryConsumerInfo(t, natsClient))
 	})
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, headPushed); err != nil || !attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, headPushed); err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, the pushed head) after the pass = %v, %v; want true", issue, attributed, err)
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, headBefore); err != nil || attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, headBefore); err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(%s, the head before the push) after the pass = %v, %v; want false", issue, attributed, err)
 	}
 }
@@ -510,7 +510,7 @@ func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *t
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	client := fake.newTestClient()
-	intake := newIntake(nil, pool, nil, client, nil, nil)
+	intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 	const (
 		lagged = 77
 		never  = 78
@@ -526,14 +526,14 @@ func TestAPullRequestGitHubDidNotKnowAtItsEventIsReadByTheNextReconcilePass(t *t
 			t.Fatalf("#%d has %d head rows after GitHub's 404, want none: nothing an envelope says is GitHub's answer", number, count)
 		}
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, head); err != nil || attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head); err != nil || attributed {
 		t.Fatalf("HeadAttributedTo(%s) after two 404s = %v, %v; want false: a read owed is no head", issue, attributed, err)
 	}
 
 	github.set("acme/widgets", lagged, "open", head, branch, body, at)
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, head); err != nil || !attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head); err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, GitHub's head of #%d) after the reconcile's next pass = %v, %v; want true", issue, lagged, attributed, err)
 	}
 	owed := func(number int) int {
@@ -568,7 +568,7 @@ func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliver
 	issue := seedHeadIssue(t, ctx, pool, 9301)
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil))
+	intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 	const opened, pushed = "4301430143014301430143014301430143014301", "e273e273e273e273e273e273e273e273e273e273"
 	const branch, body = "test/nats-hooked-server", "No key here."
 	deliver := func(number int, action, head string, at time.Time) {
@@ -594,7 +594,7 @@ func TestAKeyFreePullRequestLinkedOnItsIssueIsListedAtItsPushedHeadWithNoDeliver
 	for _, number := range []int{301, 302} {
 		deliver(number, "synchronize", pushed, at.Add(48*time.Minute))
 	}
-	heads, err := HeadsAttributedTo(ctx, pool, issue)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue)
 	if err != nil {
 		t.Fatal(err)
 	}

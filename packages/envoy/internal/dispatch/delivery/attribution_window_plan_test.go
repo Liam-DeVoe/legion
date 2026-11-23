@@ -42,7 +42,7 @@ func TestTheTimelinesReadersPlanTheStatementForTheirOwnPullRequests(t *testing.T
 	}
 	t.Cleanup(opened.Close)
 	single := store.NewPool(opened)
-	statement := attributionStatementsFor(readingSchema(t, ctx, pool)).pullRequestIssues
+	statement := attributionStatementsFor(readingSchema(t, ctx, pool), refs.Renames{}).pullRequestIssues
 	plans := func() (generic, custom int64) {
 		t.Helper()
 		if err := single.QueryRow(ctx, `select coalesce(sum(generic_plans), 0), coalesce(sum(custom_plans), 0)
@@ -57,7 +57,7 @@ func TestTheTimelinesReadersPlanTheStatementForTheirOwnPullRequests(t *testing.T
 		ten[i] = PullRequestKey{Repo: "acme/widgets", Number: i + 1}
 	}
 	for range 10 {
-		if _, err := PullRequestIssues(ctx, single, ten); err != nil {
+		if _, err := unrenamed().PullRequestIssues(ctx, single, ten); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -68,11 +68,11 @@ func TestTheTimelinesReadersPlanTheStatementForTheirOwnPullRequests(t *testing.T
 	}
 
 	at := merged.Add(time.Hour)
-	window, err := ListPullRequestsInWindow(ctx, single, merged, at)
+	window, err := unrenamed().ListPullRequestsInWindow(ctx, single, merged, at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	waiting, err := ListPullRequestsWaitingAt(ctx, single, "acme/widgets", Production{JobNames: []string{"deploy"}}, at)
+	waiting, err := unrenamed().ListPullRequestsWaitingAt(ctx, single, "acme/widgets", Production{JobNames: []string{"deploy"}}, at)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,69 +86,82 @@ func TestTheTimelinesReadersPlanTheStatementForTheirOwnPullRequests(t *testing.T
 	}
 }
 
-// The statement reads the renamed repositories once, however many there are (renameTerms). Over
-// 20 pull requests with texts, the loops of the nodes that read repo_projects add up to the same
-// count with 2 renamed repositories and with 41. Where each renamed name's canonical name was
-// compared for every pull request, that count grew by 20 for each renamed repository, and the
-// statement over 10 pull requests took 996 ms with 500 of them. The controls in the same test: the
-// plan reads repo_projects, the statement answers each of the 20, and the links of a pull request
-// still hold its forms under the name renamed to its repository.
+// widgetsRenames is the rename pairs of the plan tests below: oldco/widgets renamed to
+// acme/widgets, and gone/r<n> renamed to kept/r<n> for each n from 1 to others, as the boot reads
+// them (refs.NewRenames).
+func widgetsRenames(others int) refs.Renames {
+	pairs := []store.RepoRename{{From: "oldco/widgets", To: "acme/widgets"}}
+	for n := 1; n <= others; n++ {
+		pairs = append(pairs, store.RepoRename{From: fmt.Sprintf("gone/r%d", n), To: fmt.Sprintf("kept/r%d", n)})
+	}
+	return refs.NewRenames(pairs)
+}
+
+// renameTermLoops is the loops of the nodes of a plan that scan the statement's terms of the
+// renaming rule (renameTerms: renames and renamed_names), and how many such nodes there are.
+func renameTermLoops(plan []explaintest.Node) (loops float64, nodes int) {
+	for _, node := range plan {
+		if node.CTE == "renames" || node.CTE == "renamed_names" {
+			loops += node.Loops
+			nodes++
+		}
+	}
+	return loops, nodes
+}
+
+// The statement reads the rename pairs once, however many there are (renameTerms): they are
+// literals of its text, one materialized relation, and no node of its plan reads repo_projects.
+// Over 20 pull requests with texts, the loops of the nodes that scan that relation add up to the
+// same count with 2 pairs and with 41. Where each renamed name's canonical name was compared for
+// every pull request, the loops of the nodes that read the pairs grew by 20 for each renamed
+// repository, and the statement over 10 pull requests took 996 ms with 500 of them. The controls
+// in the same test: the plan scans the relation in some node, the statement answers each of the
+// 20, and the links of a pull request still hold its forms under the name renamed to its
+// repository.
 func TestTheStatementReadsTheRenamesOnceForEachPullRequestWhateverTheirNumber(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	storeTextsRows(t, ctx, pool, 1, 20)
-	exec := func(what, sql string, args ...any) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	}
-	exec("project", `insert into projects (key, name, default_assignee) values ('RNMD', 'RNMD', 'alice') on conflict do nothing`)
-	exec("the old name of acme/widgets", `insert into repo_projects (repo, project, created_by, renamed_to)
-		values ('oldco/widgets', 'RNMD', '{"kind":"system","id":"test"}', 'acme/widgets')`)
-	renames := func(first, last int) {
-		t.Helper()
-		exec("renamed repositories", `insert into repo_projects (repo, project, created_by, renamed_to)
-			select 'gone/r' || g, 'RNMD', '{"kind":"system","id":"test"}', 'kept/r' || g from generate_series($1::int, $2::int) g`, first, last)
-	}
-	statement := attributionStatementsFor(readingSchema(t, ctx, pool)).pullRequestIssues
+	schema := readingSchema(t, ctx, pool)
 	repos := make([]string, 20)
 	numbers := make([]int, 20)
 	for i := range repos {
 		repos[i], numbers[i] = "acme/widgets", i+1
 	}
-	loops := func(what string) float64 {
+	loops := func(renames refs.Renames, what string) float64 {
 		t.Helper()
+		statement := attributionStatementsFor(schema, renames).pullRequestIssues
+		if strings.Contains(statement, "repo_projects") {
+			t.Fatalf("the statement %s names repo_projects: the pairs are literals of its text", what)
+		}
 		var raw []byte
 		if err := pool.QueryRow(ctx, `explain (analyze, format json) `+statement, repos, numbers).Scan(&raw); err != nil {
 			t.Fatalf("explain the statement %s: %v", what, err)
 		}
-		plan := explaintest.OnePlan(t, raw)
-		var sum float64
-		for _, node := range explaintest.Nodes(t, plan) {
-			if node.Relation == "repo_projects" {
-				sum += node.Loops
-			}
-		}
-		if root := explaintest.Nodes(t, plan)[0]; root.Rows != 20 {
+		plan := explaintest.Nodes(t, explaintest.OnePlan(t, raw))
+		if root := plan[0]; root.Rows != 20 {
 			t.Fatalf("the statement %s answers %v pull requests, want the 20", what, root.Rows)
 		}
+		for _, node := range plan {
+			if node.Relation == "repo_projects" {
+				t.Errorf("the statement %s reads repo_projects in %s", what, node)
+			}
+		}
+		sum, _ := renameTermLoops(plan)
 		return sum
 	}
 
-	renames(1, 1)
-	few := loops("with 2 renamed repositories")
-	renames(2, 40)
-	many := loops("with 41 renamed repositories")
-	t.Logf("loops of the nodes that read repo_projects: %v with 2 renamed repositories, %v with 41", few, many)
+	few := loops(widgetsRenames(1), "with 2 renamed repositories")
+	many := loops(widgetsRenames(40), "with 41 renamed repositories")
+	t.Logf("loops of the nodes that scan the rename terms: %v with 2 renamed repositories, %v with 41", few, many)
 	if few == 0 {
-		t.Fatalf("control: the plan reads repo_projects in no node, so its loops say nothing")
+		t.Fatalf("control: the plan scans the rename terms in no node, so its loops say nothing")
 	}
 	if many != few {
-		t.Errorf("the nodes that read repo_projects ran %v loops with 41 renamed repositories and %v with 2, want the same: the statement reads the renames once for each pull request", many, few)
+		t.Errorf("the nodes that scan the rename terms ran %v loops with 41 renamed repositories and %v with 2, want the same: the statement reads the renames once for each pull request", many, few)
 	}
 
 	var links []string
-	if err := pool.QueryRow(ctx, `select `+PullRequestLinksSQL("$1::text", "$2::int"), "acme/widgets", 7).Scan(&links); err != nil {
+	if err := pool.QueryRow(ctx, `select `+PullRequestLinksSQL(widgetsRenames(40), "$1::text", "$2::int"), "acme/widgets", 7).Scan(&links); err != nil {
 		t.Fatal(err)
 	}
 	want := fmt.Sprint([]string{"https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/7",
@@ -159,105 +172,77 @@ func TestTheStatementReadsTheRenamesOnceForEachPullRequestWhateverTheirNumber(t 
 }
 
 // api's link check, its lock and the lookup by reference read the links of one pull request
-// through PullRequestLinksSQL, which reads the names of its repository from the renaming rule's
-// inverse (refs.NamesSQL): only the rows that rename to its canonical name. The loops of the nodes
-// that read repo_projects add up to the same count with 2 renamed repositories and with 41. Where
-// it compared the canonical name of every renamed repository, that count grew by one or more for
-// each of them. The controls in the same test: the plan reads repo_projects, and the links hold
-// the forms of #7 under acme/widgets and under oldco/widgets, the name renamed to it, at both counts.
+// through PullRequestLinksSQL, which takes the names of its repository from the renaming rule's
+// inverse over the pairs the boot read (refs.NamesSQL): the array holds the forms of the pull
+// request under its canonical name and under each old name of a pair renamed to it, and under no
+// other pair's name, with 41 pairs as with 2; asked by an old name, it answers the forms of the
+// canonical name's pull request. The pairs are literals of the text, so the statement reads no
+// table: no node of its plan reads a relation. The control in the same test: the same walk of a
+// plan that reads issue_external_links finds that relation, so a plan that read one would be
+// seen.
 func TestPullRequestLinksSQLReadsOnlyTheRenamesOfItsRepository(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	exec := func(what, sql string, args ...any) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatalf("%s: %v", what, err)
+	forms := func(names ...string) string {
+		var all []string
+		for _, name := range names {
+			all = append(all, "https://github.com/"+name+"/issues/7", "https://github.com/"+name+"/pull/7")
 		}
+		return fmt.Sprint(slices.Sorted(slices.Values(all)))
 	}
-	exec("project", `insert into projects (key, name, default_assignee) values ('RNMD', 'RNMD', 'alice') on conflict do nothing`)
-	exec("the old name of acme/widgets", `insert into repo_projects (repo, project, created_by, renamed_to)
-		values ('oldco/widgets', 'RNMD', '{"kind":"system","id":"test"}', 'acme/widgets')`)
-	renames := func(first, last int) {
+	relations := func(what, sql string, args ...any) []string {
 		t.Helper()
-		exec("renamed repositories", `insert into repo_projects (repo, project, created_by, renamed_to)
-			select 'gone/r' || g, 'RNMD', '{"kind":"system","id":"test"}', 'kept/r' || g from generate_series($1::int, $2::int) g`, first, last)
-	}
-	query := `select ` + PullRequestLinksSQL("$1::text", "$2::int")
-	want := fmt.Sprint([]string{"https://github.com/acme/widgets/issues/7", "https://github.com/acme/widgets/pull/7",
-		"https://github.com/oldco/widgets/issues/7", "https://github.com/oldco/widgets/pull/7"})
-	loops := func(what string) float64 {
-		t.Helper()
-		var links []string
-		if err := pool.QueryRow(ctx, query, "acme/widgets", 7).Scan(&links); err != nil {
-			t.Fatalf("read the links of acme/widgets#7 %s: %v", what, err)
-		}
-		if got := fmt.Sprint(slices.Sorted(slices.Values(links))); got != want {
-			t.Fatalf("the links of acme/widgets#7 %s are %s, want %s", what, got, want)
-		}
 		var raw []byte
-		if err := pool.QueryRow(ctx, `explain (analyze, format json) `+query, "acme/widgets", 7).Scan(&raw); err != nil {
-			t.Fatalf("explain the links of acme/widgets#7 %s: %v", what, err)
+		if err := pool.QueryRow(ctx, `explain (analyze, format json) `+sql, args...).Scan(&raw); err != nil {
+			t.Fatalf("explain %s: %v", what, err)
 		}
-		var sum float64
+		var read []string
 		for _, node := range explaintest.Nodes(t, explaintest.OnePlan(t, raw)) {
-			if node.Relation == "repo_projects" {
-				sum += node.Loops
+			if node.Relation != "" {
+				read = append(read, node.Relation)
 			}
 		}
-		return sum
+		return read
 	}
-
-	renames(1, 1)
-	few := loops("with 2 renamed repositories")
-	renames(2, 40)
-	many := loops("with 41 renamed repositories")
-	t.Logf("loops of the nodes that read repo_projects: %v with 2 renamed repositories, %v with 41", few, many)
-	if few == 0 {
-		t.Fatalf("control: the plan reads repo_projects in no node, so its loops say nothing")
+	if read := relations("the control, a read of the links", `select count(*) from issue_external_links`); !slices.Contains(read, "issue_external_links") {
+		t.Fatalf("control: the plan of a read of issue_external_links reads %v, so the walk does not see a relation read", read)
 	}
-	if many != few {
-		t.Errorf("the nodes that read repo_projects ran %v loops with 41 renamed repositories and %v with 2, want the same: the links of one pull request read only the renames of its repository", many, few)
-	}
-}
-
-// renameRuleLoops is the loops of the nodes of a plan that read the renaming rule from
-// repo_projects: a node on the table whose filter or condition names renamed_to. The join of an
-// issue's project to its default repository reads the table too (refs.IssueRepoJoin), by
-// is_default, and is no read of the rule.
-func renameRuleLoops(t *testing.T, plan []explaintest.Node) (loops float64, nodes int) {
-	t.Helper()
-	for _, node := range plan {
-		if node.Relation == "repo_projects" &&
-			strings.Contains(node.Filter+" "+node.IndexCond+" "+node.RecheckCond, "renamed_to") {
-			loops += node.Loops
-			nodes++
+	for _, others := range []int{1, 40} {
+		renames := widgetsRenames(others)
+		what := fmt.Sprintf("with %d renamed repositories", others+1)
+		query := `select ` + PullRequestLinksSQL(renames, "$1::text", "$2::int")
+		for repo, want := range map[string]string{
+			"acme/widgets":  forms("acme/widgets", "oldco/widgets"),
+			"Oldco/Widgets": forms("acme/widgets", "oldco/widgets"),
+			"kept/r1":       forms("kept/r1", "gone/r1"),
+			"acme/gadgets":  forms("acme/gadgets"),
+		} {
+			var links []string
+			if err := pool.QueryRow(ctx, query, repo, 7).Scan(&links); err != nil {
+				t.Fatalf("read the links of %s#7 %s: %v", repo, what, err)
+			}
+			if got := fmt.Sprint(slices.Sorted(slices.Values(links))); got != want {
+				t.Errorf("the links of %s#7 %s are %s, want %s", repo, what, got, want)
+			}
+		}
+		if read := relations("the links of acme/widgets#7 "+what, query, "acme/widgets", 7); len(read) != 0 {
+			t.Errorf("the links of acme/widgets#7 %s read the relations %v, want none: the pairs are literals of the text", what, read)
 		}
 	}
-	return loops, nodes
 }
 
 // The statement reads the renaming rule once, however many pull requests it judges
-// (renameTerms): its nodes that read repo_projects for a canonical name run as many loops for 20
-// pull requests as for one. Where every comparison of a name read refs.CanonicalRepoSQL, those
-// nodes ran about 12 loops a pull request, 240 for 20, and a window read of 1,000 pull requests
-// on the 43 mappings production held on 22 November spent about 40 ms of its 170 ms in them.
-// The controls in the same test: the plan reads the rule in some node, the statement answers each
-// pull request it was given, and the same count over a read of refs.CanonicalRepoSQL for each of
-// the 20 names counts 20 loops, so the count sees a read made once a row.
+// (renameTerms): the nodes that scan its terms of the rule run as many loops for 20 pull requests
+// as for one. Where every comparison of a name read the rule from repo_projects
+// (refs.CanonicalRepoSQL), those nodes ran about 12 loops a pull request, 240 for 20, and a window
+// read of 1,000 pull requests on the 43 mappings production held on 22 November spent about 40 ms
+// of its 170 ms in them. The controls in the same test: the plan scans the terms in some node, the
+// statement answers each pull request it was given, and the same count over a read of the
+// relation once for each of 20 names counts 20 loops, so the count sees a read made once a row.
 func TestTheStatementReadsTheRenamingRuleOnceWhateverItsPullRequests(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	storeTextsRows(t, ctx, pool, 1, 20)
-	exec := func(what, sql string, args ...any) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, sql, args...); err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	}
-	exec("project", `insert into projects (key, name, default_assignee) values ('RNMD', 'RNMD', 'alice') on conflict do nothing`)
-	exec("the old name of acme/widgets and another renamed repository", `insert into repo_projects (repo, project, created_by, renamed_to)
-		values ('oldco/widgets', 'RNMD', '{"kind":"system","id":"test"}', 'acme/widgets'),
-			('gone/r1', 'RNMD', '{"kind":"system","id":"test"}', 'kept/r1')`)
-	exec("analyze", `analyze repo_projects`)
-	statement := attributionStatementsFor(readingSchema(t, ctx, pool)).pullRequestIssues
+	renames := widgetsRenames(1)
+	statement := attributionStatementsFor(readingSchema(t, ctx, pool), renames).pullRequestIssues
 	explain := func(what, sql string, args ...any) []explaintest.Node {
 		t.Helper()
 		var raw []byte
@@ -278,26 +263,27 @@ func TestTheStatementReadsTheRenamingRuleOnceWhateverItsPullRequests(t *testing.
 		if plan[0].Rows != float64(count) {
 			t.Fatalf("%s answers %v of them, want each", what, plan[0].Rows)
 		}
-		loops, nodes := renameRuleLoops(t, plan)
+		loops, nodes := renameTermLoops(plan)
 		if nodes == 0 {
-			t.Fatalf("control: %s reads the renaming rule in no node, so its loops say nothing", what)
+			t.Fatalf("control: %s scans the terms of the renaming rule in no node, so its loops say nothing", what)
 		}
 		return loops
 	}
 
 	one, twenty := read(1), read(20)
-	t.Logf("loops of the nodes that read the renaming rule: %v for 1 pull request, %v for 20", one, twenty)
+	t.Logf("loops of the nodes that scan the terms of the renaming rule: %v for 1 pull request, %v for 20", one, twenty)
 	if twenty != one {
-		t.Errorf("the nodes that read the renaming rule ran %v loops for 20 pull requests and %v for one, want the same: the statement reads the rule once, not once for each pull request", twenty, one)
+		t.Errorf("the nodes that scan the terms of the renaming rule ran %v loops for 20 pull requests and %v for one, want the same: the statement reads the rule once, not once for each pull request", twenty, one)
 	}
 
 	names := make([]string, 20)
 	for i := range names {
 		names[i] = fmt.Sprintf("acme/widgets-%d", i)
 	}
-	control, _ := renameRuleLoops(t, explain("a read of the rule for each of 20 names",
-		`select `+refs.CanonicalRepoSQL("k.name")+` from unnest($1::text[]) k(name)`, names))
+	control, _ := renameTermLoops(explain("a read of the relation for each of 20 names",
+		`with renames as materialized (`+refs.RenamesSQL(renames)+`)
+		select (select r.rename_target from renames r where r.rename_source = lower(k.name)) from unnest($1::text[]) k(name)`, names))
 	if control != 20 {
-		t.Fatalf("control: a read of refs.CanonicalRepoSQL for each of 20 names counts %v loops, want 20: the count does not see a read made once a row", control)
+		t.Fatalf("control: a read of the renames relation for each of 20 names counts %v loops, want 20: the count does not see a read made once a row", control)
 	}
 }

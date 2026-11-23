@@ -13,7 +13,7 @@ import (
 // message, is kept.
 func TestAQueryGitHubFailsIsLoggedWithItsBodyToABound(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	const start = `{"message":"Bad Gateway","filler":"`
 	h.github.failQueries(http.StatusBadGateway, start+strings.Repeat("x", 1<<20-len(start)-len(`"}`))+`"}`)

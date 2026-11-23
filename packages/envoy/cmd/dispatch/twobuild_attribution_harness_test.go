@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -199,10 +200,12 @@ func holdThePreviousBuildsPasses(t *testing.T, database *store.Store) string {
 	return key
 }
 
-// mapRepositoryTo makes repo the default repository of project, through p.
-func mapRepositoryTo(t *testing.T, p *dispatchProcess, repo, project string) {
+// setDefaultRepository makes repo the default repository of project, through p, as a person does
+// with PUT /api/v1/projects/{key}/default-repository: the project's issues resolve to it, in both
+// builds, which read the default from the project row.
+func setDefaultRepository(t *testing.T, p *dispatchProcess, project, repo string) {
 	t.Helper()
-	p.call(t, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, jsonBody(t, map[string]any{"project": project, "default": true}), http.StatusOK)
+	p.call(t, http.MethodPut, "/api/v1/projects/"+project+"/default-repository", jsonBody(t, map[string]any{"repo": repo}), http.StatusOK)
 }
 
 // issueWithCheck creates an issue of project through p, gives it attributionCheck, and fails the
@@ -286,7 +289,8 @@ func numbersFrom(first, count int) []int {
 }
 
 // statementAnswers is the statement's answer for each stored results row, by number, computed in
-// the test's own process (delivery.PullRequestIssues) over the database that both builds serve.
+// the test's own process (delivery.Attributor.PullRequestIssues) over the database that both
+// builds serve. The row renames no repository, so the test attributes with no rename pairs.
 func statementAnswers(t *testing.T, database *store.Store) map[int]delivery.PullRequestAttribution {
 	t.Helper()
 	ctx := context.Background()
@@ -301,7 +305,7 @@ func statementAnswers(t *testing.T, database *store.Store) map[int]delivery.Pull
 	if err != nil {
 		t.Fatalf("read the stored results rows: %v", err)
 	}
-	answers, err := delivery.PullRequestIssues(ctx, database.Pool, keys)
+	answers, err := delivery.NewAttributor(refs.Renames{}).PullRequestIssues(ctx, database.Pool, keys)
 	if err != nil {
 		t.Fatalf("read the statement's answers: %v", err)
 	}

@@ -25,13 +25,14 @@ import (
 // check's own error, so no caller stores a row of it and no failure of Postgres stands in for the
 // check: an owner of 40, a name of 101, number 0 and 2147483648, "." and "..", a character no name
 // holds, a third segment. The rows that reach the owed table through a renamed repository
-// (renamedFrom) read the repository's canonical name from repo_projects, which a target stored
-// before the settings route held it to the name rule (api's parseRepoRename), or by direct SQL,
-// holds to nothing, so that name is checked where the row is built too: a rename to a name of 101
-// characters, or of 3,500, which the btree of the owed table refused (SQLSTATE 54000), reaches no
-// statement. The read is owed under the name given, which the check takes, so the reconcile reads
-// it once the target is corrected (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D1), and
-// the head row of the refused name is refused where it is built.
+// (renamedFrom) read the repository's canonical name from the pair the boot read, whose target a
+// build before the settings route held it to the name rule (api's parseRepoRename), or direct
+// SQL, stored and nothing held, so that name is checked where the row is built too: a rename to a
+// name of 101 characters, or of 3,500, which the btree of the owed table refused (SQLSTATE 54000),
+// reaches no statement. The read is owed under the name given, which the check takes, so the
+// reconcile of a process that boots once the target is corrected reads it (acceptance of
+// cybermonklabs/legion#4209 at 3a21edb2c9, D1), and the head row of the refused name is refused
+// where it is built.
 func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	const (
@@ -44,8 +45,8 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 		// row's repository.
 		repo   string
 		number int
-		// renamedFrom, where set, is the name the owed read is recorded under, which repo_projects
-		// maps to repo.
+		// renamedFrom, where set, is the name the owed read is recorded under, which a pair renames
+		// to repo.
 		renamedFrom string
 		// bound is why the check refuses the row, "" for a row it takes.
 		bound string
@@ -81,10 +82,11 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 		{name: "a_rename_to_a_name_of_3500", repo: "acme/" + randomName(3500), number: 30, renamedFrom: renamedAwayRepo, bound: "100 is GitHub's limit for a repository name, and the btree of the owed table holds no entry past 2,704 bytes"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			owedUnder := row.repo
+			owedUnder, attributor := row.repo, unrenamed()
 			if row.renamedFrom != "" {
 				owedUnder = row.renamedFrom
 				renameRepository(t, ctx, pool, row.renamedFrom, row.repo)
+				attributor = NewAttributor(renamesOf(t, ctx, pool))
 			}
 			_, _, checked := pullRequestNamed(map[string]string{"repo": row.repo, "number": strconv.Itoa(row.number)})
 			takes := checked == nil
@@ -94,9 +96,9 @@ func TestEachValueTheNameCheckTakesIsARowTheTablesTake(t *testing.T) {
 			}
 
 			owedBefore, headsBefore := tableRows(t, pool, "pull_request_reads_owed"), tableRows(t, pool, "pull_request_heads")
-			oweErr := owePullRequestRead(ctx, pool, owedUnder, row.number, owedFailure, "")
+			oweErr := attributor.owePullRequestRead(ctx, pool, owedUnder, row.number, owedFailure, "")
 			owed := tableRows(t, pool, "pull_request_reads_owed") - owedBefore
-			headErr := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+			headErr := attributor.UpsertPullRequestHead(ctx, pool, PullRequestHead{
 				Repo: row.repo, Number: row.number, HeadSHA: sha, HeadRef: "topic", BaseRef: "main", State: "open",
 				Title: "Change " + strconv.Itoa(i), URL: "https://github.com/acme/widgets/pull/" + strconv.Itoa(i),
 			})
@@ -181,7 +183,7 @@ func TestAHeadRowTakesEveryValueAnIndexCanHoldAndRefusesOnePast(t *testing.T) {
 				url = "https://github.com/acme/widgets/pull/" + strconv.Itoa(700+i)
 			}
 			heads, seeds := tableRows(t, pool, "pull_request_heads"), tableRows(t, pool, "branch_commits")
-			err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+			err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 				Repo: row.repo, Number: 700 + i, HeadSHA: row.head, HeadRef: row.headRef, BaseRef: row.base,
 				State: state, MergeCommitSHA: row.merge, Title: title, URL: url,
 			})
@@ -220,9 +222,10 @@ func tableRows(t *testing.T, pool *store.Pool, table string) int {
 // own (renameRepository).
 const renamedAwayRepo = "acme/renamed-away-4209"
 
-// renameRepository maps from to the canonical name to in repo_projects, under deliveryProject, as
-// direct SQL or the settings route writes a rename, until the test ends. The table outlives the
-// run and no truncate of deliveryTestPool clears it, so the mapping is deleted at the end.
+// renameRepository records from as renamed to to, a repo_projects row under deliveryProject as
+// direct SQL or the last release that wrote the pairs left it, until the test ends. A test reads
+// the pair after it, as a boot reads it (renamesOf). The table outlives the run and no truncate of
+// deliveryTestPool clears it, so the row is deleted at the end.
 func renameRepository(t *testing.T, ctx context.Context, pool *store.Pool, from, to string) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)

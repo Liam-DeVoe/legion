@@ -20,12 +20,13 @@ func TestTheLineOfAnOwedReadUnderATargetWithNoSlashNamesTheTargetToABound(t *tes
 	const old, number = "acme/legacy-9105", 9105
 	target := strings.Repeat("x", 3500)
 	renameRepository(t, ctx, pool, old, target)
-	if err := owePullRequestRead(ctx, pool, old, number, owedFailure, ""); err != nil {
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
+	if err := attributor.owePullRequestRead(ctx, pool, old, number, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
 	fake := newFakeGitHub(t)
 	serveGitHubPulls(t, fake, "acme/widgets")
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(context.WithoutCancel(ctx))
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), attributor).runOnce(context.WithoutCancel(ctx))
 	var named int
 	for _, record := range logs() {
 		message, _ := record["msg"].(string)

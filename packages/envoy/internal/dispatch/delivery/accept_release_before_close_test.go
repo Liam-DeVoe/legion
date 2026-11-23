@@ -45,7 +45,7 @@ func TestAcceptACloseTheReleaseBeforeWritesOverAReadRowIsReadAgain(t *testing.T)
 			at := now.Add(-10 * time.Minute)
 			head := fakeSHA("d8", kase.number)
 			github.set("acme/widgets", kase.number, "open", head, "topic", "", at)
-			if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
+			if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
 				HeadSHA: head, HeadRef: "topic", BaseRef: "main", State: "open",
 				EventAt: &at, CheckedAt: &now, GitHubReadAt: &now}); err != nil {
 				t.Fatal(err)
@@ -53,11 +53,11 @@ func TestAcceptACloseTheReleaseBeforeWritesOverAReadRowIsReadAgain(t *testing.T)
 			closedAt := at.Add(kase.ahead)
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: kase.number,
 				HeadSHA: head, HeadRef: "topic", BaseRef: "main", State: "closed", EventAt: &closedAt}, noAttribution)
-			if got := readHead(t, ctx, pool, "acme/widgets", kase.number); got.State != "closed" {
+			if got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", kase.number); got.State != "closed" {
 				t.Fatalf("the release before's write left the row %s, want closed: the setup did not happen", got.State)
 			}
-			NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
-			got := readHead(t, ctx, pool, "acme/widgets", kase.number)
+			NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", kase.number)
 			t.Logf("after the reconcile's next pass: state %s head %s, owed %d", got.State, got.HeadSHA[:6], owedCount(t, ctx, pool, "acme/widgets", kase.number))
 			if got.State != "open" || got.HeadSHA != head {
 				t.Fatalf("after the reconcile's next pass #%d is %s at %s, want GitHub's open at %s: a close the release before wrote from an envelope dated %s after GitHub's answer stands, and no reader of GitHub reads the row until the pull request's next event",

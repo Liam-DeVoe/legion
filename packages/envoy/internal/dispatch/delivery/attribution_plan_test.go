@@ -60,7 +60,9 @@ func planTexts() []readingText {
 // issues and 5,000 more links, and then analyzes each table, as a deployment's planner sees
 // them. Three issues link a URL the texts cite, and 300 link a pull request. 5,000 is what the
 // planner needs: at 2,000 and at 1,000 pull requests the read by the issue the timeline names
-// scans pull_request_texts on PostgreSQL 18 with every index in place (round 21's size runs).
+// scans pull_request_texts on PostgreSQL 18 with every index in place (round 21's size runs). The
+// rename pair is a repo_projects row as the last release left it, and a test builds its
+// statements with the pairs read after the seed (renamesOf), as a boot reads them.
 func seedPlanFixture(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	exec := func(what, sql string, args ...any) {
@@ -70,10 +72,7 @@ func seedPlanFixture(t *testing.T, ctx context.Context, pool *store.Pool) {
 		}
 	}
 	for project, repo := range map[string]string{"ACME": "acme/widgets", "LEGN": "acme/legion", "OTHR": "", "FILL": ""} {
-		exec("project", `insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, project)
-		if repo != "" {
-			exec("mapping", `insert into repo_projects (repo, project, created_by, is_default) values ($1, $2, '{"kind":"system","id":"test"}', true)`, repo, project)
-		}
+		exec("project", `insert into projects (key, name, default_assignee, default_repo) values ($1, $1, 'alice', nullif($2, '')) on conflict do nothing`, project, repo)
 	}
 	exec("old name", `insert into repo_projects (repo, project, created_by, renamed_to) values ('acme/old', 'ACME', '{"kind":"system","id":"test"}', 'acme/widgets')`)
 	// The 200 texts are sent once a chunk, each with its place, and the server makes the 5,000
@@ -129,7 +128,7 @@ func seedPlanFixture(t *testing.T, ctx context.Context, pool *store.Pool) {
 		select 'ACME-' || g, 'ACME', g, 'cited', 'todo', '{"kind":"system","id":"test"}', 'ACME-' || g from generate_series(1, 3) g`)
 	exec("links of cited issues", `insert into issue_external_links (issue_key, url, kind)
 		select 'ACME-' || g, 'https://github.com/Acme/Widgets/issues/' || (49 + g), 'github' from generate_series(1, 3) g`)
-	for _, table := range []string{"pull_request_heads", "pull_request_texts", "issues", "issue_external_links", "delivery_pull_requests", "repo_projects"} {
+	for _, table := range []string{"pull_request_heads", "pull_request_texts", "issues", "issue_external_links", "delivery_pull_requests", "projects"} {
 		exec("analyze", `vacuum analyze `+table)
 	}
 }
@@ -185,15 +184,16 @@ var growingTables = []string{"pull_request_heads", "pull_request_texts", "delive
 // and links, at 5,000 pull requests with texts of the size real pull requests have: a read by an
 // issue that a branch names, that a link names, that a citation names and that the timeline
 // names, and a read of 1 and of 100 keys. The arm by key that compares a cited URL with a link
-// reads issue_external_links_url_lower. Scans of issues and repo_projects are printed and fail
+// reads issue_external_links_url_lower. Scans of issues and projects are printed and fail
 // nothing: the repository rule (refs.IssueRepoTerms) and the hold join issues by a hash where the
-// planner prices that lower, and repo_projects holds one row for each mapped repository. Control
-// in the same test: with issue_external_links_url_lower dropped, the read of one key, whose link
-// arms read the links of its pull request by that index, scans issue_external_links.
+// planner prices that lower, and projects holds one row for each project. Control in the same
+// test: with issue_external_links_url_lower dropped, the read of one key, whose link arms read
+// the links of its pull request by that index, scans issue_external_links.
 func TestEveryReadByIssueUsesAnIndex(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedPlanFixture(t, ctx, pool)
-	statements := attributionStatementsFor(readingSchema(t, ctx, pool))
+	renames := renamesOf(t, ctx, pool)
+	statements := attributionStatementsFor(readingSchema(t, ctx, pool), renames)
 	var branchIssue, linkIssue string
 	if err := pool.QueryRow(ctx, `select k from pull_request_texts, unnest(branch_keys) k join issues i on i.key = k order by k limit 1`).Scan(&branchIssue); err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func TestEveryReadByIssueUsesAnIndex(t *testing.T) {
 			t.Errorf("the read by issue of ACME-1, in %s, reads the links of ACME-1 by no issue_external_links_pkey:\n%s", text.what, strings.Join(plan, "\n"))
 		}
 	}
-	if listed := listedFor(t, ctx, pool, "ACME-1"); len(listed) == 0 {
+	if listed := listedFor(t, NewAttributor(renames), ctx, pool, "ACME-1"); len(listed) == 0 {
 		t.Error("ACME-1 lists no pull request: the read by issue of a cited URL read nothing to plan")
 	}
 
@@ -351,7 +351,7 @@ func TestTheReaderOfPullRequestsWhoseAnswerIsNotKnownUsesItsIndex(t *testing.T) 
 		for i := range 20 {
 			recorder := &recordedReads{pool: pool}
 			began := time.Now()
-			pulls, err := PullRequestsNotKnown(ctx, recorder, "acme/widgets")
+			pulls, err := unrenamed().PullRequestsNotKnown(ctx, recorder, "acme/widgets")
 			took := time.Since(began)
 			if err != nil {
 				t.Fatalf("PullRequestsNotKnown(acme/widgets): %v", err)

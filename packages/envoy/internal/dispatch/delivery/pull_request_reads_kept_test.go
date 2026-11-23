@@ -48,7 +48,7 @@ func TestAFailedReadHoldsNoSlotThatOtherRepositoriesShare(t *testing.T) {
 			acme.mu.Unlock()
 
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 			for n := 1; n <= intakeMaxAckPending; n++ {
@@ -138,7 +138,7 @@ func TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead(t *testing.T)
 
 	shrinkOwedReadWriteTimeout(t)
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	intake.redeliverAfter = testRedeliverAfter
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
@@ -171,8 +171,8 @@ func TestAnOwedRecordTheDatabaseRefusesAtSomeDeliveriesLosesNoHead(t *testing.T)
 	github.mu.Lock()
 	github.failing = false
 	github.mu.Unlock()
-	NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-	attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+	NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 	t.Logf("deliveries=%d owed_after_acknowledgement=%d head_is_basis_after_one_pass=%v", delivered, owed, attributed)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, #%d's head) after GitHub answers again and one reconcile pass = %v, %v, want true: the database refused the owed record at some deliveries and took it at a later one", issue, number, attributed, err)
@@ -206,7 +206,7 @@ func TestARefusalEndsOnEvidenceAndNeverByItsAge(t *testing.T) {
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil)
+			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 			now := time.Now().UTC().Truncate(time.Second)
 			const (
 				number = 99001
@@ -230,7 +230,7 @@ func TestARefusalEndsOnEvidenceAndNeverByItsAge(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			reconcile := NewReconcile(pool, client, events.NewBroker())
+			reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 			runPass := func() pass {
 				pulls, asked := github.reads.Load(), github.absenceQueries.Load()
 				reconcile.runOnce(ctx)
@@ -243,7 +243,7 @@ func TestARefusalEndsOnEvidenceAndNeverByItsAge(t *testing.T) {
 				fake.notInstalled.Delete("acme/widgets")
 				github.set("acme/widgets", number, "open", head, branch, body, now)
 				second := runPass()
-				basis, err := HeadAttributedTo(ctx, pool, issue, head)
+				basis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -299,16 +299,16 @@ func TestARateLimitOnOneInstallationEndsNoReadOfTheReconcileForAnother(t *testin
 	acme.mu.Unlock()
 	const limited = 20
 	for n := 1; n <= limited; n++ {
-		if err := owePullRequestRead(ctx, pool, "acme/widgets", n, owedFailure, ""); err != nil {
+		if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", n, owedFailure, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 	head := fakeSHA("c", 5)
 	other.set("other/tools", 5, "open", head, "legion/"+issue, "Dispatch: "+issue, time.Now().UTC().Add(-time.Minute).Truncate(time.Second))
-	if err := owePullRequestRead(ctx, pool, "other/tools", 5, owedFailure, ""); err != nil {
+	if err := unrenamed().owePullRequestRead(ctx, pool, "other/tools", 5, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
-	passErr := NewReconcile(pool, client, events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget())
+	passErr := NewReconcile(pool, client, events.NewBroker(), unrenamed()).reconcilePullRequestHeads(ctx, time.Now(), newAbsenceBudget())
 	if _, ok := githubapp.AsRateLimit(passErr); !ok {
 		t.Errorf("the head pass answered %v, want installation 1's rate limit: a pass that met a limit fails with it", passErr)
 	}

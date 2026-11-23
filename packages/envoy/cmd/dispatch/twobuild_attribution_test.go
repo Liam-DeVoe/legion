@@ -111,11 +111,11 @@ func TestTwoBuildsAttributeAPullRequestFromOneSetOfFacts(t *testing.T) {
 		t.Fatalf("build the statement in the test's process: %v", err)
 	}
 	current.createProject(t, "TB", "Two builds")
-	mapRepositoryTo(t, current, attributionRepo, "TB")
+	setDefaultRepository(t, current, "TB", attributionRepo)
 	issueWithCheck(t, current, "TB", "The first issue", "TB-1")
 	issueWithCheck(t, current, "TB", "The second issue", "TB-2")
 	current.createProject(t, "ACME", "The backlog")
-	mapRepositoryTo(t, current, backlogRepo, "ACME")
+	setDefaultRepository(t, current, "ACME", backlogRepo)
 	issueWithCheck(t, current, "ACME", "The older answer", "ACME-1")
 	issueWithCheck(t, current, "ACME", "The rule's answer", "ACME-2")
 	previousName, currentName := builds.previousName(), builds.currentName()

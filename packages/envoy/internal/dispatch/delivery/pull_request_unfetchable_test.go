@@ -50,7 +50,7 @@ func TestBothMarksOfAnAbsentPullRequestRunWithoutTheTimelinesAttributionColumns(
 		dropTimelineAttributionColumns(t, ctx, pool)
 		storeStatementRow(t, ctx, pool, statementRow{repo: unfetchableRepo, number: 43, title: changeTitle(43), noHead: true, timeline: &statementTimeline{}})
 
-		readFactsLineOrFail(t, ctx, NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker()))
+		readFactsLineOrFail(t, ctx, NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker(), unrenamed()))
 
 		if refused, unfetchable := timelineStampsOf(t, ctx, pool, unfetchableRepo, 43); refused || !unfetchable {
 			t.Errorf("the timeline row %s#43 holds facts_refused_at %v and unfetchable_at %v, want unfetchable_at only: GitHub proved it absent",
@@ -63,7 +63,7 @@ func TestBothMarksOfAnAbsentPullRequestRunWithoutTheTimelinesAttributionColumns(
 		storePartialRow(t, ctx, pool, unfetchableRepo, 45)
 		pr := DeliveryPullRequest{Repo: unfetchableRepo, Number: 45}
 
-		if err := NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker()).completePartialPullRequest(ctx, pr, newAbsenceBudget(), &passRateLimit{}); err != nil {
+		if err := NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker(), unrenamed()).completePartialPullRequest(ctx, pr, newAbsenceBudget(), &passRateLimit{}); err != nil {
 			t.Fatalf("complete the partial row: %v", err)
 		}
 
@@ -90,18 +90,18 @@ func TestAMarkOfAnAbsentPullRequestTakesOnlyARowThatStillNeedsARead(t *testing.T
 			t.Fatalf("give %s#46 the attribution inputs of the release before: %v", unfetchableRepo, err)
 		}
 
-		readFactsLineOrFail(t, ctx, NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker()))
+		readFactsLineOrFail(t, ctx, NewReconcile(pool, absentGitHub(t).newTestClient(), events.NewBroker(), unrenamed()))
 
 		if _, unfetchable := timelineStampsOf(t, ctx, pool, unfetchableRepo, 46); !unfetchable {
 			t.Errorf("the timeline row %s#46 holds no unfetchable_at, want it set: GitHub proved it absent, and it has no results row", unfetchableRepo)
 		}
-		if counts := attributionCountsOrFail(t, ctx, pool); counts.ReadsLeft != 0 {
+		if counts := attributionCountsOrFail(t, unrenamed(), ctx, pool); counts.ReadsLeft != 0 {
 			t.Errorf("after the facts line reads_left = %d, want 0: a pass reads a row GitHub proved absent no more", counts.ReadsLeft)
 		}
 	})
 	t.Run("the_rows_a_mark_takes", func(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
-		renameAcme(t, ctx, pool)
+		attributor := renameAcme(t, ctx, pool)
 		storeStatementRow(t, ctx, pool, statementRow{repo: unfetchableRepo, number: 47, title: changeTitle(47), noHead: true, timeline: &statementTimeline{}})
 		storeStatementRow(t, ctx, pool, statementRow{repo: unfetchableRepo, number: 48, title: changeTitle(48), timeline: &statementTimeline{}})
 		storeStatementRow(t, ctx, pool, statementRow{repo: unfetchableRepo, number: 49, title: changeTitle(49), timeline: &statementTimeline{}})
@@ -122,7 +122,7 @@ func TestAMarkOfAnAbsentPullRequestTakesOnlyARowThatStillNeedsARead(t *testing.T
 			{unfetchableRepo, 49, true, "a partial row, which the completion reads"},
 			{renamedToRepo, 50, false, "a results row heads it under the old name of its repository"},
 		} {
-			if err := MarkPullRequestUnfetchable(ctx, pool, row.repo, row.number, "GitHub proved that no such pull request exists"); err != nil {
+			if err := attributor.MarkPullRequestUnfetchable(ctx, pool, row.repo, row.number, "GitHub proved that no such pull request exists"); err != nil {
 				t.Fatalf("mark %s#%d unfetchable: %v", row.repo, row.number, err)
 			}
 			if _, unfetchable := timelineStampsOf(t, ctx, pool, row.repo, row.number); unfetchable != row.marked {

@@ -106,11 +106,12 @@ func recordNotReadPass(t *testing.T, handler http.Handler, issue, blockID, commi
 	return decodeBody[recordedResult](t, response).Result.ID
 }
 
-// notReadListed is what delivery.HeadsAttributedTo lists for issueKey: each number, with "?"
-// after a number whose head Dispatch has not read.
+// notReadListed is what delivery.Attributor.HeadsAttributedTo lists for issueKey: each number,
+// with "?" after a number whose head Dispatch has not read. No server of this file holds a rename
+// pair, so it reads with unrenamed.
 func notReadListed(t *testing.T, database *store.Store, issueKey string) []string {
 	t.Helper()
-	heads, err := delivery.HeadsAttributedTo(context.Background(), database.Pool, issueKey)
+	heads, err := unrenamed().HeadsAttributedTo(context.Background(), database.Pool, issueKey)
 	if err != nil {
 		t.Fatalf("HeadsAttributedTo(%s): %v", issueKey, err)
 	}
@@ -126,11 +127,12 @@ func notReadListed(t *testing.T, database *store.Store, issueKey string) []strin
 }
 
 // notReadAnswer is the answer of the statement for acme/widgets#number: the issue or "nobody",
-// then "known" or "not known". It is "absent" where the statement has no answer.
+// then "known" or "not known". It is "absent" where the statement has no answer. It reads with
+// unrenamed, as notReadListed does.
 func notReadAnswer(t *testing.T, database *store.Store, number int) string {
 	t.Helper()
 	key := delivery.PullRequestKey{Repo: "acme/widgets", Number: number}
-	answers, err := delivery.PullRequestIssues(context.Background(), database.Pool, []delivery.PullRequestKey{key})
+	answers, err := unrenamed().PullRequestIssues(context.Background(), database.Pool, []delivery.PullRequestKey{key})
 	if err != nil {
 		t.Fatalf("PullRequestIssues(acme/widgets#%d): %v", number, err)
 	}
@@ -499,7 +501,7 @@ func TestAnAfterMergeCheckBesideAMergeWhoseAnswerIsNotKnown(t *testing.T) {
 				wantNotReadAnswer(t, database, 85, "nobody, not known")
 			}
 			wantNotReadAnswer(t, database, 70, issue+", known")
-			if branch, err := delivery.BaseBranchMergedFor(context.Background(), database.Pool, issue); err != nil || branch != "release" {
+			if branch, err := unrenamed().BaseBranchMergedFor(context.Background(), database.Pool, issue); err != nil || branch != "release" {
 				t.Fatalf("SETUP: BaseBranchMergedFor(%s) answers %q (%v), want release", issue, branch, err)
 			}
 			onRelease := recordNotReadPass(t, handler, issue, "k2", integrationCommit)

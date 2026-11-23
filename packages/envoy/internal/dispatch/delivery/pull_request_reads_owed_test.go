@@ -59,7 +59,7 @@ func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil)
+			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 			for i := range forged {
 				n := 500000 + i
@@ -88,9 +88,9 @@ func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {
 			github.mu.Unlock()
 
 			readsBefore := github.reads.Load()
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 			passReads := github.reads.Load() - readsBefore
-			attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+			attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -130,13 +130,13 @@ func TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure(t *testing.T) {
 	head := fakeSHA("88", real)
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	github.set("acme/widgets", real, "open", head, branch, body, time.Now().UTC().Add(-time.Minute).Truncate(time.Second))
-	if err := owePullRequestRead(ctx, pool, "acme/widgets", real, owedFailure, ""); err != nil {
+	if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", real, owedFailure, ""); err != nil {
 		t.Fatalf("owe the failure: %v", err)
 	}
 	started := time.Now()
-	NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 	took := time.Since(started)
-	attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,14 +195,14 @@ func TestOwedReadsGoFewestReadsFirstAndTakeTheKindOfTheirLastAnswer(t *testing.T
 	failing.mu.Lock()
 	failing.failing = true
 	failing.mu.Unlock()
-	if err := owePullRequestRead(ctx, pool, "acme/widgets", 91, owedFailure, ""); err != nil {
+	if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", 91, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := owePullRequestRead(ctx, pool, "acme/gadgets", 92, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
+	if err := unrenamed().owePullRequestRead(ctx, pool, "acme/gadgets", 92, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
 		t.Fatal(err)
 	}
 	fake.notInstalled.Store("acme/widgets", true)
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 	for _, want := range []struct {
 		repo   string
 		number int
@@ -246,13 +246,13 @@ func TestAnOlderReadOverANewerRowOfTheReleaseBeforeIsReadAgain(t *testing.T) {
 			writeHeadAsTheReleaseBefore(t, ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 				HeadSHA: newer, HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &t2, CheckedAt: &now},
 				releaseBeforeAttribution{source: string(sourceNone), complete: true})
-			if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
+			if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 				HeadSHA: older, HeadRef: "topic", BaseRef: "main", State: olderState,
 				EventAt: &t1, CheckedAt: &now, GitHubReadAt: &now}); err != nil {
 				t.Fatal(err)
 			}
-			NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
-			got := readHead(t, ctx, pool, "acme/widgets", number)
+			NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 			if got.HeadSHA != newer || got.State != "merged" {
 				t.Fatalf("after the reconcile's next pass the row = head %s state %s, want GitHub's current %s merged: an answer updated %s replaced one updated %s and stands",
 					got.HeadSHA[:4], got.State, newer[:4], t1.Format(time.TimeOnly), t2.Format(time.TimeOnly))
@@ -295,7 +295,7 @@ func TestNoOrderOfTwoBuildsWritesLeavesAMarkedRowWithFactsThisBuildNeverWrote(t 
 					HeadSHA: fakeSHA("c", rng.IntN(1000)), State: states[rng.IntN(3)],
 					EventAt: &at, CheckedAt: &now, GitHubReadAt: &now}
 				ours[fmt.Sprintf("%s|%s|%d", head.HeadSHA, head.State, at.Unix())] = true
-				if err := UpsertPullRequestHead(ctx, pool, head); err != nil {
+				if err := unrenamed().UpsertPullRequestHead(ctx, pool, head); err != nil {
 					t.Fatal(err)
 				}
 				if hadRow && !priorMarked && priorAt != nil && priorAt.After(at) && owedCount(t, ctx, pool, "acme/widgets", number) == 0 {

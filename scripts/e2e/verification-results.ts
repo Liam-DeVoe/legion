@@ -56,12 +56,14 @@
 // The driver writes SQL for the fixtures that no route of Dispatch can write: stored pull request
 // rows as the release before writes them, with no texts; texts rows as a read of this build
 // writes them; timeline rows, owed reads and partial rows; a second key reading
-// (fixtures/attribution_reading_b.sql); and the delete of the reconcile's records of its passes at
-// each phase's boundary. It writes no row of older-rows and no row of key-reading-changes' own
-// 5,000 pull requests: the servers store those from events, passes and the API. It reads SQL for
-// the answers that no route gives: the issue and the source a row records, its texts and branch
-// keys, the delivery rows of limit-of-one, the records of the passes and whether a process holds
-// the reconcile's lease.
+// (fixtures/attribution_reading_b.sql); older-rows' rename pair, a repo_projects row with a
+// renamed_to as the last release whose route wrote pairs left it, since no route writes one now
+// and a server reads the pairs once, at its start; and the delete of the reconcile's records of
+// its passes at each phase's boundary. It writes no pull request row of older-rows and no row of
+// key-reading-changes' own 5,000 pull requests: the servers store those from events, passes and
+// the API. It reads SQL for the answers that no route gives: the issue and the source a row
+// records, its texts and branch keys, the delivery rows of limit-of-one, the records of the
+// passes and whether a process holds the reconcile's lease.
 //
 // Each case prints `== <case>`, what it read, then `ok <case>` or `FAIL <case>: <why>`; a summary
 // follows, and the exit status is 1 when any case failed. The first case,
@@ -254,10 +256,11 @@ const sevenChecks = [
 ] as const;
 type SevenCheck = (typeof sevenChecks)[number];
 
-/** The project of the seven checks, and its repositories: the default one; a second one, which
- *  an issue of rule-reaches-each-row moves to; and the name the default one had before a rename,
- *  which older-rows stores rows under. The fake holds no repository of that old name, so its
- *  installation lookup answers 404, as GitHub answers for a renamed repository's old name. */
+/** The project of the seven checks, and the repositories of its cases: its default repository;
+ *  a second one, which an issue of rule-reaches-each-row names as its own; and the name the
+ *  default one had before a rename, which older-rows stores rows under and whose rename pair it
+ *  writes (olderRowsFixture). The fake holds no repository of that old name, so its installation
+ *  lookup answers 404, as GitHub answers for a renamed repository's old name. */
 const attributionProject = "ATT";
 const attributionRepo = "acme/attribution-live";
 const attributionSecondRepo = "acme/attribution-second";
@@ -424,7 +427,9 @@ function standsOf(result: CheckResult): string {
 /** Where the commit of the newest result recorded at `commit` against `blockID` stands, or
  *  "absent" where that check holds no result at that commit. */
 async function commitStandsAt(key: string, blockID: string, commit: string): Promise<string> {
-  const result = (await checkOf(key, blockID)).results.find((row) => row.commit_sha === commit);
+  const result = ((await checkOf(key, blockID)).results ?? []).find(
+    (row) => row.commit_sha === commit
+  );
   return result === undefined ? "absent" : standsOf(result);
 }
 
@@ -1080,9 +1085,10 @@ interface OnePassPhase {
 // replaces the whole map, so every answer set is kept in `githubPulls` and sent again with the
 // next.
 //
-// The seven checks add the repositories of their own project, acme/attribution-live and
-// acme/attribution-second, and limit-of-one adds beta/tools and beta/deploy
-// (attributionRepositories). Each seed sends them again too.
+// The seven checks add the repositories of their cases, acme/attribution-live, the default
+// repository of their project, and acme/attribution-second, which an issue of it names as its
+// own, and limit-of-one adds beta/tools and beta/deploy (attributionRepositories). Each seed
+// sends them again too.
 
 /** One pull request the fake answers for, as its single-pull-request route reads a fixture:
  *  the head commit and branch, the repository the head branch is in, the base branch, the
@@ -1192,7 +1198,7 @@ if (phaseArg !== undefined) {
       assert: olderRowsAfterOnePass,
       before: olderRowsBeforeThePass,
       caseName: "older-rows",
-      fixture: resetPullReads,
+      fixture: olderRowsFixture,
       releasePass: olderRowsReleasePass,
       releaseWrites: olderRowsReleaseWrites,
     },
@@ -1403,7 +1409,7 @@ try {
   setupFailed("the counter of pull request reads", error);
 }
 // The repositories of the seven checks: the project's default one holds the commits a case
-// records at, and its second one holds nothing. stores-agree gives the first the permissions a
+// records at, and the second one holds nothing. stores-agree gives the first the permissions a
 // pass with delivery settings checks.
 await seedRepositories(
   {},
@@ -1423,7 +1429,7 @@ await seedRepositories(
   }
 );
 
-for (const [key, name, mapped] of [
+for (const [key, name, defaultRepo] of [
   ["VRF", "Verification results", repo],
   ["VRH", "Verification results, unreadable repository", hiddenRepo],
   [attributionProject, "Attribution", attributionRepo],
@@ -1431,21 +1437,15 @@ for (const [key, name, mapped] of [
   await asPerson("POST", "/api/v1/projects", { key, name }).catch((error: unknown) =>
     setupFailed(`project ${key}`, error)
   );
-  await asSession("PUT", `/api/v1/settings/repo-projects/${mapped}`, {
-    default: true,
-    project: key,
-  }).catch((error: unknown) => setupFailed(`repository mapping ${mapped}`, error));
+  await asSession("PUT", `/api/v1/projects/${key}/default-repository`, {
+    repo: defaultRepo,
+  }).catch((error: unknown) => setupFailed(`default repository ${defaultRepo} of ${key}`, error));
 }
-// The project of the seven checks maps two more repositories: a second one, which an issue can
-// move to, and the name its default repository had before a rename.
-for (const [mapped, mapping] of [
-  [attributionSecondRepo, { project: attributionProject }],
-  [attributionOldName, { project: attributionProject, renamed_to: attributionRepo }],
-] as const) {
-  await asSession("PUT", `/api/v1/settings/repo-projects/${mapped}`, mapping).catch(
-    (error: unknown) => setupFailed(`repository mapping ${mapped}`, error)
-  );
-}
+// Each project's one default repository is all the setup writes of repositories. The second
+// repository of the seven checks needs no write: an issue's own repository is any owner/name, so
+// rule-reaches-each-row's move names it on the issue alone (ruleMove). No rename pair is written
+// here either: older-rows writes its own, on the database that the shell empties after it
+// (olderRowsFixture), and no case after it reads a row, a link or an event under a renamed name.
 
 /** Seeds one issue with a spec that marks one requirement and a Verification document holding
  *  `checks`, whose `%KEY%` is the issue's own key — a `serves` is refused unless it names a block
@@ -1541,16 +1541,17 @@ The result read back under this check is the one that was recorded.
   note(`the pull-request body line is ${JSON.stringify(answered.line)}`);
   note(`the record's answer says it was stored at ${answered.result.created_at}`);
   const check = await checkOf(a2Issue, "a2");
+  const results = check.results ?? [];
   note(
-    `${a2Issue} check a2 (${check.when}) holds ${check.results.length} result(s): ${check.results
+    `${a2Issue} check a2 (${check.when}) holds ${results.length} result(s): ${results
       .map(
         (row) =>
           `${row.verdict} at ${row.commit_sha.slice(0, 12)} by ${row.role} (${standsOf(row)})`
       )
       .join(", ")}`
   );
-  if (check.results.length !== 1) return `the check holds ${check.results.length} results, want 1`;
-  const [recorded] = check.results;
+  if (results.length !== 1) return `the check holds ${results.length} results, want 1`;
+  const [recorded] = results;
   if (recorded?.commit_sha !== commits.a2 || recorded.verdict !== "pass") {
     return `the result read back is ${JSON.stringify(recorded)}`;
   }
@@ -1727,7 +1728,7 @@ A result stands while its commit is the head of a pull request of this repositor
     return `a fork's pull request was taken for a basis (${atFork})`;
   const compared = await checkOf(forkIssue, "fork");
   note(
-    `the check compared with ${compared.compared_with.length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
+    `the check compared with ${(compared.compared_with ?? []).length} commit(s), and names ${compared.compared_nothing ?? "no reason"} for that`
   );
   if (compared.compared_nothing !== "no_pull_request_or_branch") {
     return `the check compared with nothing for ${JSON.stringify(compared.compared_nothing)}`;
@@ -1789,9 +1790,8 @@ The pre-merge check runs before it.
     surface: "api",
   });
   note(`the after-merge result recorded: ${JSON.stringify(afterMerge.line)}`);
-  const check = await checkOf(a5Issue, "after");
-  if (check.results.length !== 1)
-    return `the after-merge check holds ${check.results.length} results, want 1`;
+  const held = (await checkOf(a5Issue, "after")).results ?? [];
+  if (held.length !== 1) return `the after-merge check holds ${held.length} results, want 1`;
 
   const { answer: beforeMerge } = await refusal("POST", issuePath(a5Issue, "/results"), {
     check: "before",
@@ -1880,11 +1880,11 @@ A result is recorded only at a commit the repository holds.
   if (!refused.error.includes(repo)) {
     return `the refusal does not name ${repo}: ${refused.error}`;
   }
-  const check = await checkOf(unheldIssue, "unheld");
-  note(`${unheldIssue} check unheld holds ${check.results.length} result(s)`);
-  return check.results.length === 0
+  const held = (await checkOf(unheldIssue, "unheld")).results ?? [];
+  note(`${unheldIssue} check unheld holds ${held.length} result(s)`);
+  return held.length === 0
     ? undefined
-    : `the refused result left ${check.results.length} row(s) under the check`;
+    : `the refused result left ${held.length} row(s) under the check`;
 });
 
 // The unreadable repository: Dispatch cannot say where the commit stands, so it answers unknown
@@ -2087,7 +2087,7 @@ A default-branch result is compared with the default branch alone.
     [commits.comparedHeadA, 21],
     [commits.comparedHeadA2, 22],
   ] as const) {
-    const result = before.results.find((row) => row.commit_sha === commit);
+    const result = (before.results ?? []).find((row) => row.commit_sha === commit);
     const stands = result === undefined ? "absent" : standsOf(result);
     const stood = result?.commit_stands?.basis;
     note(
@@ -2112,7 +2112,7 @@ A default-branch result is compared with the default branch alone.
   if (branches.join(", ") !== "branch release/old, branch main") {
     return `the after_merge check compares with ${comparedOf(after)}`;
   }
-  const merged = after.results.find((row) => row.commit_sha === commits.comparedOnMain);
+  const merged = (after.results ?? []).find((row) => row.commit_sha === commits.comparedOnMain);
   const mergedStands = merged === undefined ? "absent" : standsOf(merged);
   const mergedBasis = merged?.commit_stands?.basis;
   if (mergedStands !== "at_basis" || mergedBasis?.branch !== "main") {
@@ -2143,7 +2143,7 @@ A default-branch result is compared with the default branch alone.
       if (bases.join(", ") !== `named ${named}`) {
         return `?at=${what}: check ${check.block_id} compares with ${comparedOf(check)}`;
       }
-      for (const result of check.results) {
+      for (const result of check.results ?? []) {
         const stands = standsOf(result);
         const wanted = result.commit_sha === named ? "at_basis" : "other_commit";
         if (stands !== wanted) {
@@ -2413,7 +2413,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     surface: "cli",
   });
   const childCheck = (await checksOf(child, commits.attributionBranch))[0];
-  const childStands = childCheck?.results.map(standsOf).join(", ") ?? "";
+  const childStands = (childCheck?.results ?? []).map(standsOf).join(", ");
   note(
     `${child} with ?at=${commits.attributionBranch.slice(0, 12)} compares with ${comparedOf(childCheck as CheckBlock)}, and its result stands ${childStands}`
   );
@@ -2776,24 +2776,40 @@ function sqlKeys(keys: readonly string[]): string {
 // `Follows D(j). Closes L(j).` (#7051 to #7060: `Follows D(j).`), as GitHub answers them from the
 // start (olderRowsPull). The release before's build stores them itself, under the delivery
 // settings that its intake needs to take any event:
-//   - with the issues L(j) alone made and acme/old-name the project's default repository, the
-//     merged events of #7221 to #7240 under that name; then, the repository renamed to
-//     acme/attribution-live, the events of #7001 to #7220 and #7241 to #7260. Its intake stores
-//     each results row from its event with no texts, which it has nowhere to store, as L(j): the
-//     body names it, and no candidate above it names an issue, N(j) being none yet. It stores
-//     #7051 to #7060 as no issue. The author of #7001 to #7060 is of the settings' population, so
-//     the intake stores their timeline rows too, as L(j) or no issue;
+//   - with the issues L(j) alone made and acme/old-name the project's default repository
+//     (PUT /api/v1/projects/ATT/default-repository), the merged events of #7221 to #7240 under
+//     that name; then, with acme/attribution-live the project's default repository, the events of
+//     #7001 to #7220 and #7241 to #7260, under the name the repository has after its rename.
+//     Its intake stores each results row from its event with no texts, which it has nowhere to
+//     store, as L(j): the body names it, and no candidate above it names an issue, N(j) being
+//     none yet. It stores #7051 to #7060 as no issue. The author of #7001 to #7060 is of the
+//     settings' population, so the intake stores their timeline rows too, as L(j) or no issue;
 //   - then the issues D(j), and one pass of its reconcile. The pass resolves the timeline rows of
 //     #7001 to #7060 again from their stored inputs, whose first issue is now D(j), and leaves each
 //     merged results row as the rule of its day judged it. Its merged search finds #7261 to #7300
 //     and stores their timeline rows alone, as D(j);
 //   - then the issues N(j), which take the keys that the branches named before they existed
 //     (keysAfter, seedForetoldIssues).
-// This checkout's build then starts on that database. Before any pass, each results row's stored
-// answer holds (L(j), or no issue over the timeline's D(j)), and D(j) names #7261 to #7300 as heads
-// Dispatch has not read, with no read of GitHub. One pass reads all 300 and leaves none to read,
-// and each is then N(j)'s, #7221 to #7240 under acme/attribution-live. A second pass, after each
-// stored issue is set back to L(j), reads GitHub for none and leaves each under N(j).
+// Then, while no server runs, older-rows' fixture writes the rename pair, acme/old-name renamed to
+// acme/attribution-live, as a repo_projects row (olderRowsFixture). No route of either build
+// writes a pair: each server reads the pairs once, at its start (store.ReadRepoRenames), and
+// before it serves, its boot pass writes the new name of each pair in place of the old name in
+// every stored repository field (store.RewriteRenamedRepositories). The pair is written there,
+// after the release before's last start and before this checkout's first, so that this build is
+// the one that reads it. Had the release before's second start read it, that start's boot pass
+// would have rewritten #7221 to #7240 to the new name before this build ever started, and the
+// phase would show nothing of what this build does with the rows the release before stored under
+// a name a pair renames. Written here, the release before leaves those 20 rows as it stored them,
+// under the old name and L(j). This build's first start, the one with no pass at its start that
+// older-rows reads through before its pass (--phase older-rows-before), reads the pair, and its
+// boot pass rewrites those rows to the new name before it serves; each later start of older-rows
+// reads the pair again.
+// Before any pass, each results row's stored answer holds (L(j), or no issue over the timeline's
+// D(j)), #7221 to #7240 included, and D(j) names #7261 to #7300 as heads Dispatch has not read,
+// with no read of GitHub. One pass reads all 300 and leaves none to read, and each is then
+// N(j)'s, #7221 to #7240 with one results row each, under acme/attribution-live and with texts.
+// A second pass, after each stored issue is set back to L(j), reads GitHub for none and leaves
+// each under N(j).
 
 /** older-rows' issue of a list (L, N or D) for pull request `number`, by its index i % 6. */
 function olderRowsIssue(keys: readonly string[], number: number): string {
@@ -2904,15 +2920,16 @@ async function countOf(statement: string): Promise<number> {
 
 /** older-rows, through the release before's build started with no pass at its start: the project
  *  with acme/old-name its default repository, the issues L(j), GitHub's answers, the delivery
- *  settings, the merged events of #7221 to #7240 under the old name, the rename, the events of
- *  #7001 to #7220 and #7241 to #7260, and the issues D(j). It waits for the intake's bind and for
- *  each event's row. The keys of D(j) and N(j) are foretold, since GitHub's answers name them before
- *  they exist. */
+ *  settings, the merged events of #7221 to #7240 under the old name, acme/attribution-live the
+ *  project's default repository, the events of #7001 to #7220 and #7241 to #7260 under that name,
+ *  and the issues D(j). It waits for the intake's bind and for each event's row. The keys of D(j)
+ *  and N(j) are foretold, since GitHub's answers name them before they exist. It writes no rename
+ *  pair: older-rows' fixture writes it, after the release before's last start (the section
+ *  above). */
 async function olderRowsReleaseWrites(): Promise<string | undefined> {
   await asPerson("POST", "/api/v1/projects", { key: attributionProject, name: "Attribution" });
-  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionOldName}`, {
-    default: true,
-    project: attributionProject,
+  await asSession("PUT", `/api/v1/projects/${attributionProject}/default-repository`, {
+    repo: attributionOldName,
   });
   const L = await seedAttributionIssues(olderRowsNames("L"));
   const D = keysAfter(L, 6);
@@ -2964,16 +2981,11 @@ async function olderRowsReleaseWrites(): Promise<string | undefined> {
   ) {
     return `the release before stored ${await stored(attributionOldName, 7221, 7240)} of the 20 results rows of #7221 to #7240 under ${attributionOldName} within 120 s of their events`;
   }
-  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionRepo}`, {
-    default: true,
-    project: attributionProject,
-  });
-  await asSession("PUT", `/api/v1/settings/repo-projects/${attributionOldName}`, {
-    project: attributionProject,
-    renamed_to: attributionRepo,
+  await asSession("PUT", `/api/v1/projects/${attributionProject}/default-repository`, {
+    repo: attributionRepo,
   });
   note(
-    `${attributionOldName} is renamed to ${attributionRepo}, now the project's default repository`
+    `${attributionRepo}, the name of ${attributionOldName} after its rename, is the project's default repository`
   );
   await publish(7001, 7220, attributionRepo);
   await publish(7241, 7260, attributionRepo);
@@ -3000,8 +3012,9 @@ async function olderRowsReleaseWrites(): Promise<string | undefined> {
 }
 
 /** older-rows, through the release before's build started again with one pass at its start: that
- *  pass; the results rows and the timeline rows it leaves, each as the section above says; then the
- *  issues N(j). */
+ *  pass; the results rows and the timeline rows it leaves, each as the section above says, #7221
+ *  to #7240 still under the old name, since neither start of the release before read a rename
+ *  pair; then the issues N(j). */
 async function olderRowsReleasePass(): Promise<string | undefined> {
   note(await awaitOnePass(0, false));
   const { D, L, N } = sevenPart("olderRows");
@@ -3051,9 +3064,29 @@ async function olderRowsReleasePass(): Promise<string | undefined> {
   return undefined;
 }
 
+/** older-rows' fixture, while no server runs: the rename pair acme/old-name to
+ *  acme/attribution-live, as a repo_projects row with a renamed_to, the form in which the route
+ *  of an earlier release stored a pair; and the fake's count of reads set to 0. The next start,
+ *  this build's first on the database, reads the pair (store.ReadRepoRenames), and its boot pass
+ *  rewrites the 20 rows that the release before stored under the old name before it serves. The
+ *  section above says why the pair is written here and not before the release before's second
+ *  start. */
+async function olderRowsFixture(): Promise<void> {
+  await sql(
+    `insert into repo_projects (repo, project, created_by, renamed_to)
+     values ('${attributionOldName}', '${attributionProject}',
+       jsonb_build_object('kind', 'session', 'id', '${session}'), '${attributionRepo}')`
+  );
+  note(
+    `older-rows: ${attributionOldName} is renamed to ${attributionRepo} in repo_projects, which this build's next start reads`
+  );
+  await resetPullReads();
+}
+
 /** older-rows, before any pass, through a server that started with no pass: each pull request
- *  with a results row is a basis of the issue that row stores, or of none; D(j) names its pull
- *  requests with a timeline row alone as heads Dispatch has not read; and no read of GitHub. */
+ *  with a results row is a basis of the issue that row stores, or of none, #7221 to #7240 too,
+ *  which that start's boot pass rewrote from the old name; D(j) names its pull requests with a
+ *  timeline row alone as heads Dispatch has not read; and no read of GitHub. */
 async function olderRowsBeforeThePass(): Promise<string | undefined> {
   const { D, L, N } = sevenPart("olderRows");
   const answers = await checkPullsOf([...L, ...N, ...D]);
@@ -3073,6 +3106,16 @@ async function olderRowsBeforeThePass(): Promise<string | undefined> {
   if (differ.length > 0) {
     return `${differ.length} pull request(s) are under another issue before their read: ${differ.slice(0, 5).join("; ")}`;
   }
+  const [newNameRows, oldNameRows] = (
+    await sql(
+      `select count(*) filter (where repo = '${attributionRepo}'),
+         count(*) filter (where repo = '${attributionOldName}')
+       from pull_request_heads where number between 7221 and 7240`
+    )
+  ).split("|");
+  note(
+    `#7221 to #7240 after the boot pass of this build's first start: ${newNameRows} results row(s) under ${attributionRepo}, ${oldNameRows} under ${attributionOldName}`
+  );
   for (const [j, key] of D.entries()) {
     const wanted: number[] = [];
     for (let number = 7261; number <= 7300; number++) {
@@ -3109,7 +3152,8 @@ async function olderRowsBeforeThePass(): Promise<string | undefined> {
 }
 
 /** older-rows, after one pass: the pass's counts, which leave nothing to read; each pull request
- *  N(i % 6)'s; and one results row of each of #7221 to #7240, under the case's repository. */
+ *  N(i % 6)'s; and one results row of each of #7221 to #7240, under the case's repository, with
+ *  texts, and none under the old name. */
 async function olderRowsAfterOnePass(pass: string): Promise<string | undefined> {
   note(pass);
   const line = attributionLines().at(-1) ?? {};
@@ -3192,7 +3236,7 @@ async function olderRowsAfterTheSetBack(pass: string): Promise<string | undefine
 // results row stored as T(k) and its texts (with no texts table, the build before it, a results
 // row stored as T(k) by attribution rule 2). The branch ranks above the body, so the rule gives
 // each one to B(k) at the read, with no read of GitHub, whatever its row stores. Three more
-// phases: a person links T7 to #10107, B8 moves to the project's second repository, and a person
+// phases: a person links T7 to #10107, B8 moves to a second repository, and a person
 // makes the issue that the branch of a new pull request #15001 names. Each reads every B(k) and
 // T(k) again, and none reads GitHub.
 
@@ -3345,8 +3389,9 @@ async function ruleLink(): Promise<string | undefined> {
   return undefined;
 }
 
-/** rule-reaches-each-row: B8 moves to the project's second repository, so its branch key holds no
- *  pull request of the first one, and the body gives T8 its 50 pull requests. */
+/** rule-reaches-each-row: B8 moves to a second repository, which it names as its own repository
+ *  (any owner/name is one), so its branch key holds no pull request of the project's default
+ *  repository, and the body gives T8 its 50 pull requests. */
 async function ruleMove(): Promise<string | undefined> {
   const rule = sevenPart("rule");
   await asPerson("PATCH", issuePath(String(rule.B[8])), { repo: attributionSecondRepo });

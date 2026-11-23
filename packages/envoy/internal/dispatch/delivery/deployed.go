@@ -60,14 +60,14 @@ type shippedPullRequest struct {
 // rows before it stay written, the rest wait for the next call. The
 // payload is IssueDeployedEventPayload; the actor DeployedEventActor. The marker is the database's
 // now(): only whether it is null is ever read.
-func RecordDeployedEvents(ctx context.Context, pool *store.Pool, settings DeliverySettings, broker *events.Broker) (int, error) {
-	shipped, err := listUnrecordedShipped(ctx, pool, settings.DeployRepo, settings.Production())
+func (a *Attributor) RecordDeployedEvents(ctx context.Context, pool *store.Pool, settings DeliverySettings, broker *events.Broker) (int, error) {
+	shipped, err := a.listUnrecordedShipped(ctx, pool, settings.DeployRepo, settings.Production())
 	if err != nil {
 		return 0, err
 	}
 	written := 0
 	for _, pr := range shipped {
-		wrote, err := recordDeployedEvent(ctx, pool, broker, pr)
+		wrote, err := a.recordDeployedEvent(ctx, pool, broker, pr)
 		if err != nil {
 			return written, fmt.Errorf("record issue.deployed for %s#%d on %s: %w", pr.Repo, pr.Number, pr.IssueKey, err)
 		}
@@ -83,7 +83,7 @@ func RecordDeployedEvents(ctx context.Context, pool *store.Pool, settings Delive
 // and those merged in one instant by id, as ListPullRequestsWaitingAt orders them. It keeps those
 // that the statement attributes to an issue (attributedIssues), the issue the timeline shows. A
 // pull request of nobody, and one whose issue is not known, records no event.
-func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo string, production Production) ([]shippedPullRequest, error) {
+func (a *Attributor) listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo string, production Production) ([]shippedPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select pr.repo, pr.number, pr.issue_key, ship.run_id, ship.completed_at
 		from delivery_pull_requests pr
@@ -111,7 +111,7 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	issues, err := attributedIssues(ctx, pool, prs)
+	issues, err := a.attributedIssues(ctx, pool, prs)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of the shipped pull requests: %w", err)
 	}
@@ -146,7 +146,7 @@ func listUnrecordedShipped(ctx context.Context, pool *store.Pool, deployRepo str
 // passes that cross here, intake's and the reconcile's, the second therefore finds
 // deployed_event_at set, or the statement giving another issue, and writes nothing, as it did
 // when the row's own lock ordered them.
-func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
+func (a *Attributor) recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.Broker, pr shippedPullRequest) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -168,7 +168,7 @@ func recordDeployedEvent(ctx context.Context, pool *store.Pool, broker *events.B
 	// The update holds the row's lock. The transaction reads the statement again under it, so an
 	// issue that changed since the list gets no event, and the rollback removes the mark.
 	key := PullRequestKey{Repo: pr.Repo, Number: pr.Number}
-	answers, err := PullRequestIssues(ctx, tx, []PullRequestKey{key})
+	answers, err := a.PullRequestIssues(ctx, tx, []PullRequestKey{key})
 	if err != nil {
 		return false, fmt.Errorf("read the issue of the pull request: %w", err)
 	}

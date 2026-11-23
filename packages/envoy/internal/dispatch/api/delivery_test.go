@@ -51,7 +51,7 @@ func TestGetDeliveryTimelineRejectsMalformedWindow(t *testing.T) {
 }
 
 func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	pool := database.Pool
 	ctx := t.Context()
 
@@ -70,12 +70,11 @@ func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
 	// A PR a deploy ships (deployed), and one merged after the only deploy run (waiting), both in
 	// the deploy repository, plus one merged in a different repository the configured deploy
 	// pipeline never tracks (not_tracked). acme/widgets#1 also names a P0 issue, for the priority
-	// facet case below.
-	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`); err != nil {
-		t.Fatalf("seed project: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `insert into repo_projects (repo, project, created_by, is_default) values ('acme/widgets', 'ACME', '{"kind":"system","id":"test"}', true)`); err != nil {
-		t.Fatalf("map acme/widgets to ACME: %v", err)
+	// facet case below. ACME's default repository is acme/widgets (projects.default_repo), so that
+	// issue, which names no repository of its own, resolves to the repository of acme/widgets#1.
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee, default_repo) values ('ACME', 'Acme', 'alice', 'acme/widgets')
+		on conflict (key) do update set default_repo = excluded.default_repo`); err != nil {
+		t.Fatalf("seed project ACME with its default repository acme/widgets: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, priority, created_by, rank) values ('ACME-1', 'ACME', 1, 'x', 'todo', 0, '{"kind":"system","id":"test"}', 'U')`); err != nil {
 		t.Fatalf("seed issue: %v", err)
@@ -89,7 +88,7 @@ func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
 			t.Fatalf("seed PR %s#%d: %v", pr.Repo, pr.Number, err)
 		}
 	}
-	seedAttributedHead(t, pool, "acme/widgets", 1, "ACME-1")
+	seedAttributedHead(t, deps.Attributor, pool, "acme/widgets", 1, "ACME-1")
 
 	runSuccess := delivery.DeliveryRunConclusionSuccess
 	jobSuccess := delivery.DeliveryJobConclusionSuccess
@@ -191,7 +190,7 @@ func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
 // TestDeliveryProductionRuleSelectsLaterAppliedListedJob keeps every delivery reader on the
 // applied job when one run holds two listed names: the first job stood down, the second applied.
 func TestDeliveryProductionRuleSelectsLaterAppliedListedJob(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx, pool := t.Context(), database.Pool
 	const stoodDownName, appliedName, step = "production-apply / production-apply", "production / production-apply", "Run apply"
 	settings := delivery.DeliverySettings{
@@ -230,7 +229,7 @@ func TestDeliveryProductionRuleSelectsLaterAppliedListedJob(t *testing.T) {
 	if len(applies) != 1 || applies[0].RunID != run.RunID || !applies[0].CompletedAt.Equal(appliedAt) {
 		t.Fatalf("containment applies = %+v, want run %d at %s", applies, run.RunID, appliedAt)
 	}
-	waiting, err := delivery.ListPullRequestsWaitingAt(ctx, pool, run.Repo, production, stoodDownAt.Add(30*time.Minute))
+	waiting, err := deps.Attributor.ListPullRequestsWaitingAt(ctx, pool, run.Repo, production, stoodDownAt.Add(30*time.Minute))
 	if err != nil {
 		t.Fatalf("list waiting pull requests: %v", err)
 	}

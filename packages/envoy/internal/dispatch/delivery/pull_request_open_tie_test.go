@@ -12,15 +12,16 @@ import (
 
 // An open row is read again by the reconcile, whatever issue it credits, and its issue is
 // the statement's at each read, from the facts the row's last read stored, with Dispatch's links,
-// issues, parents and mappings as they stand then. So a tie to an issue made after the open row's
-// last event is followed at once, with no event and no results read, for each of the four ties no
-// event of the pull request carries:
+// issues, parents and default repositories as they stand then and the rename pairs its process
+// read at boot. So a tie to an issue made after the open row's last event is followed at once,
+// with no event and no results read, for each of the four ties no event of the pull request
+// carries:
 //
 //   - a link of the issue to a GitHub issue the pull request's body cites (rank 2);
 //   - a parent, with a repository of its own, given to the issue the title names, which before it
 //     resolved to another repository;
-//   - a rename of the repository the issue's project maps, to the repository the pull request is
-//     in;
+//   - a rename of the default repository of the issue's project, to the repository the pull
+//     request is in, read by the boot of the process whose reconcile then runs;
 //   - a cited GitHub issue's link moved from one issue to another, with the row credited to the
 //     first.
 //
@@ -85,7 +86,7 @@ func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *tes
 				`, key("MAPX", number), number)
 			},
 			tie: func(t *testing.T, ctx context.Context, pool *store.Pool) string {
-				mustExec(t, ctx, pool, `update repo_projects set renamed_to = 'acme/widgets' where repo = 'oldco/widgets'`)
+				seedRenamePair(t, ctx, pool, "oldco/widgets", "MAPX", "acme/widgets")
 				return key("MAPX", number)
 			},
 		},
@@ -118,10 +119,10 @@ func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *tes
 			github.pulls[number]["title"] = kase.title
 			github.mu.Unlock()
 			client := fake.newTestClient()
-			if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now()); err != nil {
+			if _, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now()); err != nil {
 				t.Fatal(err)
 			}
-			before := readHead(t, ctx, pool, repo, number)
+			before := readHead(t, unrenamed(), ctx, pool, repo, number)
 			issue := kase.tie(t, ctx, pool)
 			if before.IssueKey != nil && *before.IssueKey == issue {
 				t.Fatalf("the row credited %s before the tie: the case did not happen", issue)
@@ -139,12 +140,15 @@ func TestATieMadeAfterAnOpenRowsLastEventIsFollowedByThePassThatReachesIt(t *tes
 				`, repo, second, kase.due)
 			}
 			want := 1
-			reconcile := NewReconcile(pool, client, events.NewBroker())
+			// The reconcile is a process's that read the pairs at its boot, after the tie: the
+			// rename's pair, and none for each other tie.
+			attributor := NewAttributor(renamesOf(t, ctx, pool))
+			reconcile := NewReconcile(pool, client, events.NewBroker(), attributor)
 			reached := 0
 			for pass := 1; pass <= want+1 && reached == 0; pass++ {
 				reads := github.reads.Load()
 				reconcile.runOnce(ctx)
-				listed, err := HeadAttributedTo(ctx, pool, issue, head)
+				listed, err := attributor.HeadAttributedTo(ctx, pool, issue, head)
 				if err != nil {
 					t.Fatal(err)
 				}

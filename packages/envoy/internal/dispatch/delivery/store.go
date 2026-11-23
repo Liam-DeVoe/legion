@@ -363,7 +363,7 @@ type WaitingPullRequest struct {
 // shipping run is read here rather than from the window's own runs, which start at the window and
 // so can miss a run created before it. Each pull request's issue is the statement's answer
 // (attributedIssues), as on the timeline window.
-func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
+func (a *Attributor) ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
 		from delivery_pull_requests pr
@@ -402,7 +402,7 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo
 	for i := range waiting {
 		prs[i] = waiting[i].DeliveryPullRequest
 	}
-	issues, err := attributedIssues(ctx, pool, prs)
+	issues, err := a.attributedIssues(ctx, pool, prs)
 	if err != nil {
 		return nil, err
 	}
@@ -460,13 +460,13 @@ func DeletePullRequest(ctx context.Context, pool *store.Pool, repo string, numbe
 // UPDATE running, and marking it unfetchable after that would throw GitHub's answer away. The
 // condition names no attribution_* column: the contracting migration of the next release drops
 // them, and this build reads none of them.
-func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo string, number int, reason string) error {
+func (a *Attributor) MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo string, number int, reason string) error {
 	_, err := pool.Exec(ctx, `
 		update delivery_pull_requests d
 		set unfetchable_at = now(), unfetchable_reason = $3
 		where d.repo = $1 and d.number = $2 and (d.partial or not exists (
 			select 1 from pull_request_heads x
-			where x.number = d.number and lower(`+refs.CanonicalRepoSQL("x.repo")+`) = lower(`+refs.CanonicalRepoSQL("d.repo")+`)))
+			where x.number = d.number and lower(`+refs.CanonicalRepoSQL(a.renames, "x.repo")+`) = lower(`+refs.CanonicalRepoSQL(a.renames, "d.repo")+`)))
 	`, repo, number, reason)
 	return err
 }
@@ -986,7 +986,7 @@ const maxPullRequestsPerWindow = 50_000
 // null) is never in range and so never appears here — exactly right, since its lead time and
 // shipped status are not yet knowable. Each pull request's issue is the statement's answer
 // (attributedIssues), the answer the results route reads too, never the stored issue_key alone.
-func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to time.Time) ([]DeliveryPullRequest, error) {
+func (a *Attributor) ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to time.Time) ([]DeliveryPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`
 		from delivery_pull_requests
@@ -1009,7 +1009,7 @@ func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to ti
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	issues, err := attributedIssues(ctx, pool, prs)
+	issues, err := a.attributedIssues(ctx, pool, prs)
 	if err != nil {
 		return nil, err
 	}

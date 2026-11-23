@@ -91,7 +91,7 @@ func wakeUnreadableReads(ctx context.Context, pool *store.Pool, client *githubap
 // (linkedPullRequest, owedName), and it reads the owed row of that pull request the owe writes
 // into, in any letter case (owedRowInAnyCase), so a link spelled in other letters than the row
 // another owe wrote is named too.
-func UnreadableLinksOf(ctx context.Context, pool *store.Pool, issueKey string) ([]model.UnreadableLink, error) {
+func (a *Attributor) UnreadableLinksOf(ctx context.Context, pool *store.Pool, issueKey string) ([]model.UnreadableLink, error) {
 	rows, err := pool.Query(ctx, `select url from issue_external_links where issue_key = $1 order by url`, issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the links of %s: %w", issueKey, err)
@@ -115,7 +115,7 @@ func UnreadableLinksOf(ctx context.Context, pool *store.Pool, issueKey string) (
 		if !ok {
 			continue
 		}
-		repoFull, err := owedName(ctx, pool, given, number)
+		repoFull, err := a.owedName(given, number)
 		if err != nil {
 			return nil, err
 		}

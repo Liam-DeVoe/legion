@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -548,7 +547,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	unreadable, err := delivery.UnreadableLinksOf(r.Context(), s.deps.Store.Pool, issueKey)
+	unreadable, err := s.deps.Attributor.UnreadableLinksOf(r.Context(), s.deps.Store.Pool, issueKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1443,7 +1442,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, sha string, repo *
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
-	if _, _, err := delivery.ReadThroughCommitPulls(
+	if _, _, err := s.deps.Attributor.ReadThroughCommitPulls(
 		ctx, s.deps.Store.Pool, s.deps.GitHub, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)

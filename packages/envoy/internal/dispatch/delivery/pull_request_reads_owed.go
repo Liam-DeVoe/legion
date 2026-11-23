@@ -196,38 +196,39 @@ func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number
 
 // owePullRequestRead records that the pull request number of the repository given changed, that
 // no read of GitHub has answered for that change, and why (reason). given is canonicalised first
-// (refs.CanonicalRepo), so one pull request is owed under one name, or under the name given where
-// the canonical one is no name GitHub can have (below). Recording it again gives the
-// row a new revision, moves its time to now and its reason to the latest read's: the latest event
-// is the one a later read must answer for, and a read that read the row's revision before this
-// owe settles nothing (settleOwedRead). It keeps the count of the reconcile's reads, so publishing
-// the same envelope again moves no row ahead of the rows that have been read as often.
+// (Attributor.canonical, over the pairs the boot read), so one pull request is owed under one
+// name, or under the name given where the canonical one is no name GitHub can have (below).
+// Recording it again gives the row a new revision, moves its time to now and its reason to the
+// latest read's: the latest event is the one a later read must answer for, and a read that read
+// the row's revision before this owe settles nothing (settleOwedRead). It keeps the count of the
+// reconcile's reads, so publishing the same envelope again moves no row ahead of the rows that
+// have been read as often.
 //
 // The row is built here, and its values are checked here, before any statement: the name given,
-// which the read of its canonical name is a statement of, with the number, must be a pull request
-// GitHub can have (checkPullRequestKey), else the answer is errNoPullRequestNamed and nothing is
-// written. The canonical name is the one value of the row no envelope gives: it is a
-// repo_projects row's renamed_to, which the settings route holds to the same rule (api's
-// parseRepoRename, IsGitHubRepositoryName), and which a target stored before that rule or by
-// direct SQL holds to nothing. Where the canonical name is no name GitHub can have, the read is
-// owed under the name given, which the check took: a rename to a name of 3,500 characters would
-// otherwise fail the insert at the btree of the table (SQLSTATE 54000) at every delivery, and an
-// owe refused for it would end the envelope with nothing owed, so the pull request's head never
-// came, also after an operator corrected the target (acceptance of cybermonklabs/legion#4209 at
-// 3a21edb2c9, D1). The reconcile reads the pull request under its canonical name each pass
-// (RefreshPullRequestHead), so the read stays owed while the target stands and is read once it is
-// corrected. The reason is one of this package's two constants. So no value this writes is one
-// the table refuses, and a failure of a statement is the database's alone, which the intake hands
-// back (recordRefused). Its statements run within owedReadWriteTimeout of the call. The checks
-// and the canonical name are owedName's, which a link by hand shares (oweLinkedRead).
+// with the number, must be a pull request GitHub can have (checkPullRequestKey), else the answer
+// is errNoPullRequestNamed and nothing is written. The canonical name is the one value of the row
+// no envelope gives: it is the new name of a rename pair, which the route that wrote the pairs
+// held to the same rule (api's parseRepoRename, IsGitHubRepositoryName), and which a pair stored
+// before that rule or by direct SQL holds to nothing. Where the canonical name is no name GitHub
+// can have, the read is owed under the name given, which the check took: a rename to a name of
+// 3,500 characters would otherwise fail the insert at the btree of the table (SQLSTATE 54000) at
+// every delivery, and an owe refused for it would end the envelope with nothing owed, so the pull
+// request's head never came, also after the target was corrected (acceptance of
+// cybermonklabs/legion#4209 at 3a21edb2c9, D1). The reconcile reads the pull request under its
+// canonical name each pass (RefreshPullRequestHead), so the read stays owed while the target
+// stands and is read once a boot reads a corrected one. The reason is one of this package's two
+// constants. So no value this writes is one the table refuses, and a failure of a statement is the
+// database's alone, which the intake hands back (recordRefused). Its statements run within
+// owedReadWriteTimeout of the call. The checks and the canonical name are owedName's, which a link
+// by hand shares (oweLinkedRead).
 //
 // refusedAs is the word of GitHub's refusal where reason is owedRefusal (refusalOf), and "" for a
 // failure. A row that becomes a refusal takes the time of this write as refused_since, a row that
 // stays one keeps its time, and a row that becomes a failure clears both columns (owedRefusalSet).
-func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason, refusedAs string) error {
+func (a *Attributor) owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason, refusedAs string) error {
 	ctx, cancel := owedTableBound(ctx)
 	defer cancel()
-	repoFull, err := owedName(ctx, pool, given, number)
+	repoFull, err := a.owedName(given, number)
 	if err != nil {
 		return err
 	}
@@ -248,14 +249,11 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 // under (owePullRequestRead): the canonical name, or the name given where the canonical name is
 // no name GitHub can have. Where given and number are no pull request GitHub can have, it answers
 // errNoPullRequestNamed.
-func owedName(ctx context.Context, db refs.Queryer, given string, number int) (string, error) {
+func (a *Attributor) owedName(given string, number int) (string, error) {
 	if err := checkPullRequestKey(given, number); err != nil {
 		return "", fmt.Errorf("the read %.140q#%d is owed: %w", given, number, err)
 	}
-	repoFull, err := refs.CanonicalRepo(ctx, db, given)
-	if err != nil {
-		return "", err
-	}
+	repoFull := a.canonical(given)
 	if checkPullRequestKey(repoFull, number) != nil {
 		return given, nil
 	}
@@ -283,7 +281,7 @@ const pullRequestURLPrefix = "https://github.com/"
 // link.
 //
 // A link names the pull request under the name its repository is called today
-// (refs.CanonicalRepo), so a link written before a rename names the pull request of the
+// (Attributor.canonical), so a link written before a rename names the pull request of the
 // repository it was renamed to. The link write owes the read under that name (owedName), and the
 // statement gives the pull request to the linking issue under it (LinkedPullRequestSQL,
 // PullRequestLinksSQL, attributedTerms).
@@ -347,25 +345,22 @@ func LinkedPullRequestSQL(url string) string {
 
 // PullRequestLinksSQL is every link that names pull request number of repo (linkedPullRequest),
 // lowercased, as an array: the /pull/ and the /issues/ form of number under each name whose
-// canonical name is repo's (refs.CanonicalRepoSQL), that is the canonical name itself and each
-// name a repo_projects row renames to it (linkFormsOf). repo and number are expressions, a column
-// or a bound parameter each. A reader compares lower() of a link with the array, which
-// issue_external_links_url_lower serves with one probe a form, and takes the link only where
-// LinkedPullRequestSQL takes it too: lower() of a character outside ASCII can be an ASCII letter,
-// and a renamed name that GitHub cannot have names nothing. api's link check reads it for one
-// link; the statement, which judges many pull requests, gives linkFormsOf the names it read once
-// (attributedTerms, held_names), which are the names this array is made of.
+// canonical name is repo's (refs.CanonicalRepoSQL over renames, the pairs the boot read), that is
+// the canonical name itself and each old name of a pair renamed to it (linkFormsOf). repo and
+// number are expressions, a column or a bound parameter each. A reader compares lower() of a link
+// with the array, which issue_external_links_url_lower serves with one probe a form, and takes
+// the link only where LinkedPullRequestSQL takes it too: lower() of a character outside ASCII can
+// be an ASCII letter, and a renamed name that GitHub cannot have names nothing. api's link check
+// reads it for one link; the statement, which judges many pull requests, gives linkFormsOf the
+// names it read once (attributedTerms, held_names), which are the names this array is made of.
 //
 // The names come from the rule's inverse (refs.NamesSQL): the lowered names whose canonical name
 // is repo's in any case, which are the canonical name itself where it is its own canonical name
-// and each name the rule's one relation (refs.RenamesSQL) renames to it. So the array reads only
-// the rows that rename to that name, not every renamed repository's canonical name, and its count
-// of scans does not grow with the renamed repositories
-// (TestPullRequestLinksSQLReadsOnlyTheRenamesOfItsRepository). repo's canonical name is read
-// once, as c.
-func PullRequestLinksSQL(repo, number string) string {
-	return linkFormsOf(`(select `+refs.NamesSQL("c.canonical")+`
-		from (select `+refs.CanonicalRepoSQL(repo)+` as canonical) c)`, number)
+// and each old name of a pair renamed to it. The pairs are literals of the text, so the array
+// reads no table. repo's canonical name is read once, as c.
+func PullRequestLinksSQL(renames refs.Renames, repo, number string) string {
+	return linkFormsOf(`(select `+refs.NamesSQL(renames, "c.canonical")+`
+		from (select `+refs.CanonicalRepoSQL(renames, repo)+` as canonical) c)`, number)
 }
 
 // linkFormsOf is the lowered /pull/ and /issues/ link of pull request number under each name of
@@ -414,7 +409,7 @@ func linkFormsOf(names, number string) string {
 // order. The backfill of the links stored before this release owes what this owes for those links
 // (migration 20261120171308_pull_request_reads_owed_link_backfill), which its test holds by
 // running this over the same links (TestTheLinkBackfillOwesWhatALinkWriteOwes).
-func OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) error {
+func (a *Attributor) OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) error {
 	type owed struct {
 		repo   string
 		number int
@@ -425,7 +420,7 @@ func OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) er
 		if !ok {
 			continue
 		}
-		repoFull, err := linkedOwedName(ctx, tx, given, number)
+		repoFull, err := a.owedName(given, number)
 		if err != nil {
 			return err
 		}
@@ -436,18 +431,11 @@ func OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) er
 			strings.Compare(a.repo, b.repo))
 	})
 	for _, link := range links {
-		if err := oweLinkedRead(ctx, tx, link.repo, link.number); err != nil {
+		if err := a.oweLinkedRead(ctx, tx, link.repo, link.number); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-// linkedOwedName is owedName of a link's repository and number, within owedReadWriteTimeout.
-func linkedOwedName(ctx context.Context, tx pgx.Tx, given string, number int) (string, error) {
-	ctx, cancel := owedTableBound(ctx)
-	defer cancel()
-	return owedName(ctx, tx, given, number)
 }
 
 // owedRowInAnyCase is the FROM clause of the one owed row of pull request $2 of the repository $1
@@ -467,14 +455,14 @@ const owedRowInAnyCase = `pull_request_reads_owed o where lower(o.repo) = lower(
 // whose linked_revision is its revision. A row that is owed already takes a new revision and the
 // time of now, and keeps its reason, its refusal and its count of reads. It keeps linked_revision
 // equal to its revision only where a link alone owed the read before.
-func oweLinkedRead(ctx context.Context, tx pgx.Tx, repoFull string, number int) error {
+func (a *Attributor) oweLinkedRead(ctx context.Context, tx pgx.Tx, repoFull string, number int) error {
 	ctx, cancel := owedTableBound(ctx)
 	defer cancel()
 	var held bool
 	var owedAs *string
 	if err := tx.QueryRow(ctx, `
 		select exists (select 1 from pull_request_heads h
-			where h.number = $2 and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower($1)),
+			where h.number = $2 and lower(`+refs.CanonicalRepoSQL(a.renames, "h.repo")+`) = lower($1)),
 			(select o.repo from `+owedRowInAnyCase+`)
 	`, repoFull, number).Scan(&held, &owedAs); err != nil {
 		return fmt.Errorf("read whether the head of %s#%d is stored for a link: %w", repoFull, number, err)
@@ -647,8 +635,8 @@ func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead,
 }
 
 // owedReadJoin is the lateral join of the owed read of each pull request `a` of the statement's
-// terms answers (attributedTerms): the row owed under a.repo, the canonical name, or under a name
-// that repo_projects renames to it, which a.names holds, read once a statement (namesOver). The
+// terms answers (attributedTerms): the row owed under a.repo, the canonical name, or under an old
+// name of a pair renamed to it, which a.names holds, read once a statement (namesOver). The
 // owed row's own name goes through the same rule, so a read owed under an old name matches, and so
 // does one owed under the name given where the canonical name is no name GitHub can have
 // (owePullRequestRead). A row that a link by hand alone owed, whose linked_revision is its
@@ -671,18 +659,20 @@ var owedReadJoin = `left join lateral (
 // owedReadsOfRepository is the read of the name and the revision of each read owed in one
 // repository, $1 its canonical name, through the same rule as owedReadJoin, also each row that a
 // link by hand alone owed: the snapshot that a read-through takes before its list read
-// (ReadThroughCommitPulls). The names are the rule's inverse of $1 (refs.NamesSQL).
-var owedReadsOfRepository = `select o.repo, o.number, o.revision from pull_request_reads_owed o
-	where lower(o.repo) = any(` + refs.NamesSQL("$1::text") + `)
+// (ReadThroughCommitPulls). The names are the rule's inverse of $1 (refs.NamesSQL over renames).
+func owedReadsOfRepository(renames refs.Renames) string {
+	return `select o.repo, o.number, o.revision from pull_request_reads_owed o
+	where lower(o.repo) = any(` + refs.NamesSQL(renames, "$1::text") + `)
 		and octet_length(o.repo) <= 1024`
+}
 
 // owedReadsIn is the name, the number and the revision of each read owed in repoFull, the
 // canonical name, as a read of GitHub begins (owedReadsOfRepository). A read that fails answers
 // nothing, so the read-through settles nothing and the reconcile reads each one again.
-func owedReadsIn(ctx context.Context, pool *store.Pool, repoFull string) map[int][]owedRead {
+func (a *Attributor) owedReadsIn(ctx context.Context, pool *store.Pool, repoFull string) map[int][]owedRead {
 	bounded, cancel := context.WithTimeout(ctx, owedRevisionReadTimeout)
 	defer cancel()
-	rows, err := pool.Query(bounded, owedReadsOfRepository, repoFull)
+	rows, err := pool.Query(bounded, owedReadsOfRepository(a.renames), repoFull)
 	if err != nil {
 		logging.FromContext(ctx).Warn("dispatch delivery: read the reads owed in a repository; this read settles none, and the reconcile reads each once more",
 			"repo", repoFull, "error", err)

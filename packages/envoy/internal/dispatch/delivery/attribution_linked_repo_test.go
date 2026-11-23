@@ -26,7 +26,7 @@ func TestAPullRequestAnIssueLinksInAnotherRepositoryIsItsOwnInTheResultsAndTheTi
 	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	store := func(number int, state, title, headRepo, baseRef string) {
 		t.Helper()
-		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 			Repo: "acme/tools", Number: number, HeadSHA: fmt.Sprintf("%040x", 9000+number), HeadRef: "topic", BaseRef: baseRef,
 			State: state, Title: title, URL: fmt.Sprintf("https://github.com/acme/tools/pull/%d", number), EventAt: &at,
 			Texts: &PullRequestTexts{HeadRepo: headRepo, BaseRef: baseRef, Title: title, CommitMessages: []string{}, MessagesRead: true},
@@ -46,7 +46,7 @@ func TestAPullRequestAnIssueLinksInAnotherRepositoryIsItsOwnInTheResultsAndTheTi
 	store(11, "merged", "A forked change", "someone/tools", "main")
 
 	keys := []PullRequestKey{{Repo: "acme/tools", Number: 9}, {Repo: "acme/tools", Number: 10}, {Repo: "acme/tools", Number: 11}}
-	answers, err := PullRequestIssues(ctx, pool, keys)
+	answers, err := unrenamed().PullRequestIssues(ctx, pool, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,24 +68,24 @@ func TestAPullRequestAnIssueLinksInAnotherRepositoryIsItsOwnInTheResultsAndTheTi
 		t.Errorf("control: acme/tools#11, which ATTR-872 links and whose head is in a fork, answers %s; want none", got)
 	}
 
-	heads, err := HeadsAttributedTo(ctx, pool, "ATTR-871")
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, "ATTR-871")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(heads) != 1 || heads[0].Number != 9 || heads[0].LinkedRepo != "acme/tools" || !heads[0].HeadKnown {
 		t.Errorf("HeadsAttributedTo(ATTR-871) = %+v; want #9 alone, known, naming acme/tools", heads)
 	}
-	timeline, err := ListPullRequestsOfIssues(ctx, pool, []string{"ATTR-871"})
+	timeline, err := unrenamed().ListPullRequestsOfIssues(ctx, pool, []string{"ATTR-871"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.ContainsFunc(timeline, func(pr DeliveryPullRequest) bool { return pr.Repo == "acme/tools" && pr.Number == 9 }) || len(timeline) != 1 {
 		t.Errorf("the timeline of ATTR-871 lists %+v; want acme/tools#9 alone, the issue the results name", timeline)
 	}
-	if branch, err := BaseBranchMergedIn(ctx, pool, "ATTR-871", "acme/tools"); err != nil || branch != "release" {
+	if branch, err := unrenamed().BaseBranchMergedIn(ctx, pool, "ATTR-871", "acme/tools"); err != nil || branch != "release" {
 		t.Errorf("BaseBranchMergedIn(ATTR-871, acme/tools) = %q, %v; want release, the branch #9 merged into", branch, err)
 	}
-	if branch, err := BaseBranchMergedFor(ctx, pool, "ATTR-871"); err != nil || branch != "" {
+	if branch, err := unrenamed().BaseBranchMergedFor(ctx, pool, "ATTR-871"); err != nil || branch != "" {
 		t.Errorf("BaseBranchMergedFor(ATTR-871) = %q, %v; want none: it reads acme/widgets, the issue's own repository, alone", branch, err)
 	}
 }

@@ -324,22 +324,22 @@ func freeTexts(texts PullRequestTexts) PullRequestTexts {
 // holds. The one exception is errNoPullRequestNamed, a key that is no pull request GitHub can
 // have, also refused before any statement: nothing was written either, and no attempt with the
 // same key gets past it.
-func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullRequestHead) error {
-	_, err := upsertHead(ctx, pool, head)
+func (a *Attributor) UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullRequestHead) error {
+	_, err := a.upsertHead(ctx, pool, head)
 	return err
 }
 
 // upsertHead is UpsertPullRequestHead, and it answers whether the write of the results row
 // applied (upsertHeadRow): false where the event-time guard or the order of two reads of one
 // second kept the stored row, and so its texts.
-func upsertHead(ctx context.Context, pool *store.Pool, head PullRequestHead) (bool, error) {
+func (a *Attributor) upsertHead(ctx context.Context, pool *store.Pool, head PullRequestHead) (bool, error) {
 	head, err := checkHeadRow(head)
 	if err != nil {
 		return false, err
 	}
 	seedsBranch := head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
 	if !seedsBranch && head.Texts == nil {
-		return upsertHeadRow(ctx, pool, head)
+		return a.upsertHeadRow(ctx, pool, head)
 	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -356,7 +356,7 @@ func upsertHead(ctx context.Context, pool *store.Pool, head PullRequestHead) (bo
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()
-	applied, err := upsertHeadRow(ctx, tx, head)
+	applied, err := a.upsertHeadRow(ctx, tx, head)
 	if err != nil {
 		return false, err
 	}
@@ -414,9 +414,9 @@ const headWriteRollback = 2 * time.Second
 // the issue of a results row of the same pull request under another name of the repository, the
 // row under the canonical name first and then the one read from GitHub last, else the issue of its
 // timeline row, the row under the canonical name first. Each name is read through the renaming
-// rule (refs.CanonicalRepoSQL), as the statement reads it (attributedTerms). An update names no
-// issue. A write of texts clears the refusal and the proof of absence of a read of the facts
-// ($13).
+// rule (refs.CanonicalRepoSQL over the pairs the boot read), as the statement reads it
+// (attributedTerms). An update names no issue. A write of texts clears the refusal and the proof
+// of absence of a read of the facts ($13).
 //
 // github_read_at is the reader's clock as the read of GitHub whose answer the write carries began
 // (PullRequestHead.GitHubReadAt), and null for a write that is no answer of GitHub's: a mark, and
@@ -462,7 +462,7 @@ const headWriteRollback = 2 * time.Second
 // compares with the row the update replaces (OLD), which nothing else in the statement sees: a
 // CTE reads the statement's snapshot, and a CTE's `for update` skips a row the statement's own
 // update has changed.
-func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
+func (a *Attributor) upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	tag, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key,
@@ -476,14 +476,14 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 			left join lateral (
 				select h.repo, h.issue_key from pull_request_heads h
 				where h.number = $2::integer and h.repo <> $1::text
-					and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower(`+refs.CanonicalRepoSQL("$1::text")+`)
-				order by lower(h.repo) = lower(`+refs.CanonicalRepoSQL("$1::text")+`) desc, h.github_read_at desc nulls last, h.repo
+					and lower(`+refs.CanonicalRepoSQL(a.renames, "h.repo")+`) = lower(`+refs.CanonicalRepoSQL(a.renames, "$1::text")+`)
+				order by lower(h.repo) = lower(`+refs.CanonicalRepoSQL(a.renames, "$1::text")+`) desc, h.github_read_at desc nulls last, h.repo
 				limit 1) o on true
 			left join lateral (
 				select t.issue_key from delivery_pull_requests t
 				where t.number = $2::integer
-					and lower(`+refs.CanonicalRepoSQL("t.repo")+`) = lower(`+refs.CanonicalRepoSQL("$1::text")+`)
-				order by lower(t.repo) = lower(`+refs.CanonicalRepoSQL("$1::text")+`) desc, t.repo
+					and lower(`+refs.CanonicalRepoSQL(a.renames, "t.repo")+`) = lower(`+refs.CanonicalRepoSQL(a.renames, "$1::text")+`)
+				order by lower(t.repo) = lower(`+refs.CanonicalRepoSQL(a.renames, "$1::text")+`) desc, t.repo
 				limit 1) d on true
 		) f
 		on conflict (repo, number) do update set
@@ -516,7 +516,7 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 
 // upsertHeadUnderCanonicalName is the one writer of a head row and its texts. It writes head,
 // which every caller has already keyed by the canonical name of its repository
-// (refs.CanonicalRepo), and drops the row the same pull request is stored under as storedUnder
+// (Attributor.canonical), and drops the row the same pull request is stored under as storedUnder
 // when that is another name. GitHub answers a read only under the canonical name — the App
 // answers 404 for the old name's installation — so no read can refresh a row keyed under an old
 // name, and every reader reads such a row under the canonical name (refs.CanonicalRepoSQL). So
@@ -533,8 +533,8 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 // row would leave the pull request unknown until another event arrived. The insert of the
 // canonical row reads the old row's issue as its fallback before the delete. It answers whether
 // the write of the canonical row applied (upsertHead).
-func upsertHeadUnderCanonicalName(ctx context.Context, pool *store.Pool, head PullRequestHead, storedUnder string) (bool, error) {
-	applied, err := upsertHead(ctx, pool, head)
+func (a *Attributor) upsertHeadUnderCanonicalName(ctx context.Context, pool *store.Pool, head PullRequestHead, storedUnder string) (bool, error) {
+	applied, err := a.upsertHead(ctx, pool, head)
 	if err != nil {
 		return false, err
 	}
@@ -560,8 +560,8 @@ func upsertHeadUnderCanonicalName(ctx context.Context, pool *store.Pool, head Pu
 // it. It is the question HeadsAttributedTo answers for one commit; no route asks it, because each
 // recorded result reads its commit through (api/results.go, readThroughPullRequests), and this
 // package's tests read a basis through it.
-func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
-	statements, err := attribution()
+func (a *Attributor) HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha string) (bool, error) {
+	statements, err := a.attribution()
 	if err != nil {
 		return false, err
 	}
@@ -628,8 +628,8 @@ type AttributedHead struct {
 // and writes nothing. The record route passes the pool, before its write's transaction opens
 // (api/results_linked.go, refuseUnknownCommit), since it asks GitHub about the commit after this
 // read, and no transaction is held open across a read of GitHub.
-func HeadsAttributedTo(ctx context.Context, q Querier, issueKey string) ([]AttributedHead, error) {
-	statements, err := attribution()
+func (a *Attributor) HeadsAttributedTo(ctx context.Context, q Querier, issueKey string) ([]AttributedHead, error) {
+	statements, err := a.attribution()
 	if err != nil {
 		return nil, err
 	}
@@ -697,8 +697,8 @@ type NewestHead struct {
 // (refs.CanonicalRepoSQL), which GitHub answers the head's check runs under (api/results_ci.go),
 // whatever name the row is stored under. A pull request owed a read is answered as before, with
 // ReadOwed true.
-func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string) (NewestHead, bool, error) {
-	statements, err := attribution()
+func (a *Attributor) NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string) (NewestHead, bool, error) {
+	statements, err := a.attribution()
 	if err != nil {
 		return NewestHead{}, false, err
 	}
@@ -754,8 +754,8 @@ var newestPullRequestHeadSelect = `
 // on its own fallback, the repository's default branch, where handing that value on as a
 // branch would have it build a GitHub compare read against a branch with no name. A timeline row
 // stores no base branch, so a pull request with no results row names none either.
-func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, error) {
-	statements, err := attribution()
+func (a *Attributor) BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, error) {
+	statements, err := a.attribution()
 	if err != nil {
 		return "", err
 	}
@@ -791,8 +791,8 @@ const baseBranchMergedForSelect = `
 // the issue resolves to is no linked pull request, so a repoFull the issue resolves to answers
 // "". repoFull is compared without case with the canonical name of each pull request, as every
 // other comparison of a repository here is.
-func BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
-	statements, err := attribution()
+func (a *Attributor) BaseBranchMergedIn(ctx context.Context, pool *store.Pool, issueKey, repoFull string) (string, error) {
+	statements, err := a.attribution()
 	if err != nil {
 		return "", err
 	}
@@ -857,9 +857,9 @@ const PullRequestHeadBatch = 200
 // offered never: no read can reach it, so it is warned of and stamped read here, as a row of a
 // repository the App cannot read is stamped (MarkPullRequestHeadChecked), and leaves the front of
 // the next batches rather than holding one of its places every pass.
-func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestRef, error) {
+func (a *Attributor) ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestRef, error) {
 	rows, err := pool.Query(ctx, `
-		select h.repo, `+refs.CanonicalRepoSQL("h.repo")+`, h.number from pull_request_heads h
+		select h.repo, `+refs.CanonicalRepoSQL(a.renames, "h.repo")+`, h.number from pull_request_heads h
 		where h.state = 'open' and (h.checked_at is null or h.checked_at < $1)
 		order by h.checked_at nulls first, h.repo, h.number
 		limit $2
@@ -1024,7 +1024,7 @@ type FetchedFacts struct {
 // It answers the texts of GitHub's answer as the write stores them (freeTexts), with the messages
 // it stored or reused, and MessagesRead false where it has none. A write the guard refused answers
 // them too, though it stored none.
-func storePullRequestFacts(
+func (a *Attributor) storePullRequestFacts(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, token, canonical, storedUnder string,
 	payload pullRequestPayload, checkedAt *time.Time, read readStart, stampIncomplete, bounded bool,
 ) (*PullRequestTexts, error) {
@@ -1045,7 +1045,7 @@ func storePullRequestFacts(
 	if !texts.MessagesRead && !stampIncomplete {
 		head.CheckedAt = nil
 	}
-	applied, err := writeFacts(ctx, pool, head, storedUnder, bounded)
+	applied, err := a.writeFacts(ctx, pool, head, storedUnder, bounded)
 	if err != nil {
 		return nil, err
 	}
@@ -1057,7 +1057,7 @@ func storePullRequestFacts(
 		return answer(), nil
 	}
 	key := PullRequestKey{Repo: canonical, Number: payload.Number}
-	answers, err := PullRequestIssues(ctx, pool, []PullRequestKey{key})
+	answers, err := a.PullRequestIssues(ctx, pool, []PullRequestKey{key})
 	if err != nil {
 		return answer(), err
 	}
@@ -1089,7 +1089,7 @@ func storePullRequestFacts(
 	}
 	texts.CommitMessages, texts.MessagesRead = messages, true
 	head.CheckedAt = checkedAt
-	if _, err := writeFacts(ctx, pool, head, canonical, bounded); err != nil {
+	if _, err := a.writeFacts(ctx, pool, head, canonical, bounded); err != nil {
 		return answer(), err
 	}
 	return answer(), nil
@@ -1117,13 +1117,13 @@ func storedMessages(ctx context.Context, pool *store.Pool, repo string, number i
 // writeFacts is the write of head and its texts (upsertHeadUnderCanonicalName), bounded by
 // owedTableBound where bounded is set (storePullRequestFacts). It answers whether the write of
 // the results row applied.
-func writeFacts(ctx context.Context, pool *store.Pool, head PullRequestHead, storedUnder string, bounded bool) (bool, error) {
+func (a *Attributor) writeFacts(ctx context.Context, pool *store.Pool, head PullRequestHead, storedUnder string, bounded bool) (bool, error) {
 	if bounded {
 		writing, cancel := owedTableBound(ctx)
 		defer cancel()
-		return upsertHeadUnderCanonicalName(writing, pool, head, storedUnder)
+		return a.upsertHeadUnderCanonicalName(writing, pool, head, storedUnder)
 	}
-	return upsertHeadUnderCanonicalName(ctx, pool, head, storedUnder)
+	return a.upsertHeadUnderCanonicalName(ctx, pool, head, storedUnder)
 }
 
 // stampHeadRead stamps the row of head with at, where the row still holds the answer that head
@@ -1167,7 +1167,7 @@ func stampHeadRead(ctx context.Context, pool *store.Pool, head PullRequestHead, 
 //
 // repoFull is the name the caller holds the pull request under (an owed read's, a timeline row's,
 // or a batched ref's StoredUnder), which may be a name the repository has been renamed away from,
-// and every step here but the stamp works on the canonical name instead (refs.CanonicalRepo): the
+// and every step here but the stamp works on the canonical name instead (Attributor.canonical): the
 // token is minted for it, since GitHub answers 404 for the installation of a name no longer in
 // use; and the row is written under it, with the row under the old key dropped in the same step
 // (upsertHeadUnderCanonicalName). The stamp stays on the key the caller handed over, since that is
@@ -1176,14 +1176,11 @@ func stampHeadRead(ctx context.Context, pool *store.Pool, head PullRequestHead, 
 //
 // installations is the pass's lookups of the installation of each repository
 // (passInstallations), nil for a caller that has no pass.
-func RefreshPullRequestHead(
+func (a *Attributor) RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	installations *passInstallations, repoFull string, number int, now time.Time,
 ) (fetched *FetchedFacts, refused *pullRequestRefusal, err error) {
-	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
-	if err != nil {
-		return nil, nil, err
-	}
+	canonical := a.canonical(repoFull)
 	owner, repo, err := refs.SplitGitHubRepo(canonical)
 	if err != nil {
 		// No read of GitHub can reach a name GitHub does not allow, so the row is stamped as an
@@ -1212,7 +1209,7 @@ func RefreshPullRequestHead(
 		}
 		return nil, nil, err
 	}
-	texts, err := storePullRequestFacts(ctx, pool, client, token, canonical, repoFull, payload, &now, began, true, false)
+	texts, err := a.storePullRequestFacts(ctx, pool, client, token, canonical, repoFull, payload, &now, began, true, false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1277,8 +1274,8 @@ func RepositoryUnreadable(err error) bool {
 // no row stays a head not read in the answer of the read that learns it.
 //
 // repoFull comes from outside — the repository the check's issue resolves to — so it is
-// canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
-// is ever written under a name a repository was renamed away from. The read-time caller has
+// canonicalised before anything is asked of GitHub or written (refs.Renames.Canonical), and no
+// row is ever written under a name a repository was renamed away from. The read-time caller has
 // canonicalised that name already, and so has the record-time caller, which resolves through
 // the same helper (api/issue_repo.go, server.checkIssueRepository); the rule reaches the
 // canonical name in one step, so this read changes nothing for either. It is here because this
@@ -1297,21 +1294,18 @@ func RepositoryUnreadable(err error) bool {
 // holds for GitHub's rate limit on a pull request's commit messages too, which comes after the
 // pull request's head is written (storePullRequestFacts): it is answered as GitHub's limit, not
 // as a read that stored nothing.
-func ReadThroughCommitPulls(
+func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReadThroughTimeout)
 	defer cancel()
-	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
-	if err != nil {
-		return 0, false, readThroughNotStored(err)
-	}
+	canonical := a.canonical(repoFull)
 	owner, repo, token, err := repositoryRead(ctx, client, canonical)
 	if err != nil {
 		return 0, false, err
 	}
-	owed := owedReadsIn(ctx, pool, canonical)
+	owed := a.owedReadsIn(ctx, pool, canonical)
 	began, err := startRead(ctx, pool)
 	if err != nil {
 		return 0, false, readThroughNotStored(err)
@@ -1325,7 +1319,7 @@ func ReadThroughCommitPulls(
 			atHead = true
 		}
 		if PullRequestHeadState(pull.State, pull.Merged || pull.MergedAt != nil) == "closed" {
-			held, err := pullRequestHeld(ctx, pool, canonical, pull.Number)
+			held, err := a.pullRequestHeld(ctx, pool, canonical, pull.Number)
 			if err != nil {
 				return written, atHead, readThroughNotStored(err)
 			}
@@ -1333,7 +1327,7 @@ func ReadThroughCommitPulls(
 				continue
 			}
 		}
-		if _, err := storePullRequestFacts(ctx, pool, client, token, canonical, repoFull, pull, &now, began, false, false); err != nil {
+		if _, err := a.storePullRequestFacts(ctx, pool, client, token, canonical, repoFull, pull, &now, began, false, false); err != nil {
 			if limited, ok := githubapp.AsRateLimit(err); ok {
 				return written, atHead, limited
 			}
@@ -1379,12 +1373,12 @@ func readThroughNotStored(err error) error {
 // (ReadThroughCommitPulls). It reads the rows as the statement's heads term reads them
 // (attributedTerms): a row written from a `pull_request` envelope can carry GitHub's own spelling
 // of the repository (`Acme/Widgets`), or a name the repository was renamed away from.
-func pullRequestHeld(ctx context.Context, pool *store.Pool, canonical string, number int) (bool, error) {
+func (a *Attributor) pullRequestHeld(ctx context.Context, pool *store.Pool, canonical string, number int) (bool, error) {
 	var held bool
 	if err := pool.QueryRow(ctx, `
 		select exists (
 			select 1 from pull_request_heads h
-			where h.number = $2 and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower($1)
+			where h.number = $2 and lower(`+refs.CanonicalRepoSQL(a.renames, "h.repo")+`) = lower($1)
 		)
 	`, canonical, number).Scan(&held); err != nil {
 		return false, fmt.Errorf("read whether %s#%d is stored: %w", canonical, number, err)
@@ -1439,14 +1433,11 @@ func pullRequestHeld(ctx context.Context, pool *store.Pool, canonical string, nu
 // answer holds, since an answer of the event's own second may be one GitHub gave before the event.
 //
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
-// canonicalised before anything is read or written (refs.CanonicalRepo), and no row is ever
+// canonicalised before anything is read or written (Attributor.canonical), and no row is ever
 // written under a name a repository was renamed away from.
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) (headRead, error) {
 	given := payload["repo"]
-	repoFull, err := refs.CanonicalRepo(ctx, in.pool, given)
-	if err != nil {
-		return headRead{}, markHeadNotStored(err)
-	}
+	repoFull := in.attributor.canonical(given)
 	if err := checkPullRequestKey(repoFull, number); err != nil {
 		// A head not stored, and not errNoPullRequestNamed, which Intake.deliver ends with nothing
 		// owed: the name the envelope gave is one GitHub can have, and the read is owed under it
@@ -1505,7 +1496,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 	// minute. A read whose commit messages could not be had keeps the stamp the row had, so the
 	// reconcile's next pass reads it again.
 	now := time.Now()
-	texts, err := storePullRequestFacts(ctx, in.pool, in.github, token, repoFull, given, pull, &now, began, false, true)
+	texts, err := in.attributor.storePullRequestFacts(ctx, in.pool, in.github, token, repoFull, given, pull, &now, began, false, true)
 	read := headRead{pull: &pull, token: token}
 	if texts != nil && texts.MessagesRead && headInOwnRepository(repoFull, texts.HeadRepo) {
 		read.messages = texts.CommitMessages
@@ -1542,7 +1533,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 // that names both, and nothing is logged here: until the record is written, nothing is owed. The
 // refusal is named and not wrapped, so no caller reads the failed record as GitHub's refusal.
 func (in *Intake) oweRefusedRead(ctx context.Context, repoFull string, number int, refused error) (headRead, error) {
-	if err := owePullRequestRead(ctx, in.pool, repoFull, number, owedRefusal, refusalOf(refused)); err != nil {
+	if err := in.attributor.owePullRequestRead(ctx, in.pool, repoFull, number, owedRefusal, refusalOf(refused)); err != nil {
 		return headRead{}, markHeadNotStored(fmt.Errorf("%v, and %w", refused, err))
 	}
 	logging.FromContext(ctx).Info("dispatch delivery: GitHub gave no pull request for this read, so no head row is written; the read is owed, and the reconcile reads it again",

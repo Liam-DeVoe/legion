@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // linkPullRequests replaces the external links of issue with one link to each pull request URL
@@ -297,16 +298,22 @@ func TestManyLinksOfARepositoryDispatchCannotReadStoreTheResult(t *testing.T) {
 // A linked pull request of a repository whose name GitHub's naming rule refuses is set aside and
 // named. The link rule refuses a link that spells such a name (delivery.linkedPullRequest holds a
 // link's own name to refs.SplitGitHubRepo), so the name comes from a rename: the issue links
-// oldco/gizmo#3, and oldco/gizmo's renamed_to is `acme/.git`, which the settings route refuses
-// and which a row stored before that refusal, or by direct SQL, can still hold. The link names
-// the pull request under that canonical name, which refs.SplitGitHubRepo refuses, since the name
-// is empty once a trailing `.git` is trimmed: so Dispatch asks GitHub nothing about it, and the
-// repository counts for nothing, as one Dispatch cannot read does. The commit no repository holds
-// is refused 400 RESULT_COMMIT_UNKNOWN, and the refusal names the repository it set aside and
-// that GitHub's naming rule refuses its name, and does not name it as a repository Dispatch could
-// not read, which a grant of the App would not mend. A second issue links acme/.git#4 itself, a
-// link the rule refuses: it names no repository, so its refusal sets nothing aside and asks
-// GitHub nothing about acme/.git either.
+// oldco/gizmo#3, and the rename pair of oldco/gizmo names `acme/.git`, which the settings route
+// of an earlier release refused and which a row stored before that refusal, or by direct SQL, can
+// still hold. The link names the pull request under that canonical name, which
+// refs.SplitGitHubRepo refuses, since the name is empty once a trailing `.git` is trimmed: so
+// Dispatch asks GitHub nothing about it, and the repository counts for nothing, as one Dispatch
+// cannot read does. The commit no repository holds is refused 400 RESULT_COMMIT_UNKNOWN, and the
+// refusal names the repository it set aside and that GitHub's naming rule refuses its name, and
+// does not name it as a repository Dispatch could not read, which a grant of the App would not
+// mend. A second issue links acme/.git#4 itself, a link the rule refuses: it names no repository,
+// so its refusal sets nothing aside and asks GitHub nothing about acme/.git either.
+//
+// A server that holds the pair stores every link under its repository's new name
+// (refs.Renames.CanonicalURL), so the link by the old name is written first, on a server built
+// with no pair, as a release before stored it. The pair is then seeded by SQL, as the last
+// release left it, and the results are recorded on a server built after the seed, which reads
+// the pair once, as it is built.
 //
 // The negative control is the refusal as linkCannotCount left it, which read the name rule's
 // answer as one about a repository Dispatch cannot read and then kept only such repositories, so
@@ -314,15 +321,24 @@ func TestManyLinksOfARepositoryDispatchCannotReadStoreTheResult(t *testing.T) {
 func TestARefusalNamesALinkedRepositoryGitHubsNamingRuleRefuses(t *testing.T) {
 	const commit = "9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"
 	linked := &linkedGitHub{held: map[string][]string{"acme/widgets": {headCommit}}, pulls: map[string]string{}}
-	handler, database := linkedRepositoriesGitHub(t, linked)
+	options := linkedRepositoriesOptions(t, linked)
+	handler, database, _ := newTestServer(t, options)
 	issue := issueInRepository(t, handler, "RELG", "acme/widgets", "A link GitHub's naming rule refuses").Key
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
-		values ('oldco/gizmo', 'RELG', '{"kind":"system","id":"api-test"}'::jsonb, false, 'acme/.git')`); err != nil {
-		t.Fatalf("store oldco/gizmo as renamed to acme/.git: %v", err)
-	}
 	uploadDocument(t, handler, "/api/v1/issues/"+issue, "verification.md", twoChecks)
 	linkPullRequests(t, handler, issue, "https://github.com/oldco/gizmo/pull/3")
+	var stored int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from issue_external_links where issue_key = $1 and url = 'https://github.com/oldco/gizmo/pull/3'
+	`, issue).Scan(&stored); err != nil || stored != 1 {
+		t.Fatalf("SETUP: %s holds %d links under oldco/gizmo (%v), want 1: the case is a link stored under the old name", issue, stored, err)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into repo_projects (repo, project, created_by, renamed_to)
+		values ('oldco/gizmo', 'RELG', '{"kind":"system","id":"api-test"}'::jsonb, 'acme/.git')`); err != nil {
+		t.Fatalf("store oldco/gizmo as renamed to acme/.git: %v", err)
+	}
+	options.store, options.renames = storetest.SecondProcess(t, database), readRenames(t, database)
+	handler, _, _ = newTestServer(t, options)
 	eventsBefore := resultEventsOn(t, database, issue)
 
 	recorded := recordResult(t, handler, issue, resultBody("k1", "pass", commit, nil))
@@ -458,11 +474,12 @@ func storeLinkedHead(t *testing.T, database *store.Store, repo string, number in
 }
 
 // storeLinkedHeadOn is storeLinkedHead for a pull request in state on the base branch base: a
-// merged one is the row delivery.BaseBranchMergedIn answers the branch of.
+// merged one is the row delivery.Attributor.BaseBranchMergedIn answers the branch of. No
+// caller's server holds a rename pair, so it writes with unrenamed.
 func storeLinkedHeadOn(t *testing.T, database *store.Store, repo string, number int, sha, state, base string) {
 	t.Helper()
 	at := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
 		Repo: repo, Number: number, HeadSHA: sha, HeadRef: "topic", BaseRef: base, State: state,
 		Title: "A change", URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), EventAt: &at,
 		Texts: &delivery.PullRequestTexts{HeadRepo: repo, BaseRef: base, Title: "A change", CommitMessages: []string{}, MessagesRead: true},

@@ -57,7 +57,7 @@ func TestReconcileCatchesAMissedPullRequest(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 50))
@@ -125,7 +125,7 @@ func TestReconcileCatchesAMissedDeployRun(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	run, err := ScanRun(pool.QueryRow(ctx, `select `+RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, "acme/widgets", int64(900)))
@@ -166,7 +166,7 @@ func TestReconcileRecordsAMissingPermissionByNameAndDoesNotAdvanceLastReconcileA
 	fake.permissions = map[string]string{"contents": "read", "pull_requests": "read"}
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	after, err := GetSettings(ctx, pool)
@@ -215,7 +215,7 @@ func TestReconcileNeverWipesACompletePullRequestsAttribution(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 60))
@@ -253,7 +253,7 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	after, err := GetSettings(ctx, pool)
@@ -310,7 +310,7 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
 	pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 70))
@@ -403,7 +403,7 @@ func TestA404ThatGitHubDoesNotProveLeavesAPartialRowForTheNextPass(t *testing.T)
 	})
 	fake.handle("POST /graphql", answerSearchOrAbsence(t, "acme/widgets", 71, false))
 	noRuns(t, fake)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	for pass := 1; pass <= 2; pass++ {
 		reconcile.runOnce(ctx)
@@ -463,7 +463,7 @@ func TestReconcileWorkflowFailureStopsThePassFromReportingSuccess(t *testing.T) 
 	})
 	client := fake.newTestClient()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	run, err := ScanRun(pool.QueryRow(ctx, `select `+RunColumns+` from delivery_runs where repo = $1 and run_id = $2`, "acme/widgets", int64(900)))
@@ -531,7 +531,7 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
 	after, err := GetSettings(ctx, pool)
@@ -631,7 +631,7 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 	})
 	client := fake.newTestClient(githubapp.WithLimits(ratelimit.New(pool)))
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
 	got := attempts.Load()
@@ -716,7 +716,7 @@ func TestReconcileWorkflowStopsAtTheFirstRateLimitAndCapsLastError(t *testing.T)
 		mustEncode(t, w, map[string]any{"jobs": []any{}})
 	})
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	err := reconcile.reconcileWorkflow(ctx, "acme", "widgets", "acme/widgets", ".github/workflows/deploy.yml", DeliveryRunKindDeploy, Production{}, until)
@@ -784,7 +784,7 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	})
 
 	stale := time.Now().Add(-2 * PullRequestHeadStaleAfter)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 55, HeadSHA: headWas, HeadRef: "legion/" + key, BaseRef: "main",
 		State: "open", Title: key + " the work", URL: "https://github.com/acme/widgets/pull/55", CheckedAt: &stale,
 	}); err != nil {
@@ -792,19 +792,19 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	}
 	seedStoredIssue(t, ctx, pool, "acme/widgets", 55, &key, "title_body")
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
-	head := readHead(t, ctx, pool, "acme/widgets", 55)
+	head := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 55)
 	if head.HeadSHA != headNow {
 		t.Fatalf("the head after a pass with no delivery settings = %q, want %q: the head pass reads no setting",
 			head.HeadSHA, headNow)
 	}
-	atOld, err := HeadAttributedTo(ctx, pool, key, headWas)
+	atOld, err := unrenamed().HeadAttributedTo(ctx, pool, key, headWas)
 	if err != nil || atOld {
 		t.Fatalf("HeadAttributedTo(%s, the head it left) = %v, %v; want false: that commit is no basis",
 			key, atOld, err)
 	}
-	atNew, err := HeadAttributedTo(ctx, pool, key, headNow)
+	atNew, err := unrenamed().HeadAttributedTo(ctx, pool, key, headNow)
 	if err != nil || !atNew {
 		t.Fatalf("HeadAttributedTo(%s, the head it moved to) = %v, %v; want true", key, atNew, err)
 	}
@@ -862,21 +862,21 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	// The row as an earlier pass left it: merged, credited to nobody, stamped read a day ago, and
 	// with no texts.
 	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/gadgets", Number: 60, HeadSHA: sha, HeadRef: "legion/" + own, BaseRef: "main",
 		State: "merged",
 		Title: title, URL: "https://github.com/acme/gadgets/pull/60", CheckedAt: &stamped,
 	}); err != nil {
 		t.Fatalf("store the merged head an earlier pass left: %v", err)
 	}
-	if before := readHead(t, ctx, pool, "acme/gadgets", 60); before.IssueKey != nil {
+	if before := readHead(t, unrenamed(), ctx, pool, "acme/gadgets", 60); before.IssueKey != nil {
 		t.Fatalf("the merged head before the pass = %v, want nobody: the row has no texts and stores no issue", before.IssueKey)
 	}
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 
-	head := readHead(t, ctx, pool, "acme/gadgets", 60)
+	head := readHead(t, unrenamed(), ctx, pool, "acme/gadgets", 60)
 	if head.IssueKey == nil || *head.IssueKey != own {
 		t.Fatalf("the merged head after a pass = %v, want %s: %s resolves to acme/widgets, %s to this repository",
 			head.IssueKey, own, foreign, own)
@@ -884,7 +884,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	if stored := storedIssueOf(t, ctx, pool, "acme/gadgets", 60); stored == nil || *stored != own {
 		t.Fatalf("the merged row stores %v after a pass, want %s: the pass writes each answer to the stored row", stored, own)
 	}
-	attributed, err := HeadAttributedTo(ctx, pool, own, sha)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, own, sha)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result stands at it",
 			own, attributed, err)
@@ -900,7 +900,7 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 		t.Fatalf("the next pass asked %d batched queries, and the two passes made %d REST reads; want none: the row has current texts and read messages",
 			again, rest)
 	}
-	if again := readHead(t, ctx, pool, "acme/gadgets", 60); again.IssueKey == nil || *again.IssueKey != own {
+	if again := readHead(t, unrenamed(), ctx, pool, "acme/gadgets", 60); again.IssueKey == nil || *again.IssueKey != own {
 		t.Fatalf("the merged head after the next pass = %v, want %s still", again.IssueKey, own)
 	}
 }
@@ -986,7 +986,7 @@ func TestEachLeasedReconcilePassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
 	answerGitHub(t, fake, nil)
-	pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(), events.NewBroker()))
+	pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()))
 
 	pass()
 	if got := reads.take(); len(got) != 0 {
@@ -1269,7 +1269,7 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 				}
 				options = append(options, githubapp.WithLimits(limits))
 			}
-			pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(options...), events.NewBroker()))
+			pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(options...), events.NewBroker(), unrenamed()))
 
 			pass()
 
@@ -1305,7 +1305,7 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 // GitHub has reached, so the next pass re-reads it first (ListStalePullRequestHeads).
 func seedUnreadHead(t *testing.T, ctx context.Context, pool *store.Pool, number int) {
 	t.Helper()
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: number, HeadSHA: "cccccccccccccccccccccccccccccccccccccccc",
 		HeadRef: "topic", BaseRef: "main", State: "open",
 	}); err != nil {

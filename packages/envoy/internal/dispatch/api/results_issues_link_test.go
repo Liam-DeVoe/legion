@@ -39,10 +39,7 @@ func TestAnIssuesLinkOfAPullRequestsNumberComparesWithItsHead(t *testing.T) {
 				map[string]string{"key": "ISLK", "name": "Issues links"}, "alice"); response.Code != http.StatusCreated {
 				t.Fatalf("create project ISLK: status=%d body=%s", response.Code, response.Body.String())
 			}
-			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-				map[string]any{"project": "ISLK", "default": true}, "alice"); response.Code != http.StatusOK {
-				t.Fatalf("map acme/widgets to ISLK: status=%d body=%s", response.Code, response.Body.String())
-			}
+			setDefaultRepository(t, handler, "ISLK", "acme/widgets")
 			body := map[string]any{"project": "ISLK", "title": "Linked by number", "spec": "A spec\n", "repo": "acme/widgets"}
 			if tc.external != "" {
 				body["external"] = tc.external

@@ -109,7 +109,7 @@ func TestEveryLineOfAHandedBackDeliveryKeepsTheHandBacksCadence(t *testing.T) {
 
 			natsClient := intakeTestClient(t)
 			intake := newIntake(natsClient, intakePool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 			// This intake's own delay, so 32 hand-backs take a second, not five minutes.
 			intake.redeliverAfter = 20 * time.Millisecond
 			startIntake(t, intake)

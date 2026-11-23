@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -20,6 +21,12 @@ var day = time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 
 func after(hours float64) time.Time {
 	return day.Add(time.Duration(hours * float64(time.Hour)))
+}
+
+// unrenamed is the Attributor of no rename pairs, which Read attributes each merged pull request
+// with: no fixture of this package renames a repository.
+func unrenamed() *delivery.Attributor {
+	return delivery.NewAttributor(refs.Renames{})
 }
 
 // corpus writes the event log, handoffs and observations of one finished child of one root, the
@@ -94,7 +101,7 @@ func corpus(t *testing.T) *store.Store {
 // the report computed from it is the one the rules describe.
 func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 	database := corpus(t)
-	population, err := Read(t.Context(), database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := Read(t.Context(), database.Pool, nil, unrenamed(), "INFRA", after(-2), after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -169,7 +176,7 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 	`, after(-1)); err != nil {
 		t.Fatalf("seed the other root: %v", err)
 	}
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := Read(ctx, database.Pool, nil, unrenamed(), "INFRA", after(-2), after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -210,7 +217,7 @@ func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.
 	exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ('INFRA', 'INFRA-7', $1, '"INFRA-8"'::jsonb, $2)`, legion.FieldTree, after(2))
 
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := Read(ctx, database.Pool, nil, unrenamed(), "INFRA", after(-2), after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -265,7 +272,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	event("INFRA-2", 10, "ask.opened", session("Legion implementer · INFRA-9"), `{"id":"ask-3"}`, after(8))
 	event("INFRA-2", 11, "ask.answered", `{"kind":"user","id":"alice"}`, `{"id":"ask-3"}`, after(9))
 
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := Read(ctx, database.Pool, nil, unrenamed(), "INFRA", after(-2), after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -324,7 +331,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 			t.Errorf("commit INFRA-2's new tree during the read: %v", err)
 		}
 	})
-	population, err := Read(ctx, traced, nil, "INFRA", after(-2), after(24))
+	population, err := Read(ctx, traced, nil, unrenamed(), "INFRA", after(-2), after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -335,7 +342,7 @@ func TestReadTakesTheTimelinesAndTheTreesFromOneSnapshot(t *testing.T) {
 		t.Errorf("the read the commit landed in has INFRA-2's newest tree observation %q and its Tree %q, want INFRA-1 for both, from before the commit", observed, tree)
 	}
 
-	population, err = Read(ctx, traced, nil, "INFRA", after(-2), after(24))
+	population, err = Read(ctx, traced, nil, unrenamed(), "INFRA", after(-2), after(24))
 	if err != nil {
 		t.Fatalf("read the population again: %v", err)
 	}

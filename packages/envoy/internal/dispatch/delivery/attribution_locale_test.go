@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -115,11 +116,11 @@ func TestTheStatementMatchesRepositoriesInEveryLocale(t *testing.T) {
 				t.Fatal(err)
 			}
 			storeStatementRow(t, ctx, pool, statementRow{repo: "istanbul/widgets", number: 9, branch: "main", title: "no key", texts: readTexts("")})
-			wantAnswer(t, ctx, pool, "istanbul/widgets", 9, "IST-9 from external_link")
+			wantAnswer(t, unrenamed(), ctx, pool, "istanbul/widgets", 9, "IST-9 from external_link")
 			if _, err := pool.Exec(ctx, `delete from issue_external_links where issue_key = 'IST-9'`); err != nil {
 				t.Fatal(err)
 			}
-			wantAnswer(t, ctx, pool, "istanbul/widgets", 9, "nobody from none")
+			wantAnswer(t, unrenamed(), ctx, pool, "istanbul/widgets", 9, "nobody from none")
 		})
 	}
 }
@@ -218,7 +219,7 @@ func storeLocaleCorpus(t *testing.T, ctx context.Context, pool *store.Pool, case
 			texts: &statementTexts{body: c.Body, messages: c.Messages}})
 		keys = append(keys, PullRequestKey{Repo: c.Repo, Number: i + 1})
 	}
-	answers, err := PullRequestIssues(ctx, pool, keys)
+	answers, err := unrenamed().PullRequestIssues(ctx, pool, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +422,7 @@ func TestALinkAndACitationMatchByKeyAndByIssueAlikeInEveryLocale(t *testing.T) {
 					}
 					storeStatementRow(t, ctx, pool, statementRow{repo: pair.repo, number: pair.number, branch: "main", title: "no key", texts: readTexts(pair.body)})
 				}
-				statements := attributionStatementsFor(schema)
+				statements := attributionStatementsFor(schema, refs.Renames{})
 				answers[i] = readLinkPairs(t, ctx, pool, statements)
 				for _, pair := range citedPairs {
 					if got := answers[i].byKey[pair.number]; got != pair.answer {
@@ -458,7 +459,7 @@ func TestALinkAndACitationMatchByKeyAndByIssueAlikeInEveryLocale(t *testing.T) {
 				if err := tx.Commit(ctx); err != nil {
 					t.Fatal(err)
 				}
-				copied[i] = answerOf(t, ctx, pool, "İstanbul/x", 23)
+				copied[i] = answerOf(t, unrenamed(), ctx, pool, "İstanbul/x", 23)
 			})
 		}
 	})

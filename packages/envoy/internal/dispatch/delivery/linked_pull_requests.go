@@ -11,7 +11,8 @@ import (
 // of the issue $1 name in a repository the issue does not resolve to: linked_pulls (repo,
 // number, url), one row per link that names a pull request by the one link rule
 // (LinkedPullRequestSQL, linkedPullRequest in Go), the repository lowercased, as refs.ExternalRepo
-// spells a mapping, and under the canonical name it is called today (refs.CanonicalRepoSQL).
+// spells a repository, and under the canonical name it is called today (refs.CanonicalRepoSQL
+// over renames, the pairs the boot read).
 //
 // The record route reads them to say which repositories a result of the issue may name a commit
 // of (LinkedPullRequests, api/results_linked.go's refuseUnknownCommit): an issue whose work spans
@@ -30,9 +31,10 @@ import (
 // here too: the /pull/ and the /issues/ form, the scheme, the host and the path word in any letter
 // case, a number up to 2147483647, and an owner and a name GitHub can have (refs.SplitGitHubRepo).
 // A link the rule refuses names nothing here.
-var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
+func linkedPullRequestTerms(renames refs.Renames) string {
+	return `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
 	linked_pulls as (
-		select ` + refs.CanonicalRepoSQL("link.repo") + ` as repo, link.number, link.url
+		select ` + refs.CanonicalRepoSQL(renames, "link.repo") + ` as repo, link.number, link.url
 		from (
 			select l.url, lower(lp.repo) as repo, lp.number
 			from issue_external_links l cross join lateral ` + LinkedPullRequestSQL("l.url") + ` lp
@@ -40,8 +42,9 @@ var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.Iss
 		) link
 		join issues i on i.key = $1
 		` + refs.IssueRepoJoin + `
-		where not ` + attributionHeld("link.repo") + `
+		where not ` + attributionHeld(renames, "link.repo") + `
 	)`
+}
 
 // LinkedPullRequest is one pull request an issue's external links name in a repository the
 // issue does not resolve to (linkedPullRequestTerms).
@@ -51,15 +54,17 @@ type LinkedPullRequest struct {
 }
 
 // linkedPullRequestsQuery reads linkedPullRequestTerms in the order the links are listed in.
-var linkedPullRequestsQuery = `with recursive ` + linkedPullRequestTerms + `
+func linkedPullRequestsQuery(renames refs.Renames) string {
+	return `with recursive ` + linkedPullRequestTerms(renames) + `
 	select repo, number from linked_pulls order by url`
+}
 
 // LinkedPullRequests is every pull request the external links of issueKey name in a repository
 // the issue does not resolve to, in the order the issue lists its links. The result route reads
 // it to say which repositories a result of the issue may name a commit of (api/results_linked.go,
 // refuseUnknownCommit).
-func LinkedPullRequests(ctx context.Context, q refs.Queryer, issueKey string) ([]LinkedPullRequest, error) {
-	rows, err := q.Query(ctx, linkedPullRequestsQuery, issueKey)
+func (a *Attributor) LinkedPullRequests(ctx context.Context, q refs.Queryer, issueKey string) ([]LinkedPullRequest, error) {
+	rows, err := q.Query(ctx, linkedPullRequestsQuery(a.renames), issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull requests %s links: %w", issueKey, err)
 	}

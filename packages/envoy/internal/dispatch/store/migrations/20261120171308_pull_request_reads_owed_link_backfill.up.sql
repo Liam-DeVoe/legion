@@ -20,20 +20,29 @@
 --     `.git` is trimmed (refs.SplitGitHubRepo), and the number 1 to 2147483647 with no zero before
 --     it. An /issues/ link that names an issue of GitHub owes one read too, which GitHub answers
 --     as no pull request and the reconcile settles (pullRequestAbsent), as for a link write.
---   * The read is owed under the repository's canonical name (refs.CanonicalRepoSQL: the greatest
---     renamed_to of the repo_projects rows of that name in any letter case), or under the link's
---     own name where the canonical name is no name GitHub can have.
---   * A link owes nothing where a head row of its pull request is stored, under the canonical name
---     of the row's repository in any letter case, and nothing where a read of it is owed already
---     in any letter case: such a row is left as it is, where a link write gives it a new revision
---     and time. No read of this release is in flight while the migration runs, and the way back
---     below must leave such a row.
---   * Two links of one pull request, in two letter cases or under two names, owe one read, under
---     the owed name first in byte order, as a link write of both owes it.
+--   * The read is owed under the repository's name as the link and the stored head rows spell it,
+--     compared in any letter case. The migration reads no rename pair: no statement of this
+--     release names repo_projects, which a later change drops, and a migration that named a
+--     dropped table would fail on a database whose drop came first. The boot's rename pass, which
+--     runs after the migrations, rewrites each old name of a pair in the links, the head rows and
+--     the owed rows alike (store.RewriteRenamedRepositories), so an owe written here under an old
+--     name is owed under the new one before the process serves. Where the pass had already
+--     rewritten the links and the head rows at an earlier boot, every name this reads is its
+--     canonical one, and this owes what a link write of this release owes. Where this boot is the
+--     first with the pass, a link and its head row stored under two names of one pair (the link
+--     under the old name and the row under the new one, or the other way round) owe one read,
+--     which the reconcile makes and which writes the head GitHub answers.
+--   * A link owes nothing where a head row of its pull request is stored, under the link's name
+--     in any letter case, and nothing where a read of it is owed already in any letter case: such
+--     a row is left as it is, where a link write gives it a new revision and time. No read of
+--     this release is in flight while the migration runs, and the way back below must leave such
+--     a row.
+--   * Two links of one pull request, in two letter cases, owe one read, under the owed name first
+--     in byte order, as a link write of both owes it.
 --
--- Each link is parsed once (the materialized terms), and the renames and the stored heads are
--- read once each and joined by hash, so the cost grows with the links and the head rows, and not
--- with their product. Its test measures it.
+-- Each link is parsed once (the materialized terms), and the stored heads are read once and joined
+-- by hash, so the cost grows with the links and the head rows, and not with their product. Its
+-- test measures it.
 --
 -- Each new row is a link's owe, as recordLinkedOwe writes it: a failure whose linked_revision is
 -- its revision, a new value of pull_request_reads_owed_revision_seq, so a head row another writer
@@ -49,11 +58,7 @@
 insert into pull_request_reads_owed (repo, number, reason, revision, linked_revision)
 select owed.repo, owed.number, 'failure', owed.revision, owed.revision
 from (
-	with renamed as materialized (
-		select lower(r.repo) as source, max(r.renamed_to) as target
-		from repo_projects r where r.renamed_to is not null
-		group by lower(r.repo)
-	), parsed as materialized (
+	with parsed as materialized (
 		select p.m[1] || '/' || p.m[2] as given, p.m[4] as digits
 		from (
 			select regexp_match(lower(left(l.url, 19)) || substr(l.url, 20),
@@ -68,17 +73,11 @@ from (
 		from parsed p
 		where p.digits::bigint <= 2147483647
 	), named as materialized (
-		select case
-				when coalesce(rn.target, l.given) ~ '^[A-Za-z0-9_-]{1,39}/[A-Za-z0-9._-]{1,100}$'
-					and split_part(coalesce(rn.target, l.given), '/', 2) not in ('.', '..')
-				then coalesce(rn.target, l.given)
-				else l.given
-			end as repo,
-			l.number
-		from linked l left join renamed rn on rn.source = lower(l.given)
+		select l.given as repo, l.number
+		from linked l
 	), held as materialized (
-		select distinct lower(coalesce(rn.target, h.repo)) as repo, h.number
-		from pull_request_heads h left join renamed rn on rn.source = lower(h.repo)
+		select distinct lower(h.repo) as repo, h.number
+		from pull_request_heads h
 	), picked as (
 		select distinct on (lower(n.repo), n.number) n.repo, n.number
 		from named n

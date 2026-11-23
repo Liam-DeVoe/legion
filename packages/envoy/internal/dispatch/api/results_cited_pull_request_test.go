@@ -19,6 +19,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // The pull requests of acme/widgets these cases read: the issue's own, one stacked on its branch,
@@ -50,13 +52,16 @@ type citedPullRequest struct {
 // on its branch (legion/<issue>-snippet-sentinels), and the other issue's #53 (legion/<other>).
 // Both issues carry siblingChecks; the other issue links acme/widgets#linked as Dispatch stores a
 // reference, in both URL forms. Its App is installed on acme/other and acme/old-widgets too, and
-// a case names more pull requests with heads.
+// a case names more pull requests with heads. database and fake are the store and the GitHub the
+// world's server runs on, which a server built later (renamed) shares.
 type citedWorld struct {
-	t       *testing.T
-	handler http.Handler
-	issue   string
-	other   string
-	heads   map[string]citedPullRequest
+	t        *testing.T
+	handler  http.Handler
+	database *store.Store
+	fake     *commitPullsFake
+	issue    string
+	other    string
+	heads    map[string]citedPullRequest
 }
 
 func newCitedWorld(t *testing.T, project, ownBody string, linked int) citedWorld {
@@ -97,7 +102,7 @@ func newCitedWorld(t *testing.T, project, ownBody string, linked int) citedWorld
 			"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}]`,
 			pull.number, body, repo, pull.number, pull.head, sha, repo, pull.base)
 	})
-	return citedWorld{t: t, handler: handler, issue: issue.Key, other: other, heads: heads}
+	return citedWorld{t: t, handler: handler, database: database, fake: fake, issue: issue.Key, other: other, heads: heads}
 }
 
 // holdIn makes Dispatch hold pull request number of repo, headed by sha: an issue of a project of
@@ -110,6 +115,28 @@ func (w citedWorld) holdIn(project, repo string, number int, sha string) string 
 	w.heads[sha] = citedPullRequest{number, "legion/" + holder.Key, "main", ""}
 	w.pass(holder.Key, sha)
 	return holder.Key
+}
+
+// renamed answers the world on a server built after the rename pair oldName to newName is stored:
+// a repo_projects row of project, seeded by SQL as the last release left it, since no route writes
+// a pair. The server runs on a pool of its own to the world's database, with the same App key and
+// GitHub, and reads the pairs once, as it is built (readRenames), as a boot does. Every row the
+// world wrote before stands under the name it was written under.
+func (w citedWorld) renamed(project, oldName, newName string) citedWorld {
+	w.t.Helper()
+	if _, err := w.database.Pool.Exec(context.Background(), `
+		insert into repo_projects (repo, project, created_by, renamed_to)
+		values ($1, $2, '{"kind":"user","id":"alice"}', $3)
+	`, oldName, project, newName); err != nil {
+		w.t.Fatalf("seed the pair %s -> %s: %v", oldName, newName, err)
+	}
+	w.handler, _, _ = newTestServer(w.t, testServerOptions{
+		store:         storetest.SecondProcess(w.t, w.database),
+		renames:       readRenames(w.t, w.database),
+		app:           w.fake.app,
+		githubAPIBase: w.fake.upstream,
+	})
+	return w
 }
 
 // pass records the tester's pass of k1 of key at commit. The record route reads the pull requests
@@ -196,11 +223,11 @@ func TestABodyNamingAPullRequestByNumberLeavesThePullRequestItsBranchsIssue(t *t
 	t.Run("the body names a pull request Dispatch holds under its repository's old name", func(t *testing.T) {
 		world := newCitedWorld(t, "CITERN",
 			fmt.Sprintf("#%d renamed the helper, so this change calls it by its new name.", citedPull), citedPull)
+		// Dispatch holds #53 under acme/old-widgets before any pair names that name, so the row is
+		// stored under it. The pair is seeded after, and the issue's passes and reads go through a
+		// server built after the seed.
 		world.holdIn("CITEOW", "acme/old-widgets", citedPull, citedOldNameSHA)
-		if response := dispatchRequest(t, world.handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/old-widgets",
-			map[string]any{"project": "CITEOW", "renamed_to": "acme/widgets"}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("record acme/old-widgets as renamed to acme/widgets: status=%d body=%s", response.Code, response.Body.String())
-		}
+		world = world.renamed("CITEOW", "acme/old-widgets", "acme/widgets")
 		world.pass(world.issue, citedOwnSHA)
 		world.pass(world.issue, citedTopSHA)
 		world.requireCompared(world.issue,

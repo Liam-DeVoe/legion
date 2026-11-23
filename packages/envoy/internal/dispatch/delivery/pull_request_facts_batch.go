@@ -98,17 +98,17 @@ const factsPage = 100
 // An error ends the read: a failed query, an answer that does not decode, a rate limit of the
 // query or of a REST read, a place not taken, or a failed refresh. The answers of the requests
 // before it stay in the map that comes back with the error.
-func readFactsBatch(
+func (a *Attributor) readFactsBatch(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	installations *passInstallations, token string, refs []PullRequestRef, now time.Time,
 ) (map[PullRequestRef]batchAnswer, error) {
-	return readFactsBatchWithin(ctx, pool, client, installations, token, refs, now, nil)
+	return a.readFactsBatchWithin(ctx, pool, client, installations, token, refs, now, nil)
 }
 
 // readFactsBatchWithin is readFactsBatch, each of whose GraphQL requests, splits included, takes
 // one request of budget first. A request budget does not cover is not sent: the read ends with
 // errFactsBudgetSpent and the answers of the requests before it. A nil budget sends every request.
-func readFactsBatchWithin(
+func (a *Attributor) readFactsBatchWithin(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	installations *passInstallations, token string, refs []PullRequestRef, now time.Time, budget *factsBudget,
 ) (map[PullRequestRef]batchAnswer, error) {
@@ -116,7 +116,7 @@ func readFactsBatchWithin(
 		return nil, fmt.Errorf("a batched read of facts takes at most %d pull requests, not %d", FactsBatchSize, len(refs))
 	}
 	answers := make(map[PullRequestRef]batchAnswer, len(refs))
-	batch := factsRead{pool: pool, client: client, installations: installations, token: token, now: now, budget: budget, answers: answers}
+	batch := factsRead{attributor: a, pool: pool, client: client, installations: installations, token: token, now: now, budget: budget, answers: answers}
 	return answers, batch.query(ctx, refs)
 }
 
@@ -164,6 +164,7 @@ func (p *passInstallations) factsBudget(scope string) *factsBudget {
 // factsRead is one call of readFactsBatch: what each of its requests needs, and the answers it
 // collects.
 type factsRead struct {
+	attributor    *Attributor
 	pool          *store.Pool
 	client        *githubapp.Client
 	installations *passInstallations
@@ -229,7 +230,7 @@ func (f *factsRead) query(ctx context.Context, refs []PullRequestRef) error {
 // stores it (RefreshPullRequestHead). It passes ref.StoredUnder, so the write drops the row under
 // an old name too.
 func (f *factsRead) refresh(ctx context.Context, ref PullRequestRef) error {
-	_, refused, err := RefreshPullRequestHead(ctx, f.pool, f.client, f.installations, ref.StoredUnder, ref.Number, f.now)
+	_, refused, err := f.attributor.RefreshPullRequestHead(ctx, f.pool, f.client, f.installations, ref.StoredUnder, ref.Number, f.now)
 	if err != nil {
 		return fmt.Errorf("read %s/%s#%d, whose facts are above the limit of one answer: %w", ref.Owner, ref.Repo, ref.Number, err)
 	}

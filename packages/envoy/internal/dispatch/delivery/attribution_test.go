@@ -78,7 +78,7 @@ func resolvedKey(t *testing.T, ctx context.Context, pool *store.Pool, facts rule
 		repo: facts.Repo, number: number, branch: facts.HeadRef, title: facts.Title, url: facts.URL, texts: texts,
 	})
 	key := PullRequestKey{Repo: facts.Repo, Number: number}
-	answers, err := PullRequestIssues(ctx, pool, []PullRequestKey{key})
+	answers, err := unrenamed().PullRequestIssues(ctx, pool, []PullRequestKey{key})
 	if err != nil {
 		t.Fatalf("PullRequestIssues(%+v): %v", facts, err)
 	}
@@ -362,7 +362,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 	})
 	noRuns(t, fake)
 
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	first, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where number = 180`))
 	if err != nil {
@@ -375,7 +375,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 		t.Fatalf("#180 after its commits failed: texts row found = %v, messages read = %v; want a texts row with commit_messages null",
 			found, texts.messagesRead)
 	}
-	if answer := answerOf(t, ctx, pool, "acme/widgets", 180); answer != "nobody from none, no facts" {
+	if answer := answerOf(t, unrenamed(), ctx, pool, "acme/widgets", 180); answer != "nobody from none, no facts" {
 		t.Fatalf("#180 after its commits failed answers %q, want %q: no source names an issue yet", answer, "nobody from none, no facts")
 	}
 
@@ -392,7 +392,7 @@ func TestCompletingAPullRequestWhoseCommitsFailLeavesItPartial(t *testing.T) {
 		t.Fatalf("#180 after the commits answer: texts row found = %v, messages read = %v, commit_keys = %q; want read, with [ATTR-181]",
 			found, texts.messagesRead, texts.commit)
 	}
-	if answer := answerOf(t, ctx, pool, "acme/widgets", 180); answer != "ATTR-181 from commit_message" {
+	if answer := answerOf(t, unrenamed(), ctx, pool, "acme/widgets", 180); answer != "ATTR-181 from commit_message" {
 		t.Fatalf("#180 after the commits answer answers %q, want %q", answer, "ATTR-181 from commit_message")
 	}
 }
@@ -426,13 +426,13 @@ func TestReconcileCreditsAPullRequestAnIssueLinksLater(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 	noRuns(t, fake)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	reconcile.runOnce(ctx)
 	day := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	issueOf := func() *string {
 		t.Helper()
-		listed, err := ListPullRequestsInWindow(ctx, pool, day, day.Add(24*time.Hour))
+		listed, err := unrenamed().ListPullRequestsInWindow(ctx, pool, day, day.Add(24*time.Hour))
 		if err != nil {
 			t.Fatalf("ListPullRequestsInWindow over %s: %v", day.Format(time.DateOnly), err)
 		}

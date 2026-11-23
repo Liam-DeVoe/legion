@@ -57,6 +57,9 @@ type Intake struct {
 	// settings is the delivery settings every message is routed by, shared with the job intake
 	// (StartIntakes).
 	settings *SettingsCache
+	// attributor attributes each pull request an envelope reports, keys its head row and owes its
+	// reads, by the rename pairs the process read at boot (StartIntakes).
+	attributor *Attributor
 	// redeliverAfter is how long NATS waits before it delivers again an envelope this intake hands
 	// back (deliver): headWriteRedeliverAfter, which newIntake sets. A field, and not a package
 	// variable, so a test shortens the delay of the one intake it builds and of no other.
@@ -67,10 +70,10 @@ type Intake struct {
 }
 
 // newIntake builds an Intake on natsClient, a connected client StartIntakes opens for it alone,
-// holding its durable and taking it over under a hold and a lease it takes on leases, and routing
-// by settings.
-func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache) *Intake {
-	in := &Intake{pool: pool, github: github, events: broker, settings: settings, redeliverAfter: headWriteRedeliverAfter}
+// holding its durable and taking it over under a hold and a lease it takes on leases, routing by
+// settings, and attributing each pull request by attributor.
+func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, broker *events.Broker, settings *SettingsCache, attributor *Attributor) *Intake {
+	in := &Intake{pool: pool, github: github, events: broker, settings: settings, attributor: attributor, redeliverAfter: headWriteRedeliverAfter}
 	in.heldDurable = newHeldDurable(natsClient, leases, deliveryConsumerConfig, intakeKey, in.deliver)
 	return in
 }
@@ -222,7 +225,7 @@ func (in *Intake) handlePushEnvelope(ctx context.Context, payload map[string]str
 // which is acknowledged as every handled envelope is: the reconcile records at the end of every
 // pass too, so a row this call could not write gets its event within five minutes.
 func (in *Intake) recordDeployed(ctx context.Context, settings DeliverySettings) {
-	written, err := RecordDeployedEvents(ctx, in.pool, settings, in.events)
+	written, err := in.attributor.RecordDeployedEvents(ctx, in.pool, settings, in.events)
 	if err != nil {
 		logging.FromContext(ctx).Error("dispatch delivery: record issue.deployed after an envelope", "error", err)
 	}
@@ -678,7 +681,7 @@ func (in *Intake) oweEnvelopesRead(handling context.Context, raw string) (repo s
 	if err != nil {
 		return repo, number, err
 	}
-	return repo, number, owePullRequestRead(handling, in.pool, repo, number, owedFailure, "")
+	return repo, number, in.attributor.owePullRequestRead(handling, in.pool, repo, number, owedFailure, "")
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,

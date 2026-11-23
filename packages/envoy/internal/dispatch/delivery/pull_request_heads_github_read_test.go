@@ -35,7 +35,7 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 			fake := newFakeGitHub(t)
 			gh := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil)
+			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 			now := time.Now().UTC().Truncate(time.Second)
 			eventAt := now.Add(-time.Minute)
 			if legacyFuture {
@@ -45,7 +45,7 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 			const actual = "2222222222222222222222222222222222222222"
 			branch, body := "legion/"+issue, "Dispatch: "+issue
 			// A row of an older release, which stored its verdict: the branch's issue.
-			err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+			err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 				Repo: "acme/widgets", Number: 98767, HeadSHA: stale,
 				HeadRef: branch, BaseRef: "main", State: "open",
 				EventAt: &eventAt, CheckedAt: &now,
@@ -60,14 +60,14 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			afterEvent := readHead(t, ctx, pool, "acme/widgets", 98767)
+			afterEvent := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 98767)
 			eventReads := gh.reads.Load()
-			_, _, err = RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", 98767, time.Now())
+			_, _, err = unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", 98767, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
-			afterRefresh := readHead(t, ctx, pool, "acme/widgets", 98767)
-			staleBasis, err := HeadAttributedTo(ctx, pool, issue, stale)
+			afterRefresh := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 98767)
+			staleBasis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, stale)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -171,7 +171,7 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil)
+			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 			const (
 				real   = "6969696969696969696969696969696969696969"
 				forged = "6060606060606060606060606060606060606060"
@@ -182,7 +182,7 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 			if _, err := intake.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", 98769, "opened", real, branch, body, opened)); err != nil {
 				t.Fatalf("handle GitHub's own opened envelope: %v", err)
 			}
-			if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
+			if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
 				t.Fatalf("HeadAttributedTo(%s, GitHub's head) after the opening = %v, %v; want true", issue, attributed, err)
 			}
 
@@ -201,7 +201,7 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 			if owed, held := readOwedRow(t, ctx, pool, "acme/widgets", 98769); !held || owed.reason != owedFailure {
 				t.Fatalf("after the release before's write #98769 is owed %+v (held %v), want a failure: the fixture is not the row under test", owed, held)
 			}
-			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
+			if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
 				t.Fatalf("HeadAttributedTo(%s, the forged head) while its read is owed = %v, %v; want false: no head stands while a read is owed", issue, attributed, err)
 			}
 
@@ -217,17 +217,17 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 					t.Errorf("the labeled event read the pull request from GitHub %d times, want once: a time the release before took from an envelope stopped the read", reads)
 				}
 			case "the reconcile's next pass":
-				NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+				NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 				if reads := github.reads.Load() - readsBefore; reads != 1 {
 					t.Errorf("the pass read the pull request from GitHub over REST %d times, want once: the read that the release before's write owes", reads)
 				}
 			}
 
-			got := readHead(t, ctx, pool, "acme/widgets", 98769)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 98769)
 			if got.HeadSHA != real || got.State != "open" {
 				t.Errorf("#98769 after %s = head %s, state %s; want GitHub's %s, open", repair, got.HeadSHA, got.State, real)
 			}
-			if attributed, err := HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
+			if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, forged); err != nil || attributed {
 				t.Errorf("HeadAttributedTo(%s, the forged head) after %s = %v, %v; want false: a head GitHub never sent stands", issue, repair, attributed, err)
 			}
 			// The repair's own write lands GitHub's answer over a row that no read wrote and whose
@@ -237,14 +237,14 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 			if _, held := readOwedRow(t, ctx, pool, "acme/widgets", 98769); !held {
 				t.Errorf("after %s no read of #98769 is owed, want the one that the repair's own write owes", repair)
 			}
-			if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || attributed {
+			if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, real); err != nil || attributed {
 				t.Errorf("HeadAttributedTo(%s, GitHub's head) after %s = %v, %v; want false while its read is owed", issue, repair, attributed, err)
 			}
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 			if owed, held := readOwedRow(t, ctx, pool, "acme/widgets", 98769); held {
 				t.Errorf("after %s and one more pass #98769 is owed %+v, want none: that pass read it", repair, owed)
 			}
-			if attributed, err := HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
+			if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, real); err != nil || !attributed {
 				t.Errorf("HeadAttributedTo(%s, GitHub's head) after %s and one more pass = %v, %v; want true", issue, repair, attributed, err)
 			}
 		})

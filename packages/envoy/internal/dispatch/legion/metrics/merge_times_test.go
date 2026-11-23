@@ -120,7 +120,7 @@ func TestTheMergeTimesReadEachPullRequestsIssueFromTheStatement(t *testing.T) {
 	storeMergedPull(t, ctx, pool, mergedPull{number: 14, stored: new("ACME-4"), title: "A fourth change", mergedAt: after(7)})
 	storeMergedPull(t, ctx, pool, mergedPull{number: 15, stored: new("ACME-4"), title: "A gone change", mergedAt: after(3), unfetchable: true})
 
-	population, err := Read(ctx, pool, nil, "ACME", after(-2), after(24))
+	population, err := Read(ctx, pool, nil, unrenamed(), "ACME", after(-2), after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}

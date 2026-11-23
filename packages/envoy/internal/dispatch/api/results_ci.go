@@ -123,7 +123,7 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 	if err != nil {
 		return err
 	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+	head, found, err := s.deps.Attributor.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func (s *server) ciHeadNotKnown(
 	if !answered || repo == nil || s.deps.GitHub == nil {
 		return nil, nil
 	}
-	pulls, err := delivery.PullRequestsNotKnown(ctx, s.deps.Store.Pool, *repo)
+	pulls, err := s.deps.Attributor.PullRequestsNotKnown(ctx, s.deps.Store.Pool, *repo)
 	if err != nil {
 		return nil, err
 	}

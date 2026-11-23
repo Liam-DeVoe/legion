@@ -46,7 +46,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 	github.set("acme/widgets", number, "open", head, branch, "", at)
-	if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
+	if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
 	reading, answer := make(chan struct{}), make(chan struct{})
@@ -55,7 +55,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 		<-answer
 	}
 	settles := &statementWaitTracer{match: "delete from pull_request_reads_owed"}
-	intake := newIntake(nil, storetest.Traced(t, pool, settles, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil))
+	intake := newIntake(nil, storetest.Traced(t, pool, settles, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 	payload, err := json.Marshal(prEnvelope("acme/widgets", number, "synchronize", head, branch, "", at))
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			github.set("acme/widgets", number, "open", older, "feature/x", "", second)
 			client := fake.newTestClient()
-			if _, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil,
+			if _, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", number, "opened", older, "feature/x", "", second)); err != nil {
 				t.Fatalf("store head A: %v", err)
 			}
@@ -136,7 +136,7 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			}
 			natsClient := intakeTestClient(t)
 			writes := &statementWaitTracer{match: "insert into pull_request_heads"}
-			intake := newIntake(natsClient, storetest.Traced(t, pool, writes, nil), deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+			intake := newIntake(natsClient, storetest.Traced(t, pool, writes, nil), deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 			intake.redeliverAfter = testRedeliverAfter
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
@@ -173,7 +173,7 @@ func TestTheHeadWriteOfTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 				release()
 			}
 			awaitAcknowledged(t, natsClient)
-			got := readHead(t, ctx, pool, "acme/widgets", number)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 			t.Logf("locked=%v head=%.12s owed=%d took=%s", locked, got.HeadSHA, owedCount(t, ctx, pool, "acme/widgets", number), time.Since(published).Round(time.Millisecond))
 			if got.HeadSHA != newer {
 				t.Errorf("#%d holds %.12s once its envelope is acknowledged, want GitHub's B, %.12s", number, got.HeadSHA, newer)
@@ -215,7 +215,7 @@ func TestTheReadsPlaceAtTheIntakeWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			github.set("acme/widgets", number, "open", head, branch, "", at)
 			places := &statementWaitTracer{match: "nextval('pull_request_reads_owed_revision_seq')"}
-			intake := newIntake(nil, storetest.Traced(t, pool, places, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil))
+			intake := newIntake(nil, storetest.Traced(t, pool, places, nil), nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 			payload, err := json.Marshal(prEnvelope("acme/widgets", number, "synchronize", head, branch, "", at))
 			if err != nil {
 				t.Fatal(err)

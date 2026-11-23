@@ -392,7 +392,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	}
 	independent := []func(ctx context.Context) error{
 		func(ctx context.Context) (err error) {
-			pop.prs, err = delivery.ListPullRequestsInWindow(ctx, pool, from, to)
+			pop.prs, err = s.deps.Attributor.ListPullRequestsInWindow(ctx, pool, from, to)
 			return err
 		},
 		// Every deploy run on main GitHub created at or after `from`: the containment
@@ -429,7 +429,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		// The deploy repository's pull requests still waiting at `from`, so the waiting line
 		// starts the window at their count rather than at zero.
 		independent = append(independent, func(ctx context.Context) (err error) {
-			pop.waiting, err = delivery.ListPullRequestsWaitingAt(ctx, pool, settings.DeployRepo, settings.Production(), from)
+			pop.waiting, err = s.deps.Attributor.ListPullRequestsWaitingAt(ctx, pool, settings.DeployRepo, settings.Production(), from)
 			return err
 		})
 	}

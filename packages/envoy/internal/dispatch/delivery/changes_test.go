@@ -185,7 +185,7 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 		State: "merged", Title: complete.Title, URL: complete.URL, EventAt: &merged,
 		Texts: &PullRequestTexts{HeadRepo: "acme/widgets", BaseRef: "main", Title: complete.Title, CommitMessages: []string{}, MessagesRead: true},
 	}
-	if err := UpsertPullRequestHead(ctx, pool, results); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, results); err != nil {
 		t.Fatalf("seed the results row of #8: %v", err)
 	}
 	run := changeTestRun(500, DeliveryRunKindDeploy, merged, merged.Add(time.Minute))
@@ -211,7 +211,7 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 		}
 	}
 	for range 2 {
-		if _, err := SyncAttributions(ctx, pool); err != nil {
+		if _, err := unrenamed().SyncAttributions(ctx, pool); err != nil {
 			t.Fatalf("SyncAttributions: %v", err)
 		}
 	}

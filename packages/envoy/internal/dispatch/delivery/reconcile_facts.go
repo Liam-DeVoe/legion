@@ -106,12 +106,12 @@ func (r *Reconcile) readFactsOf(
 				for i, target := range chunk {
 					refs[i] = target.ref
 				}
-				answers, err := readFactsBatchWithin(ctx, r.pool, r.github, installations, g.token, refs, now, budget)
+				answers, err := r.attributor.readFactsBatchWithin(ctx, r.pool, r.github, installations, g.token, refs, now, budget)
 				for _, target := range chunk {
 					answer, found := answers[target.ref]
 					switch {
 					case found && answer.Head != nil:
-						_, written := upsertHeadUnderCanonicalName(ctx, r.pool, *answer.Head, target.ref.StoredUnder)
+						_, written := r.attributor.upsertHeadUnderCanonicalName(ctx, r.pool, *answer.Head, target.ref.StoredUnder)
 						switch {
 						case errors.Is(written, errNoRowHolds):
 							fail(settle(ctx, target, factsNoRowHolds))
@@ -179,7 +179,7 @@ func (r *Reconcile) stampFactsRefused(ctx context.Context, target factsTarget) e
 func (r *Reconcile) stampResultsRows(ctx context.Context, ref PullRequestRef, column string) error {
 	canonical := ref.Owner + "/" + ref.Repo
 	if _, err := r.pool.Exec(ctx, `update pull_request_heads set `+column+` = clock_timestamp()
-		where number = $2 and lower(`+refs.CanonicalRepoSQL("repo")+`) = lower($1)`, canonical, ref.Number); err != nil {
+		where number = $2 and lower(`+refs.CanonicalRepoSQL(r.attributor.renames, "repo")+`) = lower($1)`, canonical, ref.Number); err != nil {
 		return fmt.Errorf("record %s of %s#%d: %w", column, canonical, ref.Number, err)
 	}
 	return nil
@@ -263,7 +263,7 @@ func (r *Reconcile) readFactsLine(ctx context.Context, installations *passInstal
 		targets[i] = entry.target
 	}
 	readErr := r.readFactsOf(ctx, installations, limited, targets, time.Now(), true, r.settleFacts)
-	counts, err := ReadAttributionCounts(ctx, r.pool)
+	counts, err := r.attributor.ReadAttributionCounts(ctx, r.pool)
 	if err != nil {
 		return line, errors.Join(readErr, err)
 	}
@@ -278,7 +278,7 @@ func (r *Reconcile) settleFacts(ctx context.Context, target factsTarget, outcome
 		return nil
 	case factsAbsent:
 		if target.timeline != "" {
-			if err := MarkPullRequestUnfetchable(ctx, r.pool, target.timeline, target.ref.Number, "GitHub proved that no such pull request exists"); err != nil {
+			if err := r.attributor.MarkPullRequestUnfetchable(ctx, r.pool, target.timeline, target.ref.Number, "GitHub proved that no such pull request exists"); err != nil {
 				return fmt.Errorf("mark %s#%d unfetchable: %w", target.timeline, target.ref.Number, err)
 			}
 			return nil
@@ -319,7 +319,7 @@ func compareFactsEntries(a, b factsEntry) int {
 // factsEntries reads the entries of the facts line, each under its canonical name, with what the
 // line orders it by (attributionStatements.factsLine).
 func (r *Reconcile) factsEntries(ctx context.Context) ([]factsEntry, error) {
-	statements, err := attribution()
+	statements, err := r.attributor.attribution()
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +369,7 @@ func (r *Reconcile) markLikelyWrong(ctx context.Context, entries []factsEntry) e
 	if len(repos) == 0 {
 		return nil
 	}
-	statements, err := attribution()
+	statements, err := r.attributor.attribution()
 	if err != nil {
 		return err
 	}

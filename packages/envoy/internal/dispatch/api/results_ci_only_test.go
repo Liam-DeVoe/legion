@@ -177,7 +177,7 @@ func TestACheckOnlyCIProvesComparesWithTheHeadOfItsPullRequestWithNoResultRecord
 		since := time.Now()
 		go func() {
 			defer close(done)
-			delivery.NewReconcile(world.database.Pool, world.served.deps.GitHub, world.served.deps.Events).
+			delivery.NewReconcile(world.database.Pool, world.served.deps.GitHub, world.served.deps.Events, world.served.deps.Attributor).
 				FirstPassAtStart().Run(ctx, leases)
 		}()
 		t.Cleanup(func() {
@@ -208,7 +208,7 @@ func TestACheckOnlyCIProvesComparesWithTheHeadOfItsPullRequestWithNoResultRecord
 		ctx, cancel := context.WithCancel(t.Context())
 		stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 			return bus.Connect([]string{natsURL}, bus.WithName(name))
-		}, world.database.Pool, leases, world.served.deps.GitHub, world.served.deps.Events, nil, nil)
+		}, world.database.Pool, leases, world.served.deps.GitHub, world.served.deps.Events, nil, nil, world.served.deps.Attributor)
 		if err != nil {
 			cancel()
 			t.Fatalf("start the intakes: %v", err)

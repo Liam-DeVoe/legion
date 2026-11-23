@@ -15,16 +15,18 @@ import (
 
 // The reads owed in one repository, which a read-through takes before its list read
 // (owedReadsIn), are the rows owed under each name whose canonical name is the repository's: the
-// name itself in any letter case and each name renamed to it (refs.NamesSQL). oldco/widgets is
-// renamed to acme/widgets; #1 is owed under acme/widgets, #2 under Acme/Widgets, #3 under
-// oldco/widgets and #4 under other/widgets. A read of acme/widgets takes #1, #2 and #3. A read of
-// oldco/widgets takes none: no repository is called that today, so nothing GitHub answers for it
-// settles a row. Where the names were the given name and the names renamed to it, with no test of
-// the given name's own canonical name, the read of oldco/widgets took #3.
+// name itself in any letter case and each name renamed to it (refs.NamesSQL), over the pairs the
+// boot read. oldco/widgets is renamed to acme/widgets; #1 is owed under acme/widgets, #2 under
+// Acme/Widgets, #3 under oldco/widgets and #4 under other/widgets. A read of acme/widgets takes
+// #1, #2 and #3. A read of oldco/widgets takes none: no repository is called that today, so
+// nothing GitHub answers for it settles a row. Where the names were the given name and the names
+// renamed to it, with no test of the given name's own canonical name, the read of oldco/widgets
+// took #3.
 func TestTheReadsOwedInARepositoryAreTheRowsOfItsNames(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
 	renameOldcoWidgets(t, ctx, pool)
+	attributor := NewAttributor(renamesOf(t, ctx, pool))
 	for number, repo := range map[int]string{1: "acme/widgets", 2: "Acme/Widgets", 3: "oldco/widgets", 4: "other/widgets"} {
 		if _, err := pool.Exec(ctx, `insert into pull_request_reads_owed (repo, number, reason, revision)
 			values ($1, $2, 'failure', nextval('pull_request_reads_owed_revision_seq'))`, repo, number); err != nil {
@@ -33,7 +35,7 @@ func TestTheReadsOwedInARepositoryAreTheRowsOfItsNames(t *testing.T) {
 	}
 	read := func(repo string) string {
 		t.Helper()
-		owed := owedReadsIn(ctx, pool, repo)
+		owed := attributor.owedReadsIn(ctx, pool, repo)
 		var listed []string
 		for number, rows := range owed {
 			for _, row := range rows {
@@ -70,7 +72,7 @@ func TestTheIntakesReadSettlesTheReadALinkOwedInAnotherCase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := OweLinkedPullRequestReads(ctx, tx, []string{"https://github.com/" + linked + "/pull/" + strconv.Itoa(number)}); err != nil {
+			if err := unrenamed().OweLinkedPullRequestReads(ctx, tx, []string{"https://github.com/" + linked + "/pull/" + strconv.Itoa(number)}); err != nil {
 				t.Fatalf("owe the read of the link to %s#%d: %v", linked, number, err)
 			}
 			if err := tx.Commit(ctx); err != nil {
@@ -91,7 +93,7 @@ func TestTheIntakesReadSettlesTheReadALinkOwedInAnotherCase(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "Acme/Widgets")
 			at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 			github.set("Acme/Widgets", number, "open", head, branch, "", at)
-			intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil))
+			intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, newSettingsCache(pool, nil), unrenamed())
 			payload, err := json.Marshal(prEnvelope("Acme/Widgets", number, "synchronize", head, branch, "", at))
 			if err != nil {
 				t.Fatal(err)

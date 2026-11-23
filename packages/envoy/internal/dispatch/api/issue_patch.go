@@ -37,20 +37,21 @@ const linkedPullRequestLockSpace = "dispatch-issue-external-link"
 // linkFormsSQL is every link, lowercased, that holds what link holds, link being an expression of
 // one URL: where link names a pull request (delivery.LinkedPullRequestSQL, the link write's rule),
 // each link of that pull request, in its /pull/ and its /issues/ form under each name whose
-// canonical name is its repository's (delivery.PullRequestLinksSQL), which is what the statement
-// reads as that pull request; and else link itself, lowercased, a URL in any letter case. The
-// link check of a write and of a create compares other issues' links with it under lower(), which
-// issue_external_links_url_lower serves with one probe a form.
-func linkFormsSQL(link string) string {
-	return `coalesce((select ` + delivery.PullRequestLinksSQL("lp.repo", "lp.number") + ` from ` +
+// canonical name is its repository's by renames, the pairs the boot read
+// (delivery.PullRequestLinksSQL), which is what the statement reads as that pull request; and else
+// link itself, lowercased, a URL in any letter case. The link check of a write and of a create
+// compares other issues' links with it under lower(), which issue_external_links_url_lower serves
+// with one probe a form.
+func linkFormsSQL(renames refs.Renames, link string) string {
+	return `coalesce((select ` + delivery.PullRequestLinksSQL(renames, "lp.repo", "lp.number") + ` from ` +
 		delivery.LinkedPullRequestSQL(link) + ` lp), array[lower(` + link + `)])`
 }
 
 // linkLockFormSQL is the one text every link that holds what link holds reads as (linkFormsSQL):
-// for a link of a pull request, its /pull/ URL under the canonical name of its repository,
-// lowercased, and for any other URL, the URL lowercased.
-func linkLockFormSQL(link string) string {
-	return `coalesce((select lower('https://github.com/' || ` + refs.CanonicalRepoSQL("lp.repo") + ` || '/pull/' || lp.number) from ` +
+// for a link of a pull request, its /pull/ URL under the canonical name of its repository by
+// renames, lowercased, and for any other URL, the URL lowercased.
+func linkLockFormSQL(renames refs.Renames, link string) string {
+	return `coalesce((select lower('https://github.com/' || ` + refs.CanonicalRepoSQL(renames, "lp.repo") + ` || '/pull/' || lp.number) from ` +
 		delivery.LinkedPullRequestSQL(link) + ` lp), lower(` + link + `))`
 }
 
@@ -64,13 +65,13 @@ func linkLockFormSQL(link string) string {
 // the same pull requests take their locks in one order and cannot wait on each other. A URL that
 // names no pull request takes a lock of its own text in lower case, which costs one lock and holds
 // nothing else back. Two forms whose hashes meet only make one write wait for the other.
-func lockLinkedPullRequests(ctx context.Context, tx pgx.Tx, links []model.ExternalLink) error {
+func lockLinkedPullRequests(ctx context.Context, tx pgx.Tx, renames refs.Renames, links []model.ExternalLink) error {
 	urls := make([]string, 0, len(links))
 	for _, link := range links {
 		urls = append(urls, link.URL)
 	}
 	rows, err := tx.Query(ctx, `
-		select distinct `+linkLockFormSQL("u.url")+` collate "C" as form
+		select distinct `+linkLockFormSQL(renames, "u.url")+` collate "C" as form
 		from unnest($1::text[]) u(url) order by form`, urls)
 	if err != nil {
 		return fmt.Errorf("read the pull requests the links name: %w", err)
@@ -229,10 +230,20 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	repo, repoProvided, err := parseIssueRepo(input.Repo)
+	repo, repoProvided, err := parseIssueRepo(input.Repo, "INVALID_ISSUE")
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	repo = s.renamedRepo(repo)
+	// Each link URL is stored under its repository's new name where a rename pair renames it
+	// away (refs.Renames.CanonicalURL), as every write of a stored URL is. It is rewritten here,
+	// before the closed-issue gate compares the links with the stored ones, so a link resent
+	// under the old name is the link the issue already has.
+	if input.ExternalLinks != nil {
+		for i := range *input.ExternalLinks {
+			(*input.ExternalLinks)[i].URL = s.deps.Renames.CanonicalURL((*input.ExternalLinks)[i].URL)
+		}
 	}
 
 	key := r.PathValue("key")
@@ -555,7 +566,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// /issues/N of one pull request on two issues, could each find nothing and both store
 		// their link. Each write takes the lock of each pull request it links first, in one order,
 		// so the second waits for the first to commit and its check then reads the first's row.
-		if err := lockLinkedPullRequests(r.Context(), tx, *input.ExternalLinks); err != nil {
+		if err := lockLinkedPullRequests(r.Context(), tx, s.deps.Renames, *input.ExternalLinks); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -589,7 +600,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			// once stored keeps its own. The lesser key in byte order is named, so the answer turns
 			// on no row order.
 			var owner string
-			forms := linkFormsSQL("$1::text")
+			forms := linkFormsSQL(s.deps.Renames, "$1::text")
 			err := tx.QueryRow(r.Context(), `
 				select l.issue_key from issue_external_links l
 				where lower(l.url) = any(`+forms+`) and l.issue_key <> $2
@@ -616,7 +627,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// links owes a read of GitHub, in any repository, where no head row of it is stored. The
 		// next reconcile pass reads it and stores its head (R5 of the results lookup,
 		// delivery.OweLinkedPullRequestReads).
-		if err := delivery.OweLinkedPullRequestReads(r.Context(), tx, addedLinks(heldBefore, *input.ExternalLinks)); err != nil {
+		if err := s.deps.Attributor.OweLinkedPullRequestReads(r.Context(), tx, addedLinks(heldBefore, *input.ExternalLinks)); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

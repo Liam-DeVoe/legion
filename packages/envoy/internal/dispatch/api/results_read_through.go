@@ -75,7 +75,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	if !claimed {
 		return
 	}
-	written, atHead, err := delivery.ReadThroughCommitPulls(
+	written, atHead, err := c.server.deps.Attributor.ReadThroughCommitPulls(
 		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, result.CommitSHA, now)
 	if err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a result's commit",
@@ -100,16 +100,13 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 
 // readThroughRepository is the repository readThroughHead reads a result's commit through, and
 // whether that read can be made at all, by whose the commit is taken to be (commitRepositoryOf):
-// a linked repository, where the read of its canonical name answered and the App can read it
-// (commitRepository.readable, the one answer commitStands decides a `before_merge` result by as
-// well); and else the repository the check's issue resolves to, where the App answered that
-// repository's default branch, which also answers false for an issue resolving to no repository
-// and for a resolve that did not answer, the memo commitStands reads next.
+// a linked repository, where the App can read it (commitRepository.readable, the one answer
+// commitStands decides a `before_merge` result by as well); and else the repository the check's
+// issue resolves to, where the App answered that repository's default branch, which also answers
+// false for an issue resolving to no repository and for a resolve that did not answer, the memo
+// commitStands reads next.
 func (c *comparisonReader) readThroughRepository(ctx context.Context, result model.CheckResult) (string, bool) {
-	switch owner := c.commitRepositoryOf(ctx, result.CheckIssueKey, result.CommitRepo); {
-	case owner.unread:
-		return "", false
-	case owner.linked != "":
+	if owner := c.commitRepositoryOf(ctx, result.CheckIssueKey, result.CommitRepo); owner.linked != "" {
 		return owner.linked, owner.readable
 	}
 	if _, readable := c.defaultBranchOf(ctx, result.CheckIssueKey); !readable {

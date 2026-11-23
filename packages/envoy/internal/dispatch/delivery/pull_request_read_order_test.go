@@ -32,14 +32,14 @@ func TestAStoredReadStartAheadOfTheReadersClocksKeepsNoOlderHeadPastOnePass(t *t
 	stored := PullRequestHead{Repo: "acme/widgets", Number: number,
 		HeadSHA: older, HeadRef: "feature/x", BaseRef: "main", State: "open",
 		EventAt: &second, CheckedAt: &stale, GitHubReadAt: &ahead}
-	if err := UpsertPullRequestHead(ctx, pool, readAheadOfTheOthers(t, ctx, pool, stored)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, readAheadOfTheOthers(t, ctx, pool, stored)); err != nil {
 		t.Fatal(err)
 	}
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	github.set("acme/widgets", number, "open", newer, "feature/x", "", second)
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
-	got := readHead(t, ctx, pool, "acme/widgets", number)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
+	got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 	t.Logf("after one pass: head=%.12s owed=%d github_reads=%d", got.HeadSHA, owedCount(t, ctx, pool, "acme/widgets", number), github.reads.Load())
 	if got.HeadSHA != newer {
 		t.Errorf("after one reconcile pass the row holds %.12s, want GitHub's %.12s: a stored read start an hour ahead of the readers' clocks keeps the older head of second %s",
@@ -67,7 +67,7 @@ func TestAPlaceFromTheSequenceLetsTheNextReadReplaceAnOlderHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	place := read.order
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 		HeadSHA: older, HeadRef: "feature/x", BaseRef: "main", State: "open",
 		EventAt: &second, CheckedAt: &stale, GitHubReadAt: &ahead, GitHubReadOrder: &place}); err != nil {
 		t.Fatal(err)
@@ -75,8 +75,8 @@ func TestAPlaceFromTheSequenceLetsTheNextReadReplaceAnOlderHead(t *testing.T) {
 	fake := newFakeGitHub(t)
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	github.set("acme/widgets", number, "open", newer, "feature/x", "", second)
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
-	got := readHead(t, ctx, pool, "acme/widgets", number)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
+	got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 	t.Logf("stored_place=%d head=%.1s github_reads=%d", place, got.HeadSHA, github.reads.Load())
 	if got.HeadSHA != newer {
 		t.Errorf("OLDER_HEAD_KEPT after one pass: %.1s", got.HeadSHA)
@@ -117,7 +117,7 @@ func TestTwoReplicasWhoseClocksDifferOrderTheirReadsAsTheReadsBegan(t *testing.T
 	}
 	writeAnswer(t, ctx, pool, number, b, second, y)
 	writeAnswer(t, ctx, pool, number, a, second, x)
-	got := readHead(t, ctx, pool, "acme/widgets", number)
+	got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 	owed := owedCount(t, ctx, pool, "acme/widgets", number)
 	t.Logf("head=%.12s owed=%d x_clock_ahead_by=10s", got.HeadSHA, owed)
 	if got.HeadSHA != b {
@@ -157,7 +157,7 @@ func TestAnOlderAnswerThatLandsAfterANewerOneDoesNotReplaceItsHead(t *testing.T)
 	}
 	write := func(head, state string, updated time.Time, read readStart) {
 		t.Helper()
-		if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: repo, Number: number,
+		if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: repo, Number: number,
 			HeadSHA: head, HeadRef: "feature/x", BaseRef: "main", State: state, Title: "A change",
 			URL: "https://github.com/acme/widgets/pull/7704", EventAt: &updated,
 			GitHubReadAt: &read.at, GitHubReadOrder: &read.order}); err != nil {
@@ -166,10 +166,10 @@ func TestAnOlderAnswerThatLandsAfterANewerOneDoesNotReplaceItsHead(t *testing.T)
 	}
 	write(headB, "open", newer, late)
 	write(headA, "closed", older, early)
-	afterWrites := readHead(t, ctx, pool, repo, number)
+	afterWrites := readHead(t, unrenamed(), ctx, pool, repo, number)
 	owed := owedCount(t, ctx, pool, repo, number)
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
-	afterPass := readHead(t, ctx, pool, repo, number)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
+	afterPass := readHead(t, unrenamed(), ctx, pool, repo, number)
 	t.Logf("after_writes=%s@%.1s owed=%d after_pass=%s@%.1s", afterWrites.State, afterWrites.HeadSHA, owed, afterPass.State, afterPass.HeadSHA)
 	if afterWrites.HeadSHA != headB && owed == 0 {
 		t.Errorf("the older answer replaced the newer head: the row is %s at %.1s with no read owed, want open at B or a read owed", afterWrites.State, afterWrites.HeadSHA)
@@ -204,7 +204,7 @@ func TestEveryLandingOrderOfAnswersOfOneSecondKeepsTheAnswerOfTheLastRead(t *tes
 			for _, writer := range order {
 				writeAnswer(t, ctx, pool, number, heads[pattern[writer]], second, reads[writer])
 			}
-			got := readHead(t, ctx, pool, "acme/widgets", number)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 			owed := owedCount(t, ctx, pool, "acme/widgets", number)
 			differ := strings.Count(pattern, pattern[:1]) != len(pattern)
 			if want := heads[pattern[len(pattern)-1]]; got.HeadSHA != want || (owed > 0) != differ {
@@ -224,7 +224,7 @@ func TestEveryLandingOrderOfAnswersOfOneSecondKeepsTheAnswerOfTheLastRead(t *tes
 func writeAnswer(t *testing.T, ctx context.Context, pool *store.Pool, number int, head string, second time.Time, read readStart) {
 	t.Helper()
 	now := time.Now()
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 		HeadSHA: head, HeadRef: "feature/x", BaseRef: "main", State: "open",
 		EventAt: &second, CheckedAt: &now, GitHubReadAt: &read.at, GitHubReadOrder: &read.order}); err != nil {
 		t.Fatalf("write #%d at %.1s: %v", number, head, err)
@@ -283,7 +283,7 @@ func TestAReadWhosePlaceCannotBeTakenDoesNotStartAndIsOwed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	newIntake(nil, pool, nil, client, nil, newSettingsCache(pool, nil)).deliver(&intakeDelivery{handling: ctx}, intakeMessage{
+	newIntake(nil, pool, nil, client, nil, newSettingsCache(pool, nil), unrenamed()).deliver(&intakeDelivery{handling: ctx}, intakeMessage{
 		msg:      &natsgo.Msg{Subject: "notifications.github.acme.widgets.pr." + strconv.Itoa(number)},
 		envelope: &contracts.Envelope{Payload: string(payload)},
 	})
@@ -295,8 +295,8 @@ func TestAReadWhosePlaceCannotBeTakenDoesNotStartAndIsOwed(t *testing.T) {
 		}
 	}
 	restore()
-	NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-	attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+	NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+	attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 	if err != nil {
 		t.Fatal(err)
 	}

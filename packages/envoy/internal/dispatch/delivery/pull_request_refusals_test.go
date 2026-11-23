@@ -43,7 +43,7 @@ func TestAReadRefusedAfterTheRepositoryLeftTheInstallationStaysOwed(t *testing.T
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	github.set("acme/widgets", real, "open", head, branch, body, time.Now().UTC().Add(-time.Minute).Truncate(time.Second))
 	for _, number := range []int{absent, real} {
-		if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
+		if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", number, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -66,14 +66,14 @@ func TestAReadRefusedAfterTheRepositoryLeftTheInstallationStaysOwed(t *testing.T
 	})}
 	github.mu.Unlock()
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	absentOwed, realOwed := owedCount(t, ctx, pool, "acme/widgets", absent), owedCount(t, ctx, pool, "acme/widgets", real)
 	github.mu.Lock()
 	github.hidden = false
 	github.mu.Unlock()
 	reconcile.runOnce(ctx)
-	basis, err := HeadAttributedTo(ctx, pool, issue, head)
+	basis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,11 +109,11 @@ func TestARepositoryWithNoInstallationCostsAPassOneLookup(t *testing.T) {
 			// installation lookup of ghost/nowhere with 404.
 			refusedAs := map[string]string{"acme/widgets": model.RefusedAsPullRequestNotFound, "ghost/nowhere": model.RefusedAsAppNotInstalled}[repo]
 			for n := 1; n <= rows; n++ {
-				if err := owePullRequestRead(ctx, pool, repo, n, owedRefusal, refusedAs); err != nil {
+				if err := unrenamed().owePullRequestRead(ctx, pool, repo, n, owedRefusal, refusedAs); err != nil {
 					t.Fatal(err)
 				}
 			}
-			reconcile := NewReconcile(pool, client, events.NewBroker())
+			reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 			for pass := 1; pass <= 3; pass++ {
 				lookups, pulls, asked := fake.lookupsOf(repo), github.reads.Load(), github.absenceQueries.Load()
 				reconcile.runOnce(ctx)
@@ -181,7 +181,7 @@ func TestAPassAsksAtMostItsAbsenceQueriesAndTheNextPassAsksAboutTheRest(t *testi
 	github := serveGitHubPulls(t, fake, repo)
 	noRuns(t, fake)
 	for n := 1; n <= RefusedReadsPerPass; n++ {
-		if err := owePullRequestRead(ctx, pool, repo, 1000+n, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
+		if err := unrenamed().owePullRequestRead(ctx, pool, repo, 1000+n, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -195,7 +195,7 @@ func TestAPassAsksAtMostItsAbsenceQueriesAndTheNextPassAsksAboutTheRest(t *testi
 			t.Fatalf("seed partial pull request #%d: %v", number, err)
 		}
 	}
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	for i, want := range []struct{ asked, owed, rows, partial, unfetchable int }{
 		{asked: bound, owed: 0, rows: partials, partial: over, unfetchable: partials - over},

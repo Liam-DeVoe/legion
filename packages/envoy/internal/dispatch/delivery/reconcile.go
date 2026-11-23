@@ -47,19 +47,21 @@ const reconcileOverlap = time.Hour
 // (RecordDeployedEvents). A nil GitHub client (no App credentials) leaves it idle, exactly like
 // architecture.Importer and Intake.
 type Reconcile struct {
-	pool     *store.Pool
-	github   *githubapp.Client
-	events   *events.Broker
-	atStart  bool
-	interval time.Duration
+	pool       *store.Pool
+	github     *githubapp.Client
+	events     *events.Broker
+	attributor *Attributor
+	atStart    bool
+	interval   time.Duration
 	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
 }
 
-// NewReconcile builds a Reconcile.
-func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker) *Reconcile {
-	return &Reconcile{pool: pool, github: github, events: broker}
+// NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
+// attributor, the Attributor of the rename pairs the process read at boot.
+func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
+	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor}
 }
 
 // FirstPassAtStart makes Run run one pass as it starts, before its jittered ticks, for an
@@ -296,7 +298,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	// Last, over everything this pass stored and what intake stored since the previous one: the
 	// issue.deployed of every pull request whose shipping run is now known. Its failure is the
 	// pass's, so last_error names it, and the rows it did not reach wait for the next pass.
-	if written, err := RecordDeployedEvents(ctx, r.pool, settings, r.events); err != nil {
+	if written, err := r.attributor.RecordDeployedEvents(ctx, r.pool, settings, r.events); err != nil {
 		record("record issue.deployed events", err)
 	} else if written > 0 {
 		slog.Info("dispatch delivery: recorded issue.deployed", "events", written, "by", "reconcile")
@@ -631,11 +633,11 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 	if err != nil {
 		failures = append(failures, err)
 	}
-	synced, err := SyncAttributions(ctx, r.pool)
+	synced, err := r.attributor.SyncAttributions(ctx, r.pool)
 	if err != nil {
 		failures = append(failures, err)
 	}
-	appended, err := AppendAttributionEvents(ctx, r.pool, r.events)
+	appended, err := r.attributor.AppendAttributionEvents(ctx, r.pool, r.events)
 	if err != nil {
 		failures = append(failures, err)
 	}
@@ -664,7 +666,7 @@ func (r *Reconcile) HeadPass(ctx context.Context) error {
 // A row whose read gives no answer is stamped checked, so it does not hold the front of every
 // batch; one whose answer holds a value no row holds is stamped refused.
 func (r *Reconcile) readOpenHeads(ctx context.Context, now time.Time, installations *passInstallations, limited *passRateLimit) error {
-	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
+	stale, err := r.attributor.ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
 	if err != nil {
 		return err
 	}
@@ -746,7 +748,7 @@ func (p *passRateLimit) err() error {
 // below does not take a row this has just read.
 func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, installations *passInstallations, absences *absenceBudget, limited *passRateLimit) error {
 	read := func(ctx context.Context, owed owedRead) error {
-		_, refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, installations, owed.Repo, owed.Number, now)
+		_, refused, err := r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, installations, owed.Repo, owed.Number, now)
 		outcome, refusedAs := owedReadAnswered, ""
 		switch {
 		case err != nil:
@@ -813,7 +815,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 		}
 		return nil
 	}
-	fetched, refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, nil, pr.Repo, pr.Number, time.Now())
+	fetched, refused, err := r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, nil, pr.Repo, pr.Number, time.Now())
 	if err != nil {
 		return settle("dispatch delivery: complete partial pull request", err)
 	}
@@ -832,7 +834,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 			}
 			return nil
 		}
-		if markErr := MarkPullRequestUnfetchable(ctx, r.pool, pr.Repo, pr.Number, refused.err.Error()); markErr != nil {
+		if markErr := r.attributor.MarkPullRequestUnfetchable(ctx, r.pool, pr.Repo, pr.Number, refused.err.Error()); markErr != nil {
 			slog.Warn("dispatch delivery: mark pull request unfetchable", "repo", pr.Repo, "number", pr.Number, "error", markErr)
 		}
 		return nil

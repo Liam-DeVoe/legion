@@ -62,15 +62,15 @@ func TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass(t *testing
 		{name: "the_intake", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error {
 			envelope := prEnvelope(repo, number, "closed", head, "feature/no-key", "", second)
 			envelope["merged"] = "true"
-			_, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil, envelope)
+			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil, envelope)
 			return err
 		}},
 		{name: "the_reconcile", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, _ string, _ time.Time) error {
-			_, _, err := RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now())
+			_, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now())
 			return err
 		}},
 		{name: "the_read_a_result_starts", commits: true, write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, _ int, head string, _ time.Time) error {
-			_, _, err := ReadThroughCommitPulls(ctx, pool, client, repo, head, time.Now())
+			_, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, client, repo, head, time.Now())
 			return err
 		}},
 	}
@@ -111,10 +111,10 @@ func TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass(t *testing
 							}
 						}
 						if stored {
-							if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now()); err != nil {
+							if _, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now()); err != nil {
 								t.Fatalf("store #%d: %v", number, err)
 							}
-							if listed, err := HeadAttributedTo(ctx, pool, issue, head); err != nil || listed == added {
+							if listed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head); err != nil || listed == added {
 								t.Fatalf("before the link's write, %s lists #%d = %v, %v; want %v", issue, number, listed, err, !added)
 							}
 						}
@@ -145,10 +145,10 @@ func TestALinkWrittenWhileAHeadWriteIsInFlightIsFollowedByTheNextPass(t *testing
 						var listed [3]bool
 						for pass := range listed {
 							if pass > 0 {
-								NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+								NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 							}
 							var err error
-							if listed[pass], err = HeadAttributedTo(ctx, pool, issue, head); err != nil {
+							if listed[pass], err = unrenamed().HeadAttributedTo(ctx, pool, issue, head); err != nil {
 								t.Fatal(err)
 							}
 						}

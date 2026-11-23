@@ -85,15 +85,17 @@ func TestAnEnvelopeNoDeliveryCanGetPastIsFinalAtItsFirstDelivery(t *testing.T) {
 			logs := captureLogs(t)
 			pool, ctx := deliveryTestPool(t)
 			issue := seedHeadIssue(t, ctx, pool, 4209)
+			attributor := unrenamed()
 			if poison.renamedTo != "" {
 				renameRepository(t, ctx, pool, poison.repo, poison.renamedTo)
+				attributor = NewAttributor(renamesOf(t, ctx, pool))
 			}
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
 			natsClient := intakeTestClient(t)
 			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), attributor))
 			awaitBoundDurable(t, natsClient)
 			before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 
@@ -187,7 +189,7 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 	github.set("acme/widgets", number, "open", poisonHead, "feature/x\x00", "", at)
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
@@ -223,7 +225,7 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 		t.Errorf("%d WARN lines say the read it is owed is recorded, naming a value no row holds, want 1", lines)
 	}
 
-	NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 	reason, reads = owed()
 	heads := headRowCount(t, ctx, &Intake{pool: pool}, "acme/widgets", number)
 	t.Logf("reconcile: owed=%q reads=%d heads=%d", reason, reads, heads)
@@ -235,14 +237,15 @@ func TestAnAnswerNoRowHoldsIsOwedAtTheIntakeAndAtTheReconcile(t *testing.T) {
 // An event of a repository whose stored rename target is no name GitHub can have (a target a
 // build before the settings route held it to the name rule stored, or direct SQL) is a head not
 // stored, owed a read under the name the envelope gave, since no canonical name can be formed for
-// it, and the reconcile reads it once an operator corrects the target: no path of the intake ends
-// an envelope with nothing owed while its head is not stored.
+// it, and the reconcile of a process that boots once an operator has corrected the target reads
+// it: no path of the intake ends an envelope with nothing owed while its head is not stored. No
+// route writes a pair, so the correction is direct SQL, and a process reads the pairs at its boot.
 // #4243 has no row; #4241 has one, stored under the old name before the target went bad, and its
 // event moves its head. While the target stands, a pass reads both and both stay owed; after the
-// correction, one pass writes both heads under the new name. At 3a21edb2c9 the intake acknowledged
-// each event with one WARN line and owed nothing, so #4243's head never came and #4241 kept its
-// older head, also after the correction (acceptance of cybermonklabs/legion#4209 at 3a21edb2c9, D1:
-// no head 204 s after the correction).
+// correction, one pass of a process that read the corrected pair writes both heads under the new
+// name. At 3a21edb2c9 the intake acknowledged each event with one WARN line and owed nothing, so
+// #4243's head never came and #4241 kept its older head, also after the correction (acceptance of
+// cybermonklabs/legion#4209 at 3a21edb2c9, D1: no head 204 s after the correction).
 func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCorrected(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -261,19 +264,20 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 	client := fake.newTestClient()
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 	earlier := at.Add(-time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: old, Number: pushed, HeadSHA: before, HeadRef: "feature/x", BaseRef: "main", State: "open",
 		EventAt: &earlier, CheckedAt: &earlier, GitHubReadAt: &earlier,
 	}); err != nil {
 		t.Fatalf("store #%d under %s before the target went bad: %v", pushed, old, err)
 	}
 	renameRepository(t, ctx, pool, old, refused)
+	standing := NewAttributor(renamesOf(t, ctx, pool))
 	github.set(renamed, pushed, "open", after, "feature/x", "", at)
 	github.set(renamed, opened, "open", openedHead, "feature/y", "", at)
 
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), standing))
 	awaitBoundDurable(t, natsClient)
 	publishPullRequestEnvelope(t, natsClient, "acme", "legacy", pushed,
 		prEnvelope(old, pushed, "synchronize", after, "feature/x", "", at))
@@ -286,8 +290,7 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 		}
 	}
 
-	reconcile := NewReconcile(pool, client, events.NewBroker())
-	reconcile.runOnce(ctx)
+	NewReconcile(pool, client, events.NewBroker(), standing).runOnce(ctx)
 	for _, number := range []int{pushed, opened} {
 		if owed := owedCount(t, ctx, pool, old, number); owed != 1 {
 			t.Errorf("#%d is owed %d read(s) after a pass while the target stands, want 1: no read succeeded", number, owed)
@@ -298,7 +301,8 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 	}
 
 	renameRepository(t, ctx, pool, old, renamed)
-	reconcile.runOnce(ctx)
+	corrected := NewAttributor(renamesOf(t, ctx, pool))
+	NewReconcile(pool, client, events.NewBroker(), corrected).runOnce(ctx)
 	for _, want := range []struct {
 		number int
 		head   string
@@ -307,7 +311,7 @@ func TestAnEventWhileAStoredRenameTargetBreaksTheNameRuleIsReadOnceTheTargetIsCo
 		owed := owedCount(t, ctx, pool, old, want.number)
 		var head string
 		if heads == 1 {
-			head = readHead(t, ctx, pool, renamed, want.number).HeadSHA
+			head = readHead(t, corrected, ctx, pool, renamed, want.number).HeadSHA
 		}
 		t.Logf("after the correction and one pass: #%d heads=%d head=%.12s owed=%d", want.number, heads, head, owed)
 		if heads != 1 || head != want.head {
@@ -350,7 +354,7 @@ func TestAPullRequestGitHubGivesNoAnswerForLogsOneLineOnceItsReadIsOwed(t *testi
 			restore := refuseOwedReads(t, ctx, pool)
 			natsClient := intakeTestClient(t)
 			intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 			intake.redeliverAfter = testRedeliverAfter
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
@@ -424,7 +428,7 @@ func TestTheOweOfARefusedReadWaitsOnALockNoLongerThanTheStatementsBesideIt(t *te
 	owes := &oweWaitTracer{}
 	natsClient := intakeTestClient(t)
 	intake := newIntake(natsClient, storetest.Traced(t, pool, owes, nil), deliveryTestLeases(t, pool),
-		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	intake.redeliverAfter = testRedeliverAfter
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
@@ -565,7 +569,7 @@ func TestAnOwedRecordRefusedForAnyCauseLosesNoHead(t *testing.T) {
 
 			natsClient := intakeTestClient(t)
 			intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+				client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 			intake.redeliverAfter = testRedeliverAfter
 			startIntake(t, intake)
 			awaitBoundDurable(t, natsClient)
@@ -600,8 +604,8 @@ func TestAnOwedRecordRefusedForAnyCauseLosesNoHead(t *testing.T) {
 			github.mu.Lock()
 			github.failing = false
 			github.mu.Unlock()
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-			attributed, err := HeadAttributedTo(ctx, pool, issue, head)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+			attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 			t.Logf("sqlstate=%s deliveries_while_refused=%d deliveries=%d owed_after_acknowledgement=%d head_is_basis_after_one_pass=%v",
 				sqlstate, faulted, delivered, owed, attributed)
 			if faulted < 2 {
@@ -691,7 +695,7 @@ func TestAHeadWrittenAfterAFailedDeliveryLeavesNothingOwed(t *testing.T) {
 	github.mu.Unlock()
 	natsClient := intakeTestClient(t)
 	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+		client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", number,
@@ -712,14 +716,14 @@ func TestAHeadWrittenAfterAFailedDeliveryLeavesNothingOwed(t *testing.T) {
 	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
 		t.Fatalf("the two envelopes were delivered %d times, want once each", delivered)
 	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, head); err != nil || !attributed {
+	if attributed, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head); err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, #%d's head) after the push = %v, %v; want true", issue, number, attributed, err)
 	}
 	if owed := owedCount(t, ctx, pool, "acme/widgets", number); owed != 0 {
 		t.Errorf("#%d is owed %d read(s) after a read wrote its head, want none: the failed delivery's record was not deleted", number, owed)
 	}
 	readsBefore := github.reads.Load()
-	NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 	if reads := github.reads.Load() - readsBefore; reads != 0 {
 		t.Errorf("the reconcile's next pass read #%d from GitHub %d time(s), want none: its head was written", number, reads)
 	}

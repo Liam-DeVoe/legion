@@ -27,8 +27,9 @@ const narrowWindow = 7 * 24 * time.Hour
 // three hours in by run 302, #6 of another repository and never tracked, #7 four days in and never
 // shipped), a run that failed, and run 304, which ships nothing new. #5 and #6 name issues and
 // sessions, so their titles
-// leave with them.
-func seedNarrowingFixture(t *testing.T, database *store.Store) delivery.DeliverySettings {
+// leave with them. attributor is the server's (Deps.Attributor), which writes and reads the issue
+// of #5 and #6.
+func seedNarrowingFixture(t *testing.T, attributor *delivery.Attributor, database *store.Store) delivery.DeliverySettings {
 	t.Helper()
 	ctx := t.Context()
 	pool := database.Pool
@@ -65,7 +66,7 @@ func seedNarrowingFixture(t *testing.T, database *store.Store) delivery.Delivery
 			t.Fatalf("seed PR %s#%d: %v", pr.Repo, pr.Number, err)
 		}
 		if issue, named := issues[pr.Number]; named {
-			seedAttributedHead(t, pool, pr.Repo, pr.Number, issue)
+			seedAttributedHead(t, attributor, pool, pr.Repo, pr.Number, issue)
 		}
 	}
 	success, failure := delivery.DeliveryRunConclusionSuccess, delivery.DeliveryRunConclusionFailure
@@ -168,7 +169,7 @@ func assertSameTree(t *testing.T, what string, got, want map[string]any) {
 // titles and counts keep only what the remaining rows name. Same for /measures.
 func TestANarrowedPopulationComputesWhatAFreshReadReturns(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	settings := seedNarrowingFixture(t, database)
+	settings := seedNarrowingFixture(t, deps.Attributor, database)
 	s := directServer(deps)
 	ctx := t.Context()
 	from, to := narrowFrom, narrowFrom.Add(narrowWindow)

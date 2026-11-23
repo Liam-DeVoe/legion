@@ -24,8 +24,8 @@ const headAfterEventBound = 5 * time.Second
 // event reports, in a deployment that holds no delivery settings.
 //
 // The case is a pull request opened after its issue's results were recorded: not a draft, in the
-// issue's own repository, which is mapped to the issue's project but is not the project's
-// default, with a branch and a body that name the issue. Nobody links it to the issue by hand.
+// issue's own repository, which is not the project's default repository, with a branch and a body
+// that name the issue. Nobody links it to the issue by hand.
 // Envoy relays GitHub's `pull_request` event for it, as it does for every repository the App's
 // webhook covers, and the delivery intake is the one writer that turns that event into the head
 // row the results read compares with. A deployment that never configured the delivery timeline
@@ -66,12 +66,10 @@ func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
 		map[string]string{"key": "ACME", "name": "Acme"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project ACME: status=%d body=%s", response.Code, response.Body.String())
 	}
-	for repo, isDefault := range map[string]bool{"example/default": true, "example/tools": false} {
-		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo,
-			map[string]any{"project": "ACME", "default": isDefault}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("map %s to ACME: status=%d body=%s", repo, response.Code, response.Body.String())
-		}
-	}
+	// The project's default is example/default, so the issue reaches example/tools by its own
+	// repository alone: an issue resolves to its own repository, else to its project's default
+	// (refs.IssueRepoResolved).
+	setDefaultRepository(t, handler, "ACME", "example/default")
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": "ACME", "title": "The tools change", "spec": "A spec\n", "repo": "example/tools"}, "alice")
 	if created.Code != http.StatusCreated {
@@ -104,7 +102,7 @@ func requireTheEventsHeadWithinTheBound(t *testing.T, poisonBefore int) {
 	ctx, cancel := context.WithCancel(t.Context())
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil, nil)
+	}, database.Pool, leases, served.deps.GitHub, served.deps.Events, nil, nil, served.deps.Attributor)
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)

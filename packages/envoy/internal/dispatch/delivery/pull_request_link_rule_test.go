@@ -87,6 +87,8 @@ func TestTheLinkRuleInSQLIsTheLinkRuleInGo(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
 	renameOldcoWidgets(t, ctx, pool)
+	renames := renamesOf(t, ctx, pool)
+	attributor := NewAttributor(renames)
 	taken, refused := 0, 0
 	for _, link := range linkCorpus {
 		repo, number, ok := linkedPullRequest(link)
@@ -112,12 +114,12 @@ func TestTheLinkRuleInSQLIsTheLinkRuleInGo(t *testing.T) {
 			t.Errorf("%q: SQL takes %s#%d, Go takes %s#%d", link, sqlRepo, sqlNumber, repo, number)
 		}
 		taken++
-		owed, err := owedName(ctx, pool, repo, number)
+		owed, err := attributor.owedName(repo, number)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var listed bool
-		if err := pool.QueryRow(ctx, `select lower($1::text) = any(`+PullRequestLinksSQL("$2::text", "$3::int")+`)`,
+		if err := pool.QueryRow(ctx, `select lower($1::text) = any(`+PullRequestLinksSQL(renames, "$2::text", "$3::int")+`)`,
 			link, owed, number).Scan(&listed); err != nil {
 			t.Fatalf("%q: %v", link, err)
 		}
@@ -131,7 +133,7 @@ func TestTheLinkRuleInSQLIsTheLinkRuleInGo(t *testing.T) {
 	}
 
 	var links []string
-	if err := pool.QueryRow(ctx, `select `+PullRequestLinksSQL("'acme/widgets'", "105")).Scan(&links); err != nil {
+	if err := pool.QueryRow(ctx, `select `+PullRequestLinksSQL(renames, "'acme/widgets'", "105")).Scan(&links); err != nil {
 		t.Fatal(err)
 	}
 	want := fmt.Sprint([]string{"https://github.com/acme/widgets/issues/105", "https://github.com/acme/widgets/pull/105",
@@ -188,7 +190,7 @@ func TestALinkOfARepositoryGitHubCannotHaveNamesNoPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := OweLinkedPullRequestReads(ctx, tx, []string{"https://github.com/-acme/widgets/pull/129",
+	if err := unrenamed().OweLinkedPullRequestReads(ctx, tx, []string{"https://github.com/-acme/widgets/pull/129",
 		"https://github.com/acme/.git/pull/112", "https://github.com/acme/..git/pull/114"}); err != nil {
 		t.Fatal(err)
 	}

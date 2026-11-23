@@ -163,8 +163,9 @@ type Population struct {
 // issue's pull request.
 //
 // github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
-// reach leaves that issue with none, since no metric's rule is written in terms of one.
-func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time) (*Population, error) {
+// reach leaves that issue with none, since no metric's rule is written in terms of one. attributor
+// reads each finished issue's pull requests by the rename pairs the boot read (readMergeTimes).
+func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, attributor *delivery.Attributor, project string, from, to time.Time) (*Population, error) {
 	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
@@ -184,7 +185,7 @@ func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, proje
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readSampled(ctx, pool, project, keys) },
-		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, github, keys) },
+		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, github, attributor, keys) },
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
 	}
 	reads, readsCtx := errgroup.WithContext(ctx)
@@ -661,11 +662,11 @@ func (p *Population) fillReportedTrees() {
 // and fetches the ones that population does not hold yet from GitHub (delivery.FetchPullRequest),
 // up to fetchedMergeTimesCap of them. A fetch that fails leaves the issue with no merge time. A
 // pull request is the issue's when the one statement of a pull request's issue gives it to the
-// issue (delivery.ListPullRequestsOfIssues), as the delivery timeline reads it, never by the issue
-// a reconcile pass last stored on its row. A row GitHub proved absent (unfetchable_at) counts for
-// nothing.
-func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, github *githubapp.Client, keys []string) error {
-	prs, err := delivery.ListPullRequestsOfIssues(ctx, pool, keys)
+// issue (delivery.Attributor.ListPullRequestsOfIssues), as the delivery timeline reads it, never
+// by the issue a reconcile pass last stored on its row. A row GitHub proved absent
+// (unfetchable_at) counts for nothing.
+func (p *Population) readMergeTimes(ctx context.Context, pool *store.Pool, github *githubapp.Client, attributor *delivery.Attributor, keys []string) error {
+	prs, err := attributor.ListPullRequestsOfIssues(ctx, pool, keys)
 	if err != nil {
 		return fmt.Errorf("read the pull requests of the finished issues: %w", err)
 	}

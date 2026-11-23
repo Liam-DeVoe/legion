@@ -214,8 +214,8 @@ func TestNoInterleavingOfTheWritersLeavesAnOlderHeadThanGitHubsLastAnswer(t *tes
 	traced := storetest.Traced(t, pool, s, nil)
 	// Two intakes: one writes a head in a transaction with its attribution events, as the
 	// server's does, and one in a single statement.
-	intakes := []*Intake{newIntake(nil, traced, nil, client, events.NewBroker(), nil), newIntake(nil, traced, nil, client, nil, nil)}
-	reconcile := NewReconcile(traced, client, events.NewBroker())
+	intakes := []*Intake{newIntake(nil, traced, nil, client, events.NewBroker(), nil, unrenamed()), newIntake(nil, traced, nil, client, nil, nil, unrenamed())}
+	reconcile := NewReconcile(traced, client, events.NewBroker(), unrenamed())
 	rng := rand.New(rand.NewPCG(3992, 4209))
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	const sequences = 150
@@ -427,7 +427,7 @@ func TestNoInterleavingOfTheWritersLeavesAnOlderHeadThanGitHubsLastAnswer(t *tes
 				t.Fatalf("seq %d: a reconcile pass: %v", seq, err)
 			}
 		}
-		got := readHead(t, ctx, pool, "acme/widgets", number)
+		got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 		owed := owedCount(t, ctx, pool, "acme/widgets", number)
 		if got.HeadSHA != pull.head || got.State != pull.state || owed != 0 {
 			violations++

@@ -239,7 +239,7 @@ func TestALimitOfOneInstallationEndsNoStepForAnother(t *testing.T) {
 	}
 	limitedPartials := numbersFrom(30, reconcilePartialConcurrency)
 	for repo, numbers := range map[string][]int{limitBeta: {owed, open, noFacts, partial}, limitAcme: {21, 22, 23}} {
-		if err := owePullRequestRead(ctx, pool, repo, numbers[0], owedFailure, ""); err != nil {
+		if err := unrenamed().owePullRequestRead(ctx, pool, repo, numbers[0], owedFailure, ""); err != nil {
 			t.Fatalf("owe the read of %s#%d: %v", repo, numbers[0], err)
 		}
 		storeOpenRow(t, ctx, pool, repo, numbers[1], now.Add(-time.Hour))
@@ -250,12 +250,12 @@ func TestALimitOfOneInstallationEndsNoStepForAnother(t *testing.T) {
 		storePartialRow(t, ctx, pool, limitAcme, number)
 	}
 
-	NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	if rows, left := headRowsOf(t, ctx, pool, limitBeta, owed), owedCount(t, ctx, pool, limitBeta, owed); rows != 1 || left != 0 {
 		t.Errorf("the owed read %s#%d has %d results rows and %d owed reads after the pass, want 1 and 0", limitBeta, owed, rows, left)
 	}
-	if head := readHead(t, ctx, pool, limitBeta, open); head.HeadSHA != fakeSHA("h", open) {
+	if head := readHead(t, unrenamed(), ctx, pool, limitBeta, open); head.HeadSHA != fakeSHA("h", open) {
 		t.Errorf("the open row %s#%d holds the head %q after the pass, want GitHub's %q", limitBeta, open, head.HeadSHA, fakeSHA("h", open))
 	}
 	if read := readNumbers(t, ctx, pool, limitBeta); !slices.Contains(read, noFacts) {
@@ -333,7 +333,7 @@ func TestARestRateLimitNamesTheInstallationOfItsToken(t *testing.T) {
 				answerCommitPage(t, w, r, pull)
 			})
 
-			err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePartialPullRequests(ctx, newAbsenceBudget())
+			err := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).reconcilePartialPullRequests(ctx, newAbsenceBudget())
 
 			if answered.Load() == 0 {
 				t.Fatalf("GitHub answered no read with a limit, want the %s read limited", limitedRead)
@@ -394,7 +394,7 @@ func TestAnErrorOfAPageNamesTheAttemptsThatWereMade(t *testing.T) {
 		}
 		answerRESTRateLimit(w)
 	})
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 
 	var failures []error

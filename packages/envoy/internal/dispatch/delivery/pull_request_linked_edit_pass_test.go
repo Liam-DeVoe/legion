@@ -63,7 +63,7 @@ func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := OweLinkedPullRequestReads(ctx, tx, []string{url}); err != nil {
+				if err := unrenamed().OweLinkedPullRequestReads(ctx, tx, []string{url}); err != nil {
 					t.Fatal(err)
 				}
 				if err := tx.Commit(ctx); err != nil {
@@ -71,7 +71,7 @@ func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing
 				}
 			}
 			if c.action != "" {
-				intake := newIntake(nil, pool, nil, client, nil, newSettingsCache(pool, nil))
+				intake := newIntake(nil, pool, nil, client, nil, newSettingsCache(pool, nil), unrenamed())
 				payload, err := json.Marshal(prEnvelope("acme/widgets", number, c.action, head, "topic", body, at))
 				if err != nil {
 					t.Fatal(err)
@@ -81,10 +81,10 @@ func TestALinkedPullRequestWhoseBodyIsEditedIsComparedBeforeAnyResult(t *testing
 					envelope: &contracts.Envelope{Payload: string(payload)},
 				})
 			}
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 			readsAfterPass := github.reads.Load()
 
-			heads, err := HeadsAttributedTo(ctx, pool, key)
+			heads, err := unrenamed().HeadsAttributedTo(ctx, pool, key)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -478,7 +478,7 @@ func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string
 // tree on the board and in the metrics: its chain climbs through the middle issue, which left the
 // daemon's state after Dispatch observed it in `testing` and so is still Legion's.
 func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
 	seedLegionIssue(t, database, "INFRA", 1, "The root", "a", nil, "")
@@ -522,7 +522,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 		t.Errorf("the board puts INFRA-3 in tree %q, want INFRA-1: the middle issue left the daemon's state and is still Legion's", tree)
 	}
 	now := time.Now().UTC()
-	population, err := metrics.Read(t.Context(), database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.Read(t.Context(), database.Pool, nil, deps.Attributor, "INFRA", now.Add(-14*24*time.Hour), now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -736,7 +736,7 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 // INFRA's daemon reported. So each board shows its own daemon's read, and each project's metrics
 // count its own issue, its own sessions' filings and its own daemon's observations.
 func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	infra := newFakeLegionDaemon(t, handler, "INFRA")
 	linux := newFakeLegionDaemon(t, handler, "LINUX")
@@ -788,7 +788,7 @@ func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
 		{"INFRA", "INFRA-1", nil},
 		{"LINUX", "LINUX-1", []string{"INFRA-2 by implementer of LINUX-1, " + metrics.ClassOutOfTree}},
 	} {
-		population, err := metrics.Read(t.Context(), database.Pool, nil, one.project, start.Add(-24*time.Hour), now.Add(time.Hour))
+		population, err := metrics.Read(t.Context(), database.Pool, nil, deps.Attributor, one.project, start.Add(-24*time.Hour), now.Add(time.Hour))
 		if err != nil {
 			t.Fatalf("read %s's metrics population: %v", one.project, err)
 		}

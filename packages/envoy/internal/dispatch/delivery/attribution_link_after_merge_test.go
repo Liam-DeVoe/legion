@@ -30,12 +30,12 @@ func TestALinkAfterAMergedRowReachesItWithinOnePass(t *testing.T) {
 
 	// The row is written by a writer of GitHub's answer, never by SQL: a row written by SQL
 	// holds no facts of a read, so no rule over stored facts could give it to the link.
-	if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", number, time.Now()); err != nil {
+	if _, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", number, time.Now()); err != nil {
 		t.Fatalf("write #%d through the refresh: %v", number, err)
 	}
 	listed := func() []int {
 		t.Helper()
-		heads, err := HeadsAttributedTo(ctx, pool, issue)
+		heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue)
 		if err != nil {
 			t.Fatalf("HeadsAttributedTo(%s): %v", issue, err)
 		}
@@ -54,7 +54,7 @@ func TestALinkAfterAMergedRowReachesItWithinOnePass(t *testing.T) {
 		t.Fatalf("link #%d to %s: %v", number, issue, err)
 	}
 	reads, commitReads := github.reads.Load(), github.commitReads.Load()
-	NewReconcile(pool, client, nil).runOnce(ctx)
+	NewReconcile(pool, client, nil, unrenamed()).runOnce(ctx)
 	reads, commitReads = github.reads.Load()-reads, github.commitReads.Load()-commitReads
 	after := listed()
 	t.Logf("after the link and one pass %s lists %v; the pass read #%d %d times and its commits %d times", issue, after, number, reads, commitReads)
@@ -76,8 +76,9 @@ type dispatchChange struct {
 	setup, change, reverse   func(t *testing.T, ctx context.Context, pool *store.Pool)
 }
 
-// dispatchChanges are the changes of attribution_dispatch_change_test.go. The first three and
-// the moved link are on acme/widgets, the new parent on acme/prnt-side, and the mapping on
+// dispatchChanges are the changes of attribution_dispatch_change_test.go that a process makes
+// while it serves; a rename is read only at boot, so it is none of them. The first three and the
+// moved link are on acme/widgets, the new parent on acme/prnt-side, and the default repository on
 // acme/mapped.
 func dispatchChanges() []dispatchChange {
 	link := func(number int) string { return fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number) }
@@ -115,7 +116,6 @@ func dispatchChanges() []dispatchChange {
 			name: "new_parent", repo: "acme/prnt-side", number: 314, branch: "legion/PRNT-314", body: "No key here.", issue: "PRNT-314",
 			setup: func(t *testing.T, ctx context.Context, pool *store.Pool) {
 				seedProjectRepository(t, ctx, pool, "PRNT", "PRNT", "acme/prnt-main")
-				mapRepository(t, ctx, pool, "acme/prnt-side", "PRNT", false, nil)
 				insertProjectIssue(t, ctx, pool, "PRNT", "PRNT-300", 300)
 				insertProjectIssue(t, ctx, pool, "PRNT", "PRNT-314", 314)
 				execDispatchChange(t, ctx, pool, "give PRNT-300 its own repository", `update issues set repo = 'acme/prnt-side' where key = 'PRNT-300'`)
@@ -128,17 +128,18 @@ func dispatchChanges() []dispatchChange {
 			},
 		},
 		{
-			name: "repository_mapping", repo: "acme/mapped", number: 315, branch: "legion/MAPD-315", body: "No key here.", issue: "MAPD-315",
+			name: "default_repository", repo: "acme/mapped", number: 315, branch: "legion/MAPD-315", body: "No key here.", issue: "MAPD-315",
 			setup: func(t *testing.T, ctx context.Context, pool *store.Pool) {
 				seedProjectRepository(t, ctx, pool, "MAPD", "MAPD", "acme/elsewhere")
 				insertProjectIssue(t, ctx, pool, "MAPD", "MAPD-315", 315)
 			},
+			// The project's default repository, as PUT /api/v1/projects/{key}/default-repository
+			// writes it.
 			change: func(t *testing.T, ctx context.Context, pool *store.Pool) {
-				mapRepository(t, ctx, pool, "acme/mapped", "MAPD", true, nil)
+				seedProjectRepository(t, ctx, pool, "MAPD", "MAPD", "acme/mapped")
 			},
 			reverse: func(t *testing.T, ctx context.Context, pool *store.Pool) {
-				execDispatchChange(t, ctx, pool, "delete the mapping of acme/mapped", `delete from repo_projects where repo = 'acme/mapped'`)
-				mapRepository(t, ctx, pool, "acme/elsewhere", "MAPD", true, nil)
+				seedProjectRepository(t, ctx, pool, "MAPD", "MAPD", "acme/elsewhere")
 			},
 		},
 		{
@@ -179,12 +180,12 @@ func TestAChangeInDispatchReachesAMergedRowWithinOnePass(t *testing.T) {
 			github.mu.Unlock()
 			client := fake.newTestClient()
 			// A writer of GitHub's answer stores the row, never SQL, as in the test above.
-			if _, _, err := RefreshPullRequestHead(ctx, pool, client, nil, c.repo, c.number, time.Now()); err != nil {
+			if _, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, c.repo, c.number, time.Now()); err != nil {
 				t.Fatalf("write #%d through the refresh: %v", c.number, err)
 			}
 			listed := func() []int {
 				t.Helper()
-				heads, err := HeadsAttributedTo(ctx, pool, c.issue)
+				heads, err := unrenamed().HeadsAttributedTo(ctx, pool, c.issue)
 				if err != nil {
 					t.Fatalf("HeadsAttributedTo(%s): %v", c.issue, err)
 				}
@@ -196,7 +197,7 @@ func TestAChangeInDispatchReachesAMergedRowWithinOnePass(t *testing.T) {
 			}
 			pass := func() (int32, int32) {
 				reads, commitReads := github.reads.Load(), github.commitReads.Load()
-				NewReconcile(pool, client, nil).runOnce(ctx)
+				NewReconcile(pool, client, nil, unrenamed()).runOnce(ctx)
 				return github.reads.Load() - reads, github.commitReads.Load() - commitReads
 			}
 			if before := listed(); len(before) != 0 {

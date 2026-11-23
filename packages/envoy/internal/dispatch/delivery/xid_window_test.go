@@ -41,7 +41,7 @@ func TestXidWindowDeployedEventRecorded(t *testing.T) {
 	var written int
 	report := tracer.Measure(t, traced, func() {
 		var err error
-		written, err = RecordDeployedEvents(storetest.MarkXid(ctx), traced, settings, broker)
+		written, err = unrenamed().RecordDeployedEvents(storetest.MarkXid(ctx), traced, settings, broker)
 		if err != nil {
 			t.Errorf("RecordDeployedEvents: %v", err)
 		}
@@ -71,13 +71,13 @@ func TestXidWindowAttributionMoveRecorded(t *testing.T) {
 	// The row is credited to the issue it leaves first, and a pass records that, so the measured
 	// append is a move. The database is this test's own clone (deliveryTestPool), so no other
 	// move waits beside it.
-	if err := UpsertPullRequestHead(ctx, traced, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, traced, attributedHeadRow(176, &left, sourceTitleBody)); err != nil {
 		t.Fatalf("store the head attributed to %s: %v", left, err)
 	}
 	if _, appended := attributionPass(t, ctx, traced, broker); appended != 1 {
 		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the first pass appended %d events, want 1", appended)
 	}
-	if err := UpsertPullRequestHead(ctx, traced, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
+	if err := unrenamed().UpsertPullRequestHead(ctx, traced, attributedHeadRow(176, &reached, sourceBranch)); err != nil {
 		t.Fatalf("move the head to %s: %v", reached, err)
 	}
 	syncAttributions(t, ctx, traced)
@@ -85,7 +85,7 @@ func TestXidWindowAttributionMoveRecorded(t *testing.T) {
 	var appended int
 	report := tracer.Measure(t, traced, func() {
 		var err error
-		if appended, err = AppendAttributionEvents(storetest.MarkXid(ctx), traced, broker); err != nil {
+		if appended, err = unrenamed().AppendAttributionEvents(storetest.MarkXid(ctx), traced, broker); err != nil {
 			t.Errorf("append the events of the move to %s: %v", reached, err)
 		}
 	})

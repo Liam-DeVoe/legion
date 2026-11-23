@@ -70,13 +70,12 @@ func TestATieMadeAfterAMergeIsFollowedAtTheResultsRead(t *testing.T) {
 			},
 		},
 		{
+			// The parent names acme/widgets as its own repository, so the child, which names
+			// none, resolves through it to the pull request's repository once it is the
+			// parent's child.
 			name: "a_parent_with_the_repository_of_the_pull_request",
 			setUp: func(t *testing.T, handler http.Handler) (string, string, string, string) {
 				child := issueInRepository(t, handler, "RMTB", "acme/gadgets", "Child")
-				if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-					map[string]any{"project": "RMTB"}, "alice"); response.Code != http.StatusOK {
-					t.Fatalf("map acme/widgets to RMTB: status=%d body=%s", response.Code, response.Body.String())
-				}
 				created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
 					map[string]any{"project": "RMTB", "title": "Parent", "spec": "A spec\n", "repo": "acme/widgets"}, "alice")
 				if created.Code != http.StatusCreated {
@@ -95,10 +94,7 @@ func TestATieMadeAfterAMergeIsFollowedAtTheResultsRead(t *testing.T) {
 				return issue.Key, "", issue.Key + " the work", ""
 			},
 			tie: func(t *testing.T, handler http.Handler, _, _ string) {
-				if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-					map[string]any{"project": "RMTC", "default": true}, "alice"); response.Code != http.StatusOK {
-					t.Fatalf("map acme/widgets to RMTC as its default: status=%d body=%s", response.Code, response.Body.String())
-				}
+				setDefaultRepository(t, handler, "RMTC", "acme/widgets")
 			},
 		},
 		{
@@ -126,7 +122,7 @@ func TestATieMadeAfterAMergeIsFollowedAtTheResultsRead(t *testing.T) {
 			// The pull request merges at that commit, and a read of GitHub stores its row and the
 			// texts GitHub answered. The row of the fourth case stores the issue an older rule gave
 			// it, which no reader answers for a row with texts.
-			storeMergedRowWithTexts(t, database, 81, title, body, stored)
+			storeMergedRowWithTexts(t, served.deps.Attributor, database, 81, title, body, stored)
 			kase.tie(t, handler, check, stored)
 			fake.answers(mergedPullAt(81, title, body))
 			if !served.commitPulls.Claim("acme/widgets", headCommit, time.Now()) {
@@ -149,10 +145,11 @@ func TestATieMadeAfterAMergeIsFollowedAtTheResultsRead(t *testing.T) {
 // storeMergedRowWithTexts stores acme/widgets#number merged at headCommit, with title and body,
 // through the writer of a read of GitHub, with the texts that GitHub answered: its branch names
 // no issue, and its commit messages are read and empty. stored is the issue the row stores, ""
-// for none, which one update writes, as a row of an older release holds it.
-func storeMergedRowWithTexts(t *testing.T, database *store.Store, number int, title, body, stored string) {
+// for none, which one update writes, as a row of an older release holds it. attributor is the
+// server's (Deps.Attributor).
+func storeMergedRowWithTexts(t *testing.T, attributor *delivery.Attributor, database *store.Store, number int, title, body, stored string) {
 	t.Helper()
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
+	if err := attributor.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: number, HeadSHA: headCommit, HeadRef: "feature/no-key", BaseRef: "main",
 		State: "merged", Title: title, URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 		Texts: &delivery.PullRequestTexts{HeadRepo: "acme/widgets", BaseRef: "main", Title: title, Body: body,
@@ -185,7 +182,7 @@ func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *test
 			check := issueInRepository(t, handler, "RVFA", "acme/widgets", "Cited").Key
 			uploadDocument(t, handler, "/api/v1/issues/"+check, "verification.md", twoChecks)
 			recorded := decodeBody[recordedResult](t, recordResult(t, handler, check, resultBody("k1", "pass", headCommit, nil)))
-			storeMergedRowWithTexts(t, database, 81, "A change", "Fixes #81.", "")
+			storeMergedRowWithTexts(t, served.deps.Attributor, database, 81, "A change", "Fixes #81.", "")
 			if withOpen {
 				if _, err := database.Pool.Exec(context.Background(), `
 					insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, url, event_at, checked_at)
@@ -278,10 +275,11 @@ func TestAMergedHeadOfTheChecksOwnIssueIsReadThroughOnceAWindow(t *testing.T) {
 // onePass runs one head pass of the reconcile over database, as each reconcile pass runs it
 // (delivery.Reconcile.HeadPass). It holds the owed reads, the open rows, the facts line, the write
 // of each answer to its stored rows, and the events of each move. It reads GitHub through
-// served's client.
+// served's client and attributes with served's Attributor, so it reads by the rename pairs the
+// server was built with.
 func onePass(t *testing.T, database *store.Store, served *server) {
 	t.Helper()
-	if err := delivery.NewReconcile(database.Pool, served.deps.GitHub, served.deps.Events).HeadPass(context.Background()); err != nil {
+	if err := delivery.NewReconcile(database.Pool, served.deps.GitHub, served.deps.Events, served.deps.Attributor).HeadPass(context.Background()); err != nil {
 		t.Fatalf("one head pass: %v", err)
 	}
 }

@@ -28,7 +28,7 @@ func linkByHand(t *testing.T, ctx context.Context, pool *store.Pool, number int)
 		t.Fatalf("begin the link write: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := OweLinkedPullRequestReads(ctx, tx, []string{fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number)}); err != nil {
+	if err := unrenamed().OweLinkedPullRequestReads(ctx, tx, []string{fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number)}); err != nil {
 		t.Fatalf("owe the read of the link to #%d: %v", number, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -65,7 +65,7 @@ func storeReadHead(t *testing.T, ctx context.Context, pool *store.Pool, number i
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	opened := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
 	github.set("acme/widgets", number, "open", first, "legion/"+issue, "Dispatch: "+issue, opened)
-	if _, err := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil).handlePullRequestEnvelope(ctx, nil,
+	if _, err := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 		prEnvelope("acme/widgets", number, "opened", first, "legion/"+issue, "Dispatch: "+issue, opened)); err != nil {
 		t.Fatalf("handle the envelope that opens #%d: %v", number, err)
 	}
@@ -90,12 +90,12 @@ func TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder(t *t
 		owe       func(t *testing.T, ctx context.Context, pool *store.Pool, number int)
 	}{
 		{name: "an_event_whose_read_failed", owe: func(t *testing.T, ctx context.Context, pool *store.Pool, number int) {
-			if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
+			if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
 				t.Fatalf("owe the failed read of an event of #%d: %v", number, err)
 			}
 		}},
 		{name: "a_read_that_github_refused", refusedAs: model.RefusedAsAppNotInstalled, owe: func(t *testing.T, ctx context.Context, pool *store.Pool, number int) {
-			if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedRefusal, model.RefusedAsAppNotInstalled); err != nil {
+			if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", number, owedRefusal, model.RefusedAsAppNotInstalled); err != nil {
 				t.Fatalf("owe the refused read of #%d: %v", number, err)
 			}
 		}},
@@ -184,7 +184,7 @@ func TestAFailedOrRefusedReadOfALinksOweHidesNoStoredHead(t *testing.T) {
 	known := AttributedHead{Number: number, HeadSHA: first, HeadKnown: true}
 	linkOwedBeforeTheHeadWas(t, ctx, pool, number)
 	client := fake.newTestClient()
-	reconcile := NewReconcile(pool, client, events.NewBroker())
+	reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 
 	github.mu.Lock()
 	github.failing = true
@@ -199,7 +199,7 @@ func TestAFailedOrRefusedReadOfALinksOweHidesNoStoredHead(t *testing.T) {
 	github.failing = false
 	github.mu.Unlock()
 	fake.notInstalled.Store("acme/widgets", true)
-	reconcile = NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile = NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	if row, owed := readOwedRow(t, ctx, pool, "acme/widgets", number); !owed || row.reason != owedRefusal || row.reads != 2 {
 		t.Errorf("after a pass whose read of #%d GitHub refused, it is owed %v (%+v); want a refusal read two times", number, owed, row)
@@ -207,7 +207,7 @@ func TestAFailedOrRefusedReadOfALinksOweHidesNoStoredHead(t *testing.T) {
 	wantAttributedHead(t, "after the refused read", attributedHeadOf(t, ctx, pool, issue, number), known)
 
 	fake.notInstalled.Delete("acme/widgets")
-	reconcile = NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile = NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	reconcile.runOnce(ctx)
 	if row, owed := readOwedRow(t, ctx, pool, "acme/widgets", number); owed {
 		t.Errorf("after the pass that reads #%d, it is still owed a %s read (%+v); want none", number, row.reason, row)
@@ -232,7 +232,7 @@ func TestALinksRefusedReadOfAPullRequestWithNoResultsRowNamesTheRefusal(t *testi
 	serveGitHubPulls(t, fake, "acme/widgets")
 	fake.notInstalled.Store("acme/widgets", true)
 	linkByHand(t, ctx, pool, number)
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 	row, owed := readOwedRow(t, ctx, pool, "acme/widgets", number)
 	if !owed || row.reason != owedRefusal || row.refusedAs == nil || *row.refusedAs != model.RefusedAsAppNotInstalled || row.refusedSince == nil {
 		t.Fatalf("after a pass whose read of #%d GitHub refused, it is owed %v (%+v); want a refusal as %s with its time", number, owed, row, model.RefusedAsAppNotInstalled)
@@ -261,16 +261,16 @@ func TestAnUnreadableLinkIsReadAgainWhenTheAppIsInstalledOnItsRepository(t *test
 	github.set("acme/widgets", linked, "open", head, "legion/"+issue, "Dispatch: "+issue, opened)
 	fake.notInstalled.Store("acme/widgets", true)
 	linkByHand(t, ctx, pool, linked)
-	if err := owePullRequestRead(ctx, pool, "acme/widgets", evented, owedRefusal, model.RefusedAsAppNotInstalled); err != nil {
+	if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", evented, owedRefusal, model.RefusedAsAppNotInstalled); err != nil {
 		t.Fatalf("owe the refused read of an event of #%d: %v", evented, err)
 	}
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	for pass := 1; pass <= 3; pass++ {
 		lookups := fake.lookupsOf("acme/widgets")
 		reconcile.runOnce(ctx)
 		row, owed := readOwedRow(t, ctx, pool, "acme/widgets", linked)
 		other, _ := readOwedRow(t, ctx, pool, "acme/widgets", evented)
-		counts, err := ReadAttributionCounts(ctx, pool)
+		counts, err := unrenamed().ReadAttributionCounts(ctx, pool)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -288,7 +288,7 @@ func TestAnUnreadableLinkIsReadAgainWhenTheAppIsInstalledOnItsRepository(t *test
 	}
 
 	fake.notInstalled.Delete("acme/widgets")
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 	if row, owed := readOwedRow(t, ctx, pool, "acme/widgets", linked); owed {
 		t.Errorf("after the pass that follows the App's installation on acme/widgets, #%d is still owed a %s read (%+v); want none", linked, row.reason, row)
 	}

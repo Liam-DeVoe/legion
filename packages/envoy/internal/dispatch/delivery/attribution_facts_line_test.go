@@ -79,12 +79,14 @@ func mergedPull(number int, updatedAt time.Time) batchPull {
 	return pull
 }
 
-// renameAcme maps renamedToRepo to project ATTR as its default. It maps renamedRepo to the same
-// project, renamed to renamedToRepo. So both names read as renamedToRepo (refs.CanonicalRepo).
-func renameAcme(t *testing.T, ctx context.Context, pool *store.Pool) {
+// renameAcme makes renamedToRepo the default repository of project ATTR, and records renamedRepo
+// as renamed to it (seedRenamePair). It answers the Attributor of the pairs a boot reads after
+// that, under which both names read as renamedToRepo (refs.Renames.Canonical).
+func renameAcme(t *testing.T, ctx context.Context, pool *store.Pool) *Attributor {
 	t.Helper()
 	seedProjectRepository(t, ctx, pool, "ATTR", "ATTR", renamedToRepo)
-	mapRepository(t, ctx, pool, renamedRepo, "ATTR", false, new(renamedToRepo))
+	seedRenamePair(t, ctx, pool, renamedRepo, "ATTR", renamedToRepo)
+	return NewAttributor(renamesOf(t, ctx, pool))
 }
 
 // renamedGitHub is GitHub after the rename of renamedRepo: it serves renamedToRepo only. The App
@@ -109,10 +111,11 @@ func readFactsLineOrFail(t *testing.T, ctx context.Context, reconcile *Reconcile
 	return line
 }
 
-// attributionCountsOrFail is what the count route answers now (ReadAttributionCounts).
-func attributionCountsOrFail(t *testing.T, ctx context.Context, pool *store.Pool) AttributionCounts {
+// attributionCountsOrFail is what the count route of a process attributing by a answers now
+// (ReadAttributionCounts).
+func attributionCountsOrFail(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool) AttributionCounts {
 	t.Helper()
-	counts, err := ReadAttributionCounts(ctx, pool)
+	counts, err := a.ReadAttributionCounts(ctx, pool)
 	if err != nil {
 		t.Fatalf("ReadAttributionCounts: %v", err)
 	}
@@ -244,7 +247,7 @@ func TestTheFactsLineReadsFiveHundredRowsOfEachInstallation(t *testing.T) {
 		}
 	}
 
-	line := readFactsLineOrFail(t, ctx, NewReconcile(pool, client, events.NewBroker()))
+	line := readFactsLineOrFail(t, ctx, NewReconcile(pool, client, events.NewBroker(), unrenamed()))
 
 	for _, repo := range repos {
 		if read := len(readNumbers(t, ctx, pool, repo)); read != FactsQueriesPerPass*FactsBatchSize {
@@ -296,7 +299,7 @@ func TestTheFactsLineReadsTheLikelyWrongRowsFirst(t *testing.T) {
 		github.set(statementRepo, number, pull)
 	}
 
-	readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(), events.NewBroker()))
+	readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()))
 
 	read := readNumbers(t, ctx, pool, statementRepo)
 	if len(read) != FactsQueriesPerPass*FactsBatchSize {
@@ -332,7 +335,7 @@ func TestTheFactsLineWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T)
 	} {
 		t.Run(kase.name, func(t *testing.T) {
 			pool, ctx := deliveryTestPool(t)
-			renameAcme(t, ctx, pool)
+			attributor := renameAcme(t, ctx, pool)
 			storeStatementRow(t, ctx, pool, statementRow{repo: renamedRepo, number: kase.number, branch: "work/none", title: changeTitle(kase.number)})
 			if kase.canonicalRow {
 				storeStatementRow(t, ctx, pool, statementRow{repo: renamedToRepo, number: kase.number, branch: "work/none", title: changeTitle(kase.number), texts: readTexts("")})
@@ -340,7 +343,7 @@ func TestTheFactsLineWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T)
 			fake, github := renamedGitHub(t)
 			pull := mergedPull(kase.number, second)
 			github.set(renamedToRepo, kase.number, pull)
-			reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+			reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), attributor)
 
 			readFactsLineOrFail(t, ctx, reconcile)
 
@@ -350,7 +353,7 @@ func TestTheFactsLineWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T)
 			if texts, found := storedTextsOf(t, ctx, pool, renamedToRepo, kase.number); !found || !texts.messagesRead || texts.body != pull.body {
 				t.Errorf("the texts of %s#%d = %+v (found %v), want GitHub's body %q with the messages read", renamedToRepo, kase.number, texts, found, pull.body)
 			}
-			if counts := attributionCountsOrFail(t, ctx, pool); counts.FactsLeft != 0 || counts.ReadsLeft != 0 {
+			if counts := attributionCountsOrFail(t, attributor, ctx, pool); counts.FactsLeft != 0 || counts.ReadsLeft != 0 {
 				t.Errorf("after one pass facts_left = %d and reads_left = %d, want 0 and 0", counts.FactsLeft, counts.ReadsLeft)
 			}
 			for _, asked := range github.pullsAsked() {
@@ -375,13 +378,13 @@ func TestTheFactsLineWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T)
 // stored name fails (reconcilePullRequestHeads, the open arm with StoredUnder).
 func TestTheOpenArmWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	renameAcme(t, ctx, pool)
+	attributor := renameAcme(t, ctx, pool)
 	const number = 7
 	storeOpenRow(t, ctx, pool, renamedRepo, number, time.Now().Add(-10*time.Minute))
 	if owed := owedCount(t, ctx, pool, renamedRepo, number) + owedCount(t, ctx, pool, renamedToRepo, number); owed != 0 {
 		t.Fatalf("the fixture owes %d reads of #%d, want none: only the open arm reads it", owed, number)
 	}
-	if counts := attributionCountsOrFail(t, ctx, pool); counts.ReadsLeft != 0 {
+	if counts := attributionCountsOrFail(t, attributor, ctx, pool); counts.ReadsLeft != 0 {
 		t.Fatalf("the facts line holds %d entries before the pass, want none: only the open arm reads #%d", counts.ReadsLeft, number)
 	}
 	fake, github := renamedGitHub(t)
@@ -389,7 +392,7 @@ func TestTheOpenArmWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T) {
 	pull.body = "The body that GitHub answers now."
 	github.set(renamedToRepo, number, pull)
 
-	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).HeadPass(ctx); err != nil {
+	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), attributor).HeadPass(ctx); err != nil {
 		t.Fatalf("HeadPass: %v", err)
 	}
 
@@ -402,7 +405,7 @@ func TestTheOpenArmWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T) {
 	if asked := github.pullsAsked(); !slices.Contains(asked, fmt.Sprintf("%s#%d", renamedToRepo, number)) || github.restReads() != 0 {
 		t.Errorf("the pass asked the queries %v and read %d pull requests over REST, want a query of %s#%d and no REST read", asked, github.restReads(), renamedToRepo, number)
 	}
-	stale, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	stale, err := attributor.ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
 	if err != nil {
 		t.Fatalf("ListStalePullRequestHeads: %v", err)
 	}
@@ -422,7 +425,7 @@ func TestTheOpenArmWritesARowUnderAnOldNameUnderTheCanonicalName(t *testing.T) {
 // (readFactsLine, step 1).
 func TestTheFactsLineReadsATimelineRowUnderAnOldNameOnce(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
-	renameAcme(t, ctx, pool)
+	attributor := renameAcme(t, ctx, pool)
 	insertProjectIssue(t, ctx, pool, "ATTR", "ATTR-81", 81)
 	timeline := &statementTimeline{issue: new("ATTR-81")}
 	storeStatementRow(t, ctx, pool, statementRow{repo: renamedRepo, number: 8, title: changeTitle(8), noHead: true, timeline: timeline})
@@ -432,9 +435,9 @@ func TestTheFactsLineReadsATimelineRowUnderAnOldNameOnce(t *testing.T) {
 	second := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	github.set(renamedToRepo, 8, mergedPull(8, second))
 	github.set(renamedToRepo, 9, mergedPull(9, second))
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), attributor)
 	t.Run("control_a_timeline_row_whose_results_row_is_under_the_canonical_name", func(t *testing.T) {
-		if counts := attributionCountsOrFail(t, ctx, pool); counts.ReadsLeft != 1 || counts.FactsLeft != 1 {
+		if counts := attributionCountsOrFail(t, attributor, ctx, pool); counts.ReadsLeft != 1 || counts.FactsLeft != 1 {
 			t.Errorf("before the pass reads_left = %d and facts_left = %d, want 1 and 1: only #8. The results row of acme/old#9 is acme/new#9, with facts", counts.ReadsLeft, counts.FactsLeft)
 		}
 	})
@@ -450,7 +453,7 @@ func TestTheFactsLineReadsATimelineRowUnderAnOldNameOnce(t *testing.T) {
 	if old, canonical := timelineRowsOf(t, ctx, pool, renamedRepo, 8), timelineRowsOf(t, ctx, pool, renamedToRepo, 8); old != 1 || canonical != 0 {
 		t.Errorf("after the pass #8 has %d timeline rows under %s and %d under %s, want 1 and 0: no statement rewrites a stored row to another name", old, renamedRepo, canonical, renamedToRepo)
 	}
-	if counts := attributionCountsOrFail(t, ctx, pool); counts.FactsLeft != 0 || counts.ReadsLeft != 0 {
+	if counts := attributionCountsOrFail(t, attributor, ctx, pool); counts.FactsLeft != 0 || counts.ReadsLeft != 0 {
 		t.Errorf("after the pass facts_left = %d and reads_left = %d, want 0 and 0", counts.FactsLeft, counts.ReadsLeft)
 	}
 	for _, asked := range github.pullsAsked() {
@@ -481,7 +484,7 @@ func TestTheFactsLineGoesOnPastARefusedValue(t *testing.T) {
 	github.set(repo, refused, poisoned)
 	github.set(repo, written, mergedPull(written, second))
 
-	line := readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(), events.NewBroker()))
+	line := readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()))
 
 	if asked := github.asked(); len(asked) != 1 || len(asked[0].numbers) != 2 {
 		t.Errorf("the facts line sent the queries %+v, want one query of #%d and #%d", asked, refused, written)
@@ -495,7 +498,7 @@ func TestTheFactsLineGoesOnPastARefusedValue(t *testing.T) {
 	if texts, found := storedTextsOf(t, ctx, pool, repo, written); !found || !texts.messagesRead {
 		t.Errorf("the texts of #%d = %+v (found %v), want GitHub's facts: a refusal of another row ends no read", written, texts, found)
 	}
-	if counts := attributionCountsOrFail(t, ctx, pool); counts.FactsRefused != 1 || counts.ReadsLeft != 1 || counts.FactsLeft != 1 {
+	if counts := attributionCountsOrFail(t, unrenamed(), ctx, pool); counts.FactsRefused != 1 || counts.ReadsLeft != 1 || counts.FactsLeft != 1 {
 		t.Errorf("after the pass facts_refused = %d, reads_left = %d and facts_left = %d, want 1, 1 and 1: #%d", counts.FactsRefused, counts.ReadsLeft, counts.FactsLeft, refused)
 	}
 	if line.Refused != 1 {
@@ -536,9 +539,9 @@ func TestTheFactsLineEndsARowOnlyOnProofOfAbsence(t *testing.T) {
 			github.absenceFails = c.fails
 			proved := c.fails == nil
 
-			line := readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(githubapp.WithLimits(ratelimit.New(pool))), events.NewBroker()))
+			line := readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(githubapp.WithLimits(ratelimit.New(pool))), events.NewBroker(), unrenamed()))
 
-			counts := attributionCountsOrFail(t, ctx, pool)
+			counts := attributionCountsOrFail(t, unrenamed(), ctx, pool)
 			refused41, absent41 := headStampsOf(t, ctx, pool, readable, 41)
 			refused43, unfetchable43 := timelineStampsOf(t, ctx, pool, readable, 43)
 			asked := github.absenceQueries()
@@ -601,7 +604,7 @@ func TestALimitOfOneInstallationLeavesTheOtherInstallationsFactsLine(t *testing.
 		}
 	}
 
-	err := NewReconcile(pool, client, events.NewBroker()).HeadPass(ctx)
+	err := NewReconcile(pool, client, events.NewBroker(), unrenamed()).HeadPass(ctx)
 
 	scope := githubapp.GraphQLInstallationScope(githubapp.InstallationScope(1))
 	if limited, ok := githubapp.AsRateLimit(err); !ok || limited.Scope != scope {
@@ -632,7 +635,7 @@ func TestTheHeadPassLogsItsLineEveryPass(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
 	github := serveBatchGitHub(t, fake)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	if err := reconcile.HeadPass(ctx); err != nil {
 		t.Fatalf("HeadPass: %v", err)
@@ -679,8 +682,8 @@ func TestTheFactsLineReadsMessagesThatAreNotRead(t *testing.T) {
 	statementIssues(t, ctx, pool, "ACME-3")
 	const number = 33
 	storeStatementRow(t, ctx, pool, statementRow{number: number, branch: "legion/ACME-3", title: "feat: the work", texts: &statementTexts{}})
-	wantAnswer(t, ctx, pool, statementRepo, number, "ACME-3 from branch")
-	if counts := attributionCountsOrFail(t, ctx, pool); counts.ReadsLeft != 1 || counts.FactsLeft != 0 {
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, number, "ACME-3 from branch")
+	if counts := attributionCountsOrFail(t, unrenamed(), ctx, pool); counts.ReadsLeft != 1 || counts.FactsLeft != 0 {
 		t.Errorf("before the read reads_left = %d and facts_left = %d, want 1 and 0", counts.ReadsLeft, counts.FactsLeft)
 	}
 	fake := newFakeGitHub(t)
@@ -689,7 +692,7 @@ func TestTheFactsLineReadsMessagesThatAreNotRead(t *testing.T) {
 	pull.branch, pull.title, pull.messages = "legion/ACME-3", "feat: the work", []string{"Work on the change."}
 	github.set(statementRepo, number, pull)
 
-	readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(), events.NewBroker()))
+	readFactsLineOrFail(t, ctx, NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()))
 
 	if asked := github.pullsAsked(); !slices.Contains(asked, fmt.Sprintf("%s#%d", statementRepo, number)) {
 		t.Errorf("the facts line asked about %v, want %s#%d", asked, statementRepo, number)
@@ -697,10 +700,10 @@ func TestTheFactsLineReadsMessagesThatAreNotRead(t *testing.T) {
 	if texts, found := storedTextsOf(t, ctx, pool, statementRepo, number); !found || !texts.messagesRead || !slices.Equal(texts.messages, pull.messages) {
 		t.Errorf("the texts of #%d = %+v (found %v), want GitHub's messages %q, read", number, texts, found, pull.messages)
 	}
-	if counts := attributionCountsOrFail(t, ctx, pool); counts.ReadsLeft != 0 || counts.FactsLeft != 0 {
+	if counts := attributionCountsOrFail(t, unrenamed(), ctx, pool); counts.ReadsLeft != 0 || counts.FactsLeft != 0 {
 		t.Errorf("after the read reads_left = %d and facts_left = %d, want 0 and 0", counts.ReadsLeft, counts.FactsLeft)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, number, "ACME-3 from branch")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, number, "ACME-3 from branch")
 }
 
 // The first read of a pull request with a timeline row only moves it from the timeline's issue
@@ -713,13 +716,13 @@ func TestTheFirstReadOfATimelineOnlyPullRequestMovesFromItsTimelineIssue(t *test
 	statementIssues(t, ctx, pool, "ACME-11", "ACME-12")
 	const number, title = 61, "feat: ACME-12 the work"
 	storeStatementRow(t, ctx, pool, statementRow{number: number, title: title, noHead: true, timeline: &statementTimeline{issue: new("ACME-11")}})
-	wantAnswer(t, ctx, pool, statementRepo, number, "ACME-11 from none, no facts")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, number, "ACME-11 from none, no facts")
 	fake := newFakeGitHub(t)
 	github := serveBatchGitHub(t, fake)
 	pull := mergedPull(number, time.Now().UTC().Add(-time.Hour).Truncate(time.Second))
 	pull.branch, pull.title = "work/none", title
 	github.set(statementRepo, number, pull)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	for pass := 1; pass <= 2; pass++ {
 		if err := reconcile.HeadPass(ctx); err != nil {
@@ -727,14 +730,14 @@ func TestTheFirstReadOfATimelineOnlyPullRequestMovesFromItsTimelineIssue(t *test
 		}
 	}
 
-	wantAnswer(t, ctx, pool, statementRepo, number, "ACME-12 from title_body")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, number, "ACME-12 from title_body")
 	want := []string{fmt.Sprintf("%s#%d ACME-11 -> ACME-12", statementRepo, number)}
 	for _, issue := range []string{"ACME-11", "ACME-12"} {
 		if moves := attributionMovesOn(t, ctx, pool, issue); !slices.Equal(moves, want) {
 			t.Errorf("%s carries the attribution events %q, want %q", issue, moves, want)
 		}
 	}
-	if counts := attributionCountsOrFail(t, ctx, pool); counts.MovesQueued != 0 {
+	if counts := attributionCountsOrFail(t, unrenamed(), ctx, pool); counts.MovesQueued != 0 {
 		t.Errorf("after two passes %d moves are queued, want none: each pass appends what it queues", counts.MovesQueued)
 	}
 }

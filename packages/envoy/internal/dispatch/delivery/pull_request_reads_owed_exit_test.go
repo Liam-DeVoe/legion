@@ -49,7 +49,7 @@ func readOwedRow(t *testing.T, ctx context.Context, pool *store.Pool, repo strin
 // where the issue lists no such pull request.
 func attributedHeadOf(t *testing.T, ctx context.Context, pool *store.Pool, issue string, number int) AttributedHead {
 	t.Helper()
-	heads, err := HeadsAttributedTo(ctx, pool, issue)
+	heads, err := unrenamed().HeadsAttributedTo(ctx, pool, issue)
 	if err != nil {
 		t.Fatalf("HeadsAttributedTo(%s): %v", issue, err)
 	}
@@ -107,7 +107,7 @@ func TestARefusedReadEndsWhenTheAppCanReadTheRepositoryAgain(t *testing.T) {
 
 			// A read of GitHub writes the first head.
 			github.set("acme/widgets", number, "open", first, branch, body, opened)
-			if _, err := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil).handlePullRequestEnvelope(ctx, nil,
+			if _, err := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", number, "opened", first, branch, body, opened)); err != nil {
 				t.Fatalf("handle the envelope that opens #%d: %v", number, err)
 			}
@@ -131,7 +131,7 @@ func TestARefusedReadEndsWhenTheAppCanReadTheRepositoryAgain(t *testing.T) {
 				fake.notInstalled.Store("acme/widgets", true)
 			}
 			client := fake.newTestClient()
-			if _, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil,
+			if _, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 				prEnvelope("acme/widgets", number, "synchronize", second, branch, body, pushed)); err != nil {
 				t.Fatalf("handle the envelope of the second head of #%d: %v", number, err)
 			}
@@ -152,7 +152,7 @@ func TestARefusedReadEndsWhenTheAppCanReadTheRepositoryAgain(t *testing.T) {
 			refused := AttributedHead{Number: number, HeadSHA: first, RefusedAs: model.RefusedAsAppNotInstalled, RefusedSince: &firstRefusal}
 			wantAttributedHead(t, "after the refused envelope", attributedHeadOf(t, ctx, pool, issue, number), refused)
 
-			reconcile := NewReconcile(pool, client, events.NewBroker())
+			reconcile := NewReconcile(pool, client, events.NewBroker(), unrenamed())
 			for pass := 1; pass <= 5; pass++ {
 				lookups := fake.lookupsOf("acme/widgets")
 				reconcile.runOnce(ctx)

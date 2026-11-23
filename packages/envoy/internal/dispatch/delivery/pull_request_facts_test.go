@@ -115,9 +115,9 @@ func describeIssue(issue *string) string {
 
 // refreshOrFail reads repo#number through RefreshPullRequestHead, and stops the test where the
 // read fails or GitHub refuses it.
-func refreshOrFail(t *testing.T, ctx context.Context, pool *store.Pool, client *githubapp.Client, repo string, number int) *FetchedFacts {
+func refreshOrFail(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, client *githubapp.Client, repo string, number int) *FetchedFacts {
 	t.Helper()
-	fetched, refused, err := RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now())
+	fetched, refused, err := a.RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now())
 	if err != nil || refused != nil {
 		t.Fatalf("refresh %s#%d: refused %v, error %v", repo, number, refused, err)
 	}
@@ -141,15 +141,15 @@ func TestEveryWriterStoresGitHubsTextsAndNoIssue(t *testing.T) {
 		{name: "an_envelope_that_names_no_head_branch", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, second time.Time) error {
 			envelope := prEnvelope(statementRepo, number, "edited", head, "", "", second)
 			delete(envelope, "head_ref")
-			_, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil, envelope)
+			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil, envelope)
 			return err
 		}},
 		{name: "the_refresh", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, _ time.Time) error {
-			_, _, err := RefreshPullRequestHead(ctx, pool, client, nil, statementRepo, number, time.Now())
+			_, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, statementRepo, number, time.Now())
 			return err
 		}},
 		{name: "the_read_through", write: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, _ time.Time) error {
-			_, _, err := ReadThroughCommitPulls(ctx, pool, client, statementRepo, head, time.Now())
+			_, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, client, statementRepo, head, time.Now())
 			return err
 		}},
 	} {
@@ -158,7 +158,7 @@ func TestEveryWriterStoresGitHubsTextsAndNoIssue(t *testing.T) {
 			pool, ctx := deliveryTestPool(t)
 			statementIssues(t, ctx, pool, "ACME-1", "ACME-2")
 			earlier := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
-			if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: statementRepo, Number: number,
+			if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: statementRepo, Number: number,
 				HeadSHA: fakeSHA("b", number), HeadRef: "legion/ACME-2", BaseRef: "main", State: "open", EventAt: &earlier}); err != nil {
 				t.Fatalf("store the row of an older release: %v", err)
 			}
@@ -181,8 +181,8 @@ func TestEveryWriterStoresGitHubsTextsAndNoIssue(t *testing.T) {
 			if stored := storedIssueOf(t, ctx, pool, statementRepo, number); describeIssue(stored) != "ACME-1" {
 				t.Errorf("issue_key of #%d = %s after the write, want ACME-1 as the row held it: a writer names no issue", number, describeIssue(stored))
 			}
-			wantAnswer(t, ctx, pool, statementRepo, number, "ACME-2 from branch")
-			wantKnown(t, ctx, pool, statementRepo, number, true)
+			wantAnswer(t, unrenamed(), ctx, pool, statementRepo, number, "ACME-2 from branch")
+			wantKnown(t, unrenamed(), ctx, pool, statementRepo, number, true)
 			if pages := github.commitReads.Load(); pages != 0 {
 				t.Errorf("the write read %d pages of commits, want 0: the branch names a held issue", pages)
 			}
@@ -208,26 +208,26 @@ func TestAWriterReadsTheMessagesOnlyWhereNoHigherSourceDecides(t *testing.T) {
 	client := fake.newTestClient()
 	pagesOf := func(number int) int32 {
 		before := github.commitReads.Load()
-		refreshOrFail(t, ctx, pool, client, statementRepo, number)
+		refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, number)
 		return github.commitReads.Load() - before
 	}
 	if pages := pagesOf(33); pages != 1 {
 		t.Errorf("the first read of #33 read %d pages of commits, want 1", pages)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 33, "ACME-4 from commit_message")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 33, "ACME-4 from commit_message")
 	if pages := pagesOf(33); pages != 0 {
 		t.Errorf("a second read of #33 at the same head read %d pages of commits, want 0: the stored texts hold its messages", pages)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 33, "ACME-4 from commit_message")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 33, "ACME-4 from commit_message")
 	github.set(statementRepo, 33, "open", fakeSHA("b", 33), "work/none", "", second.Add(time.Minute))
 	if pages := pagesOf(33); pages != 1 {
 		t.Errorf("the read of #33 at a new head read %d pages of commits, want 1", pages)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 33, "ACME-4 from commit_message")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 33, "ACME-4 from commit_message")
 	if pages := pagesOf(34); pages != 0 {
 		t.Errorf("the read of #34 read %d pages of commits, want 0: its branch names a held issue", pages)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 34, "ACME-5 from branch")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 34, "ACME-5 from branch")
 }
 
 // A pull request with no key in its branch, title or body is known in the first answer after its
@@ -251,7 +251,7 @@ func TestAKeylessPullRequestIsKnownInTheFirstAnswerAfterItsEvent(t *testing.T) {
 			if failing {
 				github.failCommits()
 			}
-			intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil)
+			intake := newIntake(nil, pool, nil, fake.newTestClient(), nil, nil, unrenamed())
 			handle := func(action, head string, at time.Time) int32 {
 				github.set(repo, number, "open", head, "work/no-key", "", at)
 				github.setMessages(number, "Work.\n\nDispatch: ACME-4")
@@ -268,12 +268,12 @@ func TestAKeylessPullRequestIsKnownInTheFirstAnswerAfterItsEvent(t *testing.T) {
 			}{{"opened", fakeSHA("a", number), opened}, {"synchronize", fakeSHA("b", number), opened.Add(time.Minute)}} {
 				pages := handle(event.action, event.head, event.at)
 				if failing {
-					wantAnswer(t, ctx, pool, repo, number, "nobody from none, no facts")
-					wantKnown(t, ctx, pool, repo, number, false)
+					wantAnswer(t, unrenamed(), ctx, pool, repo, number, "nobody from none, no facts")
+					wantKnown(t, unrenamed(), ctx, pool, repo, number, false)
 					continue
 				}
-				wantAnswer(t, ctx, pool, repo, number, "ACME-4 from commit_message")
-				wantKnown(t, ctx, pool, repo, number, true)
+				wantAnswer(t, unrenamed(), ctx, pool, repo, number, "ACME-4 from commit_message")
+				wantKnown(t, unrenamed(), ctx, pool, repo, number, true)
 				if pages != 1 {
 					t.Errorf("event %d (%s) read %d pages of commits, want 1", i+1, event.action, pages)
 				}
@@ -297,7 +297,7 @@ func TestAForksHeadReadsNoCommits(t *testing.T) {
 		pull["head"].(map[string]any)["repo"] = map[string]any{"full_name": "fork/stmt"}
 	})
 	github.setMessages(41, "Work.\n\nDispatch: ACME-6")
-	refreshOrFail(t, ctx, pool, fake.newTestClient(), statementRepo, 41)
+	refreshOrFail(t, unrenamed(), ctx, pool, fake.newTestClient(), statementRepo, 41)
 	if pages := github.commitReads.Load(); pages != 0 {
 		t.Errorf("the read of a fork's pull request read %d pages of commits, want 0", pages)
 	}
@@ -305,9 +305,9 @@ func TestAForksHeadReadsNoCommits(t *testing.T) {
 	if !found || !texts.messagesRead || len(texts.messages) != 0 || texts.headRepo != "fork/stmt" {
 		t.Errorf("the texts of the fork's pull request = %+v (found %v), want the head repository fork/stmt and messages read and empty", texts, found)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 41, "nobody from none")
-	wantKnown(t, ctx, pool, statementRepo, 41, true)
-	wantListed(t, ctx, pool, "ACME-6")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 41, "nobody from none")
+	wantKnown(t, unrenamed(), ctx, pool, statementRepo, 41, true)
+	wantListed(t, unrenamed(), ctx, pool, "ACME-6")
 }
 
 // A failed read of the commit messages stores every other part of the facts (B4). GitHub answers
@@ -321,7 +321,7 @@ func TestACommitReadFailureStoresEveryOtherPartOfTheFacts(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	statementIssues(t, ctx, pool, "ACME-2", "ACME-3")
 	earlier := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: statementRepo, Number: 31,
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: statementRepo, Number: 31,
 		HeadSHA: fakeSHA("a", 31), HeadRef: "work/none", BaseRef: "main", State: "open", EventAt: &earlier}); err != nil {
 		t.Fatalf("store #31 before: %v", err)
 	}
@@ -336,28 +336,28 @@ func TestACommitReadFailureStoresEveryOtherPartOfTheFacts(t *testing.T) {
 	github.set(statementRepo, 32, "open", fakeSHA("a", 32), "legion/ACME-2", "", second)
 	client := fake.newTestClient()
 
-	refreshOrFail(t, ctx, pool, client, statementRepo, 31)
-	if got := readHead(t, ctx, pool, statementRepo, 31); got.HeadSHA != newHead {
+	refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, 31)
+	if got := readHead(t, unrenamed(), ctx, pool, statementRepo, 31); got.HeadSHA != newHead {
 		t.Errorf("the results row of #31 holds %.8s after the read, want the new head %.8s", got.HeadSHA, newHead)
 	}
 	texts, found := storedTextsOf(t, ctx, pool, statementRepo, 31)
 	if !found || texts.headSHA != newHead || texts.messagesRead {
 		t.Errorf("the texts of #31 = %+v (found %v), want the new head %.8s with commit_messages null", texts, found, newHead)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 31, "nobody from none, no facts")
-	wantKnown(t, ctx, pool, statementRepo, 31, false)
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 31, "nobody from none, no facts")
+	wantKnown(t, unrenamed(), ctx, pool, statementRepo, 31, false)
 	if stored := storedIssueOf(t, ctx, pool, statementRepo, 31); describeIssue(stored) != "ACME-3" {
 		t.Errorf("issue_key of #31 = %s, want ACME-3 as the row held it", describeIssue(stored))
 	}
-	wantListed(t, ctx, pool, "ACME-3")
+	wantListed(t, unrenamed(), ctx, pool, "ACME-3")
 
 	before := github.commitReads.Load()
-	refreshOrFail(t, ctx, pool, client, statementRepo, 32)
+	refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, 32)
 	if pages := github.commitReads.Load() - before; pages != 0 {
 		t.Errorf("the first read of #32 read %d pages of commits, want 0: its branch names a held issue", pages)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 32, "ACME-2 from branch")
-	wantKnown(t, ctx, pool, statementRepo, 32, true)
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 32, "ACME-2 from branch")
+	wantKnown(t, unrenamed(), ctx, pool, statementRepo, 32, true)
 }
 
 // An edited body replaces the stored texts: GitHub moves updated_at, and the next read writes the
@@ -377,7 +377,7 @@ func TestAnEditedBodyReplacesTheStoredTexts(t *testing.T) {
 		keys string
 	}{{"Fixes ACME-1.", first, "[ACME-1]"}, {"Fixes ACME-2.", first.Add(time.Minute), "[ACME-2]"}} {
 		github.set(statementRepo, 31, "open", head, "work/none", edit.body, edit.at)
-		refreshOrFail(t, ctx, pool, client, statementRepo, 31)
+		refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, 31)
 		texts, found := storedTextsOf(t, ctx, pool, statementRepo, 31)
 		if !found || texts.body != edit.body || fmt.Sprint(texts.titleKeys) != edit.keys ||
 			texts.updatedAt == nil || !texts.updatedAt.Equal(edit.at) {
@@ -385,7 +385,7 @@ func TestAnEditedBodyReplacesTheStoredTexts(t *testing.T) {
 				i+1, texts, found, edit.body, edit.keys, edit.at.Format(time.RFC3339))
 		}
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 31, "ACME-2 from title_body")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 31, "ACME-2 from title_body")
 }
 
 // RefreshPullRequestHead answers what it fetched and stored: for #31 a FetchedFacts of GitHub's
@@ -402,7 +402,7 @@ func TestARefreshAnswersWhatItFetchedAndStored(t *testing.T) {
 	github.setMessages(31, "Work.\n\nDispatch: ACME-4")
 	client := fake.newTestClient()
 
-	fetched := refreshOrFail(t, ctx, pool, client, statementRepo, 31)
+	fetched := refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, 31)
 	if fetched == nil || fetched.Texts == nil {
 		t.Fatalf("the refresh of #31 answered %+v, want the facts it fetched", fetched)
 	}
@@ -419,7 +419,7 @@ func TestARefreshAnswersWhatItFetchedAndStored(t *testing.T) {
 		t.Errorf("the refresh answered the texts %+v, and the texts row holds %+v (found %v): want one value, with the messages read", answered, kept, found)
 	}
 
-	fetched, refused, err := RefreshPullRequestHead(ctx, pool, client, nil, statementRepo, 404, time.Now())
+	fetched, refused, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, statementRepo, 404, time.Now())
 	if err != nil || refused == nil || fetched != nil {
 		t.Errorf("the refresh of #404, which GitHub does not have, answered %+v, refused %v, error %v; want no facts and the refusal", fetched, refused, err)
 	}
@@ -442,7 +442,7 @@ func TestAWriteThatTheGuardRefusesWritesNoTexts(t *testing.T) {
 			stamped := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 			first, other := fakeSHA("a", 35), fakeSHA("b", 35)
 			github.set(statementRepo, 35, "open", first, "legion/ACME-7", "", stamped)
-			refreshOrFail(t, ctx, pool, client, statementRepo, 35)
+			refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, 35)
 
 			at := stamped.Add(-time.Minute)
 			if later {
@@ -450,8 +450,8 @@ func TestAWriteThatTheGuardRefusesWritesNoTexts(t *testing.T) {
 			}
 			github.set(statementRepo, 35, "open", other, "legion/ACME-7", "", at)
 			github.edit(35, func(pull map[string]any) { pull["title"] = "Another title" })
-			refreshOrFail(t, ctx, pool, client, statementRepo, 35)
-			head := readHead(t, ctx, pool, statementRepo, 35)
+			refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, 35)
+			head := readHead(t, unrenamed(), ctx, pool, statementRepo, 35)
 			texts, found := storedTextsOf(t, ctx, pool, statementRepo, 35)
 			want, title, updated := first, "Change 35", stamped
 			if later {
@@ -499,7 +499,8 @@ func TestANewResultsRowStartsWithItsTimelineIssue(t *testing.T) {
 			fastPageRetries(t)
 			pool, ctx := deliveryTestPool(t)
 			seedProjectRepository(t, ctx, pool, "ATTR", "ATTR", repo)
-			mapRepository(t, ctx, pool, old, "ATTR", false, new(repo))
+			seedRenamePair(t, ctx, pool, old, "ATTR", repo)
+			attributor := NewAttributor(renamesOf(t, ctx, pool))
 			insertProjectIssue(t, ctx, pool, "ATTR", "ATTR-1", 1)
 			insertProjectIssue(t, ctx, pool, "ATTR", "ATTR-2", 2)
 			kase.setUp(t, ctx, pool)
@@ -507,7 +508,7 @@ func TestANewResultsRowStartsWithItsTimelineIssue(t *testing.T) {
 			github := serveGitHubPulls(t, fake, repo)
 			github.failCommits()
 			github.set(repo, number, "open", fakeSHA("a", number), "work/none", "", time.Now().UTC().Add(-time.Hour).Truncate(time.Second))
-			refreshOrFail(t, ctx, pool, fake.newTestClient(), kase.readUnder, number)
+			refreshOrFail(t, attributor, ctx, pool, fake.newTestClient(), kase.readUnder, number)
 			if stored := storedIssueOf(t, ctx, pool, repo, number); describeIssue(stored) != kase.want {
 				t.Errorf("the new results row of %s#%d stores %s, want %s", repo, number, describeIssue(stored), kase.want)
 			}
@@ -515,10 +516,10 @@ func TestANewResultsRowStartsWithItsTimelineIssue(t *testing.T) {
 			if err := pool.QueryRow(ctx, `select count(*) from pull_request_heads where repo = $1`, old).Scan(&oldRows); err != nil || oldRows != 0 {
 				t.Errorf("results rows under %s after the write = %d (%v), want 0", old, oldRows, err)
 			}
-			wantAnswer(t, ctx, pool, repo, number, "nobody from none, no facts")
-			wantKnown(t, ctx, pool, repo, number, false)
-			wantListed(t, ctx, pool, "ATTR-1")
-			wantListed(t, ctx, pool, "ATTR-2")
+			wantAnswer(t, attributor, ctx, pool, repo, number, "nobody from none, no facts")
+			wantKnown(t, attributor, ctx, pool, repo, number, false)
+			wantListed(t, attributor, ctx, pool, "ATTR-1")
+			wantListed(t, attributor, ctx, pool, "ATTR-2")
 		})
 	}
 }
@@ -551,7 +552,7 @@ func TestAFreeFormTextWithANulGetsFacts(t *testing.T) {
 		github.edit(pull.number, func(answer map[string]any) { answer["title"] = pull.title })
 		github.setMessages(pull.number, pull.message)
 		before := github.commitReads.Load()
-		refreshOrFail(t, ctx, pool, client, statementRepo, pull.number)
+		refreshOrFail(t, unrenamed(), ctx, pool, client, statementRepo, pull.number)
 		if pages := github.commitReads.Load() - before; pages != 1 {
 			t.Errorf("the read of #%d read %d pages of commits, want 1", pull.number, pages)
 		}
@@ -561,12 +562,12 @@ func TestAFreeFormTextWithANulGetsFacts(t *testing.T) {
 		fmt.Sprint(nul37.messages) != "[Work.\uFFFD Dispatch: ACME-3]" {
 		t.Errorf("the texts of #37 = %+v (found %v), want U+FFFD where each NUL was", nul37, found)
 	}
-	if head := readHead(t, ctx, pool, statementRepo, 37); head.HeadSHA != fakeSHA("a", 37) {
+	if head := readHead(t, unrenamed(), ctx, pool, statementRepo, 37); head.HeadSHA != fakeSHA("a", 37) {
 		t.Errorf("the results row of #37 holds %.8s, want its head", head.HeadSHA)
 	}
 	plain38, _ := storedTextsOf(t, ctx, pool, statementRepo, 38)
-	wantAnswer(t, ctx, pool, statementRepo, 37, "ACME-3 from commit_message")
-	wantAnswer(t, ctx, pool, statementRepo, 38, "ACME-3 from commit_message")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 37, "ACME-3 from commit_message")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 38, "ACME-3 from commit_message")
 	keysOf := func(texts storedTexts) string {
 		return fmt.Sprint(texts.titleKeys, texts.citedIssues, texts.branchKeys, texts.commit)
 	}
@@ -586,7 +587,7 @@ func TestAFreeFormTextWithANulGetsFacts(t *testing.T) {
 	if len(inside.commit) != 0 {
 		t.Errorf("the commit keys of #40, whose NUL is inside the key, = %v, want none (the control)", inside.commit)
 	}
-	wantAnswer(t, ctx, pool, statementRepo, 40, "nobody from none")
+	wantAnswer(t, unrenamed(), ctx, pool, statementRepo, 40, "nobody from none")
 }
 
 // A value of identity with a NUL is refused (BL2): a payload whose head branch holds a NUL, and
@@ -605,7 +606,7 @@ func TestAValueOfIdentityWithANulIsRefused(t *testing.T) {
 		pull["head"].(map[string]any)["repo"] = map[string]any{"full_name": statementRepo + "\x00"}
 	})
 	for _, number := range []int{42, 43} {
-		_, _, err := RefreshPullRequestHead(ctx, pool, client, nil, statementRepo, number, time.Now())
+		_, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, statementRepo, number, time.Now())
 		if !errors.Is(err, errNoRowHolds) {
 			t.Errorf("the write of #%d answered %v, want errNoRowHolds", number, err)
 		}

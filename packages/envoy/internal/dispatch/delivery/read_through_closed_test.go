@@ -19,7 +19,7 @@ func TestAReadThroughWritesNoRowOfAClosedPullRequestItDoesNotHold(t *testing.T) 
 	issue := seedHeadIssue(t, ctx, pool, 51)
 	const sha = "5151515151515151515151515151515151515151"
 	before := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
+	if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/widgets", Number: 51, HeadSHA: sha, HeadRef: "legion/" + issue, BaseRef: "main",
 		State: "open", Title: issue + " the work", URL: "https://github.com/acme/widgets/pull/51", EventAt: &before,
 	}); err != nil {
@@ -45,7 +45,7 @@ func TestAReadThroughWritesNoRowOfAClosedPullRequestItDoesNotHold(t *testing.T) 
 		mustEncode(t, w, []any{})
 	})
 
-	written, _, err := ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets", sha, time.Now())
+	written, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, fake.newTestClient(), "acme/widgets", sha, time.Now())
 	if err != nil {
 		t.Fatalf("read through the commit's pull requests: %v", err)
 	}
@@ -54,10 +54,10 @@ func TestAReadThroughWritesNoRowOfAClosedPullRequestItDoesNotHold(t *testing.T) 
 	if rows := headRowsOf(t, ctx, pool, "acme/widgets", 52); rows != 0 {
 		t.Errorf("%d rows of #52, want none: a closed pull request that was not merged gets no row", rows)
 	}
-	if held := readHead(t, ctx, pool, "acme/widgets", 51); held.State != "closed" {
+	if held := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 51); held.State != "closed" {
 		t.Errorf("#51 is %s, want closed: the read-through writes GitHub's state over a row Dispatch holds", held.State)
 	}
-	if open := readHead(t, ctx, pool, "acme/widgets", 53); open.State != "open" || open.HeadSHA != sha {
+	if open := readHead(t, unrenamed(), ctx, pool, "acme/widgets", 53); open.State != "open" || open.HeadSHA != sha {
 		t.Errorf("#53 is %s at %.7s, want open at %.7s", open.State, open.HeadSHA, sha)
 	}
 	if written != 2 {

@@ -45,7 +45,7 @@ const factsRefusedOf = `case when a.stored_repo is not null
 
 // attributionCountsSelect is ReadAttributionCounts' select over the terms of the facts line. Each
 // link's pull request is counted under its canonical name, read through the statement's renames
-// (renameJoin), so the count reads repo_projects once however many links there are.
+// (renameJoin), so the count reads the rule once however many links there are.
 var attributionCountsSelect = `
 	select (select count(*) from attributed a where not a.has_facts),
 		(select count(*) from attributed),
@@ -63,8 +63,8 @@ var attributionCountsSelect = `
 // proved absent is in no count, and one whose texts are current and whose messages are not read
 // is in ReadsLeft, and in FactsLeft only where its answer is not known. The owed reads are
 // counted by one more statement, one scan of pull_request_reads_owed (owedReadCounts).
-func ReadAttributionCounts(ctx context.Context, pool *store.Pool) (AttributionCounts, error) {
-	statements, err := attribution()
+func (a *Attributor) ReadAttributionCounts(ctx context.Context, pool *store.Pool) (AttributionCounts, error) {
+	statements, err := a.attribution()
 	if err != nil {
 		return AttributionCounts{}, err
 	}

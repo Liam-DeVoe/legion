@@ -27,15 +27,16 @@ func readAttributionCounts(t *testing.T, handler http.Handler) delivery.Attribut
 
 // storeAttributionRow stores acme/widgets#number, merged on branch, through the writer of a read of
 // GitHub, with texts that are current. Its title and its body name no issue. messagesRead false
-// stores the texts with the commit messages not read.
-func storeAttributionRow(t *testing.T, database *store.Store, number int, branch string, messagesRead bool) {
+// stores the texts with the commit messages not read. attributor is the server's (Deps.Attributor),
+// so the row is written under the rename pairs the server reads by.
+func storeAttributionRow(t *testing.T, attributor *delivery.Attributor, database *store.Store, number int, branch string, messagesRead bool) {
 	t.Helper()
 	at := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	texts := &delivery.PullRequestTexts{HeadRepo: "acme/widgets", BaseRef: "main", Title: "A change", Body: ""}
 	if messagesRead {
 		texts.CommitMessages, texts.MessagesRead = []string{}, true
 	}
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
+	if err := attributor.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
 		Repo: "acme/widgets", Number: number, HeadSHA: fmt.Sprintf("%040x", number), HeadRef: branch, BaseRef: "main",
 		State: "merged", Title: "A change", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 		EventAt: &at, Texts: texts,
@@ -137,15 +138,15 @@ func TestTheAttributionCountsNeedNoDeliverySettings(t *testing.T) {
 	check("a_refused_row_with_no_texts")
 
 	// The branch of #3 names a held issue, so its messages that are not read decide nothing.
-	storeAttributionRow(t, database, 3, "legion/"+held, false)
+	storeAttributionRow(t, deps.Attributor, database, 3, "legion/"+held, false)
 	want.ReadsLeft = 2
 	check("a_branch_that_names_a_held_issue_and_messages_not_read")
 	// No source of #4 above its messages names a held issue, so the answer of #4 is not known.
-	storeAttributionRow(t, database, 4, "work/none", false)
+	storeAttributionRow(t, deps.Attributor, database, 4, "work/none", false)
 	want.FactsLeft, want.ReadsLeft = 2, 3
 	check("control_a_branch_that_names_no_held_issue_and_messages_not_read")
 
-	storeAttributionRow(t, database, 5, "work/none", true)
+	storeAttributionRow(t, deps.Attributor, database, 5, "work/none", true)
 	check("control_texts_with_messages_read_on_the_reading_that_runs")
 	putTextsOnReading(t, database, 5, "old")
 	want.KeysOnAnotherReading = 1

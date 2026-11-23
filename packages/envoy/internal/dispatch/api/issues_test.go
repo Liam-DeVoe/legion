@@ -177,11 +177,6 @@ func TestCreateExternalIssueIsIdempotentDuringConcurrentCreation(t *testing.T) {
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
-	}
 
 	start := make(chan struct{})
 	responses := make(chan *httptest.ResponseRecorder, 2)
@@ -189,7 +184,7 @@ func TestCreateExternalIssueIsIdempotentDuringConcurrentCreation(t *testing.T) {
 		go func() {
 			<-start
 			responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-				"external": "owner/repo#777",
+				"external": "owner/repo#777", "project": "TEST",
 			}, "alice")
 		}()
 	}
@@ -1162,14 +1157,13 @@ func TestIssuePatchExternalLinkTakenByAnotherIssue(t *testing.T) {
 // reference and the external create find the holder in another case. The check compares with
 // other issues only: an issue that sends its own links again, in any case, with each write, as
 // the client does, is answered 200, and so is each issue of a pair stored before. A write that
-// sends one exact URL twice answers 409 with a message that says so.
+// sends one exact URL twice answers 409 with a message that says so. The external create names
+// its project, CORE, in its body, as every create does: Dispatch finds no project from a
+// repository.
 func TestALinkInAnotherCaseOfAHeldURLIsTaken(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map owner/repo: status=%d body=%s", response.Code, response.Body.String())
 	}
 	keys := []string{}
 	for _, title := range []string{"One", "Two", "Three", "Four", "Five", "Six"} {
@@ -1210,7 +1204,7 @@ func TestALinkInAnotherCaseOfAHeldURLIsTaken(t *testing.T) {
 
 	want("link #9 to "+three, link(three, "https://github.com/Owner/Repo/issues/9"), http.StatusOK)
 	want("resolve owner/repo#9", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%239", nil, "alice"), http.StatusOK, three)
-	want("create owner/repo#9", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#9"}, "alice"), http.StatusOK, three)
+	want("create owner/repo#9", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "external": "owner/repo#9"}, "alice"), http.StatusOK, three)
 	want(three+" links another URL beside its own", link(three, "https://github.com/Owner/Repo/issues/9", "https://github.com/owner/repo/pull/8"), http.StatusOK)
 	want("resolve owner/repo#10", dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/resolve?ref=owner/repo%2310", nil, "alice"), http.StatusNotFound)
 	// A link of a name GitHub cannot have, an owner that starts with `-`, names no pull request

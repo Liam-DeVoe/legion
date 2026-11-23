@@ -25,16 +25,18 @@ const heldLinkLock = 4209012
 // request (lockLinkedPullRequests), B waits for A to commit, and its check then reads A's row:
 // the PATCH is refused with 409 EXTERNAL_LINK_TAKEN naming the first issue, and the create
 // answers as it does for a link stored before it: the first issue holds owner/repo#7 and is of
-// another project than the one acme/tools maps to, so 400 EXTERNAL_PROJECT_MISMATCH names its
+// another project than the one the create names, so 400 EXTERNAL_PROJECT_MISMATCH names its
 // project (answerExistingExternalIssue).
 //
-// The first issue is in project OTHER and the second in CORE, which acme/tools maps to, so no
+// The first issue is in project OTHER and the second in CORE, the project the create names, so no
 // owner lock the two writes would share (an issue's, or the create's of its project) orders B
 // behind A: only the lock of the pull request can. In one project the create waits on A's lock
 // of the project, and the case then passes with the lock of the pull request taken away. Two more
 // PATCH cases hold the lock to the link rule: B links /Issues/7 of ACME/Tools, in other letters,
 // and /issues/7 of oldco/tools, the name acme/tools had before a rename, each of which names the
-// pull request A links and takes A's lock (linkLockFormSQL).
+// pull request A links and takes A's lock (linkLockFormSQL). No route writes a rename pair, so
+// that case seeds oldco/tools renamed to acme/tools by SQL, as the last release left it, and
+// builds the server after the seed, since a server reads the pairs once, as it is built.
 func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 	for _, c := range []struct {
 		second, url string
@@ -47,21 +49,18 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 	} {
 		second := c.second
 		t.Run(second, func(t *testing.T) {
-			handler, database := newTestHandlerWithStore(t)
+			options, projects := testServerOptions{}, []string{"OTHER", "CORE"}
+			if c.rename {
+				// renamedRepositoryStore seeds project CORE with the pair, so only OTHER is
+				// created below.
+				options.store, options.renames = renamedRepositoryStore(t, "CORE", "oldco/tools", "acme/tools")
+				projects = []string{"OTHER"}
+			}
+			handler, database, _ := newTestServer(t, options)
 			ctx := context.Background()
-			for _, project := range []string{"OTHER", "CORE"} {
+			for _, project := range projects {
 				if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": project}, "alice"); response.Code != http.StatusCreated {
 					t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
-				}
-			}
-			// The create for acme/tools#7 takes its project from the repository's mapping.
-			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/tools", map[string]any{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
-				t.Fatalf("map acme/tools to CORE: status=%d body=%s", response.Code, response.Body.String())
-			}
-			if c.rename {
-				if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/oldco/tools",
-					map[string]any{"project": "CORE", "renamed_to": "acme/tools"}, "alice"); response.Code != http.StatusOK {
-					t.Fatalf("record oldco/tools as renamed to acme/tools: status=%d body=%s", response.Code, response.Body.String())
 				}
 			}
 			keys := []string{}

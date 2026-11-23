@@ -30,6 +30,10 @@ func (s *server) resolveIssue(w http.ResponseWriter, r *http.Request) {
 
 // resolveIssueRef resolves an existing native key or external GitHub link.
 // Creating a missing external issue is the responsibility of POST /issues.
+//
+// An external reference finds a link stored under either name of its repository's rename pair
+// (refs.Renames.URLSpellings), so `sjawhar/legion#1955` and `cybermonklabs/legion#1955` reach
+// the same issue, whichever name its link was stored under.
 func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if issueKeyPattern.MatchString(ref) {
@@ -49,13 +53,13 @@ func (s *server) resolveIssueRef(ctx context.Context, ref string) (string, error
 	// that holds the URL in another letter case is found, and two issues that hold it in two cases
 	// answer AMBIGUOUS_ISSUE_REF. The reference is read as the URL the external create stores,
 	// its /issues/ form, and a link of the pull request or issue in either form under any name of
-	// its repository (linkFormsSQL, the one link rule) is found the same way, so a reference by
-	// the name a repository had before a rename finds the issue that links it by its name today,
-	// and the reverse. A link the rule refuses, of a name GitHub cannot have, is found only as
-	// that URL. issue_external_links_url_lower serves the read.
+	// its repository (linkFormsSQL over the rename pairs the boot read, the one link rule) is found
+	// the same way, so a reference by the name a repository had before a rename finds the issue
+	// that links it by its name today, and the reverse. A link the rule refuses, of a name GitHub
+	// cannot have, is found only as that URL. issue_external_links_url_lower serves the read.
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select distinct issue_key from issue_external_links
-		where lower(url) = any(`+linkFormsSQL("$1::text")+`) order by issue_key
+		where lower(url) = any(`+linkFormsSQL(s.deps.Renames, "$1::text")+`) order by issue_key
 	`, externalURL(repo, number))
 	if err != nil {
 		return "", err

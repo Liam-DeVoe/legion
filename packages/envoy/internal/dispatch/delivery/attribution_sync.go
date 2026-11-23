@@ -66,8 +66,8 @@ const syncJudged = `select repo, number from pull_request_heads union select rep
 // (the row that heads takes) held another issue, keyed by the canonical name: a second move before
 // the events keeps the first from_key. A pull request whose answer is not known writes nothing and
 // queues nothing. All terms read one snapshot, so from_key is the stored issue before the write.
-func syncAttributionsStatement(schema string) string {
-	return attributedTerms(schema, syncJudged) + `, heads_written as (
+func syncAttributionsStatement(schema string, renames refs.Renames) string {
+	return attributedTerms(schema, renames, syncJudged) + `, heads_written as (
 		update pull_request_heads h set issue_key = a.issue_key,
 			attribution_source = case when a.has_facts then a.source else h.attribution_source end
 		from attributed a
@@ -96,8 +96,8 @@ func syncAttributionsStatement(schema string) string {
 // another issue (syncAttributionsStatement). It reads no GitHub. The writes of a results row's
 // issue and source owe no read and keep the row's mark: migration 20261117111040 narrowed the
 // trigger pull_request_heads_unread_write to the facts of the head.
-func SyncAttributions(ctx context.Context, pool *store.Pool) (AttributionSync, error) {
-	statements, err := attribution()
+func (a *Attributor) SyncAttributions(ctx context.Context, pool *store.Pool) (AttributionSync, error) {
+	statements, err := a.attribution()
 	if err != nil {
 		return AttributionSync{}, err
 	}
@@ -124,7 +124,7 @@ type attributionMove struct {
 // commit and answers how many it appended. A move whose keys are equal again, a move and the
 // move back before the events, appends nothing. Two processes take disjoint moves (skip locked).
 // A caller with no broker appends nothing, and the moves wait for a pass that has one.
-func AppendAttributionEvents(ctx context.Context, pool *store.Pool, broker *events.Broker) (int, error) {
+func (a *Attributor) AppendAttributionEvents(ctx context.Context, pool *store.Pool, broker *events.Broker) (int, error) {
 	if broker == nil {
 		return 0, nil
 	}
@@ -187,7 +187,7 @@ func AppendAttributionEvents(ctx context.Context, pool *store.Pool, broker *even
 		from unnest($1::text[], $2::int[], $3::text[], $4::text[]) with ordinality k(repo, number, from_key, to_key, n)
 		left join lateral (
 			select h.url from pull_request_heads h
-			where h.number = k.number and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower(k.repo)
+			where h.number = k.number and lower(`+refs.CanonicalRepoSQL(a.renames, "h.repo")+`) = lower(k.repo)
 			order by lower(h.repo) = lower(k.repo) desc, h.repo
 			limit 1) u on true
 		order by k.n

@@ -108,7 +108,7 @@ func TestAnOweThatADatabaseClockBehindTheReadDatesEarlierOutlivesTheRead(t *test
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
 			traced := storetest.Traced(t, pool, clockStepTracer{t: t, pool: pool, repo: "acme/widgets", number: number, step: step}, nil)
-			intake := newIntake(nil, traced, nil, client, nil, nil)
+			intake := newIntake(nil, traced, nil, client, nil, nil, unrenamed())
 			older, newer := fakeSHA("a", number), fakeSHA("b", number)
 			branch, body := "legion/"+issue, "Dispatch: "+issue
 			now := time.Now().UTC().Truncate(time.Second)
@@ -124,9 +124,9 @@ func TestAnOweThatADatabaseClockBehindTheReadDatesEarlierOutlivesTheRead(t *test
 			owedAfterIntake := owedCount(t, ctx, pool, "acme/widgets", number)
 
 			github.set("acme/widgets", number, "closed", newer, branch, body, t2)
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-			got := readHead(t, ctx, pool, "acme/widgets", number)
-			olderBasis, err := HeadAttributedTo(ctx, pool, issue, older)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
+			olderBasis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, older)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -188,7 +188,7 @@ func TestAnOweOfATransactionThatBeganBeforeTheReadOutlivesTheRead(t *testing.T) 
 			aDone := make(chan error, 1)
 			go func() {
 				title := fmt.Sprintf("Change %d", number)
-				aDone <- UpsertPullRequestHead(ctx, poolA, PullRequestHead{Repo: "acme/widgets",
+				aDone <- unrenamed().UpsertPullRequestHead(ctx, poolA, PullRequestHead{Repo: "acme/widgets",
 					Number: number, HeadSHA: older, HeadRef: branch, BaseRef: "main", State: "open", Title: title,
 					URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number), EventAt: &t1, CheckedAt: &now,
 					GitHubReadAt: &now, Texts: &PullRequestTexts{HeadRepo: "acme/widgets", BaseRef: "main",
@@ -198,7 +198,7 @@ func TestAnOweOfATransactionThatBeganBeforeTheReadOutlivesTheRead(t *testing.T) 
 			waitOn(t, aWaiting, "writer A's transaction")
 			time.Sleep(age)
 
-			intakeB := newIntake(nil, pool, nil, client, nil, nil)
+			intakeB := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 			bDone := make(chan error, 1)
 			go func() {
 				_, err := intakeB.handlePullRequestEnvelope(ctx, nil,
@@ -221,9 +221,9 @@ func TestAnOweOfATransactionThatBeganBeforeTheReadOutlivesTheRead(t *testing.T) 
 			}
 			owedAfterB := owedCount(t, ctx, pool, "acme/widgets", number)
 
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-			got := readHead(t, ctx, pool, "acme/widgets", number)
-			olderBasis, err := HeadAttributedTo(ctx, pool, issue, older)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
+			olderBasis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, older)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -267,16 +267,16 @@ func TestALateWriteOfASnapshotCoversNoLaterEventOfItsSecond(t *testing.T) {
 			}
 			github.set("acme/widgets", number, "closed", head, branch, body, second)
 			client := fake.newTestClient()
-			intake := newIntake(nil, pool, nil, client, nil, nil)
+			intake := newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 			for _, action := range []string{"closed", "reopened"} {
 				if _, err := intake.handlePullRequestEnvelope(ctx, nil,
 					prEnvelope("acme/widgets", number, action, head, branch, body, second)); err != nil {
 					t.Fatalf("handle the %s event: %v", action, err)
 				}
 			}
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-			got := readHead(t, ctx, pool, "acme/widgets", number)
-			basis, err := HeadAttributedTo(ctx, pool, issue, head)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
+			basis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -318,13 +318,13 @@ func TestASnapshotThatLandsAfterANewerAnswerOfItsSecondIsReadAgain(t *testing.T)
 			}
 			github.set("acme/widgets", number, "closed", head, branch, body, second)
 			client := fake.newTestClient()
-			if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
+			if err := unrenamed().UpsertPullRequestHead(ctx, pool, PullRequestHead{Repo: "acme/widgets", Number: number,
 				HeadSHA: head, HeadRef: branch, BaseRef: "main", State: "open", EventAt: &earlier,
 				CheckedAt: &earlier, GitHubReadAt: &earlier, Texts: &PullRequestTexts{HeadRepo: "acme/widgets",
 					BaseRef: "main", Body: body, CommitMessages: []string{}, MessagesRead: true}}); err != nil {
 				t.Fatal(err)
 			}
-			intakeA, intakeB := newIntake(nil, pool, nil, client, nil, nil), newIntake(nil, pool, nil, client, nil, nil)
+			intakeA, intakeB := newIntake(nil, pool, nil, client, nil, nil, unrenamed()), newIntake(nil, pool, nil, client, nil, nil, unrenamed())
 			aDone := make(chan error, 1)
 			go func() {
 				_, err := intakeA.handlePullRequestEnvelope(ctx, nil, prEnvelope("acme/widgets", number, "closed", head, branch, body, second))
@@ -347,9 +347,9 @@ func TestASnapshotThatLandsAfterANewerAnswerOfItsSecondIsReadAgain(t *testing.T)
 				}
 			}
 			owedAfterBoth := owedCount(t, ctx, pool, "acme/widgets", number)
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-			got := readHead(t, ctx, pool, "acme/widgets", number)
-			basis, err := HeadAttributedTo(ctx, pool, issue, head)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
+			basis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, head)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -384,16 +384,16 @@ func TestAnAnswerWhoseReadStartedEarlierNeverReplacesTheHeadOfItsSecond(t *testi
 		read    func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error
 	}{
 		{name: "the_intake", read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, head string, second time.Time) error {
-			_, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil,
+			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 				prEnvelope(repo, number, "synchronize", head, "feature/x", "", second))
 			return err
 		}},
 		{name: "the_reconcile", read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, number int, _ string, _ time.Time) error {
-			_, _, err := RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now())
+			_, _, err := unrenamed().RefreshPullRequestHead(ctx, pool, client, nil, repo, number, time.Now())
 			return err
 		}},
 		{name: "the_read_a_result_starts", commits: true, read: func(ctx context.Context, pool *store.Pool, client *githubapp.Client, _ int, head string, _ time.Time) error {
-			_, _, err := ReadThroughCommitPulls(ctx, pool, client, repo, head, time.Now())
+			_, _, err := unrenamed().ReadThroughCommitPulls(ctx, pool, client, repo, head, time.Now())
 			return err
 		}},
 	} {
@@ -437,7 +437,7 @@ func TestAnAnswerWhoseReadStartedEarlierNeverReplacesTheHeadOfItsSecond(t *testi
 						t.Fatal(err)
 					}
 				}
-				if _, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(ctx, nil,
+				if _, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(ctx, nil,
 					prEnvelope(repo, number, "synchronize", newer, "feature/x", "", second)); err != nil {
 					t.Fatalf("the intake's read of the event of B: %v", err)
 				}
@@ -447,7 +447,7 @@ func TestAnAnswerWhoseReadStartedEarlierNeverReplacesTheHeadOfItsSecond(t *testi
 						t.Fatal(err)
 					}
 				}
-				got := readHead(t, ctx, pool, repo, number)
+				got := readHead(t, unrenamed(), ctx, pool, repo, number)
 				owed := owedCount(t, ctx, pool, repo, number)
 				t.Logf("writer=%s slow=%v head_after_both=%.12s owed_after_both=%d pull_reads=%d", writer.name, slow, got.HeadSHA, owed, github.reads.Load())
 				if got.HeadSHA != newer {
@@ -482,7 +482,7 @@ func TestAReadThatCannotReadTheOwedRevisionDeletesNothingAndTheReconcileReadsAga
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			github.set("acme/widgets", number, "open", head, branch, body, at)
 			client := fake.newTestClient()
-			if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
+			if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
 				t.Fatal(err)
 			}
 			release := func() {}
@@ -499,15 +499,15 @@ func TestAReadThatCannotReadTheOwedRevisionDeletesNothingAndTheReconcileReadsAga
 			}
 			handling, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			_, err := newIntake(nil, pool, nil, client, nil, nil).handlePullRequestEnvelope(handling, nil,
+			_, err := newIntake(nil, pool, nil, client, nil, nil, unrenamed()).handlePullRequestEnvelope(handling, nil,
 				prEnvelope("acme/widgets", number, "synchronize", head, branch, body, at))
 			release()
 			if err != nil {
 				t.Fatalf("the intake's handling with the owed table locked=%v: %v", locked, err)
 			}
-			written := readHead(t, ctx, pool, "acme/widgets", number)
+			written := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
 			owedAfterIntake, readsAfterIntake := owedCount(t, ctx, pool, "acme/widgets", number), github.reads.Load()
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
 			owedAfterPass, readsAfterPass := owedCount(t, ctx, pool, "acme/widgets", number), github.reads.Load()
 			t.Logf("owed_table_locked=%v head_written=%v owed_after_intake=%d pull_reads_after_intake=%d owed_after_pass=%d pull_reads_after_pass=%d",
 				locked, written.HeadSHA == head, owedAfterIntake, readsAfterIntake, owedAfterPass, readsAfterPass)

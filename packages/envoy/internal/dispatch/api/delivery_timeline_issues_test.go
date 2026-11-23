@@ -16,17 +16,16 @@ import (
 // seedDeliveryIssueFacts seeds what the timeline joins a pull request's issue against: project
 // ACME, its component tree from two sources (platform > api from acme/arch, and docs from
 // acme/docs), ACME-1 (P0, attached to api), its child ACME-2 (P2, attaching nothing of its own,
-// so it inherits api), and ACME-3 (no priority, attached to none with a reason). ACME maps
-// acme/widgets as its default repository, and acme/other. ACME-3's own repository is acme/other,
-// so each issue resolves to the repository whose pull requests name it.
+// so it inherits api), and ACME-3 (no priority, attached to none with a reason). ACME's default
+// repository is acme/widgets (projects.default_repo), which an issue with no repository of its
+// own resolves to. ACME-3's own repository is acme/other, so each issue resolves to the
+// repository whose pull requests name it.
 func seedDeliveryIssueFacts(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := t.Context()
 	for _, statement := range []string{
-		`insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`,
-		`insert into repo_projects (repo, project, created_by, is_default) values
-			('acme/widgets', 'ACME', '{"kind":"system","id":"test"}', true),
-			('acme/other', 'ACME', '{"kind":"system","id":"test"}', false)`,
+		`insert into projects (key, name, default_assignee, default_repo) values ('ACME', 'Acme', 'alice', 'acme/widgets')
+			on conflict (key) do update set default_repo = excluded.default_repo`,
 		`insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by) values
 			('ACME', 1, 'acme/arch', 'main', 1, '{"kind":"system","id":"test"}'),
 			('ACME', 2, 'acme/docs', 'main', 1, '{"kind":"system","id":"test"}')`,
@@ -53,12 +52,14 @@ func seedDeliveryIssueFacts(t *testing.T, database *store.Store) {
 // gives the pull request the issue from its branch, legion/<issue>. The texts hold the commit
 // messages as read, and the messages name no key. The issue must exist and resolve to repo. The
 // helper fails the test where the statement gives another answer. It writes no timeline row.
-func seedAttributedHead(t *testing.T, pool *store.Pool, repo string, number int, issue string) {
+// attributor is the server's (Deps.Attributor), so the row is written and read under the rename
+// pairs the server reads by.
+func seedAttributedHead(t *testing.T, attributor *delivery.Attributor, pool *store.Pool, repo string, number int, issue string) {
 	t.Helper()
 	ctx := t.Context()
 	at := time.Date(2026, 11, 5, 7, 15, 8, 0, time.UTC)
 	title := fmt.Sprintf("pull request %d", number)
-	if err := delivery.UpsertPullRequestHead(ctx, pool, delivery.PullRequestHead{
+	if err := attributor.UpsertPullRequestHead(ctx, pool, delivery.PullRequestHead{
 		Repo: repo, Number: number, HeadSHA: fmt.Sprintf("%040x", number), HeadRef: "legion/" + issue, BaseRef: "main",
 		State: "merged", Title: title, URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), EventAt: &at,
 		Texts: &delivery.PullRequestTexts{HeadRepo: repo, BaseRef: "main", Title: title, CommitMessages: []string{}, MessagesRead: true},
@@ -66,7 +67,7 @@ func seedAttributedHead(t *testing.T, pool *store.Pool, repo string, number int,
 		t.Fatalf("store the results row of %s#%d with its texts: %v", repo, number, err)
 	}
 	key := delivery.PullRequestKey{Repo: repo, Number: number}
-	answers, err := delivery.PullRequestIssues(ctx, pool, []delivery.PullRequestKey{key})
+	answers, err := attributor.PullRequestIssues(ctx, pool, []delivery.PullRequestKey{key})
 	if err != nil {
 		t.Fatalf("PullRequestIssues(%s#%d): %v", repo, number, err)
 	}
@@ -83,7 +84,7 @@ func seedAttributedHead(t *testing.T, pool *store.Pool, repo string, number int,
 // and that facet_counts count each facet with every other facet and the search applied and its own
 // selection ignored, while color_counts ignore every facet.
 func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
@@ -113,7 +114,7 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 			t.Fatalf("seed PR %s#%d: %v", pr.Repo, pr.Number, err)
 		}
 		if seed.issue != "" {
-			seedAttributedHead(t, database.Pool, pr.Repo, pr.Number, seed.issue)
+			seedAttributedHead(t, deps.Attributor, database.Pool, pr.Repo, pr.Number, seed.issue)
 		}
 	}
 	window := "from=" + merged.Add(-time.Hour).Format(time.RFC3339) + "&to=" + merged.Add(time.Hour).Format(time.RFC3339)
@@ -206,7 +207,7 @@ func TestGetDeliveryTimelineJoinsIssueFactsAndCountsFacets(t *testing.T) {
 // to acme/arch's api and one on an issue attached to acme/docs' docs each carry their component,
 // both are counted, and selecting the second source's component selects its pull request.
 func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
@@ -241,7 +242,7 @@ func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
 		if err := delivery.UpsertPullRequest(ctx, database.Pool, pr); err != nil {
 			t.Fatalf("seed PR %s#%d: %v", pr.Repo, pr.Number, err)
 		}
-		seedAttributedHead(t, database.Pool, pr.Repo, pr.Number, seed.issue)
+		seedAttributedHead(t, deps.Attributor, database.Pool, pr.Repo, pr.Number, seed.issue)
 	}
 	window := "from=" + merged.Add(-time.Hour).Format(time.RFC3339) + "&to=" + merged.Add(time.Hour).Format(time.RFC3339)
 
@@ -270,7 +271,7 @@ func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
 // selects #40 under __issue_not_known__ and #41 under __no_issue__, by priority and by component.
 // Control in the same test: with the messages of #40 read and empty, both are under __no_issue__.
 func TestTheTimelineMarksAPullRequestWhoseIssueIsNotKnown(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
 	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
@@ -290,8 +291,8 @@ func TestTheTimelineMarksAPullRequestWhoseIssueIsNotKnown(t *testing.T) {
 			t.Fatalf("seed PR acme/widgets#%d: %v", number, err)
 		}
 	}
-	storeAttributionRow(t, database, 40, "work/none", false)
-	storeAttributionRow(t, database, 41, "work/none", true)
+	storeAttributionRow(t, deps.Attributor, database, 40, "work/none", false)
+	storeAttributionRow(t, deps.Attributor, database, 41, "work/none", true)
 	const window = "from=2024-01-01T00:00:00Z&to=2024-01-02T00:00:00Z"
 
 	body := getDeliveryTimeline(t, handler, window)
@@ -323,7 +324,7 @@ func TestTheTimelineMarksAPullRequestWhoseIssueIsNotKnown(t *testing.T) {
 	}
 
 	// Control: with the messages of #40 read and empty, its issue is known, and it is none.
-	storeAttributionRow(t, database, 40, "work/none", true)
+	storeAttributionRow(t, deps.Attributor, database, 40, "work/none", true)
 	control := getDeliveryTimeline(t, handler, window)
 	none := map[string]int{"__no_issue__": 2}
 	for _, facet := range []string{"priority", "component"} {

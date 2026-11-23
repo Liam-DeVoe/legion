@@ -50,7 +50,7 @@ func TestOneQueryReadsTheFactsOfTwentyPullRequests(t *testing.T) {
 		t.Fatalf("the fixture holds %d refs, want 20", len(refs))
 	}
 
-	answers := readBatchOrFail(t, ctx, pool, client, token, refs)
+	answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, token, refs)
 
 	if len(answers) != 20 {
 		t.Errorf("readFactsBatch answered %d pull requests, want 20", len(answers))
@@ -110,7 +110,7 @@ func TestAPullRequestStillTooLargeAloneIsReadByTheRefresh(t *testing.T) {
 		client := fake.newTestClient()
 		refs := batchRefs(repo, numbers...)
 
-		answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, repo), refs)
+		answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, batchToken(t, ctx, client, repo), refs)
 
 		if len(answers) != 20 {
 			t.Errorf("readFactsBatch answered %d pull requests, want 20", len(answers))
@@ -130,7 +130,7 @@ func TestAPullRequestStillTooLargeAloneIsReadByTheRefresh(t *testing.T) {
 		if got := github.restReads(); got != 1 {
 			t.Errorf("readFactsBatch read %d pull requests over REST, want only #%d", got, large)
 		}
-		if head := readHead(t, ctx, pool, repo, large); head.HeadSHA != fakeSHA("h", large) {
+		if head := readHead(t, unrenamed(), ctx, pool, repo, large); head.HeadSHA != fakeSHA("h", large) {
 			t.Errorf("the stored head of #%d = %s, want GitHub's %s", large, head.HeadSHA, fakeSHA("h", large))
 		}
 		alone := false
@@ -146,7 +146,7 @@ func TestAPullRequestStillTooLargeAloneIsReadByTheRefresh(t *testing.T) {
 		pool, ctx := deliveryTestPool(t)
 		const old, canonical, number = "acme/old", "acme/new", 3
 		seedProjectRepository(t, ctx, pool, "ATTR", "ATTR", canonical)
-		mapRepository(t, ctx, pool, old, "ATTR", false, new(canonical))
+		seedRenamePair(t, ctx, pool, old, "ATTR", canonical)
 		storeStatementRow(t, ctx, pool, statementRow{repo: old, number: number, branch: "work/none", title: "Change 3"})
 		fake := newFakeGitHub(t)
 		github := serveBatchGitHub(t, fake)
@@ -155,7 +155,7 @@ func TestAPullRequestStillTooLargeAloneIsReadByTheRefresh(t *testing.T) {
 		client := fake.newTestClient()
 		ref := PullRequestRef{Owner: "acme", Repo: "new", Number: number, StoredUnder: old}
 
-		answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, canonical), []PullRequestRef{ref})
+		answers := readBatchOrFail(t, NewAttributor(renamesOf(t, ctx, pool)), ctx, pool, client, batchToken(t, ctx, client, canonical), []PullRequestRef{ref})
 
 		if answer := answers[ref]; !answer.Stored || answer.Head != nil {
 			t.Errorf("the answer of %s#%d stored under %s = %+v, want stored by the refresh under %s, with no head row to write", canonical, number, old, answer, canonical)
@@ -188,7 +188,7 @@ func TestAnAnswerAboveTheLimitSplitsTheBatch(t *testing.T) {
 	client := fake.newTestClient()
 	refs := batchRefs(repo, numbers...)
 
-	answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, repo), refs)
+	answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, batchToken(t, ctx, client, repo), refs)
 
 	asked := github.asked()
 	sizes := make([]int, len(asked))
@@ -237,13 +237,13 @@ func TestEachBatchedQueryTakesItsOwnPlace(t *testing.T) {
 		t.Fatalf("read the sequence of the places: %v", err)
 	}
 
-	answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, repo), refs)
+	answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, batchToken(t, ctx, client, repo), refs)
 	for _, ref := range refs {
 		answer := answers[ref]
 		if answer.Head == nil {
 			t.Fatalf("the answer of #%d holds no head row to write: %+v", ref.Number, answer)
 		}
-		if _, err := upsertHeadUnderCanonicalName(ctx, pool, *answer.Head, ref.StoredUnder); err != nil {
+		if _, err := unrenamed().upsertHeadUnderCanonicalName(ctx, pool, *answer.Head, ref.StoredUnder); err != nil {
 			t.Fatalf("write the answer of #%d: %v", ref.Number, err)
 		}
 	}
@@ -322,7 +322,7 @@ func TestAPullRequestOfMoreThanAHundredCommitsReadsTheRest(t *testing.T) {
 			token := batchToken(t, ctx, client, repo)
 			refs := batchRefs(repo, long, short)
 
-			answers := readBatchOrFail(t, ctx, pool, client, token, refs)
+			answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, token, refs)
 
 			longAnswer, shortAnswer := answers[refs[0]], answers[refs[1]]
 			if longAnswer.Head == nil || shortAnswer.Head == nil {
@@ -372,7 +372,7 @@ func TestAnAbsentAliasIsAbsent(t *testing.T) {
 	client := fake.newTestClient()
 	refs := append(batchRefs("acme/widgets", 7, 8), batchRefs("acme/gone", 5)...)
 
-	answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, "acme/widgets"), refs)
+	answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, batchToken(t, ctx, client, "acme/widgets"), refs)
 
 	if answer, found := answers[refs[0]]; !found || !answer.Absent || answer.Head != nil || answer.Stored {
 		t.Errorf("the answer of acme/widgets#7 = %s, want absent: GitHub answered its alias null with NOT_FOUND on its own path", describeBatchAnswer(answer, found))
@@ -417,7 +417,7 @@ func TestAQueryOfFewerThanAHundredMessagesReadsEveryPageFromTheFirst(t *testing.
 			client := fake.newTestClient()
 			refs := batchRefs(repo, number)
 
-			answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, repo), refs)
+			answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, batchToken(t, ctx, client, repo), refs)
 
 			answer := answers[refs[0]]
 			if answer.Head == nil || answer.Head.Texts == nil {
@@ -456,7 +456,7 @@ func TestARefusedRefreshLeavesAPullRequestTooLargeAloneOutOfTheAnswers(t *testin
 			client := fake.newTestClient()
 			refs := batchRefs(repo, large, small)
 
-			answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, repo), refs)
+			answers := readBatchOrFail(t, unrenamed(), ctx, pool, client, batchToken(t, ctx, client, repo), refs)
 
 			answer, found := answers[refs[0]]
 			switch {
@@ -506,7 +506,7 @@ func TestAnAliasThatDoesNotDecodeEndsTheRead(t *testing.T) {
 			client := fake.newTestClient()
 			refs := batchRefs(repo, numbers...)
 
-			answers, err := readFactsBatch(ctx, pool, client, nil, batchToken(t, ctx, client, repo), refs, time.Now())
+			answers, err := unrenamed().readFactsBatch(ctx, pool, client, nil, batchToken(t, ctx, client, repo), refs, time.Now())
 
 			if asked := len(github.asked()); asked != 3 {
 				t.Errorf("readFactsBatch sent %d queries, want 3: the twenty, and two halves of ten", asked)

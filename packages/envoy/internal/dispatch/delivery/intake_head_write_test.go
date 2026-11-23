@@ -48,7 +48,7 @@ func TestAnEnvelopeWhoseHeadRowCouldNotBeStoredIsHandedBack(t *testing.T) {
 	fake := newFakeGitHub(t)
 	serveMergedPullRequest(t, fake, 9101)
 	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool),
-		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+		fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	intake.redeliverAfter = testRedeliverAfter
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
@@ -167,7 +167,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 	t.Cleanup(process.release)
 
 	process.intake = newIntake(client, second.Pool, process.leases, github, events.NewBroker(),
-		loadedSettingsCache(t, t.Context(), second.Pool))
+		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

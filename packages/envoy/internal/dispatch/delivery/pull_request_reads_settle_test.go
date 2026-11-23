@@ -64,7 +64,7 @@ func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 			fake := newFakeGitHub(t)
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			client := fake.newTestClient()
-			intake := newIntake(nil, storetest.Traced(t, pool, settleWaitTracer{wait: c.wait}, nil), nil, client, nil, nil)
+			intake := newIntake(nil, storetest.Traced(t, pool, settleWaitTracer{wait: c.wait}, nil), nil, client, nil, nil, unrenamed())
 			const number = 88401
 			older, newer := fakeSHA("a", number), fakeSHA("b", number)
 			branch, body := "legion/"+issue, "Dispatch: "+issue
@@ -75,7 +75,7 @@ func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 				releaseBeforeAttribution{issue: &issue, source: string(sourceBranch), complete: true})
 			github.set("acme/widgets", number, "open", older, branch, body, t1)
 			if c.owedBefore {
-				if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
+				if err := unrenamed().owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -86,9 +86,9 @@ func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 			owedAfterIntake := owedCount(t, ctx, pool, "acme/widgets", number)
 
 			github.set("acme/widgets", number, "closed", newer, branch, body, t2)
-			NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
-			got := readHead(t, ctx, pool, "acme/widgets", number)
-			olderBasis, err := HeadAttributedTo(ctx, pool, issue, older)
+			NewReconcile(pool, client, events.NewBroker(), unrenamed()).runOnce(ctx)
+			got := readHead(t, unrenamed(), ctx, pool, "acme/widgets", number)
+			olderBasis, err := unrenamed().HeadAttributedTo(ctx, pool, issue, older)
 			if err != nil {
 				t.Fatal(err)
 			}

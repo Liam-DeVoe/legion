@@ -443,10 +443,10 @@ func batchToken(t *testing.T, ctx context.Context, client *githubapp.Client, rep
 	return token
 }
 
-// readBatchOrFail reads refs with readFactsBatch, and fails the test where it answers an error.
-func readBatchOrFail(t *testing.T, ctx context.Context, pool *store.Pool, client *githubapp.Client, token string, refs []PullRequestRef) map[PullRequestRef]batchAnswer {
+// readBatchOrFail reads refs with a.readFactsBatch, and fails the test where it answers an error.
+func readBatchOrFail(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, client *githubapp.Client, token string, refs []PullRequestRef) map[PullRequestRef]batchAnswer {
 	t.Helper()
-	answers, err := readFactsBatch(ctx, pool, client, nil, token, refs, time.Now())
+	answers, err := a.readFactsBatch(ctx, pool, client, nil, token, refs, time.Now())
 	if err != nil {
 		t.Fatalf("readFactsBatch of %d pull requests: %v", len(refs), err)
 	}

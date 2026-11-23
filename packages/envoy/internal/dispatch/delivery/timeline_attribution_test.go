@@ -32,7 +32,7 @@ func seedAttributedHead(t *testing.T, pool *store.Pool, repo string, number int,
 		title: fmt.Sprintf("pull request %d", number), texts: readTexts(""),
 	})
 	key := PullRequestKey{Repo: repo, Number: number}
-	answers, err := PullRequestIssues(ctx, pool, []PullRequestKey{key})
+	answers, err := unrenamed().PullRequestIssues(ctx, pool, []PullRequestKey{key})
 	if err != nil {
 		t.Fatalf("PullRequestIssues(%s#%d): %v", repo, number, err)
 	}
@@ -126,12 +126,12 @@ func timelineAnswer(pr DeliveryPullRequest) string {
 	return answer
 }
 
-// timelineOf is what ListPullRequestsInWindow gives repo#number over the day of timelineMerged
+// timelineOf is what a.ListPullRequestsInWindow gives repo#number over the day of timelineMerged
 // (timelineAnswer), or "absent" where the window holds no such row.
-func timelineOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) string {
+func timelineOf(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, repo string, number int) string {
 	t.Helper()
 	day := timelineMerged.Truncate(24 * time.Hour)
-	prs, err := ListPullRequestsInWindow(ctx, pool, day, day.Add(24*time.Hour))
+	prs, err := a.ListPullRequestsInWindow(ctx, pool, day, day.Add(24*time.Hour))
 	if err != nil {
 		t.Fatalf("ListPullRequestsInWindow: %v", err)
 	}
@@ -143,18 +143,18 @@ func timelineOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string
 	return "absent"
 }
 
-func wantTimeline(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int, want string) {
+func wantTimeline(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, repo string, number int, want string) {
 	t.Helper()
-	if got := timelineOf(t, ctx, pool, repo, number); got != want {
+	if got := timelineOf(t, a, ctx, pool, repo, number); got != want {
 		t.Errorf("ListPullRequestsInWindow gives %s#%d %q, want %q", repo, number, got, want)
 	}
 }
 
-// waitingOf is what ListPullRequestsWaitingAt gives repo#number of the deploy repository repo at
-// timelineWaitingAt (timelineAnswer), or "absent" where it lists no such row.
-func waitingOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) string {
+// waitingOf is what a.ListPullRequestsWaitingAt gives repo#number of the deploy repository repo
+// at timelineWaitingAt (timelineAnswer), or "absent" where it lists no such row.
+func waitingOf(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, repo string, number int) string {
 	t.Helper()
-	waiting, err := ListPullRequestsWaitingAt(ctx, pool, repo, timelineProduction, timelineWaitingAt)
+	waiting, err := a.ListPullRequestsWaitingAt(ctx, pool, repo, timelineProduction, timelineWaitingAt)
 	if err != nil {
 		t.Fatalf("ListPullRequestsWaitingAt(%s): %v", repo, err)
 	}
@@ -166,18 +166,18 @@ func waitingOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string,
 	return "absent"
 }
 
-func wantWaiting(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int, want string) {
+func wantWaiting(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, repo string, number int, want string) {
 	t.Helper()
-	if got := waitingOf(t, ctx, pool, repo, number); got != want {
+	if got := waitingOf(t, a, ctx, pool, repo, number); got != want {
 		t.Errorf("ListPullRequestsWaitingAt(%s) gives #%d %q, want %q", repo, number, got, want)
 	}
 }
 
-// wantShipped fails the test unless listUnrecordedShipped lists want for the deploy repository
+// wantShipped fails the test unless a.listUnrecordedShipped lists want for the deploy repository
 // repo, each entry "#<number> <issue>". It answers the list.
-func wantShipped(t *testing.T, ctx context.Context, pool *store.Pool, repo string, want ...string) []shippedPullRequest {
+func wantShipped(t *testing.T, a *Attributor, ctx context.Context, pool *store.Pool, repo string, want ...string) []shippedPullRequest {
 	t.Helper()
-	shipped, err := listUnrecordedShipped(ctx, pool, repo, timelineProduction)
+	shipped, err := a.listUnrecordedShipped(ctx, pool, repo, timelineProduction)
 	if err != nil {
 		t.Fatalf("listUnrecordedShipped(%s): %v", repo, err)
 	}
@@ -266,13 +266,13 @@ func TestTheTimelineAndTheResultsNameOneIssue(t *testing.T) {
 	for _, number := range []int{11, 12} {
 		mergeTimelineRow(t, ctx, pool, timelineRepo, number)
 	}
-	wantAnswer(t, ctx, pool, timelineRepo, 11, "ATTR-11 from branch")
-	wantTimeline(t, ctx, pool, timelineRepo, 11, "ATTR-11")
-	wantListed(t, ctx, pool, "ATTR-11", "#11")
-	wantListed(t, ctx, pool, "ATTR-19")
-	wantAnswer(t, ctx, pool, timelineRepo, 12, "nobody from none")
-	wantTimeline(t, ctx, pool, timelineRepo, 12, "nobody")
-	wantListed(t, ctx, pool, "ATTR-12")
+	wantAnswer(t, unrenamed(), ctx, pool, timelineRepo, 11, "ATTR-11 from branch")
+	wantTimeline(t, unrenamed(), ctx, pool, timelineRepo, 11, "ATTR-11")
+	wantListed(t, unrenamed(), ctx, pool, "ATTR-11", "#11")
+	wantListed(t, unrenamed(), ctx, pool, "ATTR-19")
+	wantAnswer(t, unrenamed(), ctx, pool, timelineRepo, 12, "nobody from none")
+	wantTimeline(t, unrenamed(), ctx, pool, timelineRepo, 12, "nobody")
+	wantListed(t, unrenamed(), ctx, pool, "ATTR-12")
 }
 
 // A pull request with no facts gets the issue that its results row stores from a read of GitHub
@@ -289,24 +289,25 @@ func TestTheTimelineAndTheResultsNameOneIssueForAPullRequestWithNoFacts(t *testi
 	for _, number := range []int{21, 25} {
 		mergeTimelineRow(t, ctx, pool, timelineRepo, number)
 	}
-	wantAnswer(t, ctx, pool, timelineRepo, 21, "ATTR-2 from none, no facts")
-	wantTimeline(t, ctx, pool, timelineRepo, 21, "ATTR-2")
-	wantListed(t, ctx, pool, "ATTR-2", "#21")
-	wantListed(t, ctx, pool, "ATTR-1")
-	wantAnswer(t, ctx, pool, timelineRepo, 25, "nobody from none, no facts")
-	wantTimeline(t, ctx, pool, timelineRepo, 25, "nobody")
-	wantListed(t, ctx, pool, "ATTR-5")
+	wantAnswer(t, unrenamed(), ctx, pool, timelineRepo, 21, "ATTR-2 from none, no facts")
+	wantTimeline(t, unrenamed(), ctx, pool, timelineRepo, 21, "ATTR-2")
+	wantListed(t, unrenamed(), ctx, pool, "ATTR-2", "#21")
+	wantListed(t, unrenamed(), ctx, pool, "ATTR-1")
+	wantAnswer(t, unrenamed(), ctx, pool, timelineRepo, 25, "nobody from none, no facts")
+	wantTimeline(t, unrenamed(), ctx, pool, timelineRepo, 25, "nobody")
+	wantListed(t, unrenamed(), ctx, pool, "ATTR-5")
 }
 
 // The timeline finds the results row of a pull request under the canonical name of its repository
 // (state S14). acme/timeline-old has the new name acme/timeline-new. The timeline row of #31 is
 // under the old name and stores ATTR-39. Its results row and its texts are under the new name, and
 // its branch names ATTR-31. A timeline that gives the stored issue fails. Control in the same test:
-// #32 has a timeline row alone, under the old name. It gives its stored ATTR-32.
+// #32 has a timeline row alone, under the old name. It gives its stored ATTR-32. The pair is seeded
+// by SQL and the readers read with the pairs read after it, as a boot reads them.
 func TestTheTimelineFindsItsResultsRowUnderTheCanonicalName(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	projectIssues(t, ctx, pool, timelineNewRepo, "ATTR-31", "ATTR-32", "ATTR-39")
-	mapRepository(t, ctx, pool, timelineOldRepo, "ATTR", false, new(timelineNewRepo))
+	seedRenamePair(t, ctx, pool, timelineOldRepo, "ATTR", timelineNewRepo)
 	storeStatementRow(t, ctx, pool, statementRow{repo: timelineNewRepo, number: 31, branch: "legion/ATTR-31", title: "the change",
 		texts: readTexts("")})
 	storeStatementRow(t, ctx, pool, statementRow{repo: timelineOldRepo, number: 31, title: "the change", noHead: true,
@@ -316,21 +317,23 @@ func TestTheTimelineFindsItsResultsRowUnderTheCanonicalName(t *testing.T) {
 	for _, number := range []int{31, 32} {
 		mergeTimelineRow(t, ctx, pool, timelineOldRepo, number)
 	}
-	wantAnswer(t, ctx, pool, timelineOldRepo, 31, "ATTR-31 from branch")
-	wantAnswer(t, ctx, pool, timelineNewRepo, 31, "ATTR-31 from branch")
-	wantTimeline(t, ctx, pool, timelineOldRepo, 31, "ATTR-31")
-	wantListed(t, ctx, pool, "ATTR-31", "#31")
-	wantListed(t, ctx, pool, "ATTR-39")
-	wantTimeline(t, ctx, pool, timelineOldRepo, 32, "ATTR-32")
-	wantListed(t, ctx, pool, "ATTR-32", "#32?")
+	a := NewAttributor(renamesOf(t, ctx, pool))
+	wantAnswer(t, a, ctx, pool, timelineOldRepo, 31, "ATTR-31 from branch")
+	wantAnswer(t, a, ctx, pool, timelineNewRepo, 31, "ATTR-31 from branch")
+	wantTimeline(t, a, ctx, pool, timelineOldRepo, 31, "ATTR-31")
+	wantListed(t, a, ctx, pool, "ATTR-31", "#31")
+	wantListed(t, a, ctx, pool, "ATTR-39")
+	wantTimeline(t, a, ctx, pool, timelineOldRepo, 32, "ATTR-32")
+	wantListed(t, a, ctx, pool, "ATTR-32", "#32?")
 }
 
 // A rename after both rows exist keeps one issue for every reader (B1). The results row, the texts
 // and the timeline row of acme/timeline-old#5 are under that name. Its branch names ACME-5, and its
-// timeline row stores ACME-4. Then acme/timeline-old gets the new name acme/timeline-new. Want
-// ACME-5 from the four readers by issue, from PullRequestIssues of either name, and from the three
-// readers of the timeline. One reconcile pass reads nothing of the fake GitHub, and the readers give
-// the same answers after it. Then recordDeployedEvent records the event on ACME-5 alone.
+// timeline row stores ACME-4. Then acme/timeline-old gets the new name acme/timeline-new, and a
+// process boots that reads the pair. Want ACME-5 from the four readers by issue, from
+// PullRequestIssues of either name, and from the three readers of the timeline. One reconcile pass
+// reads nothing of the fake GitHub, and the readers give the same answers after it. Then
+// recordDeployedEvent records the event on ACME-5 alone.
 func TestARenameAfterBothRowsExistKeepsOneIssueForEveryReader(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -339,18 +342,18 @@ func TestARenameAfterBothRowsExistKeepsOneIssueForEveryReader(t *testing.T) {
 		texts: readTexts(""), timeline: &statementTimeline{issue: new("ACME-4")}})
 	mergeTimelineRow(t, ctx, pool, timelineOldRepo, 5)
 	seedShippingRun(t, ctx, pool, timelineOldRepo, 905)
-	execDispatchChange(t, ctx, pool, "give "+timelineOldRepo+" the new name "+timelineNewRepo,
-		`update repo_projects set renamed_to = $2 where repo = $1`, timelineOldRepo, timelineNewRepo)
+	seedRenamePair(t, ctx, pool, timelineOldRepo, "ACME", timelineNewRepo)
+	a := NewAttributor(renamesOf(t, ctx, pool))
 	var shipped []shippedPullRequest
 	readers := func(t *testing.T) {
-		wantReaders(t, ctx, pool, "ACME-5", headOf(5), `at head true, newest acme/timeline-new#5, base "main", window [acme/timeline-old#5], of issues [acme/timeline-old#5]`)
-		wantListed(t, ctx, pool, "ACME-5", "#5")
-		wantListed(t, ctx, pool, "ACME-4")
-		wantAnswer(t, ctx, pool, timelineOldRepo, 5, "ACME-5 from branch")
-		wantAnswer(t, ctx, pool, timelineNewRepo, 5, "ACME-5 from branch")
-		wantTimeline(t, ctx, pool, timelineOldRepo, 5, "ACME-5")
-		wantWaiting(t, ctx, pool, timelineOldRepo, 5, "ACME-5")
-		shipped = wantShipped(t, ctx, pool, timelineOldRepo, "#5 ACME-5")
+		wantReaders(t, a, ctx, pool, "ACME-5", headOf(5), `at head true, newest acme/timeline-new#5, base "main", window [acme/timeline-old#5], of issues [acme/timeline-old#5]`)
+		wantListed(t, a, ctx, pool, "ACME-5", "#5")
+		wantListed(t, a, ctx, pool, "ACME-4")
+		wantAnswer(t, a, ctx, pool, timelineOldRepo, 5, "ACME-5 from branch")
+		wantAnswer(t, a, ctx, pool, timelineNewRepo, 5, "ACME-5 from branch")
+		wantTimeline(t, a, ctx, pool, timelineOldRepo, 5, "ACME-5")
+		wantWaiting(t, a, ctx, pool, timelineOldRepo, 5, "ACME-5")
+		shipped = wantShipped(t, a, ctx, pool, timelineOldRepo, "#5 ACME-5")
 	}
 	t.Run("before_the_pass", readers)
 
@@ -359,7 +362,7 @@ func TestARenameAfterBothRowsExistKeepsOneIssueForEveryReader(t *testing.T) {
 		timelineOldRepo: serveGitHubPulls(t, fake, timelineOldRepo),
 		timelineNewRepo: serveGitHubPulls(t, fake, timelineNewRepo),
 	}
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), a).runOnce(ctx)
 	var reads []string
 	for _, repo := range []string{timelineOldRepo, timelineNewRepo} {
 		g := served[repo]
@@ -376,7 +379,7 @@ func TestARenameAfterBothRowsExistKeepsOneIssueForEveryReader(t *testing.T) {
 	if len(shipped) != 1 {
 		t.Fatalf("listUnrecordedShipped(%s) lists %d pull requests after the pass, want #5 alone", timelineOldRepo, len(shipped))
 	}
-	recorded, err := recordDeployedEvent(ctx, pool, events.NewBroker(), shipped[0])
+	recorded, err := a.recordDeployedEvent(ctx, pool, events.NewBroker(), shipped[0])
 	if err != nil {
 		t.Fatalf("recordDeployedEvent(%+v): %v", shipped[0], err)
 	}
@@ -448,7 +451,7 @@ func TestAPartialRowsCompletionWritesTheResultsRowFromTheSameRead(t *testing.T) 
 	const title = "ATTR-51: the change"
 	fake := newFakeGitHub(t)
 	reads := serveTimelinePull(t, fake, timelineRepo, 51, timelinePull(timelineRepo, 51, title, "legion/ATTR-51"))
-	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePartialPullRequests(ctx, newAbsenceBudget()); err != nil {
+	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).reconcilePartialPullRequests(ctx, newAbsenceBudget()); err != nil {
 		t.Fatalf("reconcilePartialPullRequests: %v", err)
 	}
 
@@ -458,7 +461,7 @@ func TestAPartialRowsCompletionWritesTheResultsRowFromTheSameRead(t *testing.T) 
 	if rows := headRowsOf(t, ctx, pool, timelineRepo, 51); rows != 1 {
 		t.Fatalf("after the completion %s#51 has %d results rows, want 1, written from the completion's read of GitHub", timelineRepo, rows)
 	}
-	if head := readHead(t, ctx, pool, timelineRepo, 51); head.HeadSHA != fakeSHA("c", 51) || head.HeadRef != "legion/ATTR-51" || head.State != "merged" {
+	if head := readHead(t, unrenamed(), ctx, pool, timelineRepo, 51); head.HeadSHA != fakeSHA("c", 51) || head.HeadRef != "legion/ATTR-51" || head.State != "merged" {
 		t.Errorf("the results row of #51 holds the head %q on %q in the state %q, want GitHub's %q on legion/ATTR-51, merged",
 			head.HeadSHA, head.HeadRef, head.State, fakeSHA("c", 51))
 	}
@@ -474,7 +477,7 @@ func TestAPartialRowsCompletionWritesTheResultsRowFromTheSameRead(t *testing.T) 
 		t.Errorf("the timeline row of #51 has partial %v, the title %q and the first commit %v, want complete with %q and a first commit",
 			timeline.Partial, timeline.Title, timeline.FirstCommitAt, title)
 	}
-	wantTimeline(t, ctx, pool, timelineRepo, 51, "ATTR-51")
+	wantTimeline(t, unrenamed(), ctx, pool, timelineRepo, 51, "ATTR-51")
 }
 
 // issue.deployed names the issue that the statement gives the pull request, not the issue that its
@@ -494,7 +497,7 @@ func TestIssueDeployedNamesTheAttributedIssue(t *testing.T) {
 	}
 	seedShippingRun(t, ctx, pool, timelineRepo, 961)
 
-	written, err := RecordDeployedEvents(ctx, pool, DeliverySettings{DeployRepo: timelineRepo, ProductionJobNames: []string{timelineJob}},
+	written, err := unrenamed().RecordDeployedEvents(ctx, pool, DeliverySettings{DeployRepo: timelineRepo, ProductionJobNames: []string{timelineJob}},
 		events.NewBroker())
 	if err != nil {
 		t.Fatalf("RecordDeployedEvents: %v", err)
@@ -527,7 +530,7 @@ func TestALinkMovedBetweenTheListAndTheEventGivesTheListedIssueNoDeployedEvent(t
 	mergeTimelineRow(t, ctx, pool, timelineRepo, 71)
 	seedShippingRun(t, ctx, pool, timelineRepo, 971)
 	changeIssueLink(t, ctx, pool, "ATTR-71", url, "url", true)
-	wantShipped(t, ctx, pool, timelineRepo, "#71 ATTR-71")
+	wantShipped(t, unrenamed(), ctx, pool, timelineRepo, "#71 ATTR-71")
 	settings := DeliverySettings{DeployRepo: timelineRepo, ProductionJobNames: []string{timelineJob}}
 
 	arrived, release := make(chan struct{}, 1), make(chan struct{})
@@ -538,7 +541,7 @@ func TestALinkMovedBetweenTheListAndTheEventGivesTheListedIssueNoDeployedEvent(t
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		written, err := RecordDeployedEvents(ctx, traced, settings, events.NewBroker())
+		written, err := unrenamed().RecordDeployedEvents(ctx, traced, settings, events.NewBroker())
 		done <- outcome{written, err}
 	}()
 	waitOn(t, arrived, "the mark of #71")
@@ -558,7 +561,7 @@ func TestALinkMovedBetweenTheListAndTheEventGivesTheListedIssueNoDeployedEvent(t
 		t.Errorf("the marker of #71 is set at %v, want none: no event was written for it", at)
 	}
 
-	written, err := RecordDeployedEvents(ctx, pool, settings, events.NewBroker())
+	written, err := unrenamed().RecordDeployedEvents(ctx, pool, settings, events.NewBroker())
 	if err != nil {
 		t.Fatalf("the next RecordDeployedEvents: %v", err)
 	}
@@ -588,10 +591,10 @@ func TestTheTimelineMarksAPullRequestWhoseIssueIsNotKnown(t *testing.T) {
 			mergeTimelineRow(t, ctx, pool, timelineRepo, 40)
 			seedShippingRun(t, ctx, pool, timelineRepo, 940)
 
-			wantTimeline(t, ctx, pool, timelineRepo, 40, want)
-			wantShipped(t, ctx, pool, timelineRepo)
+			wantTimeline(t, unrenamed(), ctx, pool, timelineRepo, 40, want)
+			wantShipped(t, unrenamed(), ctx, pool, timelineRepo)
 			stale := shippedPullRequest{Repo: timelineRepo, Number: 40, IssueKey: "ATTR-49", RunID: 940, CompletedAt: timelineShippedAt}
-			recorded, err := recordDeployedEvent(ctx, pool, events.NewBroker(), stale)
+			recorded, err := unrenamed().recordDeployedEvent(ctx, pool, events.NewBroker(), stale)
 			if err != nil {
 				t.Fatalf("recordDeployedEvent(%+v): %v", stale, err)
 			}
@@ -639,7 +642,7 @@ func TestEveryTimelineWriteStoresANulAsUFFFD(t *testing.T) {
 	serveTimelinePull(t, fake, timelineRepo, 91, timelinePull(timelineRepo, 91, searched, "work/notes"))
 	serveTimelinePull(t, fake, timelineRepo, 92, timelinePull(timelineRepo, 92, completed, "work/guide"))
 	noRuns(t, fake)
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
 	after, err := GetSettings(ctx, pool)
 	if err != nil {

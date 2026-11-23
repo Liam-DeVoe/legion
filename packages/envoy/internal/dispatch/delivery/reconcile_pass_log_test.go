@@ -29,7 +29,7 @@ func TestAPassLogsItsTimeOnceWhereItEnds(t *testing.T) {
 		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
 	})
 	noRuns(t, fake)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 	logs := captureLogs(t)
 
 	reconcile.runOnce(ctx)
