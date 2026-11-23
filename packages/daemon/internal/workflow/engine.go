@@ -2813,7 +2813,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// out is written (WritePlan): the run's plan node, the plan whose first step is the start below.
 	// The node, the move's write and the start each read w, the walk this transition read once.
 	if trigger == TriggerGateOpened {
-		if err := e.writePlanOn(ctx, tx, issue, []Walk{w}); err != nil {
+		if err := e.writePlanOn(ctx, tx, issue, s.plan); err != nil {
 			return err
 		}
 	}

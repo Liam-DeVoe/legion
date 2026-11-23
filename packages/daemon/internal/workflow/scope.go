@@ -690,3 +690,14 @@ func scopeOrNoPlan(issue record.Issue, stored *record.StoredPlan, task string) (
 	}
 	return scopeOn(issue, stored, task)
 }
+
+// copyStoppedStep is the step the stop of issue's task ended (record.Store.StoppedStep): for a copy
+// of the issue read for one task (scopeOn), that task's own (record.Store.StoppedStepOf), and for
+// the issue itself the first stopped task's. It is the one reader of the task a copy is read for
+// outside the readers of this file.
+func copyStoppedStep(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (record.RunningStep, bool, error) {
+	if issue.ViewTask != "" {
+		return store.StoppedStepOf(ctx, tx, issue, issue.ViewTask)
+	}
+	return store.StoppedStep(ctx, tx, issue)
+}

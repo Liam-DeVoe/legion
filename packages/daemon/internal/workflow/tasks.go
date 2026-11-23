@@ -153,7 +153,7 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		// The node holds each task of the plan before any of them starts, so a step record or a
 		// need of any task names a task the node holds.
 		if node {
-			if err := e.writePlanOn(ctx, tx, issue, walksOf(issue.Key, stored)); err != nil {
+			if err := e.writePlanOn(ctx, tx, issue, stored); err != nil {
 				return record.Issue{}, err
 			}
 			node = false
@@ -181,7 +181,7 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// A gate's opening that starts no task still writes the node of the plan the work walks.
 	if node {
-		if err := e.writePlanOn(ctx, tx, issue, walksOf(issue.Key, stored)); err != nil {
+		if err := e.writePlanOn(ctx, tx, issue, stored); err != nil {
 			return record.Issue{}, err
 		}
 	}

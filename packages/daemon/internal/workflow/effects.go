@@ -1391,7 +1391,7 @@ func HeldNotice(ctx context.Context, s record.Store, tx pgx.Tx, issue record.Iss
 		notice.Role = held[0].Role
 		return notice, nil
 	}
-	stopped, ok, err := s.StoppedStep(ctx, tx, issue)
+	stopped, ok, err := copyStoppedStep(ctx, s, tx, issue)
 	if ok {
 		notice.Role = stopped.Role
 	}
