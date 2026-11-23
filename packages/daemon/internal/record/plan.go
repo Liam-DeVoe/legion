@@ -568,40 +568,80 @@ func (p *StoredPlan) HoldsBranchBeforeItsStart(issueKey, branch string) bool {
 	return p != nil && len(p.Tasks) == 1 && p.Tasks[0].Branch == "" && p.Tasks[0].unstarted() && branch == claim.IssueBranch(issueKey)
 }
 
+// StartBranch is a branch the work of a task starts from (StoredPlan.StartsFrom), and the id of
+// each of the task's needs whose work it holds, in the order of the task's needs: one need whose
+// work did not merge, on its own branch, or each need whose work merged, on the issue's default
+// branch.
+type StartBranch struct {
+	Branch string
+	Needs  []string
+}
+
+// StartsFrom is the branches the work of task of p, the plan of issue, starts from, the branches
+// the join of its needs reads, in order: the branch of each need whose work did not merge
+// (BranchOf), in the order of its needs, then the issue's default branch once where the work of any
+// need merged (WorkMerged), since that branch holds it. So no reader reads the branch of a merged
+// need, which GitHub can have deleted at its merge. Whether a need merged is the fact its merge
+// wrote, which no later version changes, never Merging: a version that needs a merged task takes it
+// out of Merging. A task that needs none starts from no branch: its branch starts at the default
+// branch. A task p does not hold, and a need it does not hold, are an error naming it:
+// plan.Validate refuses such a plan, so p holding one is a defect, which no branch would answer
+// truly.
+func (p StoredPlan) StartsFrom(issue Issue, task string) ([]StartBranch, error) {
+	of, ok := p.TaskOf(task)
+	if !ok {
+		return nil, fmt.Errorf("the branches task %s of %s starts from: its plan holds no such task", task, issue.Key)
+	}
+	var starts []StartBranch
+	var merged []string
+	for _, id := range of.Needs {
+		need, ok := p.TaskOf(id)
+		switch {
+		case !ok:
+			return nil, fmt.Errorf("the branches task %s of %s starts from: it needs %s, which its plan holds no task of", task, issue.Key, id)
+		case p.WorkMerged(id):
+			merged = append(merged, id)
+		default:
+			starts = append(starts, StartBranch{Branch: need.BranchOf(issue.Key), Needs: []string{id}})
+		}
+	}
+	if len(merged) > 0 {
+		starts = append(starts, StartBranch{Branch: issue.DefaultBranch, Needs: merged})
+	}
+	return starts, nil
+}
+
+// PlannedBase is the branch the plan gives as the base of the pull request of task of p, the plan
+// of issue, and whether it is the task's join branch, where the join of its needs is made (join
+// true). It is issue's default branch for a task that merges (Merging), for a task none of whose
+// steps is of the type implementation, whose pull request shows the joined work of its needs, which
+// its steps read, and for a task that starts from no branch (StartsFrom), one that needs none. A
+// task that starts from one branch is based on it: its one need's branch, or the default branch
+// where the work of each of its needs merged. A task that starts from several is based on its join
+// branch, its own branch and claim.JoinBranchSuffix, where they are joined and from which its branch
+// starts, so its pull request shows its own work alone. It is read for a task its first start gave a
+// branch (AssignTaskBranch). A task or a need p does not hold is StartsFrom's error.
+func (p StoredPlan) PlannedBase(issue Issue, task string) (base string, join bool, err error) {
+	starts, err := p.StartsFrom(issue, task)
+	switch {
+	case err != nil:
+		return "", false, err
+	case len(starts) == 0 || slices.Contains(p.Merging(), task) || !p.Implements(task):
+		return issue.DefaultBranch, false, nil
+	case len(starts) == 1:
+		return starts[0].Branch, false, nil
+	}
+	of, _ := p.TaskOf(task)
+	return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
+}
+
 // BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
 // it is the task's join branch, which the join of its needs makes (join true): the one rule the
 // join's executor, the opener of a task's pull request, the task text and the judgement of a later
-// version of the plan read. It is issue's default branch for the task that merges (MergingTask), for
-// a task that needs none and for a task none of whose steps is of the type implementation, whose
-// pull request shows the joined work of its needs, which its steps read. A task with one need is
-// based on that need's branch (BranchOf). A task with several is based on its join branch, its own
-// branch and claim.JoinBranchSuffix, where the work of its needs is joined and from which its branch
-// starts, so its pull request shows its own work alone. It is read for a task its first start gave a
-// branch (AssignTaskBranch). A task p does not hold, and a need it does not hold, are an error naming
-// it: plan.Validate refuses such a plan, so p holding one is a defect, which no base would answer
-// truly.
+// version of the plan read. It is the base the plan gives the task (PlannedBase), and a task or a
+// need p does not hold is its error.
 func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool, err error) {
-	of, ok := p.TaskOf(task)
-	if !ok {
-		return "", false, fmt.Errorf("the base of task %s of %s: its plan holds no such task", task, issue.Key)
-	}
-	var first PlanTask
-	for i, id := range of.Needs {
-		need, ok := p.TaskOf(id)
-		if !ok {
-			return "", false, fmt.Errorf("the base of task %s of %s: it needs %s, which its plan holds no task of", task, issue.Key, id)
-		}
-		if i == 0 {
-			first = need
-		}
-	}
-	if merging, merges := p.MergingTask(); len(of.Needs) == 0 || merges && merging == task || !p.Implements(task) {
-		return issue.DefaultBranch, false, nil
-	}
-	if len(of.Needs) > 1 {
-		return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true, nil
-	}
-	return first.BranchOf(issue.Key), false, nil
+	return p.PlannedBase(issue, task)
 }
 
 // Implements says whether a step of task of p is of the type implementation: the step that opens
