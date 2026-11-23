@@ -2077,6 +2077,9 @@ type Store interface {
 	// PutPullRequest writes pr as the pull request of its issue's branch pr.Branch, in place of the
 	// row the record holds for that branch; pr.Task is read and never written (PullRequest.Task).
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
+	// DeletePullRequest deletes the row of issue's pull request on branch, the table's key; a branch
+	// the record holds no row for deletes nothing.
+	DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.
 	ProductionCheck(ctx context.Context, tx pgx.Tx, issue string) (*ProductionCheck, error)
