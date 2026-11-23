@@ -1520,9 +1520,10 @@ These arrive as messages on the Dispatch issue:
   reports that head one the issue may advance on.
 - **A later review round reads the whole change, or from an older commit.** The reviewer's task of
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
-  commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
-  footer names the session the reviewer's claim records), the phases row of the reviewer step whose
-  round it is holds the task of
+  commit to the head. Each reviewer step of a task keeps its own commit on its phases row, and the
+  first round of a later reviewer step names the commit of the reviewer step before it. A review
+  moves that commit only when it is the reviewer's own (its Legion footer names the session the
+  reviewer's claim records), the phases row of the reviewer step whose round it is holds the task of
   an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its
   round ends with that entry, `Review entry: <n>.`, the task of a wake that brought its pod back
   included, and the reviewer writes the number of the newest such sentence of its session into the
@@ -1532,10 +1533,10 @@ These arrive as messages on the Dispatch issue:
   since the footer's session and head are still read. A review whose footer names no entry, or
   another one, such as a review of a round before a new generation or a carried hand-over's
   promotion entered the reviewer again, decides its round as any other and leaves the commit where
-  it stands; so does a person's review. The next round then reads from an older commit, or the
-  whole change where none stands, and a new generation clears the commit, so its first round reads
-  the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
-  holds.
+  it stands; so does a person's review. The next round of that step then reads from an older commit,
+  or the whole change where none stands, and a new generation clears the commit, so its first round
+  reads the whole change. The footer of the newest deciding review of that step on GitHub shows
+  which case holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
   the base forward while the issue stays in `merging`, and the merger merges the new head once the
