@@ -692,7 +692,7 @@ test("an implementer and owner task is accepted on the evidence its steps give",
   const missing = lacks("legion-architect/references/acceptance.md", [
     /`acceptance:owner` enters `accepting`/,
     /has a tester step before yours[^.;]*--phase test/,
-    /`dispatch results --issue <issue>`[^.;]*the head the steps before yours passed/,
+    /`dispatch results --issue <issue>[^`]*`[^.;]*the head the steps before yours passed/,
     /has a reviewer step before yours[^.;]*approval/,
     /no tester step[^.;]*the implementation step's evidence/,
   ]);
@@ -953,19 +953,18 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
       /On an issue with no pull request each such check reads `no_head`[^.]*\. No role waits for it or fails a round for it\./,
     ]),
     ...lacks("legion-retro/SKILL.md", [
-      /With no pull request, read `dispatch results --issue <issue> --at <that head>`\./,
-      /A check that reads `no_head`, on an issue with no pull request, goes to the architect as a finding too\./,
-      /Where the retro is yours, complete with `complete_step` at `step: 0` instead/,
+      /`dispatch results --issue <issue> --at <the head the last step passed>`/,
+      /Send a name that no run answers \(`absent`\), or `no_head`, to the architect as a finding/,
     ]),
     ...lacks("legion-worker/SKILL.md", [
-      /Then read the handoff each `Step <j> \(<role>\) reported:` line of your task names/,
-      /Such a copy is only for reading and running: commit nothing in it and push nothing from it\./,
+      /Then read each handoff your task's `Step <j> \(<role>\) reported:` lines name/,
+      /Commit nothing in the copy\./,
     ]),
     ...lacks("legion-architect/references/plan.md", [
       /A `ci_check` that reads `absent` or `no_head` moves nothing back either/,
     ]),
     ...lacks("legion-architect/references/acceptance.md", [
-      /At a `reviewer:owner` step, give that review on GitHub yourself instead\./,
+      /or its verdict with no pull request or at `reviewer:owner`/,
     ]),
     ...lacks("legion-architect/references/own-steps.md", [
       /The tool sends that record's `head` as the commit you read, so you pass no commit\./,

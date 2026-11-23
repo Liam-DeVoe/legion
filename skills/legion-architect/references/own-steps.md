@@ -55,7 +55,7 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
 - `reviewer:owner` ends by your `complete_step`, with the `verdict` `pass` or `fail`, whether or not the issue has a pull request.
   Write its `review` handoff first, its `decision` `approved` for `pass` and `changes_requested` for `fail`.
   The tool sends that record's `head` as the commit you read, so you pass no commit.
-  No review on GitHub decides the step, yours included.
+  No review on GitHub decides it, yours included.
   Your `fail` sends the work back as a `request_backward_move` from that step does, and neither counts a review round.
 
 - A review you leave on the pull request decides nothing of the step.

@@ -58,7 +58,7 @@ func TestTheNoPullRequestAndOwnerStepWordsSayWhatTheCodeDoes(t *testing.T) {
 		{"architect.md", "or its verdict where the issue has no pull request or that step was your own"},
 		{"architect.md", "Where its task holds your step `acceptance:owner`, your acceptance is the only gate on it. A task with no acceptance step has no gate on it at all."},
 		{"go/reviewer.md", "The tool sends your `review` handoff's `head` as the completion's `commit`, and the daemon refuses a completion with none (`MISSING_FIELD`, naming `commit`)."},
-		{"go/reviewer.md", "So send `return_to`, that step's place in your task's `Steps:` line, when the work that must change is another earlier step's"},
+		{"go/reviewer.md", "So send `return_to` when the work that must change is another earlier step's, such as a tester step's results."},
 		{"go/acceptance.md", "A `fail` may name the earlier step whose work must change with `return_to`"},
 		{"go/acceptance.md", "Send the same report again once each has left the workflow."},
 		{"go/acceptance.md", "Send the work back with your `fail`, never with `request_backward_move`."},
