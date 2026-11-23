@@ -14,15 +14,22 @@ package legion
 // project applies, and its snapshot is never older than a message already applied. A message that
 // arrives while a read is in flight waits on the runner behind it, for one RequestTimeout at the
 // most, and is judged against the cursor that read leaves. A message of a store the project's
-// cursor drops (cursor.forgets) runs on the runner too: it applies nothing and holds no read, and
-// the one read it can call for is queued on the runner behind it (callRead). A project keeps at
-// most stateMaxWaiting messages waiting on its runner: a message past that runs on a key of its own
-// beside the runner, makes no read and owes one, which the read in flight does not clear
-// (judgeCrowded). So a project has at most one whole read in flight; it has at most one owed
-// (cursor.readReasons), and one rule decides whether a call for a read makes it now or owes it, its
-// whole reads starting ReadRetryAfter apart (cursor.readFor). legion_event_cursors says how far the
-// project's observations have followed its daemon (cursor), and legion_event_parts holds the
-// messages of a transaction the daemon split over several until the last one arrives (part).
+// cursor drops (cursor.forgets) runs on the runner too: it applies nothing and calls for no read
+// of its own, and the one read it can call for is queued on the runner behind it (callRead). A
+// project keeps at most stateMaxWaiting messages waiting on its runner: a message past that runs on
+// a key of its own beside the runner, makes no read and owes one. The read in flight leaves the gap
+// read owed where a message past the cap that joined it carries a sequence of the read's store
+// above its snapshot, and otherwise the first such message's redelivery is judged as any message's
+// (judgeCrowded, recordWhole). A message that holds the owed read, whatever store it is of, makes
+// it at its redelivery or goes back to the stream again: no message is acknowledged while the
+// cursor names it as the holder, unless the read rule releases it (cursor.readFor), a write of the
+// setting ended its hold (endHold), or a Dispatch process of an earlier build keeps the intake from
+// the starting point the message calls for (applyMessage), where the holder is released first. So a
+// project has at most one whole read in flight; it has at most one owed (cursor.readReasons), and
+// one rule decides whether a call for a read makes it now or owes it, its whole reads starting
+// ReadRetryAfter apart (cursor.readFor). legion_event_cursors says how far the project's
+// observations have followed its daemon (cursor), and legion_event_parts holds the messages of a
+// transaction the daemon split over several until the last one arrives (part).
 
 import (
 	"context"
@@ -133,13 +140,15 @@ func consumerConfig() natsgo.ConsumerConfig {
 // holds - a starting read's, which no message makes, or one whose message has gone back
 // stateMaxHolds times - waits for the project's next message, boot, settings change or
 // take-over, which makes it once it is due. A message of a store the cursor drops (cursor.forgets)
-// holds no read and makes none itself. It waits on the project's runner behind a read in flight,
-// as every message does, and is judged against the cursor that read leaves: while no read of the
-// setting's daemon has given the cursor a store, it queues a call for a read that is due and that
-// no message holds behind itself, which the runner makes after the message is acknowledged, and
-// once a read gives another store it calls for none (callRead). No timer makes a read. A good
-// starting read holds back no read after it (recordWhole), and a project with no cursor has no
-// read to wait after.
+// calls for no read of its own, and holds one only where, past stateMaxWaiting while a read of
+// the project was in flight, it took the hold of the gap read after it (judgeCrowded): its
+// redelivery then makes that read, as every holder's does. It waits on the project's runner behind
+// a read in flight, as every message does, and is judged against the cursor that read leaves:
+// while no read of the setting's daemon has given the cursor a store, it queues a call for a read
+// that is due and that no message holds behind itself, which the runner makes after the message is
+// acknowledged, and once a read gives another store it calls for none (callRead). No timer makes a
+// read. A good starting read holds back no read after it (recordWhole), and a project with no
+// cursor has no read to wait after.
 const ReadRetryAfter = time.Minute
 
 // The reasons a whole read is made, which legion_reads.reason records and the whole read's log
@@ -355,10 +364,18 @@ type Intake struct {
 	// waiting counts the messages that wait on each project's runner, for the subscription the
 	// durable delivers on now (waitingCounts). A take-over starts it again (takenOver).
 	waiting waitingCounts
-	// reading is when the whole read in flight on each project's runner began, on the intake's
-	// clock (readWhole), so a message past stateMaxWaiting that holds the read it owes goes back to
-	// the stream until ReadRetryAfter after that start (judgeCrowded).
-	reading map[string]time.Time
+	// reading is the whole read in flight on each project's runner (readWhole, readInFlight).
+	reading map[string]readInFlight
+}
+
+// readInFlight is the whole read in flight on one project's runner (Intake.reading). started is
+// when it began, on the intake's clock, so a message past stateMaxWaiting that holds the read after
+// it goes back to the stream until ReadRetryAfter after that start. pastCap is the stream sequence
+// of the first message past stateMaxWaiting the intake judged since it began, 0 for none: that
+// message takes the hold of the read after it (judgeCrowded, inFlight).
+type readInFlight struct {
+	started time.Time
+	pastCap int64
 }
 
 // reportKey is one line of reportEvery for one project.
@@ -388,7 +405,7 @@ func newWaitingCounts() waitingCounts {
 // the shared listener's wake on SettingsChannel.
 func NewIntake(natsClient *bus.Client, pool *store.Pool, leases delivery.DurableLeases, settingsWake <-chan struct{}) *Intake {
 	in := &Intake{pool: pool, settingsWake: settingsWake, now: time.Now, reported: map[reportKey]time.Time{}, calling: map[string]bool{},
-		waiting: newWaitingCounts(), reading: map[string]time.Time{}}
+		waiting: newWaitingCounts(), reading: map[string]readInFlight{}}
 	in.durable = delivery.NewHeldDurable(natsClient, leases, consumerConfig, in.messageKey, in.deliver, in.takenOver)
 	return in
 }
@@ -606,12 +623,16 @@ const (
 	outcomeOtherStore
 	// outcomeForgotten is a message of a store the project's cursor drops (cursor.forgets): the
 	// store the project followed before a write of its setting named another daemon, or a store a
-	// whole read found is no daemon of the project. It is finished unapplied and holds no read. It
-	// waits on the project's runner behind a read in flight, as every message does, and is judged
-	// against the cursor that read leaves: while the cursor holds no store, it queues a call for the
-	// owed read behind itself where that read is due and no message holds it, and otherwise it calls
-	// for none (callRead; judge, applyBatch). On its project's crowded key it calls for none
-	// (judgeCrowded).
+	// whole read found is no daemon of the project. It is never applied. It waits on the project's
+	// runner behind a read in flight, as every message does, and is judged against the cursor that
+	// read leaves: while the cursor holds no store, it queues a call for the owed read behind itself
+	// where that read is due and no message holds it, and otherwise it calls for none (callRead;
+	// judge, applyBatch). On its project's crowded key it calls for none while no whole read of the
+	// project is in flight, and otherwise owes the read as every message past stateMaxWaiting does
+	// (judgeCrowded). A message the cursor names as the owed read's holder, which one past
+	// stateMaxWaiting of any store can be (judgeCrowded), is not finished so: it makes that read
+	// when it is due and goes back to the stream otherwise, as every holder does (applyBatch,
+	// answerRead).
 	outcomeForgotten
 	// outcomeReleased is a message whose hold of its project's owed read a write of the setting
 	// that named another daemon ended (cursor.releases, endHold): it is finished unapplied at its
@@ -725,22 +746,26 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 // the project's position (lockPosition), it answers outcomeDropped for a project with no setting,
 // finishes a message whose hold a write of the setting ended (cursor.releases, endHold), and
 // answers outcomeForgotten, writing nothing, for a message of a store the cursor drops
-// (cursor.forgets) while no whole read of the project is in flight (readsNow). A read in flight
-// can find that store behind the setting's URL (the same store behind a new URL, a marked store a
-// redeploy started there), and the cursor it leaves then applies that store's later events, so a
-// message of it past the cap is judged as any other: its events may be past that read's snapshot.
-// Every other message owes a read: the one its position calls for against the
-// cursor as it stands (stateMessage.unfollowed: a boot that does not follow calls for
-// ReadReasonBoot), and ReadReasonGap otherwise, since its events may be past the snapshot of the
-// read in flight, which does not clear a reason that arrives while it is in flight (recordWhole).
-// The read rule decides the rest as for a delivery that has made its read already
-// (cursor.readFor), so it never makes the read now. Where no message holds the read, this message
-// holds it and goes back to the stream until ReadRetryAfter after the start of the read in flight
-// (inFlight), or after the last read where none is in flight, and its redelivery, keyed to the
-// runner once fewer messages wait there, makes the read on the runner. Where another message holds
-// it, this message joins it and is acknowledged unapplied (outcomeCrowded). A project with no
-// cursor yet, whose starting read is queued or in flight, is given one that follows no daemon, so
-// the read it owes is recorded.
+// (cursor.forgets) while no whole read of the project is in flight (readsNow), unless the cursor
+// names that message as the owed read's holder: a holder is never finished unapplied while it
+// holds the read. A read in flight can find that store behind the setting's URL (the same store
+// behind a new URL, a marked store a redeploy started there), and the cursor it leaves then
+// applies that store's later events, so a message of it past the cap is judged as any other: its
+// events may be past that read's snapshot. Every other message owes a read: the one its position
+// calls for against the cursor as it stands (stateMessage.unfollowed: a boot that does not follow
+// calls for ReadReasonBoot), and ReadReasonGap otherwise, since its events may be past the
+// snapshot of the read in flight. The read rule decides the rest as for a delivery that has made
+// its read already (cursor.readFor), so it never makes the read now. The first such message since
+// the read in flight began takes the hold of the read after it (inFlight, read-rule-cases row
+// 8.1): it goes back to the stream until ReadRetryAfter after the start of the read in flight, and
+// its redelivery, keyed to the runner once fewer messages wait there, makes the read on the runner.
+// Where no read is in flight, a message holds the read where no message holds it, and goes back
+// until ReadRetryAfter after the last read. Where another message holds it, this message joins it
+// and is acknowledged unapplied (outcomeCrowded), and the cursor keeps its sequence as the highest
+// it skipped in its store (cursor.skips), so the read in flight, which clears the reasons it was
+// made for, leaves the gap read owed where that sequence is past its snapshot (recordWhole). A
+// project with no cursor yet, whose starting read is queued or in flight, is given one that follows
+// no daemon, so the read it owes is recorded.
 func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (outcome, error) {
 	message := attempt.message
 	project := message.Project
@@ -758,7 +783,7 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 		return outcomeDropped, nil
 	case current.releases(attempt.seq):
 		return endHold(ctx, tx, project, current, message.StateID)
-	case current.forgets(message.StateID) && !in.readsNow(project):
+	case current.forgets(message.StateID) && !in.readsNow(project) && !current.heldBy(attempt.seq):
 		return outcomeForgotten, nil
 	}
 	if !current.exists {
@@ -777,9 +802,17 @@ func (in *Intake) judgeCrowded(ctx context.Context, attempt *messageAttempt) (ou
 	}
 	attempt.cursor, attempt.reason = current, reason
 	// made: a message on the crowded key never makes a read, as a delivery that made one already.
-	answer := in.inFlight(project, current).readFor(reason, in.now(), attempt.seq, true)
+	answer := in.inFlight(project, current, attempt.seq).readFor(reason, in.now(), attempt.seq, true)
 	if err := owe(ctx, tx, project, answer, attempt.seq); err != nil {
 		return outcomeDone, err
+	}
+	if answer.back == 0 {
+		stateIDs, seqs := current.skips(message.StateID, message.Seq)
+		if _, err := tx.Exec(ctx, `
+			update legion_event_cursors set skipped_state_ids = $2, skipped_seqs = $3 where project = $1
+		`, project, stateIDs, seqs); err != nil {
+			return outcomeDone, fmt.Errorf("record the state message of %s skipped past the cap: %w", project, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return outcomeDone, fmt.Errorf("commit the Legion state events of %s: %w", project, err)
@@ -796,15 +829,32 @@ func (in *Intake) readsNow(project string) bool {
 	return reading
 }
 
-// inFlight is current with the start of the whole read in flight on project's runner (reading) as
-// the start of the read the next one waits ReadRetryAfter after, where a read is in flight: that
-// read records its start there once it fails or is not a starting read (recordWhole).
-func (in *Intake) inFlight(project string, current cursor) cursor {
+// inFlight is current as judgeCrowded judges the message at stream sequence seq against it, and
+// current itself where no whole read of project is in flight on its runner (reading). Where one is,
+// it records seq as the read's first message past stateMaxWaiting (readInFlight.pastCap) where the
+// read has none yet, and the read's start stands as the start of the read the next one waits
+// ReadRetryAfter after, which that read records there once it fails or is not a starting read
+// (recordWhole). And the first message past stateMaxWaiting since that read began is judged as
+// though no message held the read, so it holds the read after it from a count of 1, unless it holds
+// the read already: the message that held the read before, the one whose redelivery makes the read
+// in flight included, holds the read in flight, which clears the reasons it was made for, and the
+// read after it is for the events past its snapshot, which only the messages past the cap since it
+// began can carry. Every later message past the cap joins that hold, so the project holds one
+// message of the durable's window beside those that wait on its runner (R3-h).
+func (in *Intake) inFlight(project string, current cursor, seq int64) cursor {
 	in.mu.Lock()
-	started, reading := in.reading[project]
+	flight, reading := in.reading[project]
+	if reading && flight.pastCap == 0 {
+		flight.pastCap = seq
+		in.reading[project] = flight
+	}
 	in.mu.Unlock()
-	if reading {
-		current.readTriedAt = &started
+	if !reading {
+		return current
+	}
+	current.readTriedAt = &flight.started
+	if flight.pastCap == seq && !current.heldBy(seq) {
+		current.readHolder, current.readHolds = nil, 0
 	}
 	return current
 }
@@ -936,8 +986,11 @@ func deliveryOf(msg *natsgo.Msg) (seq int64, delivered uint64) {
 // (answerRead), which takes the message or leaves it unapplied as judge says, and the message goes
 // back to the stream where it holds the owed read (messageAttempt.back). A starting point is not
 // taken while a Dispatch process of an earlier build is in the fleet (startBlocked): the message is
-// acknowledged unapplied. A batch the database refuses for good (refusedForGood) is not tried
-// again: it calls for one whole read of the project (readRefused), and deliver logs the refusal.
+// acknowledged unapplied, and where the cursor names it as the owed read's holder (a message past
+// stateMaxWaiting holds the read of a cursor that follows no daemon: judgeCrowded), the cursor
+// names no holder from then on (owe, release), since the message is acknowledged with no read
+// made. A batch the database refuses for good (refusedForGood) is not tried again: it calls for one
+// whole read of the project (readRefused), and deliver logs the refusal.
 func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (outcome, error) {
 	if attempt.refusal != nil {
 		return in.readRefused(ctx, attempt)
@@ -951,6 +1004,9 @@ func (in *Intake) applyMessage(ctx context.Context, attempt *messageAttempt) (ou
 		return result, err
 	}
 	if blocked, err := in.startBlocked(ctx, read.reason); err != nil || blocked {
+		if blocked && attempt.cursor.heldBy(attempt.seq) {
+			err = owe(ctx, in.pool, attempt.message.Project, readAnswer{release: true}, attempt.seq)
+		}
 		return outcomeEarlierBuild, err
 	}
 	return in.makeRead(ctx, attempt, *read)
@@ -1200,18 +1256,28 @@ type cursor struct {
 	lastSeq  *int64
 	// readReasons is every reason a whole read is owed for, in the order they called for it (owe),
 	// or retry and each reason a message added while the read was in flight, after a read that
-	// failed (recordWhole), and empty while none is owed (readOwed). readTriedAt is when the read
-	// the next one waits ReadRetryAfter after began, nil where none holds the next one back
-	// (readDue). readHolder is the stream sequence of the message that holds the owed read, which
-	// goes back to the stream until the read is due, and again after each read it makes that
-	// fails, stateMaxHolds times at the most (readFor), and nil where no message holds it.
-	// readHolds is how many times that message has gone back holding the read, which neither a
-	// take-over nor a write of the setting that names the same daemon resets, and 0 where no
-	// message holds it.
+	// failed, or each such reason and gap, after a good read short of a sequence skipped past the
+	// cap (recordWhole), and empty while none is owed (readOwed). readTriedAt is when the read the
+	// next one waits ReadRetryAfter after began, nil where none holds the next one back (readDue).
+	// readHolder is the stream sequence of the message that holds the owed read, which goes back to
+	// the stream until the read is due, and again after each read it makes that fails,
+	// stateMaxHolds times at the most (readFor), and nil where no message holds it. readHolds is
+	// how many times that message has gone back holding the read, which neither a take-over nor a
+	// write of the setting that names the same daemon resets, and 0 where no message holds it.
 	readReasons []string
 	readTriedAt *time.Time
 	readHolder  *int64
 	readHolds   int
+	// skippedStateIDs and skippedSeqs are, pair by pair, a store and the highest sequence of a
+	// message of that store that judgeCrowded acknowledged unapplied past stateMaxWaiting (skips),
+	// the store skipped last at the end, maxSkippedStores at the most. Every whole read empties
+	// both as it begins, since it holds every event published before it (readWhole), so what they
+	// hold as it lands was skipped while it was in flight. A good read that those messages do not
+	// pass in its store leaves no reason owed for them, and one they pass owes the gap read
+	// (skippedAbove); either way it empties both, and a failed read keeps them (recordWhole). Every
+	// write that resets the cursor empties them (settingWritten).
+	skippedStateIDs []string
+	skippedSeqs     []int64
 	// stateID is the store the cursor's sequence is counted in: nil until a good read sets it, and
 	// again once a write of the setting clears it (settingWritten). schemaVersion is the store's
 	// schema version as the cursor last saw it, nil for none. previousStateID is the store of the
@@ -1238,6 +1304,15 @@ type cursor struct {
 // (foreignStateIDs). Past it the oldest mark goes, and that store's next message makes one store
 // read again, at most once a ReadRetryAfter.
 const maxForeignStores = 8
+
+// maxSkippedStores is how many stores a cursor keeps the highest sequence skipped past
+// stateMaxWaiting of (skippedStateIDs). During a whole read that may verify a store the cursor does
+// not hold (read-rule-cases rows 4.4, 5.2 and 5.6), messages of the cursor's store, of the store a
+// write recorded and of the stores marked as no daemon of the project can all arrive past the cap,
+// so the cursor keeps several, bounded as the marks are (maxForeignStores). Past it the store
+// skipped longest ago goes: a read that then finds that store owes no gap read for it, and that
+// store's next message calls for one.
+const maxSkippedStores = maxForeignStores
 
 // readOwed reports whether the cursor owes a whole read: whether it names a reason for one, which
 // is what the column read_owed, generated from read_reasons, says too.
@@ -1288,11 +1363,14 @@ func (a readAnswer) of(setting Settings) owedRead {
 // needs, "" for none (a call that only makes a read owed already), now is the intake's clock, seq
 // is the stream sequence of the message that calls, 0 for a call no message makes, and made
 // whether the delivery of that message has made a whole read already (messageAttempt.readMade). A
-// message of a store the cursor drops (outcomeForgotten) calls it only as a call no message makes,
-// to decide whether to queue the project's starting point, which calls it again on the project's
-// runner (callRead): so such a message never makes a read itself, holds one or owes one. A message
-// on its project's crowded key calls it as a delivery that made its read already, so it never
-// makes the read (judgeCrowded).
+// message of a store the cursor drops (outcomeForgotten) calls it as a call no message makes, to
+// decide whether to queue the project's starting point, which calls it again on the project's
+// runner (callRead): so such a message never makes a read for itself or owes one. Where the cursor
+// names it as the holder, which it can be after it owed a gap read past stateMaxWaiting while a
+// read was in flight, it calls it with no reason as the holder, so it makes the held read once
+// that read is due and goes back to the stream until then (applyBatch). A message on its
+// project's crowded key calls it as a delivery that made its read already, so it never makes the
+// read (judgeCrowded).
 //
 //   - ReadReasonStart is made now and alone: a project with no starting point has no read before
 //     it to wait after, and each reason its cursor owes is for a daemon the setting no longer
@@ -1325,8 +1403,9 @@ func (a readAnswer) of(setting Settings) owedRead {
 // read that no message holds, a starting point's or one whose message went back stateMaxHolds
 // times, is made at the project's next message, boot, settings change or take-over, once it is
 // due: the next message to call holds it. A message of a store the cursor drops neither makes nor
-// holds that read: while the cursor holds no store, it queues a call for it on the project's
-// runner, which makes it as a call no message makes (callRead).
+// holds that read unless the cursor names it as the holder: while the cursor holds no store, it
+// queues a call for it on the project's runner, which makes it as a call no message makes
+// (callRead).
 func (c cursor) readFor(reason string, now time.Time, seq int64, made bool) readAnswer {
 	switch {
 	case reason == ReadReasonStart:
@@ -1377,7 +1456,8 @@ func (c cursor) follows(stateURL string) bool {
 // names: its store is the one a write that named another daemon recorded (previousStateID), or one
 // marked as no daemon of the project (foreignStateIDs), and the cursor holds no store or another
 // store. R3 applies no message of a daemon the setting named before once the setting names
-// another. Such a message holds no read and makes none itself. It waits on the project's runner
+// another. Such a message calls for no read of its own, and makes one only as the holder of a read
+// it took past stateMaxWaiting (judgeCrowded, applyBatch). It waits on the project's runner
 // behind a read in flight, as every message does, and is judged against the cursor that read
 // leaves. While the cursor holds no store, no read has shown yet whether the setting's daemon
 // serves another store or this store behind another URL, so the message calls for the owed read
@@ -1411,6 +1491,38 @@ func (c cursor) releases(seq int64) bool {
 	return seq != 0 && c.releasedHolder != nil && *c.releasedHolder == seq
 }
 
+// heldBy reports whether the message at stream sequence seq is the one that holds the owed read
+// (readHolder). 0, a message with no JetStream metadata, holds none.
+func (c cursor) heldBy(seq int64) bool {
+	return seq != 0 && c.readHolder != nil && *c.readHolder == seq
+}
+
+// skippedAbove reports whether a message of the store stateID that the intake acknowledged
+// unapplied past stateMaxWaiting carried a sequence above seq (skippedStateIDs, skippedSeqs).
+func (c cursor) skippedAbove(stateID string, seq int64) bool {
+	i := slices.Index(c.skippedStateIDs, stateID)
+	return i >= 0 && c.skippedSeqs[i] > seq
+}
+
+// skips is the cursor's skipped sequences with seq skipped in the store stateID: that store's
+// highest, at the end as the store skipped last, and once. Past maxSkippedStores the stores
+// skipped longest ago go. Never nil: the array columns are not null.
+func (c cursor) skips(stateID string, seq int64) (stateIDs []string, seqs []int64) {
+	stateIDs, seqs = make([]string, 0, len(c.skippedStateIDs)+1), make([]int64, 0, len(c.skippedSeqs)+1)
+	for i, one := range c.skippedStateIDs {
+		if one == stateID {
+			seq = max(seq, c.skippedSeqs[i])
+			continue
+		}
+		stateIDs, seqs = append(stateIDs, one), append(seqs, c.skippedSeqs[i])
+	}
+	stateIDs, seqs = append(stateIDs, stateID), append(seqs, seq)
+	if n := len(stateIDs); n > maxSkippedStores {
+		stateIDs, seqs = stateIDs[n-maxSkippedStores:], seqs[n-maxSkippedStores:]
+	}
+	return stateIDs, seqs
+}
+
 // marked is stores, the stores a cursor marks as no daemon of its project (foreignStateIDs), with
 // stateID marked as the newest: at the end, and once. Past maxForeignStores the oldest marks go.
 func marked(stores []string, stateID string) []string {
@@ -1436,14 +1548,14 @@ func without(values []string, value string) []string {
 
 // cursorColumns is the legion_event_cursors select list scanCursor reads, in scan order.
 const cursorColumns = `state_url, run, last_seq, read_reasons, read_tried_at, read_holder, read_holds, state_id, schema_version,
-	previous_state_id, foreign_state_ids, released_holder`
+	previous_state_id, foreign_state_ids, released_holder, skipped_state_ids, skipped_seqs`
 
 // scanCursor decodes one cursorColumns row, or no row as a cursor that does not exist.
 func scanCursor(row pgx.Row) (cursor, error) {
 	current := cursor{exists: true}
 	err := row.Scan(&current.stateURL, &current.run, &current.lastSeq, &current.readReasons, &current.readTriedAt,
 		&current.readHolder, &current.readHolds, &current.stateID, &current.schemaVersion, &current.previousStateID,
-		&current.foreignStateIDs, &current.releasedHolder)
+		&current.foreignStateIDs, &current.releasedHolder, &current.skippedStateIDs, &current.skippedSeqs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return cursor{}, nil
 	}
@@ -1507,13 +1619,15 @@ func lockPosition(ctx context.Context, tx pgx.Tx, project string) (stateURL stri
 // message calls for no read of its own other than a starting point:
 //
 //   - A message of a store the cursor drops (cursor.forgets), the store a write that named another
-//     daemon recorded or a store marked as no daemon of the project, is finished unapplied
-//     whatever else holds (outcomeForgotten): R3 applies none of the messages of a daemon the
-//     setting named before once the setting names another. Such a message has waited on the
-//     project's runner behind any read in flight, as every message does, so it is judged against
-//     the cursor that read left. It calls for no read of its own, not even a starting point, and
-//     never holds a read: the setting's daemon did not publish it, and R3 says a failed starting
-//     read is one that no message holds. While the cursor holds no store, applyBatch queues the
+//     daemon recorded or a store marked as no daemon of the project, is never applied, whatever
+//     else holds (outcomeForgotten): R3 applies none of the messages of a daemon the setting named
+//     before once the setting names another. Such a message has waited on the project's runner
+//     behind any read in flight, as every message does, so it is judged against the cursor that
+//     read left. It calls for no read of its own, not even a starting point: the setting's daemon
+//     did not publish it, and R3 says a failed starting read is one that no message holds. It
+//     holds the owed read only where it took that hold past stateMaxWaiting while a read was in
+//     flight (judgeCrowded), and applyBatch then has it make that read or go back as the holder.
+//     Otherwise it is finished unapplied: while the cursor holds no store, applyBatch queues the
 //     read the cursor owes on the project's runner behind the message where that read is due and
 //     no message holds it (callRead), and the message does not wait for it; once the cursor holds
 //     another store, the message calls for no read, with one exception: a boot of such a store,
@@ -1600,14 +1714,19 @@ func ownRead(reason string, readMade bool) string {
 // (answerRead). A message of a store the cursor drops (outcomeForgotten) writes nothing and hands
 // no read to the rule: it is acknowledged unapplied and holds no read, and while the cursor holds
 // no store it queues the call for the owed read that callRead decides, on the project's runner
-// behind it. Where the rule makes a read now, the batch writes nothing and answers that read: the
-// caller makes it outside the transaction (makeRead) and tries again. Otherwise the transaction
-// records what the rule owes (answerRead, owe), and the message comes to judge's outcome: it is
-// acknowledged once its batch commits, or goes back to the stream where it holds the owed read,
-// which is set once the commit succeeds (messageAttempt.answered). A message judge leaves
-// unapplied writes nothing else (outcomeNoStore, outcomeOtherStore, outcomeUnfollowed,
-// outcomeBeyond), and neither does one whose project has no setting (outcomeDropped), one at or
-// below the position, or one with more of its transaction to come, which is held (holdPart).
+// behind it. Unless the cursor names it as the owed read's holder, which a message past
+// stateMaxWaiting of any store can become (judgeCrowded): a held read is made by its holder's
+// redelivery, whatever store the holder is of, so such a message goes on to the rule with no
+// reason of its own (answerRead), and makes the read where it is due, goes back to the stream as
+// the holder where it is not, or is released after stateMaxHolds hand-backs; it is never applied.
+// Where the rule makes a read now, the batch writes nothing and answers that read: the caller makes
+// it outside the transaction (makeRead) and tries again. Otherwise the transaction records what the
+// rule owes (answerRead, owe), and the message comes to judge's outcome: it is acknowledged once
+// its batch commits, or goes back to the stream where it holds the owed read, which is set once the
+// commit succeeds (messageAttempt.answered). A message judge leaves unapplied writes nothing else
+// (outcomeNoStore, outcomeOtherStore, outcomeUnfollowed, outcomeBeyond), and neither does one whose
+// project has no setting (outcomeDropped), one at or below the position, or one with more of its
+// transaction to come, which is held (holdPart).
 //
 // The last message of a transaction applies every event of it above the cursor, the held parts'
 // and its own, each field at its last value in sequence order, written where it differs from
@@ -1641,7 +1760,7 @@ func (in *Intake) applyBatch(ctx context.Context, attempt *messageAttempt) (outc
 	}
 	result, reason := judge(current, held, stateURL, message, attempt.readMade, attempt.readGood)
 	attempt.cursor, attempt.reason = current, reason
-	if result == outcomeForgotten {
+	if result == outcomeForgotten && !current.heldBy(attempt.seq) {
 		in.callRead(project, current)
 		return result, nil, nil
 	}
@@ -1918,9 +2037,9 @@ func fetchWhole(ctx context.Context, setting Settings, started time.Time, now fu
 // tests outside the intake drive the intake's own read through it, and the intake calls readWhole.
 // Its record clears every reason the project's cursor owes as it begins, as the record of a read
 // the read rule makes does (owedRead.clears). It answers an error only for a cursor it could not
-// read, for a record the database refused, refused again as a failed read, and for a context that
-// ended, and records nothing when the setting no longer names setting.StateURL by the time it is
-// written.
+// read, for the emptying of the skipped sequences that the database refused, for a record the
+// database refused, refused again as a failed read, and for a context that ended, and records
+// nothing when the setting no longer names setting.StateURL by the time it is written.
 func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason string) error {
 	in := &Intake{pool: pool, now: time.Now}
 	_, current, _, err := in.position(ctx, setting.Project)
@@ -1945,16 +2064,26 @@ func ReadWhole(ctx context.Context, pool *store.Pool, setting Settings, reason s
 // row naming why, its observations where the state is the project's own, and leaves the read owed.
 // Each read is announced on StateChannel and logged at INFO with its reasons (finishWhole). From
 // the read's start until readWhole returns, the intake knows that start as the start of the read in
-// flight on the project's runner (reading).
+// flight on the project's runner (reading). Before it calls the daemon, it empties the sequences
+// the cursor skipped past stateMaxWaiting (cursor.skippedStateIDs): the daemon commits each event
+// before it publishes it, so the read holds every event of a message published before it began,
+// and only a message skipped while it is in flight can be past its snapshot (recordWhole). So a
+// read owes no gap read for a message skipped before it, whatever sequence that message claims.
 //
 // It keeps the read it fetched in pending until it is recorded, so an attempt made again after a
 // refused record records that read rather than reading the daemon again. It answers the read as it
 // was recorded, failed or good, and nil where it was not recorded: when the setting moved
-// meanwhile. It answers an error only for a record the database refused, and for a stop that cut
-// the read short.
+// meanwhile. It answers an error only for a write the database refused, the record or the emptying
+// of the skipped sequences, and for a stop that cut the read short.
 func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeRead) (*wholeRead, error) {
 	read := *pending
 	if read == nil || read.stateURL != owed.setting.StateURL {
+		if _, err := in.pool.Exec(ctx, `
+			update legion_event_cursors set skipped_state_ids = '{}', skipped_seqs = '{}'
+			where project = $1 and cardinality(skipped_state_ids) > 0
+		`, owed.setting.Project); err != nil {
+			return nil, fmt.Errorf("empty the state messages of %s skipped past the cap before a whole read: %w", owed.setting.Project, err)
+		}
 		started := in.now().UTC()
 		in.reads(owed.setting.Project, &started)
 		defer in.reads(owed.setting.Project, nil)
@@ -1974,7 +2103,8 @@ func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeR
 }
 
 // reads records started as the start of the whole read in flight on project's runner (reading),
-// and nil as no read in flight. An intake that runs no durable (ReadWhole's) records nothing.
+// with no message past stateMaxWaiting judged since it began, and nil as no read in flight. An
+// intake that runs no durable (ReadWhole's) records nothing.
 func (in *Intake) reads(project string, started *time.Time) {
 	if in.reading == nil {
 		return
@@ -1985,7 +2115,7 @@ func (in *Intake) reads(project string, started *time.Time) {
 		delete(in.reading, project)
 		return
 	}
-	in.reading[project] = *started
+	in.reading[project] = readInFlight{started: *started}
 }
 
 // finishWhole records read, made for owed (recordWhole, which announces it on StateChannel), then
@@ -2026,34 +2156,41 @@ func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 // recordWhole writes read, made for owed, in one transaction that holds the project's position
 // (lockPosition): the step every whole read's record takes (recordRead: its observations where it
 // observed them, its legion_reads row naming owed's recorded reason, and its announcement), then
-// the cursor. Every read clears the reasons the cursor owed when it was decided (owed.clears) and
-// keeps each reason a message added while it was in flight (owedSince), since that message's
-// events may be past the read's snapshot (judgeCrowded). A good read sets the cursor to its
-// stateSeq, its stateId and its schemaVersion, and deletes the project's held parts (part), which
-// its snapshot holds. Where it clears every reason, it clears the message that held the read with
-// its count of hand-backs; where a reason added while it was in flight stays owed, the message
-// that holds the read holds that reason, so it stays the holder with its count. A failed one owes
-// the read for retry (ReadReasonRetry), keeps the message that holds the read with its count of
-// hand-backs, and keeps the cursor's sequence, store, schema version and held parts where it
-// follows the same daemon: the read holds none of the events, a part held is applied whole when
-// its transaction's last part arrives, and the holder comes back to make the read again
-// ReadRetryAfter after this one began, until it has gone back stateMaxHolds times
-// (cursor.readFor), after which the cursor names no holder and the read waits for the project's
-// next message, boot, settings change or take-over. The holder and its count go only with a good
-// read that leaves no reason owed or with the message: its release after stateMaxHolds hand-backs
-// (owe), or a write of the setting that names another daemon, which ends the hold
-// (settingWritten). Either way the cursor follows the setting's daemon from here, and
-// read_tried_at, which the next read waits ReadRetryAfter after (cursor.readDue), is the read's
-// start, so the minute of a read the daemon is slow to answer, or never answers, counts from when
-// the read began and not from when it ended. A good starting read writes none there, since it is
-// made because the project had no starting point and not because a message called for it, so it
-// holds back no read a message calls for after it (a gap past what it read, a boot that does not
-// follow it). A good read whose state serves a stateRun sets the cursor's run to it: the run of
-// the daemon that served the read, which is the run of every message that daemon run publishes,
-// so a boot of that run at or below the read's stateSeq, one that reaches Dispatch after the
-// read, is one the read holds and not a daemon whose counter went back
-// (stateMessage.unfollowed). Any other read keeps the cursor's run where it follows the same
-// daemon, and sets none where it does not.
+// the cursor. Every read clears the reasons the cursor owed when it was decided (owed.clears). A
+// failed one keeps each reason a message added while it was in flight (owedSince). A good one
+// clears only the reasons its stateSeq answers (read-rule-cases row 5.1): where a message of its
+// store that judgeCrowded acknowledged unapplied past stateMaxWaiting while it was in flight
+// (readWhole empties the record as the read begins) carried a sequence above that stateSeq
+// (cursor.skippedAbove), its events are past the read's snapshot, so the gap read stays owed,
+// whatever reasons were owed when the read was decided, and so does each reason added while it
+// was in flight; otherwise it clears those too, since the messages that added them are at or
+// below its snapshot or of another store, but for the one that holds the read, whose redelivery is
+// then judged as any message. Once a good read has so decided, it empties the skipped sequences; a
+// failed one keeps them. A good read sets the cursor to its stateSeq, its stateId and its
+// schemaVersion, and deletes the project's held parts (part), which its snapshot holds. Where it
+// leaves no reason owed, it clears the message that held the read with its count of hand-backs;
+// where it leaves one owed, the message that holds the read, the first message past stateMaxWaiting
+// since the read began (judgeCrowded), holds that reason, so it stays the holder with its count. A
+// failed one owes the read for retry (ReadReasonRetry), keeps the message that holds the read with
+// its count of hand-backs, and keeps the cursor's sequence, store, schema version and held parts
+// where it follows the same daemon: the read holds none of the events, a part held is applied whole
+// when its transaction's last part arrives, and the holder comes back to make the read again
+// ReadRetryAfter after this one began, until it has gone back stateMaxHolds times (cursor.readFor),
+// after which the cursor names no holder and the read waits for the project's next message, boot,
+// settings change or take-over. The holder and its count go only with a good read that leaves no
+// reason owed or with the message: its release after stateMaxHolds hand-backs (owe), or a write of
+// the setting that names another daemon, which ends the hold (settingWritten). Either way the
+// cursor follows the setting's daemon from here, and read_tried_at, which the next read waits
+// ReadRetryAfter after (cursor.readDue), is the read's start, so the minute of a read the daemon is
+// slow to answer, or never answers, counts from when the read began and not from when it ended. A
+// good starting read writes none there, since it is made because the project had no starting point
+// and not because a message called for it, so it holds back no read a message calls for after it (a
+// gap past what it read, a boot that does not follow it). A good read whose state serves a stateRun
+// sets the cursor's run to it: the run of the daemon that served the read, which is the run of
+// every message that daemon run publishes, so a boot of that run at or below the read's stateSeq,
+// one that reaches Dispatch after the read, is one the read holds and not a daemon whose counter
+// went back (stateMessage.unfollowed). Any other read keeps the cursor's run where it follows the
+// same daemon, and sets none where it does not.
 //
 // A good read whose store is the one a write recorded (previous_state_id) clears that store and
 // its URL (previous_state_url) in the same upsert: the setting's daemon is the daemon the setting
@@ -2093,16 +2230,27 @@ func recordWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 	if foreign == nil {
 		foreign = []string{}
 	}
+	skippedStateIDs, skippedSeqs := current.skippedStateIDs, current.skippedSeqs
+	if skippedStateIDs == nil || skippedSeqs == nil {
+		skippedStateIDs, skippedSeqs = []string{}, []int64{}
+	}
 	if read.failure == nil {
 		unchanged := current.follows(stateURL) && current.stateID != nil && *current.stateID == *read.stateID
 		lastSeq, stateID, schemaVersion = read.stateSeq, read.stateID, read.schemaVersion
-		if len(since) == 0 {
-			holder, holds = nil, 0
-		}
 		if read.stateRun != nil {
 			run = read.stateRun
 		}
-		reasons = since
+		reasons = []string{}
+		if current.skippedAbove(*read.stateID, *read.stateSeq) {
+			reasons = since
+			if !slices.Contains(reasons, ReadReasonGap) {
+				reasons = append(reasons, ReadReasonGap)
+			}
+		}
+		if len(reasons) == 0 {
+			holder, holds = nil, 0
+		}
+		skippedStateIDs, skippedSeqs = []string{}, []int64{}
 		if owed.reason == ReadReasonStart {
 			triedAt = nil
 		}
@@ -2114,18 +2262,20 @@ func recordWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into legion_event_cursors (project, state_url, run, last_seq, read_reasons, read_tried_at, read_holder, read_holds, state_id,
-			schema_version, foreign_state_ids)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12)
+			schema_version, foreign_state_ids, skipped_state_ids, skipped_seqs)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $14)
 		on conflict (project) do update set
 			state_url = excluded.state_url, run = excluded.run, last_seq = excluded.last_seq,
 			read_reasons = excluded.read_reasons, read_tried_at = excluded.read_tried_at, read_holder = excluded.read_holder,
 			read_holds = excluded.read_holds, state_id = excluded.state_id, schema_version = excluded.schema_version,
-			foreign_state_ids = excluded.foreign_state_ids,
+			foreign_state_ids = excluded.foreign_state_ids, skipped_state_ids = excluded.skipped_state_ids,
+			skipped_seqs = excluded.skipped_seqs,
 			previous_state_id = case when $11::boolean and legion_event_cursors.previous_state_id = excluded.state_id then null
 				else legion_event_cursors.previous_state_id end,
 			previous_state_url = case when $11::boolean and legion_event_cursors.previous_state_id = excluded.state_id then null
 				else legion_event_cursors.previous_state_url end
-	`, project, stateURL, run, lastSeq, reasons, triedAt, holder, holds, stateID, schemaVersion, read.failure == nil, foreign); err != nil {
+	`, project, stateURL, run, lastSeq, reasons, triedAt, holder, holds, stateID, schemaVersion, read.failure == nil, foreign,
+		skippedStateIDs, skippedSeqs); err != nil {
 		return false, 0, fmt.Errorf("set where the Legion events of %s stand: %w", project, err)
 	}
 	if read.failure == nil || !current.follows(stateURL) {

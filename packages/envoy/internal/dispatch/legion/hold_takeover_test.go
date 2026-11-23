@@ -885,3 +885,103 @@ func TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet(t 
 			currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), daemon.served())
 	}
 }
+
+// TestMessagesPastTheCapDuringAnOwedGapReadHoldOneMessageOfTheWindow: R3 has each owing project
+// hold one message of the consumer's window, and row 8.1 has the first message past the cap hold
+// the read it owes while each later one joins it and is acknowledged. Where the read in flight is
+// a gap read the cursor owed before it began, the message whose redelivery makes it holds it. The
+// first message past the cap since that read began takes the hold of the read after it, and every
+// later one joins that hold (judgeCrowded, inFlight). So while the read is in flight, INFRA holds
+// the messages that wait on its runner and that first message; once the read lands short of the
+// messages past the cap, the gap read stays owed, that first message still holds it, and the
+// message that made the read is acknowledged, so INFRA holds that one message.
+//
+// The setup is TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet's, with
+// 20 s of the read's minute left when 41 to 43 arrive past the cap, so the first of them is still
+// held when the test looks. At 23a92974 41 to 43 all join the hold of the message at 17 and are
+// acknowledged, and the read's record clears the gap and the holder. A rule that has every message
+// past the cap during a read in flight take the hold sends 41, 42 and 43 back, three messages of
+// the window.
+func TestMessagesPastTheCapDuringAnOwedGapReadHoldOneMessageOfTheWindow(t *testing.T) {
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+
+	// A gap read at 12 starts the minute; near its end the message at 17 owes and holds a gap read,
+	// and its redelivery makes that read, which the daemon holds at 40.
+	daemon.serves(daemonState("INFRA", 15, inPhase("implementing")))
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "implementing")))
+	rig.waitFor(20*time.Second, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.lastSeq != nil && *c.lastSeq == 15
+	}, func() string {
+		return fmt.Sprintf("control: the gap read at 12 did not land at 15: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	rig.clock.advance(ReadRetryAfter - 3*time.Second)
+	release := daemon.holds(t)
+	daemon.serves(daemonState("INFRA", 40, inPhase("testing")))
+	rig.publish("INFRA", change(17, "INFRA-1", moved("phase", "testing")))
+	maker := rig.lastStreamSeq()
+	rig.waitFor(20*time.Second, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.readHolder != nil && *c.readHolder == int64(maker) && slices.Equal(c.readReasons, []string{ReadReasonGap})
+	}, func() string {
+		return fmt.Sprintf("control: the message at 17 does not hold the owed gap read: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	rig.clock.advance(5 * time.Second)
+	rig.waitFor(30*time.Second, func() bool { return daemon.served() >= 3 }, func() string {
+		return fmt.Sprintf("control: the held message at 17 never made the gap read it owed: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+
+	// Messages at or below 40 fill the runner, and 41 to 43 arrive past the cap.
+	daemon.serves(daemonState("INFRA", 43, inPhase("reviewing")))
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	for seq := 18; seq < 18+stateMaxWaiting-1; seq++ {
+		rig.publishIn("INFRA", rigRun, rigStateID, at, false, change(seq, "INFRA-1", moved("phase", "testing")))
+	}
+	rig.waitFor(20*time.Second, func() bool {
+		info := rig.consumerInfo()
+		return info.NumPending == 0 && info.NumAckPending >= stateMaxWaiting
+	}, func() string {
+		return fmt.Sprintf("control: INFRA holds %+v, want %d messages waiting on its runner", rig.consumerInfo(), stateMaxWaiting)
+	})
+	rig.clock.advance(ReadRetryAfter - 20*time.Second)
+	var first uint64
+	for i, phase := range []string{"merging", "accepting", "reviewing"} {
+		rig.publishIn("INFRA", rigRun, rigStateID, at, false, change(41+i, "INFRA-1", moved("phase", phase)))
+		if i == 0 {
+			first = rig.lastStreamSeq()
+		}
+	}
+	rig.waitFor(20*time.Second, func() bool { return rig.consumerInfo().NumPending == 0 }, func() string {
+		return fmt.Sprintf("control: the messages past the cap were not delivered: %+v", rig.consumerInfo())
+	})
+	time.Sleep(time.Second)
+	if held := rig.consumerInfo().NumAckPending; held != stateMaxWaiting+1 {
+		t.Errorf("INFRA holds %d messages of the window while its owed gap read is in flight, want %d: %d waiting on its runner and the first message past the cap",
+			held, stateMaxWaiting+1, stateMaxWaiting)
+	}
+	if handBacks := rig.handBacksOf(); len(handBacks) != 2 || handBacks[maker] != 1 || handBacks[first] != 1 {
+		t.Errorf("the hand-backs by stream sequence are %v, want the message at 17 (%d) once, before it made the read, and the first message past the cap (%d) once", handBacks, maker, first)
+	}
+
+	release()
+	rig.waitFor(20*time.Second, func() bool {
+		c := cursorOf(t, rig.database, "INFRA")
+		return c.lastSeq != nil && *c.lastSeq >= 40
+	}, func() string {
+		return fmt.Sprintf("control: the owed gap read did not land at 40: INFRA's cursor is %s", cursorOf(t, rig.database, "INFRA"))
+	})
+	if !testwait.Holds(20*time.Second, 25*time.Millisecond, func() bool { return rig.consumerInfo().NumAckPending == 1 }) {
+		t.Errorf("INFRA holds %d messages of the window after the read at 40, want the first message past the cap alone", rig.consumerInfo().NumAckPending)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonGap}) || c.readHolder == nil ||
+		*c.readHolder != int64(first) || c.readHolds != 1 {
+		t.Errorf("INFRA's cursor after the read at 40 is %s, want the gap read owed and held by the first message past the cap (%d), gone back once", c, first)
+	}
+	if handBacks := rig.handBacksOf(); handBacks[maker] != 1 {
+		t.Errorf("the message at 17 went back %d times, want once: once its read lands it holds nothing", handBacks[maker])
+	}
+}

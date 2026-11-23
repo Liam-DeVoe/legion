@@ -54,9 +54,11 @@
 --   order they called for it, and empty while none is owed: a whole read that failed owes it for
 --   `retry`, a message that calls for a read inside a minute of the last one adds its reason, and a
 --   read clears the reasons the row held when the read was decided. A reason a message added while
---   the read was in flight stays, on a good read and on a failed one, since that message's events
---   may be past the read's snapshot. The read is recorded under the first reason and logged with
---   them all.
+--   the read was in flight stays on a failed read, since that message's events may be past the
+--   read's snapshot. A successful read keeps it, and owes `gap` with it, only where
+--   skipped_state_ids and skipped_seqs hold a sequence of the read's store above the read's
+--   stateSeq, whatever the row owed when the read was decided; otherwise it clears it too. The
+--   read is recorded under the first reason and logged with them all.
 -- - read_owed is a whole read owed, which Postgres generates from read_reasons, so no write names
 --   it.
 -- - read_tried_at is when the whole read the next one waits a minute after began, whatever the
@@ -65,9 +67,10 @@
 --   minute, and a good starting read clears it, since no message called for it.
 -- - read_holder is the stream sequence of the state message that holds the owed read: the
 --   message the intake sent back to the stream unacknowledged until the read is due, whose
---   redelivery makes the read. Null where no message holds it. A read that succeeded clears it,
---   unless a reason added while that read was in flight stays owed: the message then holds that
---   reason. A read that failed keeps it.
+--   redelivery makes the read, whatever store the message is of. Null where no message holds it.
+--   The first message that arrives past legion's stateMaxWaiting while a whole read is in flight
+--   takes it over, for the read after that one. A read that succeeded clears it, unless that read
+--   leaves a reason owed: the message then holds that reason. A read that failed keeps it.
 -- - read_holds is how many times the message read_holder names has gone back to the stream
 --   holding the read: 1 when the intake records it as the holder, one more at each hand-back after
 --   it, and 0 where no message holds it. The intake acknowledges the holder once it has gone back
@@ -124,6 +127,17 @@
 --   and the intake clears this column. So a write that names another daemon ends the hold of the
 --   message before it within one read's 60 s and a second, and a message of the newly named daemon
 --   may hold the read from a count of 1. Null for none.
+-- - skipped_state_ids and skipped_seqs are, pair by pair (the check holds them to one length), a
+--   store and the highest seq of a state message of that store that the intake acknowledged
+--   unapplied because it arrived while legion's stateMaxWaiting messages of the project waited,
+--   the store skipped last at the end, 8 stores at the most (legion's maxSkippedStores): past 8 the
+--   store skipped longest ago goes. Every whole read empties both as it begins, since the daemon
+--   commits each event before it publishes it, so the read holds every message published before
+--   it; what they hold as the read lands was skipped while it was in flight, and such a message's
+--   events may be past its snapshot. So a successful read that finds a seq of its own store above
+--   its stateSeq still owes `gap` (read_reasons), and every successful read empties both. A read
+--   that failed keeps them, and every write of the setting that resets the row empties them. Empty
+--   for none.
 --
 -- legion_event_parts holds the messages of a transaction the daemon split over several messages
 -- (each but the last carries `more: true`) until its last message arrives: the intake then applies
@@ -188,7 +202,10 @@ create table legion_event_cursors (
   previous_state_id text,
   previous_state_url text,
   foreign_state_ids text[] not null default '{}',
-  released_holder bigint
+  released_holder bigint,
+  skipped_state_ids text[] not null default '{}',
+  skipped_seqs bigint[] not null default '{}',
+  check (cardinality(skipped_state_ids) = cardinality(skipped_seqs))
 );
 
 create table legion_event_parts (
