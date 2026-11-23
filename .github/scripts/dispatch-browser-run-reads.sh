@@ -192,7 +192,7 @@ case "$mode" in
     # once otherwise; gh-read.sh's head says how it reads both. In "Reading one, the rows" of
     # dispatch-browser.yaml's merge job the step's limit binds, `timeout-minutes: 3` from the
     # step's start, so a wait ends no later than 150 s after it, which leaves 30 s for the
-    # attempt after the wait and the step's own work, 4.6 s at most
+    # attempt after the wait and the step's own work, 5.75 s at most
     # (.github/ci-notes/dispatch-browser.md#the-merge-jobs-measured-steps-and-its-budget): an
     # attempt that ran to its `timeout 30` bound there would meet the step's limit, which names
     # the step. The attempt after a wait is a second run of the wrapper below, so the count of

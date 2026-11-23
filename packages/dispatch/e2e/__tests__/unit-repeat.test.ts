@@ -1055,8 +1055,9 @@ const STOPPED_LEG_RERUNS = 2;
 
 /** Copies the tool and its preload into `directory` as a package of `files` under
  *  `e2e/__tests__`, with a `test:harness` of two workers whatever the machine's CPUs. Runs the
- *  tool there as the harness lane with two reruns, and sends the tool alone the SIGTERM the
- *  step's `timeout` sends, once every one of `marks` exists, or once the tool has ended first.
+ *  tool there as the harness lane with `STOPPED_LEG_RERUNS` reruns, and sends the tool alone the
+ *  SIGTERM the step's `timeout` sends, once every one of `marks` exists, or once the tool has
+ *  ended first.
  *  The driver runs as its tree's subreaper (`asSubreaper`), and once the tool has ended it lists
  *  what the leg left (`leftBehind`): no read of the machine's other processes, and no wait for
  *  one to die. `bounds` are the tool's two stop bounds, which the caller sets so that its verdict
