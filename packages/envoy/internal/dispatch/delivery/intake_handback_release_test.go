@@ -571,13 +571,81 @@ func requireNoHandBackAfterCreationWithin(t *testing.T, within time.Duration, bo
 // gives (traceFinalizerEnds) in records: finalizerReleased, finalizerLapse or finalizerLost, or
 // "none" while no finalizer of delivery has ended.
 func finalizerOutcome(records []map[string]any, delivery *intakeDelivery) string {
-	outcome := "none"
+	end, ended := finalizerEnd(records, delivery)
+	if !ended {
+		return "none"
+	}
+	outcome, _ := end["outcome"].(string)
+	return outcome
+}
+
+// finalizerEnd is the last trace line of the end of delivery's hand-back finalizer in records
+// (traceFinalizerEnds), and false when records hold none.
+func finalizerEnd(records []map[string]any, delivery *intakeDelivery) (map[string]any, bool) {
+	var end map[string]any
 	for _, record := range records {
 		if record["msg"] == traceFinalizerEnds && record["delivery"] == tracePointer(delivery) {
-			outcome, _ = record["outcome"].(string)
+			end = record
 		}
 	}
-	return outcome
+	return end, end != nil
+}
+
+// holdRenewFailed is the line duty.Hold logs at WARN when a renewal of its hold fails: with the
+// hold's name (hold), the loss deadline that the failed renewal leaves where it was (deadline) and
+// the renewal's error (error).
+const holdRenewFailed = "renew hold failed; the loss deadline stays where it was"
+
+// holdLostToATimedOutRenewal reports whether records show the delivery durable's hold lost to a
+// renewal that timed out, before delivery's hand-back finalizer ended: a holdRenewFailed line of
+// that hold whose error is a timeout (context.DeadlineExceeded), logged once the loss deadline it
+// gives had passed, with that deadline no later than the finalizer's end line
+// (traceFinalizerEnds). A loss deadline that has passed never moves again, so the hold was lost at
+// it, with no renewal confirmed since. A renewal that timed out while the hold was still live is
+// logged before the deadline it gives, and the standby's hold, which has the same name, gives a
+// deadline at least intakeHoldTTL past the holder's, long after the holder's finalizer ended, so
+// neither line counts.
+//
+// A run under load can lose its hold this way. duty.Hold waits at most intakeHoldRenew for each
+// renewal's answer, leaves the loss deadline where it was when none comes, and loses the hold at
+// that deadline, intakeHoldTTL less intakeHoldMargin after the last renewal the database
+// confirmed. A runner that starves the database or the holder's process gets no renewal through
+// before that deadline, and a finalizer still waiting for a flush, or for its client's close, then
+// finds its hold lost (finalizerLost) before it can leave it to lapse (finalizerLapse). The hold's
+// row lapses at its own expiry all the same, as an abandoned row does, so no standby takes the hold
+// before that expiry. In a build Job of INFRA-3931 (gVisor, 2 CPUs, six busy loops beside the
+// runs), the finalizer's flush reads, due one a second, came up to 12 s apart, the renewal in
+// flight timed out, and the client closed 6 s after the loss deadline had passed. A renewal's line
+// is logged only once its statement gives up, up to intakeHoldRenew after it was sent, so it can
+// come after the finalizer's end: in that run, 20 ms after it.
+func holdLostToATimedOutRenewal(records []map[string]any, delivery *intakeDelivery) bool {
+	end, ended := finalizerEnd(records, delivery)
+	if !ended {
+		return false
+	}
+	endedAt, ok := recordTime(end, "time")
+	if !ok {
+		return false
+	}
+	_, found := logtest.LineWhere(records, func(record map[string]any) bool {
+		if record["msg"] != holdRenewFailed || record["hold"] != intakeHoldName(bus.DispatchDeliveryDurable) {
+			return false
+		}
+		failure, _ := record["error"].(string)
+		loggedAt, logged := recordTime(record, "time")
+		deadline, read := recordTime(record, "deadline")
+		return strings.Contains(failure, context.DeadlineExceeded.Error()) && logged && read &&
+			!loggedAt.Before(deadline) && !deadline.After(endedAt)
+	})
+	return found
+}
+
+// recordTime is the time that record gives at key, an RFC 3339 time as slog's JSON handler writes
+// one, and false when it gives none.
+func recordTime(record map[string]any, key string) (time.Time, bool) {
+	stamp, _ := record[key].(string)
+	at, err := time.Parse(time.RFC3339Nano, stamp)
+	return at, err == nil
 }
 
 // logFinalizerOutcome logs one line as the subtest ends, whether it passed or failed: the outcome
@@ -615,9 +683,7 @@ func tracedAt(records []map[string]any, message string, client *bus.Client) (tim
 	if !found {
 		return time.Time{}, false
 	}
-	stamp, _ := record["time"].(string)
-	at, err := time.Parse(time.RFC3339Nano, stamp)
-	return at, err == nil
+	return recordTime(record, "time")
 }
 
 // readDeliveryHold reads the delivery durable's hold: the holder its row names and the row's
@@ -752,6 +818,12 @@ const (
 	// handling of the row's messages. The standby's fake GitHub answers each fetch at once, and the
 	// standby acknowledges each message as its handler ends.
 	inFlightSettledWithin = inFlightTakeOverWithin + takeOverFinishWithin + inFlightSlack
+	// inFlightRenewalLoggedWithin bounds the wait for the line of a renewal that timed out and so
+	// lost the holder's hold (holdLostToATimedOutRenewal), in a run whose finalizer found its hold
+	// lost. duty.Hold logs that line once the renewal's statement gives up, at most intakeHoldRenew
+	// after the renewal was sent, which came before the loss deadline and so before the finalizer's
+	// end. The wait begins after that end.
+	inFlightRenewalLoggedWithin = intakeHoldRenew + inFlightSlack
 )
 
 // closeLockWait is the longest the close of an intake's client waits for nats.go's connection
@@ -885,9 +957,10 @@ func handBackPublishEnd(records []map[string]any, delivery *intakeDelivery) (fai
 //     begins StartIntakes' stop, so the -NAK is on its way when that stop closes the client. In CI
 //     job 137127087412 of envoy-go-race, the subtest began that stop first, and the close took the
 //     client before the publish wrote the -NAK. No flush confirms the -NAK before the close. The
-//     finalizer leaves the hold to lapse, the standby takes the hold only after its row's expiry,
-//     and the -NAK lands before the standby creates the durable. Each wait after
-//     stopWithAHeldHandBack has a bound, so a failure ends in seconds (its own comment).
+//     finalizer leaves the hold to lapse, or finds it lost to a renewal that timed out under load,
+//     the standby takes the hold only after its row's expiry, and the -NAK lands before the
+//     standby creates the durable. Each wait after stopWithAHeldHandBack has a bound, so a failure
+//     ends in seconds (its own comment).
 //
 // The two shutdown subtests and the in-flight subtest each log the outcome of the holder's
 // finalizer, as "FINALIZER outcome=...", and every subtest logs its clients' reconnect counts, as
@@ -1256,7 +1329,11 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	//
 	// The subtest requires:
 	//   - that the finalizer then leaves the hold to lapse (finalizerLapse), with the hold's row still
-	//     naming the holder once StartIntakes' stop has returned;
+	//     naming the holder once StartIntakes' stop has returned. A finalizer that finds its hold
+	//     lost first (finalizerLost) passes only where the trace shows a renewal of the hold that
+	//     timed out and so lost it before the finalizer's end (holdLostToATimedOutRenewal), as one can
+	//     on a loaded runner: the row then lapses at its own expiry, and every other requirement here
+	//     holds of it as well. A hold lost with no such renewal fails;
 	//   - that the standby takes the hold only after that row's expiry;
 	//   - that the -NAK reaches the server once the link lets it go, and not after the standby
 	//     created the durable, and that the standby's consumer delivers each of the row's messages
@@ -1267,10 +1344,11 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	//
 	// Each wait after stopWithAHeldHandBack ends at a bound: the product's bound of the event, with
 	// inFlightSlack for a loaded runner (inFlightRunReturnsWithin, inFlightPublishEndsWithin, the
-	// bound of StartIntakes' stop, inFlightNAKLandsWithin, inFlightTakeOverWithin, and
-	// inFlightSettledWithin for the reads of the standby's consumer). A failure names the bound that
-	// it passed and ends in seconds, so it does not use up the test binary's deadline and fail every
-	// later test of the package.
+	// bound of StartIntakes' stop, inFlightNAKLandsWithin, inFlightTakeOverWithin,
+	// inFlightSettledWithin for the reads of the standby's consumer, and inFlightRenewalLoggedWithin
+	// for the line of a renewal that lost the hold). A failure names the bound that it passed and
+	// ends in seconds, so it does not use up the test binary's deadline and fail every later test of
+	// the package.
 	//
 	// The lapse costs the standby time. The abandoned row expires at most intakeHoldTTL (15 s) after
 	// the abandon, since its last renewal came before it, and at least intakeHoldTTL less
@@ -1354,7 +1432,17 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		requireNoHandBackAfterCreationWithin(t, time.Until(letGoAt.Add(inFlightSettledWithin)),
 			fmt.Sprintf("inFlightSettledWithin (%s) from the link letting the -NAK go", inFlightSettledWithin),
 			row.recorded, row.from, row.publisher, row.sequences)
-		if outcome := finalizerOutcome(records, row.delivery); outcome != finalizerLapse {
+		switch outcome := finalizerOutcome(records, row.delivery); outcome {
+		case finalizerLapse:
+		case finalizerLost:
+			// A renewal that timed out under load can lose the hold before the finalizer leaves it
+			// to lapse (holdLostToATimedOutRenewal). Its row lapses at its own expiry all the same,
+			// and every check of this subtest still holds of it.
+			waitFor(t, inFlightRenewalLoggedWithin, func() bool { return holdLostToATimedOutRenewal(logs(), row.delivery) }, func() string {
+				return fmt.Sprintf("the finalizer's outcome is %q, want %q: the holder's client closed with its -NAK still kept from the server, and within inFlightRenewalLoggedWithin (%s) the trace showed no renewal of the delivery durable's hold that timed out and so lost it before the finalizer ended (%q with a timeout as its error, logged once the loss deadline it gives had passed, with that deadline no later than the finalizer's end)",
+					outcome, finalizerLapse, inFlightRenewalLoggedWithin, holdRenewFailed)
+			})
+		default:
 			t.Fatalf("the finalizer's outcome is %q, want %q: the holder's client closed with its -NAK still kept from the server", outcome, finalizerLapse)
 		}
 		if abandonedBy != row.holder.intake.holder.String() {
