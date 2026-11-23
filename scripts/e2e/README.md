@@ -508,7 +508,7 @@ Each item below names a script, then what it proves.
 
 - `TestRealGitHubCredentialSurface`
 
-  the real `api.NewServer`'s App leases, rendered as the gh files a pane's `GH_CONFIG_DIR` holds, make the real `gh` identify as the implementer and reviewer bots, an empty `GH_CONFIG_DIR` authenticates nobody, and `git` clones the smoke repository through `gh auth git-credential` from the implement App's files alone.
+  the implement App's lease the daemon's `appauth` mints, rendered as the gh files a pane's `GH_CONFIG_DIR` holds, makes the real `gh` identify as the implement App's bot, an empty `GH_CONFIG_DIR` authenticates nobody, and `git` clones the smoke repository through `gh auth git-credential` from those files alone.
   Devbox only
 
 ## On a GitHub-hosted runner
@@ -1599,7 +1599,7 @@ Here:
    The harness waits for every listener's `tun: proxy#R:<port>=>` line in the bridge pod's log before any pod under test is started.
 
 3. **A dropped `kubectl port-forward` is recovered, not fatal**:
-   the watchdog that polls both processes every 5s restarts a dead port-forward itself, on the same local port, so the chisel client's own bounded reconnect (`--max-retry-count 30 --max-retry-interval 2s`, finite rather than chisel's default of forever) can pick the tunnel back up without reconfiguring anything.
+   the watchdog that polls both processes every 5s restarts a dead port-forward itself, on a new local port the kernel chooses, and then replaces the chisel client with one dialing that port, which asks the server for the same reverse listeners, so nothing on the cluster's side is reconfigured; the chisel client's own reconnect is bounded (`--max-retry-count 30 --max-retry-interval 2s`, finite rather than chisel's default of forever).
    Only two things still send the script itself `SIGTERM`, failing the run loudly:
    a port-forward that cannot be restarted within 60s of dropping, or the chisel client exiting because its own retry budget is exhausted.
    On either, the watchdog prints the bridge pod's last events, read with the operator context (its node's when the pod's are gone), so a preemption or an eviction is named with what caused it, then calls the caller's `kill_harness`, which stops what the run drives (here the Go test process;
@@ -2193,8 +2193,8 @@ What the run had to learn about GKE (`LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernete
 
 - **A dropped `kubectl port-forward` does not have to end the run.**
   Two full-length runs died outright to a transient drop during this lane's work.
-  `kubectl port-forward` never retries itself, but nothing about a drop invalidates the chisel client's tunnel state (its auth, its reverse listeners) if the port-forward comes back on the same local port
-  — so the bridge's watchdog now restarts a dropped port-forward itself (confirmed live:
+  `kubectl port-forward` never retries itself, but a drop leaves the bridge pod, its chisel server and its auth as they were
+  — so the bridge's watchdog now restarts a dropped port-forward itself, on a new local port the kernel chooses, and starts a chisel client against that port, which asks for the same reverse listeners (confirmed live:
   killing the process mid-run let it recover and the run continue), only failing the run if a restart can't land within 60s, or the chisel client's own bounded reconnect (`--max-retry-count 30 --max-retry-interval 2s`, not chisel's default of forever) gives up first.
 
 - **A lone pod on its own node is fair game for node consolidation.**
@@ -7028,7 +7028,7 @@ Without a record it makes no `gh` call.
 
 Every wait for an issue to reach one phase is `wait_for_phase ISSUE PHASE [SECONDS]`:
 `phase_seconds` (600 s, the proof's budget for an agent's turn), unless the phase's worker runs a whole loop and the caller passes its own bound:
-a correction round, the retro, and planning, whose planner runs its gap analyst and up to three plan-review rounds before its handoff (Stage 4b's `plan_seconds`, 2700 s).
+a correction round, the retro, and planning, whose planner runs its gap analyst and as many plan-review rounds as its plan needs, which the planner's prompt does not limit, before its handoff (Stage 4b's `plan_seconds`, 2700 s).
 `round_correction_pushed ROUND` accepts the round's line only as an addition in `smoke_file`'s patch, never in a notes file that quotes it.
 
 With the design gate armed (`gates.design: root-issues`), a root whose architect registers a closed gate while no worker of its tree runs waits on a person:
