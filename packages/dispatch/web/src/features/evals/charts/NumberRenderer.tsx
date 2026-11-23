@@ -156,15 +156,18 @@ function Counts(props: {
 /**
  * A declared number (plan D10): its tiles, else its headline and the numbers beside it, then each
  * of its sections; a section's counts series with no reading that has a value draws its line in
- * the counts' place.
+ * the counts' place. On the tab each part draws apart (`numberParts`): the top in the number's
+ * place, and each section alone after the chart its `after` names, where the chart's caption is
+ * the section's title, so a section drawn alone draws no heading of its own.
  */
 export function NumberRenderer({ compare, model }: ChartRendererProps): ReactNode {
   if (!isNumberModel(model)) return null;
   const points = model.series[0]?.points ?? [];
   const top = points.filter((point) => point.section === null);
+  const alone = top.length === 0 && model.number.sections.length === 1;
   return (
     <div className="flex flex-col gap-4" data-number={model.name}>
-      {model.number.tiles ? (
+      {top.length === 0 ? null : model.number.tiles ? (
         <NumberRow compare={compare} model={model} points={top} />
       ) : (
         <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
@@ -191,7 +194,9 @@ export function NumberRenderer({ compare, model }: ChartRendererProps): ReactNod
             // biome-ignore lint/suspicious/noArrayIndexKey: a section's place is its identity; two may share a title.
             key={index}
           >
-            <h5 className={`text-sm font-semibold ${textPrimaryOnSurface}`}>{section.title}</h5>
+            {alone ? null : (
+              <h5 className={`text-sm font-semibold ${textPrimaryOnSurface}`}>{section.title}</h5>
+            )}
             {section.subtitle === null ? null : (
               <p className={`text-xs ${textMutedOnSurface}`}>{section.subtitle}</p>
             )}

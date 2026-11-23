@@ -20,6 +20,7 @@ import type {
   LiveSubscribe,
 } from "../../api/types";
 import bandFixture from "./charts/__fixtures__/band-readings.json";
+import numberFixture from "./charts/__fixtures__/number-readings.json";
 import xyFixture from "./charts/__fixtures__/xy-readings.json";
 import type { DeclaredSpec } from "./charts/kind";
 import { keepLogged, LoggedEvals } from "./EveryEval";
@@ -55,6 +56,22 @@ const LATENCY: DeclaredSpec = {
 
 /** A chart of a kind the platform may add later, which the tab has no drawing of. */
 const RADAR: DeclaredSpec = { id: "arms-radar", kind: "radar", title: "Arms at a glance" };
+
+/** A number whose one section stands after the band chart, as the platform's page draws it. */
+const NUMBER: DeclaredSpec = {
+  id: "proof-numbers",
+  kind: "number",
+  sections: [
+    {
+      after: "latency-band",
+      tiles: [{ label: "still unfixed", series: "incidents-open" }],
+      title: "Grader incidents",
+    },
+  ],
+  series: ["proved", "incidents-open"],
+  tiles: [{ label: "statements proved", series: "proved" }],
+  title: "Where the proofs stand",
+};
 
 /** The logged eval `convergence` at `version`, whose list read answers `answer`. */
 function convergence(version: number, answer: string): EvalListItem {
@@ -190,6 +207,29 @@ function declared(): HTMLElement {
   return found;
 }
 
+/** The charts `declared()` draws, by name, in the order they draw. */
+function chartsDrawn(): string[] {
+  return [...declared().querySelectorAll("figure[data-chart]")].map(
+    (figure) => figure.getAttribute("data-chart") ?? ""
+  );
+}
+
+/** The eval drawn with the detail `charts` and every series they read served from `fixtures`. */
+async function drawDeclared(
+  charts: DeclaredSpec[],
+  fixtures: Record<string, { items: unknown[] }>
+): Promise<FakeLiveSocket> {
+  const socket = await renderLogged();
+  const view = await waitFor(() => socket.subscribed("evals"));
+  act(() => socket.receive(snapshotFrame(view.sub, evalsAnswer([convergence(1, "")]))));
+  await waitFor(() => expect(reads).toHaveLength(1));
+  act(() => reads[0]?.(detailOf(1, charts, "")));
+  for (const [series, fixture] of Object.entries(fixtures)) {
+    await serveItems(socket, series, itemsOf(fixture.items, series));
+  }
+  return socket;
+}
+
 test("no items view opens before the first paint lands; then one for each series the charts name", async () => {
   const socket = await renderLogged();
   const view = await waitFor(() => socket.subscribed("evals"));
@@ -308,4 +348,30 @@ test("the readings views name no repository, though the header names one", async
     within(declared()).getByRole("figure", { name: "Tokens to converge" })
   );
   expect(chart.querySelectorAll('[data-statistic="y"][data-range="window"]').length).toBe(4);
+});
+
+// Spec R20: a number's section stands on the platform's page after the chart its `after` names.
+test("a number's section draws after the chart its `after` names, not inside the number", async () => {
+  await drawDeclared([NUMBER, TOKENS, LATENCY], {
+    "incidents-open": numberFixture,
+    latency: bandFixture,
+    proved: numberFixture,
+    tokens: xyFixture,
+  });
+  await waitFor(() => within(declared()).getByRole("figure", { name: "Grader incidents" }));
+  expect(chartsDrawn()).toEqual([
+    "convergence/proof-numbers",
+    "convergence/tokens-over-time",
+    "convergence/latency-band",
+    "convergence/proof-numbers/0",
+  ]);
+  const number = within(declared()).getByRole("figure", { name: "Where the proofs stand" });
+  expect(number.querySelector('[data-number-place="proved"]')).not.toBeNull();
+  expect(number.querySelector("[data-number-section]")).toBeNull();
+  expect(number.querySelector('[data-number-place="incidents-open"]')).toBeNull();
+  const section = within(declared()).getByRole("figure", { name: "Grader incidents" });
+  expect(section.querySelector('[data-after="latency-band"]')).not.toBeNull();
+  expect(section.querySelector('[data-number-place="incidents-open"]')).not.toBeNull();
+  // Its caption is the section's title, so it draws no heading of its own.
+  expect(section.querySelector("h5")).toBeNull();
 });

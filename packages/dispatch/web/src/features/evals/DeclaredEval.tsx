@@ -16,7 +16,7 @@ import type {
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
-import { evalName } from "./chart-model";
+import { type ChartModel, type ChartRenderer, evalName } from "./chart-model";
 import {
   type ChartRead,
   chartTexts,
@@ -25,6 +25,7 @@ import {
   specObject,
   specText,
 } from "./charts/kind";
+import { isNumberModel, type NumberSectionPart, numberParts } from "./charts/number-model";
 import { compareReadings, type DeclaredReading, readingsOf } from "./charts/readings";
 import { chartKinds } from "./charts/registry";
 import { EvalChart } from "./EvalChart";
@@ -123,25 +124,22 @@ function useReadings(scope: EvalsScope, slug: string, reads: readonly ChartRead[
   };
 }
 
-/** One declared chart: its heading, then the chart its kind draws through `EvalChart`, with its
- *  subtitle under its title and its footnote, side note and note after it; a kind the tab does not
- *  draw, a line naming the chart and its kind. */
+/** One declared chart: its heading, then `model` drawn by its kind through `EvalChart`, with its
+ *  subtitle under its title and its footnote, side note and note after it, or a line saying its
+ *  readings are being read while `model` is null; a kind the tab does not draw, a line naming the
+ *  chart and its kind. */
 function DeclaredChart({
-  input,
+  model,
   slug,
   spec,
 }: {
-  input: DeclaredInput | null;
+  model: ChartModel | null;
   slug: string;
   spec: DeclaredSpec;
 }): ReactNode {
   const kind = kindOf(spec);
   const title = specText(spec.title) ?? specText(spec.id) ?? "";
   const texts = chartTexts(spec);
-  const model = useMemo(
-    () => (kind === undefined || input === null ? null : kind.model(spec, input)),
-    [kind, spec, input]
-  );
   const id = specText(spec.id) ?? "";
   const kindName = specText(spec.kind) ?? "";
   const lines = (part: string, text: readonly string[]) =>
@@ -201,15 +199,90 @@ function DeclaredChart({
   );
 }
 
+/** A section of a declared number, drawn alone through `EvalChart` with the number's renderer, at
+ *  the full width of the eval's grid. */
+function DeclaredNumberSection({
+  part,
+  renderer,
+  slug,
+}: {
+  part: NumberSectionPart;
+  renderer: ChartRenderer;
+  slug: string;
+}): ReactNode {
+  return (
+    <div className="min-w-0 @min-[42rem]:col-span-2" data-declared-section={part.model.name}>
+      <EvalChart model={part.model} opensPanel={slug} renderer={renderer} />
+    </div>
+  );
+}
+
+/** One block of an eval's charts as they draw: a declared chart and its model (null until its
+ *  readings land; a number's top alone), or a section of a number with its kind's renderer. */
+type Block =
+  | {
+      readonly kind: "chart";
+      readonly key: string;
+      readonly model: ChartModel | null;
+      readonly spec: DeclaredSpec;
+    }
+  | {
+      readonly kind: "section";
+      readonly key: string;
+      readonly part: NumberSectionPart;
+      readonly renderer: ChartRenderer;
+    };
+
+/**
+ * The blocks of an eval's charts in the order they draw (spec R20, as the platform's page draws
+ * them): each chart in the order its declaration lists it, and each section of a number after the
+ * chart its `after` names, those after one chart in the order their numbers and sections are
+ * declared; a section whose `after` names no chart of the eval stands after its own number.
+ */
+function blocksOf(
+  specs: readonly DeclaredSpec[],
+  models: readonly (ChartModel | null)[]
+): Block[] {
+  const charts = specs.map((spec, index) => {
+    const model = models[index] ?? null;
+    const renderer = kindOf(spec)?.renderer;
+    const parts =
+      renderer !== undefined && model !== null && isNumberModel(model) ? numberParts(model) : null;
+    return {
+      key: specText(spec.id) ?? String(index),
+      model: parts?.top ?? model,
+      sections: (parts?.sections ?? []).flatMap((part) =>
+        renderer === undefined
+          ? []
+          : [{ key: part.model.name, kind: "section" as const, part, renderer }]
+      ),
+      spec,
+    };
+  });
+  const named = new Set(charts.map((chart) => chart.key));
+  const after = new Map<string, Block[]>();
+  for (const chart of charts) {
+    for (const section of chart.sections) {
+      const place = named.has(section.part.after) ? section.part.after : chart.key;
+      after.set(place, [...(after.get(place) ?? []), section]);
+    }
+  }
+  return charts.flatMap((chart): Block[] => [
+    { key: chart.key, kind: "chart", model: chart.model, spec: chart.spec },
+    ...(after.get(chart.key) ?? []),
+  ]);
+}
+
 /**
  * An eval that declares its own charts, drawn in place of the per-day line (dispatch://INFRA-2918/
  * artifact/plan-md, D7, D10): its answer above its charts, then each chart through `EvalChart`
  * with its kind's model and renderer, from the readings of one `items` view per series its charts
- * name, over the header's window and compare range. Nothing of it is in the first paint: it is
- * drawn once its evals view has painted, and it subscribes its items views once its detail read,
- * which holds its charts, has answered. The detail is read at the version the evals view answers,
- * so a register write that moves the charts or the answer reads it again (D11a), the charts drawn
- * so far kept on screen until the new ones land.
+ * name, over the header's window and compare range, each section of a number after the chart it
+ * names (`blocksOf`). Nothing of it is in the first paint: it is drawn once its evals view has
+ * painted, and it subscribes its items views once its detail read, which holds its charts, has
+ * answered. The detail is read at the version the evals view answers, so a register write that
+ * moves the charts or the answer reads it again (D11a), the charts drawn so far kept on screen
+ * until the new ones land.
  */
 export function DeclaredEval({
   answer,
@@ -254,6 +327,18 @@ export function DeclaredEval({
       }),
     [answer.compare, answer.window, readings.states, slug, specs]
   );
+  const blocks = useMemo(
+    () =>
+      blocksOf(
+        specs,
+        specs.map((spec, index) => {
+          const kind = kindOf(spec);
+          const input = inputs[index] ?? null;
+          return kind === undefined || input === null ? null : kind.model(spec, input);
+        })
+      ),
+    [inputs, specs]
+  );
   return (
     <div className="@container flex min-w-0 flex-col gap-2" data-declared={slug}>
       <span className={`text-xs ${textMutedOnSurface}`}>
@@ -277,14 +362,18 @@ export function DeclaredEval({
         />
       )}
       <div className="grid grid-cols-1 gap-3 @min-[42rem]:grid-cols-2">
-        {specs.map((spec, index) => (
-          <DeclaredChart
-            input={inputs[index] ?? null}
-            key={specText(spec.id) ?? index}
-            slug={slug}
-            spec={spec}
-          />
-        ))}
+        {blocks.map((block) =>
+          block.kind === "chart" ? (
+            <DeclaredChart key={block.key} model={block.model} slug={slug} spec={block.spec} />
+          ) : (
+            <DeclaredNumberSection
+              key={block.key}
+              part={block.part}
+              renderer={block.renderer}
+              slug={slug}
+            />
+          )
+        )}
       </div>
     </div>
   );

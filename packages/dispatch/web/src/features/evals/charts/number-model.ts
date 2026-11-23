@@ -64,8 +64,8 @@ export interface NumberSeries extends ChartSeries {
   readonly points: readonly NumberPoint[];
 }
 
-/** A titled group of small numbers. On the platform's page it stands after the chart `after`
- *  names; here it stands in the number's own place, and names that chart (`data-after`). */
+/** A titled group of small numbers. On the platform's page, as on the tab, it stands after the
+ *  chart `after` names (`numberParts`), and names that chart (`data-after`). */
 export interface NumberSection {
   readonly title: string;
   readonly subtitle: string | null;
@@ -87,6 +87,70 @@ export interface NumberModel extends ChartModel {
 
 export function isNumberModel(model: ChartModel): model is NumberModel {
   return "number" in model;
+}
+
+/** A section of a number drawn alone: the chart its `after` names, and its model. */
+export interface NumberSectionPart {
+  readonly after: string;
+  readonly model: NumberModel;
+}
+
+/**
+ * A number in the parts the platform's page draws apart (spec R20): its top (its tiles, or its
+ * headline and the numbers beside it), which stands in the number's own place, and each section,
+ * which the declared eval draws after the chart its `after` names. Each part is a model of its
+ * own, so each draws through `EvalChart` and its table holds the numbers it draws: the top keeps
+ * the number's name and title, and a section takes its own title and the name
+ * `<the number's name>/<its place among the sections>`.
+ */
+export function numberParts(model: NumberModel): {
+  top: NumberModel;
+  sections: NumberSectionPart[];
+} {
+  const [series] = model.series;
+  const points = series?.points ?? [];
+  const part = (
+    name: string,
+    title: string,
+    own: readonly NumberPoint[],
+    sections: readonly NumberSection[]
+  ): NumberModel => ({
+    ...model,
+    name,
+    number: { ...model.number, sections },
+    series:
+      series === undefined
+        ? []
+        : [
+            {
+              ...series,
+              points: own,
+              statistics: series.statistics.filter(({ id }) =>
+                own.some((point) => id in point.values)
+              ),
+            },
+          ],
+    title,
+  });
+  return {
+    sections: model.number.sections.map((section, index) => ({
+      after: section.after,
+      model: part(
+        `${model.name}/${index}`,
+        section.title,
+        points
+          .filter((point) => point.section === index)
+          .map((point) => ({ ...point, section: 0 })),
+        [section]
+      ),
+    })),
+    top: part(
+      model.name,
+      model.title,
+      points.filter((point) => point.section === null),
+      []
+    ),
+  };
 }
 
 /** Each text of a spec field that is a list. */
