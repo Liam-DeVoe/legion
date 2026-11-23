@@ -224,17 +224,21 @@ test("ask.opened of a question still refreshes the Inbox read whatever it holds"
   ).toBe(true);
 });
 
-test("project.updated refreshes both reads of rows that hold a row of its project and every issue read of it, and none of them for another project", () => {
+test("project.updated refreshes both reads of rows that hold a row of its project and every issue read of it, and neither of the two reads for another project", () => {
   const core = issueRead("CORE-1", "CORE");
   expect(refreshed(projectUpdated("CORE"), { issues: [core] })).toEqual({
     dismissed: true,
     inbox: true,
     issues: [true],
   });
+  // Every issue read refreshes on any project's update, whatever project it holds: the update can
+  // change that project's default repository, which each issue naming no repository resolves to,
+  // and not every issue read's key names its project (`ownerTargets`). The approval gate's own
+  // refresh is narrowed to the project; the Inbox and Dismissed reads stay put.
   expect(refreshed(projectUpdated("OTHER"), { issues: [core] })).toEqual({
     dismissed: false,
     inbox: false,
-    issues: [false],
+    issues: [true],
   });
 });
 
