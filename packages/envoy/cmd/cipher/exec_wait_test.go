@@ -117,9 +117,13 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool
 	mux.HandleFunc("GET /v1/settings", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, fakeSettings)
 	})
-	b.Server = httptest.NewServer(mux)
+	// The URL is set before the server starts serving: its handlers read publicURL, and a request
+	// from the agent-secrets child process gives the race detector no edge from a write after
+	// Start to the handler's read, so a write there is a data race whenever a request comes.
+	b.Server = httptest.NewUnstartedServer(mux)
+	publicURL = "http://" + b.Listener.Addr().String()
+	b.Start()
 	t.Cleanup(b.Close)
-	publicURL = b.URL
 	return b
 }
 

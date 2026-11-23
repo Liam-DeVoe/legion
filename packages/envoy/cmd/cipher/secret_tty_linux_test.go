@@ -54,6 +54,29 @@ func openPTY(t *testing.T) (controller *os.File, terminal int) {
 	return ptmx, fd
 }
 
+// endReaderFirst makes the goroutine that reads the terminal end before the cleanups registered
+// ahead of this call run: a test that swaps the prompt's package variables (readTerminal, and the
+// form's readHidden and valueReadWindow) puts them back in such cleanups, and a test that failed
+// while its reader still ran would put them back while that goroutine reads them, a data race.
+// Cleanups run last-registered first, so call it after the swaps and before the goroutine starts.
+// The cleanup hangs the terminal up (closing controller ends a blocked read of it), runs release
+// (nil for none) to free a stand-in that holds the reader, and waits up to 10 s for done, which the
+// goroutine closes as it returns.
+func endReaderFirst(t *testing.T, controller *os.File, release func(), done <-chan struct{}) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = controller.Close()
+		if release != nil {
+			release()
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the terminal's reader did not end within 10s of the hang-up, so the variables it reads are put back while it runs")
+		}
+	})
+}
+
 // lflag is the terminal's local mode flags.
 func lflag(t *testing.T, fd int) uint32 {
 	t.Helper()
@@ -249,7 +272,10 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 		code   int
 	}
 	done := make(chan result, 1)
+	ended := make(chan struct{})
+	endReaderFirst(t, controller, nil, ended)
 	go func() {
+		defer close(ended)
 		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 		done <- result{stderr, code}
 	}()
@@ -520,7 +546,8 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			real := readTerminal
 			t.Cleanup(func() { readTerminal = real })
 			consumed, hungUp := make(chan struct{}), make(chan struct{})
-			var once sync.Once
+			var once, hangUp sync.Once
+			hangsUp := func() { hangUp.Do(func() { close(hungUp) }) }
 			read := 0
 			readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
 				n, err := real(fd, wake, buf, timeout)
@@ -534,7 +561,10 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 				return n, err
 			}
 			answer := make(chan promptRead, 1)
+			ended := make(chan struct{})
+			endReaderFirst(t, controller, hangsUp, ended)
 			go func() {
+				defer close(ended)
 				line, err := readHidden(terminal, time.Time{}, nil, nil)
 				answer <- promptRead{line, err}
 			}()
@@ -550,7 +580,7 @@ func TestPromptRefusesAPasteCutShortByAHangUp(t *testing.T) {
 			if err := controller.Close(); err != nil {
 				t.Fatal(err)
 			}
-			close(hungUp)
+			hangsUp()
 			select {
 			case got := <-answer:
 				if !errors.Is(got.err, tc.want) || got.line != nil {
