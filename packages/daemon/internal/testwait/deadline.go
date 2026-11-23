@@ -42,16 +42,12 @@ func StandInDeadline(parent context.Context) (ctx context.Context, pass func(cau
 			cause = context.DeadlineExceeded
 		}
 		d.endWithParent()
-		if d.end(context.DeadlineExceeded, cause) {
-			d.mu.Lock()
-			d.passedAt = time.Now()
-			d.mu.Unlock()
-		}
+		d.end(context.DeadlineExceeded, cause, time.Now())
 		stop()
 	}
 	cancel = func() {
 		d.endWithParent()
-		d.end(context.Canceled, context.Canceled)
+		d.end(context.Canceled, context.Canceled, time.Time{})
 		stop()
 	}
 	return d, pass, cancel
@@ -101,20 +97,21 @@ func (d *standInDeadline) Err() error {
 // endWithParent ends d as parent ended, where parent has ended and d has not.
 func (d *standInDeadline) endWithParent() {
 	if err := d.parent.Err(); err != nil {
-		d.end(err, context.Cause(d.parent))
+		d.end(err, context.Cause(d.parent), time.Time{})
 	}
 }
 
-// end ends d with err and cause, unless d has ended already, and reports whether it ended it. The
-// cause is recorded before Done is closed, so whoever Done wakes reads it.
-func (d *standInDeadline) end(err, cause error) bool {
+// end ends d with err and cause, and with passedAt as the moment its deadline passed (zero for an
+// end that is no pass), unless d has ended already. The cause and the moment are recorded before
+// Done is closed, so whoever Done wakes reads both.
+func (d *standInDeadline) end(err, cause error, passedAt time.Time) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.err != nil {
-		return false
+		return
 	}
 	d.record(cause)
 	d.err = err
+	d.passedAt = passedAt
 	close(d.done)
-	return true
 }
