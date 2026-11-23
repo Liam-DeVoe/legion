@@ -36,8 +36,9 @@ func statusWritesOf(t *testing.T, pool *pgxpool.Pool, key string) []record.Statu
 }
 
 // A child released into a live tree whose design gate is open takes a slot in the same pass and
-// starts planning, and Dispatch is told so: the issue a person watches shows in_progress from the
-// moment Legion works it, which is the whole of R2 (dispatch://INFRA-714/spec, dispatch://INFRA-326).
+// starts its first step (planning, on the default steps), and Dispatch is told so: the issue a
+// person watches shows in_progress from the moment Legion works it, which is the whole of R2
+// (dispatch://INFRA-714/spec, dispatch://INFRA-326).
 // The release itself writes todo, because the child enters the waiting line, so without the write
 // this start queues the board would read todo for as long as the child runs.
 func TestAReleasedChildsFirstPhaseTellsDispatchItIsInProgress(t *testing.T) {

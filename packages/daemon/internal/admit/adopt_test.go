@@ -19,7 +19,8 @@ import (
 )
 
 // seedOpenTree seeds root holding an admission slot with its design gate approved at its latest
-// version, so a todo child entering its tree starts planning at once.
+// version, so a todo child entering its tree starts its first step at once (planning, on the
+// default steps these tests run).
 func seedOpenTree(t *testing.T, pool *pgxpool.Pool, root string) {
 	t.Helper()
 	seedSlotted(t, pool, root, "A")
@@ -128,9 +129,9 @@ func assertJoinedAndPlanning(t *testing.T, pool *pgxpool.Pool, child, tree strin
 
 // A labelled root waiting in admission's queue that a person makes a child of a running tree
 // leaves the queue on that event: it joins the tree at its next generation and, the tree's gate
-// open, waits there for a slot of its own and starts planning at it, as any todo child of the
-// tree does. It never takes a tree of its own; its own architect starts with its first phase, in
-// the tree it joined.
+// open, waits there for a slot of its own and starts its first step at it (planning, on the
+// default steps), as any todo child of the tree does. It never takes a tree of its own; its own
+// architect starts with its first phase, in the tree it joined.
 func TestAQueuedRootReparentedUnderALiveTreeJoinsItAndTakesNoTreeOfItsOwn(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))

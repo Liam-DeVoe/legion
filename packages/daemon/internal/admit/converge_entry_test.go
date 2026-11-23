@@ -193,8 +193,8 @@ func seedConvergeRows(t *testing.T, pool *pgxpool.Pool, rows []convergeRow) ([]c
 
 // seedConvergeRow records one row: its tree, the member and its slot, the role's phases row at
 // seededEntry naming the work of that entry, and the claim with the entry it was given and the
-// task it holds. The phases row names the role's claim token whether or not a claim row exists,
-// as a transition writes it.
+// task it holds. The phases row names the claim token of the agent of the role's step, here the
+// role's own, whether or not a claim row exists, as a transition writes it.
 func seedConvergeRow(t *testing.T, pool *pgxpool.Pool, row convergeRow) {
 	t.Helper()
 	ctx := context.Background()
