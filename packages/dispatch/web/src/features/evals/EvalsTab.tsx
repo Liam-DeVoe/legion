@@ -8,36 +8,53 @@ import { DeploysSection } from "./DeploysSection";
 import { EvalPanelHost } from "./EvalPanel";
 import { EvalsHeader } from "./EvalsHeader";
 import { EvalsSection } from "./EvalsSection";
+import { keepLogged, LoggedEvals, UnnamedEvals } from "./EveryEval";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
 import { LegionSection } from "./LegionSection";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
 import { brushDays, useCardsScope, useEvalsScope } from "./useEvalsScope";
-import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
+import type { EvalsScope, EvalsViewSelect, EvalsViewState } from "./useEvalsViews";
 
 /** The views each section reads, by kind: the target cards read the delivery and the Legion evals
- *  (plan D3), the Deploys and lead time section the same delivery view as the cards, and the
- *  merge timeline none, since it reads a view of its own once it is opened (spec R13). */
+ *  (plan D3), the Deploys and lead time section the same delivery view as the cards, the merge
+ *  timeline none, since it reads a view of its own once it is opened (spec R13), and the Logged
+ *  section every view the tab reads, since a logged eval may be of any kind (plan D7). */
 const CARDS: readonly EvalKind[] = ["delivery", "legion"];
 const CARDS_WITHOUT_LEGION: readonly EvalKind[] = ["delivery"];
 const LEGION: readonly EvalKind[] = ["legion"];
 const CI: readonly EvalKind[] = ["ci"];
 const DEPLOYS: readonly EvalKind[] = ["delivery"];
 const TIMELINE: readonly EvalKind[] = [];
-const LOGGED: readonly EvalKind[] = ["experiment"];
+const EVERY_KIND: readonly EvalKind[] = ["delivery", "legion", "ci", "experiment"];
+const EVERY_KIND_BUT_LEGION: readonly EvalKind[] = ["delivery", "ci", "experiment"];
+
+/** One section of the tab: what it is, its heading, the kinds of eval it reads, and what it keeps
+ *  of each page of their views (all of it where absent). */
+interface Section {
+  readonly id: "cards" | "legion" | "ci" | "deploys" | "timeline" | "logged";
+  readonly title: string;
+  readonly kinds: readonly EvalKind[];
+  readonly select?: EvalsViewSelect;
+}
 
 /** The tab's sections, in the order dispatch://INFRA-2918/spec R2 sets: the target cards, the
  *  Legion measures, CI health, deploys and lead time, the merge timeline, and then every eval the
- *  project's agents and jobs log. The Legion section and the Legion cards show only where the
- *  project has a Legion daemon (spec R5). */
-function sectionsOf(legion: boolean) {
+ *  project's agents and jobs log, of every view the tab reads. The Legion section, the Legion
+ *  cards and the Legion view show only where the project has a Legion daemon (spec R5). */
+function sectionsOf(legion: boolean): Section[] {
   return [
     { id: "cards", title: "Target cards", kinds: legion ? CARDS : CARDS_WITHOUT_LEGION },
-    ...(legion ? [{ id: "legion", title: "Legion measures", kinds: LEGION }] : []),
+    ...(legion ? [{ id: "legion", title: "Legion measures", kinds: LEGION } as const] : []),
     { id: "ci", title: "CI health", kinds: CI },
     { id: "deploys", title: "Deploys and lead time", kinds: DEPLOYS },
     { id: "timeline", title: "Merge timeline", kinds: TIMELINE },
-    { id: "logged", title: "Logged", kinds: LOGGED },
+    {
+      id: "logged",
+      title: "Logged",
+      kinds: legion ? EVERY_KIND : EVERY_KIND_BUT_LEGION,
+      select: keepLogged,
+    },
   ];
 }
 
@@ -76,29 +93,45 @@ function LiveHeader({
   );
 }
 
-/** What a section draws of its views: its own charts and lists, or, for a section that has none
- *  of its own, `EvalsSection`'s list of its evals. The target cards name the brushed days they
- *  read, while the merge timeline's brush is set (`days`). */
+/** What a section draws of its views: its own charts and lists, then, for a kind's section, the
+ *  computed evals of that kind it does not draw by name; the Logged section, every logged eval.
+ *  The target cards name the brushed days they read, while the merge timeline's brush is set
+ *  (`days`). */
 function drawSection(
-  id: string,
+  id: Exclude<Section["id"], "timeline">,
   project: string,
   scope: EvalsScope,
   delivery: boolean,
   days: { from: string; to: string } | null
-): ((views: readonly EvalsViewState[]) => ReactNode) | undefined {
+): (views: readonly EvalsViewState[]) => ReactNode {
   switch (id) {
     case "cards":
       return (views) => (
         <TargetCards days={days} delivery={delivery} project={project} views={views} />
       );
     case "legion":
-      return (views) => <LegionSection project={project} repos={scope.repos} views={views} />;
+      return (views) => (
+        <>
+          <LegionSection project={project} repos={scope.repos} views={views} />
+          <UnnamedEvals kind="legion" scope={scope} views={views} />
+        </>
+      );
     case "ci":
-      return (views) => <CiHealth scope={scope} views={views} />;
+      return (views) => (
+        <>
+          <CiHealth scope={scope} views={views} />
+          <UnnamedEvals kind="ci" scope={scope} views={views} />
+        </>
+      );
     case "deploys":
-      return (views) => <DeploysSection project={project} views={views} />;
-    default:
-      return undefined;
+      return (views) => (
+        <>
+          <DeploysSection project={project} views={views} />
+          <UnnamedEvals kind="delivery" scope={scope} views={views} />
+        </>
+      );
+    case "logged":
+      return (views) => <LoggedEvals scope={scope} views={views} />;
   }
 }
 
@@ -147,6 +180,7 @@ export function EvalsTab({ project }: { project: string }): ReactNode {
               key={section.id}
               kinds={section.kinds}
               scope={section.id === "cards" ? cardsScope : scope}
+              select={section.select}
               title={section.title}
             >
               {drawSection(section.id, project, scope, delivery, days)}

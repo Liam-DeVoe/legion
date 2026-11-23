@@ -412,6 +412,90 @@ export function dayChartModel(
   };
 }
 
+/** What an eval is called on the page: its name, or its slug where it has none (an eval its first
+ *  reading registered). */
+export function evalName(item: EvalListItem): string {
+  return item.definition.name === "" ? item.definition.slug : item.definition.name;
+}
+
+/** What a statistic an eval's own fold states is called in a chart of an eval no section draws by
+ *  name; one not listed here reads as the fold names it. */
+const STATISTIC_LABELS: Readonly<Record<string, string>> = {
+  max: "Max",
+  mean: "Mean",
+  median: "Median",
+  n: "Count",
+  p90: "p90",
+  rate: "Rate",
+  sum: "Sum",
+  value: "Value",
+};
+
+/** The statistic a series' agg states first, as the server names a logged series' headline
+ *  (`evals.HeadlineStatistic`): `value` for `last` and any agg not listed here. */
+const AGG_HEADLINE: Readonly<Record<string, string>> = {
+  max: "max",
+  quantile: "median",
+  ratio: "rate",
+  sum: "sum",
+  weighted_mean: "mean",
+};
+
+/** How a chart of an eval no section draws by name shows one of its series: every statistic the
+ *  read answers of it, led by one the eval's verdict judges of it (`judged`), else the one its agg
+ *  states first, else the first by name; and its count beside the lead, where it has one. */
+function everySeriesSpec(values: EvalSeriesValues, judged: readonly string[]): SeriesSpec {
+  const answered = new Set([
+    ...Object.keys(values.window ?? {}),
+    ...(values.days ?? []).flatMap((day) => Object.keys(day.statistics ?? {})),
+  ]);
+  const byName = [...answered].sort();
+  const stated = AGG_HEADLINE[values.agg] ?? "value";
+  const lead =
+    judged.find((id) => answered.has(id)) ??
+    (answered.has(stated) ? stated : (byName[0] ?? stated));
+  // A series the read answers no statistic of yet has its agg's, which a logged fold always states.
+  const counted = lead !== "n" && (answered.has("n") || answered.size === 0);
+  const ids = [
+    lead,
+    ...byName.filter((id) => id !== lead && id !== "n"),
+    ...(counted ? ["n"] : []),
+  ];
+  return {
+    headline: counted ? [lead, "n"] : [lead],
+    label: values.unit === "" ? values.series : `${values.series} (${values.unit})`,
+    statistics: ids.map((id) => ({ id, label: STATISTIC_LABELS[id] ?? id })),
+  };
+}
+
+/** A chart of `item`, an eval no section draws by name (a logged eval, or a computed one a later
+ *  catalogue adds; plan D7), a day at a time: each listed series in the order the read answers
+ *  them, the primary first, as a line of its leading statistic, judged by the eval's verdict, over
+ *  the answer's window and compare range; null where it lists none. */
+export function everyEvalModel(
+  answer: EvalListResponse,
+  item: EvalListItem,
+  nowMs: number
+): ChartModel | null {
+  const judges = (item.verdict?.judges ?? []).map(({ judge }) => judge);
+  const series = (item.series ?? [])
+    .filter((values) => values.listed)
+    .map((values) => {
+      const prefix = `${values.series}.`;
+      const judged = judges.flatMap((judge) =>
+        judge.startsWith(prefix) ? [judge.slice(prefix.length)] : []
+      );
+      return { name: values.series, spec: everySeriesSpec(values, judged) };
+    });
+  return dayChartModel(
+    answer,
+    item,
+    { kind: "line", name: item.definition.slug, title: evalName(item) },
+    series,
+    nowMs
+  );
+}
+
 /** One place of a category chart: the eval's series it is (a Legion role's), and its label. */
 export interface Category {
   readonly name: string;
