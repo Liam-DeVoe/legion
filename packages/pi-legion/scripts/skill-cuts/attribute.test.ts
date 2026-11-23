@@ -748,7 +748,7 @@ test("rows no key of which files of two queries hold come back as they are", () 
   expect(counted.acrossQueries.get("store_a")).toEqual({ keys: 0, pairs: 0 });
 });
 
-test("a count whose rows name no calls, made by an earlier count.sql, is refused, naming the field", () => {
+test("a count whose rows name no calls, made by an earlier count.sql, fails the command (exit 1), naming the field", () => {
   const earlier = psqlTable(
     psqlRows(f7("F7-count-first.txt")).map((value) => {
       const { calls: _calls, unpaired_calls: _unpaired, ...row } = value as Record<string, unknown>;

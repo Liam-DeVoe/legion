@@ -9,8 +9,8 @@
  * readers.ts through gateway.ts, signed in by `--key-file`.
  *
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
- *       --cut <id> --skill <name> --old <skill dir at the cut's base> --new <skill dir at the
- *       cut's head> --sessions <file> --seed <n> --copies <copies out dir> --count <count dir>
+ *       --cut <id> --skill <name> --old <skill dir at the cut's base> [--new <skill dir at the
+ *       cut's head>] --sessions <file> --seed <n> --copies <copies out dir> --count <count dir>
  *       --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]
  *       [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
@@ -592,6 +592,7 @@ import {
   blobBatches,
   blobQuery,
   CopyIndex,
+  dirOf,
   factsOf,
   frontmatter,
   type Gh,
@@ -868,9 +869,9 @@ export interface BuildIo {
 
 /** The file in a spool directory (`spoolDir`) that says which run holds it: `<pid> <token>`. */
 const SPOOL_LOCK = "run.lock";
-/** The spool locks each `main` call holds (by its io), `<lock file>\0<its text>`, which `main`
+/** The spool locks each `main` call holds (by its io): each lock file and its text, which `main`
  *  gives up as the call ends. */
-const spoolLocks = new WeakMap<BuildIo, string[]>();
+const spoolLocks = new WeakMap<BuildIo, { readonly lock: string; readonly text: string }[]>();
 
 /** Whether the process `pid` runs: a signal 0 reaches it, or the system refuses to send one. */
 function processLives(pid: number): boolean {
@@ -959,15 +960,14 @@ function spoolDir(out: string, io: BuildIo): string {
   for (const entry of readdirSync(dir)) {
     if (entry !== SPOOL_LOCK) rmSync(path.join(dir, entry), { recursive: true, force: true });
   }
-  spoolLocks.set(io, [...(spoolLocks.get(io) ?? []), `${lock}\0${text}`]);
+  spoolLocks.set(io, [...(spoolLocks.get(io) ?? []), { lock, text }]);
   return dir;
 }
 
 /** Gives up each spool lock the `main` call of `io` holds (`spoolDir`): its lock file, when it is
  *  still this run's, and its directory, when nothing else is left in it. */
 function releaseSpools(io: BuildIo): void {
-  for (const held of spoolLocks.get(io) ?? []) {
-    const [lock = "", text = ""] = held.split("\0");
+  for (const { lock, text } of spoolLocks.get(io) ?? []) {
     if (existsSync(lock) && readFileSync(lock, "utf8").trim() === text)
       rmSync(lock, { force: true });
     const dir = path.dirname(lock);
@@ -2080,6 +2080,15 @@ function thinkingChange(entry: SessionEntry): string | undefined {
     : undefined;
 }
 
+/** The digest a `system-prompt-digest` entry holds, or undefined for any other entry. */
+function promptDigest(entry: SessionEntry): string | undefined {
+  return entry.type === "custom" &&
+    entry.customType === "system-prompt-digest" &&
+    typeof entry.data === "string"
+    ? entry.data
+    : undefined;
+}
+
 /** `model`'s id and whether a route of the gateway serves it, by the read count's rule
  *  (attribute.ts's `sessionModel`): a thinking suffix left out, its id (the text after the last
  *  `/`, whatever gateway or provider names it) is one of `servedIds`. */
@@ -2480,11 +2489,11 @@ function ghAnswer(args: readonly string[], result: Sent<GhResult>): string {
 export type NpmTarball = (name: string, version: string) => Promise<Uint8Array | undefined>;
 
 /** The registry's tarball URL of `version` of the package `name` (`@scope/name` too). */
-export const tarballUrl = (name: string, version: string) =>
+const tarballUrl = (name: string, version: string) =>
   `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`;
 
-// A fetch waits for ever by itself, and one did: a screen sat 15 minutes in a registry read after
-// the pod's network faulted. A try still running at this limit is given up and sent again.
+// A fetch has no time limit of its own: a try still running at this limit is given up and sent
+// again.
 const NPM_TIMEOUT_MS = 60_000;
 
 /** The reason, in the words of common.ts's TRANSIENT_FAILURES, of each error code with which Bun's
@@ -2543,7 +2552,7 @@ export async function registryTarball(
 /** The files of a gzipped tar (an npm tarball), by path less its first part (`package/`), each
  *  as Oh My Pi reads a file (common.ts's `ompText`): a regular file's entry only, its name the
  *  ustar prefix and name joined. */
-export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
+function tarballFiles(gzipped: Uint8Array): Map<string, string> {
   const bytes = Bun.gunzipSync(new Uint8Array(gzipped));
   const text = (from: number, to: number) =>
     new TextDecoder().decode(bytes.subarray(from, to)).replace(/\0.*$/s, "");
@@ -2564,10 +2573,20 @@ export function tarballFiles(gzipped: Uint8Array): Map<string, string> {
   return files;
 }
 
+/** The `from` of a default branch that the copies output's repositories.tsv names
+ *  (`GithubReads.branch`). */
+const LISTED_BRANCH = "repositories.tsv";
+
+/** The read of the last commit of `ref` of `repo` at or before `at` (`GithubReads.commitAt`), as
+ *  evidence names it. */
+const commitsRead = (repo: string, ref: string, at: string) =>
+  `gh api repos/${repo}/commits?sha=${ref}&until=${at}`;
+
 /** The GitHub reads the profile makes, each made once, and each sent again after a transient
  *  failure as common.ts's `GhRetries` says (`retries`, which counts them): a read that failed so
  *  on every try is not kept, so a later caller reads it again. The registry's tarball read
- *  (`tarball`) is sent again by the same rule, and is never kept. Exported for copies.test.ts,
+ *  (`tarball`) is sent again by the same rule; the bytes are never kept, and the names of the
+ *  skills a version's tarball ships are kept (`shippedSkills`). Exported for copies.test.ts,
  *  which checks that it reads a repository's files as copies.ts does. */
 export class GithubReads {
   private readonly made = new Map<string, Promise<Sent<GhResult>>>();
@@ -2576,6 +2595,8 @@ export class GithubReads {
   private readonly blobs = new Map<string, Promise<string>>();
   /** One level of a directory of a tree (`firstFile`), by repository, commit and path. */
   private readonly dirs = new Map<string, Promise<TreeEntry[]>>();
+  /** The skills each package version's tarball ships (`shippedSkills`), by `<name>@<version>`. */
+  private readonly shipped = new Map<string, Promise<ReadonlySet<string> | undefined>>();
 
   constructor(
     private readonly gh: Gh,
@@ -2605,6 +2626,24 @@ export class GithubReads {
     );
     if (read.code !== 0) throw new NpmFailed(tarballUrl(name, version), firstLine(read.stderr));
     return read.bytes;
+  }
+
+  /** The names of the skills the registry's tarball of `version` of the package `name` ships
+   *  (copies.ts's `tarballSkills`), undefined when the registry has none (`tarball`). Kept for
+   *  each version, since the registry takes no version twice; a read that fails is not kept, so
+   *  a later caller reads the registry again. */
+  shippedSkills(name: string, version: string): Promise<ReadonlySet<string> | undefined> {
+    const key = `${name}@${version}`;
+    const held = this.shipped.get(key);
+    if (held !== undefined) return held;
+    const made = this.tarball(name, version).then((bytes) =>
+      bytes === undefined ? undefined : new Set(tarballSkills(tarballFiles(bytes)))
+    );
+    this.shipped.set(key, made);
+    made.catch(() => {
+      if (this.shipped.get(key) === made) this.shipped.delete(key);
+    });
+    return made;
   }
 
   /** Whether GitHub lists the tag `tag` of `repo`: one read of its tags that start so. */
@@ -2653,10 +2692,16 @@ export class GithubReads {
     return ghAnswer(args, await this.call(args));
   }
 
-  /** The default branch of `repo`: repositories.tsv's, else GitHub's. */
-  async branch(repo: string, fromGithub = false): Promise<{ branch: string; from: string }> {
-    const known = fromGithub ? undefined : this.branches.get(repo);
-    if (known !== undefined && known !== "") return { branch: known, from: "repositories.tsv" };
+  /** The default branch of `repo`: repositories.tsv's (`from` LISTED_BRANCH), else GitHub's
+   *  (`githubBranch`). */
+  async branch(repo: string): Promise<{ branch: string; from: string }> {
+    const known = this.branches.get(repo);
+    if (known !== undefined && known !== "") return { branch: known, from: LISTED_BRANCH };
+    return this.githubBranch(repo);
+  }
+
+  /** The default branch GitHub names of `repo`. */
+  async githubBranch(repo: string): Promise<{ branch: string; from: string }> {
     const branch = (await this.ok(["api", `repos/${repo}`, "--jq", ".default_branch"])).trim();
     if (branch === "") throw new Error(`GitHub names no default branch of ${repo}`);
     return { branch, from: `gh api repos/${repo}` };
@@ -2962,10 +3007,6 @@ export class GithubReads {
     excludePaths: SkillCutsConfig["excludePaths"]
   ): Promise<RepositoryAt> {
     const faults: { file: string; why: string }[] = [];
-    const dirOf = (file: string) => {
-      const dir = path.posix.dirname(file);
-      return dir === "." ? "" : dir;
-    };
     // No fork is read here: the entries kept are those of a repository that is no fork.
     const { skillFiles: skillEntries, manifests: candidates } = repositoryFiles(
       repo,
@@ -3124,7 +3165,7 @@ const DEVBOX_INSTALLERS_RULE =
 /** How Oh My Pi 18.18.6 reads skills.ignoredSkills. */
 const IGNORED_RULE =
   "Oh My Pi 18.18.6 loads no skill whose name a pattern of skills.ignoredSkills matches as a Bun.Glob, matched against the skill's own name and again against the name it is listed under, <namespace>/<name> for a later copy of a name whose text differs (extensibility/skills.ts, lines 386-389, 401-406, 437 and 544), so a session can neither list nor read it";
-/** When a pool new at a subagent's start is installed (fault A of the misses diagnosis). */
+/** When a pool new at a subagent's start is installed. */
 const POOL_AT_START_RULE =
   "Oh My Pi 18.18.6 has a subagent emit resources_discover as it starts and merges the skill directories its extensions give then into the snapshot its parent gave it (session/session-tools.ts, discoverStartupSkillPaths, lines 2530-2547, and #mergeDiscoveredSkillDirectories, lines 2350-2420), so a pool the dev box's skills-sources.json names at the subagent's start is listed where its clone is there then; which clones the host had then no repository records, so the profile installs such a pool only where the subagent's recorded listing names one of its skills, an inference from that listing, and the listing measure marks each name taken so (fromRecorded), since there the recorded listing both installs the names and is what the measure compares against";
 /** Which Claude Code plugins Oh My Pi lists for a session. */
@@ -3215,6 +3256,19 @@ const LEGION_DAEMON_RULE = `the Legion daemon of a pod composes its role prompt 
  *  image (`daemonImage`). */
 type ImageKey = "image" | "daemonImage";
 
+/** A YAML value less a quote at its start and one at its end. */
+const unquoted = (value: string) => value.replace(/^["']|["']$/g, "");
+
+/** The comment lines right above the line `at` of `lines`, none before the line `floor`, each less
+ *  its `#`. */
+function commentAbove(lines: readonly string[], at: number, floor: number): string[] {
+  const comment: string[] = [];
+  for (let above = at - 1; above >= floor && /^\s*#/.test(lines[above] ?? ""); above--) {
+    comment.unshift((lines[above] ?? "").trim().replace(/^#\s?/, ""));
+  }
+  return comment;
+}
+
 /** The `key:` value of the entry `- key: <project>` of the Pulumi config text `text`, and the
  *  comment lines right above that line, each less its `#`; undefined when the text holds no such
  *  entry with a `key:` line. The entry's lines are those after its `- key:` line that are
@@ -3226,7 +3280,6 @@ function projectImage(
   project: string,
   key: ImageKey
 ): { readonly image: string; readonly comment: readonly string[] } | undefined {
-  const unquoted = (value: string) => value.replace(/^["']|["']$/g, "");
   const field = new RegExp(`^\\s*${key}:\\s*(\\S+)\\s*(?:#.*)?$`);
   const lines = text.split("\n");
   const head = lines.findIndex((line) => {
@@ -3242,11 +3295,7 @@ function projectImage(
     if (indent <= dash) return undefined;
     const value = field.exec(line)?.[1];
     if (value === undefined || indent !== dash + 2) continue;
-    const comment: string[] = [];
-    for (let above = at - 1; above > head && /^\s*#/.test(lines[above] ?? ""); above--) {
-      comment.unshift((lines[above] ?? "").trim().replace(/^#\s?/, ""));
-    }
-    return { image: unquoted(value), comment };
+    return { image: unquoted(value), comment: commentAbove(lines, at, head + 1) };
   }
   return undefined;
 }
@@ -3265,11 +3314,7 @@ function projectFileImage(
   const at = lines.findIndex((line) => field.test(line));
   if (at < 0) return undefined;
   const value = field.exec(lines[at] ?? "")?.[1] ?? "";
-  const comment: string[] = [];
-  for (let above = at - 1; above >= 0 && /^\s*#/.test(lines[above] ?? ""); above--) {
-    comment.unshift((lines[above] ?? "").trim().replace(/^#\s?/, ""));
-  }
-  return { image: value.replace(/^["']|["']$/g, ""), comment };
+  return { image: unquoted(value), comment: commentAbove(lines, at, 0) };
 }
 
 /** The commit of `imageRepo` that the image the `key:` line names for the project `project` was
@@ -3370,7 +3415,7 @@ async function imageCommit(
       };
     }
     if (commit.startsWith(ref)) {
-      const asked = `gh api repos/${imageRepo}/commits?sha=${ref}&until=${when.at}`;
+      const asked = commitsRead(imageRepo, ref, when.at);
       return {
         sha: commit,
         how: `${above} names ${ref}, the commit ${commit} of ${imageRepo} (${asked})`,
@@ -3387,8 +3432,9 @@ async function imageCommit(
  *  listing holds, `listed` those the rebuilt profile lists (its skills less those Oh My Pi hides),
  *  `missing` the recorded names the profile does not list, `added` the names it lists that the
  *  recording lacks, `missingShare` missing ÷ recorded (null with no recorded name);
- *  `sessionDigest` the session's first system-prompt-digest, `rebuiltDigest` always null (the
- *  build makes no prompt), `subagent` the subagent whose listing is used, and `why` in words. */
+ *  `sessionDigest` the session's system-prompt digest (a case's last before its step, a task's
+ *  first), `rebuiltDigest` always null (the build makes no prompt), `subagent` the subagent whose
+ *  listing is used, and `why` in words. */
 export const ListingMeasure = z.strictObject({
   kind: z.enum(["session listing", "subagent listing", "not measurable"]),
   recorded: z.number().nullable(),
@@ -3422,8 +3468,9 @@ type BuildWindow =
   | { readonly unknown: string };
 
 /** What a listing measure of one session is made from: the names its rebuilt profile lists, its
- *  recorded system prompt when it has one (a subagent's), its first system-prompt digest, and,
- *  for a top-level session, the window of the build its profile is read at. */
+ *  recorded system prompt when it has one (a subagent's), its system-prompt digest (a case's last
+ *  before its step, a task's first), and, for a top-level session, the window of the build its
+ *  profile is read at. */
 interface ListingInput {
   readonly listed: readonly string[];
   readonly recorded: readonly string[] | undefined;
@@ -3479,9 +3526,7 @@ async function subagentListings(
   const found = new Map<string, SubagentsFound>();
   if (sessions.length === 0) return found;
   const wanted = new Map(sessions.map((each) => [betweenKey(each.hash, each), each]));
-  const query = subagentsSql(
-    [...wanted.values()].map(({ hash, from, to }) => ({ hash, from, to }))
-  );
+  const query = subagentsSql([...wanted.values()]);
   for (const row of await storeRows(command, store, query)) {
     const parsed = SubagentRow.safeParse(row);
     if (!parsed.success) continue;
@@ -3526,6 +3571,48 @@ function unasked(input: ListingInput): SubagentRead {
           ? input.build.unknown
           : "no prompt build of it is known, so no subagent of it is asked for",
   };
+}
+
+/** What subagents.sql finds of each session of `measured` (its store, path hash and query times,
+ *  `betweenOf`), by `<store>\0<betweenKey>`: one `subagentListings` query a store, in the order
+ *  the sessions first name the stores; and how many queries that took. */
+async function subagentsByStore(
+  command: string,
+  measured: readonly {
+    readonly store: string;
+    readonly pathHash: string;
+    readonly between: Between;
+  }[]
+): Promise<{ readonly found: Map<string, SubagentsFound>; readonly queries: number }> {
+  const found = new Map<string, SubagentsFound>();
+  let queries = 0;
+  for (const store of new Set(measured.map((each) => each.store))) {
+    const listings = await subagentListings(
+      command,
+      store,
+      measured
+        .filter((each) => each.store === store)
+        .map((each) => ({ hash: each.pathHash, ...each.between }))
+    );
+    queries += 1;
+    for (const [key, each] of listings) found.set(`${store}\0${key}`, each);
+  }
+  return { found, queries };
+}
+
+/** What the store gave of the subagents of the session `pathHash` of `store`, whose listing input
+ *  is `listing`: what `subagentsByStore` found (`found`) for its query's times, or why it was not
+ *  asked (`unasked`). */
+function subagentRead(
+  found: ReadonlyMap<string, SubagentsFound>,
+  store: string,
+  pathHash: string,
+  listing: ListingInput
+): SubagentRead {
+  const between = betweenOf(listing);
+  return between === undefined
+    ? unasked(listing)
+    : { found: found.get(`${store}\0${betweenKey(pathHash, between)}`) };
 }
 
 /** When a subagent's skills were loaded, and where Oh My Pi's source says so. */
@@ -3578,14 +3665,16 @@ async function digestRows(
 function parentLoad(row: DigestRow | undefined, before: string, store: string): ReadTime {
   const builds = row?.digests.filter((each) => Date.parse(each.at) < Date.parse(before)) ?? [];
   const at = builds.at(-1)?.at;
-  const why =
-    row === undefined
-      ? `the store ${store} holds no file of the subagent now`
-      : !row.rootHeld
-        ? `the store ${store} holds no file of its root (${row.root.slice(0, 12)})`
-        : at === undefined
-          ? `its root (${row.root.slice(0, 12)}) holds no system-prompt-digest line before it`
-          : `its root (${row.root.slice(0, 12)}) built its prompt last at ${at} before it (${builds.length} builds)`;
+  let why: string;
+  if (row === undefined) {
+    why = `the store ${store} holds no file of the subagent now`;
+  } else if (!row.rootHeld) {
+    why = `the store ${store} holds no file of its root (${row.root.slice(0, 12)})`;
+  } else if (at === undefined) {
+    why = `its root (${row.root.slice(0, 12)}) holds no system-prompt-digest line before it`;
+  } else {
+    why = `its root (${row.root.slice(0, 12)}) built its prompt last at ${at} before it (${builds.length} builds)`;
+  }
   return {
     at,
     words: "the root's last prompt build",
@@ -3634,13 +3723,17 @@ function messageTime(message: SessionMessage): string | undefined {
 
 /** The index in `lines` (a top-level session's digest lines, earliest first) of the build a step
  *  whose message is at `stepAt` ran under, the case's digest being `digest` (TOP_BUILD_RULE): the
- *  last line at or before it, or the line after that one when it holds `digest` and that one does
- *  not; -1 for none. */
-function stepLine(lines: readonly DigestLine[], stepAt: string, digest: string | null): number {
+ *  last line at or before it (`last`), or the line after that one when it holds `digest` and that
+ *  one does not; -1 for none. */
+function stepLine(
+  lines: readonly DigestLine[],
+  stepAt: string,
+  digest: string | null
+): { readonly index: number; readonly last: number } {
   const step = Date.parse(stepAt);
   const last = lines.findLastIndex((line) => Date.parse(line.at) <= step);
   const own = last >= 0 && digest !== null && lines[last]?.digest !== digest;
-  return own && lines[last + 1]?.digest === digest ? last + 1 : last;
+  return { index: own && lines[last + 1]?.digest === digest ? last + 1 : last, last };
 }
 
 /** The ReadTime and BuildWindow of a top-level session that started at `start` and whose digest
@@ -3728,8 +3821,7 @@ function stepBuild(
       "the case records no time of its step's message, so its step is taken to run under the session's first build"
     );
   }
-  const index = stepLine(lines, stepAt, digest);
-  const last = lines.findLastIndex((line) => Date.parse(line.at) <= Date.parse(stepAt));
+  const { index, last } = stepLine(lines, stepAt, digest);
   const how =
     index < 0
       ? `the step's message is at ${stepAt}, before every system-prompt-digest line of the session`
@@ -3791,17 +3883,19 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
   const found = "found" in read ? read.found : undefined;
   const against = measuredAgainst(input, read);
   const subagent = against?.subagent;
-  const digest = `the session's first system-prompt-digest is ${input.sessionDigest ?? "none"}, and the rebuilt prompt has no digest: the build makes no prompt`;
+  const digest = `the session's system-prompt-digest (a case's last before its step, a task's first) is ${input.sessionDigest ?? "none"}, and the rebuilt prompt has no digest: the build makes no prompt`;
   let measure: ListingMeasure;
   if (against === undefined) {
-    const none =
-      unknown !== undefined
-        ? `${unknown}, so no subagent of it can be tied to the build its profile is read at`
-        : "unread" in read
-          ? read.unread
-          : found === undefined
-            ? `the store holds no subagent of it (subagents.sql, asked for those spawned ${words})`
-            : `the store holds no subagent of it whose recorded prompt holds a skill listing spawned ${words} (subagents.sql: ${found.recorded} of its ${found.subagents} subagents record one, ${found.under} of them spawned then), and the listing of a subagent spawned under another build is never used`;
+    let none: string;
+    if (unknown !== undefined) {
+      none = `${unknown}, so no subagent of it can be tied to the build its profile is read at`;
+    } else if ("unread" in read) {
+      none = read.unread;
+    } else if (found === undefined) {
+      none = `the store holds no subagent of it (subagents.sql, asked for those spawned ${words})`;
+    } else {
+      none = `the store holds no subagent of it whose recorded prompt holds a skill listing spawned ${words} (subagents.sql: ${found.recorded} of its ${found.subagents} subagents record one, ${found.under} of them spawned then), and the listing of a subagent spawned under another build is never used`;
+    }
     measure = {
       kind: "not measurable",
       recorded: null,
@@ -3817,10 +3911,11 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
   } else {
     const recorded = listingNames(against.blocks);
     const missing = recorded.filter((name) => !listed.includes(name));
-    const from =
-      input.recorded !== undefined || subagent === undefined || found === undefined
-        ? "the session recorded its system prompt, and its capture sends it whole"
-        : `the session records only its prompt's digest, and ${digest}; the listing is the recorded one of its subagent ${subagent.pathHash} (agent ${subagent.agent}, started at ${subagent.start ?? "no recorded time"}), the earliest of the ${found.under} of its ${found.subagents} subagents whose recorded prompt holds a listing (${found.recorded} in all) spawned ${words}, since ${SUBAGENT_LISTING_RULE}`;
+    // `measuredAgainst` gives a subagent only where the session recorded no prompt of its own.
+    const fromSubagent = subagent !== undefined && found !== undefined;
+    const from = fromSubagent
+      ? `the session records only its prompt's digest, and ${digest}; the listing is the recorded one of its subagent ${subagent.pathHash} (agent ${subagent.agent}, started at ${subagent.start ?? "no recorded time"}), the earliest of the ${found.under} of its ${found.subagents} subagents whose recorded prompt holds a listing (${found.recorded} in all) spawned ${words}, since ${SUBAGENT_LISTING_RULE}`
+      : "the session recorded its system prompt, and its capture sends it whole";
     measure = {
       kind: input.recorded !== undefined ? "session listing" : "subagent listing",
       recorded: recorded.length,
@@ -3830,15 +3925,14 @@ function listingMeasure(input: ListingInput, read: SubagentRead): Evidence {
       missingShare: recorded.length === 0 ? null : missing.length / recorded.length,
       sessionDigest: input.sessionDigest,
       rebuiltDigest: null,
-      subagent:
-        input.recorded !== undefined || subagent === undefined || found === undefined
-          ? null
-          : {
-              pathHash: subagent.pathHash,
-              agent: subagent.agent,
-              subagents: found.subagents,
-              recorded: found.recorded,
-            },
+      subagent: fromSubagent
+        ? {
+            pathHash: subagent.pathHash,
+            agent: subagent.agent,
+            subagents: found.subagents,
+            recorded: found.recorded,
+          }
+        : null,
       why: `${from}; ${NAMES_ONLY}`,
     };
   }
@@ -3936,6 +4030,18 @@ function listedNames(result: Pick<ProfileResult, "profile" | "hidden">): string[
 const NAMESPACE_RULE =
   "Oh My Pi 18.18.6 keeps the bare name for the skill of a name it admits first (a skills directory an extension names before any provider's skill) and lists a later one whose text (body or frontmatter) differs as <namespace>/<name>, the namespace its plugin's name, else the directory that holds its skills/, else its provider's id for a dotted directory, made one token of letters, digits, _ and - (extensibility/skills.ts, skillNamespace, lines 96-116, and resolveCollision, lines 164-223); a later one of the same text it drops";
 
+/** The name or directory a copy of the unit `unit` takes its namespace from (`unitNamespace`),
+ *  before Oh My Pi makes it one token; undefined for a unit it gives none. */
+function namespaceRoot(unit: string): string | undefined {
+  if (unit.startsWith("package:")) return unit.slice("package:".length).split("/").pop();
+  if (unit.startsWith("plugin:")) return unit.slice("plugin:".length).split("@")[0];
+  if (unit.startsWith("image:")) return unit.slice("image:".length);
+  if (unit.startsWith("pool:")) return path.posix.basename(unit.slice("pool:".length));
+  if (unit === "user-skills:omp") return "agent";
+  if (unit === "user-skills:claude-code") return "claude";
+  return undefined;
+}
+
 /** The namespace Oh My Pi gives a copy of the unit `unit` (NAMESPACE_RULE): the plugin's name a
  *  package (less its scope), a plugin or a worker image plugin is loaded under; else the directory
  *  that holds the copy's `skills/` where the host installs it: a pool's directory, `agent` for
@@ -3944,19 +4050,7 @@ const NAMESPACE_RULE =
  *  for any other unit, and for a pool in a dotted directory, whose second copy a profile leaves
  *  out. */
 function unitNamespace(unit: string): string | undefined {
-  const root = unit.startsWith("package:")
-    ? unit.slice("package:".length).split("/").pop()
-    : unit.startsWith("plugin:")
-      ? unit.slice("plugin:".length).split("@")[0]
-      : unit.startsWith("image:")
-        ? unit.slice("image:".length)
-        : unit.startsWith("pool:")
-          ? path.posix.basename(unit.slice("pool:".length))
-          : unit === "user-skills:omp"
-            ? "agent"
-            : unit === "user-skills:claude-code"
-              ? "claude"
-              : undefined;
+  const root = namespaceRoot(unit);
   if (root === undefined || root.startsWith(".")) return undefined;
   const token = root.replace(/[^\p{L}\p{N}_-]+/gu, "-").replace(/^-+|-+$/g, "");
   return token === "" ? undefined : token;
@@ -4240,6 +4334,12 @@ const MEMBER_ACTIONS: Readonly<Record<string, true>> = {
   installs: true,
 };
 
+/** Whether the resolved installer row `row` (copies.ts's `resolveInstallers`) ships a copy as a
+ *  member of its unit: it names the copy, by one of MEMBER_ACTIONS. */
+function shipsMember(row: { readonly copyPath?: string | undefined; readonly action: string }) {
+  return row.copyPath !== undefined && Object.hasOwn(MEMBER_ACTIONS, row.action);
+}
+
 /** A case's profile, the evidence for each part, and `shipped`: each copy some unit of the
  *  profile ships (`<repo>\0<name>`), whether or not a copy of its name came first. */
 interface ProfileResult {
@@ -4273,9 +4373,12 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
-  // A dev box's own repository is the checkout whose .claude/ the configuration names as its
-  // CLAUDE_CONFIG_DIR (DEVBOX_CHECKOUT_RULE); devboxHome's evidence is pushed where it is below.
-  const devboxRepo = input.context.startsWith("legion:") ? undefined : devboxHome(copies, []);
+  const legion = input.context.startsWith("legion:");
+  // A dev box's own repository (DEVBOX_INSTALLERS_RULE) is the checkout whose .claude/ the
+  // configuration names as its CLAUDE_CONFIG_DIR (DEVBOX_CHECKOUT_RULE); devboxHome's evidence is
+  // pushed where it is below.
+  const homeEvidence: Evidence[] = [];
+  const home = legion ? undefined : devboxHome(copies, homeEvidence);
   const claudeDir = run.config.devboxClaudeConfigDir;
   let checkout =
     input.checkout ??
@@ -4283,9 +4386,9 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       input.context,
       input.cwd,
       copies.branches.keys(),
-      devboxRepo === undefined || claudeDir === undefined
+      home === undefined || claudeDir === undefined
         ? undefined
-        : { repo: devboxRepo, dir: path.posix.dirname(claudeDir) }
+        : { repo: home, dir: path.posix.dirname(claudeDir) }
     );
   evidence.push(checkout.line);
   // A checkout a parent's name gave is taken only where its repository's tree holds the working
@@ -4326,8 +4429,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     );
   let levels = [checkout.rel];
   for (let level = checkout.rel; level !== ""; ) {
-    const parent = path.posix.dirname(level);
-    level = parent === "." ? "" : parent;
+    level = dirOf(level);
     levels.push(level);
   }
   let projectDirs = projectDirsAt(levels);
@@ -4345,18 +4447,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     try {
       sha = await github.commitAt(repo, branch, when.at);
     } catch (error) {
-      const fallBack = !transientFailure(error) && from === "repositories.tsv";
+      const fallBack = !transientFailure(error) && from === LISTED_BRANCH;
       if (!fallBack && !(error instanceof NoCommitThen)) throw error;
       if (fallBack) {
         younger = `${branch}, the ref repositories.tsv names, has no commit at or before ${when.words}; `;
-        ({ branch, from } = await github.branch(repo, true));
+        ({ branch, from } = await github.githubBranch(repo));
         sha = await github.commitAt(repo, branch, when.at).catch((again: unknown) => {
           if (again instanceof NoCommitThen) return undefined;
           throw again;
         });
       }
     }
-    const read = `gh api repos/${repo}/commits?sha=${branch}&until=${when.at}`;
+    const read = commitsRead(repo, branch, when.at);
     if (sha === undefined) {
       return {
         line: {
@@ -4444,7 +4546,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // pod's only when one of them holds it; another's (a dev box's own) installs nothing in a pod.
   // Their units are read at the image's commit (LEGION_IMAGE_RULE, below).
   const imageRepositories = new Set<string>();
-  if (input.context.startsWith("legion:")) {
+  if (legion) {
     const ompUnits = new Set(
       copies.installers
         .filter((row) => row.host === "omp")
@@ -4497,11 +4599,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 
   // A dev box installs every unit its own repository's installers install into Oh My Pi at the
   // session's start, whether or not the session read from it (DEVBOX_INSTALLERS_RULE).
-  const home = input.context.startsWith("legion:") ? undefined : devboxHome(copies, evidence);
+  evidence.push(...homeEvidence);
   // A Legion pod installs what its deployment gives each role at its start (LEGION_INSTALLS_RULE):
   // the deployment repository is the one whose project file (legion-project) names the project,
   // read at the session's start with the catalog its role setup fetches.
-  const projectFile = input.context.startsWith("legion:")
+  const projectFile = legion
     ? copies.manifests.find(
         (row) =>
           row.kind === "legion-project" && (row.says ?? "").startsWith(`project ${input.project}:`)
@@ -4510,11 +4612,11 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const deployment = projectFile?.repository;
   const legionPins = (manifests: readonly Manifest[]): InstallerPin[] => {
     if (deployment === undefined) return [];
-    const legion = legionCatalog(manifests, deployment, projectFile?.path ?? "");
+    const deployed = legionCatalog(manifests, deployment, projectFile?.path ?? "");
     return [
-      ...legion.setup,
-      ...legion.plugins.flatMap(({ manifest, fact }) =>
-        fact.repo !== "" && legion.wanted.has(fact.plugin)
+      ...deployed.setup,
+      ...deployed.plugins.flatMap(({ manifest, fact }) =>
+        fact.repo !== "" && deployed.wanted.has(fact.plugin)
           ? [{ repository: fact.repo, ref: fact.ref, manifest }]
           : []
       ),
@@ -4550,7 +4652,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   if (deployment !== undefined) repositories.add(deployment);
   // A dev-box session repository whose Claude Code settings enable plugins (CLAUDE_PLUGIN_RULE)
   // is read whole with the repositories of the marketplaces that ship them.
-  if (checkout.repo !== undefined && !input.context.startsWith("legion:")) {
+  if (checkout.repo !== undefined && !legion) {
     const repo = checkout.repo.toLowerCase();
     const enabled = new Set(
       copies.installers
@@ -4602,14 +4704,8 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       const project =
         repo === checkout.repo ? await github.project(repo, sha, levels, excludePaths) : undefined;
       return repositories.has(repo) || project === undefined
-        ? {
-            repo,
-            commit: { sha, line },
-            at: await github.at(repo, sha, excludePaths),
-            reads: 0,
-            project,
-          }
-        : { repo, commit: { sha, line }, ...project, project };
+        ? { repo, commit: { sha, line }, at: await github.at(repo, sha, excludePaths), project }
+        : { repo, commit: { sha, line }, at: project.at, project };
     })
   );
   // A repository with no commit at the time it is read at did not exist then: nothing of it was
@@ -4672,7 +4768,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         sha,
         line: {
           item: `commit ${sha} of ${value.repo}`,
-          source: `the last commit of ${pin.ref}, the ref ${pin.manifest.repository}:${pin.manifest.path} pins at the session's start, at or before ${when.words} ${when.at}: gh api repos/${value.repo}/commits?sha=${pin.ref}&until=${when.at}`,
+          source: `the last commit of ${pin.ref}, the ref ${pin.manifest.repository}:${pin.manifest.path} pins at the session's start, at or before ${when.words} ${when.at}: ${commitsRead(value.repo, pin.ref, when.at)}`,
         },
       },
       at: await github.at(value.repo, sha, run.config.excludePaths),
@@ -4720,11 +4816,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
               sha,
               line: {
                 item: `commit ${sha} of ${pin.repository}`,
-                source: `the last commit of ${ref}, the ref ${pinned} ${names} at the session's start, at or before ${when.words} ${when.at}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${when.at}`,
+                source: `the last commit of ${ref}, the ref ${pinned} ${names} at the session's start, at or before ${when.words} ${when.at}: ${commitsRead(pin.repository, ref, when.at)}`,
               },
             },
             at: await github.at(pin.repository, sha, run.config.excludePaths),
-            reads: 0,
             project: undefined,
           });
           fresh = true;
@@ -4734,7 +4829,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
             error instanceof NoCommitThen
               ? {
                   item: `left out: ${pin.repository}, which has no commit at or before ${when.words} ${when.at}`,
-                  source: `${ref}, the ref ${pinned} ${names} at the session's start, has no commit at or before ${when.words}: gh api repos/${pin.repository}/commits?sha=${ref}&until=${when.at} gives none, so nothing of ${pin.repository} was installed then, and the profile installs nothing of it`,
+                  source: `${ref}, the ref ${pinned} ${names} at the session's start, has no commit at or before ${when.words}: ${commitsRead(pin.repository, ref, when.at)} gives none, so nothing of ${pin.repository} was installed then, and the profile installs nothing of it`,
                 }
               : {
                   item: `left out: ${pin.repository}, which ${pinned} pins at the session's start`,
@@ -4745,7 +4840,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       }
     }
   }
-  for (const { repo, commit, at, reads: treeReads, project } of values) {
+  for (const { repo, commit, at, project } of values) {
     commits.set(repo, commit.sha);
     evidence.push(commit.line);
     const { byParent, rel } = checkout;
@@ -4803,7 +4898,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     if (repo === checkout.repo && !notCheckout) projectTree = project?.at ?? at;
     const unitRepo = repositories.has(repo);
     if (unitRepo) held.set(repo, at);
-    const projectRead = `gh api repos/${repo}/git/trees/<tree id>, one directory a read (${project?.reads ?? treeReads} ${(project?.reads ?? treeReads) === 1 ? "read" : "reads"}), of the directories Oh My Pi reads a project's skills and context files from: each level from the working directory up to the checkout's root, its ${PROJECT_LEVEL_DIRS.map((dir) => `${dir}/`).join(", ")}, its ${PROJECT_SKILLS.flatMap((kind) => kind.dirs.map((dir) => `${dir}/`)).join(", ")} and each skill directory in them, a skill directory held as a link read at the directory it names. Their ${(project?.at ?? at).copies.length} SKILL.md files, read at that commit, give the session repository's project skills`;
+    const projectRead = `gh api repos/${repo}/git/trees/<tree id>, one directory a read (${project?.reads ?? 0} ${(project?.reads ?? 0) === 1 ? "read" : "reads"}), of the directories Oh My Pi reads a project's skills and context files from: each level from the working directory up to the checkout's root, its ${PROJECT_LEVEL_DIRS.map((dir) => `${dir}/`).join(", ")}, its ${PROJECT_SKILLS.flatMap((kind) => kind.dirs.map((dir) => `${dir}/`)).join(", ")} and each skill directory in them, a skill directory held as a link read at the directory it names. Their ${(project?.at ?? at).copies.length} SKILL.md files, read at that commit, give the session repository's project skills`;
     evidence.push(
       unitRepo
         ? {
@@ -4965,8 +5060,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
               row.unit === id &&
               row.manifestRepository === repo &&
               row.manifestPath === pkg.path &&
-              row.copyPath !== undefined &&
-              Object.hasOwn(MEMBER_ACTIONS, row.action)
+              shipsMember(row)
           );
           versions.set(id, {
             sha,
@@ -4982,21 +5076,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       tagWhy = `${repo}'s tag ${tag} cannot be read (${messageFor(error)})`;
     }
     const url = tarballUrl(pin.package, pin.version);
-    const bytes = await github.tarball(pin.package, pin.version);
-    if (bytes === undefined) {
+    const names = await github.shippedSkills(pin.package, pin.version);
+    if (names === undefined) {
       versions.set(id, {
         why: `${pinned}; ${tagWhy}, and the registry has no tarball of it (${url}), so it ships nothing to the profile: ${NPM_PIN_RULE}`,
       });
       continue;
     }
-    const names = new Set(tarballSkills(tarballFiles(bytes)));
     versions.set(id, {
       names,
       why: `${pinned}; ${tagWhy}, so the registry's tarball (${url}) names the skills it ships (${[...names].join(", ") || "none"}), each installed from ${repo} at ${commits.get(repo)}: ${NPM_PIN_RULE}`,
     });
   }
   const resolved = resolveInstallers(
-    [...held].flatMap(([repo, at]) => unitTree(repo, at).manifests),
+    heldManifests,
     new CopyIndex([...held].flatMap(([repo, at]) => unitTree(repo, at).copies)),
     run.config.clones
   );
@@ -5022,8 +5115,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         row.unit === via.unit &&
         row.manifestRepository === via.repository &&
         row.manifestPath === via.manifest &&
-        row.copyPath !== undefined &&
-        Object.hasOwn(MEMBER_ACTIONS, row.action)
+        shipsMember(row)
     );
   // A read whose skill no unit ships at the session's start, though the repository its unit comes
   // from was read at that commit: the copies output names the unit as the manifests name it at
@@ -5071,12 +5163,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       ...poolResolved.rows.filter((row) => row.unit.startsWith("pool:")),
     ];
     for (const row of rows) {
-      if (
-        row.manifestRepository !== home ||
-        row.host !== "omp" ||
-        row.copyPath === undefined ||
-        !Object.hasOwn(MEMBER_ACTIONS, row.action)
-      ) {
+      if (row.manifestRepository !== home || row.host !== "omp" || !shipsMember(row)) {
         continue;
       }
       const via = { unit: row.unit, repository: home, manifest: row.manifestPath };
@@ -5108,7 +5195,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // The Claude Code plugins the session repository's own Claude Code settings enable, which
   // Claude Code installs for that project and Oh My Pi lists for a session in it
   // (CLAUDE_PLUGIN_RULE): each from the marketplace rows that ship its skills.
-  if (checkout.repo !== undefined && !input.context.startsWith("legion:") && !notCheckout) {
+  if (checkout.repo !== undefined && !legion && !notCheckout) {
     const repo = checkout.repo.toLowerCase();
     const enabled = new Set(
       resolved.rows
@@ -5121,11 +5208,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         .map((row) => row.unit)
     );
     for (const row of resolved.rows) {
-      if (
-        !enabled.has(row.unit) ||
-        row.copyPath === undefined ||
-        !Object.hasOwn(MEMBER_ACTIONS, row.action)
-      ) {
+      if (!enabled.has(row.unit) || !shipsMember(row)) {
         continue;
       }
       const via = {
@@ -5143,29 +5226,28 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // A Legion pod's role start installs the catalog plugins its deployment gives the project, and
   // its worker image carries the skills its Dockerfile installs under /opt.
   if (deployment !== undefined) {
-    const legion = legionCatalog(
+    const deployed = legionCatalog(
       [...held.values()].flatMap((at) => at.manifests),
       deployment,
       projectFile?.path ?? ""
     );
-    if (legion.setup.length === 0) {
+    if (deployed.setup.length === 0) {
       evidence.push({
         item: "left out: the catalog of the Legion role setup",
         source: `${LEGION_INSTALLS_RULE}; ${atCommit(deployment)} holds no role setup script that names a catalog`,
       });
     }
     for (const row of resolved.rows) {
-      const plugin = row.unit.startsWith("plugin:") ? (row.unit.slice(7).split("@")[0] ?? "") : "";
-      const catalog = legion.setup.some(
+      const plugin = row.unit.startsWith("plugin:")
+        ? (row.unit.slice("plugin:".length).split("@")[0] ?? "")
+        : "";
+      const catalog = deployed.setup.some(
         (pin) => pin.repository.toLowerCase() === row.manifestRepository.toLowerCase()
       );
-      const fromCatalog = catalog && row.kind === "claude-marketplace" && legion.wanted.has(plugin);
+      const fromCatalog =
+        catalog && row.kind === "claude-marketplace" && deployed.wanted.has(plugin);
       const fromImage = row.manifestRepository === deployment && row.unit.startsWith("image:");
-      if (
-        !(fromCatalog || fromImage) ||
-        row.copyPath === undefined ||
-        !Object.hasOwn(MEMBER_ACTIONS, row.action)
-      ) {
+      if (!(fromCatalog || fromImage) || !shipsMember(row)) {
         continue;
       }
       const via = {
@@ -5177,7 +5259,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       units.set(viaKey(via), {
         via,
         why: fromCatalog
-          ? `${LEGION_INSTALLS_RULE}: ${deployment}'s role setup installs ${plugin} of the catalog ${row.manifestRepository} (${legion.why})`
+          ? `${LEGION_INSTALLS_RULE}: ${deployment}'s role setup installs ${plugin} of the catalog ${row.manifestRepository} (${deployed.why})`
           : `${LEGION_INSTALLS_RULE}: ${deployment}:${row.manifestPath} at ${commits.get(deployment)} installs it in the worker image`,
       });
     }
@@ -5473,19 +5555,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         });
         continue;
       }
-      const text =
-        blob === undefined
-          ? ""
-          : !differs
-            ? "; its SKILL.md is the same, and Oh My Pi drops such a copy (NAMESPACE_RULE)"
-            : namespaced === undefined
-              ? "; its SKILL.md differs, and the namespace Oh My Pi would list it under is not known"
-              : `; its SKILL.md differs, and ${namespaced} is taken`;
+      let text = "";
+      if (differs) {
+        text =
+          namespaced === undefined
+            ? "; its SKILL.md differs, and the namespace Oh My Pi would list it under is not known"
+            : `; its SKILL.md differs, and ${namespaced} is taken`;
+      } else if (blob !== undefined) {
+        text = "; its SKILL.md is the same, and Oh My Pi drops such a copy (NAMESPACE_RULE)";
+      }
       evidence.push({
         item: `left out: skill ${offer.copy.name} from ${offer.copy.repo} ${offer.copy.path}`,
         source: `${offer.how} too; ${why}${text}`,
       });
-    } else if (pick !== offer && offer.namespace !== undefined) {
+    } else if (offer.namespace !== undefined) {
       again.push({ copy: offer.copy, how: offer.how, namespace: offer.namespace });
     }
   }
@@ -5496,7 +5579,6 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   // file too, and for a dev box the user-level context file Oh My Pi reads. A recorded prompt
   // already holds them as its session had them. `why` says why a user-level file is that one.
   const contextFiles: { repo: string; path: string; why?: string }[] = [];
-  const legion = input.context.startsWith("legion:");
   if (input.recordedPrompt) {
     evidence.push({
       item: "no context files",
@@ -5691,7 +5773,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --new <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> [--new <dir>] --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>] [--max-candidates <n>] [--max-search-minutes <m>]\n       build.ts build-tasks --config <skill-cuts.json> --copies <dir> --count <dir> --reprofile <tasks.jsonl> --profiles-out <new dir> [--context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--model <model>] [--profiles-out <dir> --copies <dir> --count <dir>]";
 
@@ -5984,6 +6066,17 @@ function listsSkill(
   return skills.some((each) => listedName(each) === skill);
 }
 
+/** How `sessionProfile` rebuilds a session's profile: as a context session (`asContext`, see
+ *  there), and, for a subagent, with its digest-times.sql row read by `digestRow` (by its path
+ *  hash; undefined when the store holds no file of it) where a caller reads the rows of many
+ *  sessions in one query, else by one query of its own. */
+interface SessionProfileOptions {
+  readonly asContext?:
+    | { readonly spawned: { readonly pathHash: string; readonly at: string } }
+    | { readonly unspawned: string };
+  readonly digestRow?: (pathHash: string) => Promise<DigestRow | undefined>;
+}
+
 /**
  * The load test's profile of the session whose transcript is `t` (read from the file
  * `transcriptPath` of `store`; its caller parsed it, `readTranscript`), rebuilt as build-cases
@@ -6006,10 +6099,9 @@ async function sessionProfile(
   transcriptPath: string,
   t: Transcript,
   skill: string,
-  asContext?:
-    | { readonly spawned: { readonly pathHash: string; readonly at: string } }
-    | { readonly unspawned: string }
+  options: SessionProfileOptions = {}
 ): Promise<SessionProfile> {
+  const { asContext } = options;
   const header = sessionHeader(t);
   if ("drop" in header) throw new Error(`${header.drop}: ${header.detail}`);
   const rebuilt = sessionContext(store, t, transcriptPath);
@@ -6021,8 +6113,11 @@ async function sessionProfile(
   let build: BuildWindow | undefined;
   if (init !== undefined) {
     const hash = pathHash(transcriptPath);
-    const rows = await digestRows(run.config.psqlCommand, store.name, [hash]);
-    readTime = parentLoad(rows.get(hash), header.sessionStart, store.name);
+    const row =
+      options.digestRow === undefined
+        ? (await digestRows(run.config.psqlCommand, store.name, [hash])).get(hash)
+        : await options.digestRow(hash);
+    readTime = parentLoad(row, header.sessionStart, store.name);
   } else if (asContext === undefined) {
     ({ read: readTime, window: build } = topBuild(
       digestLines(t),
@@ -6113,14 +6208,7 @@ async function sessionProfile(
       listed: listedNames(profiled),
       fromRecorded: profiled.fromRecorded,
       recorded: init?.systemPrompt,
-      sessionDigest:
-        t.branch.flatMap((entry) =>
-          entry.type === "custom" &&
-          entry.customType === "system-prompt-digest" &&
-          typeof entry.data === "string"
-            ? [entry.data]
-            : []
-        )[0] ?? null,
+      sessionDigest: t.branch.map(promptDigest).find((digest) => digest !== undefined) ?? null,
       ...(build === undefined ? {} : { build }),
     },
     // The copy listed under the tested skill's name: the recorded listing's line of it stands for
@@ -6302,9 +6390,10 @@ async function caseOf(
       lines.findLastIndex((line) => Date.parse(line.at) <= endAt) + 1,
       lines.length - 1
     );
-    const builds = new Set([from < 1 ? 0 : from]);
-    for (let index = Math.max(from, 1); index <= to; index += 1) builds.add(index);
-    reach = [...builds].map(
+    // Each build from the read's (the first for a read before every line) to the reach's last.
+    const builds = [from];
+    for (let index = from + 1; index <= to; index += 1) builds.push(index);
+    reach = builds.map(
       (index) =>
         topBuild(
           lines,
@@ -6543,13 +6632,7 @@ async function caseOf(
     );
   }
 
-  const digest = lastBefore(t.branch, stepItem.at, (entry) =>
-    entry.type === "custom" &&
-    entry.customType === "system-prompt-digest" &&
-    typeof entry.data === "string"
-      ? entry.data
-      : undefined
-  );
+  const digest = lastBefore(t.branch, stepItem.at, promptDigest);
   // The profile: from the reads before the step, read at the root's last prompt build before a
   // subagent's start (PARENT_LOAD_RULE), or at the build a top-level session's step ran under
   // (TOP_BUILD_RULE). Its GitHub reads were made for the reads the reader could reach, so they
@@ -6940,6 +7023,7 @@ async function reprofileCases(
   }
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
+  const measures: (ListingMeasure | undefined)[] = [];
   const leftOut: { id: string; why: string }[] = [];
   for (const c of cases) {
     const leave = (why: string) => {
@@ -7038,35 +7122,31 @@ async function reprofileCases(
     // known, so the old evidence of why it is left out stands in for the new one's.
     const why =
       !held && agents === undefined ? old.filter((each) => /AGENTS\.md$/.test(each.item)) : [];
+    const listing: ListingInput = {
+      listed: listedNames(profiled),
+      fromRecorded: profiled.fromRecorded,
+      recorded: c.profile.systemPrompt,
+      sessionDigest: c.sessionDigest,
+      ...(reading?.window === undefined ? {} : { build: reading.window }),
+    };
+    // Every case of a store the configuration names has its reading, a window with no recorded
+    // prompt and none with one.
+    const between = betweenOf(listing);
+    const read: SubagentRead = !held
+      ? {
+          unread:
+            "the store holds the session no longer (session-head.sql), so no subagent of it is read",
+        }
+      : between === undefined
+        ? unasked(listing)
+        : { found: subagents.get(store.name)?.get(betweenKey(c.source.pathHash, between)) };
     const evidence = [
       ...old.slice(0, profileStart < 0 ? old.length : profileStart),
       ...headless,
       ...profiled.evidence.flatMap((each) =>
         each.item === NO_WORKSPACE && why.length > 0 ? why : [each]
       ),
-      listingMeasure(
-        {
-          listed: listedNames(profiled),
-          fromRecorded: profiled.fromRecorded,
-          recorded: c.profile.systemPrompt,
-          sessionDigest: c.sessionDigest,
-          ...(reading?.window === undefined ? {} : { build: reading.window }),
-        },
-        !held
-          ? {
-              unread:
-                "the store holds the session no longer (session-head.sql), so no subagent of it is read",
-            }
-          : reading?.window === undefined
-            ? { unread: "it recorded its own listing, so no subagent of it is asked for" }
-            : "unknown" in reading.window
-              ? { unread: reading.window.unknown }
-              : {
-                  found: subagents
-                    .get(store.name)
-                    ?.get(betweenKey(c.source.pathHash, reading.window)),
-                }
-      ),
+      listingMeasure(listing, read),
       ...old.filter((each) => each.item.startsWith(AUDIT_EVIDENCE) || each.item === EXCLUDED_READS),
     ];
     const built = Case.parse({ ...c, profile: { ...c.profile, ...profiled.profile }, evidence });
@@ -7074,6 +7154,8 @@ async function reprofileCases(
     const names = (profile: Profile) => profile.skills.map((skill) => skill.name);
     const before = names(c.profile);
     const after = names(built.profile);
+    const measure = measureIn(built.evidence);
+    measures.push(measure);
     records.push({
       id: c.id,
       skills: after.length,
@@ -7082,7 +7164,7 @@ async function reprofileCases(
       removed: before.filter((name) => !after.includes(name)),
       plugins: built.profile.plugins.map((plugin) => plugin.name),
       contextFiles: built.profile.contextFiles.map((file) => `${file.repo} ${file.path}`),
-      listing: measureIn(built.evidence) ?? null,
+      listing: measure ?? null,
     });
     io.out(
       `build-cases: ${c.id}: profile of ${after.length} skills (${before.length} before), each in its repository at its commit\n`
@@ -7100,7 +7182,7 @@ async function reprofileCases(
       cases: records,
       leftOut,
       githubRetries: run.github.retries.record(),
-      listing: listingCounts(records.map((each) => ListingMeasure.safeParse(each.listing).data)),
+      listing: listingCounts(measures),
     })
   );
   // The file must load as the behaviour commands load it.
@@ -8003,16 +8085,17 @@ async function pulledTranscript(
 }
 
 /** The profile of the file `filePath` of `store`, pulled into `spool` (`pulledTranscript`) and
- *  rebuilt by `sessionProfile`. Throws, naming why, when the session gives none. */
+ *  rebuilt by `sessionProfile` with `options`. Throws, naming why, when the session gives none. */
 async function pulledProfile(
   run: ProfileRun,
   store: string,
   filePath: string,
   spool: string,
-  skill: string
+  skill: string,
+  options: SessionProfileOptions = {}
 ): Promise<SessionProfile> {
   const t = await pulledTranscript(run.config.psqlCommand, store, filePath, spool);
-  return sessionProfile(run, storeNamed(run.config, store), filePath, t, skill);
+  return sessionProfile(run, storeNamed(run.config, store), filePath, t, skill, options);
 }
 
 /** The context session of a run and its profile, the one each written task takes; its evidence
@@ -8020,7 +8103,6 @@ async function pulledProfile(
 interface ContextProfile {
   readonly store: string;
   readonly hash: string;
-  readonly pathHash: string;
   readonly built: SessionProfile;
 }
 
@@ -8059,28 +8141,23 @@ async function rebuiltContext(
   const { paths } = await resolvePaths(run.config.psqlCommand, store, [hash]);
   const filePath = paths.get(hash);
   if (filePath === undefined) return undefined;
+  const filePathHash = pathHash(filePath);
   const open = { from: null, to: null };
   let found: SubagentsFound | undefined;
   let unplaced: string | undefined;
   let built: SessionProfile;
   try {
     const listings = await subagentListings(run.config.psqlCommand, store, [
-      { hash: pathHash(filePath), ...open },
+      { hash: filePathHash, ...open },
     ]);
-    found = listings.get(betweenKey(pathHash(filePath), open));
+    found = listings.get(betweenKey(filePathHash, open));
     const listing = found?.listing;
     const placed = listing !== undefined && !Number.isNaN(Date.parse(listing.start ?? ""));
     if (listing !== undefined && !placed) {
       unplaced = `its earliest subagent whose recorded prompt holds a skill listing (${listing.pathHash}) records no start, so the build it was spawned under is not known (subagents.sql)`;
     }
-    const t = await pulledTranscript(run.config.psqlCommand, store, filePath, spool);
-    built = await sessionProfile(
-      run,
-      storeNamed(run.config, store),
-      filePath,
-      t,
-      skill,
-      placed
+    built = await pulledProfile(run, store, filePath, spool, skill, {
+      asContext: placed
         ? { spawned: { pathHash: listing.pathHash, at: listing.start ?? "" } }
         : {
             unspawned:
@@ -8088,8 +8165,8 @@ async function rebuiltContext(
               (found === undefined
                 ? "the store holds no subagent of it (subagents.sql, asked for those spawned at any time)"
                 : `none of its ${found.subagents} subagents records a skill listing (subagents.sql, asked for those spawned at any time)`),
-          }
-    );
+          },
+    });
   } catch (error) {
     throw new Error(`${named}: ${messageFor(error)}`);
   }
@@ -8102,7 +8179,7 @@ async function rebuiltContext(
   }
   const read: SubagentRead = unplaced === undefined ? { found } : { unread: unplaced };
   built.evidence.push(listingMeasure(built.listing, read));
-  return { store, hash, pathHash: pathHash(filePath), built: withRecordedListing(built, read) };
+  return { store, hash, built: withRecordedListing(built, read) };
 }
 
 /** A task line as build-tasks writes it, with the profile `--profiles-out` gives it. */
@@ -8133,8 +8210,9 @@ const OTHER_MODEL = "other-model";
  * (`pulledProfile`, pulled into `spool`), a written task the context session's. A task whose
  * profile cannot be rebuilt keeps no `profile`, and the record of it says why. A session task
  * whose profile does not list the skill (`listsSkill`) is dropped (`skill-not-listed`): it would
- * test nothing. Returns the tasks kept, the record of each task, and the sessions.sql queries it
- * made for the paths.
+ * test nothing. Returns the tasks kept, the record of each task, the store queries it made
+ * (sessions.sql for the paths, and subagents.sql for the listing measures, one a store) and the
+ * counts of the measures.
  */
 async function writeProfiles<T extends TaskLine>(
   plan: ProfilesPlan,
@@ -8202,17 +8280,8 @@ async function writeProfiles<T extends TaskLine>(
       ? []
       : [{ store: built.store, pathHash: built.pathHash, between }];
   });
-  const subagents = new Map<string, SubagentsFound>();
-  for (const store of new Set(measured.map((each) => each.store))) {
-    const ofStore = measured.filter((each) => each.store === store);
-    const found = await subagentListings(
-      plan.run.config.psqlCommand,
-      store,
-      ofStore.map((each) => ({ hash: each.pathHash, ...each.between }))
-    );
-    queries += 1;
-    for (const [key, each] of found) subagents.set(`${store}\0${key}`, each);
-  }
+  const subagents = await subagentsByStore(plan.run.config.psqlCommand, measured);
+  queries += subagents.queries;
   const measures: (ListingMeasure | undefined)[] = [];
   const notes: Record<string, unknown>[] = [];
   const out: T[] = [];
@@ -8237,11 +8306,7 @@ async function writeProfiles<T extends TaskLine>(
       );
       continue;
     }
-    const between = betweenOf(built.listing);
-    const read: SubagentRead =
-      between === undefined
-        ? unasked(built.listing)
-        : { found: subagents.get(`${built.store}\0${betweenKey(built.pathHash, between)}`) };
+    const read = subagentRead(subagents.found, built.store, built.pathHash, built.listing);
     // A written task's profile is the context session's, which keeps its listing already.
     const listed = task.source === "written" ? built : withRecordedListing(built, read);
     const file = path.resolve(plan.dir, `${task.id}.json`);
@@ -8265,8 +8330,9 @@ async function writeProfiles<T extends TaskLine>(
 }
 
 /** What a summary records of a run's profiles: where they are, the context session (with the
- *  evidence of its profile), each task's, the sessions.sql queries for their paths, and the
- *  GitHub reads sent again after a transient failure, by reason. */
+ *  evidence of its profile), each task's, the store queries `writeProfiles` made (sessions.sql for
+ *  the paths, subagents.sql for the listing measures), the measures' counts, and the GitHub reads
+ *  sent again after a transient failure, by reason. */
 function profilesRecord(
   plan: ProfilesPlan,
   context: ContextProfile | undefined,
@@ -8280,7 +8346,7 @@ function profilesRecord(
         : {
             store: context.store,
             hash: context.hash,
-            pathHash: context.pathHash,
+            pathHash: context.built.pathHash,
             context: context.built.profile.context,
             secretsRemoved: context.built.secretsRemoved,
             evidence: context.built.evidence,
@@ -8766,14 +8832,16 @@ function tasksToReprofile(file: string): Task[] {
  * `--profiles-out` builds one now, with no candidate search and no reader call, so the tasks a
  * bounded search chose stay as it chose them. A session task's session is found in its store by
  * its path hash (session-paths.sql, one query a store) and pulled as the search pulls it
- * (`pulledProfile`); a written task takes the profile of `--context-session`, else of the context
- * session the tasks file's summary names (`rebuiltContext`). A task whose session its store holds
- * no longer keeps its old profile, and its evidence says so (NO_SESSION). A session task whose
- * rebuilt context no longer lists the skill is left out and named, and the command fails (exit
- * 1); a store read, a pull or a rebuild that fails fails it before anything is written. Writes
- * each profile to `<dir>/<task id>.json`, the tasks to `<dir>/tasks.jsonl`, each `profile` naming
- * its new file, and `<dir>/tasks.jsonl.summary.json`: per task, whether the profile's bytes
- * changed and the evidence items added and removed against the old summary's.
+ * (`pulledProfile`), the prompt builds of the roots of those whose old profile records a prompt (a
+ * subagent's) read in one digest-times.sql query a store; a written task takes the profile of
+ * `--context-session`, else of the context session the tasks file's summary names
+ * (`rebuiltContext`). A task whose session its store holds no longer keeps its old profile, and
+ * its evidence says so (NO_SESSION). A session task whose rebuilt context no longer lists the
+ * skill is left out and named, and the command fails (exit 1); a store read, a pull or a rebuild
+ * that fails fails it before anything is written. Writes each profile to `<dir>/<task id>.json`,
+ * the tasks to `<dir>/tasks.jsonl`, each `profile` naming its new file, and
+ * `<dir>/tasks.jsonl.summary.json`: per task, whether the profile's bytes changed and the
+ * evidence items added and removed against the old summary's.
  */
 async function reprofileTasks(
   values: Readonly<Record<string, string | boolean | string[] | undefined>>,
@@ -8881,6 +8949,30 @@ async function reprofileTasks(
     sessionQueries += resolved.queries;
     for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
   }
+  // A subagent's profile is read at its root's prompt builds (PARENT_LOAD_RULE): the
+  // digest-times.sql rows of the session tasks whose old profile records a system prompt (a
+  // subagent's) are read in one query a store, sent as the first of them is rebuilt; any other
+  // session that needs its row is asked alone (`sessionProfile`).
+  const promptHashes = new Map<string, string[]>();
+  for (const task of sessionTasks) {
+    const profile = parseJson(old.get(task.id)?.text ?? "");
+    if (!paths.has(`${task.store}\0${task.pathHash}`)) continue;
+    if (!isObject(profile) || profile.systemPrompt === undefined) continue;
+    promptHashes.set(task.store, [...(promptHashes.get(task.store) ?? []), task.pathHash]);
+  }
+  const digestBatches = new Map<string, Promise<Map<string, DigestRow>>>();
+  const digestRowOf = (store: string) => async (hash: string) => {
+    const batch = promptHashes.get(store) ?? [];
+    if (!batch.includes(hash)) {
+      return (await digestRows(config.psqlCommand, store, [hash])).get(hash);
+    }
+    let rows = digestBatches.get(store);
+    if (rows === undefined) {
+      rows = digestRows(config.psqlCommand, store, batch);
+      digestBatches.set(store, rows);
+    }
+    return (await rows).get(hash);
+  };
   // Each session task's profile built again (`pulledProfile`), or why the task is left out: a
   // profile load would refuse is not written, nor one whose context no longer lists the skill.
   const pulled = new Map<string, SessionProfile | { readonly leftOut: string }>();
@@ -8889,7 +8981,9 @@ async function reprofileTasks(
     if (filePath === undefined) continue;
     let built: SessionProfile;
     try {
-      built = await pulledProfile(run, task.store, filePath, spool, skill);
+      built = await pulledProfile(run, task.store, filePath, spool, skill, {
+        digestRow: digestRowOf(task.store),
+      });
     } catch (error) {
       if (error instanceof ProfileRefused) {
         pulled.set(task.id, { leftOut: error.message });
@@ -8918,18 +9012,8 @@ async function reprofileTasks(
       built === undefined || "leftOut" in built ? undefined : betweenOf(built.listing);
     return between === undefined ? [] : [{ store: task.store, pathHash: task.pathHash, between }];
   });
-  const subagents = new Map<string, SubagentsFound>();
-  for (const store of new Set(measured.map((each) => each.store))) {
-    const found = await subagentListings(
-      config.psqlCommand,
-      store,
-      measured
-        .filter((each) => each.store === store)
-        .map((each) => ({ hash: each.pathHash, ...each.between }))
-    );
-    sessionQueries += 1;
-    for (const [key, each] of found) subagents.set(`${store}\0${key}`, each);
-  }
+  const subagents = await subagentsByStore(config.psqlCommand, measured);
+  sessionQueries += subagents.queries;
   /** The measure of a task that keeps its old profile `text`: not measurable, for `why`, listing
    *  the profile's skills (KeptSkills), each under the name Oh My Pi lists it by (`listedName`). */
   const keptMeasure = (text: string | undefined, why: string) => {
@@ -8977,11 +9061,7 @@ async function reprofileTasks(
           io.err(`build-tasks: ${task.id}: left out: ${why}`);
           continue;
         }
-        const between = betweenOf(built.listing);
-        const read: SubagentRead =
-          between === undefined
-            ? unasked(built.listing)
-            : { found: subagents.get(`${task.store}\0${betweenKey(task.pathHash, between)}`) };
+        const read = subagentRead(subagents.found, task.store, task.pathHash, built.listing);
         rebuilt = {
           text: json(withRecordedListing(built, read).profile),
           evidence: withMeasure(built.evidence, listingMeasure(built.listing, read)),
@@ -9043,7 +9123,7 @@ async function reprofileTasks(
             ? null
             : {
                 ...contextSession,
-                pathHash: context?.pathHash ?? null,
+                pathHash: context?.built.pathHash ?? null,
                 context: context?.built.profile.context ?? null,
                 secretsRemoved: context?.built.secretsRemoved ?? null,
                 evidence: context?.built.evidence ?? [

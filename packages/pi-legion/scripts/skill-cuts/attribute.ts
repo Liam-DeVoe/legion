@@ -39,8 +39,8 @@
  *   the file whose hash sorts first, over every query of the store, by the rule count.sql applies
  *   inside one query (`countOnce`), since a fork written on another mtime day than its parent is
  *   in another query; a file stays in a row when one of its keys there counts in it. A count
- *   whose rows have no `calls` (made by an earlier count.sql) is refused. A `read` row counts in
- *   `sessions`, and a `reference` row (a read of `skill://<name>/<other>` or of
+ *   whose rows have no `calls` (made by an earlier count.sql) fails the command (exit 1). A `read`
+ *   row counts in `sessions`, and a `reference` row (a read of `skill://<name>/<other>` or of
  *   `<name>/references/...`) in `reference_sessions`. A call that has no result in its file is
  *   not a read: the report counts such sessions per store, and no copy counts them.
  *   The copy of a count row is decided in this order:

@@ -941,7 +941,7 @@ export function joinPath(...parts: string[]): string {
 }
 
 /** A path's directory, `""` for the root. */
-function dirOf(file: string): string {
+export function dirOf(file: string): string {
   const dir = path.posix.dirname(file);
   return dir === "." ? "" : dir;
 }

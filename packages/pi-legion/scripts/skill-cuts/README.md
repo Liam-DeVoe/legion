@@ -295,8 +295,8 @@ file's model, read from the first 256 Ki characters of the file, as one row per 
 Each count row also names, for each file, the keys of the reads that put it in the row (`calls`,
 and `unpaired_calls` for calls with no result). A key is md5 of the call's id, a space and the
 call line's UTC timestamp to the microsecond, cut to 16 hex characters. Inside one query, a key
-that two files hold counts in the file whose path hash sorts first, and `shared_call_ids` counts
-such keys.
+that two files hold counts in the file whose file hash (md5 of its path, 16 hex characters) sorts
+first in byte order, and `shared_call_ids` counts such keys.
 
 ### `load`
 
@@ -582,12 +582,13 @@ package under `node_modules/`, a plugin under `plugins/cache/`) is a checkout on
 the copy's own directories name, and a read inside an `ensure_vendor` clone that no prefix row
 maps goes to no copy by the context rule either: it is unattributed.
 A read that two files of a store hold (the same call id and timestamp: a forked session copies
-its parent's lines) counts in one of them, the file whose path hash sorts first, whichever queries
-hold the two, since a fork written on another mtime day than its parent is in another query. A
-file stays a session of a skill when one of its reads of it counts in it. `build-cases` reads the
-count by the same rule. A count made by an earlier `count.sql`, whose rows have no `calls`, is
-refused. The report's store table gives the call ids two files of one query hold, the call ids
-files of two queries hold, and the pairs of files of two queries that hold one.
+its parent's lines) counts in one of them, the file whose file hash (md5 of its path, 16 hex
+characters) sorts first in byte order, whichever queries hold the two, since a fork written on
+another mtime day than its parent is in another query. A file stays a session of a skill when
+one of its reads of it counts in it. `build-cases` reads the count by the same rule. A count made
+by an earlier `count.sql`, whose rows have no `calls`, fails the command (exit 1). The report's
+store table gives the call ids two files of one query hold, the call ids files of two queries
+hold, and the pairs of files of two queries that hold one.
 
 ### `build-cases` and `build-tasks`
 
@@ -1036,7 +1037,8 @@ digest, and the build makes no prompt, so `rebuiltDigest` is always null; it is 
 the recorded listing of a subagent it started under the build its profile is read at (`subagent
 listing`: the earliest one-level child of its directory whose `session_init` holds a listing and
 whose header's time falls between that build's line and the next, or before the second line for
-the first build; read with `subagents.sql`, one query a store, since Oh My Pi gives a subagent its
+the first build; read with `subagents.sql`, one query a session as `build-cases` pulls it and one
+a store for `--reprofile` and `build-tasks --profiles-out`, since Oh My Pi gives a subagent its
 parent's skills: task/structured-subagent.ts, lines 811-818 and 900; task/executor.ts, lines
 662-666 and 5256), else it is `not measurable`, with why: a subagent spawned under another build
 is never used. The measure says the store holds no such subagent only after `subagents.sql` was

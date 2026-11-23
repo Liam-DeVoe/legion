@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { SQL } from "bun";
 import { z } from "zod";
-import { attribute, parseQueryOutput, type R4Tables } from "./attribute";
+import { attribute, parseQueryOutput, type QueryOutput, type R4Tables } from "./attribute";
 import { pullTranscript } from "./build";
+import { pathHash } from "./cases";
 import { loadConfig } from "./config";
 import {
   countSql,
@@ -230,7 +231,7 @@ describe("countsql.ts fills the SQL", () => {
   });
 
   test("session-head.sql is filled with the path hashes, each a SHA-256 in hex, and refuses any other", () => {
-    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const hash = pathHash("made-up/a.jsonl");
     const sql = sessionHeadSql([hash]);
     expect(sql).toStartWith("SET LOCAL statement_timeout = '15min';");
     expect(sql).toContain(`= ANY (ARRAY['${hash}']::text[])`);
@@ -242,7 +243,7 @@ describe("countsql.ts fills the SQL", () => {
   });
 
   test("session-paths.sql is filled with the path hashes, each a SHA-256 in lowercase hex, and refuses any other", () => {
-    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const hash = pathHash("made-up/a.jsonl");
     const sql = sessionPathsSql([hash]);
     expect(sql).toContain(`WHERE h.hash = ANY (ARRAY['${hash}']::text[])`);
     expect(sql).not.toContain("{{");
@@ -254,7 +255,7 @@ describe("countsql.ts fills the SQL", () => {
   });
 
   test("subagents.sql is filled with each session's path hash and the times its subagent's start falls between, as one JSON array, and refuses a hash or a time of any other form", () => {
-    const hash = createHash("sha256").update("made-up/a.jsonl").digest("hex");
+    const hash = pathHash("made-up/a.jsonl");
     const sql = subagentsSql([
       { hash, from: "2026-11-20T01:59:48.959Z", to: null },
       { hash, from: null, to: null },
@@ -279,7 +280,7 @@ describe("countsql.ts fills the SQL", () => {
   });
 
   test("digest-times.sql is filled with the sessions' path hashes, each a SHA-256 in lowercase hex, and refuses any other", () => {
-    const hash = createHash("sha256").update("made-up/a/b.jsonl").digest("hex");
+    const hash = pathHash("made-up/a/b.jsonl");
     const sql = digestTimesSql([hash]);
     expect(sql).toStartWith("SET LOCAL statement_timeout = '15min';");
     expect(sql).toContain(`SELECT DISTINCT unnest(ARRAY['${hash}']::text[]) AS hash`);
@@ -898,9 +899,21 @@ describe.skipIf(serverDsn === undefined)(
       ]);
     });
 
-    /** count.sql's output on the fork database for the mtime day `day`, read by attribute.ts. */
-    const forkQuery = (day: string) =>
-      parseQueryOutput("store_a", day, output(names.fork, countSql(CONFIG, "store_a", day)));
+    /** count.sql's output on the fork database for the mtime day `day`, read by attribute.ts: one
+     *  query a day, kept, since no test changes the database. */
+    const forkQueries = new Map<string, QueryOutput>();
+    const forkQuery = (day: string) => {
+      let read = forkQueries.get(day);
+      if (read === undefined) {
+        read = parseQueryOutput(
+          "store_a",
+          day,
+          output(names.fork, countSql(CONFIG, "store_a", day))
+        );
+        forkQueries.set(day, read);
+      }
+      return read;
+    };
     /** attribute.ts's count of the fork database's queries of the mtime days `days`. */
     const forkCount = (...days: string[]) => attribute(CONFIG, days.map(forkQuery), NO_COPIES);
 
@@ -1025,6 +1038,10 @@ describe.skipIf(serverDsn === undefined)(
       });
     });
 
+    /** The path hash of the fixture file `file` (cases.ts's `pathHash`), as the databases store
+     *  its path. */
+    const hashOf = (file: string) => pathHash(storedPath(file));
+
     /** What session-head.sql must give for `file`: its header's cwd and start, its first user
      *  message's timestamp and attribution, and its journaled reminders, read from the fixture. */
     const headOf = (file: string) => {
@@ -1036,7 +1053,7 @@ describe.skipIf(serverDsn === undefined)(
       const header = lines.find((line) => line.type === "session");
       const user = lines.find((line) => line.type === "message" && line.message?.role === "user");
       return {
-        hash: createHash("sha256").update(storedPath(file)).digest("hex"),
+        hash: hashOf(file),
         cwd: header.cwd,
         start: header.timestamp,
         first_user: {
@@ -1064,7 +1081,7 @@ describe.skipIf(serverDsn === undefined)(
         `user:${session.first_user.timestamp}:${session.first_user.attribution}`
       );
       expect(subagent.first_user.attribution).toBe("agent");
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const rows = run(names.first, sessionHeadSql([session.hash, subagent.hash, missing]));
       expect(rows).toEqual([session, subagent].toSorted((a, b) => (a.hash < b.hash ? -1 : 1)));
       // F1's session cut into three parts inside one line: the head is joined whole.
@@ -1076,23 +1093,22 @@ describe.skipIf(serverDsn === undefined)(
     test("session-paths.sql: the path of each file of a path hash, in path order; no row for a hash the store does not hold", () => {
       const files = [F4_SESSION, F1_SUBAGENT, F1_SESSION].map((file) => ({
         path: storedPath(file),
-        hash: createHash("sha256").update(storedPath(file)).digest("hex"),
+        hash: hashOf(file),
       }));
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const rows = run(names.first, sessionPathsSql([...files.map((each) => each.hash), missing]));
       expect(rows).toEqual(files.toSorted((a, b) => (a.path < b.path ? -1 : 1)));
       expect(run(names.first, sessionPathsSql([missing]))).toEqual([]);
     });
 
     test("subagents.sql: of a session's subagents one level below its directory, the earliest with a recorded skill listing whose start falls between the times, its session_init line whole, or none; the counts; no row for a session with no subagent, or a hash the store does not hold", () => {
-      const hashOf = (file: string) => createHash("sha256").update(storedPath(file)).digest("hex");
       const lines = readFileSync(F1_SUBAGENT, "utf8").split("\n");
       const header = JSON.parse(lines.find((line) => line.includes('"type":"session"')) ?? "{}");
       const init = lines.find((line) => line.startsWith('{"type":"session_init"'));
       expect(init).toContain("<skills>");
       const start = header.timestamp as string;
       const before = new Date(Date.parse(start) - 1).toISOString();
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const session = hashOf(F1_SESSION);
       const found = { hash: hashOf(F1_SUBAGENT), start, init, subagents: 1, recorded: 1, under: 1 };
       const none = { hash: null, start: null, init: null, subagents: 1, recorded: 1, under: 0 };
@@ -1121,7 +1137,6 @@ describe.skipIf(serverDsn === undefined)(
     });
 
     test("digest-times.sql: for a subagent, its root (the file its topmost <…>Z_<id> directory stands for), and for a top-level session itself, with the time and digest of each of the root's system-prompt-digest lines, a line the file row and its first part split read whole; no row for a hash the store does not hold", async () => {
-      const hashOf = (file: string) => createHash("sha256").update(storedPath(file)).digest("hex");
       // F1's session's own digest lines, read as Oh My Pi wrote them.
       const digests = readFileSync(F1_SESSION, "utf8")
         .split("\n")
@@ -1131,7 +1146,7 @@ describe.skipIf(serverDsn === undefined)(
           return { at: entry.timestamp as string, digest: entry.data as string };
         });
       expect(digests.length).toBeGreaterThan(0);
-      const missing = createHash("sha256").update("made-up/missing.jsonl").digest("hex");
+      const missing = pathHash("made-up/missing.jsonl");
       const session = hashOf(F1_SESSION);
       const subagent = hashOf(F1_SUBAGENT);
       expect(run(names.first, digestTimesSql([subagent, session, missing]))).toEqual(
@@ -1180,7 +1195,7 @@ describe.skipIf(serverDsn === undefined)(
       const ROOT = "made-up/2026-11-01T10-00-00-000Z_0a0b0c0d-0000-4000-8000-000000000001.jsonl";
       const at = "2026-11-01T10:00:01.000Z";
       const line = `{"type":"custom","customType":"system-prompt-digest","data":"d1","id":"a1","parentId":null,"timestamp":"${at}"}\n`;
-      const root = createHash("sha256").update(ROOT).digest("hex");
+      const root = pathHash(ROOT);
       const name = `skill_cuts_count_${stamp}_digest_big`;
       const server = new SQL(serverDsn ?? "");
       try {
