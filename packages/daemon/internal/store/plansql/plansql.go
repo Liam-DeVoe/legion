@@ -2,7 +2,7 @@
 // issue's generation: the role of the step its task stands at (record.Issue.StepRole) and the role
 // of the claim that works its task's place (record.Issue.PlaceRole). The record's read of an issue
 // (record's issueColumns), the idle view of its pod (store's readIdleView) and the cancel of its
-// pod's release while the project is paused (store's ReleaseCancelPause.openRoleOf) all select
+// pod's release while the project is paused (store's ReleaseCancelPause.backstopTargetOf) all select
 // them, so the reads give one answer. It is a package of its own, under internal/store, because
 // store and record import neither each other, and it imports nothing, so both can.
 //

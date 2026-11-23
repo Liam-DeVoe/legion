@@ -32,14 +32,14 @@ func servingReleasedClaim(t *testing.T, st *Store, role claim.Role) {
 	}
 }
 
-// implementingWorker is the worker of the issue's place as workflow.OpenRoleAt names it for the
-// places these tests use, where no plan rows give a role: the implementer while the issue
-// implements, and nobody otherwise.
-func implementingWorker(p phase.Phase, _, _ claim.Role) claim.Role {
+// implementingWorker is the claim a backstop is armed for as workflow.BackstopTargetAt names it for
+// the places these tests use, where no plan rows give a role: the implementer serving the issue's
+// run while the issue implements, and nobody otherwise.
+func implementingWorker(_, _ string, p phase.Phase, _, _ claim.Role) (claim.Role, claim.Token) {
 	if p == phase.Implementing {
-		return claim.RoleImplementer
+		return claim.RoleImplementer, ""
 	}
-	return ""
+	return "", ""
 }
 
 // endPause ends pause at at as the operator, as the resume's transaction writes the end.
@@ -207,7 +207,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			at := pausedAt.Add(time.Minute)
 
 			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenRole: implementingWorker})
+				ReleaseCancelPause{At: at, Backstop: time.Hour, BackstopTarget: implementingWorker})
 			if err != nil {
 				t.Fatalf("cancel the release while paused: %v", err)
 			}
@@ -286,7 +286,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 	}
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", otherIssue, resume, record.OutOfWorkflow,
-		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenRole: implementingWorker})
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, BackstopTarget: implementingWorker})
 	if err != nil {
 		t.Fatalf("cancel the release of %s while LEGION is paused: %v", otherIssue, err)
 	}
@@ -315,7 +315,7 @@ func TestAReleaseCancelWithNoMomentIsRefused(t *testing.T) {
 	pauseLegion(t, st, pausedAt)
 
 	_, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, resumeRow, record.OutOfWorkflow,
-		ReleaseCancelPause{Backstop: time.Hour, OpenRole: implementingWorker})
+		ReleaseCancelPause{Backstop: time.Hour, BackstopTarget: implementingWorker})
 	if err == nil || !strings.Contains(err.Error(), "ReleaseCancelPause.At") {
 		t.Fatalf("a cancel with no moment = %v, want it refused naming ReleaseCancelPause.At", err)
 	}

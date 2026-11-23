@@ -3960,12 +3960,13 @@ func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold wor
 
 // releaseCancelPause is the paused half of every cancel of a release the outbox makes
 // (store.ReleaseCancelPause): the moment at the stops are stamped with, the idle release's
-// backstop, and the workflow's rule of which role works the place an issue's task stands at,
-// read from the issue's phase and the two roles its plan rows give it (workflow.OpenRoleAt), so a
+// backstop, and the workflow's rule of which claim a backstop is armed for, read from the issue's
+// key, project and phase and the two roles its plan rows give it (workflow.BackstopTargetAt), so a
 // paused cancel arms the backstop the stop transaction arms (projectPause.stopTx, which reads
-// workflow.OpenRoleOf of the issue's record).
+// workflow.BackstopClaim of the issue's record): the owner's at its own place, and elsewhere the
+// worker's of the place.
 func releaseCancelPause(at time.Time, backstop time.Duration) store.ReleaseCancelPause {
-	return store.ReleaseCancelPause{At: at, Backstop: backstop, OpenRole: workflow.OpenRoleAt}
+	return store.ReleaseCancelPause{At: at, Backstop: backstop, BackstopTarget: workflow.BackstopTargetAt}
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the

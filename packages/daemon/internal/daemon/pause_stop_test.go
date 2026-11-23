@@ -386,22 +386,37 @@ func seedPauseRigPlan(t *testing.T, r *pauseRig, words string, types []stepplan.
 // pauseStopPlaces are the places TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace and
 // TestACancelWhilePausedArmsTheBackstopOfTheRoleThatWorksThePlace stand LEGION-208 at: the plan of
 // its one task, the step its task runs at and the phase that step runs as, the role whose released
-// claim is stopped there, and whether that role works the place and so gets a backstop.
+// claim is stopped there and the run that claim serves, and whether the claim is the one that
+// works the place and so gets a backstop. The owner's claim serves no run, as a child's architect
+// started with no task serves none: an architect is told its steps by notices, which no delivery
+// of a run carries.
 var pauseStopPlaces = []struct {
-	name   string
-	steps  string
-	types  []stepplan.Type
-	at     int
-	stands phase.Phase
-	role   claim.Role
-	armed  bool
+	name    string
+	steps   string
+	types   []stepplan.Type
+	at      int
+	stands  phase.Phase
+	role    claim.Role
+	serving uint64
+	armed   bool
 }{
 	{"the fresh agent of acceptance at accepting", "implementer acceptance", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeReview}, 2,
-		phase.Accepting, claim.RoleAcceptance, true},
+		phase.Accepting, claim.RoleAcceptance, 1, true},
 	{"a role of the deployment at step", "implementer checker", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeTesting}, 2,
-		phase.Step, "checker", true},
+		phase.Step, "checker", 1, true},
 	{"the implementer at the owner's implementer step", "implementer:owner tester", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeTesting}, 1,
-		phase.Implementing, claim.RoleImplementer, false},
+		phase.Implementing, claim.RoleImplementer, 1, false},
+	{"the owner at its own implementer step", "implementer:owner tester", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeTesting}, 1,
+		phase.Implementing, claim.RoleArchitect, 0, true},
+	{"the owner at its own acceptance", "implementer acceptance:owner", []stepplan.Type{stepplan.TypeImplementation, stepplan.TypeReview}, 2,
+		phase.Accepting, claim.RoleArchitect, 0, false},
+}
+
+// releasedAt is role's claim of LEGION-208 as a release left it, serving the run serving.
+func (r *pauseRig) releasedAt(role claim.Role, serving uint64) supervise.Claim {
+	c := r.claim(role, supervise.StateSuspended)
+	c.ServingGeneration = serving
+	return c
 }
 
 // wantBackstopOf fails unless LEGION-208 has exactly one backstop, of role, where armed, and none
@@ -420,13 +435,14 @@ func (r *pauseRig) wantBackstopOf(role claim.Role, armed bool) {
 	}
 }
 
-// A pause's stop of a released claim arms the backstop of the role that works the issue's place,
-// the role workflow.OpenRoleOf names from the issue and its plan rows, and of no other role: the
-// fresh agent of a step `acceptance` with no key, at accepting, and a role the deployment defines,
-// at step, each get one; at the owner's implementer step of `implementer:owner tester` the
-// implementer gets none, since no worker works that step and the owner, an architect, gets no
-// backstop. The control is the role read from the phase alone, which names nobody at accepting or
-// at step, and the implementer at implementing.
+// A pause's stop of a released claim arms the backstop of the claim that works the issue's place
+// (workflow.BackstopClaim), and of no other: the fresh agent of a step `acceptance` with no key,
+// at accepting, and a role the deployment defines, at step, each get one, as the worker of the
+// place serving the issue's run; at the owner's implementer step of `implementer:owner tester` the
+// implementer gets none, since no worker works that step, and the owner gets one, whatever run its
+// claim served last, since that step is its own work and may wait on something no CI settlement
+// reports. The control is the role read from the phase alone, which names nobody at accepting or
+// at step, the implementer at implementing, and never the owner.
 func TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
 	for _, tc := range pauseStopPlaces {
 		t.Run(tc.name, func(t *testing.T) {
@@ -434,7 +450,7 @@ func TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
 			seedPauseRigPlan(t, r, tc.steps, tc.types, tc.at, tc.stands)
 			held := r.pauseLegion()
 
-			r.mustStop(r.claim(tc.role, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
+			r.mustStop(r.releasedAt(tc.role, tc.serving), supervise.PauseStop{Pause: held.ID})
 
 			r.wantBackstopOf(tc.role, tc.armed)
 		})
@@ -442,7 +458,7 @@ func TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.T) {
 }
 
 // A cancel of a release made while the project is paused records the claim the release had
-// stopped as stopped by the pause, and arms the backstop the stop transaction arms, of the role
+// stopped as stopped by the pause, and arms the backstop the stop transaction arms, of the claim
 // that works the issue's place and no other (TestAPauseStopArmsTheBackstopOfTheRoleThatWorksThePlace),
 // with what the outbox's cancel gives the store (releaseCancelPause). The control is the stop's:
 // the role read from the phase alone.
@@ -450,7 +466,7 @@ func TestACancelWhilePausedArmsTheBackstopOfTheRoleThatWorksThePlace(t *testing.
 	for _, tc := range pauseStopPlaces {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newPauseRig(t)
-			if err := r.st.PutClaim(r.ctx, r.claim(tc.role, supervise.StateSuspended)); err != nil {
+			if err := r.st.PutClaim(r.ctx, r.releasedAt(tc.role, tc.serving)); err != nil {
 				t.Fatalf("seed the released %s: %v", tc.role, err)
 			}
 			seedPauseRigPlan(t, r, tc.steps, tc.types, tc.at, tc.stands)

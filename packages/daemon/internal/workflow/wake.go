@@ -406,20 +406,49 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 }
 
 // BackstopClaim says whether released, a claim a release of issue's pod left released, is the one
-// that release arms the backstop for (R5; the daemon's armBackstops): at the owner's own place
-// (record.Issue.OwnersPlace: a step of the key owner, the owner's retro, and accepting on an issue
-// with no plan rows) the owner, the issue's own architect by rule (record.OwnerClaim), matched by
-// its token whatever run its claim served last, since an architect is told its steps by notices,
-// which no delivery of a run carries; at any other place the worker of the open phase
-// (OpenRoleOf) serving the issue's run. podBackstopDue wakes the same claim when the backstop
-// comes due.
+// a backstop is armed for, by every path that arms one (R5): the release (the daemon's
+// armBackstops), a pause's stop of a released claim (the daemon's projectPause.stopTx) and a cancel
+// of a release while the project is paused (store.ReleaseCancelPause.BackstopTarget, through
+// BackstopTargetAt). It is the claim BackstopTarget names. podBackstopDue wakes the same claim when
+// the backstop comes due.
 func BackstopClaim(issue record.Issue, released supervise.Claim) bool {
-	if issue.OwnersPlace() {
-		owner, err := record.OwnerClaim(issue)
-		return err == nil && released.Token == owner
+	role, owner := BackstopTarget(issue)
+	if role == "" || released.Role != role {
+		return false
 	}
-	open := OpenRoleOf(issue)
-	return open != "" && released.Role == open && released.ServingGeneration == issue.Generation
+	if owner != "" {
+		return released.Token == owner
+	}
+	return released.ServingGeneration == issue.Generation
+}
+
+// BackstopTarget is the claim a backstop of issue's pod is armed for, as its role and, where one
+// claim is meant whatever run it served last, its token: where the owner works its place alone
+// (ownerAlone: a step of the key owner or the owner's retro, and never its acceptance) the
+// architect and the owner's token, the issue's own architect by rule (record.OwnerClaim), since an
+// architect is told its steps by notices, which no delivery of a run carries, and the step may
+// wait on something no CI settlement reports; at any other place the worker of the open phase
+// (OpenRoleOf) and no token, for that role's claim serving the issue's run; and no role where none
+// is armed. The owner's acceptance arms none: a parent or a root waits there while its children
+// run, and their notices wake it, so a backstop there would wake it for nothing at every release.
+func BackstopTarget(issue record.Issue) (claim.Role, claim.Token) {
+	if ownerAlone(issue) {
+		owner, err := record.OwnerClaim(issue)
+		if err != nil {
+			return "", ""
+		}
+		return claim.RoleArchitect, owner
+	}
+	return OpenRoleOf(issue), ""
+}
+
+// BackstopTargetAt is BackstopTarget of an issue its reader holds as its key, its project, its
+// phase and the two roles its plan rows give it (record.Issue.StepRole, record.Issue.PlaceRole),
+// not as a record of the issue: the cancel of a release while the project is paused
+// (store.ReleaseCancelPause.BackstopTarget), which reads the two roles with the store's own SQL
+// (store/plansql).
+func BackstopTargetAt(key, project string, p phase.Phase, stepRole, placeRole claim.Role) (claim.Role, claim.Token) {
+	return BackstopTarget(record.Issue{Key: key, Project: project, Phase: p, StepRole: stepRole, PlaceRole: placeRole})
 }
 
 // wakeReleased is the one act every wake of this file performs, and the one place the gates are
@@ -502,8 +531,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 
 // OpenRoleAt is OpenRoleOf of an issue its reader holds as its phase and the two roles its plan rows
 // give it (record.Issue.StepRole, record.Issue.PlaceRole), not as a record of the issue: the idle
-// view of a pod (idlePhaseOpen), and the cancel of a release while the project is paused
-// (store.ReleaseCancelPause.OpenRole), each of which reads the two roles with the store's own SQL
+// view of a pod (idlePhaseOpen), which reads the two roles with the store's own SQL
 // (store/plansql).
 func OpenRoleAt(p phase.Phase, stepRole, placeRole claim.Role) claim.Role {
 	return OpenRoleOf(record.Issue{Phase: p, StepRole: stepRole, PlaceRole: placeRole})
@@ -519,11 +547,10 @@ func OpenRoleAt(p phase.Phase, stepRole, placeRole claim.Role) claim.Role {
 // claim is sent its phase's task (readyWorkerTask), which suspended claim the boot resumes
 // (suspendedPhaseOwners), which claim the silence repair prompts (phaseWorkerRecord), which role a
 // CI settlement wakes off the owner's place (wakeOnSettlement, which wakes the owner at its own),
-// which role a release arms a backstop for off the owner's place (BackstopClaim, which the
-// daemon's armBackstops asks, and which at the owner's own place arms the owner's backstop), and
-// which role a pause's stop of a released claim and a cancel of a release while the project is
-// paused arm one for (projectPause.stopTx, and OpenRoleAt for the cancel), which arm no
-// architect's. An architect off its own place gets none: nothing of its own is due, and a
+// and which role a release, a pause's stop of a released claim and a cancel of a release while the
+// project is paused arm a backstop for off the owner's place (BackstopClaim, which the three paths
+// ask, and which arms the owner's backstop where it works its place alone) — an architect gets none
+// there, because nothing of its own is due and a
 // sub-architect woken for nothing would hold a pod open for the backstop period. A held issue
 // stands in held, which no role works, so none of those paths gives its worker anything until a
 // release of the hold gives the phase back.
