@@ -197,27 +197,39 @@ func (p *Process) WaitExit(t testing.TB, after string) {
 }
 
 // WaitForOutput waits through the shared wait for each of lines to appear in the process's
-// output, and fails the test at once when the process exits before one has.
+// output, and fails the test at once when the process exits before one has. That failure is
+// WaitForOutput's own, so it names the caller's line: the read inside the wait only reports the
+// exit, since a t.Fatalf inside it would name this file instead.
 func (p *Process) WaitForOutput(t testing.TB, lines ...string) {
 	t.Helper()
 	for _, line := range lines {
-		testwait.Until(t, fmt.Sprintf("%s to log %q", p.name, line), func() (string, bool) {
+		read := testwait.Until(t, fmt.Sprintf("%s to log %q", p.name, line), func() (outputRead, bool) {
 			output := p.Output.String()
 			if strings.Contains(output, line) {
-				return "", true
+				return outputRead{}, true
 			}
 			select {
 			case <-p.Exited:
 				// Exited closes only once the output is whole, so this read is final.
 				if output = p.Output.String(); strings.Contains(output, line) {
-					return "", true
+					return outputRead{}, true
 				}
-				t.Fatalf("%s exited before it logged %q:\n%s", p.name, line, output)
+				return outputRead{output: output, exited: true}, true
 			default:
 			}
-			return output, false
+			return outputRead{output: output}, false
 		})
+		if read.exited {
+			t.Fatalf("%s exited before it logged %q:\n%s", p.name, line, read.output)
+		}
 	}
+}
+
+// outputRead is one read of WaitForOutput's wait: the process's output, and whether the process
+// had exited without the line.
+type outputRead struct {
+	output string
+	exited bool
 }
 
 // HeldPort is a loopback TCP port the kernel chose, held by a listening socket from the moment

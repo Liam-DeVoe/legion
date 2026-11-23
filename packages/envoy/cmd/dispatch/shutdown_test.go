@@ -1263,27 +1263,39 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 		defer close(returned)
 		closePool(fake, pool)
 	}()
+	// healthProbeBound is the bound HealthyOn arms on each probe (store's healthProbeTimeout), and
+	// bound the latest closePool may give up, on its clock: silentProbes pauses and probe bounds.
+	const healthProbeBound = 2 * time.Second
+	bound := silentProbes * (drainPollInterval + healthProbeBound)
 	type step struct {
 		to       time.Time
 		returned bool
-		// armed is every deadline pending when the step was read, which a wait that gives up prints.
-		armed []time.Time
 	}
 	for {
-		next := testwait.Until(t, "closePool to arm its next wait, or to return", func() (step, bool) {
+		var next step
+		testwait.Until(t, "closePool to arm its next wait, or to return", func() (string, bool) {
 			select {
 			case <-returned:
-				return step{returned: true}, true
+				next = step{returned: true}
+				return "returned", true
 			default:
 			}
 			armed := fake.Armed()
 			if len(armed) == 0 {
-				return step{}, false
+				return fmt.Sprintf("closePool has not returned, and no wait is armed on its clock at %v", fake.Now()), false
 			}
-			return step{to: armed[0], armed: armed}, true
+			next = step{to: armed[0]}
+			return fmt.Sprintf("waits armed at %v", armed), true
 		})
 		if next.returned {
 			break
+		}
+		// A closePool that never gives up arms one wait after another, which this loop moves the
+		// fake to as fast as each is armed, so without this it would run until go test's -timeout
+		// panics the binary.
+		if waited := fake.Now().Sub(began); waited > bound {
+			t.Fatalf("closePool was still waiting %v after it began with the database unanswering, past %v: %d pauses of %v and %d probes of %v; its next wait ends %v after it began",
+				waited, bound, silentProbes, drainPollInterval, silentProbes, healthProbeBound, next.to.Sub(began))
 		}
 		fake.Set(next.to)
 	}
@@ -1297,9 +1309,7 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	if !strings.Contains(logged.String(), "once the database stopped answering") {
 		t.Errorf("closePool did not say it gave up because the database stopped answering:\n%s", logged.String())
 	}
-	// healthProbeBound is the bound HealthyOn arms on each probe (store's healthProbeTimeout).
-	const healthProbeBound = 2 * time.Second
-	if bound := silentProbes * (drainPollInterval + healthProbeBound); gaveUp > bound {
+	if gaveUp > bound {
 		t.Errorf("closePool gave up %v after it began with the database unanswering, want within %v: %d pauses of %v and %d probes of %v",
 			gaveUp, bound, silentProbes, drainPollInterval, silentProbes, healthProbeBound)
 	}
