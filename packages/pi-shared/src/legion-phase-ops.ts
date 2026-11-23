@@ -318,7 +318,8 @@ export const PHASE_OP_SENTENCES = {
     "counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by " +
     "nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. ",
   requestBackwardMove:
-    "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+    "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue, but the fresh agent of " +
+    "acceptance sends work back with its fail. " +
     "The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself. " +
     "Such a step is its acceptance in accepting, a step whose key is owner, or a retro it does. That move counts no review round. ",
   readBuild:
@@ -406,7 +407,8 @@ export function legionToolDescription(host: {
     "(HANDOFF_NO_PULL_REQUEST: open it). A HANDOFF_NO_PULL_REQUEST naming a closed pull request is the architect's to decide. " +
     "The daemon refuses the pass of the fresh agent of acceptance while an issue beneath its issue is still in the workflow " +
     "(SIGNOFF_CHILD_IN_WORKFLOW). The refusal names each one: send the same completion again once each has left. " +
-    "A refused completion changed nothing, so fix what it names and complete again. " +
+    "A refused completion changed nothing, but a late report of a stopped task, refused TASK_STOPPED, counts its handoff record " +
+    "used: never send it again. Fix what any other names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +

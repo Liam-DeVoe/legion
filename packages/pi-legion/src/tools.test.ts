@@ -236,7 +236,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "(HANDOFF_NO_PULL_REQUEST: open it). A HANDOFF_NO_PULL_REQUEST naming a closed pull request is the architect's to decide. " +
   "The daemon refuses the pass of the fresh agent of acceptance while an issue beneath its issue is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW). The refusal names each one: send the same completion again once each has left. " +
-  "A refused completion changed nothing, so fix what it names and complete again. " +
+  "A refused completion changed nothing, but a late report of a stopped task, refused TASK_STOPPED, counts its handoff record " +
+  "used: never send it again. Fix what any other names and complete again. " +
   "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
   "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
   "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
@@ -245,7 +246,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
-  "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
+  "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue, but the fresh agent of " +
+  "acceptance sends work back with its fail. " +
   "The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself. " +
   "Such a step is its acceptance in accepting, a step whose key is owner, or a retro it does. That move counts no review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
