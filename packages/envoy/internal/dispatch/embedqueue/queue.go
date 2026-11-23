@@ -63,8 +63,9 @@ const (
 )
 
 // renewClaimInterval is how often a claimRenewal re-extends its claim on every row it still
-// protects - between bisection's own embed attempts, and during a single reservation's wait
-// longer than this - comfortably inside claimWindow so a renewal always lands before the claim
+// protects - between bisection's own embed attempts, and during a wait longer than this, a
+// reservation's on the token budget (reserveTokens) or the pace's before an Embed call
+// (embedDocuments) - comfortably inside claimWindow so a renewal always lands before the claim
 // it is refreshing could lapse. A var, not a const alongside claimWindow above, so a test can
 // shrink it well below claimWindow's own 2 minutes and observe a renewal firing in milliseconds
 // rather than needing to wait out the real interval.
@@ -120,9 +121,23 @@ func (p *proof) answered() <-chan struct{} {
 
 // embedDocuments embeds texts as documents with the configured embedder and, when the call
 // succeeds, records that the embedder works (Deps.proven). Every Embed call this package makes
-// goes through it, the canaries' included.
-func (d Deps) embedDocuments(ctx context.Context, texts []string) ([][]float32, error) {
-	vectors, err := d.Embedder.Embed(ctx, texts, embed.InputDocument)
+// goes through it, the canaries' included. An embedder that paces its calls (pacer) waits before
+// each one, at its slowest retry.MaxDelay (5 minutes), longer than claimWindow, so that wait
+// renews renewal's claim as a reservation's wait does (waitOutDebt): unrenewed, the claim would
+// lapse mid-wait, and another process's scan would claim the rows and embed them again. The wait
+// is the pace's in full, so the pace holds. A nil renewal (a call that holds no claim) waits
+// without renewing.
+func (d Deps) embedDocuments(ctx context.Context, texts []string, renewal *claimRenewal) ([][]float32, error) {
+	var vectors [][]float32
+	var err error
+	if paced, ok := d.Embedder.(pacer); ok {
+		vectors, err = paced.EmbedAfter(ctx, texts, embed.InputDocument, func(ctx context.Context, wait time.Duration) bool {
+			waitOutDebt(ctx, wait, renewal, renewClaimInterval)
+			return ctx.Err() == nil
+		})
+	} else {
+		vectors, err = d.Embedder.Embed(ctx, texts, embed.InputDocument)
+	}
 	if err == nil {
 		d.proven.record()
 	}
@@ -431,7 +446,7 @@ func embedRows(ctx context.Context, deps Deps, rows []pendingRow, renewal *claim
 		}
 		renewal.renew(ctx)
 		reserveTokens(ctx, deps, group.tokens, limits.BackgroundTokensPerMinute, renewal)
-		vectors, err := deps.embedDocuments(ctx, texts)
+		vectors, err := deps.embedDocuments(ctx, texts, renewal)
 		if err != nil {
 			groupResult := handleGroupFailure(ctx, deps, group.rows, err, renewal)
 			if groupResult.err != nil {
@@ -588,21 +603,25 @@ func chunkForBudget(rows []pendingRow, limits embed.Limits) []budgetedGroup {
 // ProcessBatch call is working through - not just whatever subtree bisection is currently in,
 // since every row not yet committed or confirmed permanent is still this call's responsibility
 // until it returns - once renewClaimInterval has passed since the last renewal, so work slower
-// than claimWindow (a long bisection, or a single reservation's own wait; see renewClaimInterval
-// and reserveTokens' own doc comments) never loses its claim to a concurrent scanner partway
-// through. Best-effort: a failed renewal is logged and never aborts anything, since a row a
-// concurrent scanner reclaims is merely processed twice, not corrupted - commitEmbeddings' own
-// content_hash-matched update already makes a doubly-claimed row safe, just not free. A nil
-// *claimRenewal (a caller with no claim to protect, such as a test exercising reserveTokens
-// alone) is a safe no-op.
+// than claimWindow (a long bisection, or a single wait on the token budget or the pace; see
+// renewClaimInterval, reserveTokens' and embedDocuments' own doc comments) never loses its claim
+// to a concurrent scanner partway through. Best-effort: a failed renewal is logged and never
+// aborts anything, since a row a concurrent scanner reclaims is merely processed twice, not
+// corrupted - commitEmbeddings' own content_hash-matched update already makes a doubly-claimed
+// row safe, just not free. A nil *claimRenewal (a caller with no claim to protect, such as a test
+// exercising reserveTokens alone) is a safe no-op. extend makes each renewal: extendClaim on the
+// store of the Deps newClaimRenewal was given, or, in a test on a synctest fake clock, where no
+// Postgres statement may run (duty.ExclusiveFunc says why), a record of the renewal.
 type claimRenewal struct {
-	deps Deps
-	rows []pendingRow
-	last time.Time
+	rows   []pendingRow
+	last   time.Time
+	extend func(ctx context.Context, rows []pendingRow) error
 }
 
 func newClaimRenewal(deps Deps, rows []pendingRow) *claimRenewal {
-	return &claimRenewal{deps: deps, rows: rows, last: time.Now()}
+	return &claimRenewal{rows: rows, last: time.Now(), extend: func(ctx context.Context, rows []pendingRow) error {
+		return extendClaim(ctx, deps, rows)
+	}}
 }
 
 func (c *claimRenewal) renew(ctx context.Context) {
@@ -610,23 +629,30 @@ func (c *claimRenewal) renew(ctx context.Context) {
 		return
 	}
 	c.last = time.Now()
-	kinds := make([]string, len(c.rows))
-	ids := make([]string, len(c.rows))
-	hashes := make([]string, len(c.rows))
-	for i, row := range c.rows {
+	if err := c.extend(ctx, c.rows); err != nil {
+		slog.Error("dispatch embedqueue: bisection claim renewal failed", "error", err)
+	}
+}
+
+// extendClaim pushes next_attempt_at of each of rows claimWindow past now, keeping scanPending's
+// claim on them.
+func extendClaim(ctx context.Context, deps Deps, rows []pendingRow) error {
+	kinds := make([]string, len(rows))
+	ids := make([]string, len(rows))
+	hashes := make([]string, len(rows))
+	for i, row := range rows {
 		kinds[i], ids[i], hashes[i] = row.kind, row.id, row.contentHash
 	}
 	// content_hash-matched, exactly as commitEmbeddings and retryRows both are: a row a
 	// concurrent write already changed is no longer this claim's to protect, and touching it
 	// anyway would delay that write's own, fresher embeddings_enqueue up to claimWindow for no
 	// reason - the row's new content_hash makes it eligible again immediately otherwise.
-	if _, err := c.deps.Store.Pool.Exec(ctx, `
+	_, err := deps.Store.Pool.Exec(ctx, `
 		update embeddings e set next_attempt_at = now() + $4
 		from unnest($1::text[], $2::text[], $3::text[]) as v(kind, id, content_hash)
 		where e.kind = v.kind and e.id = v.id and e.content_hash = v.content_hash
-	`, kinds, ids, hashes, claimWindow); err != nil {
-		slog.Error("dispatch embedqueue: bisection claim renewal failed", "error", err)
-	}
+	`, kinds, ids, hashes, claimWindow)
+	return err
 }
 
 // resolve removes committed rows from the set a claimRenewal still protects: once a row commits
@@ -731,10 +757,11 @@ func reserveTokens(ctx context.Context, deps Deps, tokens, ceilingPerMinute int,
 	waitOutDebt(ctx, wait, renewal, renewClaimInterval)
 }
 
-// waitOutDebt is reserveTokens' own wait loop, pulled out so a test can drive it with a tiny
-// segment instead of renewClaimInterval's real one minute: it sleeps out wait in slices of at
-// most segment, calling renewal.renew between every slice (not only before or after the whole
-// wait), so a wait longer than segment still renews partway through rather than only at the end.
+// waitOutDebt is the wait loop of reserveTokens and of the pace's wait before an Embed call
+// (embedDocuments), pulled out so a test can drive it with a tiny segment instead of
+// renewClaimInterval's real one minute: it sleeps out wait in slices of at most segment, calling
+// renewal.renew between every slice (not only before or after the whole wait), so a wait longer
+// than segment still renews partway through rather than only at the end.
 func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal, segment time.Duration) {
 	for wait > 0 {
 		s := wait

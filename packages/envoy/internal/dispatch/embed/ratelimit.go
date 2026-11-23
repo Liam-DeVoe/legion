@@ -93,23 +93,38 @@ func NewRateLimitedEmbedder(inner Embedder) *RateLimitedEmbedder {
 // deadline, without ever waiting for ctx to actually end - and embedqueue's callers depend on
 // ctx.Err() being set by the time this call returns (handleGroupFailure's own ctx.Err() check,
 // which every embedRows loop iteration relies on), to tell a cancelled wait apart from every
-// other failure. Reserve, by contrast, hands back a delay to wait out ourselves, so the select
-// below only ever returns once ctx.Done() has genuinely fired.
+// other failure. Reserve, by contrast, hands back a delay to wait out ourselves, so the wait
+// (sleep) only ever gives up once ctx.Done() has genuinely fired.
 func (r *RateLimitedEmbedder) Embed(ctx context.Context, texts []string, inputType InputType) ([][]float32, error) {
+	return r.EmbedAfter(ctx, texts, inputType, sleep)
+}
+
+// EmbedAfter is Embed with the pace's wait before the call made by wait, which waits d and returns
+// whether ctx is still live once it has: on false EmbedAfter gives its reservation back and returns
+// ctx.Err(), so a wait returns false only once ctx has ended. embedqueue's wait renews the claim on
+// the rows the call carries, since at the pace's slowest (retry.MaxDelay, 5 minutes) the wait
+// outlasts that claim (2 minutes).
+func (r *RateLimitedEmbedder) EmbedAfter(ctx context.Context, texts []string, inputType InputType, wait func(ctx context.Context, d time.Duration) bool) ([][]float32, error) {
 	reservation := r.limiter.Reserve()
-	if delay := reservation.Delay(); delay > 0 {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			reservation.Cancel()
-			return nil, ctx.Err()
-		case <-timer.C:
-		}
+	if delay := reservation.Delay(); delay > 0 && !wait(ctx, delay) {
+		reservation.Cancel()
+		return nil, ctx.Err()
 	}
 	vectors, err := r.inner.Embed(ctx, texts, inputType)
 	r.adjust(err)
 	return vectors, err
+}
+
+// sleep waits d, and returns false without waiting the rest of it once ctx ends first.
+func sleep(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // Identity is the inner Embedder's: pacing calls changes nothing about which model embeds them.

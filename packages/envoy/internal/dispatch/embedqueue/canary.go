@@ -3,6 +3,7 @@ package embedqueue
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
@@ -35,7 +36,7 @@ const embedCanary = "dispatch embedqueue confirmation canary"
 func confirmSoloFailure(ctx context.Context, deps Deps, group []pendingRow, rowErr error, renewal *claimRenewal) bisectResult {
 	renewal.renew(ctx)
 	reserveBackgroundTokens(ctx, deps, []string{embedCanary}, renewal)
-	_, canaryErr := deps.embedDocuments(ctx, []string{embedCanary})
+	_, canaryErr := deps.embedDocuments(ctx, []string{embedCanary}, renewal)
 	if canaryErr != nil {
 		slog.Error("dispatch embedqueue: a known-good canary also failed right after this row's own failure - systemic, not this row's fault",
 			"kind", group[0].kind, "id", group[0].id, "rowError", rowErr, "canaryError", canaryErr)
@@ -49,9 +50,14 @@ func confirmSoloFailure(ctx context.Context, deps Deps, group []pendingRow, rowE
 	return bisectResult{permanent: group}
 }
 
-// pacer is an Embedder that paces its calls and slows them when told the service is failing:
-// embed.RateLimitedEmbedder, which cmd/dispatch wraps around the queue's embedder.
-type pacer interface{ BackOff() }
+// pacer is an Embedder that paces its calls: embed.RateLimitedEmbedder, which cmd/dispatch wraps
+// around the queue's embedder. BackOff slows the pace when told the service is failing, and
+// EmbedAfter is Embed with the pace's wait before the call made by the caller, so embedDocuments'
+// wait renews the claim on the rows the call carries.
+type pacer interface {
+	BackOff()
+	EmbedAfter(ctx context.Context, texts []string, inputType embed.InputType, wait func(ctx context.Context, d time.Duration) bool) ([][]float32, error)
+}
 
 // proveEmbedder embeds embedCanary, paced from the shared budget like any other background call,
 // and returns the call's error: nil proves the configured embedder answers (and records it,
@@ -61,6 +67,6 @@ type pacer interface{ BackOff() }
 // holds no claim, so it has nothing to renew.
 func proveEmbedder(ctx context.Context, deps Deps) error {
 	reserveBackgroundTokens(ctx, deps, []string{embedCanary}, nil)
-	_, err := deps.embedDocuments(ctx, []string{embedCanary})
+	_, err := deps.embedDocuments(ctx, []string{embedCanary}, nil)
 	return err
 }
