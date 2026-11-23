@@ -482,7 +482,7 @@ func TestADeploymentRoleMovesItsTaskBack(t *testing.T) {
 func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
 	const refusal = "task a of LEGION-208 has two earlier steps that run as step, %s and %s, so a move back to step does not say which one the " +
 		"task returns to; this move changed nothing. The agent of a step names the place with handoff_complete, the verdict fail and returnTo; " +
-		"the owner names it with request_backward_move and returnTo."
+		"the owner names it with complete_step and return_to at a step of its own, or with request_backward_move and returnTo."
 	const reason = "the check missed a case"
 	for _, tc := range []struct {
 		name     string

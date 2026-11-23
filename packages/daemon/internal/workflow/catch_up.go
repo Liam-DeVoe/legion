@@ -189,8 +189,10 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // (dispatch://INFRA-714 R7).
 //
 // The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
-// one claim: the issue is recorded and in the workflow, the worker of its open phase (OpenRoleOf,
-// the role of its running step at step) is this claim's, its tree does not linger, and its phase's
+// one claim: the issue is recorded and in the workflow, the worker of its open phase (OpenRoleOf:
+// the role of the claim that works the task's place, and none where the owner does that step or
+// retro, whose owner is told by an owner-step notice instead) is this claim's, its tree does not
+// linger, and its phase's
 // own terminating fact has not arrived (PhaseFinished) — a merged root stands in merging for as
 // long as the rest of its tree runs, and its merger must not be handed merging again at every
 // launch. A claim of another project's issue finds no record here, as a claim of an issue nobody

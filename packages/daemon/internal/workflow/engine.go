@@ -89,7 +89,8 @@ type Config struct {
 	// it submits is the reviewer's own only when its Legion footer also names the session the
 	// reviewer's claim records (byReviewer), and only then does it decide a round whatever GitHub
 	// gives its bot account (DecidesRound) or answer a round the reviewer left undecided
-	// (reviewersAnswer); while that claim records no session, it waits (RefusedWhileNoSession). A
+	// (reviewersAnswer); while that claim records no session, it waits (RefusedWhileNoSession). No
+	// review decides a review step the owner does, which its report ends (settleRound). A
 	// push by it is recorded as the review App's (record.ClassifiedPush.ByReviewApp). Empty matches
 	// no one. A workflow boot never leaves it empty: it refuses a review App that names no login
 	// (daemon.appLoginsAtBoot).
@@ -120,7 +121,8 @@ type Config struct {
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
 	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
 	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
-	// issue to accepting; and, by the gate classify.MergeStateReadOwed, a head move of an issue in
+	// issue on to its task's next step (accepting on the default steps); and, by the gate
+	// classify.MergeStateReadOwed, a head move of an issue in
 	// implementing through merging and a base push of an issue in testing through merging, each of
 	// which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
 	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
@@ -595,8 +597,10 @@ const restartReason = "the issue was set to todo while its task was stopped"
 
 // sessionStatusWrite takes a lifecycle status change written by a session whose write the workflow
 // does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
-// since a phase ends only by its completion (the `legion` tool's `handoff_complete`) and a tree
-// only by the architect's sign-off. Any other session on the root of a running tree — one holding
+// since a step ends only by its agent's report (the `legion` tool's `handoff_complete`, or the
+// owner's `complete_step` for a step of its own) and a tree only by the daemon's close (its merge,
+// the end of the retro of an issue with no pull request, or the architect's close_root). Any other
+// session on the root of a running tree — one holding
 // its admission slot, or one waiting on a person, whose tree stays live and which keeps its slot
 // — another tree's agent, or one outside Legion that took the issue for its own, has no part
 // in the tree it would end or park, so the tree's architect is told who wrote what. Either way the
@@ -987,8 +991,10 @@ func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return record.TaskPlace{}, refused("RETURN_REFUSED", why).Refusal, nil
 }
 
-// recordStepReview writes the commit a completion of a step of the type review that runs as step
-// read onto the role's phases row (record.PhaseRow.ReviewedHead), so the task of the step's next
+// recordStepReview writes the commit a completion of a step of the type review read onto the
+// role's phases row (record.PhaseRow.ReviewedHead), in whatever phase the step runs as — a role's
+// step at step, the fresh agent of acceptance in accepting, a reviewer's verdict in reviewing — so
+// the task of the step's next
 // run names it (namingTheReviewRound), as the reviewer's next round names the commit its own
 // review read. The row is the row of the step the completion is of (phaseRow), and the first run of
 // a later step of the role starts from it (stepRunRow), as the reviewer's next round does; the
@@ -1090,14 +1096,17 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return refused("HANDOFF_STALE_GENERATION", fmt.Sprintf("%s is on generation %d and this completion is generation %d's; the run it reports is over",
 			issue.Key, issue.Generation, fact.Generation)), nil
 	}
-	// phase.RoleFor(accepting) is the architect, which accepts with sign_off: no completion of its own
-	// moves an issue, so an architect's is refused before the phase gate would pass it.
+	// An architect's own completion moves no issue: it accepts with sign_off where the acceptance is
+	// its own, and reports a step of its own with complete_step, which the route applies as the
+	// completion of that step's role under its claim (api's complete_step), so a completion of the
+	// role architect is refused before the phase gate would pass it.
 	if fact.Role == claim.RoleArchitect {
-		return refused("ACCEPTANCE_IS_SIGN_OFF", fmt.Sprintf("the architect accepts %s with sign_off, not handoff_complete; this completion changed nothing", issue.Key)), nil
+		return refused("ACCEPTANCE_IS_SIGN_OFF", fmt.Sprintf("an architect accepts %s with sign_off where the acceptance is its own, and reports a step of its own with complete_step, not handoff_complete; this completion changed nothing", issue.Key)), nil
 	}
-	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
-	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
-	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase),
+	// A role can still be mid-turn in a phase the issue has left: on an issue with a pull request
+	// whose review step a worker does, the review event moves reviewing on, so a reviewer's own
+	// request for changes starts the step it returns to before the reviewer's handoff lands. Its
+	// completion is recorded on its own row and moves nothing (leftItsPhase),
 	// and the handoff it names is the report of the run of its step the move ended
 	// (reportEndedStep).
 	//
@@ -1326,15 +1335,19 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the first line of the runtime's account of that death (deathReason): it is the one notice of
 // that failure the architect and the controller are sent.
 //
-// A child's own architect works no phase but its child's acceptance (accepting), where no worker
-// runs: the daemon starts it with the child's first phase (StartFirstPhase). Its claim failing
-// holds nothing, even at accepting, since its branch below comes before any read of the phase, and
-// is told as a worker-died of the architect on the child, which reaches the architect above it,
-// since the owner walk starts at the child's parent for an architect's own worker-died
-// (record.OwningArchitect). That architect takes the child's notices from then on, because the
-// failed claim no longer holds its role, until the child's architect runs again: the daemon starts
-// it again at the child's next phase start (start), and so do a re-admission of the tree while the
-// child stands in a phase (admit's startMidPhaseMembers) and an operator's retry. The worker-died
+// A child's own architect works no place of its child's task but the owner's — an acceptance it
+// does, a step of the key owner, the owner's retro — where no worker runs: the daemon starts it
+// with the child's first phase (StartFirstPhase). Its claim failing holds nothing, even at a place
+// of its own, since its branch below comes before any read of the phase, and is told as a
+// worker-died of the architect on the child, which reaches the architect above it, since the owner
+// walk starts at the child's parent for an architect's own worker-died (record.OwningArchitect).
+// That architect takes the child's notices from then on, all but an owner-step, which waits for
+// the child's own architect (record.OwnerClaim), because the failed claim no longer holds its
+// role, until the child's architect runs again: the daemon starts it again at the child's next
+// phase start (start), and so do a re-admission of the tree while the child stands in a phase
+// (admit's startMidPhaseMembers) and an operator's retry. A child that stands at a step of its
+// owner's waits for that retry, which the stranded list names, as the worker-died's reason says.
+// The worker-died
 // names the failure, as a finished role's does, so the architect above it reads why the child's
 // architect stopped; no controller copy goes with it, since an architect inside the tree is left
 // to act on it. A child that left the workflow or a member of a lingering tree tells nobody,
@@ -2181,9 +2194,10 @@ func (e *Engine) retryOrEscalate(ctx context.Context, tx pgx.Tx, fact intake.Ret
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return intake.Result{}, err
 	}
-	// The role the hold is from is the issue's at that phase (record.Issue.RoleAt): for a hold from
-	// step, the role of the step it was held at, which the held issue keeps, since phase.RoleFor
-	// knows no role of step.
+	// The role the hold is from is the issue's at that phase (record.Issue.RoleAt): the role of the
+	// claim that works the place it was held at (record.Issue.PlaceRole), which the held issue keeps
+	// — at step the step's own role, since phase.RoleFor knows no role of step, and the architect
+	// where the owner does that step.
 	if refusal, err := e.stepMovedRefusal(ctx, tx, *issue, issue.RoleAt(issue.Hold.From), fact.Claim); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
@@ -2215,8 +2229,10 @@ func (e *Engine) stepMovedRefusal(ctx context.Context, tx pgx.Tx, issue record.I
 // restartPhase is the operator's retry of a phase worker through `legion claims retry` (api's
 // retryClaim): the worker failed, or an operator stopped it, and a stop is no death, so no hold
 // may be waiting for its architect to decide. The phase the worker works is started again, which
-// is what gives it the task of that phase; an issue held for this role is restored from its hold
-// first, as the architect's retry does. One whose phase another role works, or that has left the
+// is what gives it the task of that phase; at a step or a retro the owner does, the retry of the
+// owner's claim relaunches that claim and tells the owner its step again with one more owner-step
+// notice, starting no run (restart). An issue held for this role is restored from its hold first,
+// as the architect's retry does. One whose phase another role works, or that has left the
 // workflow, is refused, since starting that phase under this claim's name would run the wrong
 // role. A restart that asks for a new session (`--fresh-session`) says so on the start it
 // queues, so the claim forgets its recorded session in the retry that start makes and no refusal
@@ -2335,7 +2351,8 @@ func backwardRefusal(issue record.Issue, w Walk, fact intake.BackwardMove, serve
 	case len(two) == 2:
 		return fmt.Sprintf("task %s of %s has two earlier steps that run as step, %d (%s) and %d (%s), so a move back to step does not say "+
 			"which one the task returns to; this move changed nothing. The agent of a step names the place with handoff_complete, "+
-			"the verdict fail and returnTo; the owner names it with request_backward_move and returnTo.",
+			"the verdict fail and returnTo; the owner names it with complete_step and return_to at a step of its own, or with "+
+			"request_backward_move and returnTo.",
 			w.Task, issue.Key, two[0].Position, w.RoleAt(two[0]), two[1].Position, w.RoleAt(two[1]))
 	case !served:
 		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
@@ -2505,8 +2522,10 @@ const parkRule = "only when a person asked for that move, or when the work is do
 
 // signOff is the architect's acceptance of the step before it: it moves the issue from accepting
 // to the task's next step, or to retro where the acceptance is the task's last step (the default
-// steps), and starts that step's role told the report of the step the owner accepted: the handoff
-// on the phases row of the role of the step before accepting, with the pull request. An issue with
+// steps), and starts that step's agent, or tells the owner with an owner-step notice where that
+// step or the retro is its own, told the report of the step the owner accepted: the handoff on the
+// phases row of the role of the step before accepting, with the pull request where it has one. An
+// issue with
 // no plan rows walks today's line, where that step is the review, so its retro is told the
 // review's handoff, as the approval told it before acceptance existed. Outside accepting it
 // changes nothing and says so, and so it does where the acceptance the task stands at is not the
@@ -2518,7 +2537,8 @@ const parkRule = "only when a person asked for that move, or when the work is do
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
 // (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
-// that carries its children's merges: accepted first, it would reach retro and the merge
+// that carries its children's merges: accepted first, it would reach retro, and the merge where it
+// has a pull request,
 // with their work not in it, which is what dispatch://INFRA-980 forbids. The acceptance
 // was held this way once before (dispatch://INFRA-229) and the hold was taken off because a
 // parent's approved pull request then waited outside the merge queue and went stale against its
@@ -2562,13 +2582,14 @@ func (e *Engine) signOffRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil || len(open) == 0 {
 		return nil, err
 	}
-	return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
+	return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent is accepted after its children, so that what it is accepted on carries their work: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
 		issue.Key, strings.Join(open, ", "))).Refusal, nil
 }
 
 // accept is the move of an accepted step, issue standing in accepting: on to the task's next step,
 // or to the retro, told the report of the step the acceptance accepted (acceptedRole) with the
-// pull request, and told no report where no step stands before the acceptance, since none ran.
+// pull request where it has one, and told no report where no step stands before the acceptance,
+// since none ran.
 // The owner's sign-off and the fresh agent of acceptance's pass both move by it, past
 // signOffRefusal.
 func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
@@ -2589,9 +2610,10 @@ func (e *Engine) accept(ctx context.Context, tx pgx.Tx, issue record.Issue) erro
 	return e.transition(ctx, tx, issue, TriggerSignOff, record.TaskPlace{}, report, pr, "")
 }
 
-// acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
-// the acceptance's place on the task of its walk, by place and never by type, so the step after
-// the sign-off reads the report the owner read. Of two acceptance steps, the place is the one the
+// acceptedRole is the role of the step the acceptance of issue accepts, the owner's or the fresh
+// agent's: the step before the acceptance's place on the task of its walk, by place and never by
+// type, so the step after the acceptance reads the report the acceptance read. Of two acceptance
+// steps, the place is the one the
 // task stands at (Walk.placeRunning). An acceptance that is its task's first step accepts the work
 // its task text names and no step's report, so it answers "": a plan whose first step is an
 // acceptance is taken (plan.Supported), and its pass moves on with no report to hand on. An issue
@@ -2660,7 +2682,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// its own pair and a hook of the deployment stands on that pair (recordPass,
 	// fireWorkBackHooks), so a hook sees every way the work goes back and not the review's alone.
 	// The round is the review's alone — it counts the review rounds review_round_cap bounds, so
-	// only a review that requested changes moves it, and a send-back for anything else leaves it
+	// only a review step's request for changes moves it, where its agent is not the owner (below),
+	// and a send-back for anything else leaves it
 	// where it stands. The pull request goes with both because each reads it: a move made while
 	// the record holds this head in a confirmed conflict with its base (record.PullRequest's
 	// ConflictingHead) is a conflict round, which review_round_cap does not count and no pair
@@ -2709,7 +2732,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// The role the row moves the task to: on a task with plan rows the role of the step at the
 	// row's place (Walk.RoleAt), so the second of two steps that run as step starts its own role,
-	// and on an issue with none the role of the phase. The merge's row keeps the task at its merge
+	// or tells the owner where the owner does that step (start, startOwnersStep), and on an issue
+	// with none the role of the phase. The merge's row keeps the task at its merge
 	// while the issue goes to done, which no role works.
 	starting := phase.RoleFor(row.To)
 	if w.Stored && row.To != phase.Done {
@@ -2902,7 +2926,9 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 
 // StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to.
 // For a child it also starts the child's own architect, which owns the child while it holds its
-// role, and tells the architect above the child that it started (ChildStartedNotice). It is the
+// role and does each step of the child's task whose key is owner, whose owner-step notice goes to
+// it whatever its claim's state (record.OwnerClaim), and tells the architect above the child that
+// it started (ChildStartedNotice). It is the
 // half of the old gate-opening behaviour that needs a slot, and it is deliberately the only half
 // here.
 //
@@ -2983,6 +3009,8 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // at a time, oldest first, so the architect's claim exists by that worker's launch. That is the
 // order the outbox tries, not one it holds to: a start that fails and backs off holds back none of
 // the rows behind it.
+// Where the first step is the owner's, no worker starts: the move raises the owner's entry under
+// that architect's claim and queues the owner-step notice that tells it the step (startOwnersStep).
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if err := e.planFirstStep(ctx, tx, issue); err != nil {
 		return err
