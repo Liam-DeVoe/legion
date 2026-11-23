@@ -138,6 +138,12 @@ type liveWrite struct {
 	// anchorsTree is the tree the transaction's anchors were last refreshed against, so the
 	// version write does not refresh the same tree's anchors a second time.
 	anchorsTree *pmdoc.Node
+	// readTree is the document as the transaction's read of it found it, the tree its first
+	// operation started from (applyLiveWritten), nil until one ran: the tree a version of the
+	// write compares with the block index for the room's removals no settlement holds
+	// (roomReadTree, holdRoomRemovals), since what the transaction's own operations took out is
+	// theirs to hold or refuse (answerDroppedAnsweredAsks).
+	readTree *pmdoc.Node
 	// credits are the authors of the transaction's content changes no version the transaction
 	// wrote lists (Ledger.recordVersion takes out each author a version lists), and creditedBy the
 	// append that recorded each one's latest change, which its pending row names; actor made the

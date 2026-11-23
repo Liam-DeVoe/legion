@@ -899,9 +899,9 @@ func (r *XidReport) problems() []string {
 }
 
 // Err is the report's verdict: nil when every window keeps D6 and the rig judged one. A rig
-// problem comes first, worded so a red run cannot be mistaken for a finding - unless a window broke
-// D6 too: then the violations follow the problems, and the run is not called free of a finding
-// about the code.
+// problem comes first, worded so a red run cannot be mistaken for a finding - unless a window
+// broke D6 too: then the violations follow the problems, and the run is not called free of a
+// finding about the code.
 func (r *XidReport) Err() error {
 	var b strings.Builder
 	for _, window := range r.Windows {

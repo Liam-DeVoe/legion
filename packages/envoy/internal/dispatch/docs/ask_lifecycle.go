@@ -28,6 +28,9 @@ type BlockRef struct {
 // reopens, which marks its document owed (MarkReopenOwedAskDocuments), a settlement indexes it
 // as a new open ask. WriteIssueAskStates and RebuildDocument each log the blocks they mark
 // themselves, so every caller sees them logged once, whatever it does with them.
+// Only a write while another build serves marks a block (readIssueAskStateWrites).
+//
+// kept for one release: roll-window-attributes
 func logUnindexedAskBlocks(issueKey string, blocks []BlockRef) {
 	for _, block := range blocks {
 		slog.Warn("dispatch: mark resolved an ask block no settlement indexed before its issue closed",
@@ -190,6 +193,7 @@ func (s *Service) WriteIssueAskStates(ctx context.Context, issueKey string, asks
 		}
 		unindexed = append(unindexed, marked...)
 	}
+	// kept for one release: roll-window-attributes
 	logUnindexedAskBlocks(issueKey, unindexed)
 	return unindexed, nil
 }
@@ -243,6 +247,7 @@ func (s *Service) writeDocumentAskStates(
 	if writes == nil {
 		return nil, nil
 	}
+	// kept for one release: roll-window-attributes
 	return writes.marked, nil
 }
 
@@ -525,8 +530,10 @@ type issueAskStateWrites struct {
 	writes settlementReconciliation
 	// repeats are the blocks repeating an earlier ask block's id, each marked resolved at its
 	// place (markRepeatedAskBlocks).
+	// kept for one release: roll-window-attributes
 	repeats []repeatedAskBlock
 	// marked are the unindexed blocks apply changed to read state="resolved".
+	// kept for one release: roll-window-attributes
 	marked []BlockRef
 }
 
@@ -544,15 +551,17 @@ type issueAskStateWrites struct {
 // block gets the attributes the release before's pages read its state from
 // (rollWindowAskAttributes, resolveUnindexedAskBlock), and once the fleet is one build the ones a
 // version keeps (keptAskState), written from the node of the block's ask, or of a copy's source,
-// as this transaction's commit leaves it (askNodeAnswers, onItsNode), as settlement writes them.
-// wanted hands back the row as it stands for a block it shows as the store holds it - the close's
-// final sweep, a closed issue's rebuild - and that row can be ahead of its node where a process of
-// the release before wrote it, before the decisions step's catch-up states it. An ask wanted hands
-// back in another state than its row's is one whose change the caller plans after this write in
-// the same transaction - the close's withdrawal (api's planWithdrawal) - and is written as wanted
-// gives it. It changes nothing in tree.
+// as this transaction's commit leaves it (askNodeAnswers, keptFromItsNode), as settlement writes
+// them. wanted hands back the row as it stands for a block it shows as the store holds it - the
+// close's final sweep, a closed issue's rebuild - and that row can be ahead of its node where a
+// process of the release before wrote it, before the decisions step's catch-up states it: such a
+// block is written from the row (keptFromItsNode). An ask wanted hands back in another state than
+// its row's is one whose change the caller plans after this write in the same transaction - the
+// close's withdrawal (api's planWithdrawal) - and is written as wanted gives it. It changes
+// nothing in tree.
 //
-// kept for one release: roll-window-attributes
+// The one-build writes are R10's and stay; each branch on twoBuilds is the roll window's and goes
+// with it.
 func readIssueAskStateWrites(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -564,6 +573,7 @@ func readIssueAskStateWrites(
 ) (*issueAskStateWrites, error) {
 	found := &issueAskStateWrites{artifactID: artifactID}
 	blocks, repeats := readableAskBlocks(tree)
+	// kept for one release: roll-window-attributes
 	if markUnindexed && twoBuilds {
 		found.repeats = repeats
 	}
@@ -596,10 +606,14 @@ func readIssueAskStateWrites(
 		}
 	}
 	shown := func(ask, row model.Ask) model.Ask {
-		if twoBuilds || ask.State != row.State {
+		// kept for one release: roll-window-attributes
+		if twoBuilds {
 			return ask
 		}
-		return onItsNode(ask, nodes)
+		if ask.State != row.State {
+			return ask
+		}
+		return keptFromItsNode(ask, nodes)
 	}
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {
@@ -611,6 +625,7 @@ func readIssueAskStateWrites(
 		if source, copied := sources[block.id]; copied {
 			if ask, write := wanted(source.ask); write {
 				copyWrite := askReadableWrite(twoBuilds, shown(ask, source.ask), source.document)
+				// kept for one release: roll-window-attributes
 				if twoBuilds && ask.State == "answered" {
 					copyWrite = answeredCopyWrite(ask, source.document)
 				}
@@ -625,6 +640,7 @@ func readIssueAskStateWrites(
 				if !resolve(node) {
 					return false
 				}
+				// kept for one release: roll-window-attributes
 				if twoBuilds {
 					found.marked = append(found.marked, ref)
 				}
@@ -637,7 +653,11 @@ func readIssueAskStateWrites(
 
 // empty reports whether w has nothing to write.
 func (w *issueAskStateWrites) empty() bool {
-	return len(w.writes.repairs) == 0 && len(w.repeats) == 0
+	// kept for one release: roll-window-attributes
+	if len(w.repeats) > 0 {
+		return false
+	}
+	return len(w.writes.repairs) == 0
 }
 
 // apply makes w's writes on live, a tree of w's document, recording each unindexed block it marks
@@ -702,10 +722,10 @@ func resolveUnindexedAskBlock(node *pmdoc.Node) bool {
 // another build serves, whose pages read the block's state from it, and once the fleet is one
 // build none of the seven attributes a version can store (withoutStoredAskAttributes), since a
 // block that has no ask row and is no copy keeps none of them (R10); the text routes answer it
-// resolved in their asks (textAsks). It reports whether it changed the block.
-//
-// kept for one release: roll-window-attributes
+// resolved in their asks (textAsks). It reports whether it changed the block. The one-build write
+// is R10's and stays; the roll window's branch goes with it.
 func unindexedAskResolution(twoBuilds bool) func(*pmdoc.Node) bool {
+	// kept for one release: roll-window-attributes
 	if twoBuilds {
 		return resolveUnindexedAskBlock
 	}
@@ -734,6 +754,7 @@ func readableAskBlocks(tree *pmdoc.Node) ([]askBlock, []repeatedAskBlock) {
 		index++
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 		if _, repeated := seen[id]; repeated {
+			// kept for one release: roll-window-attributes
 			if id != "" && node.Attrs["state"] != "resolved" {
 				if _, err := parseAskBlock(node); err == nil {
 					repeats = append(repeats, repeatedAskBlock{index: index, id: id})
@@ -753,6 +774,8 @@ func readableAskBlocks(tree *pmdoc.Node) ([]askBlock, []repeatedAskBlock) {
 // repeatedAskBlock is an ask block that repeats the id an earlier ask block of its document holds
 // (readableAskBlocks): index is its place among the document's ask blocks in document order, and
 // id the id it repeats.
+//
+// kept for one release: roll-window-attributes
 type repeatedAskBlock struct {
 	index int
 	id    string

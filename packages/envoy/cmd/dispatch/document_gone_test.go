@@ -451,6 +451,9 @@ func TestNoReadReachesTheDecisionsDocument(t *testing.T) {
 		}
 	}
 	answered := map[string]bool{}
+	// The linked section's decision is the one whose text holds its words: exactly one of the two,
+	// so the checks of its links and its Keep below cannot pass over a member that matched none.
+	linkedDecisions := 0
 	for _, decision := range compat.Decisions {
 		if decision.Kind != "agent" {
 			t.Errorf("the old decisions member answers %s of kind %q, want agent for a decision node", decision.Ref, decision.Kind)
@@ -462,6 +465,7 @@ func TestNoReadReachesTheDecisionsDocument(t *testing.T) {
 		}
 		answered[node] = true
 		if strings.Contains(decision.Text, "We chose Postgres") {
+			linkedDecisions++
 			if len(decision.Links) != 1 || decision.Links[0].To.ID != specRefKey+"#r1" {
 				t.Errorf("the linked section's decision answers the links %+v, want one, to %s#r1, from its shaped tuple", decision.Links, specRefKey)
 			}
@@ -469,6 +473,10 @@ func TestNoReadReachesTheDecisionsDocument(t *testing.T) {
 				t.Errorf("the kept decision answers kept %+v and waiting_review %t, want the person's Keep and no wait", decision.Kept, decision.WaitingReview)
 			}
 		}
+	}
+	if linkedDecisions != 1 {
+		t.Errorf("the old decisions member answers %d decisions whose text holds the linked section's %q, want one, with the section's link and the person's Keep: %+v",
+			linkedDecisions, "We chose Postgres", compat.Decisions)
 	}
 	if compat.Document != nil {
 		t.Errorf("after the retirement the old document member reads %q, want null", *compat.Document)

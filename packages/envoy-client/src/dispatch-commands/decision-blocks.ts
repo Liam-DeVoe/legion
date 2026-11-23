@@ -141,11 +141,15 @@ export async function refuseOpenDecisionBlocks(
       }
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
-    // A copy, judged by its source.
+    // A copy, judged by its source, which is read off the block's own opening line alone: a line
+    // that quotes it (in code or front matter, say) names no ask Dispatch recorded.
     const text = await liveText();
     if (!text.served && recordsSettled) return undefined;
     if (!text.served && recordsOpen) {
-      return openCopy(named, liveTextAsks({ markdown: openers.join("\n") }));
+      return openCopy(
+        named,
+        liveTextAsks({ markdown: version.markdown }).filter((copy) => copy.block_id === block.id)
+      );
     }
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =

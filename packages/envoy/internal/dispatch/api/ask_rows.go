@@ -310,6 +310,16 @@ func askNodeAnsweredAtOf(ask string) string {
 		askNodeValueOf(ask, graphstore.TupleAnsweredAt) + `)::timestamptz end`
 }
 
+// askNodeResolutionOf is the resolution of the ask aliased ask as applyTo lays it over the row, as
+// jsonb: the resolution value its node holds on an ask the node holds resolved, none on any other
+// the node holds, and the row's own where the row names no node. The write advice's declined asks
+// read a decline through it (readDeclinedAsks), as every read of an answer reads the node (R3).
+func askNodeResolutionOf(ask string) string {
+	return `case when ` + ask + `.node_kind is null then ` + ask + `.resolution when ` +
+		askNodeValueOf(ask, graphstore.TupleAnswerState) + ` = '` + asks.StateResolved + `' then (` +
+		askNodeValueOf(ask, graphstore.TupleResolution) + `)::jsonb end`
+}
+
 // nodeFact is one value or relation of a node as a statement aggregates it: its kind, the kind
 // of its far end, and that far end, the value itself for a value.
 type nodeFact struct {
