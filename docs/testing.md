@@ -35,6 +35,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
+- A test in which a real Dispatch reads the check runs of a commit takes its GitHub from `githubtest.ServeChecks`, the one fake GitHub whose state is the package's.
+  It answers what Dispatch's App client asks first, the App's installation, an installation token and the repository, and then the check runs a test set on the commit with `SetCheckRun`; it answers every other request 404 and keeps it for `Unanswered`.
+  `githubtest.PublishChecksSettlement` publishes on the notification stream the settlement of a pull request's checks that the listener's CI summary loop publishes, so the test drives Dispatch's check states by the trigger production uses.
+  The daemon's `internal/daemon` holds the rig over both: a scratch Dispatch with a throwaway App on the fake (`scratchDispatchOptions.github`), its delivery settings written (`writeDeliverySettings`), and the self-test `TestTheScratchDispatchPublishesACIStateFromTheSettlement`.
+
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
