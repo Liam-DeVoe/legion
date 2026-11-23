@@ -161,6 +161,8 @@ func issueNumber(t testing.TB, key string) int {
 // keys (a text naming an issue key matches that issue, as on the server it came from), each with
 // its latest title and spec and its server's creation and update times, and each done issue
 // closed as the server holds it, so a target that is done ranks where a reader would find it.
+// Each create writes the spec without its pointers into other documents, then the corpus's text
+// (corpusWritableSpec).
 // DISPATCH_RECALL_LOAD_OPEN=1 loads every issue open instead, as this harness did before the
 // close times were copied: that is how a run of it at main loads the same corpus, so the two
 // runs compared on the "every pair" line differ in the ranking alone.
@@ -186,14 +188,18 @@ func loadRecallCorpus(t testing.TB, corpus recallCorpus) (*server, *store.Store,
 			corpus.project, issueNumber(t, key)); err != nil {
 			t.Fatalf("number %s: %v", key, err)
 		}
+		written, rewritten := corpusWritableSpec(t, key, issue.Spec)
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": corpus.project, "title": issue.Title, "spec": issue.Spec, "force": true,
+			"project": corpus.project, "title": issue.Title, "spec": written, "force": true,
 		}, "alice")
 		if response.Code != http.StatusCreated {
 			t.Fatalf("create %s: status=%d body=%s", key, response.Code, response.Body.String())
 		}
 		if created := decodeBody[model.Issue](t, response).Key; created != key {
 			t.Fatalf("created %s, want %s", created, key)
+		}
+		if rewritten {
+			setCorpusFirstSpec(t, ctx, database, key, issue.Spec)
 		}
 		if _, err := database.Pool.Exec(ctx, `update issues set created_at = $2, updated_at = $3 where key = $1`,
 			key, issue.CreatedAt, issue.UpdatedAt); err != nil {

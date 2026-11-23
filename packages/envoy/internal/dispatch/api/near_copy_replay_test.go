@@ -484,7 +484,8 @@ func refreshNearCopyStats(t testing.TB, ctx context.Context, database *store.Sto
 // insertNearCopyIssue creates the issue through the API, under its own key, then sets the
 // columns the corpus holds and the API does not take: its creation time and the status it was
 // filed in. The create is forced, so the gate never refuses one; its own gate run is the price
-// of going through the real write path.
+// of going through the real write path. It writes the spec without its pointers into other
+// documents, then the corpus's text (corpusWritableSpec).
 func insertNearCopyIssue(
 	t testing.TB, ctx context.Context, database *store.Store, handler http.Handler,
 	corpus nearCopyCorpus, event nearCopyEvent, present map[string]bool,
@@ -492,9 +493,11 @@ func insertNearCopyIssue(
 	t.Helper()
 	number := nearCopyNumber(t, event.key)
 	execNearCopy(t, ctx, database, `update projects set next_number = $2 where key = $1`, corpus.project, number)
+	spec := corpus.firstSpec(event.key)
+	written, rewritten := corpusWritableSpec(t, event.key, spec)
 	body := map[string]any{
 		"project": corpus.project, "title": event.title,
-		"spec": corpus.firstSpec(event.key), "force": true,
+		"spec": written, "force": true,
 	}
 	// A parent the walk has not reached yet is left off: an event log that lost its issue.created
 	// gives the parent a later update set, and the create would be refused for an issue that does
@@ -509,6 +512,9 @@ func insertNearCopyIssue(
 	}
 	if created := decodeBody[model.Issue](t, response).Key; created != event.key {
 		t.Fatalf("created %s, want %s", created, event.key)
+	}
+	if rewritten {
+		setCorpusFirstSpec(t, ctx, database, event.key, spec)
 	}
 	closedAt := any(nil)
 	if event.status == "done" {
