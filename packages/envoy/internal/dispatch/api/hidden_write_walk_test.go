@@ -479,10 +479,10 @@ func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptes
 // seedHiddenWrites stands up verification v16's seed and writes, as carol, PRIV's object of every
 // kind a write row names, through the routes. The seed's store is traced and its listener records
 // its calls, so a pair of calls can be held to the same work (callPair). PRIV's issue is claimed by
-// s1 and links privateHeldURL; PRIV maps acme/p_x, and PUB maps acme/w_pub, whose issue 9
-// privateHeldURL is. PUB holds a project document and an ask of its own too, the objects a session
-// hidden from a caller that sees PUB is named beside (compareSessionBeside): privateSession acts in
-// PRIV and follows PUB's ask, and s-pub follows PRIV's.
+// s1 and links privateHeldURL; PUB maps acme/w_pub, whose issue 9 privateHeldURL is. PUB holds a
+// project document and an ask of its own too, the objects a session hidden from a caller that sees
+// PUB is named beside (compareSessionBeside): privateSession acts in PRIV and follows PUB's ask,
+// and s-pub follows PRIV's.
 func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	t.Helper()
 	topics := []string{}
