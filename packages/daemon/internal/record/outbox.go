@@ -909,8 +909,8 @@ type ControllerNotice Notice
 
 func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNotice }
 
-// The controller notices, each a kind the controller acts on (skill://legion-controller,
-// "Wakes"). A triage notice's root is unrecorded, so no architect owns it; a slot-free notice
+// The controller notices, each of a kind this comment names and each in a row of its own
+// (#4065). A triage notice's root is unrecorded, so no architect owns it; a slot-free notice
 // names the issue whose slot admission released while no waiting issue took it. A todo notice
 // names an issue not handed to Legion that changed in `todo` while a slot stood free. On either
 // of the two the controller runs its prioritization pass and its deployment's intake. A tick is

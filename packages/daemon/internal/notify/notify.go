@@ -132,11 +132,10 @@ const RoleTopicPrefix = "notifications.role."
 // to; a workflow notice goes to the role topic of the architect that owns its issue instead (the
 // daemon's notice executor), since every issue's topic is a subject its phase workers subscribe
 // to. It carries the controller notices (record.ControllerNotice), each an outbox row of its own,
-// and only the kinds the controller acts on (#4065; skill://legion-controller,
-// "Wakes"): a root in triage handed to Legion (`triage`, admission); the slot wakes admission
-// sends through wakeController, `slot-free` and `todo`, on which the controller runs its
-// prioritization pass and its deployment's intake, and `tick`, its periodic wake
-// (admit.Admission.wakeController and its callers say when; the tick alone carries
+// and only the kinds named here (#4065): a root in triage handed to Legion (`triage`, admission);
+// the slot wakes admission sends through wakeController, `slot-free` and `todo`, on which the
+// controller runs its prioritization pass and its deployment's intake, and `tick`, its periodic
+// wake (admit.Admission.wakeController and its callers say when; the tick alone carries
 // `openCapabilities`, the deployment capabilities with no decision,
 // admit.Admission.ReportCapabilities); a tree of the project that has stopped (`tree-stalled`,
 // admit's tellStalledTrees, once for each stall); a root whose own architect is not taking the
