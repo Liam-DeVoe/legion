@@ -200,7 +200,7 @@ test("no skill or daemon prompt names a list of open items", () => {
 // issue from the queue" is its
 // decision on R4; "one agent keeps each project's order" is R3's owner of the board, whom the
 // next sentence tells the agent to tell; the claim sentence's "an outside claim can take the tree
-// out of the workflow" and the sentence after it, "A status write is set back or stands", are the
+// out of the workflow" and "A status write is set back or stands", beside the status-write rule, are the
 // consequences #2608 added, because the bare prohibition was quoted to a person as that person's
 // rule; "Each query word must match" is what makes "remove a word before adding one" work;
 // dispatch-writing-specs' "It replaces superpowers' brainstorming there" is the rule that picks it
@@ -285,7 +285,7 @@ test("every relative link resolves to a file inside the staged partition", () =>
 // dispatch must come with this plugin (`agents/`, which ships none today) or with Oh My Pi itself
 // (what `omp agents unpack` writes, read off the pinned binary rather than listed here). A
 // `skill://legion-*` mention in these skills is held to no such partition, on purpose: each is a
-// sentence conditioned on a Legion role (skills/dispatch/SKILL.md:13,
+// sentence conditioned on a Legion role (skills/dispatch/SKILL.md:14,
 // skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:54), inert
 // for a person and right for a pane with both plugins, and `brokenSkillLinks` above resolves a
 // `skill://<name>/<path>` link against the repository's skills/ for the same reason.
