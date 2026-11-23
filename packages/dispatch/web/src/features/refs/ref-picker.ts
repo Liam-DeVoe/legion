@@ -159,6 +159,18 @@ export type RefPickerParts =
   | { readonly kind: "blocks"; readonly address: string }
   | { readonly kind: "documents"; readonly session: string };
 
+/** The session a party's row names: a session's row its own, and a role's row the session that
+ *  holds the role. The list draws it through `AgentName`, with its running state, in place of
+ *  `words` (`RefRowLabel`, `RefRowDetail`). */
+export interface RefPickerAgent {
+  readonly sessionId: string;
+  /** The session's title as the agent list gave it: its name when the registry has none. */
+  readonly storedTitle: string;
+  /** The row's own words for the session, as `useAgentText` names it: the whole label of a
+   *  session's row, and the head of a role's detail. */
+  readonly words: string;
+}
+
 /** One row of the picker. `id` is unique within one open: it is the row's React key and the
  *  value a host puts in `aria-activedescendant`. */
 export interface RefPickerRow {
@@ -183,6 +195,8 @@ export interface RefPickerRow {
     readonly tree: DisplayTree;
     readonly source: TextSource | undefined;
   };
+  /** For a party's row that names an agent, that agent (`RefPickerAgent`). */
+  readonly agent?: RefPickerAgent;
 }
 
 /** One kind's rows, under that kind's heading. */
@@ -432,8 +446,8 @@ export type RefPickerState = "rows" | "loading" | "empty" | "unreachable";
 
 /** The words of each state the list has no rows for, in the composer's own shapes
  *  (`MentionComposer.tsx`: "Loading live agents…", "No live agents match.", "Could not load live
- *  agents — Envoy listener unreachable."). An agent list that is refilling is a list not ready
- *  yet, so it reads as loading rather than as a failure. */
+ *  agents — Envoy listener unreachable."). `unreachable` is a Dispatch read that failed: the
+ *  agent list is Envoy's, and where it stands is said by its own line (`RefPickerParties`). */
 export const REF_PICKER_WORDS: Record<Exclude<RefPickerState, "rows">, string> = {
   empty: "No reference matches.",
   loading: "Loading references…",

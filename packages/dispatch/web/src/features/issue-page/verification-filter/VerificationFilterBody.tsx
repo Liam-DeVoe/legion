@@ -1498,7 +1498,8 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
  *  inside a name resolves nothing - cut to a chip's room. So no mark the author typed is drawn
  *  and a statement whose words open on "1." keeps it. A target the view holds no statement for
  *  and one the store holds no line for draw nothing, a comma stands only between targets that
- *  are drawn, and the line is drawn only where one is. */
+ *  are drawn, and the line is drawn only where one is. The reading list's `node-row-chip`
+ *  (`DISPATCH_READING_SURFACES`) says why a chip's words are drawn so. */
 function AlsoUnder({
   chips,
   names,

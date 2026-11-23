@@ -118,6 +118,7 @@ export type DispatchReadingSurface =
   | "node-row-chip"
   | "outline-crumb"
   | "issue-pin"
+  | "plan-task-line"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -555,9 +556,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "node-row-child-title",
   },
   // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
-  // line a filter's row names a node's parent by, a crumb above a zoom and a pin in Details, each
-  // projected from the node's own words and cut by R1's first-line rule; and a chip, which names
-  // a tie's target.
+  // line a filter's row names a node's parent by, a crumb above a zoom, a pin in Details and a
+  // task's line in the Plan view, each projected from the node's own words and cut by R1's
+  // first-line rule; and a chip, which names a tie's target - in a row of the outline, in the
+  // Plan chart's needs and serves, and on a check's "Also under" line in the Verification view.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
@@ -573,26 +575,44 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
-    files: ["packages/dispatch/web/src/features/issue-page/node-line.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/issue-page/node-line.tsx",
+      "packages/dispatch/web/src/features/issue-page/decisions-filter/DecisionsRow.tsx",
+    ],
     proof: {
       file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
       test: "a parent line is its parent's projected first line, a reference in it read by its target's name",
     },
     reach:
-      "/issues/<ISSUE>?preset=plan with the new issue page on, a plan task's line naming the statement it serves",
+      "/issues/<ISSUE>/plan with the new issue page on, a plan task's line naming the statement it serves",
     reason: `A filter's row names a parent it draws no row for on one line, the parent's first line cut by R1's first-line rule, in the words of a link to it. ${PLAIN_WORDS_REASON}`,
     record: true,
     rendered: false,
     surface: "node-row-parent-line",
   },
   {
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
-    proof: {
-      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
-      test: "a numbered step keeps its number in a chip and in a folded line",
-    },
-    reach: "/issues/<ISSUE> with the new issue page on, a plan task's needs chip",
-    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record, and a block by the line the store projects beside that name, the first block of its words (\`KnownReferences.lines\`). The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
+    files: [
+      "packages/dispatch/web/src/features/issue-page/NodeRow.tsx",
+      "packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.tsx",
+      "packages/dispatch/web/src/features/issue-page/verification-filter/VerificationFilterBody.tsx",
+    ],
+    proof: [
+      {
+        file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+        test: "a numbered step keeps its number in a chip and in a folded line",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.test.tsx",
+        test: "a step's needs and serves chips name each block by its first worded block, cut to a chip's room",
+      },
+      {
+        file: "packages/dispatch/web/src/features/issue-page/verification-filter/VerificationFilterBody.drawn.test.tsx",
+        test: "a check under two statements names the other by its words with no mark of markdown",
+      },
+    ],
+    reach:
+      "/issues/<ISSUE> with the new issue page on, a plan task's needs chip; /issues/<ISSUE>/plan with it on, a step's needs and serves chips in the chart; /issues/<ISSUE>/verification with it on, a check's \"Also under\" line",
+    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record, and a block by the line the store projects beside that name, the first block of its words (\`KnownReferences.lines\`). The Plan chart's chips - the tasks a step needs and the statements it serves - and the Verification view's "Also under" line, which names the other statements a check is drawn under, name each block as a tie's chip does, by that line cut to a chip's room (\`chipName\`), read off the store with no projection of their own: a serves chip as a link to its statement, and a need and an "Also under" name as words alone. The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
     record: false,
     rendered: false,
     surface: "node-row-chip",
@@ -623,6 +643,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "issue-pin",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.test.tsx",
+      test: "a step's line reads a reference by its target's name, as the task's folded line does",
+    },
+    reach: "/issues/<ISSUE>/plan with the new issue page on, a step's line in the chart",
+    reason: `The Plan view names a task on one line - the line a step's row of the chart labels its bar with, and a task's link in the line of tasks that need each other - its first line cut by R1's first-line rule with its ellipsis, and its kind's word where its words hold none, read as the task's folded line in the outline is (\`node-row-first-line\`). ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "plan-task-line",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
@@ -825,7 +858,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
       test: "the Change quotes its block's plain-text projection and anchors to the document's own words",
     },
     reach:
-      "/issues/<ISSUE>?preset=decisions with the new issue page on, a waiting decision's Change, the quote over its box",
+      "/issues/<ISSUE>/decisions with the new issue page on, a waiting decision's Change, the quote over its box",
     reason: `The Change quotes the decision's first block below its heading, the words the change is anchored to, on one line over the box. ${PLAIN_WORDS_REASON} The write still anchors to the decisions document's own words, which the server matches (\`anchor-quote\`). ${LOAD_STATE_REASON}`,
     record: true,
     rendered: false,

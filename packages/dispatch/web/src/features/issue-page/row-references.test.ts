@@ -18,6 +18,9 @@ const NAMES = new Map([
   ["dispatch://CORE-1/ask/ask-1", "At which width does the\nidentity block condense?"],
 ]);
 
+/** The issue the rows belong to. */
+const ISSUE = "CORE-1";
+
 test("what a text cites is every whole address and every bare key, each once", () => {
   expect(
     citedReferences(
@@ -47,7 +50,9 @@ test("an address that writes its id short is asked for as written, and named fro
   const [link] = rowReferences(`see ${short}`, []);
   if (link === undefined) throw new Error("the text holds one reference");
   expect(link.reference).toBe(short);
-  expect(rowReferenceWords(link, new Map([[short, "The comment its short id names"]]))).toEqual({
+  expect(
+    rowReferenceWords(link, new Map([[short, "The comment its short id names"]]), ISSUE)
+  ).toEqual({
     key: undefined,
     words: "The comment its short id names",
   });
@@ -79,9 +84,9 @@ test("a party is never asked for", () => {
 function partyLinks(text: string, names: ReadonlyMap<string, string> = NAMES): (string | null)[][] {
   const root = document.createElement("div");
   root.innerHTML = `<p>${text}</p>`;
-  linkRowReferences(root, names, knownIssueKeys(names));
+  linkRowReferences(root, names, knownIssueKeys(names), ISSUE);
   // A second pass, as a page makes once names arrive, keeps each party's words.
-  linkRowReferences(root, names, knownIssueKeys(names));
+  linkRowReferences(root, names, knownIssueKeys(names), ISSUE);
   return [...root.querySelectorAll("a")].map((link) => [
     link.getAttribute("href"),
     link.textContent,
@@ -121,7 +126,7 @@ test("a person links to nothing, and reads as their login once named", () => {
   ]);
   const root = document.createElement("div");
   root.innerHTML = `<p>${text}</p>`;
-  linkRowReferences(root, new Map([[person, "alice@example.com"]]), []);
+  linkRowReferences(root, new Map([[person, "alice@example.com"]]), [], ISSUE);
   expect(root.textContent).toBe("Ask alice@example.com about dispatch://CORE-7.");
   expect(root.querySelector(`[data-row-reference="${person}"]`)?.localName).toBe("span");
 });
@@ -134,21 +139,24 @@ test("an issue reads as its key and title, and anything else as its target's own
   if (issue === undefined || unnamed === undefined || ask === undefined) {
     throw new Error("the text holds three references");
   }
-  expect(rowReferenceWords(issue, NAMES)).toEqual({
+  expect(rowReferenceWords(issue, NAMES, ISSUE)).toEqual({
     key: "CORE-7",
     words: "The header draws the approval of each step",
   });
   // An issue the read has not named yet reads as the words its writer wrote, and so does any
   // other target, as a link of any body does until its title resolves (R8, INFRA-1196 decision
   // 350, which replaces decision 95's short form).
-  expect(rowReferenceWords(unnamed, NAMES)).toEqual({ key: undefined, words: "dispatch://CORE-9" });
+  expect(rowReferenceWords(unnamed, NAMES, ISSUE)).toEqual({
+    key: undefined,
+    words: "dispatch://CORE-9",
+  });
   // The page publishes a name as a link to its target reads it (R8), and a target the row draws
   // as a chip in place is cut again as a tie's chip cuts it (`chipName`).
-  expect(rowReferenceWords(ask, NAMES)).toEqual({
+  expect(rowReferenceWords(ask, NAMES, ISSUE)).toEqual({
     key: undefined,
     words: "At which width does the…",
   });
-  expect(rowReferenceWords(ask, new Map())).toEqual({
+  expect(rowReferenceWords(ask, new Map(), ISSUE)).toEqual({
     key: undefined,
     words: "dispatch://CORE-1/ask/ask-1",
   });
@@ -159,7 +167,7 @@ test("the pass links what painted words cite, and names it again when the names 
   root.innerHTML =
     "<p>From: dispatch://CORE-7, and <code>dispatch://CORE-7</code> in UTF-16.</p>" +
     '<p><a href="https://example.com">dispatch://CORE-7</a></p>';
-  linkRowReferences(root, new Map(), []);
+  linkRowReferences(root, new Map(), [], ISSUE);
   const links = () => [...root.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")];
   expect(
     links().map((link) => [link.getAttribute("href"), link.textContent, link.tabIndex])
@@ -172,12 +180,12 @@ test("the pass links what painted words cite, and names it again when the names 
   expect(root.querySelector('a[href="https://example.com"]')?.textContent).toBe(
     "dispatch://CORE-7"
   );
-  linkRowReferences(root, NAMES, knownIssueKeys(NAMES));
+  linkRowReferences(root, NAMES, knownIssueKeys(NAMES), ISSUE);
   expect(links().map((link) => link.textContent)).toEqual([
     "CORE-7 The header draws the approval of each step",
   ]);
   // A second pass over the same words makes no second link.
-  linkRowReferences(root, NAMES, knownIssueKeys(NAMES));
+  linkRowReferences(root, NAMES, knownIssueKeys(NAMES), ISSUE);
   expect(links()).toHaveLength(1);
 });
 
@@ -207,20 +215,20 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
     );
   const root = document.createElement("div");
   root.innerHTML = painted;
-  linkRowReferences(root, NAMES, knownIssueKeys(NAMES), new Set([AMBIGUOUS]));
+  linkRowReferences(root, NAMES, knownIssueKeys(NAMES), ISSUE, new Set([AMBIGUOUS]));
   expect(linked(root)).toEqual(["dispatch://CORE-7"]);
   expect(root.textContent).toBe(drawn);
 
   // A pass before the read answered linked it, and the pass after puts the words back.
   const earlier = document.createElement("div");
   earlier.innerHTML = painted;
-  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES));
+  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), ISSUE);
   expect(linked(earlier)).toEqual([AMBIGUOUS, "dispatch://CORE-7"]);
-  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), new Set([AMBIGUOUS]));
+  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), ISSUE, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
   // A second pass over the same words finds nothing to do.
-  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), new Set([AMBIGUOUS]));
+  linkRowReferences(earlier, NAMES, knownIssueKeys(NAMES), ISSUE, new Set([AMBIGUOUS]));
   expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
   expect(earlier.textContent).toBe(drawn);
 });

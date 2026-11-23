@@ -250,11 +250,12 @@ function sectionsOf(
  * The change each decision waits on, by the decision's own address (`DecisionEntry.ref`): the
  * newest of the changes a person asked of it (`decisionChangeComments`, which `placed` holds where
  * the caller has read it already). `documents` are the blocks of the issue's documents the page
- * has read, `undefined` where it has read none. A decision with none is not held.
+ * has read, `undefined` where it has read none. A decision with none is not held. Each change is
+ * the comment as `comments` holds it, so a caller reads whatever else its read gave of it.
  */
-export function decisionChanges(
+export function decisionChanges<Change extends ChangeComment>(
   decisions: Pick<IssueDecisions, "entries"> | undefined,
-  comments: readonly ChangeComment[] | undefined,
+  comments: readonly Change[] | undefined,
   issue: DecisionDocuments,
   documents: readonly DocumentBlocks[] | undefined,
   placed: ReadonlyMap<string, string> = decisionChangeComments(
@@ -263,8 +264,8 @@ export function decisionChanges(
     issue,
     documents
   )
-): ReadonlyMap<string, ChangeComment> {
-  const changes = new Map<string, ChangeComment>();
+): ReadonlyMap<string, Change> {
+  const changes = new Map<string, Change>();
   for (const comment of comments ?? []) {
     const ref = placed.get(comment.id);
     if (ref === undefined) continue;

@@ -103,13 +103,15 @@ export interface NodeChip {
    *  into the name every surface reads the target by, as a link to it reads it
    *  (`refs/reference-names.tsx`), and which a chip cuts again where it draws it (`chipName`). A
    *  block by the server's reading of its whole text, as a link to it titles it, which a chip
-   *  names by its first block that holds any words (`blockLineReading`); where the read answered
+   *  names by its first block that holds any words (`chipLineReading`); where the read answered
    *  with no reading or one that holds no words, the page's word for the block's kind
    *  (`NODE_TYPE_NAMES`) for a block of this issue whose document the tree read; a whole
-   *  document by the page's word for one, never `spec.md`; an ask's, a comment's and a message's
-   *  stored text; an issue's title; and anything else's name as that read answers it. Absent for
-   *  a block and for anything else until the read answers, for another issue's block the read
-   *  sent no words for, and for a target that is gone. */
+   *  document by the title a link to it reads, the issue's title for its spec and its file name
+   *  for any other, with the page's word for it, which a chip draws in place of that title
+   *  (`ReferenceNameReading.chipWord`); an ask's, a comment's and a message's stored text; an
+   *  issue's title; and anything else's name as that read answers it. Absent for a block and for
+   *  anything else until the read answers, for another issue's block the read sent no words
+   *  for, and for a target that is gone. */
   readonly reading?: ReferenceNameReading;
   /** The target's own `dispatch://` address. */
   readonly ref: string;
@@ -473,9 +475,10 @@ export function nodeWords(node: TreeNode): string {
 }
 
 /** What a node's one line is projected from (`lineReading`): a reading, with the issue's key
- *  the page writes before the words it projects to (`key`); the stored text, which the
- *  projection parses and reads the first line of (`usePlainHeadline`'s `firstLine`), where the
- *  node carries no reading; or nothing, for a reading none of whose blocks holds a word. */
+ *  the page writes before the words it projects to (`key`); the stored text, where the node
+ *  carries no reading, which the line parses once (`useNodeLine`) and the projection reads the
+ *  first line of (`usePlainHeadline`'s `firstLine`); or nothing, for a reading none of whose
+ *  blocks holds a word. */
 export type LineReading =
   | { readonly key?: string; readonly tree: DisplayTree }
   | { readonly markdown: string }
@@ -505,7 +508,8 @@ export type LineReading =
  *   key is written before its line (`key`), where R1's rule reads a label after it
  *   (`firstLineOf`'s `lead`) and no name of the issue takes its place.
  * - **A node whose read sent no reading** - a result from a server of the build before - by its
- *   stored text, which the projection parses, reading its first line.
+ *   stored text, which the line parses once for as long as it draws it (`node-line.tsx`'s
+ *   `useNodeLine`), the projection reading the parse's first line.
  */
 export function lineReading(node: {
   readonly id: string;
@@ -523,9 +527,10 @@ export function lineReading(node: {
 /** The words a chip draws for a target `name` names (ruling 5): a block's first line, as a row
  *  draws one (R1, `firstLineOf`, `drawnLine`), and any other target's name, each cut to a
  *  chip's room (`chipWords`). The page publishes every name as a link to its target reads it
- *  (R8), so a tie's chip (`NodeRow.tsx`) and a block or a document drawn as a chip in a node's
- *  words (`row-references.ts`) each cut it again here, where they draw it, and draw one target
- *  alike. */
+ *  (R8), so a tie's chip (`NodeRow.tsx`), a block or a document drawn as a chip in a node's words
+ *  (`row-references.ts`), the Plan chart's needs and serves (`plan-filter/PlanFilterBody.tsx`)
+ *  and a check's "Also under" line (`verification-filter/VerificationFilterBody.tsx`) each cut it
+ *  again here, where they draw it, and draw one target alike. */
 export function chipName(route: DispatchReferenceRoute | undefined, name: string): string {
   const block = route !== undefined && referenceTargetKind(route) === "block";
   return chipWords(block ? drawnLine(firstLineOf(name)) : name);
@@ -541,7 +546,9 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  * What the page publishes from the targets of the batched reference read (`reads.targets`) for
  * every surface beside the tree to name them by (`refs/reference-names.tsx`), each read by the
  * rule a chip naming the target is named by (`treeContext`), so a link and a chip naming one
- * target never disagree: the chip of each answered target, named by `chipNaming`.
+ * target never disagree, save that a chip draws the page's word for a whole document in place
+ * of its name (`ReferenceNameReading.chipWord`): the chip of each answered target, named by
+ * `chipNaming`.
  */
 export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "asked"> {
   const context = treeContext(reads);
