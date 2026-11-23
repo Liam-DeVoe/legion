@@ -1,3 +1,4 @@
--- This migration adds two columns with constant defaults and a not valid check to eval_versions,
--- and states evals_current again over them. It reads no stored row, and refuses and rewrites none.
+-- This migration adds two columns to eval_versions with constant defaults it then drops, a not
+-- valid check, a function and a trigger before each insert, and states evals_current again over
+-- the columns. It reads no stored row, and refuses and rewrites none.
 select 0;

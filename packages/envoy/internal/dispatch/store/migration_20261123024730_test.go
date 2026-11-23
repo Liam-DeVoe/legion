@@ -14,9 +14,11 @@ const evalChartsAnswerVersion = 20261123024730
 
 // The migration over versions the release before it wrote: its census counts 0; every version
 // then reads no charts (an empty list) and no answer (an empty text) through eval_versions and
-// evals_current, and every other column as it was; an insert that names neither column, as the
-// release before writes one during the roll, holds both defaults; one that names them holds them
-// and is the eval's current version; and charts that are no list are refused by
+// evals_current, and every other column as it was. After it, an insert that names neither column,
+// as the release before writes one during the roll or after a rollback, carries the charts and
+// the answer of the eval's newest earlier version forward, and a first version written so holds
+// an empty list and an empty text; an insert that names them keeps what it names, an empty list
+// and an empty text among them; and charts that are no list are refused by
 // eval_versions_charts_array.
 func TestTheChartsMigrationGivesEveryVersionNoChartsAndNoAnswer(t *testing.T) {
 	ctx := context.Background()
@@ -61,28 +63,43 @@ func TestTheChartsMigrationGivesEveryVersionNoChartsAndNoAnswer(t *testing.T) {
 		}
 	}
 
+	// In turn: the release before's insert after a version with no charts; a version naming
+	// charts and an answer; the release before's insert after it; the release before's insert of
+	// an eval's first version; and a version naming no charts and no answer as values.
 	if _, err := store.Pool.Exec(ctx, releaseBeforeInsert, "EVAL/review-rounds", 2, "review-rounds", "Rounds"); err != nil {
 		t.Fatalf("insert a version as the release before writes one: %v", err)
 	}
-	if _, err := store.Pool.Exec(ctx, `
+	const namedInsert = `
 		insert into eval_versions (eval_id, version, project_key, slug, name, kind, source, written_via, written_by, charts, answer)
-		values ('EVAL/wait-time', 3, 'EVAL', 'wait-time', 'Wait time', 'experiment', 'logged', 'register', '{"kind":"user","id":"alice"}',
-			'[{"id": "wait", "kind": "xy", "title": "Wait", "y": {"series": "wait"}}]', 'Most waits end within an hour.')
-	`); err != nil {
+		values ('EVAL/wait-time', $1, 'EVAL', 'wait-time', 'Wait time', 'experiment', 'logged', 'register', '{"kind":"user","id":"alice"}', $2, $3)`
+	if _, err := store.Pool.Exec(ctx, namedInsert, 3,
+		`[{"id": "wait", "kind": "xy", "title": "Wait", "y": {"series": "wait"}}]`, "Most waits end within an hour."); err != nil {
 		t.Fatalf("insert a version with charts and an answer: %v", err)
 	}
+	if _, err := store.Pool.Exec(ctx, releaseBeforeInsert, "EVAL/wait-time", 4, "wait-time", "Wait time (the release before)"); err != nil {
+		t.Fatalf("insert a version after it as the release before writes one: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, releaseBeforeInsert, "EVAL/queue-depth", 1, "queue-depth", "Queue depth"); err != nil {
+		t.Fatalf("insert a first version as the release before writes one: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, namedInsert, 5, `[]`, ""); err != nil {
+		t.Fatalf("insert a version naming no charts and no answer: %v", err)
+	}
+	const written = `select string_agg(eval_id || ' v' || version || ' ' || jsonb_array_length(charts) || ' ' || quote_literal(answer), ', ' order by eval_id, version) from eval_versions`
+	if got, want := readText(t, store, written), "EVAL/queue-depth v1 0 '', EVAL/review-rounds v1 0 '', EVAL/review-rounds v2 0 '', "+
+		"EVAL/wait-time v1 0 '', EVAL/wait-time v2 0 '', EVAL/wait-time v3 1 'Most waits end within an hour.', "+
+		"EVAL/wait-time v4 1 'Most waits end within an hour.', EVAL/wait-time v5 0 ''"; got != want {
+		t.Errorf("the versions after the inserts = %s\nwant %s", got, want)
+	}
 	const newest = `select string_agg(eval_id || ' v' || version || ' ' || jsonb_array_length(charts) || ' ' || quote_literal(answer), ', ' order by eval_id) from evals_current`
-	if got, want := readText(t, store, newest), `EVAL/review-rounds v2 0 '', EVAL/wait-time v3 1 'Most waits end within an hour.'`; got != want {
-		t.Errorf("evals_current after the two inserts = %s, want %s", got, want)
+	if got, want := readText(t, store, newest), `EVAL/queue-depth v1 0 '', EVAL/review-rounds v2 0 '', EVAL/wait-time v5 0 ''`; got != want {
+		t.Errorf("evals_current after the inserts = %s, want %s", got, want)
 	}
 
-	_, err := store.Pool.Exec(ctx, `
-		insert into eval_versions (eval_id, version, project_key, slug, kind, source, written_via, written_by, charts)
-		values ('EVAL/wait-time', 4, 'EVAL', 'wait-time', 'experiment', 'logged', 'register', '{"kind":"user","id":"alice"}', '{"id": "wait"}')
-	`)
+	_, err := store.Pool.Exec(ctx, namedInsert, 6, `{"id": "wait"}`, "")
 	var refused *pgconn.PgError
 	if !errors.As(err, &refused) || refused.Code != "23514" || refused.ConstraintName != "eval_versions_charts_array" {
 		t.Fatalf("an insert of charts that are an object answered %v, want check_violation of eval_versions_charts_array", err)
 	}
-	t.Logf("census 0; every version reads no charts and no answer; the release before's insert holds the defaults; an object refused: %s", refused.Message)
+	t.Logf("census 0; every version reads no charts and no answer; the release before's insert carries both forward; an object refused: %s", refused.Message)
 }

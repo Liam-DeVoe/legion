@@ -436,9 +436,10 @@ func insertDefinition(ctx context.Context, tx pgx.Tx, definition Definition) (De
 
 // definitionInsert is the statement that writes definition as a new version, and its arguments.
 // A definition whose Charts is nil, one made by a read that did not read them (the seed's, a
-// register write's that sets no charts, a readings write's first registration), writes the charts
-// of the eval's newest version, or `[]` for its first: its writer holds the eval's lock, so that
-// version is the one it read.
+// register write's that sets no charts, a readings write's first registration), sends a null
+// charts, which the table's trigger before each insert sets to the charts of the eval's newest
+// version, or `[]` for its first (eval_versions_carry_forward, migration 20261123024730): its
+// writer holds the eval's lock, so that version is the one it read.
 func definitionInsert(definition Definition) (string, []any, error) {
 	failureModes, err := json.Marshal(nonNil(definition.FailureModes))
 	if err != nil {
@@ -461,9 +462,7 @@ func definitionInsert(definition Definition) (string, []any, error) {
 			doc_block, failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person,
 			issue_key, kind, source, state, replaced_by, links, written_via, written_by, set_by_person, answer, charts)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14, $15, $16, $17,
-			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25, $26, $27,
-			coalesce($28::jsonb, (select newest.charts from eval_versions newest where newest.eval_id = $1
-				order by newest.version desc limit 1), '[]'::jsonb))`, []any{
+			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25, $26, $27, $28)`, []any{
 		definition.EvalID, definition.Version, definition.ProjectKey, definition.Slug, definition.Name,
 		definition.Question, definition.NumberRule, definition.Decision, definition.DocBlock, failureModes,
 		definition.Unit, definition.Direction, definition.Target, definition.TargetInclusive,
