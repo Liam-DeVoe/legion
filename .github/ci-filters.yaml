@@ -2095,6 +2095,9 @@ listener_server_change:
   - '.github/workflows/ci-job-listener-server-change.yaml'
   - *go_workspace
   - *listener_command
+  # The fake curl the startup probe's test runs (pod_startup_probe_test.go), the testdata of a
+  # package the soak's go test compiles.
+  - 'packages/envoy/cmd/listener/testdata/**'
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
   - 'packages/envoy/going/*'
   - 'packages/envoy/internal/routing/*'

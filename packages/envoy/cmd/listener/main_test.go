@@ -5127,26 +5127,33 @@ func setupTestNATS(t *testing.T) *bus.Client {
 }
 
 // listenerTestParallelism is how many of this package's tests run at once when the command line
-// names no -parallel. Every test calls t.Parallel except those that change or read back something
-// the whole process shares (t.Setenv, the log package's output, the default logger, the entries
-// of takeoverUnrecordedWarnings a test asserts on) or that hold a wall-clock upper bound close to
-// what they wait for (a close, a probe count or a recovery within a second or two), which stay
-// serial and run before the rest. A test here spends most of its time waiting on NATS, a listener
-// process or Postgres, not on a core, and each has a JetStream account of its own (testnats.URL) or
-// a server of its own. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on
-// a dev box, where every test's account, rig and Dispatch database at once would swamp the one
-// shared server.
+// names no -parallel. Every untagged test calls t.Parallel except those that change or read back
+// something the whole process shares (t.Setenv, the log package's output, the default logger, the
+// entries of takeoverUnrecordedWarnings a test asserts on) or that hold a wall-clock bound within a
+// second or two of what they wait for (a close, a probe count, a recovery, a relay's receipt wait
+// of 500 ms), which stay serial and run before the rest. The natslive rows keep the choice each
+// already made: the nine of relay_socket_live_test.go are parallel, the others serial. A test here
+// spends most of its time waiting on NATS, a listener process or Postgres, not on a core, and each
+// has a JetStream account of its own (testnats.URL) or a server of its own. go test's default of
+// GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's account, rig
+// and Dispatch database at once would swamp the one shared server.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const listenerTestParallelism = 8
 
+// listenerTestAccounts is how many accounts the package's shared NATS server declares when it
+// starts. A run asks for about 600, one for each test and subtest that calls testnats.URL; a server
+// that starts with fewer declares more by a reload, which holds every client of the server for up
+// to 1.7 s while parallel tests run beside it (testnats.Accounts).
+const listenerTestAccounts = 1024
+
 // TestMain sets the package's default -parallel and removes the NATS server the package's tests
-// share (testnats.Main).
+// share (testnats.Main), which it starts with listenerTestAccounts accounts.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(listenerTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(testnats.Main(m))
+	os.Exit(testnats.Main(m, testnats.Accounts(listenerTestAccounts)))
 }
 
 // endInterestWatcherWhileConnected ends the interest registry's KV watcher while NATS stays

@@ -603,7 +603,6 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 // unanswered frame and the one stored during the pause, in stream order, which a session that is
 // answering again takes once.
 func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *testing.T) {
-	t.Parallel()
 	// Shorter than the production bounds, long enough that the silent window below ends before
 	// the first probe: the relay sends again receipt + pauseFirst after the frame it got no
 	// answer for. The receipt wait is this row's own rather than production's three seconds,
@@ -645,7 +644,6 @@ func TestSessionConsumerUnreachableSessionPausesAndSendsAgainAfterItsBackoff(t *
 
 // A registration resumes a paused relay at once, long before its backoff would send again.
 func TestSessionConsumerUnreachableSessionResumesAtOnceWhenItRegisters(t *testing.T) {
-	t.Parallel()
 	// A backoff no test waits out: only the registration can make the relay send again here.
 	// The receipt wait is this row's own, as in the row above.
 	const receipt = 500 * time.Millisecond
@@ -825,6 +823,8 @@ func TestSessionConsumerRelayLosingItsSessionReturnsTheMessageItHolds(t *testing
 // written at and both halves of the error it carries, not only which of the two lines is
 // written, because the level and the error are what a reader and an alert key on.
 func TestSessionConsumerRelayHandOverThatReachesNoServerSaysSo(t *testing.T) {
+	t.Parallel()
+	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frame
 	// it holds, before the row takes the session away.
 	rig := newRelayRigReceipt(t, relayPauseFirst, relayPauseMax, 30*time.Second)
 	sessionID := "ses_relay_handover_lost_" + id.New()
