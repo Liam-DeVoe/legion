@@ -2646,7 +2646,7 @@ func (c *Client) PublishCoreContext(ctx context.Context, subject string, item co
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return err
 	}
-	conn := c.Conn
+	conn := c.Connection()
 	return c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: data}, conn.PublishMsg)
 }
 
@@ -2719,7 +2719,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 		return nil, err
 	}
 	deadline, _ := ctx.Deadline()
-	conn := c.Conn
+	conn := c.Connection()
 	life := lifeOf(conn).current()
 	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
@@ -2800,6 +2800,7 @@ func (f *PendingForward) Wait() (StoredAck, error) {
 			// comes. Any other reply that is no acknowledgement (readPublishAcknowledgement) is
 			// passed over.
 			if ack.Stream != "" && ack.Duplicate {
+				replied = true
 				return StoredAck{}, fmt.Errorf("%w: %w", ErrForwardNotStored, ErrDuplicateWithoutSequence)
 			}
 			continue

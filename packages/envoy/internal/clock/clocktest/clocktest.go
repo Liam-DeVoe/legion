@@ -1,8 +1,5 @@
-// Package clocktest is Envoy's one fake clock: a clock.Clock that moves only when the test
-// moves it, and that tells the test what the code has armed on it.
-// packages/daemon/internal/clock/clocktest and packages/envoy/internal/clock/clocktest hold the same
-// code, because Go's internal rule keeps one module from importing the other's (packages/envoy/infra
-// imports Envoy's through its replace), so a change to one is made to the other.
+// Package clocktest holds the fakes of clock.Clock: clocks that move only when the test moves
+// them, and that tell the test what the code has armed on them.
 //
 // # Two fakes
 //

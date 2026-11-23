@@ -923,3 +923,70 @@ func TestAClientsRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t 
 	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "every request's inbox to be gone once the hold was released",
 		func() bool { return conn.NumSubscriptions() == before })
 }
+
+// A forward whose stream answers it over a live link as a duplicate with no sequence
+// (ErrDuplicateWithoutSequence) ends its inbox on Wait's own goroutine, as every reply taken over a
+// live link does (endReplies). Wait's return for that answer set no replied, so Wait unsubscribed
+// on a goroutine of its own and answered with its inbox still subscribed.
+//
+// The row forwards to a subject a responder answers with a duplicate that names no sequence, as
+// nats-server v2.10.29 answered an id it had staged at 0. Once that answer is in the forward's
+// inbox, the row holds nats.go's connection lock with a write (HoldWriteLock), on a connection that
+// stays connected, and calls Wait. The unsubscribe waits for that lock, so Wait gives no answer
+// while the write holds it. Once the write lets the lock go, Wait answers ErrForwardNotStored
+// wrapping ErrDuplicateWithoutSequence, and its inbox is gone.
+//
+// The controls: the lock is still held (RequireLockHeld), and the connection is still in the life
+// the inbox was subscribed in, when the row stops its wait for an answer. The negative control is
+// the return as it was, with no replied: Wait answers while the write holds the lock, and its
+// inbox is still subscribed.
+func TestAForwardAnsweredADuplicateWithNoSequenceEndsItsInboxOnItsGoroutine(t *testing.T) {
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	responder := testnats.Connect(t, testnats.URL(t))
+	subject := fmt.Sprintf("held-write.duplicate.%d", time.Now().UnixNano())
+	if _, err := responder.Subscribe(subject, func(msg *nats.Msg) {
+		_ = msg.Respond([]byte(`{"stream":"ENVOY_NOTIFICATIONS","seq":0,"duplicate":true}`))
+	}); err != nil {
+		t.Fatalf("subscribe the responder: %v", err)
+	}
+	if err := responder.Flush(); err != nil {
+		t.Fatalf("flush the responder: %v", err)
+	}
+	item := contracts.Envelope{EventID: "evt-held-write-duplicate", Topic: subject}
+	forward, err := client.StartRequestStoredTo(subject, item, "held-write-duplicate", time.Minute)
+	if err != nil {
+		t.Fatalf("control: the forward's send answered %v, want it sent", err)
+	}
+	testwait.WithinPolling(t, 30*time.Second, time.Millisecond, "the responder's duplicate to reach the forward's inbox",
+		func() bool {
+			pending, _, _ := forward.replies.Pending()
+			return pending > 0
+		})
+
+	thaw := hold.HoldWriteLock(t, conn)
+	answers := make(chan error, 1)
+	go func() {
+		_, err := forward.Wait()
+		answers <- err
+	}()
+	select {
+	case err := <-answers:
+		subscribed := forward.replies.IsValid()
+		thaw()
+		t.Fatalf("Wait answered %v while a write held nats.go's lock (its inbox still subscribed: %t), want it to end its inbox first, on its own goroutine", err, subscribed)
+	case <-time.After(300 * time.Millisecond):
+	}
+	testnats.RequireLockHeld(t, conn)
+	if !lifeCurrent(forward.life) {
+		t.Fatal("control: the connection left the life the forward's inbox was subscribed in while the write held the lock")
+	}
+	thaw()
+	err = testwait.Receive(t, "Wait's answer once the write let nats.go's lock go", answers)
+	if !errors.Is(err, ErrForwardNotStored) || !errors.Is(err, ErrDuplicateWithoutSequence) {
+		t.Errorf("the forward answered a duplicate with no sequence returned %v, want ErrForwardNotStored wrapping ErrDuplicateWithoutSequence", err)
+	}
+	if forward.replies.IsValid() {
+		t.Error("the forward's inbox was still subscribed when Wait answered, want it ended on Wait's goroutine")
+	}
+}

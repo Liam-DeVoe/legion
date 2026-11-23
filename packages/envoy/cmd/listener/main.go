@@ -356,7 +356,7 @@ func rebuildListenerDependencies(
 	if !client.Connected() {
 		return nats.ErrConnectionClosed
 	}
-	err := rewatchListenerKVWatchers(ctx, client.Conn, caches)
+	err := rewatchListenerKVWatchers(ctx, client.Connection(), caches)
 	if durableProbe == nil {
 		return err
 	}
@@ -828,7 +828,7 @@ const healthzBudget = 3 * time.Second
 // fails at ctx's end, so each check answers at its budget. The flush left running sends one PING
 // once nats.go lets the lock go, which changes nothing.
 func busAnswers(ctx context.Context, d *listenerDeps) error {
-	conn := d.client.Conn
+	conn := d.client.Connection()
 	_, _, err := bus.Bounded(ctx, nil, func() (struct{}, error) { return struct{}{}, conn.FlushWithContext(ctx) })
 	return err
 }

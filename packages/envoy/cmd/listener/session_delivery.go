@@ -60,10 +60,25 @@ const (
 	consumerPluginMinimumVersion = "14.1.0"
 )
 
-// sessionConsumerCallTimeout bounds the consumer calls a registration makes before it answers,
-// those of one relay restart, timed from when it holds its turn and the session's lock
-// (sessionRelays.restart), and the delete a reaped session's record, a deregistration or the
-// sweep asks for, with the bucket read before it and the repair after it (deleteConsumer).
+// sessionConsumerCallTimeout bounds the consumer calls that no client waits for: the calls of one
+// relay restart, timed from when it holds its turn and the session's lock (sessionRelays.restart),
+// the relays' list of every session consumer when this listener gains the durable binding
+// (sessionRelays.listConsumers), the sweep's list (sessionConsumerSweep.pass), and the delete a
+// reaped session's record, a deregistration or the sweep asks for, with the bucket read before it
+// and the repair after it, timed from when it holds the session's lock (deleteConsumer). It also
+// bounds the loop of a fenced filter write (storedFilterWrite), inside any earlier deadline of its
+// ctx.
+//
+// It does not end a registration's consumer calls. The registration's budget bounds each of them
+// and ends first: sendRequestBudget, 3.5 s from the request's arrival, which subscribeHandler takes
+// (listenerDeps.registrationBudgetOr, unless a test set another budget).
+//   - Each pass's read of the stream's identity and its create or update of the consumer
+//     (consumerFor) also have registrationCallBudgetOr, timed from before the wait for the
+//     session's lock. That bound is this timeout unless a test set another one.
+//   - The repair after the session's entry is written (confirmRegistered) has the budget alone.
+//   - The filter write that settles a registration the route did not answer (registerSession)
+//     also has this timeout. So does an unsubscribe's filter write (refollow), inside its route's
+//     sendRequestBudget.
 const sessionConsumerCallTimeout = 5 * time.Second
 
 // noGrantBackoff is how long, after a consumer call the server refused for want of a grant, every
