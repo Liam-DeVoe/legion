@@ -37,11 +37,17 @@ import (
 //     so `postgresql+psycopg2://u:<pw>@h/x?sslmode=…`, `postgress://…`, `pgsql://…`,
 //     `postgres//…`, `postgres;//…`, `jdbc:postgresql://…` and a BOM before `postgres:` print
 //     whole too;
+//   - a URL whose query holds a key of no such shape (queryKeyMalformed), read as pgx reads it,
+//     the spaces at its ends dropped (`&https://u:<pw>%40h=1`): pgx sends it to the server as a
+//     parameter's name, which the server prints;
 //   - a value of any key but password and sslpassword holding a URL with a user name or a password,
 //     "://" and then an "@" before the next "/", "?" or "#" (valueHoldsURLCredential), as pgx reads
 //     it from a keyword DSN or, decoded, from a URL's query: the server echoes a runtime parameter's
 //     value it refuses, given as a keyword (`datestyle=https://u:<pw>@h`) or inside options
-//     (`options='-c datestyle=https://u:<pw>@h'`), and the four values below are printed;
+//     (`options='-c datestyle=https://u:<pw>@h'`), and the four values below are printed. A space
+//     does not end it: a password holding one (`%20`, a tab, an escaped or quoted space) reaches the
+//     server whole, so two settings of options, a URL and then an address
+//     (`-c app.url=https://ci.example -c app.owner=ops@acme.example`), are refused too;
 //   - a value other than a password holding "://" anywhere (valueHoldsURL), where the value is
 //     one of the four pgx's connect error or the server prints: the user, the database (dbname or
 //     database), the host or the hostaddr, as pgx reads it from a keyword DSN or, decoded, from a
@@ -91,7 +97,7 @@ func Refusal(setting, dsn string) error {
 			" name and the server can print whole; name each setting of the query by its keyword", setting)
 	case valueHoldsURLCredential:
 		return fmt.Errorf("%s cannot be read: a value of it other than a password holds a URL with a user name or a password"+
-			" (\"://\" and then an \"@\" before the next \"/\", \"?\", \"#\" or space), which Postgres can print whole, as the server"+
+			" (\"://\" and then an \"@\" before the next \"/\", \"?\" or \"#\", a space or none), which Postgres can print whole, as the server"+
 			" prints a setting's value it refuses; give the setting no credential", setting)
 	case valueHoldsURL:
 		return fmt.Errorf("%s cannot be read: a value of it other than a password, its user, database, host or hostaddr,"+
@@ -134,6 +140,7 @@ const (
 // other value that begins, after leading space, with "postgres:" or "postgresql:" in any case is
 // a mistyped scheme; and any other value is a keyword DSN, read as pgx reads one
 // (keywordSettings), refused for a key that is no keyword's shape and then for its printed values.
+// A URL's query is refused, before its printed values, for a key that is no keyword's shape.
 // Both forms' printed values are held to the one rule set (printedRefusal).
 func refusalOf(dsn string) refusal {
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
@@ -200,9 +207,10 @@ func printedRefusal(settings []keywordSetting) refusal {
 }
 
 // urlCredential is a URL with a user name or a password in a value: "://", then an "@" before the
-// next "/", "?", "#" or space, which ends a URL's authority, so two settings of options, a URL
-// and then an address (`-c app.url=https://ci.example -c app.owner=ops@acme.example`), are none.
-var urlCredential = regexp.MustCompile(`://[^/?#\s]*@`)
+// next "/", "?" or "#", which ends a URL's authority. A space does not end it: pgx decodes a
+// password's %20 before the value reaches the server, and a tab or a quoted or escaped space
+// stands in a value as written, so a password holding one is still the URL's.
+var urlCredential = regexp.MustCompile(`://[^/?#]*@`)
 
 // hostList says whether value reads as a host list pgx dials and no credential stands in: no "@"
 // or "=" anywhere, and a ":" only in an entry (pgx splits the list at ",") that is a socket
@@ -225,7 +233,9 @@ func hostList(value string) bool {
 
 // keywordShape is the shape of every libpq keyword and Postgres parameter name: ASCII letters,
 // digits, "_" and ".", and after the first character "$", which Postgres takes in a custom
-// setting's name (guc.c's valid_custom_variable_name).
+// setting's name (guc.c's valid_custom_variable_name). A name holding a letter outside ASCII
+// (`app.naïve`), which guc.c's own check admits, is refused as libpq refuses it, since libpq is
+// the rule every split of this repository's DSN readers holds to (pg-url.json).
 var keywordShape = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_.$]*$`)
 
 // keywordSetting is one key=value pair of a keyword DSN, as pgx reads it.
@@ -332,7 +342,10 @@ func urlSettings(dsn string) []keywordSetting {
 		}
 	}
 	if query, ok := strings.CutPrefix(rest, "?"); ok && query != "" {
-		for _, pair := range strings.Split(query, "&") {
+		// pgx reads pairs until nothing is left after an "&", so one "&" at the end ends the query
+		// (`?sslmode=disable&`); two in a row, or one in the middle with nothing before the next,
+		// pgx refuses as a pair with no "=".
+		for _, pair := range strings.Split(strings.TrimSuffix(query, "&"), "&") {
 			key, value, _ := strings.Cut(pair, "=")
 			settings = append(settings, keywordSetting{urlDecoded(key), urlDecoded(value)})
 		}

@@ -117,8 +117,8 @@ func TestRefusalKeepsADSNWithNoAtPastItsUserPart(t *testing.T) {
 		"postgres://db.invalid/legion?application_name=https://ci.example/run/1",
 		"postgres://db.invalid/legion?hostaddr=::1&dbname=app:prod",
 		"host=db.invalid dbname=legion options='-c app.url=https://ci.example/run/1'",
-		"host=db.invalid dbname=legion options='-c app.url=https://ci.example -c app.owner=ops" + at + "acme.example'",
 		"postgres://db.invalid/legion?host= ::1",
+		"postgres://db.invalid/legion?sslmode=disable&",
 		"postgres://db.invalid/legion?options=-c%20app.url%3Dhttps://ci.example/run/1",
 		"host=db.invalid user=legion sslpassword=https://u:Postgres" + at + "h sslkey=/k dbname=legion",
 		"",
@@ -186,75 +186,93 @@ func TestEveryHostFormPgxTakesIsKept(t *testing.T) {
 // or a ":" outside an IP address. Each DSN that names host=127.0.0.1 port=1, or 127.0.0.1:1 in a
 // URL, is pointed at the echo server by its port.
 var printedShapes = map[string]struct{ dsn, want string }{
-	"an upper-case scheme":              {"POSTGRES://legion:madeuphead0123" + "@" + "db.invalid:5432/legion?sslmode=require", "it names the postgres scheme"},
-	"a mixed-case scheme":               {"Postgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"a space before it":                 {" postgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"a tab before it":                   {"\tpostgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"no // after it":                    {"postgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
-	"postgresql+psycopg2://":            {"postgresql+psycopg2://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgresql+asyncpg://":             {"postgresql+asyncpg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgress://":                      {"postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgre://":                        {"postgre://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"pgsql://":                          {"pgsql://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"pg://":                             {"pg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgres//":                        {"postgres//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"postgres;//":                       {"postgres;//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"jdbc:postgresql://":                {"jdbc:postgresql://db.invalid/app?user=app&password=madeuphead0123&sslmode=disable", keyMalformedWords},
-	"a BOM before postgres:":            {"\ufeffpostgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
-	"a BOM before postgres://":          {"\ufeffpostgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
-	"a misspelt second key":             {"host=127.0.0.1 port=1 postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
-	"a password of two words":           {"host=127.0.0.1 port=1 user=legion password=madeuphead0123 zqtailtwo dbname=legion", keyMalformedWords},
-	"a URL as dbname":                   {"host=127.0.0.1 port=1 dbname=postgres://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
-	"a URL as user":                     {"host=127.0.0.1 port=1 user=Postgresql://u:madeuphead0123" + "@" + "db.invalid/x dbname=x", urlWords},
-	"postgres:/ as dbname":              {"host=127.0.0.1 port=1 dbname=postgres:/app:madeuphead0123" + "@" + "db/app", databaseWords},
-	"postgres: as dbname":               {"host=127.0.0.1 port=1 dbname=postgres:u:madeuphead0123" + "@" + "db.invalid", databaseWords},
-	"postgress:// as dbname":            {"host=127.0.0.1 port=1 dbname=postgress://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
-	"pg:// as dbname":                   {"host=127.0.0.1 port=1 dbname=pg://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
-	"postgresql+asyncpg:// as dbname":   {"host=127.0.0.1 port=1 dbname=postgresql+asyncpg://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
-	"a JDBC URL as dbname":              {"host=127.0.0.1 port=1 dbname=jdbc:postgresql://app:madeuphead0123" + "@" + "db.invalid/app", urlWords},
-	"a quoted space before a URL":       {"host=127.0.0.1 port=1 dbname=' pg://u:madeuphead0123" + "@" + "h'", urlWords},
-	"an escaped space before a URL":     {`host=127.0.0.1 port=1 dbname=\ postgres://u:madeuphead0123` + "@" + "h/x", urlWords},
-	"a URL in parentheses":              {"host=127.0.0.1 port=1 dbname=(postgres://u:madeuphead0123" + "@" + "h/x)", urlWords},
-	"a URL in angle brackets":           {"host=127.0.0.1 port=1 dbname=<postgres://u:madeuphead0123" + "@" + "h/x>", urlWords},
-	"a URL with a token in its path":    {"host=127.0.0.1 port=1 dbname=https://hooks.example/madeuphead0123", urlWords},
-	"a quoted pgsql:// user":            {"host=127.0.0.1 port=1 user='pgsql://u:madeuphead0123" + "@" + "h' dbname=x", urlWords},
-	"a postgres: user":                  {"host=127.0.0.1 port=1 user=postgres:madeuphead0123 dbname=x", userHoldsColonWords},
-	"a user holding :":                  {"host=127.0.0.1 port=1 user=app:madeuphead0123 dbname=app", userHoldsColonWords},
-	"a user holding : and @":            {"host=127.0.0.1 port=1 user=app:madeuphead0123" + "@" + "db.invalid dbname=app", userHoldsColonWords},
-	"a database holding user info":      {"host=127.0.0.1 port=1 dbname=app:madeuphead0123" + "@" + "db.invalid/app", databaseWords},
-	"a database of a password and @":    {"host=127.0.0.1 port=1 dbname=madeuphead0123" + "@" + "db.invalid", databaseWords},
-	"a database key holding @":          {"host=127.0.0.1 port=1 database=app:madeuphead0123" + "@" + "db.invalid", databaseWords},
-	"a user and password host":          {"host=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", hostWords},
-	"a hostaddr holding @":              {"hostaddr=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", hostWords},
-	"a host missing a space":            {"host=127.0.0.1password=madeuphead0123 port=1 dbname=x", hostWords},
-	"a named host missing a space":      {"host=db.invalidpassword=madeuphead0123 dbname=x", hostWords},
-	"a hostaddr missing a space":        {"hostaddr=127.0.0.1password=madeuphead0123 port=1 dbname=x", hostWords},
-	"a host holding :":                  {"host=app:madeuphead0123 port=1 dbname=app", hostWords},
-	"a host list entry holding :":       {"host=/tmp,app:madeuphead0123 port=1 dbname=app", hostWords},
-	"a hostaddr holding :":              {"hostaddr=app:madeuphead0123 port=1 dbname=app", hostWords},
-	"a URL's ?user holding :":           {"postgres://127.0.0.1:1/legion?user=app:madeuphead0123", userHoldsColonWords},
-	"a URL's user info holding :":       {"postgres://app%3Amadeuphead0123" + "@" + "127.0.0.1:1/legion", userHoldsColonWords},
-	"a URL's ?dbname holding a URL":     {"postgres://127.0.0.1:1/legion?dbname=pg://u:madeuphead0123%40h", urlWords},
-	"a URL's ?dbname with a token path": {"postgres://127.0.0.1:1/legion?dbname=https://hooks.example/madeuphead0123", urlWords},
-	"a URL's path holding a URL":        {"postgres://127.0.0.1:1/pg://u:madeuphead0123%40h", urlWords},
-	"a URL's ?user holding a URL":       {"postgres://127.0.0.1:1/legion?user=jdbc:postgresql://u:madeuphead0123%40h", urlWords},
-	"a URL's ?dbname holding @":         {"postgres://127.0.0.1:1/legion?dbname=app:madeuphead0123%40db.invalid", databaseWords},
-	"a URL's ?database holding @":       {"postgres://127.0.0.1:1/legion?database=madeuphead0123%40db.invalid", databaseWords},
-	"a URL's path holding @":            {"postgres://127.0.0.1:1/app:madeuphead0123%40db.invalid", databaseWords},
-	"a URL's ?host holding :":           {"postgres://127.0.0.1:1/legion?host=app:madeuphead0123", hostWords},
-	"a URL's ?host holding @":           {"postgres://127.0.0.1:1/legion?host=app:madeuphead0123%40127.0.0.1", hostWords},
-	"a URL's ?hostaddr holding @":       {"postgres://127.0.0.1:1/legion?hostaddr=app:madeuphead0123%40127.0.0.1", hostWords},
-	"a URL's bracketed host with :":     {"postgres://[app:madeuphead0123]:1/legion", hostWords},
-	"a URL credential as a setting":     {"host=127.0.0.1 port=1 user=legion dbname=legion datestyle=https://u:madeuphead0123" + "@" + "h", urlCredentialWords},
-	"a URL credential in options":       {"host=127.0.0.1 port=1 user=legion dbname=legion options='-c datestyle=https://u:madeuphead0123" + "@" + "h'", urlCredentialWords},
-	"a URL credential glued in options": {"host=127.0.0.1 port=1 user=legion dbname=legion options='-cdatestyle=https://u:madeuphead0123" + "@" + "h/x'", urlCredentialWords},
-	"a URL's setting with a credential": {"postgres://127.0.0.1:1/legion?user=legion&datestyle=https://u:madeuphead0123%40h", urlCredentialWords},
-	"a URL's options with a credential": {"postgres://127.0.0.1:1/legion?user=legion&options=-c%20datestyle%3Dhttps://u:madeuphead0123%40h", urlCredentialWords},
-	"a URL's user after a space":        {"postgres://127.0.0.1:1/legion?sslmode=disable& user=app:madeuphead0123", userHoldsColonWords},
-	"a URL's user key with a space":     {"postgres://127.0.0.1:1/legion?user =app:madeuphead0123", userHoldsColonWords},
-	"a URL's dbname after a space":      {"postgres://127.0.0.1:1/legion?sslmode=disable& dbname=app:madeuphead0123%40h", databaseWords},
-	"a URL's host after a space":        {"postgres://127.0.0.1:1/legion?sslmode=disable& host=app:madeuphead0123", hostWords},
-	"a URL's query key holding a URL":   {"postgres://127.0.0.1:1/legion?user=legion&https://u:madeuphead0123%40h=1", queryKeyWords},
+	"an upper-case scheme":                             {"POSTGRES://legion:madeuphead0123" + "@" + "db.invalid:5432/legion?sslmode=require", "it names the postgres scheme"},
+	"a mixed-case scheme":                              {"Postgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"a space before it":                                {" postgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"a tab before it":                                  {"\tpostgresql://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"no // after it":                                   {"postgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=require", "it names the postgres scheme"},
+	"postgresql+psycopg2://":                           {"postgresql+psycopg2://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgresql+asyncpg://":                            {"postgresql+asyncpg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgress://":                                     {"postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgre://":                                       {"postgre://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"pgsql://":                                         {"pgsql://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"pg://":                                            {"pg://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgres//":                                       {"postgres//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"postgres;//":                                      {"postgres;//app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"jdbc:postgresql://":                               {"jdbc:postgresql://db.invalid/app?user=app&password=madeuphead0123&sslmode=disable", keyMalformedWords},
+	"a BOM before postgres:":                           {"\ufeffpostgres:legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
+	"a BOM before postgres://":                         {"\ufeffpostgres://legion:madeuphead0123" + "@" + "db.invalid/legion?sslmode=disable", keyMalformedWords},
+	"a misspelt second key":                            {"host=127.0.0.1 port=1 postgress://app:madeuphead0123" + "@" + "db.invalid/app?sslmode=disable", keyMalformedWords},
+	"a password of two words":                          {"host=127.0.0.1 port=1 user=legion password=madeuphead0123 zqtailtwo dbname=legion", keyMalformedWords},
+	"a URL as dbname":                                  {"host=127.0.0.1 port=1 dbname=postgres://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
+	"a URL as user":                                    {"host=127.0.0.1 port=1 user=Postgresql://u:madeuphead0123" + "@" + "db.invalid/x dbname=x", urlWords},
+	"postgres:/ as dbname":                             {"host=127.0.0.1 port=1 dbname=postgres:/app:madeuphead0123" + "@" + "db/app", databaseWords},
+	"postgres: as dbname":                              {"host=127.0.0.1 port=1 dbname=postgres:u:madeuphead0123" + "@" + "db.invalid", databaseWords},
+	"postgress:// as dbname":                           {"host=127.0.0.1 port=1 dbname=postgress://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
+	"pg:// as dbname":                                  {"host=127.0.0.1 port=1 dbname=pg://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
+	"postgresql+asyncpg:// as dbname":                  {"host=127.0.0.1 port=1 dbname=postgresql+asyncpg://u:madeuphead0123" + "@" + "db.invalid/x", urlWords},
+	"a JDBC URL as dbname":                             {"host=127.0.0.1 port=1 dbname=jdbc:postgresql://app:madeuphead0123" + "@" + "db.invalid/app", urlWords},
+	"a quoted space before a URL":                      {"host=127.0.0.1 port=1 dbname=' pg://u:madeuphead0123" + "@" + "h'", urlWords},
+	"an escaped space before a URL":                    {`host=127.0.0.1 port=1 dbname=\ postgres://u:madeuphead0123` + "@" + "h/x", urlWords},
+	"a URL in parentheses":                             {"host=127.0.0.1 port=1 dbname=(postgres://u:madeuphead0123" + "@" + "h/x)", urlWords},
+	"a URL in angle brackets":                          {"host=127.0.0.1 port=1 dbname=<postgres://u:madeuphead0123" + "@" + "h/x>", urlWords},
+	"a URL with a token in its path":                   {"host=127.0.0.1 port=1 dbname=https://hooks.example/madeuphead0123", urlWords},
+	"a quoted pgsql:// user":                           {"host=127.0.0.1 port=1 user='pgsql://u:madeuphead0123" + "@" + "h' dbname=x", urlWords},
+	"a postgres: user":                                 {"host=127.0.0.1 port=1 user=postgres:madeuphead0123 dbname=x", userHoldsColonWords},
+	"a user holding :":                                 {"host=127.0.0.1 port=1 user=app:madeuphead0123 dbname=app", userHoldsColonWords},
+	"a user holding : and @":                           {"host=127.0.0.1 port=1 user=app:madeuphead0123" + "@" + "db.invalid dbname=app", userHoldsColonWords},
+	"a database holding user info":                     {"host=127.0.0.1 port=1 dbname=app:madeuphead0123" + "@" + "db.invalid/app", databaseWords},
+	"a database of a password and @":                   {"host=127.0.0.1 port=1 dbname=madeuphead0123" + "@" + "db.invalid", databaseWords},
+	"a database key holding @":                         {"host=127.0.0.1 port=1 database=app:madeuphead0123" + "@" + "db.invalid", databaseWords},
+	"a user and password host":                         {"host=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", hostWords},
+	"a hostaddr holding @":                             {"hostaddr=app:madeuphead0123" + "@" + "127.0.0.1 port=1 dbname=app", hostWords},
+	"a host missing a space":                           {"host=127.0.0.1password=madeuphead0123 port=1 dbname=x", hostWords},
+	"a named host missing a space":                     {"host=db.invalidpassword=madeuphead0123 dbname=x", hostWords},
+	"a hostaddr missing a space":                       {"hostaddr=127.0.0.1password=madeuphead0123 port=1 dbname=x", hostWords},
+	"a host holding :":                                 {"host=app:madeuphead0123 port=1 dbname=app", hostWords},
+	"a host list entry holding :":                      {"host=/tmp,app:madeuphead0123 port=1 dbname=app", hostWords},
+	"a hostaddr holding :":                             {"hostaddr=app:madeuphead0123 port=1 dbname=app", hostWords},
+	"a URL's ?user holding :":                          {"postgres://127.0.0.1:1/legion?user=app:madeuphead0123", userHoldsColonWords},
+	"a URL's user info holding :":                      {"postgres://app%3Amadeuphead0123" + "@" + "127.0.0.1:1/legion", userHoldsColonWords},
+	"a URL's ?dbname holding a URL":                    {"postgres://127.0.0.1:1/legion?dbname=pg://u:madeuphead0123%40h", urlWords},
+	"a URL's ?dbname with a token path":                {"postgres://127.0.0.1:1/legion?dbname=https://hooks.example/madeuphead0123", urlWords},
+	"a URL's path holding a URL":                       {"postgres://127.0.0.1:1/pg://u:madeuphead0123%40h", urlWords},
+	"a URL's ?user holding a URL":                      {"postgres://127.0.0.1:1/legion?user=jdbc:postgresql://u:madeuphead0123%40h", urlWords},
+	"a URL's ?dbname holding @":                        {"postgres://127.0.0.1:1/legion?dbname=app:madeuphead0123%40db.invalid", databaseWords},
+	"a URL's ?database holding @":                      {"postgres://127.0.0.1:1/legion?database=madeuphead0123%40db.invalid", databaseWords},
+	"a URL's path holding @":                           {"postgres://127.0.0.1:1/app:madeuphead0123%40db.invalid", databaseWords},
+	"a URL's ?host holding :":                          {"postgres://127.0.0.1:1/legion?host=app:madeuphead0123", hostWords},
+	"a URL's ?host holding @":                          {"postgres://127.0.0.1:1/legion?host=app:madeuphead0123%40127.0.0.1", hostWords},
+	"a URL's ?hostaddr holding @":                      {"postgres://127.0.0.1:1/legion?hostaddr=app:madeuphead0123%40127.0.0.1", hostWords},
+	"a URL's bracketed host with :":                    {"postgres://[app:madeuphead0123]:1/legion", hostWords},
+	"a URL credential as a setting":                    {"host=127.0.0.1 port=1 user=legion dbname=legion datestyle=https://u:madeuphead0123" + "@" + "h", urlCredentialWords},
+	"a URL credential in options":                      {"host=127.0.0.1 port=1 user=legion dbname=legion options='-c datestyle=https://u:madeuphead0123" + "@" + "h'", urlCredentialWords},
+	"a URL credential glued in options":                {"host=127.0.0.1 port=1 user=legion dbname=legion options='-cdatestyle=https://u:madeuphead0123" + "@" + "h/x'", urlCredentialWords},
+	"a URL's setting with a credential":                {"postgres://127.0.0.1:1/legion?user=legion&datestyle=https://u:madeuphead0123%40h", urlCredentialWords},
+	"a URL's options with a credential":                {"postgres://127.0.0.1:1/legion?user=legion&options=-c%20datestyle%3Dhttps://u:madeuphead0123%40h", urlCredentialWords},
+	"a URL's user after a space":                       {"postgres://127.0.0.1:1/legion?sslmode=disable& user=app:madeuphead0123", userHoldsColonWords},
+	"a URL's user key with a space":                    {"postgres://127.0.0.1:1/legion?user =app:madeuphead0123", userHoldsColonWords},
+	"a URL's dbname after a space":                     {"postgres://127.0.0.1:1/legion?sslmode=disable& dbname=app:madeuphead0123%40h", databaseWords},
+	"a URL's host after a space":                       {"postgres://127.0.0.1:1/legion?sslmode=disable& host=app:madeuphead0123", hostWords},
+	"a URL's query key holding a URL":                  {"postgres://127.0.0.1:1/legion?user=legion&https://u:madeuphead0123%40h=1", queryKeyWords},
+	"a URL's setting with a %20 in its password":       {"postgres://127.0.0.1:1/legion?user=legion&datestyle=https://u:madeup%20madeuphead0123%40h", urlCredentialWords},
+	"a URL's setting with a tab in its password":       {"postgres://127.0.0.1:1/legion?user=legion&datestyle=https://u:madeup%09madeuphead0123%40h", urlCredentialWords},
+	"a quoted setting with a space in its password":    {"host=127.0.0.1 port=1 user=legion dbname=legion datestyle='https://u:madeup madeuphead0123" + "@" + "h'", urlCredentialWords},
+	"a statement_timeout with a space in its password": {"host=127.0.0.1 port=1 user=legion dbname=legion statement_timeout='https://u:madeup madeuphead0123" + "@" + "h'", urlCredentialWords},
+	"options with an escaped space in a password":      {`host=127.0.0.1 port=1 user=legion dbname=legion options='-c datestyle=https://u:madeup\\ madeuphead0123` + "@" + `h'`, urlCredentialWords},
+}
+
+// A custom parameter's name holding a letter outside ASCII (`app.naïve`), which guc.c's own check
+// admits and libpq refuses, is refused as libpq refuses it, in a keyword DSN and in a URL's query.
+func TestANonASCIIParameterNameIsRefusedAsLibpqRefusesIt(t *testing.T) {
+	for dsn, want := range map[string]string{
+		"host=db.invalid dbname=legion app.naïve=1":     keyMalformedWords,
+		"postgres://db.invalid/legion?app.na%C3%AFve=1": queryKeyWords,
+	} {
+		if err := Refusal("postgres_dsn", dsn); err == nil || !strings.HasPrefix(err.Error(), "postgres_dsn cannot be read: "+want) {
+			t.Errorf("Refusal(%q) = %v, want it refused: %s", dsn, err, want)
+		}
+	}
 }
 
 const (
@@ -377,8 +395,11 @@ func echoOf(parameters map[string]string) *pgproto3.ErrorResponse {
 	if user := parameters["user"]; user != echoUser {
 		return fatal("28000", "role \""+user+"\" does not exist")
 	}
-	if style, ok := startupDateStyle(parameters); ok && !dateStyle.MatchString(style) {
+	if style, ok := startupSetting(parameters, "datestyle"); ok && !dateStyle.MatchString(style) {
 		return fatal("22023", "invalid value for parameter \"DateStyle\": \""+style+"\"")
+	}
+	if timeout, ok := startupSetting(parameters, "statement_timeout"); ok && !timeoutValue.MatchString(timeout) {
+		return fatal("22023", "invalid value for parameter \"statement_timeout\": \""+timeout+"\"")
 	}
 	return fatal("3D000", "database \""+parameters["database"]+"\" does not exist")
 }
@@ -386,23 +407,55 @@ func echoOf(parameters map[string]string) *pgproto3.ErrorResponse {
 // dateStyle is the shape of a DateStyle a server takes: words such as ISO and MDY, with commas.
 var dateStyle = regexp.MustCompile(`^[A-Za-z, ]+$`)
 
-// startupDateStyle is the datestyle a startup sets, as a parameter of its own or as `-c
-// datestyle=<value>` (or `-cdatestyle=<value>`) among its options, and whether it sets one.
-func startupDateStyle(parameters map[string]string) (string, bool) {
-	if style, ok := parameters["datestyle"]; ok {
-		return style, true
+// timeoutValue is the shape of a statement_timeout a server takes: a number and maybe a unit.
+var timeoutValue = regexp.MustCompile(`^[0-9]+ *[a-z]*$`)
+
+// startupSetting is the value a startup sets for name, as a parameter of its own or as `-c
+// name=<value>` (or `-cname=<value>`) among its options, which the server splits at spaces a
+// backslash does not take (pg_split_opts), and whether it sets one.
+func startupSetting(parameters map[string]string, name string) (string, bool) {
+	if value, ok := parameters[name]; ok {
+		return value, true
 	}
-	words := strings.Fields(parameters["options"])
+	words := optionWords(parameters["options"])
 	for i, word := range words {
 		setting, ok := strings.CutPrefix(word, "-c")
 		if ok && setting == "" && i+1 < len(words) {
 			setting = words[i+1]
 		}
-		if style, ok := strings.CutPrefix(setting, "datestyle="); ok {
-			return style, true
+		if value, ok := strings.CutPrefix(setting, name+"="); ok {
+			return value, true
 		}
 	}
 	return "", false
+}
+
+// optionWords is options split as the server's pg_split_opts splits it: at spaces, a backslash
+// taking the next character into the word.
+func optionWords(options string) []string {
+	var words []string
+	var word strings.Builder
+	escaped := false
+	for _, r := range options {
+		switch {
+		case escaped:
+			word.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			escaped = true
+		case r == ' ' || r == '\t':
+			if word.Len() > 0 {
+				words = append(words, word.String())
+				word.Reset()
+			}
+		default:
+			word.WriteRune(r)
+		}
+	}
+	if word.Len() > 0 {
+		words = append(words, word.String())
+	}
+	return words
 }
 
 // leaked reports whether text holds part of a made-up password of these rows.
