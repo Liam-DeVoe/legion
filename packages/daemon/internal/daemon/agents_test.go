@@ -297,13 +297,15 @@ func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
 	}
 }
 
-// phaseRow is what entryRose reads of one phases row: the claim it names and its entry.
+// phaseRowNow is what entryRose reads of one phases row: the claim it names and its entry.
 type phaseRowNow struct {
 	claim string
 	entry int64
 }
 
-// phaseRowsNow is each phases row of the walk's issue, by role, as the store holds it now.
+// phaseRowsNow is the phases rows of the walk's issue, by role, as the store holds them now. It
+// keeps one row of each role, so it reads only walks whose roles each stand at one step, as
+// `implementer:a tester:a reviewer`'s do.
 func (r *ownerStepsRig) phaseRowsNow() map[claim.Role]phaseRowNow {
 	t := r.t
 	t.Helper()

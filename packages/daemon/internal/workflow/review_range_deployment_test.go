@@ -44,8 +44,8 @@ func reportsAtEntry(t *testing.T, pool *pgxpool.Pool, engine *Engine, id, key st
 }
 
 // stepReviewedHead is the commit the newest run of role's review step of key read, as role's
-// phases row holds it (phases.reviewed_head, which recordStepReview writes): a role runs at most one
-// step of an issue.
+// phases row holds it (phases.reviewed_head, which recordStepReview writes): role stands at one
+// step of each plan here, so it has one row.
 func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) string {
 	t.Helper()
 	var head string
