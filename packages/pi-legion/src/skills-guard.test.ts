@@ -1035,6 +1035,17 @@ test("the decomposition guide asks for a reader of a child's spec where the read
   expect(decomposition).not.toContain('1. Have a fresh `task(agent="plan-reviewer")`');
 });
 
+// The children-first rule holds only a first phase that has not started
+// (record.ChildrenFirstCandidates): a child's architect starts with its issue's first phase, and
+// the children it files run beside that work. So the skill says the phase does not start.
+test("the architect skill says an open child keeps a parent's first phase from starting", () => {
+  const skill = collapsed(path.join(staged, "legion-architect", "SKILL.md"));
+  expect(skill).toContain(
+    "A parent's own first phase does not start while Dispatch shows an open child under it (the `children-first` row)."
+  );
+  expect(skill).not.toContain("first phase waits while Dispatch shows an open child");
+});
+
 // The wake table sends the three notices an owner's plan adds to the reference that holds their
 // handling, and a conflict merged forward in `accepting` to the reference that waits for a review
 // only where the task has a reviewer step.
