@@ -153,8 +153,8 @@ func TestARemovedIdThatComesBackTakesANewName(t *testing.T) {
 
 // A carried copy of a generation keeps a running task's branch, the needs whose join conflicted and
 // every name the generation gave, since the carried run goes on in its working copies. The copy that
-// starts the plan from its start keeps none of them, so the first task of the new generation to
-// start takes the issue's branch again.
+// starts the plan from its start keeps no task's branch, and its plan holds task a alone, so a takes
+// the issue's branch again, as the one task of a plan of one always does.
 func TestACarriedTaskKeepsItsBranch(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

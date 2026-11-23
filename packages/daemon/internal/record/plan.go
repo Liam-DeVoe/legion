@@ -24,9 +24,11 @@ import (
 // daemon records its issue: such a plan is written at generation 0. An issue that ran before plans
 // has no rows, and goes on as it did then. The count of starts of a step is not the plan's: it lives
 // in step_starts alone, at the place TaskPlace.StepPlace names. Beside them, plan_branches holds
-// each branch name a generation gave to a task (store migration 20261121165047_task_copies): only
-// AssignTaskBranch writes it and decides by it, a carried CarryPlan copies it, and neither
-// DeleteTasks nor DeletePlan deletes it. A task's hold and the wait of the step at its place are
+// each branch name a generation of the issue gave (store migration 20261121165047_task_copies):
+// AssignTaskBranch writes it at each name it gives and decides by every generation's rows,
+// RecordBranchGiven writes the branch of each pull request of an earlier run whose row a run
+// started again deletes, a carried CarryPlan copies it, and neither DeleteTasks nor DeletePlan
+// deletes it. A task's hold and the wait of the step at its place are
 // columns of its row (store migration 20261117224125_task_held).
 
 const (
@@ -189,14 +191,21 @@ func (t PlanTask) BranchOf(issueKey string) string {
 }
 
 // AssignTaskBranch gives task of the plan of issue at generation its GitHub branch and answers it:
-// the branch its row holds already, else the first name the generation has not given to any task,
-// in this order: the issue's own branch (claim.IssueBranch), then each give of the task's slug
-// (claim.TaskBranchOfGive over plan.TaskSlug), legion/<issue>.<slug> first. The name is written on
-// the task's row and among the names the generation gave (plan_branches), which no later removal
-// of the task deletes: GitHub keeps a branch and its commits, so a name given is never given to
-// another task of the generation. Each branch another task of the generation holds is given too
-// (BranchOf): a task that a release before this one started works on the issue's own branch with
-// no branch on its row, so the issue's branch counts as given while such a task stands. The
+// the branch its row holds already, else the first name not given, in this order: the issue's own
+// branch (claim.IssueBranch), then each give of the task's slug (claim.TaskBranchOfGive over
+// plan.TaskSlug), legion/<issue>.<slug> first. GitHub keeps a branch and its commits, so a name
+// given is never given to another task of the issue, at any generation: a name is given where any
+// generation of the issue gave it (plan_branches, which neither a later removal of the task nor a
+// carry of the plan from its start deletes, and where RecordBranchGiven keeps the branch of each
+// pull request of an earlier run whose row a run started again deletes, a run before tasks had
+// branches of their own among them), and where another task of the generation holds it. Each
+// branch another task of the generation holds is read by BranchOf: a task that a release before
+// this one started works on the issue's own branch with no branch on its row, so the issue's
+// branch counts as given while such a task stands. The one task of a plan of one task takes the
+// issue's own branch whatever an earlier generation gave it to, as an issue always did, so an
+// issue run again goes on on its branch and the open pull request a new generation keeps there
+// (ClearGeneration); a later version that adds tasks to that plan gives them names no generation
+// gave. The name is written on the task's row and among the names the generation gave. The
 // generation's task rows are locked first, so two transactions that start two tasks of the issue
 // at one time give their names one after the other. A task the plan does not hold is refused,
 // naming it.
@@ -233,7 +242,14 @@ func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string
 	if !held {
 		return "", fmt.Errorf("%s: the plan holds no such task", describe)
 	}
-	names, err := tx.Query(ctx, `select branch from plan_branches where issue = $1 and generation = $2`, issue, int64(generation))
+	// own is the issue's branch where the plan holds this task alone, which no name an earlier
+	// generation gave takes from it.
+	own := ""
+	if len(tasks) == 1 {
+		own = claim.IssueBranch(issue)
+	}
+	names, err := tx.Query(ctx, `select branch from plan_branches where issue = $1 and (generation = $2 or branch <> $3)`,
+		issue, int64(generation), own)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", describe, err)
 	}
@@ -257,6 +273,19 @@ func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string
 		return "", fmt.Errorf("%s: %w", describe, err)
 	}
 	return branch, nil
+}
+
+// RecordBranchGiven records branch among the names generation of issue gave (plan_branches), so
+// AssignTaskBranch never gives it to a task of the issue again: the branch of a pull request of an
+// earlier run whose row the first step of a run started again deletes (the workflow's
+// closeEarlierPullRequests), which GitHub keeps with its commits while no row of the record names
+// it any longer. A name recorded already is left as it is.
+func (s *Postgres) RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error {
+	if _, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3) on conflict do nothing`,
+		issue, int64(generation), branch); err != nil {
+		return fmt.Errorf("record %s among the names %s gave at generation %d: %w", branch, issue, generation, err)
+	}
+	return nil
 }
 
 // SetJoinConflicts writes needs as the needs of task of the plan of issue at generation whose merge
@@ -724,10 +753,12 @@ func (s *Postgres) PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Is
 // counts, its branch and the needs whose join conflicted, and the generation every name it gave a
 // task (AssignTaskBranch), since the run goes on in those branches. Without carried, the plan
 // starts from its start: each task waits at no act with no hold, no step wait, every count 0 and
-// no branch, and no name is given yet, so the first task of to that starts takes the issue's
-// branch again. Neither copies a count of starts, which step_starts keeps by place alone. Where
-// from has no plan rows it writes nothing, so an issue that ran before plans goes on as it did; a
-// generation to that holds a plan already is refused.
+// no branch, and to has given no name yet. The names from gave stay given to the issue
+// (AssignTaskBranch reads them at every generation), so no task of a plan of several takes one of
+// them, the issue's branch among them, while the one task of a plan of one takes the issue's
+// branch, as an issue always did. Neither copies a count of starts, which step_starts keeps by
+// place alone. Where from has no plan rows it writes nothing, so an issue that ran before plans
+// goes on as it did; a generation to that holds a plan already is refused.
 func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
 	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
 	if from == to {
