@@ -82,7 +82,9 @@ async function expectCount(page: Page, count: number): Promise<void> {
 
 /** The number the bar counts, read off its own words, or null while it draws no bar. */
 async function barCount(page: Page): Promise<number | null> {
+  // Its one caller is an `expect.poll`, which reads again while the bar is not drawn yet.
   if ((await bar(page).count()) === 0) return null;
+  // The same poll reads the bar's words again until they count the run it waits for.
   const counted = /(\d+) selected/.exec((await bar(page).textContent()) ?? "");
   return counted === null ? null : Number(counted[1]);
 }
@@ -650,8 +652,17 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
     const drawn = await drawnIds(inboxList(page));
     const selectedText = () => page.evaluate(() => window.getSelection()?.toString() ?? "");
 
-    // A click and a shift-click ten rows apart: both landed, and no text is selected.
+    // The third row's quoted words: the root's words the card quotes.
+    const words = row(page, drawn[2] ?? "")
+      .getByRole("paragraph")
+      .filter({ hasText: /^Mirror root \d+$/ });
+
+    // A click, a click in the third row's quoted words, and a shift-click ten rows from the
+    // first: both checkbox presses landed, and no text is selected. The click in the words puts
+    // the caret in text, as a reader's earlier click does, so a shift-click the page did not stop
+    // would select the text from that caret to the checkbox.
     await mark(page, drawn[0] ?? "").click();
+    await words.click();
     await mark(page, drawn[10] ?? "").click({ modifiers: ["Shift"] });
     await expectCount(page, 11);
     expect(await selectedText(), "the page's selected text").toBe("");
@@ -660,10 +671,7 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
       `the shift-clicked checkbox holds the focus; the focus is on ${await describeFocus(page)}`
     ).toBe(true);
 
-    // A drag across one row's text still selects it: the root's words the card quotes.
-    const words = row(page, drawn[2] ?? "")
-      .getByRole("paragraph")
-      .filter({ hasText: /^Mirror root \d+$/ });
+    // A drag across one row's text still selects it: the third row's quoted words.
     // The count of eleven above waited for the list's rows, and nothing moves this card before
     // the drag.
     const box = await words.boundingBox();
