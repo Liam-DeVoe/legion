@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -111,6 +112,7 @@ func (f *MachineFile) credential() *machineCredential {
 type loginState struct {
 	Code, State         string    // the most recent login; State: pending|issued|denied|expired
 	VerificationURI     string    // where a person types Code: the device authorization's verification_uri; set while the login is pending
+	Reason              string    // beside an "expired" State, how many polls in a row before the code lapsed the broker did not answer or answered with an outage (pollsUnreached); "" otherwise
 	CredentialHeld      bool      // the helper holds a launcher credential, whichever login installed it
 	CredentialExpiresAt time.Time // when the held credential lapses without a refresh; zero while none is held
 	Refused             bool      // Dropped != ""
@@ -213,6 +215,10 @@ type Broker struct {
 	// testSave, when set, replaces MachineFile.Save for every save of the machine file, so a test
 	// fails a save the way a full disk does (the unlink still works). No production caller sets it.
 	testSave func(f *MachineFile, path string) error
+	// testDeviceAccessToken, when set, replaces x/oauth2's DeviceAccessToken for every call of
+	// pollLogin, so a test reads the da.Interval each call starts from and answers it as it chooses
+	// without waiting out x/oauth2's ticker. No production caller sets it.
+	testDeviceAccessToken func(ctx context.Context, da *oauth2.DeviceAuthResponse) (*oauth2.Token, error)
 
 	// unsaved is the held login whose save failed, while no save has landed since. The failed
 	// save removed the machine file at once (unsaveFile), since it named a token the broker had
@@ -520,7 +526,8 @@ func (b *Broker) LoginStatus() loginState {
 	if !out.CredentialHeld && dropped != "" {
 		out.Refused, out.Dropped = true, dropped
 		if out.State != "pending" {
-			out.State = "expired"
+			// The drop is newer than the login, so its cause, not the login's, is why it reads so.
+			out.State, out.Reason = "expired", ""
 		}
 	}
 	return out
@@ -530,7 +537,7 @@ func (b *Broker) LoginStatus() loginState {
 // say a session cannot enroll: NoCredentialReason of this moment's login-status.
 func (b *Broker) noCredentialReason() string {
 	ls := b.LoginStatus()
-	return NoCredentialReason(ls.State, ls.Refused, ls.Dropped)
+	return NoCredentialReason(ls.State, ls.Reason, ls.Refused, ls.Dropped)
 }
 
 // recordLogin records ls as the current machine login. Whether the login starts or settles, its
@@ -599,28 +606,94 @@ func (b *Broker) installCredential(cred *machineCredential, issued *loginState) 
 // those errors included, is the broker down and polls again; a refusal naming no error or another
 // one is the broker answering with no decision, and polls again too, until the code's lifetime
 // records "expired".
+//
+// x/oauth2's DeviceAccessToken polls on by itself through authorization_pending and slow_down, at
+// any status, adding slow_down's 5 s, and returns on any other answer; it sets its ticker once per
+// call, from da.Interval, and from 5 s where that is 0 (golang.org/x/oauth2 v0.37.0,
+// deviceauth.go:189-196). So a poll the broker did not answer, or answered with an outage, raises
+// da.Interval by 5 s before the next call: RFC 8628 section 3.5 has a client poll less often after
+// a connection timeout, and that call and every one after it poll 5 s further apart. A lapse after
+// such polls records, in the "expired" state's Reason, how many came in a row before it
+// (pollsUnreached).
 func (b *Broker) pollLogin(key *ecdsa.PrivateKey, cfg *oauth2.Config, da *oauth2.DeviceAuthResponse, operator string) {
 	ctx := b.tokenContext(context.Background(), key)
-	settle := func(state string) { b.recordLogin(&loginState{Code: da.UserCode, State: state}) }
+	settle := func(state, reason string) {
+		b.recordLogin(&loginState{Code: da.UserCode, State: state, Reason: reason})
+	}
+	poll := cfg.DeviceAccessToken
+	if b.testDeviceAccessToken != nil {
+		poll = func(ctx context.Context, da *oauth2.DeviceAuthResponse, _ ...oauth2.AuthCodeOption) (*oauth2.Token, error) {
+			return b.testDeviceAccessToken(ctx, da)
+		}
+	}
+	// unreached counts the polls in a row the broker did not answer or answered with an outage.
+	unreached := 0
 	for {
-		tok, err := cfg.DeviceAccessToken(ctx, da)
+		tok, err := poll(ctx, da)
 		if err == nil {
 			b.keepLogin(key, tok, da.UserCode, operator)
 			return
 		}
 		switch oauthrefusal.Refusal(err) {
 		case "access_denied":
-			settle("denied")
+			settle("denied", "")
 			return
 		case "expired_token", "invalid_grant":
-			settle("expired")
+			settle("expired", "")
 			return
+		}
+		// The code's lifetime ending x/oauth2's wait is no poll: it returns that context's own error,
+		// where a poll that got no answer returns its transport's (*url.Error).
+		lapsed := errors.Is(err, context.DeadlineExceeded) && !errors.As(err, new(*url.Error))
+		unanswered := !lapsed && pollUnanswered(err)
+		if unanswered {
+			unreached++
+		} else if !lapsed {
+			unreached = 0
 		}
 		if !da.Expiry.IsZero() && !time.Now().Before(da.Expiry) {
-			settle("expired")
+			settle("expired", pollsUnreached(unreached))
 			return
 		}
+		if unanswered {
+			if da.Interval == 0 {
+				da.Interval = defaultDeviceInterval
+			}
+			da.Interval += deviceIntervalStep
+		}
 	}
+}
+
+// defaultDeviceInterval is the interval, in seconds, x/oauth2 polls at where the broker names
+// none (RFC 8628 section 3.2), and deviceIntervalStep how much a poll the broker did not answer
+// adds to it (pollLogin), the 5 s RFC 8628 section 3.5 adds for a slow_down.
+const (
+	defaultDeviceInterval = 5
+	deviceIntervalStep    = 5
+)
+
+// pollUnanswered reports whether err, a device code poll's failure, is one the broker did not
+// answer now: an answer whose status is an Outage, or no answer x/oauth2 read a status from (no
+// answer at all, or one it could not read whole).
+func pollUnanswered(err error) bool {
+	var retrieve *oauth2.RetrieveError
+	if errors.As(err, &retrieve) && retrieve.Response != nil {
+		return oauthrefusal.Outage(retrieve.Response.StatusCode)
+	}
+	return true
+}
+
+// pollsUnreached is the Reason of a login that expired after n polls in a row the broker did not
+// answer or answered with an outage, in the words the TypeScript device login's lapse uses, and ""
+// for none.
+func pollsUnreached(n int) string {
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "the broker was unreachable or busy for the last poll"
+	}
+	return fmt.Sprintf("the broker was unreachable or busy for the last %d polls", n)
 }
 
 // keepLogin keeps the login an approved device grant issued at MachineFile and only then installs
