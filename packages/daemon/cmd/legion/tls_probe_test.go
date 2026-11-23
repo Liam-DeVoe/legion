@@ -2242,19 +2242,23 @@ const tlsStandInStart = time.Minute
 // began is that run's own. A read of the log that fails changes nothing, and a run that logs
 // nothing within tlsStandInStart has its limit counted from then. The clock records each run's
 // start: its line, how long after the run began the line was seen, which the run's elapsed time
-// holds and its limit does not (startsOf), and the limit it was handed (limitsOf).
+// holds and its limit does not (startsOf), the limit it was handed (limitsOf), and whether that
+// limit had passed by the time the run returned and cancelled its clock (limitPassedAtReturn).
 type standInLog struct {
 	path   string
 	mu     sync.Mutex
-	starts []standInStart
+	starts []*standInStart
 }
 
 // standInStart is one run's line in a standInLog, how long after the run asked for its limit
-// clock, just before its command started, the line was seen, and the limit the clock counted.
+// clock, just before its command started, the line was seen, and the limit the clock counted;
+// returned is whether the run has cancelled its clock, which it does once it has returned, and
+// limitPassed whether its limit had passed by then.
 type standInStart struct {
-	line  string
-	after time.Duration
-	limit time.Duration
+	line                  string
+	after                 time.Duration
+	limit                 time.Duration
+	returned, limitPassed bool
 }
 
 // newStandInLog is a standInLog at path, for the test that makes it to hand to the stand-ins, the
@@ -2295,15 +2299,20 @@ func (l *standInLog) clock(ctx context.Context, limit time.Duration) (context.Co
 		return read
 	})
 	run, pass, cancel := testwait.StandInDeadline(ctx)
+	start := &standInStart{limit: limit}
 	go func() {
 		testwait.Holds(tlsStandInStart, testwait.Poll, func() bool {
+			// The run's end is read before the log, so a run that writes its line and returns
+			// between the two reads is seen with its line.
+			ended := run.Err() != nil
 			if lines, read := l.lines(); read && len(lines) > before {
 				l.mu.Lock()
-				l.starts = append(l.starts, standInStart{line: lines[before], after: time.Since(asked), limit: limit})
+				start.line, start.after = lines[before], time.Since(asked)
+				l.starts = append(l.starts, start)
 				l.mu.Unlock()
 				return true
 			}
-			return run.Err() != nil
+			return ended
 		})
 		limited := time.NewTimer(limit)
 		defer limited.Stop()
@@ -2313,7 +2322,12 @@ func (l *standInLog) clock(ctx context.Context, limit time.Duration) (context.Co
 		case <-run.Done():
 		}
 	}()
-	return run, cancel
+	return run, func() {
+		l.mu.Lock()
+		start.returned, start.limitPassed = true, errors.Is(context.Cause(run), errTLSRunLimit)
+		l.mu.Unlock()
+		cancel()
+	}
 }
 
 // startsOf is how long after its run began each of the first n runs that logged line was seen to
@@ -2338,6 +2352,22 @@ func (l *standInLog) limitsOf(t *testing.T, line string, n int) []time.Duration 
 	return limits
 }
 
+// limitPassedAtReturn is, for each of the first n runs that logged line, in the order they ran,
+// whether its limit had passed by the time the run returned, as its own clock saw it: a fact of
+// the run, where a time read from the run's line can sit just under the limit. A run that has not
+// returned fails t.
+func (l *standInLog) limitPassedAtReturn(t *testing.T, line string, n int) []bool {
+	t.Helper()
+	var passed []bool
+	for _, start := range l.seen(t, line, n) {
+		if !start.returned {
+			t.Fatalf("the run that logged %q has not returned", line)
+		}
+		passed = append(passed, start.limitPassed)
+	}
+	return passed
+}
+
 // seen is the first n starts the clock saw of runs that logged line, in the order they ran,
 // waiting for the clock to have seen n of them.
 func (l *standInLog) seen(t *testing.T, line string, n int) []standInStart {
@@ -2349,7 +2379,7 @@ func (l *standInLog) seen(t *testing.T, line string, n int) []standInStart {
 		starts = starts[:0]
 		for _, start := range l.starts {
 			if start.line == line {
-				starts = append(starts, start)
+				starts = append(starts, *start)
 			}
 		}
 		return len(starts) >= n
@@ -3154,7 +3184,9 @@ func TestTLSProbeReadsAKilledRunThatPrintedAnAnswerAsAccepted(t *testing.T) {
 // loaded machine can stretch and the limit does not count; the line prints tenths of a second, so
 // each bound allows half a tenth. The limit the clock was handed for each run is the limit its line
 // names, read exactly: a clock handed a limit other than the one the line names fails here however
-// the run's time rounds.
+// the run's time rounds. The run a signal ended must have returned before its limit passed, as its
+// own clock records it (limitPassedAtReturn): a probe that held such a run until its limit would
+// print a time just under that limit, which the bound on the line's time cannot tell apart.
 func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -3198,6 +3230,9 @@ func TestTLSProbeLineNamesWhatEndedARunAndAfterHowLong(t *testing.T) {
 		t.Errorf("aws's emSign lines = %q, want one", lines)
 	} else if elapsed, ok := seconds(lines[0], signal); !ok || elapsed-runs.startsOf(t, "aws emSign", 1)[0].Seconds() >= 1+halfATenth {
 		t.Errorf("aws's emSign line = %q, want it to name the signal and a time under its 1s limit after its start", lines[0])
+	}
+	if passed := runs.limitPassedAtReturn(t, "aws emSign", 1)[0]; passed {
+		t.Errorf("aws's emSign run, which a signal ended at once, returned after its 1s limit had passed: the probe held a run a signal ended until its limit")
 	}
 	if lines := tlsLines(stdout, "node", aaaTLSSite.name); len(lines) != 1 || lines[0] != "probe-image: TLS client node AAA: refused ("+trimTLSDetail("exit status 1: "+nodeTLSRefusal)+")" {
 		t.Errorf("node's AAA lines = %q, want the refusal's detail as a run that exited has always had it", lines)
