@@ -25,10 +25,12 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
 - Legion starts no agent for your step.
   It sends you one `owner-step` notice: its role is the step's role (none for the retro), its phase the phase the issue stands in, and its reason the task a worker of that step would get.
 
-- The notice comes once your slot holds the GitHub App of the step's role.
-  While you do the step, your slot acts on GitHub as that App, so an implementer step opens its pull request as the implement App; at the step's end it holds your own App again.
+- The notice comes only while that step runs, once your slot holds the GitHub App of the step's role (at once for your acceptance and your retro).
+  While you do the step, your slot acts on GitHub as that App, so an implementer step opens its pull request as the implement App; at the step's end it holds your own App again, before your next notice comes.
 
-- A retry of your claim at your step sends the notice again and starts no worker.
+- While the step runs, Legion tells it to you again in the same words when you stay idle past the silence bound, and at each launch of your session.
+
+- A retry of your claim at your step (`legion claims retry`) relaunches your session and sends the notice again; it starts no worker.
 
 ## Reporting it
 
