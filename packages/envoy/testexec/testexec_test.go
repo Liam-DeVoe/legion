@@ -64,27 +64,36 @@ func TestAnExecutableWrittenWhileTheProcessForksRuns(t *testing.T) {
 	}
 }
 
+// writeUnder writes body to path under root, at 0o644, making the directories it needs: the one
+// way the guard's tests write a fixture's files.
+func writeUnder(t *testing.T, root, path, body string) {
+	t.Helper()
+	path = filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Unguarded names a write of a file with an execute bit by os.WriteFile or os.OpenFile in a test
 // file of a package whose tests call Parallel, and in any file of a test-support package, by
 // whatever name the file imports os and however the mode is spelled, and a mode it cannot
 // evaluate. It names an open by os.WriteFile, os.OpenFile, os.Create or os.CreateTemp whose file
 // the same function gives an execute bit by os.Chmod of its path or of its file's Name(), or by
-// the file's Chmod method, in a closure too, a use of one of those functions as a value, and a dot
-// import of os. It leaves out a mode with no execute bit, a Chmod with none or of a path no open of
-// the function names, a package whose tests do not run beside each other, a write by WriteFile,
-// another module below root, and this package's own WriteFile.
+// the file's Chmod method, in a closure too. It follows the file kept in a variable or a field,
+// handed through a call that wraps the open, or renamed by os.Rename before the Chmod. It names a
+// use of one of those functions as a value, and a dot import of os. It leaves out a mode with no
+// execute bit, a Chmod with none or of a path no open of the function names, a package whose tests
+// do not run beside each other, a write by WriteFile, another module below root, and this
+// package's own WriteFile.
 func TestUnguardedNamesEveryExecutableWriteATestMayRunBesideAFork(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	write := func(path, body string) {
 		t.Helper()
-		path = filepath.Join(root, path)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeUnder(t, root, path, body)
 	}
 	const parallel = "func TestParallel(t *testing.T) { t.Parallel() }\n"
 	write("go.mod", "module example.com/checked\n")
@@ -213,6 +222,36 @@ func temporaries(t *testing.T) {
 	_, _ = create("", "")
 }
 `)
+	write("beside/held_test.go", `package beside
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+type holder struct{ f *os.File }
+
+func must(f *os.File, err error) *os.File { return f }
+
+func held(t *testing.T, dir string) {
+	a, _ := os.Create(filepath.Join(dir, "a"))
+	_ = os.Chmod(a.Name(), 0o755)
+	b, _ := os.OpenFile(filepath.Join(dir, "b"), os.O_CREATE|os.O_WRONLY, 0o600)
+	_ = os.Chmod(b.Name(), 0o700)
+	var h holder
+	h.f, _ = os.CreateTemp(dir, "d")
+	_ = h.f.Chmod(0o755)
+	c := must(os.CreateTemp(dir, "c"))
+	_ = c.Chmod(0o755)
+	e, _ := os.CreateTemp(dir, "e")
+	_ = os.Rename(e.Name(), filepath.Join(dir, "run"))
+	_ = os.Chmod(filepath.Join(dir, "run"), 0o755)
+	k, _ := os.CreateTemp(dir, "k")
+	_ = os.Rename(k.Name(), filepath.Join(dir, "log"))
+	_ = os.Chmod(filepath.Join(dir, "log"), 0o600)
+}
+`)
 	got, err := Unguarded(root)
 	if err != nil {
 		t.Fatal(err)
@@ -223,7 +262,9 @@ func temporaries(t *testing.T) {
 		"beside/chmod_test.go:11", "beside/chmod_test.go:13", "beside/chmod_test.go:15",
 		"beside/chmod_test.go:22", "beside/chmod_test.go:27", "beside/chmod_test.go:9",
 		"beside/createtemp_test.go:11", "beside/createtemp_test.go:15", "beside/createtemp_test.go:9",
-		"beside/dot_test.go:4", "fakestest/fakestest.go:5",
+		"beside/dot_test.go:4",
+		"beside/held_test.go:14", "beside/held_test.go:16", "beside/held_test.go:19", "beside/held_test.go:21",
+		"beside/held_test.go:23", "fakestest/fakestest.go:5",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Unguarded named\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
@@ -237,35 +278,25 @@ func temporaries(t *testing.T) {
 // nothing. A module root with one test file and no write is named nothing and no error.
 func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
 	t.Parallel()
-	write := func(root, path, body string) {
-		t.Helper()
-		path = filepath.Join(root, path)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 	const test = "package beside\n\nimport \"testing\"\n\nfunc TestParallel(t *testing.T) { t.Parallel() }\n"
 	parent := t.TempDir()
-	write(parent, "module/go.mod", "module example.com/checked\n")
-	write(parent, "module/beside/beside_test.go", test)
+	writeUnder(t, parent, "module/go.mod", "module example.com/checked\n")
+	writeUnder(t, parent, "module/beside/beside_test.go", test)
 	noTests := t.TempDir()
-	write(noTests, "go.mod", "module example.com/no-tests\n")
-	write(noTests, "beside/beside.go", "package beside\n")
+	writeUnder(t, noTests, "go.mod", "module example.com/no-tests\n")
+	writeUnder(t, noTests, "beside/beside.go", "package beside\n")
 	nested := t.TempDir()
-	write(nested, "go.mod", "module example.com/outer\n")
-	write(nested, "inner/go.mod", "module example.com/inner\n")
-	write(nested, "inner/beside_test.go", test)
+	writeUnder(t, nested, "go.mod", "module example.com/outer\n")
+	writeUnder(t, nested, "inner/go.mod", "module example.com/inner\n")
+	writeUnder(t, nested, "inner/beside_test.go", test)
 	for _, row := range []struct{ what, root, want string }{
 		{"the parent of a module's directory", parent, "holds no go.mod"},
 		{"a directory inside a module", filepath.Join(parent, "module", "beside"), "holds no go.mod"},
-		{"a module with no test file", noTests, "read no Go test file under " + noTests},
-		{"a module whose one test file is in another module below it", nested, "read no Go test file under " + nested},
+		{"a module with no test file", noTests, "read no Go test file under"},
+		{"a module whose one test file is in another module below it", nested, "read no Go test file under"},
 	} {
 		got, err := Unguarded(row.root)
-		if err == nil || !strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), row.root) {
+		if got != nil || err == nil || !strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), row.root) {
 			t.Errorf("Unguarded on %s (%s) = %v, %v; want no names and an error naming the root and saying %q", row.what, row.root, got, err, row.want)
 		}
 	}
