@@ -931,6 +931,8 @@ func TestEnrollRefusalsCarryTheCodeAndPermanence(t *testing.T) {
 		{http.StatusForbidden, "POD_TOKEN_EXPIRED", false, true},
 		{http.StatusConflict, "ALREADY_ENROLLED", true, false},
 		{http.StatusTooManyRequests, "RATE_LIMITED", false, false},
+		// The broker, or a proxy before it, did not take the request: an outage, as a 429 is.
+		{http.StatusRequestTimeout, "REQUEST_TIMEOUT", false, false},
 		{http.StatusServiceUnavailable, "DATABASE", false, false},
 	} {
 		broker, c := newIssuedClient(t)

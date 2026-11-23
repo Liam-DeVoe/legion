@@ -7,6 +7,7 @@
 // broker and NATS credentials, and every test read them without owning the retry loop.
 
 import { scrub } from "@legion/contracts/held-secrets";
+import { outage } from "./oauth-refusal";
 import {
   isKnownBrokerRefusal,
   KNOWN_OAUTH_ERROR_CODES,
@@ -16,10 +17,6 @@ import {
 } from "./refusal-text";
 import { SIGNIN_COMMAND } from "./signins";
 import { POD_SESSION_NOT_REGISTERED } from "./wire";
-
-/** The broker's rate limit: the first of the five refusals a later trade may be answered
- *  differently. */
-const TOO_MANY_REQUESTS = 429;
 
 /** What the broker answers a proof whose `iat` is outside its 60 s skew window. */
 const INVALID_DPOP_PROOF = "invalid_dpop_proof";
@@ -48,8 +45,8 @@ const MACHINE_LOGIN_ENDED = "The machine login the subject token belongs to has 
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
- * The five exceptions are the broker's 429, its two DPoP refusals, a pod session it holds no
- * registration for yet, and a person Dispatch holds (`permanent`).
+ * The five exceptions are an outage (the broker's 429, or a 408), its two DPoP refusals, a pod
+ * session it holds no registration for yet, and a person Dispatch holds (`permanent`).
  */
 export class BrokerRefusedError extends Error {
   /** What the broker said, as a text may print it: its description where that is a known
@@ -115,10 +112,13 @@ export class BrokerRefusedError extends Error {
    * packages/envoy/internal/cipherclient/brokerclient.go), and
    * `packages/envoy/internal/cipherclient/testdata/wire.json` holds the two to that one reading.
    *
-   * The broker's 429: its token endpoint spends a bucket per source address, and a bucket
-   * refills. A client that dropped the token in hand on a 429 would write with no identity
-   * through a burst — its own, or another process's on the same machine — while the token it
-   * already held was still good.
+   * An outage ({@link outage}, Go's `oauthrefusal.Outage`): the broker's 429, and a 408, the
+   * broker or a proxy before it that did not take the request, whatever OAuth error either body
+   * names (`brokerRefusal` makes a refusal only of a 4xx, so no 5xx is one). The broker's token
+   * endpoint spends a bucket per source address, and a bucket refills. A client that dropped the
+   * token in hand on one would write with no identity through a burst — its own, or another
+   * process's on the same machine — or over one request a proxy did not pass on, while the token
+   * it already held was still good.
    *
    * `invalid_dpop_proof`, which is what the broker answers a proof whose `iat` is outside its
    * 60 s skew window. A process started before NTP has corrected the host's clock would
@@ -142,7 +142,7 @@ export class BrokerRefusedError extends Error {
    */
   get permanent(): boolean {
     return (
-      this.status !== TOO_MANY_REQUESTS &&
+      !outage(this.status) &&
       this.code !== INVALID_DPOP_PROOF &&
       this.code !== USE_DPOP_NONCE &&
       this.code !== MEMBERSHIP_HELD &&

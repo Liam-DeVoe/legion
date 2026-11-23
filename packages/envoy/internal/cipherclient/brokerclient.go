@@ -41,6 +41,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -174,10 +175,13 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
 // five.
 //
-// The broker's 429: its token endpoint spends a bucket per source address, and a bucket
-// refills. A client that stopped trading on a 429 would stop for good over a burst — its own,
-// or that of another process behind the same address — and enrol nothing once the credential
-// it holds lapsed, with nothing but a restart to cure it.
+// An outage (oauthrefusal.Outage): a 408, a broker or a proxy before it that did not take the
+// request, and the broker's 429, whatever OAuth error either body names; no 5xx is a refusal,
+// which is read only from a 4xx. The token endpoint spends a bucket per source address, and a
+// bucket refills. A client that stopped trading on one would stop for good over a burst — its
+// own, or that of another process behind the same address — or over one request a proxy did not
+// pass on, and enrol nothing once the credential it holds lapsed, with nothing but a restart to
+// cure it.
 //
 // `invalid_dpop_proof`, which is what the broker answers a proof whose iat is outside its 60 s
 // skew window. A helper started at boot, before NTP has corrected the clock, would otherwise
@@ -199,7 +203,7 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // login. A client that stopped on it would need a restart after every hold.
 func (e *RefusedError) Permanent() bool {
 	switch {
-	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),
+	case oauthrefusal.Outage(e.Status), e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered(),
 		e.Code == oauthwire.MembershipHeld:
 		return false
 	}

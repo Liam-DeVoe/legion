@@ -175,13 +175,17 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("broker answered %d %s: %s", e.Status, e.Code, e.Message)
 }
 
-// Permanent is a refusal a retry cannot change: every 4xx but 429, POD_TOKEN_EXPIRED and
-// POD_REGISTRAR_NOT_LISTED. A client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent —
-// the caller retries once the daemon's next token login wins a credential — and neither is an
-// expired pod token, which the pod's current token replaces under the same key (TokenExpired), nor
-// a registrar the broker does not yet list (RegistrarNotListed).
+// Permanent is a refusal a retry cannot change: every 4xx but 408, 429, POD_TOKEN_EXPIRED and
+// POD_REGISTRAR_NOT_LISTED. A 408 (the broker, or a proxy before it, did not take the request)
+// and a 429 (it will not take one yet) are an outage, as every 5xx is, the set the envoy module's
+// oauthrefusal.Outage states, which this module cannot import (it is internal to that module). A
+// client-side NO_MACHINE_CREDENTIAL (Status 0) is never permanent — the caller retries once the
+// daemon's next token login wins a credential — and neither is an expired pod token, which the
+// pod's current token replaces under the same key (TokenExpired), nor a registrar the broker does
+// not yet list (RegistrarNotListed).
 func (e *APIError) Permanent() bool {
-	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusTooManyRequests && !e.TokenExpired() && !e.RegistrarNotListed()
+	return e.Status >= 400 && e.Status < 500 && e.Status != http.StatusRequestTimeout && e.Status != http.StatusTooManyRequests &&
+		!e.TokenExpired() && !e.RegistrarNotListed()
 }
 
 // TokenExpired is the broker refusing the pod token presented because it has expired
@@ -200,8 +204,8 @@ func (e *APIError) RegistrarNotListed() bool {
 // IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
 // (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError)
 // or at a later generation than sent (*SupersededError), or one named with no key
-// (*MissingThumbprintError). A transport failure, a 5xx, a 429, an expired pod token and a daemon
-// with no credential yet are all transient.
+// (*MissingThumbprintError). A transport failure, a 5xx, a 408, a 429, an expired pod token and a
+// daemon with no credential yet are all transient.
 func IsPermanent(err error) bool {
 	var permanent interface{ Permanent() bool }
 	return errors.As(err, &permanent) && permanent.Permanent()
