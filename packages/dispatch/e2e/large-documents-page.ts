@@ -407,31 +407,24 @@ export interface DocumentMeasurement {
 }
 
 /**
- * Throttles `page`'s renderer through a CDP session of its own
+ * Throttles `page`'s renderer to the set-up's rate (`cpuThrottlingRate`), the rate every number
+ * R11 is held to is read under, through a CDP session of its own
  * (`page.context().newCDPSession(page)`, as `e2e/touch.ts` opens one). The session stays attached
  * for the page's life: detaching it would drop the override the measurement is taken under.
  * Chromium only, which is the engine the `iphone` project runs.
- *
- * The rate is the set-up's own unless the caller names another. A row that times nothing may:
- * what a heavier rate buys is a longer build, since a batch takes the blocks it can convert
- * inside its budget (`BATCH_BUDGET_MS` in `packages/proof-editor/src/progressive-build.ts`)
- * and a slower renderer converts fewer of them. A row that reads a clock may not: every number
- * R11 is held to is read under the rate the spec names.
  *
  * Set it for the build the row reads, not for the page's way to that build. It takes effect
  * from the call rather than from the navigation, and a row that holds the document's socket
  * (`documentTransport`'s `holding`) already has the two apart: no batch of the editor runs
  * until `release()`, so the page's boot, its own draw of the document and whatever the row
  * arranges over that draw are setup no reading is taken of, and a rate set before the
- * navigation charges every one of them what the build is charged. Measured on this pod, over
- * the whole of `large-documents-reader.e2e.ts`: 23.0 s of the two-people row's 102 s went on
- * that setup before the window it reads opened, against 58.3 s of build inside it. A row with
- * no hold has no such moment - its build begins with the sync its load asks for - and sets the
- * rate before the navigation, as it must.
+ * navigation charges every one of them what the build is charged. A row with no hold has no
+ * such moment - its build begins with the sync its load asks for - and sets the rate before the
+ * navigation, as it must.
  */
-export async function throttleTheCpu(page: Page, rate = cpuThrottlingRate): Promise<void> {
+export async function throttleTheCpu(page: Page): Promise<void> {
   const session = await page.context().newCDPSession(page);
-  await session.send("Emulation.setCPUThrottlingRate", { rate });
+  await session.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottlingRate });
 }
 
 /**
