@@ -361,12 +361,18 @@ closed, and that the merge waits until every gated step stands open again. Under
 also holds the tree's running work, and no phase starts. The daemon tells every architect and phase
 worker of the tree that the gate closed, and tells each phase worker to end its turn. It stops each
 phase worker, with its session kept, when its turn ends or 2 minutes after the message reached it.
+The 2 minutes count from the delivery of the message that the daemon confirmed.
+A daemon restart or a late confirmation can make the stop later, by the length of the restart or of a retry's backoff, but never earlier.
+A project pause can release a worker before its close message runs.
+The pause's resume then relaunches the worker, the worker gets the close message, and the daemon stops it 2 minutes later at most.
 The architects go on. While the hold stands, the daemon keeps the pod of each worker it stopped, and
 the `why` in the state of each issue at a phase worker's phase names the hold and the version that
 closed the gate. When the gate opens again, the daemon starts each worker it stopped. The worker's
 task names the version that closed the gate, and tells it to check what its cut turn already did.
 Where the worker is owed news of the approved version, that same task carries the news after the work.
 A merger that the hold stopped starts again only after the daemon records what changed in the approved version.
+A worker can keep a task that an operator gave it before the hold stopped it, where no turn took that task.
+When the gate opens, the daemon sends that task first, and then the task that names the version that closed the gate.
 
 Under both holds, the daemon wakes a merger whose idle pod it released for the close message, so
 that the merger can take its pull request out of GitHub's merge queue. This wake is the one start

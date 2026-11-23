@@ -458,7 +458,12 @@ The tree waits until every entry reads `approved`, and `designGate` beside it is
 Under `gates.hold: work`, a new version of an approved document of a gated step stops the tree's
 phase workers until a person approves that version. Each live phase worker got the close message,
 which ends `End your turn now.`, and the daemon stopped it when its turn ended, or 2 minutes after
-the message reached it. A released merger was woken for the message first, so that it could take
+the message reached it.
+The 2 minutes count from the delivery of the message that the daemon confirmed.
+A daemon restart or a late confirmation can make the stop later, by the length of the restart or of a retry's backoff, but never earlier.
+A project pause can release a worker before its close message runs.
+The pause's resume then relaunches the worker, the worker gets the close message, and the daemon stops it 2 minutes later at most.
+A released merger was woken for the message first, so that it could take
 its pull request out of GitHub's merge queue. A released worker that is not a merger got no message:
 the hold took it over at once. The architects go on, and their close message ends
 `Your own work goes on.`

@@ -3706,3 +3706,73 @@ func TestWorkHoldStopRowWakesItsLaneOnlyOnceItCommits(t *testing.T) {
 		}
 	}
 }
+
+// An operator's act overrides the work hold, and the daemon drops no instruction without saying
+// so: the opening keeps an operator's task queued behind the hold's stop, the claim takes it first,
+// and the opening's task follows it (supervise.Machine.EndHold), end to end through the outbox. The
+// operator gives the implementer a task while its turn runs, the close's stop is held for that
+// turn, and the turn's end stops the claim with the operator's task kept. The opening's start then
+// starts the claim with that task, and the start's own delivery waits behind it on its row's
+// backoff (supervise's queue, ErrDeliveryPending). The implementer is prompted with the operator's
+// task alone, and once that task's turn is over, with one task that names the version that closed
+// the gate and carries today's open message. A daemon restart between the two deliveries leaves
+// the opening's task owed, and the start's next attempt delivers it once.
+func TestWorkHoldOpeningGivesTheOperatorsTaskFirstAndItsOwnTaskAfter(t *testing.T) {
+	const operatorTask = "Read the daemon log of the last hour and report what failed."
+	for _, restart := range []bool{false, true} {
+		name := "no restart"
+		if restart {
+			name = "a daemon restart between the two deliveries"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newWorkHoldRig(t, legionTree(phase.Implementing, config.HoldWork))
+			token := r.token(claim.RoleImplementer)
+			r.working(claim.RoleImplementer)
+			r.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: token, Task: operatorTask})
+			r.close(4)
+			r.runOnce()
+			r.runOnce()
+			endTurn(r.ctx, t, r.machine(claim.RoleImplementer), token)
+			r.wantHeld(claim.RoleImplementer, 1, "after the close")
+			if kept := r.machine(claim.RoleImplementer).Claim().Pending; kept == nil || kept.Task != operatorTask {
+				t.Fatalf("the stopped implementer keeps %+v, want the operator's task", kept)
+			}
+
+			r.approve(4, 12)
+			r.drain()
+			if got := r.startsSince(claim.RoleImplementer, 0); got != 1 {
+				t.Fatalf("after the opening the outbox holds %d starts of the implementer, want the opening's start waiting behind the operator's task", got)
+			}
+			readyClaimAs(t, r.sup, token, claim.RoleImplementer, "ses-implementer")
+			machine := r.machine(claim.RoleImplementer)
+			machine.Wait()
+			prompts := r.conn(claim.RoleImplementer).Prompts()
+			if len(prompts) != 1 || !strings.HasSuffix(prompts[0].Message, operatorTask) || strings.Contains(prompts[0].Message, r.openedMessage(4)) {
+				t.Fatalf("at its ready the implementer was prompted %+v, want the operator's task alone", prompts)
+			}
+			taken := machine.Claim().Pending
+			if taken == nil || taken.Task != operatorTask {
+				t.Fatalf("the implementer holds %+v once prompted, want the operator's task", taken)
+			}
+			r.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token, DeliveryID: taken.ID})
+			endTurn(r.ctx, t, machine, token)
+			if restart {
+				r.restart()
+				machine = r.machine(claim.RoleImplementer)
+			}
+
+			task := r.opening(4, 4) + "\n\n" + workflow.ResumePhaseTask(r.issue())
+			for _, pass := range []string{"the drain after the operator's turn", "a second drain"} {
+				r.drain()
+				machine.Wait()
+				prompts = r.conn(claim.RoleImplementer).Prompts()
+				if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
+					t.Fatalf("after %s the implementer was prompted %+v, want the operator's task and then the opening's task once\n%q", pass, prompts, task)
+				}
+			}
+			if got := r.startsSince(claim.RoleImplementer, 0); got != 0 {
+				t.Fatalf("the outbox still holds %d starts of the implementer, want the opening's start finished", got)
+			}
+		})
+	}
+}

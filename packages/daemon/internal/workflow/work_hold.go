@@ -555,14 +555,15 @@ func tellsOpening(opened *record.WorkHold, root record.Issue) bool {
 // this start is written in place of, so the role gets one task, the newest entry's
 // (Store.EnqueueStart) — and the phase's resume task where it does not. A claim that holds no
 // phase is told that the issue's other roles may ask it questions. The start carries opening apart
-// (record.SuperviseRequest.Opening): where the claim kept a task of its own, supervise puts those
-// sentences in front of it instead (Machine.EndHold). A claim with a queued start of the opening
-// that stands over the start this would write (OpeningStartStands) is given no second: the queued
-// start builds its words from the tree's record when it runs (internal/daemon's
-// startOfAHeldClaim, HeldClaimOpening), so it gives this opening's words. A queued start that
-// carries no phase work does not stand over the start of a claim that holds its phase now. Each
-// start is one log line naming the issue, the role and version, the version that closed the gate,
-// which is 0 where no record or stop names it.
+// (record.SuperviseRequest.Opening): where the claim kept a task of a run of its own, supervise
+// puts those sentences in front of it instead. Where the claim kept an operator's task, the claim
+// takes that task first, and this start's task follows it (Machine.EndHold). A claim with a queued
+// start of the opening that stands over the start this would write (OpeningStartStands) is given
+// no second: the queued start builds its words from the tree's record when it runs
+// (internal/daemon's startOfAHeldClaim, HeldClaimOpening), so it gives this opening's words. A
+// queued start that carries no phase work does not stand over the start of a claim that holds its
+// phase now. Each start is one log line naming the issue, the role and version, the version that
+// closed the gate, which is 0 where no record or stop names it.
 //
 // Where opening tells the gate's opening (told, tellsOpening), the holder row of each such claim
 // that holds its member's phase is settled as told (record.Store.SettleOpening): the one task tells

@@ -7,9 +7,14 @@ body: |-
   before: the merger's start and the first phase of each issue that has not started wait, and
   every running phase goes on. `work` also holds the tree's running work. No phase of the tree
   starts, and each phase worker of the tree is told to end its turn and is stopped, with its session
-  kept, when its turn ends or 2 minutes after the message reached it. A start of a worker that is
-  not a merger, which read the gate open just before the close, is stopped at its agent's ready,
-  before the agent takes a task, or 2 minutes after the close at the latest. Where a daemon restart
+  kept, when its turn ends or 2 minutes after the message reached it. The 2 minutes count from the
+  delivery of the message that the daemon confirmed. A daemon restart or a late confirmation can make
+  the stop later, by the length of the restart or of a retry's backoff, but never earlier. A project
+  pause can release a worker before its close message runs. The pause's resume then relaunches the
+  worker, the worker gets the close message, and the daemon stops it 2 minutes later at most. A start
+  of a worker that is not a merger, which read the gate open just before the close, is stopped at
+  its agent's ready, before the agent takes a task, or 2 minutes after the close at the latest.
+  Where a daemon restart
   leaves a worker's launch uncertain, the daemon launches the worker again and stops it at the
   latest 64 seconds after its agent's ready, where that is later than those 2 minutes. The
   architects go on. The stop
@@ -33,6 +38,9 @@ body: |-
   the daemon records what changed in the approved version, as every start of a merger does. Each
   holder is told the opening once: a live holder that is owed news gets no open message, and the
   task that carries its news starts with the opening.
+  A claim can keep a task that an operator gave it before the hold stopped it, where no turn took
+  that task. The opening never retires that task: the daemon sends it first, and the opening's task
+  after it.
   An operator's own resume or retry of such a claim starts it
   too. The hold survives a daemon restart. Any other value of `gates.hold` is refused at load,
   `legion config check` prints the word as `design-gate-hold=`, and `legion state --json` shows it
