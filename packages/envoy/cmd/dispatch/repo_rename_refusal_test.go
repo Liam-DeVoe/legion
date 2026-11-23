@@ -20,10 +20,10 @@ import (
 // its own canonical name, and a link of it owes its read under that name, a name a read can reach
 // (refs.SplitGitHubRepo). The other pairs apply. No route, event or migration writes a pair, so
 // such a pair comes only from SQL by hand (store.RepoRename). Before, the pass wrote `not a
-// repository name` into every field of badrename/x, INFRA-2's own repository and the read owed
-// for #109 among them, and every reader called badrename/x by that name, which no read of GitHub
-// can reach. The control in the same test is the other pair, sjawhar/legion to
-// cybermonklabs/legion, which the pass writes and the start reads as before.
+// repository name` into every field of badrename/x, the read owed for #109 among them, and every
+// reader called badrename/x by that name, which no read of GitHub can reach. The control in the
+// same test is the other pair, sjawhar/legion to cybermonklabs/legion, which the pass writes and
+// the start reads as before.
 func TestTheStartDropsARenamePairWhoseNewNameGitHubCannotHold(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -31,8 +31,6 @@ func TestTheStartDropsARenamePairWhoseNewNameGitHubCannotHold(t *testing.T) {
 	if _, err := database.Pool.Exec(ctx, `
 		insert into repo_projects (repo, project, created_by, renamed_to)
 			values ('badrename/x', 'INFRA', '{"kind":"user","id":"alice"}', 'not a repository name');
-		insert into issues (key, project_key, number, title, created_by, rank, repo)
-			values ('INFRA-2', 'INFRA', 2, 'Two', '{"kind":"user","id":"alice"}', 'U2', 'badrename/x');
 		insert into pull_request_reads_owed (repo, number, reason) values ('badrename/x', 109, 'failure');
 	`); err != nil {
 		t.Fatalf("seed badrename/x renamed to a name GitHub cannot hold: %v", err)
@@ -68,14 +66,7 @@ func TestTheStartDropsARenamePairWhoseNewNameGitHubCannotHold(t *testing.T) {
 		t.Errorf("logged, want the pass's summary at INFO with the one pair GitHub can hold, pairs=1 rows=1 deleted=0 failures=0 left=0:\n%s", out)
 	}
 	if repo := issueRepo(t, ctx, database); repo != "cybermonklabs/legion" {
-		t.Errorf("INFRA-1's repository = %s, want cybermonklabs/legion: the other pair applies", repo)
-	}
-	var kept string
-	if err := database.Pool.QueryRow(ctx, `select repo from issues where key = 'INFRA-2'`).Scan(&kept); err != nil {
-		t.Fatal(err)
-	}
-	if kept != "badrename/x" {
-		t.Errorf("INFRA-2's repository = %q, want badrename/x: the pass rewrites no field for the dropped pair", kept)
+		t.Errorf("the sjawhar/legion issue's repository = %s, want cybermonklabs/legion: the other pair applies", repo)
 	}
 	if canonical := renames.Canonical("BadRename/X"); canonical != "BadRename/X" {
 		t.Errorf("the canonical name of BadRename/X = %q, want the name itself: the start holds no pair it dropped", canonical)

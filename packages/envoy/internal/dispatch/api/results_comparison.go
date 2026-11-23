@@ -394,10 +394,10 @@ func headBasis(head delivery.AttributedHead) model.CheckBasis {
 // An issue that resolves to no repository is the first. delivery.Attributor.BaseBranchMergedFor
 // reads `base_ref` by issue key alone, so an issue whose project's default repository was cleared
 // after its merge, or whose parent moved, keeps a merged row naming a branch of a repository it no
-// longer resolves to; walking that name would reach onNamedBranch with no repository to ask GitHub
-// or the stored rows about and answer unknown for every result of the check. There is nothing to
-// compare with and nothing left to read, which is a fact about the work and not a failed read, so
-// no pass of such a check stands (dispatch://INFRA-1522).
+// longer resolves to; walking that name would reach onNamedBranch with no repository to ask
+// GitHub or the stored rows about and answer unknown for every result of the check. There is
+// nothing to compare with and nothing left to read, which is a fact about the work and not a
+// failed read, so no pass of such a check stands (dispatch://INFRA-1522).
 //
 // A resolve that did not answer is the second, and parts from the first here rather than at
 // the walk below: Dispatch does not know whether that issue has a repository, so it knows
