@@ -1137,7 +1137,14 @@ func main() {
 		// routes share, which imports the enabled sources on that repository and branch at once; a
 		// push it hands over once the importer's Close has begun starts nothing
 		// (architecture.Importer.Pushed). Each intake's client writes with a 5 s deadline
-		// (delivery.IntakeWriteDeadline), so a frozen write holds its Close no longer than that; a
+		// (delivery.IntakeWriteDeadline), so each write to a frozen link holds its Close no longer
+		// than that, but no fixed time bounds the Close: it waits for the write that holds nats.go's
+		// lock, then for each write queued on the lock ahead of it, the ping timer's PING among them,
+		// then for its own flush of what was queued behind them, each up to 5 s while the socket
+		// takes no byte (nats.go v1.55.0: natsWriter.flush leaves the socket open after a write that
+		// sent no byte, nats.go:2389-2395; timeoutWriter gives each write a deadline of its own,
+		// 7026-7031; processPingTimer and sendPing write the PING under the lock, 6081-6101 and
+		// 6071-6076; close flushes under the lock before it closes the socket, 6277-6281), and a
 		// reconnect attempt through a frozen link holds the Close through its dial and its
 		// handshake. No other client of the server takes that deadline, since the publisher and the
 		// agent stream relay publish payloads a slow link can take longer than that to accept.
