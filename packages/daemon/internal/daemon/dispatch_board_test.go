@@ -161,6 +161,10 @@ func (b *liveDispatch) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		_, _ = io.WriteString(w, `{"code":"`+dispatch.ArtifactNotFound+`","error":"artifact not found"}`)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/rating"):
 		b.putRating(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/rating"), req, w)
+	// A run's commits go to the record's own commits route, which writes the run's identity and
+	// its commits onto the same record, each field once, as a step write does.
+	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/") && strings.HasSuffix(path, "/commits"):
+		b.putStep(key, strings.TrimSuffix(strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), "/commits"), req, w)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/steps/"):
 		b.putStep(key, strings.TrimPrefix(path, "/api/v1/issues/"+key+"/steps/"), req, w)
 	case req.Method == http.MethodPut && key != "" && strings.HasPrefix(path, "/api/v1/issues/"+key+"/plans/"):
