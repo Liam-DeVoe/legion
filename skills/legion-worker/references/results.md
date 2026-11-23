@@ -11,7 +11,7 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
 
 - **A result** is one run of one check: `dispatch result --issue <issue> --check <block id> --role <your role> --verdict pass --commit <sha>`, with `--surface`, `--run`, `--observed` and `--negative-control`.
   These refuse a bare `-`: use `--run-file` and its kin, one reading stdin per call.
-  Put the printed line into the body unchanged.
+  Where the issue has a pull request, put the printed line into its body unchanged.
 
 - The surface is production-like (the real-process harness, a sandbox repository, a real browser, a development stack, staging) and has the resource the change touches;
   `--run` or `--observed` links to the run.

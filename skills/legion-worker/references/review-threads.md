@@ -21,7 +21,7 @@ At retro it answers the threads it finds; a run still going may open more, so re
   When GitHub refuses, send the thread and GitHub's message to the architect with `envoy_publish`; never skip it.
   Where that step is the owner's (`implementer:owner`), the owner's `gh` acts as the implement App only while it does an implementation step, not at its retro.
 
-- The implementer records each thread in the PR body's `Threads` section, stamped with the head it just pushed, or at retro with the head retro found.
+- The implementation step's agent, or at retro the retro's agent, records each thread in the PR body's `Threads` section, stamped with the head it just pushed, or at retro with the head retro found.
 
 - The reviewer lists the threads, replies, and names the threads it accepted to the implementation step's agent by node id (on that agent's role topic, the architect's where the step is `implementer:owner`, or in its review body):
 
@@ -33,7 +33,7 @@ At retro it answers the threads it finds; a run still going may open more, so re
 
 - GitHub cannot tell a CI bot from a person whose `gh` acts as an App, so accept such a thread only when its finding is settled.
 
-- A reviewer who disagrees with a resolution replies and unresolves it; a finding it cannot accept becomes its own `REQUEST_CHANGES`.
+- A reviewer who disagrees with a resolution replies and unresolves it; a finding it cannot accept becomes its own `REQUEST_CHANGES`, or at `reviewer:owner` the owner's `fail`.
 
 - The reviewer verifies thread state in `gh api graphql`, never from the `Threads` section, and its approval never waits on a resolution.
   The merger resolves nothing.

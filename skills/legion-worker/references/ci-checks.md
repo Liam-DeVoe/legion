@@ -34,7 +34,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 ## What each role does
 
-- The implementer copies each such check's `Pull request line` into the `Checks` block.
+- The implementation step's agent copies each such check's `Pull request line` into the `Checks` block.
   The next role that writes the body reads `dispatch results` again and replaces a no-result line.
 
 - The tester runs and records only the checks with no `ci_check`.
@@ -44,7 +44,7 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
 - A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it.
-  The implementer adds the label, then pushes, because the workflow starts on a push and not on a label.
+  The implementation step's agent adds the label, then pushes, because the workflow starts on a push and not on a label.
   The label stays on while a `ci_check` of the issue names such a job.
 
 ## A name that no run answers
