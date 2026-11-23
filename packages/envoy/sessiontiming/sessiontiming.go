@@ -10,10 +10,11 @@
 // packages/contracts. This package is the one public door onto them, so the daemon reads the
 // generated values rather than keeping copies of its own.
 //
-// No package of the envoy module imports this one. packages/envoy/docker/Dockerfile copies only
-// go.mod, go.sum, cmd, internal and listenfd into the listener image's build context, so an
-// internal/... import of this top-level directory would compile here and break that image build.
-// An envoy package that needs one of these numbers reads internal/contracts directly.
+// No package of the envoy module imports this one: an envoy package that needs one of these
+// numbers reads internal/contracts directly. The listener image's build copies the whole module
+// (packages/envoy/docker/Dockerfile, `COPY packages/envoy ./`), so an envoy package may import a
+// top-level package of its module, as internal/oauthrefusal imports httpoutage, and the image
+// still builds.
 package sessiontiming
 
 import "github.com/sjawhar/envoy/internal/contracts"

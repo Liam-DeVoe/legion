@@ -741,6 +741,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 	}
 	if answer.Status != http.StatusOK {
 		code := dispatchread.RefusalCode(answer.Body)
+		var unanswered bool
 		switch answer.Status {
 		case http.StatusNotFound:
 			if code == projectNotFoundCode {
@@ -748,15 +749,14 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 			}
 			return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
 		case http.StatusRequestTimeout, http.StatusTooManyRequests:
-			return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
+			unanswered = true
 		case http.StatusInternalServerError:
-			if code == "" || code == internalCode {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
-			}
+			unanswered = code == "" || code == internalCode
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-			if code == "" || slices.Contains(outageCodes, code) {
-				return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
-			}
+			unanswered = code == "" || slices.Contains(outageCodes, code)
+		}
+		if unanswered {
+			return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", errUnavailable, path, answer.Status, code)
 		}
 		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, answer.Status, code)
 	}
