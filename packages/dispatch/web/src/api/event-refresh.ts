@@ -762,11 +762,14 @@ const DOCUMENT_WRITES: Partial<Record<EventType, true>> = {
  * a held tree read or view places the issue's node under: the node the issue's node stands under
  * is that issue's own node, or a node of it the issue's `part_of` names (a requirement), which is
  * of the issue it names (`issue`), else of the tree's own issue (the query's key), as the route
- * marks a node of the issue read with no issue. The trees are read only once a detail names no
- * parent. The walk goes up from `key` to each parent it finds, and stops at an issue it has
- * passed already. The event's own refresh marks its issue's detail stale too, which says nothing
- * of where the issue stands: `ownerTargets` names the trees first, so the walk runs before that
- * mark wherever the page holds a tree with no read out.
+ * marks a node of the issue read with no issue. The trees are read only once no fresh detail
+ * names a parent. The walk goes up from `key` to each parent it finds, and stops at an issue it
+ * has passed already. The event's own refresh, which carries every event of the same flush,
+ * marks details stale only after every check of the refresh has run (`refreshQueries`), so a
+ * detail marked stale here is one an earlier refresh marked. One gap stays: where every tree or
+ * view the check judges has a read out when the event lands - the event's own issue's are read
+ * whatever they hold, and judge nothing - the walk runs on the first answer that lands, after the
+ * refresh's marks, and the event's issue's detail then places nothing.
  */
 function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
   const above = new Set<string>();
@@ -823,14 +826,15 @@ function issuesAbove(key: string, cache: QueryCache): ReadonlySet<string> {
  * A view follows its outline (`["issue-tree", key]`): whatever marks an issue's outline stale
  * marks every view of that issue the page holds, by the outline's answer. An outline with no read
  * out judges its views at once, and so does one whose answer this event judged as holding what it
- * moves before its read went out: the read this event's own refresh starts, where the outline
- * comes before its views. While any other read of the outline is out - its first, or a refetch
- * out as the event lands - a view is judged by its own answer alone, and a view that leaves
- * unmarked waits for the outline's answer: once it lands, or the read is refused and leaves the
- * answer the outline held, the views that wait are marked where that answer holds what the event
- * moves, each once, and none read since it was judged. An event that moves no kind reaches none:
- * a child's comment or message reads nothing of its parent's tree. A child's plain ask is on no
- * node its parent's answers hold, so it reads none of them.
+ * moves before its read went out: the read this event's own refresh starts once it has judged
+ * every answer it can at once, which a view whose own read was out finds on that read's response.
+ * While any other read of the outline is out - its first, or a refetch out as the event lands - a
+ * view is judged by its own answer alone, and a view that leaves unmarked waits for the outline's
+ * answer: once it lands, or the read is refused and leaves the answer the outline held, the views
+ * that wait are marked where that answer holds what the event moves, each once, and none read
+ * since it was judged. An event that moves no kind reaches none: a child's comment or message
+ * reads nothing of its parent's tree. A child's plain ask is on no node its parent's answers hold,
+ * so it reads none of them.
  */
 function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefined {
   const moved = treeNodesMoved(event);
@@ -959,8 +963,8 @@ function treesHolding(key: string, event: DispatchEvent): RefreshTarget | undefi
         return false;
       }
       // A read of the outline out after this event judged the answer it holds as holding what
-      // the event moves - the read this event's own refresh started, on a page where the outline
-      // comes before its views - answers nothing the view waits for: the view is read now.
+      // the event moves - the read this event's own refresh started, which a view whose own read
+      // was out finds on its response - answers nothing the view waits for: the view is read now.
       const answer = outline.state.data;
       const judged = typeof answer === "object" && answer !== null && held.get(answer) === true;
       if (outline.state.fetchStatus !== "idle" && !judged) {
@@ -1851,13 +1855,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       }
     }
     const holding = treesHolding(key, event);
-    // A document event's check places its issue by the issue's detail (`issuesAbove`), so it goes
-    // first, before that detail's own target: the refresh judges each query once, in the order its
-    // targets reach it, so the trees the page holds with no read out are judged before this
-    // event's own target marks the detail stale. Any other event's goes in its turn.
-    if (holding !== undefined && DOCUMENT_WRITES[event.type] === true) {
-      targets.unshift(holding);
-    } else if (holding !== undefined) {
+    if (holding !== undefined) {
       targets.push(holding);
     }
   }

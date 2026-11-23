@@ -301,6 +301,9 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
       }
     }
   }
+  // Every check is judged before any query is marked or fetched: each check of one refresh sees
+  // the cache as the refresh found it, so no mark of the same refresh decides another check.
+  const accepted: Query[] = [];
   for (const [query, condition] of reached) {
     if (isLiveQuery(query)) {
       continue;
@@ -319,6 +322,9 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
         continue;
       }
     }
+    accepted.push(query);
+  }
+  for (const query of accepted) {
     owe(state, query, requestedAt);
     drive(state, queryClient, query.queryHash);
     for (const listener of [...(state.owners.get(query.queryHash) ?? [])]) {

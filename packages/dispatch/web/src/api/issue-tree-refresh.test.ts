@@ -940,11 +940,10 @@ function observedParent(
   };
 }
 
-// On the page the outline and the open view are both observed, and the outline's query comes
-// first in the cache: the event's refresh judges the outline's answer, which holds the child's
-// node, and starts the outline's read before it judges the view. That read answers nothing the
-// view waits for, so the view is read at once, beside the outline, whichever query was made
-// first.
+// On the page the outline and the open view are both observed. The event's refresh judges the
+// outline's answer, which holds the child's node, and the view by that answer, before it starts
+// any read: it then starts the outline's read, which answers nothing the view waits for, so the
+// view is read at once, beside the outline, whichever query was made first.
 test("a parent's observed view is read at once where the event's own refresh starts its outline's read, whichever query was made first", async () => {
   const seen: Record<string, unknown> = {};
   for (const viewFirst of [false, true]) {
@@ -1051,6 +1050,52 @@ test("a grandchild's document version marks its grandparent's outline and view w
     outline: client.getQueryState(outline)?.isInvalidated,
     verification: client.getQueryState(verification)?.isInvalidated,
   }).toEqual({ outline: true, verification: true });
+});
+
+// The feed refreshes every event of one window in one refresh, so an earlier event of the
+// grandchild - a comment, a claim - names its detail before its version's checks run. No mark of
+// a refresh decides a check of the same refresh: the grandchild's fresh detail places it under
+// its parent all the same, and the grandparent's outline and view are read again.
+test("a grandchild's comment or claim and then its document version, in one refresh, mark its grandparent's outline and view where the grandchild's fresh detail names its parent", () => {
+  const comment = eventOf(
+    "comment.created",
+    { body: "A reply.", id: "comment-3", kind: "comment" },
+    "CORE-3"
+  );
+  const claim = eventOf("issue.claimed", {}, "CORE-3");
+  for (const [name, first] of [
+    ["a comment", comment],
+    ["a claim", claim],
+  ] as const) {
+    const client = new QueryClient();
+    const { outline, verification } = grandparentHolding(client, "detail");
+    refreshQueries(
+      client,
+      [first, GRANDCHILD_VERSION].flatMap((event) => eventRefreshTargets(event, "alice"))
+    );
+    expect(
+      {
+        outline: client.getQueryState(outline)?.isInvalidated,
+        verification: client.getQueryState(verification)?.isInvalidated,
+      },
+      `${name}, then the version`
+    ).toEqual({ outline: true, verification: true });
+  }
+});
+
+// A detail marked stale - its issue may have moved since it was read - places nothing until it
+// is read again, and the page places the issue from the trees it holds alone: no tree holds a
+// node of the grandchild, so its document version reads nothing of the grandparent's, though
+// its detail names the parent whose node the grandparent's outline holds.
+test("a grandchild's document version marks nothing of its grandparent's where the grandchild's detail that names its parent is marked stale", () => {
+  const client = new QueryClient();
+  const { outline, verification } = grandparentHolding(client, "detail");
+  void client.invalidateQueries({ exact: true, queryKey: ["issue", "CORE-3"] });
+  refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+  expect({
+    outline: client.getQueryState(outline)?.isInvalidated,
+    verification: client.getQueryState(verification)?.isInvalidated,
+  }).toEqual({ outline: false, verification: false });
 });
 
 // The parent's held outline places the grandchild too: it holds the grandchild's node under the
@@ -1291,26 +1336,4 @@ test("an outline whose refetch answers no node of the issue it was placed above 
     spec: false,
     verification: false,
   });
-});
-
-// A detail marked stale - its issue was moved since it was read - names a parent the issue may
-// have left, so it places nothing until it is read again, and the page places the issue from the
-// trees it holds alone. The grandchild's detail names its parent, whose node the grandparent's
-// outline holds, and no tree holds a node of the grandchild: its document version reads the
-// grandparent's outline and every view of it where that detail is fresh - the event's own
-// refresh marks the detail stale only after it has placed the grandchild - and none of them where
-// the detail was marked stale before the event.
-test("a grandchild's document version marks its grandparent's outline and views where its fresh detail names its parent, and none of them where that detail is marked stale", () => {
-  const seen: Record<string, unknown> = {};
-  for (const detail of ["fresh", "marked stale"]) {
-    const client = new QueryClient();
-    const { marks } = parentBeforeTheCheck(client, OUTLINE_WITH_CHILD);
-    client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
-    if (detail === "marked stale") {
-      void client.invalidateQueries({ exact: true, queryKey: ["issue", "CORE-3"] });
-    }
-    refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
-    seen[detail] = marks();
-  }
-  expect(seen).toEqual({ fresh: EVERY_ANSWER, "marked stale": NO_ANSWER });
 });
