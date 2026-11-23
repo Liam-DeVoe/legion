@@ -357,14 +357,17 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 	}
 }
 
-// Three sentences of the owner's prompt say what Legion does, where their earlier words were read
+// Four sentences of the owner's prompt say what Legion does, where their earlier words were read
 // two ways or were false. A part of `plan.md` changes by `dispatch doc-edit` and only a whole
 // replacement is an upload, as the planner is told. Steps that share a key are one agent in one
 // session and a step with no key has an agent of its own (plan.AgentOf), so the owner's choice of
 // a fresh or an earlier agent is carried out, where the old words said each role had one agent for
 // each issue. An issue whose work started on another architect's plan runs that plan's task, and
-// only one whose work started before any plan runs the task default. Each rule is held by the
-// terms of the clause that states it, in their order, and each retired sentence is gone from both
+// only one whose work started before any plan runs the task default. A version Legion took, given
+// again at the generation it was given at, is the same fact (api's registerPlan), answered `200`
+// with its plan and changing nothing. Only another version at or below the plan in force is
+// refused PLAN_VERSION_OLD (workflow's laterVersionRefusal). Each rule is held by the terms of the
+// clause that states it, in their order, and each retired sentence is gone from both
 // compositions. This shows the text is loaded, never that an owner follows it.
 func TestTheOwnersPlanSentencesSayWhatLegionDoes(t *testing.T) {
 	composer, err := New(t.TempDir())
@@ -377,6 +380,9 @@ func TestTheOwnersPlanSentencesSayWhatLegionDoes(t *testing.T) {
 		{"before any architect gave it a plan", "the task default"},
 		{"started on a plan another architect gave", "that plan's task"},
 		{"stop_task", "its running task", "`default` or the other plan's", "register_plan"},
+		{"A version Legion took", "given again at the generation it was given at", "the same registration"},
+		{"Legion answers it `200`", "its plan again", "changes nothing"},
+		{"any other version at or below the one it holds", "`PLAN_VERSION_OLD`"},
 	}
 	retired := []string{
 		"upload each new version",
@@ -384,6 +390,7 @@ func TestTheOwnersPlanSentencesSayWhatLegionDoes(t *testing.T) {
 		"cannot carry that choice out yet",
 		"before you gave it a plan runs the task default",
 		"call stop_task on the task default",
+		"It also refuses a version at or below the one it holds",
 	}
 	for _, tc := range []struct {
 		name   string
