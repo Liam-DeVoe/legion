@@ -414,6 +414,7 @@ test("a closed issue refuses Upload and New document and says why", async () => 
     expect(screen.queryByRole("textbox", { name: "Title" })).not.toBeInTheDocument();
 
     const notes = new File(["# Notes\n"], "notes.md", { type: "text/markdown" });
+    // A drop of files, which user-event has no form for.
     fireEvent.drop(screen.getByRole("menu"), { dataTransfer: { files: [notes] } });
     expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Summary (optional)" })).not.toBeInTheDocument();
