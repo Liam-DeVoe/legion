@@ -21,7 +21,10 @@ body: |-
   the row at each decision on a pool of its own (`BROKER_NATS_HOLD_POOL_SIZE`, default 2) and, while
   no verified row can be read, refuses every client but the operator with `hold_unknown`, which
   `broker_nats_callout_hold_unknown` shows; the broker then needs an `operator` entry and signing
-  keys to start, and starts with no row.
+  keys to start, and starts with no row. The legacy-subjects gate's list of callout kinds
+  (`scripts/lib/legacy-subjects-gate-callout-publishers.json`) classifies both new kinds as
+  publishing no notification subject: the operator's grant names none in any phase of the hold,
+  and the probe's names only `_ENVOY_HOLD_PROBE.none`.
 time: 2026-11-20T23:35:36Z
 custom:
     Issue: callout-operator-kind
