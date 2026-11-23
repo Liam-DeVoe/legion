@@ -2464,7 +2464,7 @@ test("an architect's operation set is the tree's operations and none of the agen
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
-  expect(declared).toHaveLength(23);
+  expect(declared).toHaveLength(25);
   for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
     const tool = toolFor(architect);
     const available: string[] = [];
@@ -2478,6 +2478,8 @@ test("an architect's operation set is the tree's operations and none of the agen
     }
     expect(available).toEqual([
       "register_gate",
+      "register_plan",
+      "stop_task",
       "release_children",
       "request_backward_move",
       "retry_or_escalate",
