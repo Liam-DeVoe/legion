@@ -425,7 +425,9 @@ generators and its screenshot harness read. docs-site.yaml holds those steps, an
 both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
 builds and publishes main's site on the pushes this same list selects: its
 on.push.paths, which check-ci-filters.sh holds equal to this filter, so the list
-names all three workflow files.
+names all three workflow files. The docs job is selected like any other job, now that no run
+of ci.yaml is a push to main; docs-pages.yaml still builds and deploys main's site, on a push
+trigger of its own.
 
 ## go_notices: lint's notices step: the Go packages it loads for every
 
@@ -1381,7 +1383,7 @@ required check wait for the other. `dispatch-references` runs a slice of the bro
 a pull request for feedback alone: the merge queue's full lane gates every row of it already,
 and a required check is the repository owner's to change, so it carries no report step and
 the verdict waits for nothing of it
-(.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing
+(.github/ci-notes/ci.md#the-reference-rows-preview-job
 says the rest).
 That check asks none of the ci-ok rules of a job named here, and refuses
 one that carries the ci-ok-report step: ci-ok.sh fails a result for a job CI_OK_SELECTED_BY
@@ -1398,7 +1400,10 @@ about 15 minutes where the arm64 pool starts one in seconds (INFRA-4222).
 ## What the changes job selects, and the two terms every job carries
 
 Selects the jobs that read what this change touched. Skipped on a draft pull request, so no
-test job runs; marking it ready for review starts a run that selects by the same diff.
+test job runs; marking it ready for review starts a run that selects by the same diff. Each
+output but ref_is_main reads the one dorny/paths-filter step of the job. Rule 19 of
+.github/scripts/check-ci-filters.sh refuses an output naming a filter .github/ci-filters.yaml
+does not hold.
 
 Also skipped on a re-run attempt of a merge-group run, by a term every job of this file but
 the two named for a required check — `ci-ok` and `pr-title`, each of which refuses such an
@@ -1485,7 +1490,7 @@ all, so the two lanes are two jobs, and their checks carry the caller's id:
 queue. .github/ci-notes/ci.md#what-the-lane-input-reads says what each lane runs. The third
 caller, dispatch-references, runs the `references` lane behind an output and a narrower filter
 of its own, and gates nothing
-(.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing).
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
 ## Which lane a job runs in: the pull request or the merge queue
 
@@ -1527,7 +1532,7 @@ dashboard is held to (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-
 A job whose numbers cross the line moves class by the same rule. dispatch-references is in
 neither class: it is outside ci-ok, runs on a pull request alone and never in the queue, whose
 full lane already runs every row of it
-(.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing).
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
 What this accepts: a slow test that would have failed the pull request now fails first in the
 queue, where the failure takes the entry out and the queue rebuilds the groups behind it. Every
@@ -1993,7 +1998,7 @@ meets the whole suite before it lands, and the nightly
 lane, from main, under the job id dispatch-browser) runs it again on main's tip. A third lane,
 `references`, is dispatch-references', a preview of the reference rows on a pull request that
 gates nothing
-(.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing).
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 
 Two inputs, each a literal of its caller's. `lane` decides the projects each job of the called
 workflow runs, so nothing here chooses them a second time; it picks no browser to install any
@@ -2024,7 +2029,7 @@ The same rule as the docs job's: a caller that declares no `permissions:` hands 
 called workflow the default GITHUB_TOKEN permissions rather than this file's block, so
 dispatch-browser and dispatch-browser-pr each declare the same three, and dispatch-references
 two of them
-(.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing).
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 `contents: read` is every job of dispatch-browser.yaml's checkout; `actions: read` is the
 merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and `checks: write`
 that job's last step, the ci-ok report.
@@ -2036,7 +2041,7 @@ dispatch-browser-pr `pull-request`, which runs the two projects a pull request i
 the `@pr` rows, dispatch-browser `full`, which runs every project, the three `-alone` ones,
 the two-process job and the visual review over every row, and dispatch-references
 `references`, which runs Chromium over the reference rows' spec files
-(.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing).
+(.github/ci-notes/ci.md#the-reference-rows-preview-job).
 Which lane a run gets is which caller runs: dispatch-browser-pr and dispatch-references on a
 pull request alone, and dispatch-browser wherever its `dispatch_browser` output is true, which
 a pull request gets only under `full-ci` or `lane:dispatch_browser`
@@ -2047,7 +2052,9 @@ No other job of this file passes a lane: a job runs all its steps wherever it ru
 that held a slow suite beside steps a pull request runs is two jobs now
 (.github/ci-notes/ci.md#the-fast-half-of-a-split-job-comes-back-on-every-push).
 
-## The reference rows' preview job: what it runs, and why it gates nothing
+## The reference rows' preview job
+
+What it runs, and why it gates nothing.
 
 The reference rows' preview: every Chromium row of the eleven spec files
 the reference framework's Verification document names and the nine of the reading list's

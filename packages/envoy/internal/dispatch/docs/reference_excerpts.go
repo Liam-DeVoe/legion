@@ -118,8 +118,7 @@ func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID strin
 		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
 		return changes, graphstore.Uncaused{}, err
 	}
-	changes, stated, _, err := s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree)
-	return changes, stated, err
+	return s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree)
 }
 
 // offsetBlocks is the blocks a render's offsets name, as the block index takes them, each with the
@@ -154,15 +153,16 @@ func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
 // itself, because the foreign key on the projection rows needs them, and holds its tuples back
 // because on the request path the event does not exist yet.
 //
-// Its third result says the block pass won the revision fence (refs.BlockIndexing.Won). Only a
-// pass that won writes the version's blocks, so only its reconciliation settles the document's
-// row of the forms queue (replaceVersionRefs' blocksIndexed). A pass that lost - a newer version's
+// Whether the block pass won the revision fence (refs.BlockIndexing.Won) decides what its
+// reconciliation settles: only a pass that won writes the version's blocks, so only its
+// reconciliation settles the document's row of the forms queue (replaceVersionRefs'
+// blocksIndexed). A pass that lost - a newer version's
 // blocks already stand - writes no block, and it leaves that row owed for the next pass, as it
 // leaves the block index's own mark (refs.BlockIndexing.Queue writes nothing for it).
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, graphstore.Uncaused, bool, error) {
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	record, err := indexedVersionOf(ctx, tx, artifactID, version)
 	if err != nil {
-		return model.ReferenceChanges{}, graphstore.Uncaused{}, false, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	located := refs.NewReader(ctx, tx, record.Writer, "artifact", artifactID, s.serverURL).Mentions(markdown)
 	// The blocks are indexed before the document's own references are reconciled: a first
@@ -174,13 +174,13 @@ func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactI
 		ServerURL: s.serverURL,
 	})
 	if err != nil {
-		return model.ReferenceChanges{}, graphstore.Uncaused{}, false, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	if err := write(ctx, tx, indexBlocks); err != nil {
-		return model.ReferenceChanges{}, graphstore.Uncaused{}, false, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located, s.serverURL), won)
-	return changes, stated, won, err
+	return changes, stated, err
 }
 
 // blockPointers is each `block[]` value of the version (pmdoc.BlockPointers) as the block index

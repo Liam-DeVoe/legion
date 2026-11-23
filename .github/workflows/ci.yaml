@@ -197,6 +197,7 @@ jobs:
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:dispatch_browser')) && steps.filter.outputs.dispatch_browser || 'false' }}
       # why: .github/ci-notes/ci.md#the-browser-suites-two-outputs-one-per-lane
       dispatch_browser_pr: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_pr }}
+      # why: .github/ci-notes/ci.md#the-reference-rows-preview-job
       dispatch_references: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_references }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
       # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
@@ -639,7 +640,7 @@ jobs:
       job: dispatch-browser-pr
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # why: .github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing
+  # why: .github/ci-notes/ci.md#the-reference-rows-preview-job
   dispatch-references:
     needs: changes
     if: github.event_name == 'pull_request' && needs.changes.outputs.dispatch_references == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

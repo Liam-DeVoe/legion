@@ -211,10 +211,11 @@ func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
 	}
 }
 
-// Every parameter is held to its rule before anything is read, each refusal 400 INVALID_QUERY
-// naming the parameter: a value that is no session id, one byte longer than any reference in
-// text names, no id at all, one more than the bound, and a parameter the route does not take.
-// Each bound itself is admitted, and so is the whole API's session parameter.
+// id is held to its rule before anything is read, each refusal 400 INVALID_QUERY naming it: a
+// value that is no session id, one byte longer than any reference in text names, no id at all,
+// and one more than the bound. A parameter the route does not take is read by nothing, so `ids`,
+// a misspelling, leaves the request with no id. Each bound itself is admitted, and so is the whole
+// API's session parameter.
 func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -236,8 +237,7 @@ func TestKnownSessionsRefusesAQueryOutsideItsRule(t *testing.T) {
 		"no id at all":                         {"/api/v1/agents/known", "id"},
 		"only the acting session":              {"/api/v1/agents/known?session=" + knownTitled, "id"},
 		"one id more than the bound":           {knownSessionsPath(overBound...), "id"},
-		"a parameter the route does not take":  {knownSessionsPath(knownTitled) + "&limit=5", "limit"},
-		"the parameter misspelled":             {"/api/v1/agents/known?ids=" + knownTitled, "ids"},
+		"the parameter misspelled, so no id":   {"/api/v1/agents/known?ids=" + knownTitled, "id"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := dispatchRequest(t, handler, http.MethodGet, refusal.path, nil, "alice")

@@ -1168,7 +1168,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 	if err != nil {
 		return false, false, err
 	}
-	_, stated, _, err := s.indexRenderedVersion(queued, tx, document.id, version, versionAt, markdown, blocks, nil)
+	_, stated, err := s.indexRenderedVersion(queued, tx, document.id, version, versionAt, markdown, blocks, nil)
 	if err != nil {
 		return false, false, err
 	}

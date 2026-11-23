@@ -469,7 +469,7 @@ func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
 			t.Fatalf("owe the document to the forms queue: %v", err)
 		}
 	}
-	index := func(version int) bool {
+	index := func(version int) {
 		t.Helper()
 		live, blocks, err := service.TextWithBlocks(ctx, document)
 		if err != nil {
@@ -486,20 +486,17 @@ func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
 			t.Fatalf("begin the index of version %d: %v", version, err)
 		}
 		defer tx.Rollback(ctx)
-		_, _, won, err := service.indexRenderedVersion(ctx, tx, document, version, versionAt, live, blocks, nil)
+		_, _, err = service.indexRenderedVersion(ctx, tx, document, version, versionAt, live, blocks, nil)
 		if err != nil {
 			t.Fatalf("index version %d: %v", version, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatalf("commit the index of version %d: %v", version, err)
 		}
-		return won
 	}
 
 	oweForms()
-	if index(1) {
-		t.Fatalf("the index of version 1, the version the blocks stand at with no mark, won the fence")
-	}
+	index(1)
 	if _, owed := formsOwedRows(t, database)[row]; !owed {
 		t.Errorf("a block pass that lost the revision fence settled the document's forms row: it wrote no block of the version, so its index is not current")
 	}
@@ -509,8 +506,9 @@ func TestABlockPassThatLosesTheFenceLeavesTheFormsRowOwed(t *testing.T) {
 
 	second := nextVersionRow(t, database, document, markdown)
 	oweForms()
-	if !index(second) {
-		t.Fatalf("the control pass at version %d, above the stored version 1, lost the fence", second)
+	index(second)
+	if stands := blockIndexAt(t, database, document); stands == nil || *stands != second {
+		t.Fatalf("the control pass at version %d, above the stored version 1, moved the blocks to %s, not to %d", second, standsText(stands), second)
 	}
 	if _, owed := formsOwedRows(t, database)[row]; owed {
 		t.Errorf("the control pass at version %d won the fence and left the forms row owed, so the losing pass proves nothing", second)
