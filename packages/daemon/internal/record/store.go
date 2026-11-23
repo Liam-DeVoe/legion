@@ -2463,7 +2463,7 @@ var liveClaimStates = []string{
 // Claim is the claim's token, and WorksStep whether the claim is the worker on its role's step
 // (WorkerClaim), the claim the record gives the step. Two claims of one issue can hold one role —
 // the agent of a key on a step of another role, beside that role's own claim of an earlier version
-// of the plan — and each is a holder of its own.
+// of the plan, or two agents at two steps of the role — and each is a holder of its own.
 type RoleHolder struct {
 	Role      claim.Role
 	Session   string
@@ -3499,8 +3499,8 @@ type IssueClaim struct {
 // IssueClaims is every stored claim of issue in project, the claims' project token as
 // claims.project holds it, in any state, with its stored role, ordered by token. Two claims of an
 // issue can hold one role — a keyed agent on a step of another role, beside that role's own claim
-// from an earlier version of the plan — so a walk over every claim of an issue reads them here
-// rather than one claim for each role.
+// from an earlier version of the plan, or two agents at two steps of the role — so a walk over
+// every claim of an issue reads them here rather than one claim for each role.
 func (s *Postgres) IssueClaims(ctx context.Context, tx pgx.Tx, project, issue string) ([]IssueClaim, error) {
 	rows, err := tx.Query(ctx, `select token, role from claims where project = $1 and issue = $2 order by token`, project, issue)
 	if err != nil {
@@ -3535,7 +3535,8 @@ func (s *Postgres) RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, is
 // payload's role and generation exactly as Postgres renders them (`payload->>'role'`,
 // `payload->>'generation'`), so a row is matched before it is decoded. Two claims can hold one
 // role of an issue at one generation — the agent of a key on a step of another role, beside that
-// role's own claim of an earlier version of the plan — so one identity can stand for several keys.
+// role's own claim of an earlier version of the plan, or two agents at two steps of the role — so
+// one identity can stand for several keys.
 type roleRunIdentity struct {
 	issue      string
 	role       string

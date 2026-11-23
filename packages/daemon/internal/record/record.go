@@ -580,7 +580,9 @@ func (m EventMark) ID() int64 {
 	return 0
 }
 
-// PhaseRow is the durable part of a role's work on an issue; live claim facts are joined for state.
+// PhaseRow is the durable part of a role's work on one place of an issue's task — a step, the
+// retro or the merge (StepTask, StepPlace) — or on the issue where it has no plan rows; live claim
+// facts are joined for state.
 type PhaseRow struct {
 	Issue string
 	Role  claim.Role
@@ -681,21 +683,23 @@ type PhaseRow struct {
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
-	// tree brings back, and a root architect's start of work it was not on raise it, to the higher
-	// of the row's own entry plus one and one above the highest entry of each row of the issue that
-	// names the step's claim, and write the three fields below beside it, in their own transaction
-	// (workflow's start, StartPromotedWorker, StartArchitect and ResumeAwaitedRoot). It is the
-	// finer of the two numbers a completion is held to: the issue's generation is the same for
-	// every entry of one run, where the entry is new at each one, which is what tells one testing
-	// phase from the testing phase after a move back (api/handoff.go). A start that hands
-	// the role no work it was not already on leaves it where it stands — the send of this entry's
-	// own work to a claim behind it, the held phase's retry, and every start of no entry
-	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
-	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
-	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
-	// in place that the upgrade found with no work handed out, which the completion route reads
-	// as nothing to compare. The reviewer's row has a second reader: each task the reviewer is
-	// given in reviewing ends naming this number (reviewround.EntryLabel), its review's
+	// tree brings back, and a root architect's start of work it was not on raise it, and write the
+	// three fields below beside it, in their own transaction (workflow's start, StartPromotedWorker,
+	// StartArchitect and ResumeAwaitedRoot). A phase worker's raise puts it one above the highest of
+	// the row's own entry, the entry of every row of the issue that names the step's claim or is of
+	// the role, and the entry that claim was last given (RoleClaim.GivenEntry), so the row where the
+	// task stands holds the role's highest entry; an architect's raise puts it at the row's own entry
+	// plus one (workflow's enter). It is the finer of the two numbers a completion is held to: the
+	// issue's generation is the same for every entry of one run, where the entry is new at each one,
+	// which is what tells one testing phase from the testing phase after a move back
+	// (api/handoff.go). A start that hands the role no work it was not already on leaves it where it
+	// stands — the send of this entry's own work to a claim behind it, the held phase's retry, and
+	// every start of no entry (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit
+	// it is never reset: ClearGeneration leaves the entry and clears the task below. Zero on a row
+	// no entry has been raised on: a role the issue's phases have not reached, and every row of a
+	// daemon upgraded in place that the upgrade found with no work handed out, which the completion
+	// route reads as nothing to compare. The reviewer's row has a second reader: each task the
+	// reviewer is given in reviewing ends naming this number (reviewround.EntryLabel), its review's
 	// footer names it back, and only a review that names the number the row holds moves
 	// ReviewedHead. Because the number is never reset and each entry raises it, a review of an
 	// earlier entry can never name the entry that stands.
@@ -736,13 +740,14 @@ type PhaseRow struct {
 	//
 	// One rule of the daemon reads it and no other: the completion route's entry fence, which
 	// takes a completion of an earlier entry when the commit it names is the head the record
-	// holds, and refuses it however the heads read when the entry standing now was raised by a
-	// move back (api/handoff.go). Such an entry asks for the phase's work to be done again, which
-	// is what the earlier entry's verdict must not stand in for, and the heads cannot say so: the
-	// move back that sends work back at a head that did not move leaves the two heads equal. The
-	// counts beside it cannot say so either — Pass rises on every move back and a phase is never
-	// re-entered without one, so a fence on the count would refuse the case the route exists to
-	// take.
+	// holds, unless that entry is of another of the role's steps or its retro, or of a run of this
+	// step the task left for one of them (OtherStepsEntry), and refuses it however the heads read
+	// when the entry standing now was raised by a move back (api/handoff.go). Such an entry asks for
+	// the phase's work to be done again, which is what the earlier entry's verdict must not stand in
+	// for, and the heads cannot say so: the move back that sends work back at a head that did not
+	// move leaves the two heads equal. The counts beside it cannot say so either — Pass rises on
+	// every move back and a phase is never re-entered without one, so a fence on the count would
+	// refuse the case the route exists to take.
 	EntryMovedBack bool
 	// StepTask and StepPlace are the step this row runs, for an issue with plan rows: the plan's
 	// task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro on the
@@ -759,9 +764,11 @@ type PhaseRow struct {
 	StepPlace int
 }
 
-// Completed says whether the role completed its current phase: its completion reported a commit
-// or named a handoff record, both of which clearing the handoff at the next phase's start
-// (workflow's clearHandoff) and a new generation (ClearGeneration) empty.
+// Completed says whether the role completed the phase of this row's run: its completion reported a
+// commit or named a handoff record, both of which clearing the handoff when the role starts its next
+// phase on this row (workflow's clearHandoff) and a new generation (ClearGeneration) empty. A later
+// step of the role starts on a row of its own, so this row keeps its step's report, which the tasks
+// of the later steps name (workflow's reportsBefore).
 func (p PhaseRow) Completed() bool {
 	return p.HandoffCommit != "" || p.HandoffRecord != ""
 }
@@ -1910,16 +1917,16 @@ type Store interface {
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
-	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
-	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
-	// PhaseRow.EntryVerbatim), by issue and role, read in one statement. Admission's sweep weighs
-	// every role it holds against that number (admit's owedEntryRoles), reads the mark to tell
-	// which roots past admitted its architect reach keeps (workflow.ArchitectAtWork), and reads the
-	// moment beside them to tell how long a role has been owed the work the number names (admit's
-	// architectStalls), and a read an issue would cost one round trip a slot on every fact of the
-	// project, which a project running hundreds of trees pays hundreds of times over. A row the
-	// record does not hold is absent from the answer, which reads as the zero entry: a role no
-	// transition has ever handed work on.
+	// PhaseEntries is the entry each role's phases row now of issues names (PhaseRowOf: a role that
+	// stands at two steps has a row for each), the moment that entry was raised and whether its task
+	// is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt, PhaseRow.EntryVerbatim), by
+	// issue and role, read in one statement. Admission's sweep weighs every role it holds against
+	// that number (admit's owedEntryRoles), reads the mark to tell which roots past admitted its
+	// architect reach keeps (workflow.ArchitectAtWork), and reads the moment beside them to tell how
+	// long a role has been owed the work the number names (admit's architectStalls), and a read an
+	// issue would cost one round trip a slot on every fact of the project, which a project running
+	// hundreds of trees pays hundreds of times over. A row the record does not hold is absent from
+	// the answer, which reads as the zero entry: a role no transition has ever handed work on.
 	PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error)
 	PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error
 	// MovePhaseToStep writes the step task and place on role's row of no step on issue (StepTask
@@ -2614,8 +2621,10 @@ type RoleClaim struct {
 	RetiredAtWriteMark int64
 	// GivenEntry is the phase entry of the last task this claim was queued
 	// (supervise.Claim.GivenEntry), and 0 for a claim that has been queued no task carrying one.
-	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
-	// row names — one owed that entry's work — from one already holding it.
+	// Its readers are the admission pass, which tells a claim behind the entry its role's phases
+	// row names — one owed that entry's work — from one already holding it, and a phase worker's
+	// raise of its step's entry, which puts the entry above it (workflow's enter): the steps of one
+	// key are one claim, and the rows a new generation folds can keep no entry as high as it.
 	GivenEntry int64
 	// LastReady is when the claim's agent last said it could be prompted (supervise.Claim.LastReady,
 	// last_ready), and the zero time for a claim whose agent never has. The ready of every launch
