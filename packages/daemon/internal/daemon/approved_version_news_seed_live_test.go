@@ -241,7 +241,8 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 // start starts it (workflow.Engine.StartFirstPhase), on the child recorded at admitted, where the
 // waiting line finds it once the tree's gate is open: that start queues the child's plain architect
 // start, which hands the role no entry and no task, beside the rows of the child's move into
-// planning. The child is then recorded again in the phase it stands in. A member's phase worker is
+// planning. The child is then recorded again in the phase it stands in. Each is recorded there with
+// its task where that phase stands (recordTaskAt). A member's phase worker is
 // started as the promotion of a mid-phase member starts it (workflow.Engine.StartPromotedWorker),
 // which raises that role's entry on the phase the member stands in, with the phase's resume task
 // as the entry's work. Each start queues its role's start on the outbox, and each but the child
@@ -267,6 +268,9 @@ func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *wo
 				return fmt.Errorf("start the first phase of %s, which starts its own architect: %w", issue.Key, err)
 			}
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
+				return err
+			}
+			if err := recordTaskAt(ctx, tx, records, issue); err != nil {
 				return err
 			}
 		case role == phase.RoleFor(issue.Phase):

@@ -755,11 +755,7 @@ func (r *personHandoverRig) applyAsTheDaemon(source, id string, fact intake.Fact
 
 // moveRecord writes key's record in phase to, as close_scratch_dispatch_test.go writes a record in
 // merging, once every write the daemon queued on key has run: a phase the rig runs no agent to
-// reach. A run whose first step has started holds plan rows, and its task is moved to the step
-// that runs as to, as the workflow's own move does (workflow's moveTask): issues.phase and the
-// task's place are two records of where the issue stands, and every later write of the issue
-// (workflow.Engine.WriteIssue) refuses a record in which they disagree. A run with no plan rows has
-// only its phase.
+// reach. Its task is moved with it (recordTaskAt).
 func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 	t := r.t
 	t.Helper()
@@ -775,24 +771,44 @@ func (r *personHandoverRig) moveRecord(key string, to phase.Phase) {
 		if err := records.PutIssue(ctx, tx, *issue); err != nil {
 			return err
 		}
-		stored, err := records.Plan(ctx, tx, key, issue.Generation)
-		if err != nil || stored == nil {
-			return err
-		}
-		task, err := stored.Task()
-		if err != nil {
-			return err
-		}
-		roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
-		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == to })
-		if at < 0 {
-			return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, key, to)
-		}
-		return records.MoveTask(ctx, tx, key, issue.Generation, task.Task,
-			record.TaskPlace{Kind: record.PlaceStep, Position: steps[at].Position}, record.TaskRunning)
+		return recordTaskAt(ctx, tx, records, *issue)
 	}); err != nil {
 		t.Fatalf("record %s in %s: %v", key, to, err)
 	}
+}
+
+// recordTaskAt moves the task of issue's run to the place that stands in issue.Phase, as the
+// workflow's own move does (workflow's moveTask), for a record a test writes in a phase by hand:
+// issues.phase and the task's place are two records of where the issue stands, and every later
+// write of the issue (workflow.Engine.WriteIssue) refuses a record in which they disagree. The task
+// runs at the step that runs as the phase, at its retro or at its merge, and waits at no act at
+// admitted. A run with no plan rows has only its phase.
+func recordTaskAt(ctx context.Context, tx pgx.Tx, records record.Store, issue record.Issue) error {
+	stored, err := records.Plan(ctx, tx, issue.Key, issue.Generation)
+	if err != nil || stored == nil {
+		return err
+	}
+	task, err := stored.Task()
+	if err != nil {
+		return err
+	}
+	place, state := record.TaskPlace{}, record.TaskRunning
+	switch issue.Phase {
+	case phase.Admitted:
+		state = record.TaskWaiting
+	case phase.Retro:
+		place.Kind = record.PlaceRetro
+	case phase.Merging:
+		place.Kind = record.PlaceMerge
+	default:
+		roles, steps := planwords.BuiltinRoles(), stored.Steps[task.Task]
+		at := slices.IndexFunc(steps, func(step record.PlanStep) bool { return roles[step.Role].Phase == issue.Phase })
+		if at < 0 {
+			return fmt.Errorf("the task %s of %s runs no step as %s", task.Task, issue.Key, issue.Phase)
+		}
+		place = record.TaskPlace{Kind: record.PlaceStep, Position: steps[at].Position}
+	}
+	return records.MoveTask(ctx, tx, issue.Key, issue.Generation, task.Task, place, state)
 }
 
 // requestApprovalWithVerification asks the person, as an architect's session does with
