@@ -367,6 +367,74 @@ func TestAStatusChangesCommentIsANodeOfTheStore(t *testing.T) {
 	}
 }
 
+// TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject: a parent may be an issue of another
+// project, so include_parent can move an ancestor the caller's credential may not write. A
+// credential scoped to BETA is refused the status change of its own BETA issue whose
+// include_parent would move the ALPHA ancestor: 403 PROJECT_SCOPE naming the ancestor and both
+// projects, with changed [] and nothing written, no status moved and no event appended on either
+// issue, and its dry run is refused the same way. The same call by a person, whose credential
+// names no project, moves the ancestor, which is the control.
+func TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{})
+	caller := newBrokerCaller(t)
+	ctx := context.Background()
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+		}
+	}
+	ancestor := createdIssue(t, "create ALPHA's ancestor", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "ALPHA", "title": "Another project's ancestor", "force": true,
+	})).Key
+	named := createdIssue(t, "create BETA's issue under it", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "Its own project's issue under it", "parent": ancestor, "force": true,
+	})).Key
+	const token = "a-token-scoped-to-beta"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{"BETA"}
+	rig.broker.Says(token, answer)
+	// stored is each issue's status and last_seq, and the events on the two issues.
+	stored := func() string {
+		t.Helper()
+		var held string
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select string_agg(key || ' ' || status || ' ' || last_seq, ', ' order by key)
+			       || '; ' || (select count(*) from events where issue_key = any($1))
+			from issues where key = any($1)
+		`, []string{ancestor, named}).Scan(&held); err != nil {
+			t.Fatalf("read %s and %s: %v", ancestor, named, err)
+		}
+		return held
+	}
+	before := stored()
+	for _, dryRun := range []bool{false, true} {
+		label := fmt.Sprintf("a scoped status change moving an ancestor of another project (dry_run %t)", dryRun)
+		refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", token, map[string]any{
+			"status": "in_progress", "include_parent": true, "dry_run": dryRun,
+		}))
+		body := refused.Body.Bytes()
+		expectRefusal(t, label, refused, http.StatusForbidden, codeProjectScope, ancestor, "ALPHA", "BETA")
+		var refusal statusChangeRefusal
+		if err := json.Unmarshal(body, &refusal); err != nil || refusal.Changed == nil || len(refusal.Changed) != 0 {
+			t.Fatalf("%s: body=%s, want changed []", label, body)
+		}
+	}
+	if after := stored(); after != before {
+		t.Fatalf("the refused status changes moved %s to %s, want nothing written", before, after)
+	}
+	moved := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", map[string]any{
+		"status": "in_progress", "include_parent": true,
+	})
+	if moved.Code != http.StatusOK {
+		t.Fatalf("a person's status change moving an ancestor of another project: status=%d body=%s, want 200", moved.Code, moved.Body.String())
+	}
+	for _, key := range []string{ancestor, named} {
+		if status := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)).Status; status != "in_progress" {
+			t.Errorf("the person's status change left %s %s, want in_progress", key, status)
+		}
+	}
+}
+
 // statusChangeCaller is one way a request reaches the status-change route: what it presents, and
 // whether optionalActor takes it for a person at a browser.
 type statusChangeCaller struct {
