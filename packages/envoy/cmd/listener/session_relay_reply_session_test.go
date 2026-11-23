@@ -151,10 +151,15 @@ const registrationSpare = 30 * time.Second
 // Each 5xx is sent again after its Retry-After when it carries one, else after the client's own
 // pause (clientResendPause), until registrationSpare before the test binary's deadline, which is
 // the one bound: a listener that never takes the registration fails the row then, naming the last
-// refusal (its status, reason and body) and how many registrations were sent. Any other status
-// fails the row at once, since a 4xx is the listener's answer to this registration and the client
-// does not send it again. A row that asserts that a registration is refused must not register
-// through this: it would take the refusal it asserts for a slow listener.
+// refusal (its status, reason and body) and how many registrations were sent. The client itself
+// ignores Retry-After: envoy-client pauses 250 ms whatever the answer says, and the plugins' next
+// registration comes 20 to 40 s later. The helper still waits a Retry-After out because it sends
+// again far more often than the client does, and the listener sets one (1 s, on the bus-unavailable
+// 503) where a sooner try would meet the same late server: the wait stays well under the plugins'
+// 20 to 40 s and spares that server a registration every 250 ms. Any other status fails the row at
+// once, since a 4xx is the listener's answer to this registration and the client does not send it
+// again. A row that asserts that a registration is refused must not register through this: it would
+// take the refusal it asserts for a slow listener.
 func registerAsTheClientDoes(t *testing.T, port int, body string) {
 	t.Helper()
 	var request struct {
