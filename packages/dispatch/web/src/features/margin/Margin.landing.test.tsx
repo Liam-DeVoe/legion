@@ -449,11 +449,12 @@ test("with the list of keys over Details, Escape closes the list alone, the focu
     act(() => close.focus());
     const list = () => screen.queryByRole("dialog", { name: "Keyboard shortcuts" });
 
-    // The list takes the focus in the commit that opens it, with no frame run. The focus is then
-    // put back on Details' Close, under the list, so the Escape lands there. The row reads that
-    // it is there before the Escape: a list that kept the focus inside itself would take the
-    // Escape in the list, which closes it as well, and the row would pass without the case it
-    // names, the focus outside the list.
+    // The list takes the focus in the commit that opens it, with no frame run: its filter, the
+    // field it names, so a key typed straight after `?` is the filter's. The focus is then put back
+    // on Details' Close, under the list, so the Escape lands there. The row reads that it is there
+    // before the Escape: a list that kept the focus inside itself would take the Escape in the
+    // list, which closes it as well, and the row would pass without the case it names, the focus
+    // outside the list.
     const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
     try {
       await user.keyboard("?");

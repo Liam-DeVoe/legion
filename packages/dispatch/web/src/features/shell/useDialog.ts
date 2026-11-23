@@ -76,13 +76,13 @@ const scrollLock = {
 };
 
 // Every open dialog's container. Escape is a `dialog`-scope keymap binding so it works wherever
-// the focus is, outside the dialog too (a press on the dialog's own text gives the focus to the
-// page, and the key then lands there); only the innermost open dialog closes. Two dialogs nested
-// by DOM containment (a picker opened inside an already-open sheet) resolve by containment, the
-// nested one winning regardless of which mounted its effect first. Two dialogs that are siblings
-// - neither containing the other, such as the phone navigation sheet and a second dialog a
-// control inside it opens without closing the sheet first - have no containment relationship to
-// resolve by, so the most recently opened of the two wins instead.
+// the focus is - on its field, on the dialog itself in the first frame of one that names no field,
+// or on the page after a press on its text took it there; only the innermost open dialog closes.
+// Two dialogs nested by DOM containment (a picker opened inside an already-open sheet) resolve by
+// containment, the nested one winning regardless of which mounted its effect first. Two dialogs
+// that are siblings - neither containing the other, such as the phone navigation sheet and a
+// second dialog a control inside it opens without closing the sheet first - have no containment
+// relationship to resolve by, so the most recently opened of the two wins instead.
 const openDialogs = new Set<HTMLElement | null>();
 
 function innermostOpenDialog(): HTMLElement | null | undefined {
@@ -100,11 +100,99 @@ function innermostOpenDialog(): HTMLElement | null | undefined {
   return innermost;
 }
 
-/** Whether a dialog is open. Its Escape is then its own wherever the focus is: in the dialog, or
- *  on the page after a press on its text took the focus there. A layer under it that answers
- *  Escape itself leaves the key to it. */
+/** Whether a dialog is open. Its Escape is then its own wherever the focus is: on its field, on
+ *  the dialog itself in the frame before a field takes the focus, or on the page after a press on
+ *  its text took the focus there. A layer under it that answers Escape itself leaves the key to
+ *  it. */
 export function dialogOpen(): boolean {
   return openDialogs.size > 0;
+}
+
+/** Where an open dialog gives the focus back when it closes, and whether it made its own element
+ *  focusable to take the focus as it opened. */
+interface FocusRecord {
+  giveBackTo: HTMLElement | null;
+  madeFocusable: boolean;
+}
+
+// Every open dialog's focus record, by its element. A dialog's layout effect adds its own entry
+// in the commit that opens it, and its layout cleanup deletes it in the commit that closes it;
+// a commit's layout cleanups run before its passive cleanups, so a closing dialog never finds
+// itself here. A record's `giveBackTo` is written as its dialog opens, and by other dialogs only
+// through three functions below, each in one phase: `takeOverTargetOfInner` (layout),
+// `giveBackToField` (frame) and `handOverFocus` (passive cleanup). `ownField` reads the map.
+const focusRecords = new Map<HTMLElement, FocusRecord>();
+
+/** Layout phase, by a dialog (`container`, its `record`) opening with the focus already inside
+ *  its element, before it adds its own record to the map, so every record found here is
+ *  another dialog's. When the focus is in an open dialog inside `container` whose target is
+ *  outside `container` - a dialog in a child component that opened in the same commit, whose
+ *  layout effect ran first and took the focus - `record` takes that target over, and that dialog
+ *  gives the focus back to `container` instead. Returns whether it did. The first such dialog is
+ *  enough: in a chain of dialogs opened in one commit, each has already taken over the target of
+ *  the one inside it, so only the outermost of them still has a target outside `container`. */
+function takeOverTargetOfInner(
+  container: HTMLElement,
+  active: Element | null,
+  record: FocusRecord
+): boolean {
+  for (const [inner, innerRecord] of focusRecords) {
+    const target = innerRecord.giveBackTo;
+    const targetOutside = target === null || !container.contains(target);
+    if (container.contains(inner) && inner.contains(active) && targetOutside) {
+      record.giveBackTo = target;
+      innerRecord.giveBackTo = container;
+      return true;
+    }
+  }
+  return false;
+}
+
+/** The first control of an open dialog's element that no other open dialog inside it holds: the
+ *  dialog's own field, which a dialog inside it gives the focus back to. */
+function ownField(container: HTMLElement): HTMLElement | undefined {
+  const inner = [...focusRecords.keys()].filter(
+    (other) => other !== container && container.contains(other)
+  );
+  return focusableIn(container).find((control) => !inner.some((other) => other.contains(control)));
+}
+
+/** Frame phase, by a dialog whose frame found the focus inside its element and not on it, which
+ *  is where a dialog opened inside it holds the focus: every record that gives the focus back to
+ *  `container` gives it back to `field` instead. */
+function giveBackToField(container: HTMLElement, field: HTMLElement): void {
+  for (const record of focusRecords.values()) {
+    if (record.giveBackTo === container) {
+      record.giveBackTo = field;
+    }
+  }
+}
+
+/** Passive cleanup phase, by a closing dialog: whether an open dialog outside the closing one's
+ *  element `container` holds the focus. That is a dialog that opened in the commit that closes
+ *  this one, or any older open dialog whose control the reader pressed to close this one; it
+ *  keeps the focus. Every open dialog whose element holds the focus (each of a nested chain)
+ *  takes `giveBackTo`, this dialog's target, when its own is none or is inside `container`: the
+ *  commit removed the control that held the focus as it opened, or it was a control of the
+ *  closing dialog. A focus still inside `container` has no holder: a dialog that stays mounted
+ *  when it closes (the margin sheet's `aside`, the conversation's thread section) still holds the
+ *  focus at its cleanup, and an open dialog around it is no holder of that focus. */
+function handOverFocus(container: HTMLElement | null, giveBackTo: HTMLElement | null): boolean {
+  const active = document.activeElement;
+  if (container?.contains(active) === true) {
+    return false;
+  }
+  let held = false;
+  for (const [other, record] of focusRecords) {
+    if (!other.contains(active)) {
+      continue;
+    }
+    held = true;
+    if (record.giveBackTo === null || container?.contains(record.giveBackTo) === true) {
+      record.giveBackTo = giveBackTo;
+    }
+  }
+  return held;
 }
 
 export interface UseDialogOptions {
@@ -121,10 +209,14 @@ export interface DialogHandle<T extends HTMLElement> {
 /**
  * Focus trap, Escape-to-close, focus restoration, and a body scroll lock for an overlay
  * (the search palette, the phone navigation drawer, the phone margin sheet, and the reference
- * picker all use this). While open it pushes the `dialog` keymap scope, which masks every page
- * and global binding, and registers Escape there for the innermost open dialog, whatever
- * element holds focus; a descendant that owns its Escape (the margin Composer dismissing its
- * picker) stops propagation before the dispatcher sees it. Tab trapping listens on the container.
+ * picker all use this). On open the focus moves at once, in the commit that opens the dialog: to
+ * the field the dialog names (`initialFocusRef`), or, for a dialog that names none, to the dialog
+ * itself and to its first control a frame later. A focus already inside the dialog stays. So no
+ * key typed straight after opening reaches a control outside the dialog. While open it pushes the
+ * `dialog` keymap scope, which masks every page and global binding, and registers Escape there
+ * for the innermost open dialog, whatever element holds focus; a descendant that owns its Escape
+ * (the margin Composer dismissing its picker) stops propagation before the dispatcher sees it.
+ * Tab trapping listens on the container.
  */
 export function useDialog<T extends HTMLElement>({
   initialFocusRef,
@@ -134,12 +226,14 @@ export function useDialog<T extends HTMLElement>({
   const containerRef = useRef<T>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  // What held the focus as the dialog opened: the element it was opened from. It is read in an
-  // insertion effect, which React runs in the mutation phase of the commit that opens the dialog,
+  // What held the focus before the commit that opens the dialog: the element it was opened from.
+  // It is read in an insertion effect, which React runs in the mutation phase of that commit,
   // before the layout phase in which React carries out a descendant's `autoFocus` and runs every
   // layout effect - the dialog's own initial focus below among them - so it is never a focus the
-  // dialog's opening moved. Closing gives the focus back to it while it is still in the
-  // document, as WAI-ARIA's dialog pattern has it, and to the body otherwise.
+  // dialog's opening moved. The layout effect below gives the focus back to it when the focus is
+  // already inside the dialog's element as that effect runs: a field of the dialog that focused
+  // itself by `autoFocus` holds it then, and closing the dialog unmounts that field, so closing
+  // gives the focus back to the opener, as WAI-ARIA's dialog pattern has it, not to the body.
   const openerRef = useRef<HTMLElement | null>(null);
   useInsertionEffect(() => {
     if (open) {
@@ -164,28 +258,73 @@ export function useDialog<T extends HTMLElement>({
       : []
   );
 
-  // The initial focus moves in the commit that opens the dialog, before the browser handles
-  // another event: keys typed straight after the press that opened it reach the dialog, not the
-  // control that opened it. Moved a frame later, it would leave them to the opener: a space typed
-  // into Request changes, opened by Shift+R on the Approve button, would press Approve.
-  // A descendant that focuses itself as the dialog opens keeps that focus. React runs a
-  // component's layout effects after those of the components it renders, so a descendant's
-  // `autoFocus` or its own layout effect has already landed inside the container by now, and is
-  // left alone. One that focuses itself in a passive effect - the margin sheet's composer
-  // (`MentionComposer`'s `autoFocus`) - runs after every layout effect of the commit, so its
-  // focus comes last and stays.
+  // This dialog's record, set by its layout effect in the commit that opens it. It is read through
+  // this ref because the dialog may have no element (no entry in `focusRecords`), and because the
+  // passive cleanup runs after the layout cleanup has deleted the entry.
+  const focusRecord = useRef<FocusRecord | null>(null);
+
+  // The focus moves in the commit that opens the dialog, before the browser handles another
+  // event, so no key typed straight after the press that opened it reaches the control that
+  // opened it: a Space on Approve, behind Request changes that Shift+R opens from it, would
+  // approve the document (in CI a space typed 32 ms after Shift+R did). Where it moves turns on
+  // whether the dialog names its field (`initialFocusRef`):
+  // - A named field takes the focus at once. It is the control the dialog is for the reader to
+  //   type into first - the search bar's box, the list of keys' filter, Request changes' reason -
+  //   so the keys typed straight after opening are text for it, and land in it.
+  // - A dialog that names none takes the focus on its own element at once, and gives it to its
+  //   first control a frame later (the passive effect below). That control is only the first in
+  //   the markup, often a button, which a Space or an Enter typed before the reader has seen the
+  //   dialog would press; the element takes such a key and does nothing with it. So does a dialog
+  //   whose named field takes no focus as it opens (not drawn yet, or disabled).
+  // The element is made focusable (`tabindex="-1"`, out of the Tab order) when it takes the focus
+  // here, or when a dialog inside it is to give the focus back to it (`takeOverTargetOfInner`),
+  // unless it already is. A focus already inside the dialog's element stays where it is: React
+  // runs a component's layout effects after those of the components it renders, so a
+  // descendant's `autoFocus` or its own layout effect has landed by now, and is left alone. One
+  // that focuses itself in a passive effect - the margin sheet's composer (`MentionComposer`'s
+  // `autoFocus`) - runs after every layout effect of the commit, so its focus comes last and
+  // stays. A layout effect, so this holds whatever update opened the dialog.
   useLayoutEffect(() => {
     if (!open) {
       return;
     }
     const container = containerRef.current;
-    if (container?.contains(document.activeElement)) {
+    const active = document.activeElement;
+    // The focus goes back where it was before this dialog's opening moved it: where it is now, or,
+    // when that is inside the dialog's element, where it was before this commit (`openerRef`).
+    // Not to the body: a commit that removed the control that held the focus as it opened this
+    // dialog leaves it there.
+    const before = container?.contains(active) === true ? openerRef.current : active;
+    const record: FocusRecord = {
+      giveBackTo: before instanceof HTMLElement && before !== document.body ? before : null,
+      madeFocusable: false,
+    };
+    focusRecord.current = record;
+    if (container === null) {
       return;
     }
-    const initial =
-      initialFocusRef?.current ??
-      (container === null ? null : (focusableIn(container)[0] ?? container));
-    initial?.focus();
+    const makeFocusable = () => {
+      record.madeFocusable = !container.hasAttribute("tabindex");
+      if (record.madeFocusable) {
+        container.tabIndex = -1;
+      }
+    };
+    if (!container.contains(active)) {
+      initialFocusRef?.current?.focus();
+      if (!container.contains(document.activeElement)) {
+        makeFocusable();
+        container.focus({ preventScroll: true });
+      }
+    } else if (takeOverTargetOfInner(container, active, record)) {
+      // The dialog inside now gives the focus back to this element until this dialog's frame
+      // points it at this dialog's field, so the element must take the focus until then: a
+      // dialog inside that closes before that frame gives the focus to this element.
+      makeFocusable();
+    }
+    focusRecords.set(container, record);
+    return () => {
+      focusRecords.delete(container);
+    };
   }, [open, initialFocusRef]);
 
   useEffect(() => {
@@ -193,8 +332,46 @@ export function useDialog<T extends HTMLElement>({
       return;
     }
     const container = containerRef.current;
-    const previouslyFocused = openerRef.current;
+    const record = focusRecord.current;
     scrollLock.acquire();
+    const stopBeingFocusable = () => {
+      if (container !== null && record?.madeFocusable === true) {
+        container.removeAttribute("tabindex");
+        record.madeFocusable = false;
+      }
+    };
+
+    // Where the dialog's element took the focus as it opened, its field takes it a frame later, so
+    // a focus a descendant takes in its own effect lands first and is not taken back: the margin
+    // sheet's composer focuses its text box in an effect once it is on screen (`MentionComposer`'s
+    // `autoFocus` prop). Only a focus still on the dialog itself, or gone from it, is moved. A
+    // focus elsewhere inside the element - a named field that took it as the dialog opened among
+    // them - stays, and every record that gives the focus back to the element gives it back to the
+    // field instead (`giveBackToField`). The field is the dialog's own: a control inside an open
+    // dialog inside this one is not it (`ownField`). The element then stops being focusable, unless
+    // the focus is on it, so a press on the dialog's text puts the focus on the page's body, as
+    // before this hook took the focus at once.
+    const initialFocusFrame = window.requestAnimationFrame(() => {
+      if (container === null) {
+        return;
+      }
+      const active = document.activeElement;
+      const field = initialFocusRef?.current ?? ownField(container);
+      if (field === undefined) {
+        // No field of its own: the element keeps the focus it has, stays focusable, and stays
+        // the target a dialog inside it gives the focus back to.
+        return;
+      }
+      if (active === container || !container.contains(active)) {
+        field.focus();
+      } else {
+        giveBackToField(container, field);
+      }
+      if (document.activeElement !== container) {
+        stopBeingFocusable();
+      }
+    });
+
     openDialogs.add(container);
 
     const handleTab = (event: KeyboardEvent) => {
@@ -208,7 +385,12 @@ export function useDialog<T extends HTMLElement>({
         event.preventDefault();
         return;
       }
-      if (event.shiftKey && document.activeElement === first) {
+      // The dialog itself holds the focus in the first frame of one that names no field: Tab goes
+      // to its first control and Shift+Tab to its last, not to the page behind it.
+      if (document.activeElement === container) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -218,17 +400,25 @@ export function useDialog<T extends HTMLElement>({
     };
     container?.addEventListener("keydown", handleTab);
 
+    // A passive effect's cleanup, so the focus goes back after the commit that closes the dialog
+    // has drawn the page under it: a control that commit enables again takes the focus.
     return () => {
+      window.cancelAnimationFrame(initialFocusFrame);
       openDialogs.delete(container);
       container?.removeEventListener("keydown", handleTab);
+      stopBeingFocusable();
       scrollLock.release();
-      if (previouslyFocused !== null && document.contains(previouslyFocused)) {
-        previouslyFocused.focus();
+      const giveBackTo = record?.giveBackTo ?? null;
+      if (handOverFocus(container, giveBackTo)) {
+        return;
+      }
+      if (giveBackTo !== null && document.contains(giveBackTo)) {
+        giveBackTo.focus();
       } else {
         document.body.focus({ preventScroll: true });
       }
     };
-  }, [open]);
+  }, [open, initialFocusRef]);
 
   return { containerRef };
 }

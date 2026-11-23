@@ -262,6 +262,13 @@ test("Tab narrows the chip to the block the cursor is in and Backspace widens it
     await openBar(page, ["Control+k"]);
     await expect(scope(page)).toHaveText(/Design notes/);
 
+    // Tab and Backspace move the chip as keys of the box (`useBarScope`'s `handleKey`). The box is
+    // the field the bar names, which takes the focus as the bar opens (`useDialog`), and a key
+    // that reached anything else would move no chip, so the row reads that the box has it first.
+    await expect(
+      bar(page).getByRole("combobox", { name: "Search" }),
+      "the bar's box took no focus"
+    ).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(scope(page)).toHaveText(new RegExp(paragraph));
 
