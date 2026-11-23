@@ -24,17 +24,13 @@ func TestPrepareAirlockWritesTheBundleWhereTheCommandsCertDirLacksTheRoot(t *tes
 	if err := os.WriteFile(filepath.Join(with, "private.pem"), []byte(other), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range []struct {
-		name       string
-		dir        string
-		wantBundle bool
-	}{
-		{name: "SSL_CERT_DIR names an empty directory", dir: empty, wantBundle: true},
-		{name: "SSL_CERT_DIR names a directory without the root", dir: without, wantBundle: true},
+	for _, row := range []struct{ name, dir string }{
+		{name: "SSL_CERT_DIR names an empty directory", dir: empty},
+		{name: "SSL_CERT_DIR names a directory without the root", dir: without},
 		// Changed from the acceptance tester's row (want no bundle): httpx reads this directory
 		// through OpenSSL's capath, which finds a root only under its hash link, and this
 		// directory holds root.pem with none, so any SSL_CERT_DIR now gets the bundle.
-		{name: "SSL_CERT_DIR names a directory that holds the root", dir: with, wantBundle: true},
+		{name: "SSL_CERT_DIR names a directory that holds the root", dir: with},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			// The machine's system bundle holds the root.
@@ -51,14 +47,8 @@ func TestPrepareAirlockWritesTheBundleWhereTheCommandsCertDirLacksTheRoot(t *tes
 			if err != nil {
 				t.Fatalf("airlockVars: %v", err)
 			}
-			if !row.wantBundle {
-				if files.bundle != "" {
-					t.Errorf("prepareAirlock wrote the bundle %q, want none: the command's SSL_CERT_DIR holds the root", files.bundle)
-				}
-				return
-			}
 			if files.bundle == "" {
-				t.Fatalf("prepareAirlock wrote no bundle, though the command's SSL_CERT_DIR, which Node reads in place of the system's directory, lacks the root")
+				t.Fatalf("prepareAirlock wrote no bundle for SSL_CERT_DIR=%q; any SSL_CERT_DIR gets one", row.dir)
 			}
 			for _, key := range airlockBundleVars {
 				if vars[key] != files.bundle {

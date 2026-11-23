@@ -15,7 +15,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io/fs"
 	"maps"
 	"net/url"
 	"os"
@@ -93,7 +92,7 @@ func systemTrust() *x509.CertPool {
 	pool := x509.NewCertPool()
 	for _, path := range systemTrustFiles {
 		data, err := os.ReadFile(path)
-		if errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err == nil {
@@ -594,8 +593,11 @@ func wgetrcTrusts(path string, roots []*x509.Certificate) bool {
 	}
 	// An empty value is still a ca_directory: wget keeps it, loads no directory from it, and so
 	// loads no system store either.
+	if directory == "" {
+		return false
+	}
 	entries, err := os.ReadDir(directory)
-	if directory == "" || err != nil {
+	if err != nil {
 		return false
 	}
 	pool := x509.NewCertPool()

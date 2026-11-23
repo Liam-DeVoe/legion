@@ -20,19 +20,15 @@ func TestPrepareAirlockReadsTheCertDirAsNodeDoes(t *testing.T) {
 	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
 	without := filepath.Dir(writeLoginFile(t, "private.pem", other))
 	with := filepath.Dir(writeLoginFile(t, "root.pem", root))
-	for _, row := range []struct {
-		name       string
-		value      string
-		wantBundle bool
-	}{
-		{name: "a list whose second directory holds the root", value: without + ":" + with, wantBundle: true},
-		{name: "a list whose first directory holds the root", value: with + ":" + without, wantBundle: true},
-		{name: "a list of empty entries around a directory that holds the root", value: "::" + with + ":", wantBundle: true},
-		{name: "a set but empty SSL_CERT_DIR", value: "", wantBundle: true},
+	for _, row := range []struct{ name, value string }{
+		{name: "a list whose second directory holds the root", value: without + ":" + with},
+		{name: "a list whose first directory holds the root", value: with + ":" + without},
+		{name: "a list of empty entries around a directory that holds the root", value: "::" + with + ":"},
+		{name: "a set but empty SSL_CERT_DIR", value: ""},
 		// Changed from the acceptance tester's row (want no bundle): httpx reads this directory
 		// through OpenSSL's capath, which finds a root only under its hash link, and this
 		// directory holds root.pem with none, so any SSL_CERT_DIR now gets the bundle.
-		{name: "one directory that holds the root", value: with, wantBundle: true},
+		{name: "one directory that holds the root", value: with},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			// The machine's system bundle holds the root.
@@ -49,14 +45,8 @@ func TestPrepareAirlockReadsTheCertDirAsNodeDoes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("airlockVars: %v", err)
 			}
-			if !row.wantBundle {
-				if files.bundle != "" {
-					t.Errorf("prepareAirlock wrote the bundle %q, want none: the one directory SSL_CERT_DIR names holds the root", files.bundle)
-				}
-				return
-			}
 			if files.bundle == "" {
-				t.Fatalf("prepareAirlock wrote no bundle for SSL_CERT_DIR=%q, which Node reads as one directory path that does not hold the root", row.value)
+				t.Fatalf("prepareAirlock wrote no bundle for SSL_CERT_DIR=%q; any SSL_CERT_DIR gets one", row.value)
 			}
 			if vars["NODE_EXTRA_CA_CERTS"] != files.bundle {
 				t.Errorf("the command's NODE_EXTRA_CA_CERTS is %q, want the bundle %q", vars["NODE_EXTRA_CA_CERTS"], files.bundle)
