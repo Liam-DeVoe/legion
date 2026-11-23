@@ -292,7 +292,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		ok += " nats-daemon-nkey-user=" + daemonNatsUser
 	}
 	fmt.Fprintln(stdout, ok)
-	for _, warning := range append(slices.Clone(cfg.Warnings), warnings...) {
+	for _, warning := range slices.Concat(cfg.Warnings, warnings) {
 		fmt.Fprintln(stdout, warning)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
