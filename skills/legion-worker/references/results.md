@@ -24,12 +24,15 @@ The pull request body's `Checks` lines are in `skill://legion-worker/references/
   A documented procedure counts only when it ran: reading it is not a run.
 
 - A `before_merge` result stands while its commit is the head of an open pull request Dispatch attributes to the check's issue (`packages/envoy/internal/dispatch/delivery/attribution.go`), or the final head of a merged one, and while no part of the check's block has changed.
+  An issue with no pull request has no such head, so a plain `dispatch results --issue <issue>` shows no pass standing there.
+  Read it with `--at <head>`, which compares every check with that one commit.
   So after a push, record each `before_merge` check with no `ci_check` again.
 
 ## The rules every phase's evidence follows
 
 - The tester tries to break the changed surface (wrong and boundary inputs, the second and the concurrent run, the party it must refuse) and writes a failing test for each way it breaks that no existing test catches.
-  Lint, types and the unit and integration suites are CI's: read them on GitHub at the head, rerun no lane as evidence, and wait for none.
+  Lint, types and the unit and integration suites are CI's: read them on GitHub at the pull request's head, where the issue has one.
+  Rerun no lane as evidence, and wait for none.
 
 - After a forward merge, the tester reruns each check the merge can reach (`skill://legion-worker/references/conflicts-and-rewrites.md`) and records each other check with no `ci_check` at the new head unrun, its `--observed` naming the earlier pass and why the merge misses it.
   A class search that finds an instance, or a parent's last round, takes a full test round.

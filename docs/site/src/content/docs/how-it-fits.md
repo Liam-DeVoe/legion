@@ -75,7 +75,7 @@ Each admitted issue gets an **architect**, which owns the issue's tree. It write
 large work into child issues, and runs each change through the steps of the issue's plan in turn:
 by default a **planner**, an **implementer**, a **tester**, a **reviewer** and its own acceptance,
 then a **merger** where the steps opened a pull request. The architect can do any step itself.
-Every agent works in a workspace of its own, and each planning, implementation, test and review
+The agents of an issue share its one workspace. Each planning, implementation, test and review
 step records a structured handoff on the issue in Dispatch, which the next step reads and a
 restarted agent recovers from. The coordinator writes the issue's status back to Dispatch as the
 work moves (In Progress, Testing, Needs Review, Retro).

@@ -453,10 +453,11 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// release suspended, comes back in a new session with nothing to do. A claim that still
 	// owes a task keeps it — the resume sends that one. An architect's phase is restarted only
 	// where it is its issue's owner at a place of its own (ownersOwnPlace: a step it does, its
-	// acceptance among them, or its retro), and that restart starts no run: it tells the architect
-	// its step again, with one more owner-step where none is still queued. The daemon's own delivery
-	// of a relaunch's record is no task it owes (supervise.HoldsTask), so a claim holding that alone
-	// is read as owing nothing, and the phase's task takes its place (supervise's queue).
+	// acceptance among them, or its retro). That restart starts no run. It tells the architect its
+	// step again in one more owner-step, where none of the step's open run is still queued. The
+	// daemon's own delivery of a relaunch's record is no task it owes (supervise.HoldsTask), so a
+	// claim holding that alone is read as owing nothing, and the phase's task takes its place
+	// (supervise's queue).
 	status = http.StatusOK
 	if !supervise.HoldsTask(m.Claim().Pending) {
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {

@@ -32,7 +32,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 ## Steps
 
-1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request where there is one, and the implementer's handoff where it has an implementer step.
+1. **Read the evidence**: the issue, `dispatch results --issue <issue> --at <head>`, the pull request where there is one, and the implementer's handoff where it has an implementer step.
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
    A pass must stand at the head the last step passed for every `before_merge` check, and, with a pull request, the body's `Checks` block carries each.
 
@@ -44,6 +44,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      when CI settles, the daemon tells the architect and any worker of the phase the issue then stands in.
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
      Neither that run nor that finding moves the issue back.
+     A `no_head` check can never pass: it is a defect, held as *When retro stops* says.
 
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
      `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check` check, or `to: testing` for the tester's result, where the task has that step, else send it to the architect;
@@ -104,4 +105,4 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 
 - The comment and the message are posted, and the pull request's head, where there is one, is the head you found.
 
-- Your `handoff_complete` carries `plan_rating` and `plan_reason`, or neither where your `legion` tool's `handoff_complete` takes neither.
+- Your `handoff_complete` carries `plan_rating` and `plan_reason` as step 6 says.

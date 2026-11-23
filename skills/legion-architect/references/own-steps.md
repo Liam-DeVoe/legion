@@ -33,6 +33,7 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
   It tells it again at a launch only where your session has not had it, as a fresh session after a lost one has not; a launch that resumes the session that had it is told nothing more.
 
 - A retry of your claim at your step (`legion claims retry`) relaunches your session, and Legion tells you the step again; it starts no worker.
+  While an `owner-step` of that run is still on its way to you, the retry tells you nothing more.
 
 ## Reporting it
 
@@ -52,10 +53,16 @@ Read it when a step of your issue's plan has the key `owner`, when its task has 
 
 ## Your review step
 
-- `reviewer:owner` ends by your `complete_step`, with the `verdict` `pass` or `fail`, and the commit your review's handoff record names, whether or not the issue has a pull request.
-  No review on GitHub decides it, yours included, and your `fail` counts no review round.
+- `reviewer:owner` ends by your `complete_step`, with the `verdict` `pass` or `fail`, whether or not the issue has a pull request.
+  Write its `review` handoff first, its `decision` `approved` for `pass` and `changes_requested` for `fail`.
+  The tool sends that record's `head` as the commit you read, so you pass no commit.
+  No review on GitHub decides it, yours included.
+  Your `fail` sends the work back as a `request_backward_move` from that step does, and neither counts a review round.
 
-- A review you leave on the pull request serves only the repository's own merge rule, such as a required approving review; Legion reads nothing of it.
+- A review you leave on the pull request decides nothing of the step.
+  It serves the repository's own merge rule, such as a required approving review, which you give yourself.
+  After a forward merge in `accepting`, `retro` or `merging`, the daemon asks you to approve the new head on GitHub.
+  A merger that enters `merging` while that approval is owed waits for it.
 
 ## A task with no pull request
 

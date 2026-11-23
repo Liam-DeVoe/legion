@@ -320,7 +320,7 @@ export const PHASE_OP_SENTENCES = {
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself: " +
-    "its acceptance in accepting, or a step whose key is owner. That move counts no review round. ",
+    "its acceptance in accepting, a step whose key is owner, or a retro it does. That move counts no review round. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -379,8 +379,10 @@ export function legionToolDescription(host: {
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
     "and reports it with `commit`, the head that record's body names " +
     "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first. Retro, the merger, the role acceptance and each role " +
+    "of the deployment or of the plan write no handoff record. Each reports the commit the workspace stands on. So does a phase you left with no " +
+    "record, or with an implement record naming no head. It " +
+    "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
     "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
@@ -396,7 +398,9 @@ export function legionToolDescription(host: {
     "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
-    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
+    "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide), and the pass of the fresh agent of " +
+    "acceptance while an issue beneath its issue is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one: send the same completion " +
+    "again once each has left); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +

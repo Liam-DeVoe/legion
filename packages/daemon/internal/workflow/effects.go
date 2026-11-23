@@ -438,13 +438,14 @@ const testerVerdictLabel = "Tester's verdict"
 // child's own starts with the child's first phase (StartFirstPhase).
 //
 // Every phase start of a child, the move into accepting among them, first starts the child's own
-// architect again when its claim has failed (reviveArchitect). The phase starts are the one place
-// in the workflow that does this, since the transitions are the only phase starts. Outside the
-// workflow, a re-admission brings a mid-phase child's failed architect back with the member's
-// other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart of a held
-// phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry) and a
-// resume task each hand a role the work of a phase the issue already stands in, and the owed-entry
-// sweep runs every minute, so none of them revives the architect.
+// architect again when its claim has failed (reviveArchitect). In the workflow one other place
+// starts it again: its failure, where the child stands at a place only that architect ends
+// (restartFailedOwner). No phase start comes there until that architect reports its step.
+// Outside the workflow, a re-admission brings a mid-phase child's failed architect back with the
+// member's other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart
+// of a held phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry)
+// and a resume task each hand a role the work of a phase the issue already stands in, and the
+// owed-entry sweep runs every minute, so none of them revives the architect.
 //
 // told composes the start's task from where the work stands (standingPart), which start reads only
 // for an agent it starts or tells: a phase that starts nobody is told no task, and done, which
@@ -534,12 +535,12 @@ func stepRun(place record.StepPlace, starts int64) record.NoticeStep {
 // claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
 // starts again at its child's next phase start (dispatch://INFRA-3915 R2). One that failed while
 // its child stands at a place only it ends, which no phase start follows, is started again at its
-// failure, at most OwnerRestarts times in the step's run, and then waits for the operator's retry,
-// which the stranded list names (restartFailedOwner). Until it runs again its child's notices go
-// to the architect above it (record.OwningArchitect), all but an owner-step, which goes to that
-// architect alone (record.OwnerClaim): when its claim has failed, it is told that step again when
-// it runs again, where no owner-step of it is still queued and the session it runs in has not had
-// one (claimReady's owedOwnersStep and toldThisSession). The
+// failure, at most OwnerRestarts times in the step's run (restartFailedOwner). After that the
+// operator's retry or the controller's fresh_session starts it, and the stranded list names it.
+// Until it runs again its child's notices go to the architect above it (record.OwningArchitect),
+// all but an owner-step, which goes to that architect alone (record.OwnerClaim). It is told that
+// step again when it runs again, where no owner-step of the step's open run is still queued and
+// its session has not had one (claimReady's owedOwnersStep and toldThisSession). The
 // outbox's start retries a failed claim with fresh budgets (supervise.RequestRetry), in the
 // session it recorded, or a new one once supervise's Machine.forgetSession has dropped it. This
 // start asks for no new session itself. A tree root's architect is admission's, started with its

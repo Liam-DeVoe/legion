@@ -165,10 +165,11 @@ func TestASaveOfAReleaseOfAnotherProjectsIssueActsWhileOnlyThatProjectIsPaused(t
 }
 
 // Decision 12 of dispatch://INFRA-3759: a cancel made while the project is paused queues no resume.
-// It records each role the release had stopped as stopped by the pause, holds the pod whatever
-// the pod's other roles do, and arms the backstop of the open phase's worker serving the issue's
-// generation, as the stop transaction does while its pause stands; the architect gets none. A role
-// a wake already owes a launch keeps that wake, owes the launch in its stop, and gets no backstop.
+// It records each role the release had stopped as stopped by the pause, and holds the pod whatever
+// the pod's other roles do. It arms the backstop the stop transaction arms while its pause stands,
+// for the claim BackstopTarget names. Here that is the implementer serving the issue's generation,
+// and the architect, which does no step of its own here, gets none. A role a wake already owes a
+// launch keeps that wake, owes the launch in its stop, and gets no backstop.
 func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

@@ -43,6 +43,12 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
+- On an issue with no pull request each such check reads `no_head`: no run can prove it, so its words are wrong for that task.
+  The tester names it in `implementerProof.how`, sends it to the architect and fails no round for it.
+  The reviewer and the fresh agent of `acceptance` send it to the architect and hold their verdict with a `WAITING` line until the check is rewritten.
+  Or they `fail` with no `return_to`, which stops a task with no implementation step before theirs for its owner.
+  No step passes while such a check stands, and the retro holds its completion for it (`skill://legion-retro`).
+
 - A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites and the full browser lane) reads `skipped` without it.
   The implementation step's agent adds the label, then pushes, because the workflow starts on a push and not on a label.
   The label stays on while a `ci_check` of the issue names such a job.

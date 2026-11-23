@@ -16,9 +16,9 @@ section can use the words without stopping to explain them.
   restart picks up where it left off. It never writes code; the merge is the merger agent's request
   under the repository's rules.
 - **Agents** are [Oh My Pi](https://github.com/cybermonklabs/oh-my-pi) sessions. Under the Kubernetes
-  runtime each issue runs in a pod of its own, where every agent of that issue runs, from one
-  published worker image. Each agent talks to the daemon over a connection its pod dials back, and
-  a controller the daemon launches runs in a pod of its own. Under the tmux runtime a phase
+  runtime the agents of one issue all run in that issue's one pod, from one published worker
+  image. Each talks to the daemon over a connection its pod dials back, and a controller the daemon
+  launches runs in a pod of its own. Under the tmux runtime a phase
   worker's role may run on Claude Code instead (`worker_backends` in `legion.yaml`); it does the same
   work through the same `legion` tool and keeps its conversation the same way.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
@@ -224,10 +224,10 @@ architect in a session that has not had it, such as a fresh session after a lost
 the architect is idle past the silence bound. It starts no other agent for the
 step, and takes its report
 with the `legion` tool's `complete_step`: the issue, the step's place (1 for the first, 0 for the
-retro), a summary, and the verdict `pass` or `fail` where the step reports one, with the commit it
-read for a review step. The retro is done by the agent of the task's last step of the type
-implementation, as that step's role, and by the architect where that step is its own or the task
-has none. It writes
+retro), a summary, and the verdict `pass` or `fail` where the step reports one. The tool adds the
+commit and the handoff record itself, as `handoff_complete` does. The retro is done by the agent
+of the task's last step of the type implementation, as that step's role, and by the architect
+where that step is its own or the task has none. It writes
 the plan as the issue's `plan.md` document, with one `plan_task` block such as
 `:::plan_task{#a steps="implementer reviewer"}` whose text says what the task must deliver, and
 gives that version to Legion with the `legion` tool's `register_plan` before the issue's work
@@ -491,9 +491,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   names no pull request. A red is for those roles to decide on — re-run a check that failed on
   itself, fix code that is at fault, or wait — and for GitHub to hold the merge over, under the base
   branch's own required checks, which Legion reads only to decide whether a conflicting head needs
-  its merge forward now (below), and never re-implements. The reviewer reads the
-  head's checks on GitHub itself before it approves, and the agent of an acceptance step before it
-  accepts; those reads are the ones that decide anything. Two settlements of the same head that
+  its merge forward now (below), and never re-implements. The reviewer reads the head's checks on
+  GitHub itself before it approves, and so does the architect before its own acceptance. The fresh
+  agent of `acceptance` reads the result Dispatch derives for each `ci_check` check instead. Those
+  reads are the ones that decide anything. Two settlements of the same head that
   name the same
   checks tell nobody twice, and a lingering tree is told nothing at all.
 - **A head that conflicts with its base** moves no phase. GitHub computes no merge ref for such a
@@ -526,9 +527,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
 - **A completion behind its phase entry.** A move the role's completion did not make — a
   reviewer's own request for changes, which ends the round before the reviewer completes — keeps that role's
   turn, its background jobs, its process and its session. Only the entry of the phase the issue
-  moves to is raised, so a completion the role sends for the phase it lost
-  still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
-  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
+  moves to is raised. So the role's first completion of the phase it lost still names the entry
+  that phase gave it. The daemon records that completion on the role's row and moves nothing, and
+  its handoff is the report of the ended step. A second completion of that phase is refused
+  `HANDOFF_NOT_CURRENT_PHASE`. `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
   while the issue stands in that phase. A completion of another entry than the role's phases row
   names, from a role whose phase the issue is no longer in, is answered
   `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
@@ -537,8 +539,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   of a phase that ends with the role's own handoff record. The phase was entered again at that
   head, so the work the new entry's task asks for is the work that completion reports; taking it
   moves the issue on, so the same completion sent again, or one naming a newer record, is
-  answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused; so is one that
-  names no commit, and so is any while the record holds no pull request for the issue. A
+  answered `HANDOFF_NOT_CURRENT_PHASE`. That completion is taken only at the head the record holds.
+  One at another commit, or one that names none, is refused. So is every completion behind its
+  entry on an issue the record holds no pull request for, since no head stands there. A
   completion is refused whatever head it names when the entry the phase stands on was raised by a
   move back, which asks for that phase's work to be done again.
 - **An implementer step that completes with no pull request**, the implementer's completion or the

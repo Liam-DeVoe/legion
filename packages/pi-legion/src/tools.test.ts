@@ -207,8 +207,10 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
   "and reports it with `commit`, the head that record's body names " +
   "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
-  "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first. Retro, the merger, the role acceptance and each role " +
+  "of the deployment or of the plan write no handoff record. Each reports the commit the workspace stands on. So does a phase you left with no " +
+  "record, or with an implement record naming no head. It " +
+  "refuses, posting nothing, a planning, implementing, testing or reviewing phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
   "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
   "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
   "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
@@ -226,7 +228,9 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
   "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
   "pull request on `legion/<issue>` and none recorded " +
-  "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
+  "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide), and the pass of the fresh agent of " +
+  "acceptance while an issue beneath its issue is still in the workflow (SIGNOFF_CHILD_IN_WORKFLOW, naming each one: send the same completion " +
+  "again once each has left); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +
   "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
   "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
@@ -238,7 +242,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
   "The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself: " +
-  "its acceptance in accepting, or a step whose key is owner. That move counts no review round. " +
+  "its acceptance in accepting, a step whose key is owner, or a retro it does. That move counts no review round. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -256,8 +260,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "steps its task runs, in any order and with no role required: Legion's roles planner, implementer, tester, reviewer and acceptance, " +
   "and the roles of the deployment and of the plan, each with an optional key after a colon that names its agent (`implementer:owner` " +
   "is a step you do yourself, and `acceptance` with no key is a fresh agent of the role acceptance); a task that names none runs the " +
-  "project's default steps. Legion adds the retro, done by the agent of the task's last step of the type implementation or by you " +
-  "where it has none, and the merge where the issue has a pull request. Give it before the issue's " +
+  "project's default steps. Legion adds the retro, and the merge where the issue has a pull request. The agent of the task's last " +
+  "step of the type implementation does the retro, or you where it has none or that step is yours. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
   "(PLAN_REFUSED, which also refuses a version that changes a running task or a role its steps name: stop it with stop_task first, and a plan of an issue " +

@@ -69,9 +69,10 @@ function recordAnswer(key: string, state: Record<string, unknown>): Response {
     : Response.json(record);
 }
 
-/** What the implementer's retro reports in the pane: the commit alone, since a retro ends with no
+/** What the pane gathers for the implementer's retro: the commit alone, since a retro ends with no
  * handoff record and the daemon refuses a retro's completion that names one
- * (`HANDOFF_RECORD_MISMATCH`). */
+ * (`HANDOFF_RECORD_MISMATCH`). The rating of the plan comes from the tool's own arguments
+ * (`plan_rating`, `plan_reason`), not from the pane. */
 const RETRO_REPORT = { commit: "c".repeat(40) };
 
 /** A daemon refusal as its route answers it: the status, the code and the sentence. */
@@ -184,7 +185,7 @@ test("the description sets the host's sentences before and after handoff_complet
   // Every host states `ready_for_update`, so its sentences are the template's own, between
   // handoff_complete's contract and the host's `after`.
   expect(placed).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself: its acceptance in accepting, or a step whose key is owner. That move counts no review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue moves it, named by `issue`, back to an earlier step of its task from a step it does itself: its acceptance in accepting, a step whose key is owner, or a retro it does. That move counts no review round. The controller's read_state returns the daemon's whole state. What a later phase needs"
   );
   expect(placed.endsWith("role topic with mcp__legion__envoy_publish.")).toBe(true);
 });
@@ -412,7 +413,8 @@ test("the retro's completion sends plan_rating and plan_reason as planRating and
 // to refuse (PLAN_RATING_UNEXPECTED). So the tool sends a rating on a completion at any phase,
 // since a filter on the record's phase would drop a rating the agent believes it gave.
 test("a rating is sent on a completion at any phase: the late retro's at merging, and one at implementing that the daemon refuses PLAN_RATING_UNEXPECTED", async () => {
-  // A retro writes no handoff record, so the pane reports the commit alone for it.
+  // A retro writes no handoff record, so the pane gathers the commit alone for it, and the rating
+  // comes from the tool's arguments.
   const lateHead = "b".repeat(40);
   const late = runtime(implementer, stateAtPhase("merging"), undefined, { commit: lateHead });
   const lateReason = "The reviewer's two rounds were the test step the plan had left out.";
