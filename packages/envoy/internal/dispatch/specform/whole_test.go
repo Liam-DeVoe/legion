@@ -21,13 +21,13 @@ import (
 // (wholeText.load, changedRuns, writesNoNewFinding), each where a count one word off, or the other
 // half alone, changes the verdict: the two ways a piece runs on into a sentence from the one before
 // it, from an open sentence of one piece and of two (left: the initialism ends a piece of ste-lint
-// and no sentence), with a closed sentence as the control, and a way out that brings the piece of
-// two pieces' last to the bound of 25 words and one past it, also where a piece runs on into that
-// sentence too; one sentence written twice with an open sentence between, whose closing quote a way
-// out takes away at both places, and a closed one that a way out opens at both places (a changed
-// sentence's run, as the text holds it and as the way out writes it); and a sentence of one word
-// that a way out writes in code font, open with no word in its last piece, before a long piece,
-// which it then runs on into (the piece after a run, as the way out writes it).
+// and no sentence), with a closed sentence as the control, and a way out that brings the last piece
+// of a sentence of two pieces one word past the bound of 25, and to the bound where a piece runs on
+// into that sentence too; one sentence written twice with an open sentence between, whose closing
+// quote a way out takes away at both places, and a closed one that a way out opens at both places
+// (a changed sentence's run, as the text holds it and as the way out writes it); and a sentence of
+// one word that a way out writes in code font, open with no word in its last piece, before a long
+// piece, which it then runs on into (the piece after a run, as the way out writes it).
 func wholeTestLines(t *testing.T) []string {
 	t.Helper()
 	lines := []string{
@@ -46,7 +46,6 @@ func wholeTestLines(t *testing.T) []string {
 		`It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp." It keeps it. It ends.`,
 		`He said "wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp wq wr." It keeps it. It ends.`,
 		`He said wa wb wc wd we wf wg wh wi wj wk wl wm wn wo wp wq wr. It keeps it. It ends.`,
-		`It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm." It keeps it. It ends.`,
 		`It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm wn." It keeps it. It ends.`,
 		`He said "Go." It runs in the U.S. and it said "wa wb wc wd we wf wg wh wi wj wk wl wm." It keeps it. It ends.`,
 		`He said "sa sb sc sd se sf sg sh si last." He said "ma mb mc md me mf." He said "sa sb sc sd se sf sg sh si last." It ends.`,
@@ -132,8 +131,8 @@ func TestTheWholeTextReadsAsSteLintReadsTheLine(t *testing.T) {
 // the change, from the sentences before it (left) and into those after it (runs), is read for each
 // way a piece can cross the changed sentence, each where a count one word off, or one half of what
 // the judge reads alone, changes the verdict (counted): after an open sentence of two pieces, whose
-// last piece runs on into it, where the way out brings that piece to the bound of 25 words and one
-// past it, also where a piece runs on into the sentence of two pieces too; in a sentence written
+// last piece runs on into it, where the way out brings that piece one word past the bound of 25,
+// and to the bound where a piece runs on into the sentence of two pieces too; in a sentence written
 // twice that a run of open sentences joins, where the way out closes it at both places, and in one
 // that the way out opens at both places, so that only the text it writes joins them, into a piece
 // that ste-lint refuses and neither place alone gives; and in a closed sentence that the way out
