@@ -1462,22 +1462,22 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 // for an issue with no plan rows and an issue the record does not hold, whose move is the issue's
 // as before, and for an agent that runs no step, whose move the workflow refuses.
 func (s *server) taskOfAgent(ctx context.Context, key string, token claim.Token) (string, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issue, err := s.records.Issue(ctx, tx, key)
-	if err != nil || issue == nil {
-		return "", err
-	}
-	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
-	if err != nil || stored == nil {
-		return "", err
-	}
-	_, agent, _ := token.Cut()
-	step, _ := issue.StepOfAgent(agent)
-	return step.Task, tx.Commit(ctx)
+	var task string
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
+		}
+		stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil || stored == nil {
+			return err
+		}
+		_, agent, _ := token.Cut()
+		step, _ := issue.StepOfAgent(agent)
+		task = step.Task
+		return nil
+	})
+	return task, err
 }
 
 func (s *server) phaseRetry(w http.ResponseWriter, r *http.Request) {
