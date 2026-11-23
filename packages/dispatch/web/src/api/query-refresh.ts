@@ -54,7 +54,9 @@ export interface RefreshTarget {
 
 /** A test of one query's answer (`RefreshTarget.when`): its data, the query, and the client the
  *  refresh runs on, which `refreshQueries` always hands it; a test called apart from a refresh may
- *  be handed none. */
+ *  be handed none. A check may do more than answer: it may wait on that client for another
+ *  query's answer, and then ask for a refresh of its own (`refreshQueries`), after the refresh
+ *  that called it has ended. */
 export type RefreshCheck = (data: unknown, query: Query, client?: QueryClient) => boolean;
 
 interface DeferredCheck {

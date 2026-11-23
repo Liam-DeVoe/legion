@@ -30,6 +30,7 @@ import { blockNodeId } from "../tree-drafts";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
 import {
   blocksOfRole,
+  nextTreeCursor,
   type TreeDraftMark,
   treeDraftMarks,
   treeDraftsFrom,
@@ -1199,10 +1200,30 @@ test("a page that names no next page ends the walk, the cursor left out or empty
   }
 });
 
-// A server that names the same next page again never ends a walk that follows it: the walk asks
-// for each page at most once and ends, with an answer or a failure, instead of asking without
-// end.
-test("a cursor the server names twice ends the walk", async () => {
+// The rule every walk of the read ends by, the page's own and the e2e helpers' alike
+// (`nextTreeCursor`): a page whose cursor is null, left out of the body or empty names no next
+// page, and any other cursor names the next.
+test("a page's cursor names no next page where it is null, left out or empty", () => {
+  const page = answer([block("r1", "requirement", KEY, SPEC, 0)]);
+  const { cursor: _none, ...leftOut } = page;
+  const pages = [
+    { ...page, cursor: null },
+    leftOut as TreeAnswer,
+    { ...page, cursor: "" },
+    { ...page, cursor: "page-2" },
+  ];
+  expect(pages.map((one) => nextTreeCursor(one))).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    "page-2",
+  ]);
+});
+
+// A server that names a cursor it named already has a fault, and the pages past it are missing:
+// the walk asks for each page at most once, and the read fails with an error that names the
+// cursor, rather than answer the pages it read as the whole tree or ask without end.
+test("a cursor the server names twice fails the read, naming the cursor", async () => {
   const { cursors, outcome } = await walkWith((cursor) =>
     cursor === undefined
       ? { ...answer([block("r1", "requirement", KEY, SPEC, 0)]), cursor: "page-2" }
@@ -1212,7 +1233,7 @@ test("a cursor the server names twice ends the walk", async () => {
         }
   );
   expect(cursors).toEqual([undefined, "page-2"]);
-  expect(JSON.stringify(outcome)).not.toContain("page reads");
+  expect(outcome).toEqual({ error: expect.stringContaining('the cursor "page-2" twice') });
 });
 
 /** Each row of `root` as its depth in dashes, its id and its kind, every branch open. */

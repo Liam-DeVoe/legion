@@ -484,6 +484,8 @@ It groups the listed tests by project and file and deals the groups to the legs:
 It writes this leg's groups to the file the run's `--test-list` reads, one `[project] › <file>` line each with the file named from the config's directory, which is how `loadTestList` (:2746 of that file) compares it, and which takes every test of that file in that project.
 So every listed test runs in exactly one leg, and a file's hooks and serial blocks stay on one machine.
 The step's log holds every leg's planned seconds, this leg's groups, and the listing's own milliseconds in its `bounded child:` line.
+After its run, the leg holds the test count Playwright says it ran (its `Running N tests` line, 0 where it printed none) to the count the deal planned for this leg (the tool's `leg <n> of <legs>: ..., N tests` line), and fails, naming both, where they differ.
+Playwright fails no `--test-list` run that selects no test, so a Playwright that read the deal's lines another way would run every leg empty and green, and the merge job, which holds the legs' counts to the merged report's, would find them agree at 0.
 
 The weights are packages/dispatch/e2e/shard-times.json: for each `[project] › e2e/<file>`, the seconds of every attempt of its tests, and how many tests those were.
 A group weighs its recorded seconds scaled to the tests the run lists of it, so the pull-request lane's `@pr` share of a file, and a file that gained tests, weigh what they hold.

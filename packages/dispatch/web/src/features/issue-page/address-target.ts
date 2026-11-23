@@ -116,7 +116,7 @@ export function landingPath(to: string): string {
  * its thread, `reply_to`), the ask it replies under (`ask_id`), the message it answers
  * (`in_reply_to`) - where the tree holds it, else that entry's own, as `tree-drafts.ts`'s
  * `addTurns` places each turn. Where the tree holds none of them - the head of such a thread
- * sits under the issue, and an approval request is no node (`addAsks`) - it is the issue alone.
+ * sits under the issue, and an approval request is no node (`draftAsk`) - it is the issue alone.
  */
 function agentsOnlyAncestor(
   root: TreeNode,

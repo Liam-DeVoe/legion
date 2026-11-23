@@ -1,3 +1,4 @@
+import type { TreeFilter } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
 import { blockIdOfNode } from "./decision-review";
@@ -20,7 +21,7 @@ import {
   type Preset,
 } from "./page-words";
 import { readingOf, treeIdOfNode } from "./tree-read/tree-nodes";
-import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-read";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree.
@@ -75,12 +76,6 @@ const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   verification: ["check", "result"],
 };
 
-/** The kinds `filter` draws as rows of its own (`ROW_KINDS`), for a part that draws a filter's
- *  rows itself, so it reads them here rather than holding a copy. */
-export function rowKindsOf(filter: Filter): readonly NodeType[] {
-  return ROW_KINDS[filter];
-}
-
 /** The kinds a filter draws as context: rows that place its own, faint and marked, and drawn
  *  whether or not anything of the filter's sits under them (R2's "each requirement as
  *  context"). */
@@ -121,7 +116,8 @@ export interface PresetView {
    *  not hide it. */
   readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
-   *  the row's id: never rows (R4). Empty where the view is read off the tree. */
+   *  the row's id: a decision or a constraint is a line of a row and never a row itself. Empty
+   *  where the view is read off the tree. */
   readonly lines: ReadonlyMap<string, readonly PresetLine[]>;
   /** How many distinct nodes of the view's main kind it draws: a check drawn under two
    *  requirements is one node, so this is what the control's own count says. */
@@ -133,9 +129,10 @@ export interface PresetView {
   readonly rootRow: boolean;
 }
 
-/** A node of a view read drawn as a line of a row rather than as a row (R4): a decision whose
- *  `shaped` tuple names the row's node, or a constraint the row's node's `constrained_by` tuple
- *  names. Later parts of the page draw them. */
+/** A node of a view read drawn as a line of a row, never as a row itself, which is how a
+ *  decision and a constraint are always drawn: a decision whose `shaped` tuple names the row's
+ *  node, or a constraint the row's node's `constrained_by` tuple names. Later parts of the page
+ *  draw them. */
 export interface PresetLine {
   /** The node's id: a decision's block id (`block_id`), and the view read's id of any other. */
   readonly id: string;

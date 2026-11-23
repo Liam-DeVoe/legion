@@ -6,6 +6,8 @@ import {
   issueCoverageQuery,
   issueResultsQuery,
   referenceTargetsQuery,
+  TREE_FILTERS,
+  type TreeFilter,
   whoAmIQuery,
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
@@ -21,13 +23,7 @@ import {
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
-import {
-  TREE_FILTERS,
-  type TreeAnswer,
-  type TreeRead,
-  useTreeRead,
-  viewQuery,
-} from "./tree-read/tree-read";
+import { type TreeAnswer, type TreeRead, useTreeRead, viewQuery } from "./tree-read/tree-read";
 import { useLineRefusals } from "./useLineRefusals";
 
 /** The issue's tree, and how far the tree read it is built from has got (`TreeRead`): `root` is
@@ -154,17 +150,22 @@ export const issueMessagesQuery = (key: string) =>
     queryFn: () => api.listIssueMessages(key),
   });
 
-/** The reads a tree is built from (`IssueTreeReads`), each compared by identity. */
-const TREE_INPUTS = [
-  "asks",
-  "comments",
-  "coverage",
-  "decisions",
-  "issue",
-  "results",
-  "targets",
-  "viewer",
-] as const satisfies readonly (keyof IssueTreeReads)[];
+/** The reads a tree is built from (`IssueTreeReads`) beside the tree read's answer, which holds
+ *  the trees built from it (`builtTrees`), each compared by identity. Every other member is named
+ *  here, so a member added to `IssueTreeReads` does not compile until it is named. */
+const TREE_INPUTS: Readonly<Record<Exclude<keyof IssueTreeReads, "tree">, true>> = {
+  asks: true,
+  comments: true,
+  coverage: true,
+  decisions: true,
+  issue: true,
+  results: true,
+  targets: true,
+  viewer: true,
+};
+
+/** The members `TREE_INPUTS` names, which `builtTree` compares. */
+const TREE_INPUT_NAMES = Object.keys(TREE_INPUTS) as (keyof typeof TREE_INPUTS)[];
 
 /** How many trees are kept for one answer of the tree read: the tree before the names answer,
  *  the tree with them, and one more. */
@@ -188,7 +189,9 @@ function builtTree(reads: IssueTreeReads): TreeNode {
   const answer = reads.tree;
   if (answer === undefined) return buildIssueTree(reads);
   const held = builtTrees.get(answer) ?? [];
-  const found = held.find((one) => TREE_INPUTS.every((input) => one.reads[input] === reads[input]));
+  const found = held.find((one) =>
+    TREE_INPUT_NAMES.every((input) => one.reads[input] === reads[input])
+  );
   if (found !== undefined) return found.root;
   const root = buildIssueTree(reads);
   builtTrees.set(answer, [...held.slice(1 - TREES_PER_ANSWER), { reads, root }]);
@@ -266,13 +269,17 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const who = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
-  // and holds whatever `ViewReadProvider` read for the load; the answers in `TREE_FILTERS`' order.
-  const [specView, verificationView, planView] = useQueries({
+  // and holds whatever `ViewReadProvider` read for the load. Each answer is read by its filter, at
+  // that filter's place in the list the reads were made from, so the order of `TREE_FILTERS`
+  // hands no view another's answer.
+  const viewReads = useQueries({
     queries: TREE_FILTERS.map((filter) => ({ ...viewQuery(key, filter), enabled: false })),
   });
-  const spec = specView?.data;
-  const verification = verificationView?.data;
-  const plan = planView?.data;
+  const viewOf = (filter: TreeFilter): TreeAnswer | undefined =>
+    viewReads[TREE_FILTERS.indexOf(filter)]?.data;
+  const spec = viewOf("spec");
+  const verification = viewOf("verification");
+  const plan = viewOf("plan");
   const views = useMemo((): TreeViews | undefined => {
     const held: TreeViews = {
       ...(decisions.data === undefined ? {} : { decisions: decisions.data }),

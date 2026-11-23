@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One shard leg of the Dispatch browser suite: the stacks' binaries, the lane's projects, the
-# Playwright run over the rows the deal gives this leg, the row count the merge job reads, and
-# the memory and CPU sampler this leg starts and reads back.
+# Playwright run over the rows the deal gives this leg, the row count the merge job reads and
+# its check against the deal's, and the memory and CPU sampler this leg starts and reads back.
 #
 # Who runs it, and what it takes:
 #
@@ -176,8 +176,22 @@ kill "$sampler" 2>/dev/null || true
 # the blob report, in a directory of its own so that `merge-reports` sees zips alone.
 sed -n 's/^Running \([0-9][0-9]*\) tests\? using .*/\1/p' "$RUNNER_TEMP/playwright-log.txt" |
   tail -n 1 > "$RUNNER_TEMP/leg-report/rows/shard-$shard.txt"
+# The tests the deal planned for this leg, from its own `leg <shard> of <legs>: ..., N tests`
+# line, against the tests Playwright says it runs, the count just read. Playwright fails no
+# `--test-list` run that selects no test, and prints no `Running` line for one, so a Playwright
+# that read the deal's lines another way would run every leg empty and green, and the merge job,
+# which holds the legs' counts to the merged report's, would find them agree at 0. A leg whose
+# count is not the deal's fails here, naming both, whatever the suite's own status was.
+planned=$(sed -n "s/^  leg $shard of $legs: .*, \([0-9][0-9]*\) tests\$/\1/p" "$RUNNER_TEMP/playwright-log.txt")
+ran=$(cat "$RUNNER_TEMP/leg-report/rows/shard-$shard.txt")
+if [ "${ran:-0}" != "$planned" ]; then
+  echo "::error::shard $shard: Playwright ran ${ran:-0} tests (its 'Running N tests' line, 0" \
+    "where it printed none), and the deal planned ${planned:-no count} for this leg (its" \
+    "'leg $shard of $legs' line)"
+  [ "$status" -ne 0 ] || status=1
+fi
 # The sampler's two readings, titled with this leg so a run's notices say which
 # machine each is from. After the suite and before the exit below, so this step still
-# ends on the suite's own status.
+# ends on the status above.
 "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-samples.sh" report "$RUNNER_TEMP/dispatch-e2e-record" "shard $shard"
 exit "$status"

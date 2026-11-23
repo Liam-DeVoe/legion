@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { DisplayTree, IssueTreeParent } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
-import { filterSignals, presetView, rowKindsOf } from "./presets";
+import { filterSignals, presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
@@ -868,9 +868,4 @@ test("a node the address names under a row whose first placement is a transclusi
     shapeOf(tree({ plan }), "plan", "comment-x"),
     "the named comment's place once the Plan view read is held"
   ).toEqual(shapeOf(tree(undefined), "plan", "comment-x"));
-});
-
-// Another part draws the Decisions filter's rows itself and reads its kinds from here.
-test("the Decisions filter's row kinds are the asks and the decisions", () => {
-  expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);
 });

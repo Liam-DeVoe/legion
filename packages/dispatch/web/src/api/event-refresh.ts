@@ -1,7 +1,6 @@
 import { hashKey, type Query, type QueryCache, type QueryClient } from "@tanstack/react-query";
 
 import { askProject } from "../features/inbox/list-row";
-import type { TreeFilter } from "../features/issue-page/tree-read/tree-read";
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
@@ -14,6 +13,7 @@ import {
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
   projectsQuery,
+  type TreeFilter,
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
@@ -594,10 +594,11 @@ function treeNodesMoved(event: DispatchEvent): readonly HeldKind[] | typeof ON_I
   if (moved !== BY_THE_WRITE) {
     return moved;
   }
-  const changes = issueChanges(event);
-  if (changes === undefined || changes.has("parent")) {
+  if (mayMoveParent(event)) {
     return EVERY_KIND;
   }
+  // The write says what it moved, and the parent is none of it (`mayMoveParent`).
+  const changes = issueChanges(event) ?? [];
   return [...changes].some((field) => ISSUE_NODE_FIELDS.has(field)) ? ["issue"] : [];
 }
 
