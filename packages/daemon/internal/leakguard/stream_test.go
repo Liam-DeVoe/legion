@@ -553,6 +553,8 @@ func TestAPathInASingleByteEncodingIsRefusedAndMasked(t *testing.T) {
 	for _, tc := range []struct{ name, path string }{
 		{"a Windows-1252 en dash", "notes/agen" + "t\x96c/x.md"},
 		{"a Latin-1 no-break space", "notes/agen" + "t\xa0c/x.md"},
+		// The control: the same dash in UTF-8, which the rules and the mask read as it is.
+		{"a UTF-8 en dash", "notes/agen" + "t\u2013c/x.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			push := aPushOf(t, map[string]string{tc.path: "a line of nothing in particular\n"})
