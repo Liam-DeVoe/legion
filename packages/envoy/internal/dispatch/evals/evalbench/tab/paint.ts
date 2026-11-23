@@ -203,10 +203,14 @@ for (const one of own(atPaint).sort((a, b) => b.ms - a.ms).slice(0, 12)) {
 }
 if (chosen.narrowed) {
   const narrowedAt = since(record.narrowing.narrowed?.painted);
+  const cardsAt = since(record.sections.cards?.painted);
+  const after = (from: number | null) => (narrowedAt === null || from === null ? null : narrowedAt - from);
+  // A negative delay is a narrowed view that landed before that paint: the cards then drew their
+  // narrowed values before the last section of the first paint.
   result(
-    `tab paint case=${which} rate=${rate} narrowed_cards_ms=${ms(narrowedAt)} narrowed_after_first_paint_ms=${ms(
-      narrowedAt === null || firstPaint === null ? null : narrowedAt - firstPaint
-    )} loading_mark_seen=${record.narrowing.loading !== undefined} db_ms_through_narrowed=${ms(atNarrowed === null ? null : total(own(atNarrowed)))} ` +
+    `tab paint case=${which} rate=${rate} narrowed_cards_ms=${ms(narrowedAt)} narrowed_after_first_paint_ms=${ms(after(firstPaint))} ` +
+      `narrowed_after_cards_painted_ms=${ms(after(cardsAt))} loading_mark_seen=${record.narrowing.loading !== undefined} ` +
+      `db_ms_through_narrowed=${ms(atNarrowed === null ? null : total(own(atNarrowed)))} ` +
       "(no budget of its own: the narrowed cards draw after the first paint, plan D7a; reported to the architect)"
   );
 }

@@ -164,10 +164,14 @@ if [ "$mode" = tab ]; then
     echo "FAIL job.sh: bun cannot read the tab's steps, so the tab is not measured"
     exit 1
   fi
+  # Biome's check of the tab's steps, as CI's lint runs it: what it fixes by itself is written in
+  # this throwaway checkout and printed as a patch (gzip, base64) for the author to apply, and what
+  # it cannot fix is printed beside it.
   lint=0
-  (cd "$source_dir" && bunx biome check "$here/tab" >"$work/tab-lint.log" 2>&1) || lint=$?
-  sed 's/^/MARK biome /' "$work/tab-lint.log" | tail -n 60
-  echo "RESULT tab lint biome_exit=$lint"
+  (cd "$source_dir" && bunx biome check --write "$here/tab" >"$work/tab-lint.log" 2>&1) || lint=$?
+  sed 's/^/MARK biome /' "$work/tab-lint.log" | tail -n 80
+  echo "RESULT tab lint biome_exit=$lint fixed_files=$(git -C "$source_dir" diff --name-only -- "$here/tab" | wc -l)"
+  echo "MARK biome-patch $(git -C "$source_dir" diff -- "$here/tab" | gzip -c | base64 -w0)"
   mark "built the web app at $EVALBENCH_WEB_DIST; Chromium ${EVALBENCH_CHROMIUM:-of Playwright at $PLAYWRIGHT_BROWSERS_PATH}"
 fi
 
