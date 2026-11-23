@@ -287,7 +287,7 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	deployed := DeploymentApps{"checker": Implement}
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
 	for role, app := range map[claim.Role]string{"checker": "implement", claim.RoleReviewer: "review"} {
-		bundle, err := credential(context.Background(), "", role, repo)
+		bundle, err := credential.Bundle(context.Background(), "", role, repo)
 		if err != nil {
 			t.Fatalf("the bundle of %s: %v", role, err)
 		}
@@ -301,7 +301,7 @@ func TestADeploymentRolesBundleIsMintedAsItsApp(t *testing.T) {
 	var minted []string
 	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
 		ghrepo.Renames{}, nil, nil, RoleApps{Deployed: deployed}, quietBundleLog())
-	if _, err := counted(context.Background(), "", "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+	if _, err := counted.Bundle(context.Background(), "", "ghost", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
 		t.Errorf("the bundle of ghost = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
 	}
 }
@@ -324,7 +324,7 @@ func TestARoleOfAPlansBundleIsMintedAsTheAppOfItsType(t *testing.T) {
 	repo := ghrepo.MustParse("sjawhar/legion")
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), served, ghrepo.Renames{}, nil, nil, RoleApps{Plan: planOf43}, quietBundleLog())
 	for role, app := range map[claim.Role]string{"coder": "implement", "prober": "review"} {
-		bundle, err := credential(context.Background(), "LEGION-43", role, repo)
+		bundle, err := credential.Bundle(context.Background(), "LEGION-43", role, repo)
 		if err != nil {
 			t.Fatalf("the bundle of %s on LEGION-43: %v", role, err)
 		}
@@ -335,7 +335,7 @@ func TestARoleOfAPlansBundleIsMintedAsTheAppOfItsType(t *testing.T) {
 	var minted []string
 	counted := GitHubCredential(sourceOf(countingTokens{ownerTokens: ownerTokens{}, minted: &minted}, installedEverywhere("sjawhar/legion")), served,
 		ghrepo.Renames{}, nil, nil, RoleApps{Plan: planOf43}, quietBundleLog())
-	if _, err := counted(context.Background(), "LEGION-44", "coder", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
+	if _, err := counted.Bundle(context.Background(), "LEGION-44", "coder", repo); !errors.Is(err, ErrRoleNotDefined) || len(minted) != 0 {
 		t.Errorf("the bundle of coder on LEGION-44 = %v, minting %v; want an error that is ErrRoleNotDefined and no mint", err, minted)
 	}
 }
@@ -359,11 +359,9 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 	var built []string
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
 		apps, quietBundleLog())
-	counting := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	bundles := NewBundles(beforeEachBuild(credential, func(issue string, role claim.Role) {
 		built = append(built, issue+"/"+string(role))
-		return credential(ctx, issue, role, repo)
-	}
-	bundles := NewBundles(counting, nil, apps)
+	}), nil, apps)
 	for _, ask := range []struct {
 		issue string
 		role  claim.Role
@@ -391,9 +389,18 @@ func TestAWalksBundlesOfARoleOfAPlanAreTheirIssues(t *testing.T) {
 	}
 }
 
+// beforeEachBuild is credential with before called at the start of each build as an App its
+// caller read (Credential.ForApp), which is how a walk's memo builds.
+func beforeEachBuild(credential *Credential, before func(issue string, role claim.Role)) *Credential {
+	return &Credential{forApp: func(ctx context.Context, app AppRole, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		before(issue, role)
+		return credential.ForApp(ctx, app, issue, role, repo)
+	}}
+}
+
 // One ask of a walk's memo for a role of a plan reads the issue's plan once: the memo reads the
-// role's App (RoleApps.Of) and hands it to the build, which mints as that App and reads no plan of
-// its own (GitHubCredential). coder of LEGION-43 is of the type implementation.
+// role's App (RoleApps.Of) and builds as that App (Credential.ForApp), which reads no plan of its
+// own. coder of LEGION-43 is of the type implementation.
 func TestOneAskOfARoleOfAPlanReadsThePlanOnce(t *testing.T) {
 	reads := 0
 	apps := RoleApps{Plan: func(ctx context.Context, issue string, role claim.Role) (Planned, error) {
@@ -426,7 +433,7 @@ func TestABundleIsHeldUnderTheAppItsAskRead(t *testing.T) {
 			"sjawhar": ghconfig.Render("ghs_review", string(Review), time.Now().Add(time.Hour)),
 		}}, nil
 	}
-	bundles := NewBundles(credential, nil, RoleApps{})
+	bundles := NewBundles(CredentialOf(credential), nil, RoleApps{})
 	for range 2 {
 		if _, err := bundles.Bundle(context.Background(), "LEGION-43", claim.RoleTester, ghrepo.MustParse("sjawhar/legion"), ""); err != nil {
 			t.Fatalf("the bundle of the tester: %v", err)
@@ -456,13 +463,13 @@ func TestAClaimsBundleIsTheControllersByOwnerAndEveryOtherRolesByRepository(t *t
 	}
 	repo := ghrepo.MustParse("sjawhar/legion")
 	ctx := context.Background()
-	if _, err := ClaimBundle(ctx, credential, controller, "", claim.RoleController, ghrepo.Repository{}, "acme"); err != nil {
+	if _, err := ClaimBundle(ctx, CredentialOf(credential), controller, "", claim.RoleController, ghrepo.Repository{}, "acme"); err != nil {
 		t.Fatalf("the controller's bundle: %v", err)
 	}
-	if _, err := ClaimBundle(ctx, credential, controller, "LEGION-43", claim.RoleTester, repo, "acme"); err != nil {
+	if _, err := ClaimBundle(ctx, CredentialOf(credential), controller, "LEGION-43", claim.RoleTester, repo, "acme"); err != nil {
 		t.Fatalf("the tester's bundle: %v", err)
 	}
-	bundles := NewBundles(credential, controller, RoleApps{})
+	bundles := NewBundles(CredentialOf(credential), controller, RoleApps{})
 	for range 2 {
 		if _, err := bundles.Bundle(ctx, "", claim.RoleController, ghrepo.Repository{}, "acme"); err != nil {
 			t.Fatalf("the walk's controller bundle: %v", err)
@@ -500,14 +507,12 @@ func TestAPlanVersionTakenDuringABuildLeavesTheAppItsAskRead(t *testing.T) {
 	credential := GitHubCredential(sourceOf(ownerTokens{}, installedEverywhere("sjawhar/legion")), servesOneOf("sjawhar/legion"), ghrepo.Renames{}, nil, nil,
 		apps, quietBundleLog())
 	var built []string
-	commitThenBuild := func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	bundles := NewBundles(beforeEachBuild(credential, func(issue string, role claim.Role) {
 		if issue == "LEGION-43" {
 			committed = true
 		}
 		built = append(built, issue+"/"+string(role))
-		return credential(ctx, issue, role, repo)
-	}
-	bundles := NewBundles(commitThenBuild, nil, apps)
+	}), nil, apps)
 	for _, ask := range []struct {
 		issue string
 		app   string

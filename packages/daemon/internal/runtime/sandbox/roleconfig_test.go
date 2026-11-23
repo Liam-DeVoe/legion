@@ -108,12 +108,12 @@ func withDeploymentProber(o *Options) {
 	o.Pod = operatorPod()
 	o.RoleApps.Deployed = appauth.DeploymentApps{"prober": appauth.Implement}
 	// The deployment's prober acts as the implement App, so its gh files are the implementer's.
-	o.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+	o.GitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		if role == "prober" {
 			role = claim.RoleImplementer
 		}
 		return staticCredential(ctx, issue, role, repo)
-	}
+	})
 	o.RoleConfigFiles = map[claim.Role][]string{"prober": {proberOverlay}}
 }
 

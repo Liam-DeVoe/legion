@@ -57,7 +57,7 @@ func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
 				g.spawn(testSpec(t, keyed, claim.RoleTester, testTree))
 			}
 			g = newRig(t, nil, withOptions(func(o *Options) {
-				o.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+				o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 					if refreshing.Load() && tc.during != "" && role == tc.during && landing.CompareAndSwap(false, true) {
 						launch()
 						landed.Store(true)
@@ -75,7 +75,7 @@ func TestARefreshALaunchOvertakesLeavesTheSlotOnTheLaunchesApp(t *testing.T) {
 						"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
 						owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),
 					}}, nil
-				}
+				})
 			}))
 			g.spawn(rootSpec(t))
 			issue := SandboxName(rootToken)
@@ -147,7 +147,7 @@ func TestARefreshReadsTheLaunchRecordOnlyOfTheClaimsLatestGeneration(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			keyed := claim.Token("legion-legion-legion-208-implementer")
 			g := newRig(t, nil, withOptions(func(o *Options) {
-				o.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+				o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 					owner := strings.ToLower(repo.Owner())
 					if owner == "" {
 						owner = "sjawhar"
@@ -161,7 +161,7 @@ func TestARefreshReadsTheLaunchRecordOnlyOfTheClaimsLatestGeneration(t *testing.
 						"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
 						owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),
 					}}, nil
-				}
+				})
 			}))
 			g.spawn(rootSpec(t))
 			g.store.mu.Lock()

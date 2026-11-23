@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -58,13 +59,13 @@ func TestARefreshOfALetGoPaneLeavesTheRelaunchsBundle(t *testing.T) {
 			}
 			r = &Runtime{
 				stateDir: t.TempDir(),
-				gitHubCredential: func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+				gitHubCredential: appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 					if refreshing && tc.interleave && !interleaved {
 						interleaved = true
 						relaunch()
 					}
 					return staticCredential(ctx, issue, role, repo)
-				},
+				}),
 				controllerCredential: staticControllerCredential,
 				claimRepository:      acmeWidgets,
 				log:                  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -127,7 +128,7 @@ func TestARelaunchAtTheMomentOfARefreshsWriteWaitsForItAndWritesLast(t *testing.
 	t.Cleanup(release)
 	r := &Runtime{
 		stateDir:             stateDir,
-		gitHubCredential:     staticCredential,
+		gitHubCredential:     appauth.CredentialOf(staticCredential),
 		controllerCredential: staticControllerCredential,
 		claimRepository:      acmeWidgets,
 		log:                  slog.New(slog.NewTextHandler(io.Discard, nil)),

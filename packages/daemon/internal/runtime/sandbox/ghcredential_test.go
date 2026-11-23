@@ -153,7 +153,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 	logs := &lockedLog{}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		o.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
@@ -169,12 +169,12 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 				"acme": ghconfig.Render("ghs_"+string(app)+"_"+*lease.Load()+"_read", string(app), staticCredentialExpiry),
 				owner:  ghconfig.Render("ghs_"+string(app)+"_"+*lease.Load(), string(app), staticCredentialExpiry),
 			}}, nil
-		}
+		})
 		// The controller's bundle comes from the one function that answers by owner, over the same
 		// lease: its launch asks for no owner and its refresh for the one its Secret records.
 		// Once refuse holds, its bundle holds no directory for the owner the pod was fixed at.
 		o.ControllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-			bundle, err := o.GitHubCredential(ctx, "", claim.RoleController, ghrepo.Repository{})
+			bundle, err := o.GitHubCredential.Bundle(ctx, "", claim.RoleController, ghrepo.Repository{})
 			if err != nil || defaultOwner == "" {
 				return bundle, err
 			}
@@ -252,7 +252,7 @@ func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		o.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			app, err := appauth.AppRoleFor(role, nil, appauth.Planned{})
 			if err != nil {
 				return ghconfig.Bundle{}, err
@@ -263,7 +263,7 @@ func TestATickBuildsOneBundlePerAppRoleAndRepository(t *testing.T) {
 				return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 			}
 			return staticCredential(ctx, issue, role, repo)
-		}
+		})
 	}))
 	g.spawn(rootSpec(t))
 	built.Clear()
@@ -329,13 +329,13 @@ func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
 	}
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		o.GitHubCredential = func(_ context.Context, _ string, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, _ claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			owner := strings.ToLower(repo.Owner())
 			if owner == "" {
 				owner = first()
 			}
 			return bundle(owner), nil
-		}
+		})
 		o.ControllerCredential = func(_ context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 			asked.Store(&defaultOwner)
 			if defaultOwner == "" {
@@ -350,7 +350,7 @@ func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
 		t.Fatalf("the controller's Secret records the default %q, want the one owner its launch served, sjawhar", recorded)
 	}
 	gained.Store(true)
-	if asked, _ := g.r.gitHubCredential(g.ctx, "", claim.RoleController, ghrepo.Repository{}); asked.Default != "acme" {
+	if asked, _ := g.r.gitHubCredential.Bundle(g.ctx, "", claim.RoleController, ghrepo.Repository{}); asked.Default != "acme" {
 		t.Fatalf("a bundle asked for by repository defaults to %q, want the project's new first owner acme, which the Secret does not record", asked.Default)
 	}
 	g.clearActions()
@@ -928,7 +928,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 func TestASlotsGhFilesFollowItsClaimsRole(t *testing.T) {
 	keyed := claim.Token("legion-legion-legion-208-implementer")
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.GitHubCredential = func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
+		o.GitHubCredential = appauth.CredentialOf(func(_ context.Context, _ string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			owner := strings.ToLower(repo.Owner())
 			if owner == "" {
 				owner = "sjawhar"
@@ -942,7 +942,7 @@ func TestASlotsGhFilesFollowItsClaimsRole(t *testing.T) {
 				"acme": ghconfig.Render("ghs_"+app+"_read", app, staticCredentialExpiry),
 				owner:  ghconfig.Render("ghs_"+app, app, staticCredentialExpiry),
 			}}, nil
-		}
+		})
 	}))
 	g.spawn(rootSpec(t))
 	issue := SandboxName(rootToken)
@@ -1224,7 +1224,7 @@ func TestACredentialRefreshGoesOnAfterTheServedNamesMovedTheRoutedDefault(t *tes
 			refreshed := func(when string, next state) {
 				t.Helper()
 				held.Store(&next.repos)
-				if bundle, err := g.r.gitHubCredential(g.ctx, testTree, claim.RoleArchitect, recordedSmoke); err != nil || bundle.Default != next.routed {
+				if bundle, err := g.r.gitHubCredential.Bundle(g.ctx, testTree, claim.RoleArchitect, recordedSmoke); err != nil || bundle.Default != next.routed {
 					t.Fatalf("%s: a bundle built for %s defaults to %q (%v), want %s", when, recordedSmoke, bundle.Default, err, next.routed)
 				}
 				if next.pairs == pairs {

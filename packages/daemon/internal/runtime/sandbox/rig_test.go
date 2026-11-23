@@ -102,7 +102,7 @@ func testOptions() Options {
 		ProbeInterval:         time.Hour,
 		AdoptTimeout:          time.Minute,
 		Tokens:                staticTokens{},
-		GitHubCredential:      staticCredential,
+		GitHubCredential:      appauth.CredentialOf(staticCredential),
 		ControllerCredential:  staticControllerCredential,
 		GitHubDirs:            func(ghrepo.Repository, []appauth.AppRole) []string { return staticDirs },
 		Conns:                 fake.NewConns(),
@@ -234,7 +234,7 @@ func servingAddedOwner(o *Options) {
 		bundle.Dirs[addedOwner] = ghconfig.Render(staticOwnerToken(role, addedOwner), string(legionApp(role)), staticCredentialExpiry)
 		return bundle, nil
 	}
-	o.GitHubCredential = credential
+	o.GitHubCredential = appauth.CredentialOf(credential)
 	o.ControllerCredential = func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
 		bundle, err := credential(ctx, "", claim.RoleController, ghrepo.Repository{})
 		if err != nil || defaultOwner == "" {

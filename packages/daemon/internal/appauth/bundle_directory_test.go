@@ -34,7 +34,7 @@ func TestEveryDirectoryHoldsTheLeaseOfTheOwnerItsNameMeans(t *testing.T) {
 		t.Run("an issue recorded on "+rec, func(t *testing.T) {
 			credential := GitHubCredential(sourceOf(ownerTokens{}, installedOnOwners("cybermonklabs", "sjawhar")), served,
 				renames, nil, nil, RoleApps{}, quietBundleLog())
-			bundle, err := credential(context.Background(), "", claim.RoleImplementer, ghrepo.MustParse(rec))
+			bundle, err := credential.Bundle(context.Background(), "", claim.RoleImplementer, ghrepo.MustParse(rec))
 			if err != nil {
 				t.Fatalf("credential: %v", err)
 			}
