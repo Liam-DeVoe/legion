@@ -151,15 +151,16 @@ function Result({ row }: { row: StepRow }): ReactNode {
 }
 
 /** The commits the run's task's head was at when the run started and when it ended, each cut to
- *  ten characters and both whole in the title, or the dash for a record that holds none. */
+ *  ten characters and both whole in the title, or the dash for a record that holds none. A line
+ *  may break after the `..`, as an agent's id breaks at its hyphens, so the column is no wider
+ *  than one commit; each commit stays whole. */
 function Commits({ commits }: { commits: StepCommits | null }): ReactNode {
   if (commits === null) return NONE;
   return (
-    <span
-      className="font-mono whitespace-nowrap"
-      title={`${commits.start ?? NONE}..${commits.end ?? NONE}`}
-    >
-      {commits.start?.slice(0, 10) ?? NONE}..{commits.end?.slice(0, 10) ?? NONE}
+    <span className="font-mono" title={`${commits.start ?? NONE}..${commits.end ?? NONE}`}>
+      <span className="whitespace-nowrap">{commits.start?.slice(0, 10) ?? NONE}..</span>
+      <wbr />
+      <span className="whitespace-nowrap">{commits.end?.slice(0, 10) ?? NONE}</span>
     </span>
   );
 }
