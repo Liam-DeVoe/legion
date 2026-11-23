@@ -121,7 +121,8 @@ func TestAnOwedStartCarriesTheClaimItNames(t *testing.T) {
 
 // A start a pause holds is listed under the claim it names, the claim it was queued for: key b's
 // start of the implementer's step is key b's, though the implementer's own token is key a's. A start
-// the release before wrote names none and is listed under its role's own token, as before.
+// the release before wrote names none and is listed under the claim of the worker on its role's
+// step (WorkerClaimOf), here the implementer's own token, since no phases row names another.
 func TestAPauseHeldStartIsListedUnderTheClaimItNames(t *testing.T) {
 	row := OutboxRow{Kind: OutboxKindSupervise, Issue: "LEGION-208"}
 	if got := pauseHeldClaim("legion", row, string(claim.RoleImplementer), keyBToken, nil); got != keyBToken {
