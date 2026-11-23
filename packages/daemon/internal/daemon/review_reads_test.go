@@ -894,8 +894,9 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 }
 
 // seedReviewBesideFix gives CAPTURE-1 a plan of one task, `implementer reviewer`, standing at its
-// review, whose run started at captureHead, and, where fix holds, fix 1 of the task, for a check
-// failed at captureHead, running beside that review since after its start.
+// review, whose run started at captureHead with the record the reviewer's start keeps
+// (workflow's startStep), and, where fix holds, fix 1 of the task, for a check failed at
+// captureHead, running beside that review since after its start.
 func seedReviewBesideFix(t *testing.T, pool *store.Pool, fix bool) {
 	t.Helper()
 	ctx := context.Background()
@@ -914,9 +915,10 @@ func seedReviewBesideFix(t *testing.T, pool *store.Pool, fix bool) {
 		if err := records.MoveTask(ctx, tx, "CAPTURE-1", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning); err != nil {
 			return err
 		}
-		head := captureHead
-		if _, err := records.RaiseStepStarts(ctx, tx, "CAPTURE-1", record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2}, func(int64) record.StepRecord {
-			return record.StepRecord{StartedAt: &started, StartCommit: &head}
+		head, place := captureHead, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2}
+		if _, err := records.RaiseStepStarts(ctx, tx, "CAPTURE-1", place, func(starts int64) record.StepRecord {
+			return record.StepRecord{ID: workflow.StepID("CAPTURE-1", 1, place, starts), Task: "a", Step: 2, Kind: record.PlaceStep,
+				Role: "reviewer", Type: "review", Generation: 1, StartedAt: &started, StartCommit: &head}
 		}); err != nil {
 			return err
 		}
