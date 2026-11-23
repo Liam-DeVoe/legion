@@ -24,6 +24,7 @@ import (
 // not, and the retro the daemon recorded stays unrated; the daemon's rating of it lands, which is
 // the control.
 func TestARatingIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := uuid.NewString()
@@ -66,6 +67,7 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 // write 403 STEP_WRITER with nothing written, where the session of that id writes all three, which
 // is the control.
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	writer := legionDaemonSessionPrefix + "LEG"
@@ -110,6 +112,7 @@ func workflowRows(t *testing.T, database *store.Store) int {
 // project check alone stands between them: 403 PROJECT_SCOPE with nothing written. The same writes
 // over a credential scoped to the issue's project land, which is the control.
 func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": "OTH", "name": "OTH"}); created.Code != http.StatusCreated {
@@ -155,6 +158,7 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 // an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND; a closed issue takes it; the write
 // appends no event and answers the plan as it stands.
 func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issues := createListedIssues(t, handler, "LEG", 2)
 	issue, closed := issues[0], issues[1]

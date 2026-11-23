@@ -560,6 +560,7 @@ func putExperiment(t *testing.T, handler http.Handler, issue, id string, body an
 // name outside the daemon's rule for the names its settings declare, is 400 STEP_INPUT and writes
 // nothing; a second variant leaves the first.
 func TestTheExperimentRouteWritesTheVariantOfARun(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of an experiment")
 	daemon := daemonSessionOf("LEG")
@@ -618,6 +619,7 @@ func TestTheExperimentRouteWritesTheVariantOfARun(t *testing.T) {
 // run's record exists or not, and the run the daemon recorded names no variant; the daemon's write
 // of the pair lands, which is the control.
 func TestAVariantIsTheDaemonsAlone(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of an experiment")
 	run := uuid.NewString()

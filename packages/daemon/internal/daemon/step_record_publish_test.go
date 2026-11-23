@@ -365,6 +365,7 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 // the record's write (a 503 here), the run ends there, with no write of the pair, and the next
 // run sends the record again and then the pair.
 func TestAStepRecordSendsItsVariantAfterItsRecord(t *testing.T) {
+	t.Parallel()
 	started := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC)
 	session := "ses-implementer"
 	pair := &record.StepExperiment{Experiment: "planning", Variant: "b"}
@@ -442,6 +443,7 @@ func TestAStepRecordSendsItsVariantAfterItsRecord(t *testing.T) {
 // experiment route as an older Dispatch does until the test serves it; the runner's client is the
 // daemon's real HTTP client, so its requests and their order decide.
 func TestAStepRecordLandsWhileItsVariantWaitsForItsRoute(t *testing.T) {
+	t.Parallel()
 	started := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC)
 	ended := started.Add(time.Hour)
 	session, model, result, report := "ses-implementer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"

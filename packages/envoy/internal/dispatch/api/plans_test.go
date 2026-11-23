@@ -857,6 +857,7 @@ func holdsPlan(t *testing.T, handler http.Handler, issue string) bool {
 // each issue's newest run name, as the experiment route wrote them, and null for an issue whose
 // records name none.
 func TestTheReadOfAProjectNamesEachIssuesVariant(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	drawn := createTestIssue(t, handler, "LEG", "An issue of an experiment")
 	plain := createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Rotate the signing key"}, "alice").Key
