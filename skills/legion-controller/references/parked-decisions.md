@@ -1,6 +1,6 @@
 # Decisions on a parked tree
 
-Read this on a `parked-decision` wake, and for the parked-root walk at every start and on each `tick`. A parked tree is a labelled root in `backlog` or `icebox` whose `issues.<KEY>.phase` is `done`. Its architect is gone, so nobody inside it hears a person's decision. The daemon sends you each one as `parked-decision` (`decision`, `root`, `ref`, `actor`, and a spec decision's `version` and `reason`); the walk finds those sent while no controller ran.
+Read this on a `parked-decision` wake, and for the parked-root walk at every start and on each `tick`. A parked tree is a labelled root in `backlog` or `icebox` whose `issues.<KEY>.phase` is `done`. Its architect is gone, so nobody inside it hears a person's decision. The daemon sends you each one as `parked-decision` (`decision`, `root`, `ref`, `actor`, and a spec decision's `version` and `reason`); the walk finds those sent while no controller ran, except a `carried-gate-opened`, whose approval is an event of the root that owns the carried document, outside the parked tree.
 
 A person's own approval of a parked root's primary document while no tree is live is no decision for you: the daemon sets the root `todo` itself. A carried approval, or one on a root that keeps a Dispatch parent, is a decision. A session's reply on a parked tree is none.
 
