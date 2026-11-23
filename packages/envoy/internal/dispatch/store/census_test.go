@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 var censusBase = fstest.MapFS{
@@ -1703,6 +1704,13 @@ func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
 // A holder's refusal carries its diagnosis, read when the census refused: its state, transaction
 // start, xid, wait and query from pg_stat_activity, and every lock it holds from pg_locks. The
 // query is printed with its literals taken out, so a value it carries never reaches the report.
+//
+// The holder waits for its client, idle in its transaction, until the test ends, but its wait event
+// is not a fact it holds for the whole wait: a signal that wakes its backend (the process-signal
+// barrier a dropdb sends to every backend, as the tests beside this one drop their databases)
+// takes it out of the wait until it waits again, and a census that reads it then prints its wait
+// as none. So the census is taken again until its diagnosis reads the wait, and every other part
+// of the refusal is held to that same census.
 func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	ctx := context.Background()
 	store, url := migratedToOne(t)
@@ -1721,15 +1729,20 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(1100 * time.Millisecond)
-	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
-	if err != nil {
-		t.Fatalf("census: %v", err)
-	}
 	pid := "pid " + strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
-	got := refusals(report)
-	if len(got) != 1 {
-		t.Fatalf("refusals = %v, want the one old holder", got)
-	}
+	var report *pgmigrate.Report
+	refusal := testwait.UntilPolling(t, 100*time.Millisecond, "a census whose diagnosis of "+pid+" reads its wait for its client", func() (string, bool) {
+		var err error
+		report, err = census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
+		if err != nil {
+			t.Fatalf("census: %v", err)
+		}
+		got := refusals(report)
+		if len(got) != 1 {
+			t.Fatalf("refusals = %v, want the one old holder", got)
+		}
+		return got[0], strings.Contains(got[0], ", wait_event Client/ClientRead, ")
+	})
 	for _, want := range []string{
 		"has held a lock on things for ",
 		"; diagnosis of " + pid + ", read when refused: state idle in transaction, xact_start 20",
@@ -1737,8 +1750,8 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 		"relation things AccessShareLock granted",
 		"virtualxid ExclusiveLock granted",
 	} {
-		if !strings.Contains(got[0], want) {
-			t.Errorf("refusal lacks %q:\n%s", want, got[0])
+		if !strings.Contains(refusal, want) {
+			t.Errorf("refusal lacks %q:\n%s", want, refusal)
 		}
 	}
 	if out := reportText(report); strings.Contains(out, sentinel) {
