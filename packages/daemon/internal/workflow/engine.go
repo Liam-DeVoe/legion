@@ -1888,11 +1888,9 @@ func (e *Engine) sessionStoreFault(ctx context.Context, tx pgx.Tx, fact intake.S
 }
 
 // podRefusedLaunch tells the issue and the controller that a role cannot start until its issue's
-// pod is replaced, and queues a start of the claim where the fact asks for one (Queue): a start
-// naming the claim, at the issue's generation and of no phase, which the outbox runs as every start
-// of a suspended claim, waiting for the pod while it stands and resuming the claim once another
-// stands or none. The supervisor decides how often it is told — at the first refusal, then hourly
-// — so every fact that reaches here is reported.
+// pod is replaced, and queues a start of the claim where the fact asks for one (Queue,
+// queueRefusedStart). The supervisor decides how often it is told — at the first refusal, then
+// hourly — so every fact that reaches here is reported.
 func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.PodRefusedLaunch) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1911,7 +1909,32 @@ func (e *Engine) podRefusedLaunch(ctx context.Context, tx pgx.Tx, fact intake.Po
 	if !fact.Queue {
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: fact.Role, Claim: fact.Claim,
+	return intake.Result{}, e.queueRefusedStart(ctx, tx, *issue, fact)
+}
+
+// queueRefusedStart queues the start of a claim whose launch its issue's pod refused with no
+// outbox start behind it (intake.PodRefusedLaunch's Queue): a relaunch of the machine's own, an
+// operator's resume. The suspension that refusal ended in retired the phase task the claim held
+// (supervise's settle), and the record holds that work all the same: where the claim works the
+// step its issue stands in, the start is that step's owed entry (sendOwedEntry), the entry and the
+// task its phases row holds, marked as a resend of that entry so the claim, which was given it, is
+// given it again. Any other is a start naming the claim, of no phase, which resumes it with
+// whatever it holds. The outbox runs either as a wait for the pod while that pod stands
+// (supervise's podStillRefuses) and resumes the claim once another stands or none.
+func (e *Engine) queueRefusedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.PodRefusedLaunch) error {
+	if record.OutOfWorkflow(issue.Status) {
+		return nil
+	}
+	if role := OpenRoleOf(issue); role != "" && role == fact.Role {
+		row, err := e.phaseRow(ctx, tx, issue.Key, role)
+		if err != nil {
+			return err
+		}
+		if row.Claim == fact.Claim && row.Entry > 0 {
+			return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{resend: true})
+		}
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: fact.Role, Claim: fact.Claim,
 		Generation: issue.Generation})
 }
 
