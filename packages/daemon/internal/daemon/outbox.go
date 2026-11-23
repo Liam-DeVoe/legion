@@ -2270,16 +2270,6 @@ func (r *outbox) workerToken(ctx context.Context, issue string, role claim.Role,
 	return token, nil
 }
 
-// workerOf is the claim of the worker on role's step of issue among rows, the issue's phases rows
-// (record.WorkerClaim).
-func (r *outbox) workerOf(issue string, role claim.Role, rows []record.PhaseRow) (claim.Token, error) {
-	token, err := record.WorkerClaim(r.project, issue, role, rows)
-	if err != nil {
-		return "", fmt.Errorf("the %s of %s: %w", role, issue, err)
-	}
-	return token, nil
-}
-
 // publishToRole publishes message to topic, the Envoy topic of one claim (the claim the row names,
 // else the claim of the worker on the row's role's step: workerToken)
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, so a retried row is
@@ -2413,10 +2403,6 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// row names — and its look (checkLookHolds) where a phase start is fenced on the generation and
 	// the phase.
 	var check *record.ProductionCheck
-	// The issue's phases rows, read at most once, for the entry fence below and for the claim the
-	// row acts on: rowsRead tells an issue whose record holds no row from rows not read yet.
-	var rows []record.PhaseRow
-	rowsRead := false
 	if payload.CheckLook > 0 {
 		if check, err = r.checkLookHolds(ctx, row, payload, issue); err != nil || check == nil {
 			return err
@@ -2437,49 +2423,47 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role, "stepRole", issue.StepRole)
 			return nil
 		}
-		// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the
-		// role's phases row names the entry its phase is on now (record.PhaseRow.Entry). A row
-		// below that number carries work a later entry of the same phase has superseded, and that
-		// entry's own start carries that entry's task, so running this one would hand the worker
-		// work the record has moved past. Finishing it here is what lets a start row be a message
-		// with no state of its own: a row that outlives its entry is harmless rather than
-		// something to rewrite.
-		//
-		// Only a row that carries an entry and names a phase is held to it: a production check's
-		// look carries neither and is fenced on its check above, every start of no entry
-		// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and
-		// so is a root architect's start, which carries an entry and names no phase, since that
-		// architect serves every phase of its tree and its row must act whatever phase the root
-		// stands in. What keeps one entry to one task for the architect is the claim's own rule:
-		// a delivery of an entry it was already queued a task of queues no second one
-		// (supervise.Claim.GivenEntry).
-		if payload.Entry > 0 && payload.Phase != "" {
-			if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
-				return err
-			}
-			rowsRead = true
-			if entry := record.PhaseRowOf(rows, payload.Role).Entry; payload.Entry < entry {
-				r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
-					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
-				return nil
-			}
+	}
+	// A start carries the phase entry its task is of (record.SuperviseRequest.Entry), and the role's
+	// phases row names the entry its phase is on now (record.PhaseRow.Entry). A row below that
+	// number carries work a later entry of the same phase has superseded, and that entry's own start
+	// carries that entry's task, so running this one would hand the worker work the record has moved
+	// past. Finishing it here is what lets a start row be a message with no state of its own: a row
+	// that outlives its entry is harmless rather than something to rewrite.
+	//
+	// Only a row that carries an entry and names a phase is held to it: a production check's look
+	// carries neither and is fenced on its check above, every start of no entry
+	// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and so is a
+	// root architect's start, which carries an entry and names no phase, since that architect serves
+	// every phase of its tree and its row must act whatever phase the root stands in. What keeps one
+	// entry to one task for the architect is the claim's own rule: a delivery of an entry it was
+	// already queued a task of queues no second one (supervise.Claim.GivenEntry).
+	fencesEntry := payload.CheckLook == 0 && payload.Entry > 0 && payload.Phase != ""
+	// The issue's phases rows are read once, where the entry fence or the claim of a row that names
+	// none needs them, so the two are judged on one read.
+	var rows []record.PhaseRow
+	if fencesEntry || payload.Claim == "" {
+		if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
+			return err
+		}
+	}
+	if fencesEntry {
+		if entry := record.PhaseRowOf(rows, payload.Role).Entry; payload.Entry < entry {
+			r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
+				"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
+			return nil
 		}
 	}
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
 	}
 	// The claim the row acts on is the one it names, a row that stands for one stored claim of the
-	// issue, and otherwise the claim of the worker on its role's step, which can be the claim of a
-	// key's agent that started on an earlier step of another role (workerOf).
+	// issue, and otherwise the claim of the worker on its role's step (record.WorkerClaim), which
+	// can be the claim of a key's agent that started on an earlier step of another role.
 	token := payload.Claim
 	if token == "" {
-		if !rowsRead {
-			if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
-				return err
-			}
-		}
-		if token, err = r.workerOf(row.Issue, payload.Role, rows); err != nil {
-			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+		if token, err = record.WorkerClaim(r.project, row.Issue, payload.Role, rows); err != nil {
+			return fmt.Errorf("derive claim for outbox row %d: the %s of %s: %w", row.ID, payload.Role, row.Issue, err)
 		}
 	}
 	machine, found := r.supervisor.Machine(token)
@@ -4346,12 +4330,12 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 }
 
 // phaseRows is issue's phases rows as the record holds them, read in a transaction of its own just
-// before the executor acts on a row. A start reads its fence from them, the phase entry its role's
-// row names (record.PhaseRow.Entry, 0 for a role whose row holds no entry and for one the record
-// has no row of at all): the transition writes that number in its own transaction before the start
-// it queues can run (workflow.Engine.enter), so a start reading a number above its own is reading a
-// later entry of the same phase. A row of one role reads from them the claim of the worker on that
-// role's step (workerOf).
+// before the supervise executor acts on a row. A start reads its fence from them, the phase entry
+// its role's row names (record.PhaseRow.Entry, 0 for a role whose row holds no entry and for one
+// the record has no row of at all): the transition writes that number in its own transaction
+// before the start it queues can run (workflow.Engine.enter), so a start reading a number above its
+// own is reading a later entry of the same phase. A row that names no claim reads from the same
+// rows the claim of the worker on its role's step (record.WorkerClaim).
 func (r *outbox) phaseRows(ctx context.Context, issue string) ([]record.PhaseRow, error) {
 	var rows []record.PhaseRow
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
