@@ -4,4 +4,4 @@ body: |-
   carries `running`, its `kind`, `place` and `role`.
 time: 2026-11-23T05:32:22Z
 custom:
-    Issue: running-task-text
+    Issue: pr5204

@@ -5,4 +5,4 @@ body: |-
   alone. The plugin speaks daemon API contract 235.
 time: 2026-11-23T05:32:22Z
 custom:
-    Issue: running-task-text
+    Issue: pr5204
