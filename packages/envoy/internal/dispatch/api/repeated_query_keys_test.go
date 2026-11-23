@@ -85,6 +85,7 @@ func contractQueryKeys(t *testing.T) map[string]map[string]bool {
 // A row is counted once its assertions have run, and the count is held to the rows the registered
 // server mounts, so a walk that skipped a row, or walked none, fails.
 func TestEverySingleValueQueryKeyRefusesARepeat(t *testing.T) {
+	t.Parallel()
 	served := register(http.NewServeMux(), t.Context(), Deps{
 		TestHooksEnabled: true,
 		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
