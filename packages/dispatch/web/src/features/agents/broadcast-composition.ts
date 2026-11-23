@@ -1,7 +1,8 @@
 import { useState } from "react";
 
-import type { MessageDeliveryMode } from "../../api/types";
+import type { Agent, MessageDeliveryMode } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
+import { broadcastDelivery } from "../conversation/delivery";
 import { retriesUnderItsKey } from "../writes/keyed-write";
 import type { RestoredBroadcast } from "./broadcast-plan";
 import type { BroadcastSend } from "./broadcast-queue";
@@ -36,6 +37,28 @@ type CompositionState = Omit<
   BroadcastComposition,
   "pressed" | "restore" | "sent" | "setDelivery" | "setDraft" | "setSelected"
 >;
+
+/**
+ * The mode a composition shows and sends, on the Agents page and in the Inbox's compose dialog. A
+ * restored request is re-sent word for word until an edit drops it, so its own mode comes first,
+ * then the mode the sender picked. Until they pick one, the broadcast goes in the one its
+ * selection of `agents` takes (`broadcastDelivery`): BTW, or Aside when a selected session takes
+ * Aside and not BTW.
+ */
+export function compositionDelivery(
+  composition: BroadcastComposition,
+  agents: readonly Agent[]
+): MessageDeliveryMode {
+  return (
+    composition.restored?.input.delivery ??
+    composition.delivery ??
+    broadcastDelivery(
+      agents.flatMap((agent) =>
+        composition.selected.has(agent.session_id) ? [agent.capabilities ?? []] : []
+      )
+    )
+  );
+}
 
 /**
  * The composition is page state, not the composer's: the composer unmounts whenever the selection

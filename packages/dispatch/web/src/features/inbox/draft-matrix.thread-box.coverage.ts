@@ -441,9 +441,10 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[14],
   }),
   ...answers("DismissedRows | - | form | (scroller === null) ? …", { reason: REASONS[14] }),
-  ...answers("DismissedRows | - | form | if (Math.abs(start - margin) >= 1)", {
-    reason: REASONS[14],
-  }),
+  ...answers(
+    "DismissedRows | - | form | if (Math.abs(start - virtualizer.options.scrollMargin) >= 1)",
+    { reason: REASONS[14] }
+  ),
   ...answers(
     "AgentMessageComposer | AgentMessageComposer <MentionComposer mutationKey={sendKey}> | lifetime | <MentionComposer mutationKey={sendKey}>",
     cells(`${HOST} · the page reloaded, then back · an Agent row's box`)

@@ -28,7 +28,7 @@ import {
 } from "../../api/client";
 import type { Agent, AskUrgency } from "../../api/types";
 import { Chip } from "../../components/Chip";
-import { useHeldThroughAnswer } from "../../components/held-press";
+import { useHeldThroughAnswer, useHeldUntilRead } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -67,7 +67,7 @@ import { useAgentText } from "../refs/AgentName";
 import { mentionOptions } from "../refs/party-options";
 import { draftParties } from "../refs/party-references";
 import { textSourceOf } from "../refs/text-references";
-import { SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
+import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
 import {
@@ -211,6 +211,13 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
       }));
 }
 
+/** A draft its host keeps (`MentionComposerProps.hostDraft`): the body the field starts from, and
+ *  where every body it holds is reported. */
+export interface HostDraft {
+  readonly starting: string;
+  readonly onChange: (body: string) => void;
+}
+
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   readonly anchor?: ComposerAnchor;
@@ -250,10 +257,7 @@ interface MentionComposerProps {
    *  field holds is reported to `onChange`; and the composer keeps no draft of its own under its
    *  send name for an address it leaves, so a remount shows the host's body and never an older
    *  one. */
-  readonly hostDraft?: {
-    readonly starting: string;
-    readonly onChange: (body: string) => void;
-  };
+  readonly hostDraft?: HostDraft;
   /** Holds Send by `aria-disabled` while a send is out, as every composer's Send is held then,
    *  with why on the line under it, and past the send: after it lands the hold goes on until the
    *  read the send changes has come back - the promise `onSent` answers - and it ends at the
@@ -401,25 +405,15 @@ export function MentionComposer({
     landed: (sent, answer) => landed(sent, answer),
     refused: (held) => replaceDraft(held.draft.draft),
   });
-  // A held Send's hold (`heldSend`): when the newest press was made (0 before any) and the press
-  // whose deadline has passed, so the hold ends at the write deadline from the press at the latest;
-  // and, once the send has landed, the read `onSent` answered, which the hold waits for.
+  // A held Send's hold (`heldSend`): when the newest press was made (0 before any), and, once its
+  // send has landed, the read `onSent` answered, which the hold waits for (`useHeldUntilRead`).
   const [pressedAt, setPressedAt] = useState(0);
-  const [pastDeadline, setPastDeadline] = useState(0);
-  const [awaitedRead, setAwaitedRead] = useState<Promise<unknown> | null>(null);
-  useEffect(() => {
-    if (pressedAt === 0) return;
-    const bound = window.setTimeout(
-      () => setPastDeadline(pressedAt),
-      pressedAt + SEND_DEADLINE_MS - Date.now()
-    );
-    return () => window.clearTimeout(bound);
-  }, [pressedAt]);
-  useEffect(() => {
-    if (awaitedRead === null) return;
-    const end = () => setAwaitedRead((now) => (now === awaitedRead ? null : now));
-    awaitedRead.then(end, end);
-  }, [awaitedRead]);
+  const [landedRead, setLandedRead] = useState<Promise<unknown> | null>(null);
+  const holdStands = useHeldUntilRead(
+    pressedAt,
+    landedRead !== null,
+    () => landedRead ?? Promise.resolve()
+  );
   const registerComposer = useComposerRegistry();
   /** This composer's send by name, which is what the margin looks it up by. */
   const composerName = mutationKey === undefined ? undefined : composerNameOf(mutationKey);
@@ -645,18 +639,17 @@ export function MentionComposer({
   const landed = ({ edit: sentEdit }: SentRequest, answer: unknown) => {
     clearDraft();
     const read = onSent(answer);
-    if (heldSend && read instanceof Promise) setAwaitedRead(read);
+    if (heldSend && read instanceof Promise) setLandedRead(read);
     if (!inline && sentEdit === undefined) onClose();
   };
   const { refusal, sending } = outgoing;
   // A held Send (`heldSend`) is refused while its send is out and, once it lands, until the read it
   // waits for has come back, within the write deadline from the press; the field takes no typing
   // meanwhile. The hold is part of the reader's press while it is on (`useHeldThroughAnswer`).
-  const holding = heldSend && pressedAt !== pastDeadline && (sending || awaitedRead !== null);
+  const holding = heldSend && (sending || landedRead !== null) && holdStands;
   useHeldThroughAnswer(holding);
-  const sendRefusal = !heldSend
-    ? undefined
-    : sending
+  const sendRefusal =
+    heldSend && sending
       ? "Your message is on its way."
       : holding
         ? "Your message is sent."
@@ -945,6 +938,7 @@ export function MentionComposer({
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
       setPressedAt(Date.now());
+      setLandedRead(null);
       field.current?.closePicker();
       forgetUnsent();
       return sentRequest(refused);

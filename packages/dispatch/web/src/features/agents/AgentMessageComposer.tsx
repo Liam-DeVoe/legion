@@ -16,7 +16,7 @@ import {
 import { seededDraft } from "../conversation/composer-draft";
 import type { ListedReplies, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
-import { MentionComposer } from "../conversation/MentionComposer";
+import { type HostDraft, MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import { useSessionSends } from "../conversation/useSessionSends";
 import { meInboxReadsBack } from "../inbox/one-read-cache";
@@ -81,10 +81,7 @@ export function AgentMessageComposer({
    *  `starting`, and every message it holds is reported to `onChange` as the person wrote it,
    *  without the mention of this session an issue's channel writes in front of it. The Inbox's
    *  compose dialog passes it, so the message stays when the person adds or removes a recipient. */
-  hostDraft?: {
-    readonly starting: string;
-    readonly onChange: (body: string) => void;
-  };
+  hostDraft?: HostDraft;
   /** The messages of the session's conversation the row lists (`MentionComposer`'s `listed`),
    *  or none where its host has not read them, or where the box answers only its own thread's
    *  newest message (`standing`), which leaves the page with the box. */

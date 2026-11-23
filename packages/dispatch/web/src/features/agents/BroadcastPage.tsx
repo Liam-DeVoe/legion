@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { broadcastQuery } from "../../api/queries";
 import type {
   Agent,
   BroadcastExclusion,
@@ -187,12 +188,7 @@ export function BroadcastPage(): ReactNode {
   const { id = "" } = useParams<{ id: string }>();
   const excluded = exclusionsFromState(useNavigationState());
   const { agents, current } = useAgents(true, true);
-  const broadcast = useQuery({
-    queryFn: () => api.getBroadcast(id),
-    // Keyed under ["broadcast"], the prefix every issue-less message event invalidates, so a
-    // recipient's delivery receipt or reply lands here without a poll.
-    queryKey: ["broadcast", id],
-  });
+  const broadcast = useQuery(broadcastQuery(id));
 
   if (broadcast.isPending) return <LoadingSkeleton label="Loading broadcast" />;
   if (broadcast.isError) {

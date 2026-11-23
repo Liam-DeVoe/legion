@@ -1,8 +1,9 @@
 import type { MeInboxResponse } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, patchIssue } from "./api";
-import { seedDismissedThreads } from "./dismissed-seed";
-import { listTrigger, openDisplayMenu, openFilterPanel, pickFromList } from "./filters";
+import { isDismissedPage, pageIds, seedDismissedThreads } from "./dismissed-seed";
+import { chooseShow, listTrigger, openFilterPanel, pickFromList } from "./filters";
+import { describeFocus, frameAndTask, holdsFocus, tabTo } from "./focus";
 import { drawer } from "./inbox-drawer";
 import { inboxList, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
 import {
@@ -12,7 +13,7 @@ import {
   seedCommentThread,
   THREAD_SESSION,
 } from "./inbox-threads";
-import { expandedState } from "./settled";
+import { drawnIds } from "./inbox-view";
 import { type BrowserContext, expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -58,13 +59,6 @@ function row(page: Page, id: string): Locator {
 /** A row's own checkbox. */
 function mark(page: Page, id: string): Locator {
   return row(page, id).getByRole("checkbox");
-}
-
-/** The ids of the rows the list draws, in the order it draws them. */
-function drawnIds(page: Page): Promise<string[]> {
-  return rows(page).evaluateAll((nodes) =>
-    nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
-  );
 }
 
 /** The ids of the drawn rows whose checkbox is ticked, in the order the list draws them. */
@@ -124,49 +118,10 @@ async function namedByPress(page: Page, press: () => Promise<void>): Promise<str
   return body.threads ?? [];
 }
 
-/** Picks one choice of the View menu's Show section and shuts the menu again. */
-async function chooseShow(page: Page, label: string): Promise<void> {
-  const menu = await openDisplayMenu(page);
-  const trigger = page.getByRole("button", { exact: true, name: "View" });
-  await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
-  await expect(menu).toHaveCount(0);
-}
-
 /** Selects a row as the pointer does: one click on its own time. */
 async function selectRow(page: Page, id: string): Promise<void> {
   await row(page, id).locator("time").first().click();
   await expect(row(page, id)).toHaveAttribute("data-inbox-selected", "true");
-}
-
-/** One frame and one task on, by when the page has drawn what it last read and its focus
- *  rescue has placed the focus. */
-function frameAndTask(page: Page): Promise<void> {
-  return page.evaluate(() => {
-    const done = Promise.withResolvers<void>();
-    requestAnimationFrame(() => setTimeout(done.resolve, 0));
-    return done.promise;
-  });
-}
-
-/** The element holding the focus, named for a failure: the body, or its tag, its accessible
- *  name and the row it is in. */
-function focusHolder(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || active === document.body) return "the page's body";
-    const name = (active.getAttribute("aria-label") ?? active.textContent ?? "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 80);
-    const inRow = active.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? "no row";
-    return `<${active.tagName.toLowerCase()}> name="${name}" in ${inRow}`;
-  });
-}
-
-/** Whether `target` holds the focus. */
-function holdsFocus(target: Locator): Promise<boolean> {
-  return target.evaluate((node) => node === document.activeElement);
 }
 
 /** The window's scroll position and the list column's, which scrolls in itself beside the
@@ -184,19 +139,6 @@ function markInSight(page: Page, id: string): Promise<boolean> {
     const drawn = box.getBoundingClientRect();
     return drawn.top >= seen.top && drawn.bottom <= seen.bottom;
   });
-}
-
-/** Presses Tab from where the focus is until `target` holds it. */
-async function tabTo(page: Page, target: Locator, what: string): Promise<void> {
-  // Each read follows a key press whose focus move the browser makes before the press resolves,
-  // and the line after the loop reads the focus again and fails with its holder.
-  for (let pressed = 0; pressed < 80 && !(await holdsFocus(target)); pressed += 1) {
-    await page.keyboard.press("Tab");
-  }
-  expect(
-    await holdsFocus(target),
-    `Tab reaches ${what}; the focus is on ${await focusHolder(page)}`
-  ).toBe(true);
 }
 
 /** Moves the selection to the row at `to` among `ids` with `j` and `k`, from the row it is on. */
@@ -237,7 +179,7 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
     const dismisses = watchDismisses(page);
     await expect(rows(page)).toHaveCount(10);
     expect(await bandHeadings(page)).toEqual(["P1 (3)", "P2 (3)", "P3 (4)"]);
-    const drawn = await drawnIds(page);
+    const drawn = await drawnIds(inboxList(page));
 
     // From the second row of the first band to the second row of the second band: the run is
     // the rows the list draws between them, in its order.
@@ -256,7 +198,7 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
     expect([...named].sort()).toEqual([...run].sort());
     expect(dismisses).toHaveLength(1);
     await expect(rows(page)).toHaveCount(drawn.length - run.length);
-    expect(await drawnIds(page)).toEqual(drawn.filter((id) => !run.includes(id)));
+    expect(await drawnIds(inboxList(page))).toEqual(drawn.filter((id) => !run.includes(id)));
 
     // Over the third band's asks and the thread among them, one press of Snooze writes one
     // snooze for each ask of the run, and none for the thread.
@@ -285,7 +227,7 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
     await chooseShow(page, "Dismissed");
     await expect(page).toHaveURL(/show=dismissed/);
     await expect(rows(page)).toHaveCount(run.length);
-    const loaded = await drawnIds(page);
+    const loaded = await drawnIds(inboxList(page));
     const back = loaded.slice(0, 3);
     await mark(page, loaded[0] ?? "").click();
     await mark(page, loaded[2] ?? "").click({ modifiers: ["Shift"] });
@@ -305,27 +247,15 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
     // of the first 150 of them.
     const drill = await createIssue({ project: "CORE", title: "Window drill" });
     await seedDismissedThreads({ count: 300, issueKey: drill.key, prefix: "Drill" });
-    const firstPage = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return (
-        url.pathname === "/api/v1/me/inbox" &&
-        url.searchParams.get("state") === "dismissed" &&
-        !url.searchParams.has("cursor")
-      );
-    });
+    const firstPage = page.waitForResponse((response) => isDismissedPage(response));
     await page.goto("/?show=dismissed");
-    const answered = (await (await firstPage).json()) as MeInboxResponse;
-    const loadedIds = (answered.entries ?? []).flatMap((entry) =>
-      entry.thread === undefined || entry.thread === null
-        ? []
-        : [replyRowId(entry.thread.thread_id)]
-    );
+    const loadedIds = pageIds((await (await firstPage).json()) as MeInboxResponse);
     expect(loadedIds).toHaveLength(200);
     const span = loadedIds.slice(0, 150);
     const spanFirst = span[0] ?? "";
     const spanLast = span.at(-1) ?? "";
     await expect(row(page, spanFirst)).toBeVisible();
-    const windowed = await drawnIds(page);
+    const windowed = await drawnIds(inboxList(page));
     expect(windowed.length, `the window draws ${windowed.length} of 200 loaded rows`).toBeLessThan(
       150
     );
@@ -338,7 +268,7 @@ test("a shift-click selects the drawn rows between two checkboxes", async ({ bro
       });
       await frameAndTask(page);
     }
-    const drawnAtClick = await drawnIds(page);
+    const drawnAtClick = await drawnIds(inboxList(page));
     await mark(page, spanLast).click({ modifiers: ["Shift"] });
     await expect
       .poll(() => barCount(page), {
@@ -373,7 +303,7 @@ test("the anchor of a range is the row marked last without the shift key", async
   try {
     const page = await inboxPage(alice);
     await expect(rows(page)).toHaveCount(14);
-    const drawn = await drawnIds(page);
+    const drawn = await drawnIds(inboxList(page));
     /** Row `n` of the list, counted from 1. */
     const at = (n: number) => drawn[n - 1] ?? "";
     const rowsFrom = (first: number, last: number) => drawn.slice(first - 1, last);
@@ -453,7 +383,7 @@ test("the anchor of a range is the row marked last without the shift key", async
     await page.keyboard.press("Escape");
     await expect(page.getByRole("dialog", { name: "Filter" })).toHaveCount(0);
     await expect(rows(page)).toHaveCount(6);
-    const filtered = await drawnIds(page);
+    const filtered = await drawnIds(inboxList(page));
     expect(filtered.length).toBeGreaterThan(1);
     expect(filtered.length).toBeLessThan(drawn.length);
     expect(filtered).not.toContain(at(3));
@@ -474,7 +404,7 @@ test("the anchor of a range is the row marked last without the shift key", async
       await seedCommentThread(backup.key, "Backup root new", "Backup reply new")
     );
     await expect(rows(page)).toHaveCount(drawn.length + 1);
-    const withArrival = await drawnIds(page);
+    const withArrival = await drawnIds(inboxList(page));
     expect(withArrival.indexOf(arrived)).toBe(withArrival.indexOf(at(8)) + 1);
     await mark(page, at(10)).click({ modifiers: ["Shift"] });
     const counted = [at(7), at(8), arrived, at(9), at(10)];
@@ -488,7 +418,7 @@ test("the anchor of a range is the row marked last without the shift key", async
 
     // A row the list holds in place under the pointer after the server dropped it: another tab
     // dismisses it. It is drawn, and the range from the anchor to the row in hand leaves it out.
-    const left = await drawnIds(page);
+    const left = await drawnIds(inboxList(page));
     const [anchor, , held, , hand] = left;
     if (anchor === undefined || held === undefined || hand === undefined) {
       throw new Error(`the list draws too few rows: ${left.join(", ")}`);
@@ -538,7 +468,7 @@ test("one Dismiss over a range of 300 rows is one request", async ({ browser }) 
       await expect(rows(page)).toHaveCount(shown);
     }
     expect(await bandHeadings(page)).toEqual(["P2 (300)"]);
-    const drawn = await drawnIds(page);
+    const drawn = await drawnIds(inboxList(page));
     await mark(page, drawn[0] ?? "").click();
     await mark(page, drawn[299] ?? "").click({ modifiers: ["Shift"] });
     await expectCount(page, 300);
@@ -572,7 +502,7 @@ test("one Dismiss over a range of 300 rows is one request", async ({ browser }) 
     expect(await bandHeadings(page)).toEqual(["P1 (60)", "P2 (4)", "P3 (4)"]);
     await expect(rows(page)).toHaveCount(50 + 1 + 4);
     await expect(row(page, ask)).toBeVisible();
-    const across = await drawnIds(page);
+    const across = await drawnIds(inboxList(page));
     await mark(page, across[0] ?? "").click();
     await mark(page, across.at(-1) ?? "").click({ modifiers: ["Shift"] });
     await expectCount(page, across.length);
@@ -604,7 +534,7 @@ test("the keyboard makes the same range from the anchor", async ({ browser }) =>
   try {
     const page = await inboxPage(alice);
     await expect(rows(page)).toHaveCount(10);
-    const drawn = await drawnIds(page);
+    const drawn = await drawnIds(inboxList(page));
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[0] ?? "");
     // The spoken count is in the page before the first mark.
     const spoken = page.locator("[data-inbox-selection-count]");
@@ -625,8 +555,8 @@ test("the keyboard makes the same range from the anchor", async ({ browser }) =>
     await expect(spoken).toHaveText("6 rows selected");
     await expect(page.getByText("6 selected", { exact: true })).toHaveCount(1);
 
-    // From the same anchor, `Shift+J` three times takes the run to the fourth row with the hand,
-    // and `Shift+K` once back to the third.
+    // From the same anchor, `Shift+J` three times takes the run to the fourth row with the row in
+    // hand, and `Shift+K` once back to the third.
     await selectWithKeys(page, drawn, 1);
     for (let pressed = 0; pressed < 3; pressed += 1) await page.keyboard.press("Shift+J");
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[4] ?? "");
@@ -677,8 +607,8 @@ test("the keyboard makes the same range from the anchor", async ({ browser }) =>
     await bar(page).getByRole("button", { name: "Clear selection" }).click();
     await expect(spoken).toHaveText("");
 
-    // With no anchor, as after Clear selection, `Shift+J` only moves the hand: it ticks no row
-    // and sets no anchor, so the shift-click after it ticks its own row alone.
+    // With no anchor, as after Clear selection, `Shift+J` only moves the row in hand: it ticks no
+    // row and sets no anchor, so the shift-click after it ticks its own row alone.
     await page.locator("body").focus();
     await page.keyboard.press("Shift+J");
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[4] ?? "");
@@ -717,7 +647,7 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
     // the title is a link, which a drag carries rather than selects.
     const page = await inboxPage(alice, "/", READING_PANE_WIDTH - 256);
     await expect(rows(page)).toHaveCount(12);
-    const drawn = await drawnIds(page);
+    const drawn = await drawnIds(inboxList(page));
     const selectedText = () => page.evaluate(() => window.getSelection()?.toString() ?? "");
 
     // A click and a shift-click ten rows apart: both landed, and no text is selected.
@@ -727,7 +657,7 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
     expect(await selectedText(), "the page's selected text").toBe("");
     expect(
       await holdsFocus(mark(page, drawn[10] ?? "")),
-      `the shift-clicked checkbox holds the focus; the focus is on ${await focusHolder(page)}`
+      `the shift-clicked checkbox holds the focus; the focus is on ${await describeFocus(page)}`
     ).toBe(true);
 
     // A drag across one row's text still selects it: the root's words the card quotes.
@@ -760,7 +690,7 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
     const page = await inboxPage(alice);
     await expect(rows(page)).toHaveCount(12);
     // The count above waited for all twelve rows, and nothing moves them before the keys do.
-    const drawn = await drawnIds(page);
+    const drawn = await drawnIds(inboxList(page));
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", drawn[0] ?? "");
     await page.mouse.move(0, 0);
     await page.locator("body").focus();
@@ -773,7 +703,7 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
     await page.keyboard.press("Shift+X");
     await expectCount(page, 6);
     const dismiss = bar(page).getByRole("button", { name: "Dismiss selected threads" });
-    await tabTo(page, dismiss, "the bar's Dismiss");
+    await tabTo(page, dismiss, "the bar's Dismiss", 80);
     const before = await scrollPositions(page);
     await page.keyboard.press("Enter");
     for (const id of drawn.slice(2, 8)) await expect(row(page, id)).toHaveCount(0);
@@ -782,11 +712,11 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
     // focus is on its checkbox, and nothing scrolled.
     await frameAndTask(page);
     const place = drawn[8] ?? "";
-    expect(await drawnIds(page)).toEqual([...drawn.slice(0, 2), ...drawn.slice(8)]);
+    expect(await drawnIds(inboxList(page))).toEqual([...drawn.slice(0, 2), ...drawn.slice(8)]);
     expect(await markInSight(page, place), "row 9 is in the list's visible box").toBe(true);
     expect(
       await holdsFocus(mark(page, place)),
-      `the focus is on row 9's checkbox; it is on ${await focusHolder(page)}`
+      `the focus is on row 9's checkbox; it is on ${await describeFocus(page)}`
     ).toBe(true);
     expect(await scrollPositions(page)).toEqual(before);
 
@@ -799,7 +729,7 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
     await mark(page, gone).click();
     await expectCount(page, 2);
     await expect(mark(page, gone)).toBeFocused();
-    const standing = await drawnIds(page);
+    const standing = await drawnIds(inboxList(page));
     const still = await scrollPositions(page);
     const other = await inboxPage(alice);
     await selectRow(other, gone);
@@ -808,10 +738,10 @@ test("a range Dismiss hands the focus to a row that stays", async ({ browser }) 
     await other.close();
     await expectCount(page, 1);
     await frameAndTask(page);
-    expect(await drawnIds(page), "the held row is drawn in its place").toEqual(standing);
+    expect(await drawnIds(inboxList(page)), "the held row is drawn in its place").toEqual(standing);
     expect(
       await holdsFocus(mark(page, gone)),
-      `the focus stays on the held row's checkbox; it is on ${await focusHolder(page)}`
+      `the focus stays on the held row's checkbox; it is on ${await describeFocus(page)}`
     ).toBe(true);
     expect(await scrollPositions(page)).toEqual(still);
   } finally {
@@ -888,7 +818,7 @@ test("the bar's return keeps the row marked last, or takes the first row in sigh
   try {
     const page = await inboxPage(alice);
     await expect(rows(page)).toHaveCount(40);
-    const drawn = await drawnIds(page);
+    const drawn = await drawnIds(inboxList(page));
     const list = inboxList(page);
 
     // A mark on row 2, then a range taken to row 30 far below it: Clear selection hands the
@@ -902,7 +832,7 @@ test("the bar's return keeps the row marked last, or takes the first row in sigh
     await frameAndTask(page);
     expect(
       await holdsFocus(mark(page, drawn[1] ?? "")),
-      `the focus is on row 2's checkbox; it is on ${await focusHolder(page)}`
+      `the focus is on row 2's checkbox; it is on ${await describeFocus(page)}`
     ).toBe(true);
     expect(await markInSight(page, drawn[1] ?? ""), "row 2 is in sight").toBe(true);
 
@@ -939,7 +869,7 @@ test("the bar's return keeps the row marked last, or takes the first row in sigh
     await frameAndTask(page);
     expect(
       await holdsFocus(mark(page, firstInSight)),
-      `the focus is on the first row in sight; it is on ${await focusHolder(page)}`
+      `the focus is on the first row in sight; it is on ${await describeFocus(page)}`
     ).toBe(true);
     expect(await scrollPositions(page)).toEqual(before);
   } finally {

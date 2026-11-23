@@ -444,9 +444,9 @@ func oneInboxPercentiles(readings []time.Duration) (string, time.Duration) {
 // build is read first, and prints both builds' p50, p95 and p99 on one line, with each of the base
 // build's reads apart and what each build answered. It fails where the one read's p50 is above
 // oneInboxReadBound times the base build's. For the reader whose Inbox holds the gated issues'
-// items (seedOneInboxGate), each reading of this build keeps its answer, and once its clock has
-// stopped the answer must carry an approval gate on every entry of those issues
-// (requireOneInboxGates): a build whose statement leaves the gate out fails there.
+// items (seedOneInboxGate), the reading not counted must carry an approval gate on every entry of
+// those issues (requireOneInboxGates): a build whose statement leaves the gate out fails there.
+// The corpus does not change between readings, so that one answer proves what each would.
 func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInboxSide) {
 	t.Helper()
 	const one = "/api/v1/me/inbox?state=inbox"
@@ -457,12 +457,12 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 	var ones, bases []time.Duration
 	parts := make([][]time.Duration, len(replaced))
 	var entries, asks, rows int
-	// The reading not counted keeps its answer, to say what each build answered; every counted one
-	// drops it as it arrives (baselineServer.read), but this build's readings of the gated items'
-	// reader, which are read for their gates.
+	// The reading not counted keeps its answer, to say what each build answered and to check the
+	// gates; every counted one, on both builds, drops it as it arrives (baselineServer.read), so
+	// neither build's clock pays for keeping or decoding an answer the other's does not.
 	gated := reader.login == oneInboxHeavy && len(this.corpus.gateIssues) > 0
 	get := func(side *oneInboxSide, reading int, path string) apiAnswer {
-		if reading == 0 || (gated && side == this) {
+		if reading == 0 {
 			return oneInboxExpect(t, side.name+": "+path+" of "+reader.shape,
 				side.server.call(t, reader.login, http.MethodGet, path, nil), http.StatusOK)
 		}
@@ -470,10 +470,10 @@ func measureOneInboxRead(t *testing.T, reader oneInboxReader, base, this *oneInb
 	}
 	readOne := func(reading int) {
 		answer := get(this, reading, one)
-		if gated {
-			requireOneInboxGates(t, reading, answer.body, this.corpus.gateIssues)
-		}
 		if reading == 0 {
+			if gated {
+				requireOneInboxGates(t, reading, answer.body, this.corpus.gateIssues)
+			}
 			var read meInboxResponse
 			if err := json.Unmarshal(answer.body, &read); err != nil {
 				t.Fatalf("decode the one read of %s: %v", reader.shape, err)

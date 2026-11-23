@@ -21,7 +21,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import { askThreadQuery, issueQuery, meInboxKey } from "../../api/queries";
+import { askThreadQuery, issueQuery } from "../../api/queries";
 import type {
   Actor,
   CommentWithTrees,
@@ -359,9 +359,8 @@ function CommentThreadBody({
           // drawn beside it under the thread's id, and siblings are told apart by their keys.
           // Its Send is held until the Inbox is read again (`heldSend`): the reader's own reply
           // takes the thread out of their Inbox (the own-answer rule, R1), and the box with it.
-          // The send's landing has read the Inbox again already (`held-sends.ts`'
-          // `refreshAfter`), so the hold waits on that read (`meInboxReadsBack`) and not on the
-          // one more this box asks for, as it always has.
+          // The send's landing reads the Inbox again (`held-sends.ts`' `refreshAfter`), so the box
+          // asks for no read of its own, and the hold waits on that one read (`meInboxReadsBack`).
           <MentionComposer
             box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
@@ -374,7 +373,6 @@ function CommentThreadBody({
             onClose={noReturn}
             onSent={() => {
               void queryClient.invalidateQueries({ queryKey: commentsKey });
-              void queryClient.invalidateQueries({ queryKey: meInboxKey });
               return meInboxReadsBack(queryClient);
             }}
             owner={owner}
@@ -467,7 +465,6 @@ function MessageThreadBody({
             onClose={noReturn}
             onSent={() => {
               void queryClient.invalidateQueries({ queryKey: messagesKey });
-              void queryClient.invalidateQueries({ queryKey: meInboxKey });
               return meInboxReadsBack(queryClient);
             }}
             owner={{ issueKey, kind: "issue" }}

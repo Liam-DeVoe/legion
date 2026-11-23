@@ -11,7 +11,7 @@ import {
 } from "./api";
 import { displayChoice } from "./filters";
 import { settledScrollTop } from "./frames";
-import { inboxList, inboxPane, paneScroller } from "./inbox-pane";
+import { inboxPane, paneScroller, selectRow } from "./inbox-pane";
 import { asSession, holdReadMarks, replyRowId, THREAD_SESSION } from "./inbox-threads";
 import { expect, type Locator, type Page, test } from "./test";
 import { verticalOrder } from "./threads-order";
@@ -179,13 +179,6 @@ async function openFold(thread: Drawn): Promise<void> {
     .click();
   await expectFoldOpen(thread);
   await expectOrder(thread, "oldest");
-}
-
-/** Selects a thread row the way the pointer does, by its own time. */
-async function selectRow(page: Page, id: string): Promise<void> {
-  const row = inboxList(page).locator(`[data-inbox-row="${id}"]`);
-  await row.locator("time").first().click();
-  await expect(row).toHaveAttribute("data-inbox-selected", "true");
 }
 
 /** Where the page stands: the window's scroll, and the reading pane's while there is one. */

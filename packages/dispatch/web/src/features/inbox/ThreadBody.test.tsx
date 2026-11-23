@@ -17,8 +17,8 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SEARCH_DEBOUNCE_MS } from "../refs/useRefPicker";
+import { OrderPicker } from "../threads/order-picker-fixture";
 import { agentRow, plannerAgentRow, withConversation } from "../threads/replies-fixture";
-import { useThreadOrder } from "../threads/thread-order";
 import { ThreadBody } from "./ThreadBody";
 import { ThreadRowCard } from "./ThreadRowCard";
 
@@ -455,17 +455,6 @@ test("an Agent card whose thread moves on under a refused reply says what its bo
   expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
 });
-
-/** The other thread order, picked through the one preference every thread reads, as the Inbox's
- *  display menu picks it. */
-function OrderPicker(): ReactNode {
-  const [order, setOrder] = useThreadOrder();
-  return (
-    <button onClick={() => setOrder(order === "oldest" ? "newest" : "oldest")} type="button">
-      {order === "oldest" ? "Newest first" : "Oldest first"}
-    </button>
-  );
-}
 
 // The reading pane's thread opens at its first unread reply under Oldest first. An order picked
 // while it is open reorders it where it stands: the pick back to Oldest first does not scroll to

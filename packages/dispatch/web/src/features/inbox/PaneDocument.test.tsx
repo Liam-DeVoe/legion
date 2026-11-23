@@ -15,7 +15,7 @@ import { installInboxApiMocks } from "./inbox-fixture";
 import { ThreadPane } from "./ThreadPane";
 
 /**
- * The reading pane over a comment on an issue's document (the in-document pane, R3, ST6): the
+ * The reading pane over a comment on an issue's document (the in-document pane, R3): the
  * pane reads the document only once the selection has stood still, reads it once, and once the
  * section is placed brings the comment's own mark into view without moving the focus.
  */

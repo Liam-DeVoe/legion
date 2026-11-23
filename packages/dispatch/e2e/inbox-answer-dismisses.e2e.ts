@@ -6,6 +6,7 @@ import {
   createProject,
   replyToMessageDelivery,
 } from "./api";
+import { describeFocus, frameAndTask, holdsFocus, tabTo } from "./focus";
 import { inboxList, inboxPane, paneScroller, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
 import {
   agentRowId,
@@ -86,14 +87,6 @@ async function expectNotDismissed(context: BrowserContext, id: string): Promise<
   } finally {
     await dismissed.close();
   }
-}
-
-/** One frame and one task on, by when the page has drawn what it last read and its rescue has
- *  placed the focus. */
-function frameAndTask(page: Page): Promise<void> {
-  return page.evaluate(
-    () => new Promise<void>((done) => requestAnimationFrame(() => setTimeout(done, 0)))
-  );
 }
 
 /** Resolves once the page's own read of its Inbox's rows (`GET /api/v1/me/inbox?state=inbox`),
@@ -222,35 +215,6 @@ test("an answer or a reply takes the thread out of the Inbox until somebody else
 /** The width the focus test runs at: the reading-column layout, 1440 pixels wide. */
 const FOCUS_WIDTH = 1440;
 
-/** The element holding the focus, named for a failure: the body, or its tag, its role, its
- *  accessible name as its label or its text gives it, and its test id. */
-function focusHolder(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || active === document.body) return "the page's body";
-    const tag = active.tagName.toLowerCase();
-    const implicit: Record<string, string> = {
-      a: "link",
-      button: "button",
-      hr: "separator",
-      input: active.getAttribute("type") === "radio" ? "radio" : "textbox",
-      section: active.hasAttribute("aria-label") ? "region" : "generic",
-      textarea: "textbox",
-    };
-    const role = active.getAttribute("role") ?? implicit[tag] ?? "generic";
-    const name = (active.getAttribute("aria-label") ?? active.textContent ?? "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 80);
-    return `<${tag}> role=${role} name="${name}" testid=${active.dataset.testid ?? "(none)"}`;
-  });
-}
-
-/** Whether `target` holds the focus. */
-function holdsFocus(target: Locator): Promise<boolean> {
-  return target.evaluate((node) => node === document.activeElement);
-}
-
 /** Moves the selection to `id` with the Inbox's own keys, `j` and `k`, from the row it is on. */
 async function selectWithKeys(page: Page, id: string): Promise<void> {
   await expect(selectedRow(page)).toHaveCount(1);
@@ -266,19 +230,6 @@ async function selectWithKeys(page: Page, id: string): Promise<void> {
     await page.keyboard.press(to > from ? "j" : "k");
   }
   await expect(row(page, id)).toHaveAttribute("data-inbox-selected", "true");
-}
-
-/** Presses Tab from where the focus is until `target` holds it. */
-async function tabTo(page: Page, target: Locator, what: string): Promise<void> {
-  // Each read follows a key press whose focus move the browser makes before the press resolves,
-  // and the line after the loop reads the focus again and fails with its holder.
-  for (let pressed = 0; pressed < 40 && !(await holdsFocus(target)); pressed += 1) {
-    await page.keyboard.press("Tab");
-  }
-  expect(
-    await holdsFocus(target),
-    `Tab reaches ${what}; the focus is on ${await focusHolder(page)}`
-  ).toBe(true);
 }
 
 /** What a Send carries while its write is out. */
@@ -299,7 +250,7 @@ async function expectHeldWithTheFocus(page: Page, send: Locator, what: string): 
     .toEqual({ "aria-disabled": "true", disabled: false });
   expect(
     await holdsFocus(send),
-    `while ${what} is held the focus is on ${await focusHolder(page)}`
+    `while ${what} is held the focus is on ${await describeFocus(page)}`
   ).toBe(true);
 }
 
@@ -318,7 +269,7 @@ async function expectTheColumnStop(
   const scroller = paneScroller(page);
   expect(
     await holdsFocus(scroller),
-    `the focus is on the column's own stop, the region named Question body; it is on ${await focusHolder(page)}`
+    `the focus is on the column's own stop, the region named Question body; it is on ${await describeFocus(page)}`
   ).toBe(true);
   await expect(inboxPane(page).getByRole("region", { name: "Question body" })).toHaveAttribute(
     "data-testid",
@@ -381,12 +332,12 @@ test("the focus after an own Send goes to the column's own stop", async ({ brows
     await page.keyboard.press("l");
     await expect(paneScroller(page)).toBeFocused();
     const ship = pane.getByRole("radio", { name: "Ship" });
-    await tabTo(page, ship, "the Ship option");
+    await tabTo(page, ship, "the Ship option", 40);
     await page.keyboard.press("Space");
     await expect(ship).toBeChecked();
     // Answer reads "Answering…" while its write is out, so the button is matched by both labels.
     const send = pane.getByRole("button", { name: /^Answer(ing…)?$/ });
-    await tabTo(page, send, "the answer's Send");
+    await tabTo(page, send, "the answer's Send", 40);
     const scrollBefore = await page.evaluate(() => window.scrollY);
     await page.keyboard.press("Enter");
     await expectHeldWithTheFocus(page, send, "the answer's Send");
@@ -413,11 +364,11 @@ test("the focus after an own Send goes to the column's own stop", async ({ brows
     await page.keyboard.press("l");
     await expect(paneScroller(page)).toBeFocused();
     const box = pane.getByRole("textbox", { name: "Reply" });
-    await tabTo(page, box, "the reply box");
+    await tabTo(page, box, "the reply box", 40);
     await page.keyboard.type("Then I take it from six.");
     // The reply box's own Send, which reads "Sending…" while its write is out.
     const replySend = pane.getByRole("button", { name: /^(Send|Sending…)$/ });
-    await tabTo(page, replySend, "the reply box's Send");
+    await tabTo(page, replySend, "the reply box's Send", 40);
     const replyScrollBefore = await page.evaluate(() => window.scrollY);
     await page.keyboard.press("Enter");
     await expectHeldWithTheFocus(page, replySend, "the reply box's Send");

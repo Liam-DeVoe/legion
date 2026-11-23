@@ -1,16 +1,19 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import { api } from "../../api/client";
 import { meInboxKey } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Ask, AskRead, Comment, CreateCommentInput, IssueAskRow } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { AskThread, type AskThreadQuery, type CreateReply } from "./AskThread";
 import { AskReplyWritesContext, useOutstandingAnswerWrites } from "./outstanding-answers";
 
@@ -254,6 +257,70 @@ test("an answered ask's Reply in an Inbox stays held until the Inbox is read aga
     expect(box.value).toBe("More");
     expect(sent).toHaveLength(1);
   } finally {
+    view.unmount();
+  }
+});
+
+// The same reply box, held at the latest until the write deadline from the press
+// (`SEND_DEADLINE_MS`): the reply has landed, and the read of the Inbox the landing started never
+// comes back, so Reply and the box hold until the deadline and are the reader's again after it.
+// The reply lands when the test lets it, on the held clock.
+test("an answered ask's Reply in an Inbox is held no longer at the write deadline", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  let inboxReads = 0;
+  const sent: CreateCommentInput[] = [];
+  const landing = Promise.withResolvers<void>();
+  const createReply: CreateReply = async (_issueKey, input) => {
+    sent.push(input);
+    await landing.promise;
+    return { ...reply, body: input.body ?? "", id: "reply-own" };
+  };
+  function InInbox({ children }: { readonly children: ReactNode }) {
+    useQuery({
+      queryFn: () => (inboxReads++ === 0 ? Promise.resolve(0) : new Promise<number>(() => {})),
+      queryKey: [...meInboxKey, "page"],
+    });
+    return (
+      <AskReplyWritesContext value={useOutstandingAnswerWrites()}>{children}</AskReplyWritesContext>
+    );
+  }
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const thread = { data: { ...read, replies: [] } } as unknown as AskThreadQuery;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <InInbox>
+          <AskThread ask={answeredAsk} createReply={createReply} order="oldest" thread={thread} />
+        </InInbox>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await tick(20);
+    expect(inboxReads).toBe(1);
+    const box = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
+    await user.click(box);
+    await user.paste("Shipping it today.");
+    const send = view.getByRole("button", { name: "Reply" });
+    await user.click(send);
+    await tick(20);
+    expect(sent).toHaveLength(1);
+    await act(async () => landing.resolve());
+    await tick(1_000);
+    expect(inboxReads).toBe(2);
+    expect(send.getAttribute("aria-disabled")).toBe("true");
+    expect(box.readOnly).toBe(true);
+
+    await jump(SEND_DEADLINE_MS - 2_000);
+    expect(box.readOnly).toBe(true);
+    await jump(1_000);
+    expect(box.readOnly).toBe(false);
+  } finally {
+    realClock();
     view.unmount();
   }
 });

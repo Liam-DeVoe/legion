@@ -1,11 +1,11 @@
 import { dispatchWritingBox } from "@legion/contracts";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useContext, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useContext, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds, type WriteMethod } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
-import { useHeldThroughAnswer } from "../../components/held-press";
+import { useHeldThroughAnswer, useHeldUntilRead } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -33,7 +33,6 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import type { AskPress } from "./ask-writes";
 import { invalidateMeInbox, meInboxReadsBack } from "./one-read-cache";
@@ -288,24 +287,17 @@ export function AskReplyComposer({
   const inbox = useInboxAnswerWrite(useContext(AskReplyWritesContext), ask.id, options);
   const submit: OutstandingAnswerWrite<ReplyPress> = inbox ?? own;
   const sending = inbox === undefined ? ownSending : inbox.isPending;
-  // Inside an Inbox, the landing whose reads of the Inbox have come back, and the press whose
-  // write deadline has passed: Reply is held from the landing's own render until the first of the
-  // two.
-  const pressedAt = inbox?.submittedAt ?? 0;
-  const landedAt = inbox?.isSuccess === true ? pressedAt : 0;
-  const [readBackFor, setReadBackFor] = useState(0);
-  const [pastDeadline, setPastDeadline] = useState(0);
-  useEffect(() => {
-    if (landedAt === 0) return;
-    void meInboxReadsBack(queryClient).then(() => setReadBackFor(landedAt));
-    const bound = window.setTimeout(
-      () => setPastDeadline(landedAt),
-      landedAt + SEND_DEADLINE_MS - Date.now()
-    );
-    return () => window.clearTimeout(bound);
-  }, [landedAt, queryClient]);
-  const rowGoing = landedAt !== 0 && readBackFor !== landedAt && pastDeadline !== landedAt;
-  const held = useHeldThroughAnswer(sending || rowGoing);
+  // Inside an Inbox, Reply is held from the press past the landing until the reads of the Inbox
+  // out then have come back, and at the latest until the write deadline from the press
+  // (`useHeldUntilRead`); the press's hold ends there. Reply and the box stay held while the send
+  // is out either way.
+  const replyHoldStands = useHeldUntilRead(inbox?.submittedAt ?? 0, inbox?.isSuccess === true, () =>
+    meInboxReadsBack(queryClient)
+  );
+  const pressHeld = useHeldThroughAnswer(
+    inbox === undefined ? ownSending : (inbox.isPending || inbox.isSuccess) && replyHoldStands
+  );
+  const held = sending || pressHeld;
   // Reply is held while the send is out, while nothing is typed, and while a picture is still
   // uploading: a reply sent then would go without it.
   const replyHeld = held || body.trim() === "" || uploading;

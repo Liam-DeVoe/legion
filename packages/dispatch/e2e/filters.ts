@@ -66,6 +66,22 @@ export async function chooseDisplay(
   await displayChoice(await openDisplayMenu(page, label), section, value).click();
 }
 
+/** Picks one choice of the Inbox's **View** menu's **Show** section from the trigger inside
+ *  `within` - the page, or the Inbox drawer - and shuts the menu again. */
+export async function chooseShow(
+  page: Page,
+  label: string,
+  within: Locator | Page = page
+): Promise<void> {
+  const menu = page.getByRole("dialog", { name: "View" });
+  const trigger = within.getByRole("button", { exact: true, name: "View" });
+  if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
+  await expect(menu).toHaveCount(1);
+  await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
+  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
+  await expect(menu).toHaveCount(0);
+}
+
 /** A Board strip picker or the List table's header filter, by the name it carries. */
 export function filterPicker(page: Page, picker: "Claimed by" | "Labels" | "Status"): Locator {
   return page

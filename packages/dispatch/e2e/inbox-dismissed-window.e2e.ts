@@ -1,12 +1,19 @@
 import type { MeInboxResponse } from "../web/src/api/types";
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, dismissInbox, getMeInbox } from "./api";
-import { countDismissedThreads, seedDismissedThreads } from "./dismissed-seed";
+import {
+  countDismissedThreads,
+  isDismissedPage,
+  pageIds,
+  seedDismissedThreads,
+} from "./dismissed-seed";
+import { chooseShow } from "./filters";
+import { describeFocus, frameAndTask, holdsFocus, tabTo } from "./focus";
 import { drawer } from "./inbox-drawer";
 import { inboxList } from "./inbox-pane";
-import { replyRowId, THREAD_SESSION } from "./inbox-threads";
-import { expandedState } from "./settled";
-import { type BrowserContext, expect, type Locator, type Page, type Response, test } from "./test";
+import { THREAD_SESSION } from "./inbox-threads";
+import { median } from "./shard-split";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -26,7 +33,7 @@ import { asUser } from "./users";
  *  column scrolls in itself. */
 const WIDE = { height: 900, width: 1440 };
 
-/** Rows the window draws past each edge of what the list column shows (`DISMISSED_OVERSCAN`). */
+/** Rows the window draws past each edge of what the list column shows (`WINDOW_OVERSCAN`). */
 const OVERSCAN = 12;
 
 /** How many times each pile is opened and timed. */
@@ -49,24 +56,6 @@ interface Opening {
   readonly ids: readonly string[];
   /** The time from the navigation to the first drawn row, in milliseconds. */
   readonly ms: number;
-}
-
-/** Whether `response` answers a read of the Dismissed view's pages: the first, or with `cursor`
- *  the page that cursor names. */
-function isDismissedPage(response: Response, cursor?: string): boolean {
-  const url = new URL(response.url());
-  return (
-    url.pathname === "/api/v1/me/inbox" &&
-    url.searchParams.get("state") === "dismissed" &&
-    url.searchParams.get("cursor") === (cursor ?? null)
-  );
-}
-
-/** The row ids one page of the read answers, in its order. */
-function pageIds(answer: MeInboxResponse): string[] {
-  return (answer.entries ?? []).flatMap((entry) =>
-    entry.thread === undefined || entry.thread === null ? [] : [replyRowId(entry.thread.thread_id)]
-  );
 }
 
 /** Notes, from the start of every document the page loads, when the first Inbox row is drawn:
@@ -123,14 +112,6 @@ async function expectEmptyInbox(login: string): Promise<void> {
   if (total !== 0) throw new Error(`${login} has ${total} entries in the Inbox before the timing`);
 }
 
-/** The middle of `values`, or the mean of the two middle ones. */
-function median(values: readonly number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  const upper = sorted[middle] ?? Number.NaN;
-  return sorted.length % 2 === 1 ? upper : ((sorted[middle - 1] ?? Number.NaN) + upper) / 2;
-}
-
 /** One row of `within`'s list, by the id its `data-inbox-row` names. */
 function row(within: Page | Locator, id: string): Locator {
   return inboxList(within).locator(`[data-inbox-row="${id}"]`);
@@ -162,63 +143,12 @@ function readWindow(box: Locator): Promise<{ drawn: string[]; loaded: number; sh
   });
 }
 
-/** One frame and one task on, by when the page has drawn what it last read and its focus rescue
- *  has answered a loss. */
-function frameAndTask(page: Page): Promise<void> {
-  return page.evaluate(() => {
-    const done = Promise.withResolvers<void>();
-    requestAnimationFrame(() => setTimeout(done.resolve, 0));
-    return done.promise;
-  });
-}
-
-/** The element holding the focus, named for a failure: the body, or its tag, its accessible name,
- *  and the row or dialog it is in. */
-function focusHolder(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || active === document.body) return "the page's body";
-    const name = (active.getAttribute("aria-label") ?? active.textContent ?? "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 80);
-    const inRow = active.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? "no row";
-    const testId = active.getAttribute("data-testid") ?? "";
-    return `<${active.tagName.toLowerCase()}${testId === "" ? "" : ` data-testid="${testId}"`}> name="${name}" in ${inRow}`;
-  });
-}
-
-/** Whether `target` holds the focus. */
-function holdsFocus(target: Locator): Promise<boolean> {
-  return target.evaluate((node) => node === document.activeElement);
-}
-
 /** The row the focus is in, or null for none. */
 function focusedRow(page: Page): Promise<string | null> {
   return page.evaluate(
     () =>
       document.activeElement?.closest("[data-inbox-row]")?.getAttribute("data-inbox-row") ?? null
   );
-}
-
-/** Presses Tab from where the focus is until `target` holds it, calling `atStop` at each stop
- *  before it. */
-async function tabTo(
-  page: Page,
-  target: Locator,
-  what: string,
-  atStop: () => Promise<void> = async () => {}
-): Promise<void> {
-  // Each read follows a key press whose focus move the browser makes before the press resolves,
-  // and the line after the loop reads the focus again and fails with its holder.
-  for (let pressed = 0; pressed < 120 && !(await holdsFocus(target)); pressed += 1) {
-    await page.keyboard.press("Tab");
-    if (!(await holdsFocus(target))) await atStop();
-  }
-  expect(
-    await holdsFocus(target),
-    `Tab reaches ${what}; the focus is on ${await focusHolder(page)}`
-  ).toBe(true);
 }
 
 /** Scrolls `box` down, as far as a person's scroll goes at a time, until row `id` is no longer
@@ -232,17 +162,6 @@ async function scrollUntilGone(page: Page, within: Page | Locator, box: Locator,
   }
   await expect(row(within, id)).toHaveCount(0);
   return box.evaluate((scroller) => scroller.scrollTop);
-}
-
-/** Picks one choice of the View menu's Show section from the trigger inside `within`, and shuts
- *  the menu again. */
-async function chooseShow(page: Page, within: Page | Locator, label: string): Promise<void> {
-  const trigger = within.getByRole("button", { exact: true, name: "View" });
-  if ((await expandedState("the View menu", trigger)) === "shut") await trigger.click();
-  const menu = page.getByRole("dialog", { name: "View" });
-  await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
-  await expect(menu).toHaveCount(0);
 }
 
 // R7. A person's whole history of dismissals: 5,000 threads, of which the view reads the newest
@@ -395,7 +314,7 @@ test("the Dismissed view draws a window of its rows over thousands dismissed", a
     const back = opened.ids[29] ?? "";
     await row(page, back).locator(`[data-inbox-dismiss="${back}"]`).click();
     await expect(row(page, back)).toHaveCount(0);
-    await chooseShow(page, page, "Inbox");
+    await chooseShow(page, "Inbox");
     await expect(row(page, back)).toBeVisible();
   } finally {
     await bob.close();
@@ -428,14 +347,14 @@ test("a focused row scrolled out of the window is no loss of focus", async ({ br
     // The person tabs to the fifth row's checkbox, and scrolls the list until the window has
     // taken that row away.
     await page.locator("body").focus();
-    await tabTo(page, mark(page, fifth), "the fifth row's checkbox");
+    await tabTo(page, mark(page, fifth), "the fifth row's checkbox", 120);
     const pageAt = await page.evaluate(() => window.scrollY);
     const listAt = await scrollUntilGone(page, page, box, fifth);
     await frameAndTask(page);
     expect(await box.evaluate((scroller) => scroller.scrollTop)).toBe(listAt);
     expect(await page.evaluate(() => window.scrollY)).toBe(pageAt);
-    expect(await focusedRow(page), `the focus is on ${await focusHolder(page)}`).toBeNull();
-    expect(await focusHolder(page)).toBe("the page's body");
+    expect(await focusedRow(page), `the focus is on ${await describeFocus(page)}`).toBeNull();
+    expect(await describeFocus(page)).toBe("the page's body");
 
     // Scrolled back, the row is drawn again.
     await box.evaluate((scroller) => {
@@ -450,13 +369,13 @@ test("a focused row scrolled out of the window is no loss of focus", async ({ br
     await page.keyboard.press("i");
     const peek = drawer(page);
     await expect(peek).toBeVisible();
-    await chooseShow(page, peek, "Dismissed");
+    await chooseShow(page, "Dismissed", peek);
     await expect(row(peek, fifth)).toHaveCount(1);
-    await tabTo(page, mark(peek, fifth), "the fifth row's checkbox in the drawer");
+    await tabTo(page, mark(peek, fifth), "the fifth row's checkbox in the drawer", 120);
     const pageBefore = await page.evaluate(() => window.scrollY);
     const drawerAt = await scrollUntilGone(page, peek, peek, fifth);
     await frameAndTask(page);
-    expect(await holdsFocus(peek), `the focus is on ${await focusHolder(page)}`).toBe(true);
+    expect(await holdsFocus(peek), `the focus is on ${await describeFocus(page)}`).toBe(true);
     expect(await peek.evaluate((scroller) => scroller.scrollTop)).toBe(drawerAt);
     expect(await page.evaluate(() => window.scrollY)).toBe(pageBefore);
     await page.keyboard.press("Escape");
@@ -476,14 +395,15 @@ test("a focused row scrolled out of the window is no loss of focus", async ({ br
     await reread;
     await frameAndTask(page);
     expect((await readWindow(box)).drawn).toEqual(before);
-    expect(await holdsFocus(mark(page, third)), `the focus is on ${await focusHolder(page)}`).toBe(
-      true
-    );
+    expect(
+      await holdsFocus(mark(page, third)),
+      `the focus is on ${await describeFocus(page)}`
+    ).toBe(true);
     expect(await box.evaluate((scroller) => scroller.scrollTop)).toBe(listBefore);
 
     // At each of the row's own stops it stays drawn; once the focus is on the next row's
     // checkbox, the view draws it no more, and the other rows keep their order.
-    await tabTo(page, mark(page, next), "the next row's checkbox", async () => {
+    await tabTo(page, mark(page, next), "the next row's checkbox", 120, async () => {
       if ((await focusedRow(page)) === third) await expect(row(page, third)).toHaveCount(1);
     });
     await expect(row(page, third)).toHaveCount(0);

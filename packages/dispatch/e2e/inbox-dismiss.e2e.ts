@@ -10,7 +10,7 @@ import {
   meInboxThreads,
   patchIssue,
 } from "./api";
-import { openDisplayMenu } from "./filters";
+import { chooseShow } from "./filters";
 import { typeFilterCount } from "./inbox-filter";
 import { inboxList, inboxPane, READING_PANE_WIDTH, selectedRow, selectRow } from "./inbox-pane";
 import {
@@ -27,7 +27,6 @@ import {
 } from "./inbox-threads";
 import { distinctKeys, watchWrites } from "./keyed-writes";
 import { refusePosts, WRITE_REFUSED } from "./sends";
-import { expandedState } from "./settled";
 import { type BrowserContext, expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -159,15 +158,6 @@ async function seenReplies(): Promise<Record<string, InboxDismissSeen>> {
           : { version: row.version },
       ])
   );
-}
-
-/** Picks one choice of the **View** menu's **Show** section and shuts the menu again. */
-async function chooseShow(page: Page, label: string): Promise<void> {
-  const menu = await openDisplayMenu(page);
-  const trigger = page.getByRole("button", { exact: true, name: "View" });
-  await menu.getByRole("group", { name: "Show" }).getByRole("radio", { name: label }).click();
-  if ((await expandedState("the View menu", trigger)) === "open") await trigger.click();
-  await expect(menu).toHaveCount(0);
 }
 
 // ---------------------------------------------------------------------------

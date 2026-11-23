@@ -68,7 +68,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { listedReplies } from "../conversation/conversation-model";
-import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
+import { deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -99,7 +99,7 @@ import { type NeedsYouBySession, tallyBySession } from "./ask-tally";
 import { deliveryAttempts } from "./attempts";
 import { BroadcastComposer } from "./BroadcastComposer";
 import { BroadcastSends, useBroadcastQueue } from "./BroadcastSends";
-import { useBroadcastComposition } from "./broadcast-composition";
+import { compositionDelivery, useBroadcastComposition } from "./broadcast-composition";
 import { composedBroadcast } from "./broadcast-plan";
 import { EndedAgentsWithReplies } from "./EndedAgentsWithReplies";
 import { agentReplyTo } from "./exchange-delivery";
@@ -1424,14 +1424,8 @@ export function AgentsPage(): ReactNode {
   // while another is begun.
   const composition = useBroadcastComposition();
   const { draft, selected, setSelected } = composition;
-  // Until the sender picks a mode, the broadcast goes in the one its selection takes: BTW, or
-  // Aside when a selected session takes Aside and not BTW.
-  const defaultDelivery = broadcastDelivery(
-    agents.flatMap((agent) => (selected.has(agent.session_id) ? [agent.capabilities ?? []] : []))
-  );
-  // A restored request is re-sent word for word until an edit drops it, so its own mode is the one
-  // the page shows and sends while it is held.
-  const delivery = composition.restored?.input.delivery ?? composition.delivery ?? defaultDelivery;
+  // The mode the page shows and sends (`compositionDelivery`).
+  const delivery = compositionDelivery(composition, agents);
   const composing = draft.trim() !== "" || selected.size > 0;
   const queue = useBroadcastQueue(composing);
   const restoreRefusal = composing

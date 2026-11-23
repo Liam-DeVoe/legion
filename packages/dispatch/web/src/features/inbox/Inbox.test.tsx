@@ -8883,7 +8883,7 @@ describe("the approval mark", () => {
 });
 
 // ----------------------------------------------------------------------------------------
-// The Dismissed view's window (R7, the plan's ST4). The view draws the loaded rows near sight
+// The Dismissed view's window (R7). The view draws the loaded rows near sight
 // and twelve more above and below them, out of every row it has loaded. happy-dom lays nothing
 // out and scrolls nothing, so each case lays the rows down the box they scroll in
 // (`layDismissedRows`) and makes each scroll itself, as a browser reports one
@@ -9090,7 +9090,7 @@ function renderDismissed(where: "drawer" | "page", address = "/?show=dismissed")
 }
 
 describe("the Dismissed window", () => {
-  // ST4 row 1, in the spec's words: a focused row the person scrolls out of the window is no
+  // In the spec's words: a focused row the person scrolls out of the window is no
   // loss. The window takes the row's element away, and the page's rescue, which read the row out
   // of sight on that scroll before the window took it, moves the focus nowhere and scrolls
   // nothing.
@@ -9124,7 +9124,7 @@ describe("the Dismissed window", () => {
     }
   });
 
-  // ST4 row 2: the same scroll in the drawer, a modal dialog, which takes the focus itself so the
+  // The same scroll in the drawer, a modal dialog, which takes the focus itself so the
   // page behind it is never reached, with no scroll.
   test("in the drawer, a focused row scrolled out of the window leaves the focus on the drawer itself, with no scroll", async () => {
     const reads = answerDismissedPages(() => [dismissedThreads(60)]);
@@ -9156,7 +9156,7 @@ describe("the Dismissed window", () => {
     }
   });
 
-  // ST4 row 3: the row the window took away is one of the loaded rows still, so the scroll back
+  // The row the window took away is one of the loaded rows still, so the scroll back
   // draws it again, in its place among the others.
   test("a row scrolled out of the window is drawn again when the person scrolls back", async () => {
     const narrow = widenToReadingPane();
@@ -9179,7 +9179,7 @@ describe("the Dismissed window", () => {
     }
   });
 
-  // ST4 row 4, in the spec's words: a row a live update takes away while it is the row under the
+  // In the spec's words: a row a live update takes away while it is the row under the
   // hand stays drawn in its place while it stays the row under the hand. The focus inside it
   // stays there, and nothing scrolls, because the person did not cause that loss. Once that row
   // is no longer the row under the hand, the view draws it no more.
@@ -9224,7 +9224,7 @@ describe("the Dismissed window", () => {
     }
   });
 
-  // ST4 row 5: the row in hand is always drawn. `j` from the last row the window draws selects a
+  // The row in hand is always drawn. `j` from the last row the window draws selects a
   // row it does not draw, and the window scrolls to that row and draws it in view.
   test("`j` from the row in hand at the window's end draws the next row and brings it into view", async () => {
     const narrow = widenToReadingPane();
@@ -9264,7 +9264,7 @@ describe("the Dismissed window", () => {
     }
   });
 
-  // ST4 row 6: the window reads the next page itself once it reaches the last loaded row, with
+  // The window reads the next page itself once it reaches the last loaded row, with
   // the cursor the first page answered, and once only.
   test("a scroll that brings the window to the end of the loaded rows reads the next page once, with the first page's cursor", async () => {
     const narrow = widenToReadingPane();

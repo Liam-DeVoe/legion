@@ -7,7 +7,7 @@ import {
   editArtifact,
   meInboxThreads,
 } from "./api";
-import { inboxList, inboxPane } from "./inbox-pane";
+import { inboxList, inboxPane, selectRow } from "./inbox-pane";
 import { asSession, holdReadMarks, replyRowId } from "./inbox-threads";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -45,13 +45,6 @@ const LONG_PARAGRAPH = [
 /** The project document's one paragraph. */
 const DOCUMENT_QUOTE = "three attempts per lease";
 const DOCUMENT_LINE = `The replay budget is ${DOCUMENT_QUOTE}, and then the mirror gives up.`;
-
-/** Selects a row the way the pointer does: the click lands on the row's own time. */
-async function selectRow(page: Page, id: string): Promise<void> {
-  const row = inboxList(page).locator(`[data-inbox-row="${id}"]`);
-  await row.locator("time").first().click();
-  await expect(row).toHaveAttribute("data-inbox-selected", "true");
-}
 
 /** Where the mark stands against the box the pane scrolls in, as the reader sees it: `inside`
  *  says whether it stands wholly inside, and the numbers say where each edge is, for a failure

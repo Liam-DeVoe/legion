@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { beginAnswerHold } from "./focus-place";
 
 /**
@@ -53,4 +54,44 @@ export function useHeldThroughAnswer(pending: boolean): boolean {
   const held = pending || answering;
   useEffect(() => (held ? beginAnswerHold() : undefined), [held]);
   return held;
+}
+
+/**
+ * Whether a press's hold still stands, for a control held past its write's landing until a read
+ * comes back: a held Send in an Inbox, where the reader's own answer or reply takes its row away
+ * once the Inbox is read again (the own-answer rule, R1). The hold stands from the press, made at
+ * `pressedAt` (0 before any, which holds nothing), and once that press's write has `landed`, until
+ * the read `read` answers has come back. `read` is called once, at the landing. The hold ends at
+ * the latest at the write deadline from the press (`SEND_DEADLINE_MS`), whatever became of the
+ * write. The caller holds only while its write is out or has landed, so a refusal ends the hold at
+ * once.
+ */
+export function useHeldUntilRead(
+  pressedAt: number,
+  landed: boolean,
+  read: () => PromiseLike<unknown>
+): boolean {
+  const [pastDeadline, setPastDeadline] = useState(0);
+  const [readBackFor, setReadBackFor] = useState(0);
+  const readRef = useRef(read);
+  readRef.current = read;
+  useEffect(() => {
+    if (pressedAt === 0) return;
+    const bound = window.setTimeout(
+      () => setPastDeadline(pressedAt),
+      pressedAt + SEND_DEADLINE_MS - Date.now()
+    );
+    return () => window.clearTimeout(bound);
+  }, [pressedAt]);
+  // The landing whose read has come back: the hold runs from the landing's own render until then,
+  // with no render between them that lets go.
+  const landedAt = landed ? pressedAt : 0;
+  useEffect(() => {
+    if (landedAt === 0) return;
+    const back = () => setReadBackFor(landedAt);
+    readRef.current().then(back, back);
+  }, [landedAt]);
+  return (
+    pressedAt !== 0 && pressedAt !== pastDeadline && (landedAt === 0 || readBackFor !== landedAt)
+  );
 }

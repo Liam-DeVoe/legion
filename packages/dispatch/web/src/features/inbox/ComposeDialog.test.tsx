@@ -217,7 +217,7 @@ function outcomeOf(session: string): string {
   return row?.textContent ?? "(no outcome drawn)";
 }
 
-// ST3 row 6: a send the server refuses gives Send back enabled with its error, and the form stays
+// A send the server refuses gives Send back enabled with its error, and the form stays
 // with what the person wrote, for a broadcast and for a send to one.
 test("a refused send gives Send back with its error", async () => {
   const user = userEvent.setup();
@@ -262,7 +262,7 @@ test("a refused send gives Send back with its error", async () => {
   }
 });
 
-// ST3 row 7: once a broadcast's answer lands, the outcomes take the form's place with Done first,
+// Once a broadcast's answer lands, the outcomes take the form's place with Done first,
 // and the page's rescue puts the focus on Done. The dialog holds its Send through the answer
 // (`useHeldThroughAnswer`), so the press is still live as Send goes with the form.
 test("the focus goes to Done once a broadcast's answer lands", async () => {
@@ -289,7 +289,7 @@ test("the focus goes to Done once a broadcast's answer lands", async () => {
   }
 });
 
-// ST3 row 11: the outcomes are drawn from the answer first, and redrawn from the send's own read
+// The outcomes are drawn from the answer first, and redrawn from the send's own read
 // once it answers a state the answer did not: a broadcast's from GET /api/v1/broadcasts/{id},
 // where a copy taken reads sent, one stored reads stored for later, and one refused reads failed
 // with its error; and a message's to one session from GET /api/v1/messages/{id}, where a session
@@ -324,7 +324,7 @@ test("an outcome follows the delivery read after the answer", async () => {
     );
     await waitFor(() => expect(outcomeOf("planner-session")).toContain("Sent"));
     expect(outcomeOf("reviewer-session")).toContain(
-      "Stored for later: it reaches the session when it runs again"
+      "Stored for later: the session is stopped; it gets the message if it runs again within 72 hours"
     );
     expect(outcomeOf("builder-session")).toContain(`Failed: ${refusedCopy}`);
     expect(getBroadcast).toHaveBeenCalledWith("broadcast-1");
@@ -347,7 +347,7 @@ test("an outcome follows the delivery read after the answer", async () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
     await screen.findByRole("region", { name: "Where your message went" });
     expect(outcomeOf("planner-session")).toContain(
-      "Stored for later: it reaches the session when it runs again"
+      "Stored for later: the session is stopped; it gets the message if it runs again within 72 hours"
     );
     messageRead.resolve({
       message: message("planner-session", body, [attempt("planner-session", "failed", failure)]),
@@ -364,7 +364,7 @@ test("an outcome follows the delivery read after the answer", async () => {
   }
 });
 
-// ST3 row 12: a follow-up read that fails keeps the outcomes the answer gave, with the read's
+// A follow-up read that fails keeps the outcomes the answer gave, with the read's
 // error beside them, and Done still closes the dialog: the message's read, the broadcast's read,
 // and the read of the comment that mentions the session where an issue was picked.
 test("a failed delivery read keeps the answer's outcomes", async () => {
@@ -382,7 +382,7 @@ test("a failed delivery read keeps the answer's outcomes", async () => {
     await screen.findByRole("region", { name: "Where your message went" });
     await screen.findByText(/Could not read where it went since: the read broke\./);
     expect(outcomeOf("planner-session")).toContain(
-      "Stored for later: it reaches the session when it runs again"
+      "Stored for later: the session is stopped; it gets the message if it runs again within 72 hours"
     );
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(dialog.onClose).toHaveBeenCalledTimes(1);
@@ -406,7 +406,7 @@ test("a failed delivery read keeps the answer's outcomes", async () => {
     expect(getBroadcast).toHaveBeenCalledWith("broadcast-1");
     for (const session of ["planner-session", "reviewer-session"]) {
       expect(outcomeOf(session)).toContain(
-        "Stored for later: it reaches the session when it runs again"
+        "Stored for later: the session is stopped; it gets the message if it runs again within 72 hours"
       );
     }
     await user.click(screen.getByRole("button", { name: "Done" }));
@@ -466,7 +466,7 @@ async function failToTheDeadline(): Promise<void> {
 
 const stoppedText = new SendStoppedError().message;
 
-// ST3 row 13: a send still out at the write deadline is late. The press's hold ends there, the
+// A send still out at the write deadline is late. The press's hold ends there, the
 // dialog says the send is still being tried, and Stop trying gives Send back enabled with what
 // stopped it, for a send to one and for a broadcast.
 test("Send's hold ends at the write deadline", async () => {

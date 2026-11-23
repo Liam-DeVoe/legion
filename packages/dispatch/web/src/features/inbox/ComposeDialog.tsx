@@ -2,7 +2,7 @@ import { type MutationKey, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useRef, useState } from "react";
 
 import { api } from "../../api/client";
-import { agentConversationQuery } from "../../api/queries";
+import { agentConversationQuery, broadcastQuery } from "../../api/queries";
 import type {
   Agent,
   BroadcastCreated,
@@ -31,7 +31,7 @@ import {
 } from "../../theme/classes";
 import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { BroadcastComposer } from "../agents/BroadcastComposer";
-import { useBroadcastComposition } from "../agents/broadcast-composition";
+import { compositionDelivery, useBroadcastComposition } from "../agents/broadcast-composition";
 import { type BroadcastRequest, composedBroadcast } from "../agents/broadcast-plan";
 import {
   type BroadcastSend,
@@ -39,7 +39,7 @@ import {
   defineBroadcastKind,
   keptBroadcastInput,
 } from "../agents/broadcast-queue";
-import { broadcastDelivery, deliveryOutcomeState } from "../conversation/delivery";
+import { deliveryOutcomeState, queuedWait } from "../conversation/delivery";
 import { DiscardDraftPrompt } from "../conversation/MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { useAgents } from "../conversation/useAgents";
@@ -85,14 +85,15 @@ type Outcome =
   | { readonly kind: "failed"; readonly error: string }
   | { readonly kind: "left out"; readonly reason: string };
 
-/** The words of an outcome. A session that is not running gets the message when it runs again,
- *  which is what Dispatch stores it for. */
+/** The words of an outcome. A session that is not running gets the message if it runs again
+ *  while the stream still keeps it, which is what Dispatch stores it for: said in the words the
+ *  Agents page gives a queued attempt (`queuedWait`), with their time limit. */
 function outcomeWords(outcome: Outcome): string {
   switch (outcome.kind) {
     case "sent":
       return "Sent";
     case "stored":
-      return "Stored for later: it reaches the session when it runs again";
+      return `Stored for later: the session ${queuedWait}`;
     case "on its way":
       return "On its way";
     case "failed":
@@ -167,12 +168,10 @@ function SentOutcomes({ onDone, sent }: { onDone: () => void; sent: Sent }): Rea
     queryKey: [...agentConversationQuery(one?.sessionId ?? "").queryKey, "message", messageId],
   });
   const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
-  // The Agents page's broadcast page reads the same key, which every issue-less message event
-  // refreshes.
+  // The Agents page's broadcast page reads the same key (`broadcastQuery`).
   const broadcast = useQuery({
+    ...broadcastQuery(broadcastId ?? ""),
     enabled: broadcastId !== undefined,
-    queryFn: () => api.getBroadcast(broadcastId ?? ""),
-    queryKey: ["broadcast", broadcastId],
   });
 
   let rows: OutcomeRow[];
@@ -246,14 +245,15 @@ function SentOutcomes({ onDone, sent }: { onDone: () => void; sent: Sent }): Rea
 type RecipientState = "running" | "stored" | "unlisted" | "unlisted alone" | "unknown";
 
 /** The words of a recipient's state before Send. The registry's own mark says an unresponsive
- *  session's state only in a tooltip, so what the server does with the message is said here. A
+ *  session's state only in a tooltip, so what the server does with the message is said here, in
+ *  the words the Agents page gives a queued attempt (`queuedWait`), with their time limit. A
  *  session the registry does not list may be stopped, and then the Envoy listener knows it and
  *  the message is stored for it, or the listener may not know it at all; only the server can tell
  *  the two apart. So its words name both outcomes, and the outcome after Send says which it was.
  *  A send to one is no broadcast and leaves nobody out, so only the first applies to it. */
 const STATE_WORDS: Record<RecipientState, string> = {
   running: "Running",
-  stored: "Not running: the message is stored and reaches it when it runs again",
+  stored: `Not running: the message is stored. The session ${queuedWait}`,
   unknown: "Running state unknown",
   unlisted:
     "Not listed: the message is stored for it if the Envoy listener knows it; otherwise the send leaves it out",
@@ -274,8 +274,9 @@ const STATE_WORDS: Record<RecipientState, string> = {
  * Send is held by `aria-disabled` until the server answers; on an error it comes back with the
  * error. The answer draws each recipient's outcome in the place of the form, with Done first, so
  * the page's rescue hands the focus to Done (`controlsInPlace`). Done closes the dialog, and
- * `useDialog` gives the focus back to what opened it: the New message control, the row in hand,
- * or the page's body where nothing had it. Mounted only while open, so it starts fresh each time.
+ * `useDialog` gives the focus back to what opened it: the New message control, the row that held
+ * the focus, or the page's body where nothing had it. Mounted only while open, so it starts fresh
+ * each time.
  */
 export function ComposeDialog({ onClose }: { onClose: () => void }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose: () => closeOrAsk(), open: true });
@@ -330,8 +331,8 @@ export function ComposeDialog({ onClose }: { onClose: () => void }): ReactNode {
       : rows.find((row) => ofKind(row, composeBroadcast) !== undefined && row.key === out)
   );
   // The press's hold on what answers it (`useHeldThroughAnswer`) ends at the write deadline from
-  // the press at the latest, as R1's held Send's does: a send still out past it is still being
-  // tried under its key, which the dialog then says, with Stop trying.
+  // the press at the latest, as a held Send's does (`MentionComposer`'s `heldSend`): a send still
+  // out past it is still being tried under its key, which the dialog then says, with Stop trying.
   const pastDeadline = out !== null && outWrite?.status === "late";
   useHeldThroughAnswer(out !== null && !pastDeadline);
 
@@ -339,12 +340,8 @@ export function ComposeDialog({ onClose }: { onClose: () => void }): ReactNode {
   const oneSendKey = composeSendKey(one ?? "");
   const oneHold = useSending(oneSendKey);
   const selected = composition.selected;
-  const defaultDelivery = broadcastDelivery(
-    agents.flatMap((agent) => (selected.has(agent.session_id) ? [agent.capabilities ?? []] : []))
-  );
-  // A refused request is sent again word for word until an edit drops it, so its own mode is the
-  // one the dialog shows and sends while it is held, as on the Agents page.
-  const delivery = composition.restored?.input.delivery ?? composition.delivery ?? defaultDelivery;
+  // The mode the dialog shows and sends, by the Agents page's rule (`compositionDelivery`).
+  const delivery = compositionDelivery(composition, agents);
   const composed = composedBroadcast({ ...composition, delivery }, { agents, current, refilling });
 
   // The Agents page's rule (`liveExclusion`): a session the registry does not list is never left

@@ -597,10 +597,11 @@ func (s *server) createStoredMessage(
 		// A person's reply under an Agent thread dismisses it for them (inboxwrite's step 6), so its
 		// root is taken `for update` first, before this reply's insert, whose foreign key holds its
 		// parent `for key share`: taken after that, the lock would be an upgrade that can deadlock
-		// against the dismiss route, which takes the root before the person's rows (D6, the lock
-		// order on markInboxReadThreads, api/inbox_read.go).
+		// against the dismiss route, which takes the root before the person's rows with this same
+		// statement (inboxDismissLockAgentRoots; D6, the lock order on markInboxReadThreads,
+		// api/inbox_read.go).
 		if root, dismisses := recording.AgentDismissal(); dismisses {
-			b.Queue("", `select 1 from messages where id = $1::uuid for update`, root)
+			b.Queue("", inboxDismissLockAgentRoots, []string{root})
 		}
 		if block != nil {
 			queueReplyParentMessageLock(b, parent.ID)

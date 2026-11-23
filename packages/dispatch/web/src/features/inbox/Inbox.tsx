@@ -20,6 +20,7 @@ import type { MyReplyRow, OpenAskRow } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
 import { controlPadding } from "../../components/control-names";
+import { WINDOW_OVERSCAN } from "../../components/DataTable";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import { type FilterChip, filterChips } from "../../components/filter-chips";
@@ -73,7 +74,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { type KeyBinding, type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
-import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
+import { closestMatching, focusedMatching, roveFocus, roveIndex } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { THREAD_ORDER_LABELS, THREAD_ORDERS, useThreadOrder } from "../threads/thread-order";
@@ -1042,10 +1043,6 @@ function InboxAskWrites({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
-/** How many rows the Dismissed view draws past the rows in sight, above them and below them: the
- *  one window size the app holds (`DataTable`'s `overscan`). */
-const DISMISSED_OVERSCAN = 12;
-
 /** The space between two rows of the Dismissed list, in pixels: its `gap-3`. */
 const DISMISSED_ROW_GAP = 12;
 
@@ -1080,7 +1077,7 @@ interface DismissedWindowProps {
 }
 
 /**
- * The Dismissed view's rows, drawn as a window: the rows in sight and `DISMISSED_OVERSCAN` more
+ * The Dismissed view's rows, drawn as a window: the rows in sight and `WINDOW_OVERSCAN` more
  * above and below them, out of every row the view has loaded. A person can have thousands of
  * dismissed threads, and drawing every loaded row made the view slower with each page. The rows
  * stay the view's own `<li>`s in its own `<ul>`, with the virtualizer `DataTable` uses.
@@ -1097,20 +1094,25 @@ function DismissedWindow(props: DismissedWindowProps): ReactNode {
   );
 }
 
-/** The window over rows the page itself scrolls. */
-function DismissedPageWindow(props: DismissedWindowProps): ReactNode {
-  const [margin, setMargin] = useState(0);
-  const virtualizer = useWindowVirtualizer({
+/** What both windows ask of their virtualizer: the loaded rows, each keyed by its row, and
+ *  `margin`, where the list starts in what the window scrolls (`DismissedRows`). */
+function dismissedWindowOptions(props: DismissedWindowProps, margin: number) {
+  return {
     count: props.rows.length,
     estimateSize: () => props.rowHeight,
     gap: DISMISSED_ROW_GAP,
-    getItemKey: (index) => (props.rows[index] === undefined ? index : rowId(props.rows[index])),
-    overscan: DISMISSED_OVERSCAN,
+    getItemKey: (index: number) =>
+      props.rows[index] === undefined ? index : rowId(props.rows[index]),
+    overscan: WINDOW_OVERSCAN,
     scrollMargin: margin,
-  });
-  return (
-    <DismissedRows {...props} margin={margin} onMargin={setMargin} virtualizer={virtualizer} />
-  );
+  };
+}
+
+/** The window over rows the page itself scrolls. */
+function DismissedPageWindow(props: DismissedWindowProps): ReactNode {
+  const [margin, setMargin] = useState(0);
+  const virtualizer = useWindowVirtualizer(dismissedWindowOptions(props, margin));
+  return <DismissedRows {...props} onMargin={setMargin} virtualizer={virtualizer} />;
 }
 
 /** The window over rows a box scrolls. */
@@ -1119,27 +1121,21 @@ function DismissedBoxWindow(
 ): ReactNode {
   const [margin, setMargin] = useState(0);
   const virtualizer = useVirtualizer({
-    count: props.rows.length,
-    estimateSize: () => props.rowHeight,
-    gap: DISMISSED_ROW_GAP,
-    getItemKey: (index) => (props.rows[index] === undefined ? index : rowId(props.rows[index])),
+    ...dismissedWindowOptions(props, margin),
     getScrollElement: () => props.box.current,
-    overscan: DISMISSED_OVERSCAN,
-    scrollMargin: margin,
   });
-  return (
-    <DismissedRows {...props} margin={margin} onMargin={setMargin} virtualizer={virtualizer} />
-  );
+  return <DismissedRows {...props} onMargin={setMargin} virtualizer={virtualizer} />;
 }
 
 /**
  * The drawn part of the window, and what keeps it right.
  *
  * The list starts below whatever the box or the page draws above it, so where it starts is read
- * after each commit (`margin`). The row in hand is always drawn: a step of `j` or `k` to a row
- * the window does not draw scrolls the window to it first, and the row takes the focus, or the
- * selection, once it is drawn. The next page is read once the window reaches the last loaded
- * row, one request for each number of loaded rows; **Show more** still reads it by key.
+ * after each commit and handed to the window (`onMargin`), whose virtualizer counts its rows from
+ * it (`scrollMargin`). The row in hand is always drawn: a step of `j` or `k` to a row the window
+ * does not draw scrolls the window to it first, and the row takes the focus, or the selection,
+ * once it is drawn. The next page is read once the window reaches the last loaded row, one
+ * request for each number of loaded rows; **Show more** still reads it by key.
  *
  * A focused row the person scrolls out of the window is no loss. The page's focus rescue reads
  * the row out of sight from its capture-phase scroll listener, before the virtualizer's own
@@ -1152,14 +1148,12 @@ function DismissedRows({
   box,
   hand,
   handle,
-  margin,
   onMargin,
   onNearEnd,
   renderRow,
   rows,
   virtualizer,
 }: DismissedWindowProps & {
-  readonly margin: number;
   readonly onMargin: (margin: number) => void;
   readonly virtualizer: Virtualizer<HTMLElement, Element> | Virtualizer<Window, Element>;
 }): ReactNode {
@@ -1195,7 +1189,7 @@ function DismissedRows({
       scroller === null
         ? top + window.scrollY
         : top - scroller.getBoundingClientRect().top + scroller.scrollTop;
-    if (Math.abs(start - margin) >= 1) onMargin(start);
+    if (Math.abs(start - virtualizer.options.scrollMargin) >= 1) onMargin(start);
   });
 
   // A row a step asked for takes the focus once it is drawn, with no scroll of its own: the
@@ -1614,13 +1608,7 @@ function InboxBody({
     }
     const ids = presented.current.map(({ row }) => rowId(row));
     const current = rowAround(document.activeElement)?.dataset.inboxRow;
-    const at = current === undefined ? -1 : ids.indexOf(current);
-    const next =
-      at === -1
-        ? delta === 1
-          ? 0
-          : ids.length - 1
-        : Math.max(0, Math.min(ids.length - 1, at + delta));
+    const next = roveIndex(ids.length, current === undefined ? -1 : ids.indexOf(current), delta);
     const id = ids[next];
     if (id !== undefined) dismissedWindow.current?.focusRow(id, next);
   };

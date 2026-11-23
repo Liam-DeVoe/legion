@@ -23,7 +23,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
-import { useHeldThroughAnswer } from "../../components/held-press";
+import { useHeldThroughAnswer, useHeldUntilRead } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -72,7 +72,7 @@ import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -490,29 +490,13 @@ export function AskCard({
   // every control the card refuses is.
   const queryClient = useQueryClient();
   const inInbox = useContext(AskAnswerWritesContext) !== undefined;
-  const answerPressedAt = mutation.submittedAt;
-  const answerLandedAt = mutation.isSuccess ? answerPressedAt : 0;
-  const [answerPastDeadline, setAnswerPastDeadline] = useState(0);
-  useEffect(() => {
-    if (!inInbox || answerPressedAt === 0) return;
-    const bound = window.setTimeout(
-      () => setAnswerPastDeadline(answerPressedAt),
-      answerPressedAt + SEND_DEADLINE_MS - Date.now()
-    );
-    return () => window.clearTimeout(bound);
-  }, [answerPressedAt, inInbox]);
-  // The landing whose reads of the Inbox have come back: the hold runs from the landing's own
-  // render until then, with no render between them that lets go.
-  const [readBackFor, setReadBackFor] = useState(0);
-  useEffect(() => {
-    if (!inInbox || answerLandedAt === 0) return;
-    void meInboxReadsBack(queryClient).then(() => setReadBackFor(answerLandedAt));
-  }, [answerLandedAt, inInbox, queryClient]);
+  const answerHoldStands = useHeldUntilRead(
+    inInbox ? mutation.submittedAt : 0,
+    mutation.isSuccess,
+    () => meInboxReadsBack(queryClient)
+  );
   const answerHeld =
-    !waitsForRead &&
-    inInbox &&
-    answerPressedAt !== answerPastDeadline &&
-    (mutation.isPending || (answerLandedAt !== 0 && readBackFor !== answerLandedAt));
+    !waitsForRead && (mutation.isPending || mutation.isSuccess) && answerHoldStands;
   useHeldThroughAnswer(answerHeld);
   answerTakesRow.current = inInbox && (mutation.isPending || mutation.isSuccess);
   // What a refused control is drawn from, recorded while rendering as the landing is, in the

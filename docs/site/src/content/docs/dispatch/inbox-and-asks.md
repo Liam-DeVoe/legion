@@ -296,8 +296,8 @@ Pick the recipients in **Recipients**. The list holds the live sessions, and its
 them as you type. Under the list, each recipient shows its state before you send:
 
 - **Running**: the session is live.
-- **Not running**: the session has missed its heartbeats. The message is stored and reaches it
-  when it runs again.
+- **Not running**: the session has missed its heartbeats. The message is stored, and the session
+  gets it if it runs again within 72 hours, as the Agents page says of a queued message.
 - **Not listed**: the live list does not hold the session. It may be stopped, and then the Envoy
   listener knows it and the message is stored for it. Or the listener may not know it at all,
   and then a message to two or more leaves it out. Only the server can tell the two apart, so

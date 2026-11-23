@@ -50,6 +50,10 @@ import { reorder, type TableLayoutModel } from "./table-layout";
  *  a column's definition into what the row shows. */
 export { flexRender };
 
+/** How many rows a windowed list draws past the rows in sight, above them and below them: the one
+ *  window size the app holds, the table's and the Inbox's Dismissed view's. */
+export const WINDOW_OVERSCAN = 12;
+
 const EMPTY_COUNTS: ReadonlyMap<string, number> = new Map();
 const NO_SELECTION: RowSelectionState = {};
 const NONE_UNLOADED: readonly string[] = [];
@@ -290,7 +294,7 @@ export function useDataTable<Row>({
     getItemKey: (index) =>
       `${displayRows[index]?.continued ? "continued-" : ""}${displayRows[index]?.row.id}`,
     initialRect: { width: 1000, height: 600 },
-    overscan: 12,
+    overscan: WINDOW_OVERSCAN,
   });
 
   const focusRow = useRowKeymap({

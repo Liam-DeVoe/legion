@@ -1,7 +1,9 @@
 import { INBOX_DISMISSED_PAGE } from "@legion/contracts";
+import type { Response } from "@playwright/test";
 
+import type { MeInboxResponse } from "../web/src/api/types";
 import { dismissInbox, getMeInbox } from "./api";
-import { seedBulkReplyThreads } from "./inbox-threads";
+import { replyRowId, seedBulkReplyThreads } from "./inbox-threads";
 
 /**
  * The reader's dismissed threads at a person's scale: thousands of them, seeded in one batch.
@@ -60,4 +62,22 @@ export async function countDismissedThreads(login = "alice"): Promise<number> {
     cursor = page.next_cursor ?? undefined;
   } while (cursor !== undefined);
   return counted;
+}
+
+/** Whether `response` answers a read of the Dismissed view's pages: the first, or with `cursor`
+ *  the page that cursor names. */
+export function isDismissedPage(response: Response, cursor?: string): boolean {
+  const url = new URL(response.url());
+  return (
+    url.pathname === "/api/v1/me/inbox" &&
+    url.searchParams.get("state") === "dismissed" &&
+    url.searchParams.get("cursor") === (cursor ?? null)
+  );
+}
+
+/** The row ids one page of the Dismissed view's read answers, in its order. */
+export function pageIds(answer: MeInboxResponse): string[] {
+  return (answer.entries ?? []).flatMap((entry) =>
+    entry.thread === undefined || entry.thread === null ? [] : [replyRowId(entry.thread.thread_id)]
+  );
 }

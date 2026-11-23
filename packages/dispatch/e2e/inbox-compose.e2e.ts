@@ -18,6 +18,7 @@ import {
   replyToMessageDelivery,
 } from "./api";
 import { controlRow, listTrigger } from "./filters";
+import { describeFocus, frameAndTask, holdsFocus } from "./focus";
 import { inboxList, inboxPane } from "./inbox-pane";
 import { agentRowId, seedAgentThread } from "./inbox-threads";
 import { keyedWrite } from "./keyed-writes";
@@ -117,16 +118,6 @@ async function untilRegistryReads(page: Page, check: () => Promise<void>): Promi
   }).toPass({ timeout: REGISTRY_MS });
 }
 
-/** One frame and one task on, by when the page has drawn what it last read and its rescue has
- *  placed the focus. */
-function frameAndTask(page: Page): Promise<void> {
-  return page.evaluate(() => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    requestAnimationFrame(() => setTimeout(resolve, 0));
-    return promise;
-  });
-}
-
 /** Takes the focus off whatever holds it, so the next key is pressed with nothing focused. */
 function blurFocus(page: Page): Promise<void> {
   return page.evaluate(() => {
@@ -139,24 +130,6 @@ function isCommentInput(body: unknown): body is { body: string } {
   return (
     typeof body === "object" && body !== null && "body" in body && typeof body.body === "string"
   );
-}
-
-/** Whether `target` holds the focus. */
-function holdsFocus(target: Locator): Promise<boolean> {
-  return target.evaluate((node) => node === document.activeElement);
-}
-
-/** The element holding the focus, named for a failure. */
-function focusHolder(page: Page): Promise<string> {
-  return page.evaluate(() => {
-    const active = document.activeElement;
-    if (!(active instanceof HTMLElement) || active === document.body) return "the page's body";
-    const name = (active.getAttribute("aria-label") ?? active.textContent ?? "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 80);
-    return `<${active.tagName.toLowerCase()}> name="${name}"`;
-  });
 }
 
 /** Every write the page sends to an agent from here on: each message to one session and each
@@ -228,7 +201,7 @@ function outcomeWordsIn(read: BroadcastCreated, sessionId: string): string {
     case "pending":
       return "On its way";
     case "queued":
-      return "Stored for later: it reaches the session when it runs again";
+      return "Stored for later: the session is stopped; it gets the message if it runs again within 72 hours";
     case "failed":
       return `Failed: ${attempt.error ?? "no reason was recorded"}`;
     default:
@@ -465,7 +438,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
     });
     await expect(stateOf(page, running.session_id)).toHaveText(/·\s*Running$/);
     await expect(stateOf(page, stalled.session_id)).toContainText(
-      "Not running: the message is stored and reaches it when it runs again"
+      "Not running: the message is stored. The session is stopped; it gets the message if it runs again within 72 hours"
     );
     // Three recipients: the broadcast composer's fields, and no Issue picker.
     await expect(listTrigger(dialog, "Delivery mode")).toBeVisible();
@@ -511,7 +484,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
     await page.unroute(/\/api\/v1\/broadcasts\/[^/]+$/);
     await expect(outcomeOf(page, running.session_id)).toContainText("Sent");
     await expect(outcomeOf(page, stalled.session_id)).toContainText(
-      "Stored for later: it reaches the session when it runs again"
+      "Stored for later: the session is stopped; it gets the message if it runs again within 72 hours"
     );
     await expect(outcomeOf(page, unknown.session_id)).toContainText("Left out: no live session");
     await dialog.getByRole("button", { name: "Done" }).click();
@@ -555,7 +528,7 @@ test("the compose dialog shows where a message to each agent went", async ({ bro
     ]);
     const queuedOutcome = outcomeOf(page, unknown.session_id);
     await expect(queuedOutcome).toContainText(
-      "Stored for later: it reaches the session when it runs again"
+      "Stored for later: the session is stopped; it gets the message if it runs again within 72 hours"
     );
     await expect(queuedOutcome).toContainText(unknown.session_id);
     expect(await queuedOutcome.textContent()).not.toContain("Left out");
@@ -659,11 +632,11 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
       await page.keyboard.press("Enter");
     };
 
-    // The hand on a row, then `n`.
+    // `j` puts a row in hand, then `n`.
     await blurFocus(page);
     await page.keyboard.press("j");
     const inHand = rows.first();
-    expect(await holdsFocus(inHand), `the focus after j is on ${await focusHolder(page)}`).toBe(
+    expect(await holdsFocus(inHand), `the focus after j is on ${await describeFocus(page)}`).toBe(
       true
     );
     const scrolled = await page.evaluate(() => window.scrollY);
@@ -686,7 +659,7 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
     await expect(send).toHaveAttribute("aria-disabled", "true");
     expect(
       await holdsFocus(send),
-      `while the send is out the focus is on ${await focusHolder(page)}`
+      `while the send is out the focus is on ${await describeFocus(page)}`
     ).toBe(true);
     await (await answer).finished();
     await frameAndTask(page);
@@ -699,16 +672,17 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
     const done = dialog.getByRole("button", { name: "Done" });
     expect(
       await holdsFocus(done),
-      `once the answer landed the focus is on ${await focusHolder(page)}`
+      `once the answer landed the focus is on ${await describeFocus(page)}`
     ).toBe(true);
     await page.unroute(`**/api/v1/agents/${builder.session_id}/messages`);
 
     // Done: closed, the focus on the row in hand, and the page not scrolled.
     await page.keyboard.press("Enter");
     await expect(dialog).toHaveCount(0);
-    expect(await holdsFocus(inHand), `after Done the focus is on ${await focusHolder(page)}`).toBe(
-      true
-    );
+    expect(
+      await holdsFocus(inHand),
+      `after Done the focus is on ${await describeFocus(page)}`
+    ).toBe(true);
     expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
 
     // From the New message control, to both sessions: one broadcast, its answer held two
@@ -753,9 +727,10 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
     // Done gives the focus back to the control.
     await done.click();
     await expect(dialog).toHaveCount(0);
-    expect(await holdsFocus(control), `after Done the focus is on ${await focusHolder(page)}`).toBe(
-      true
-    );
+    expect(
+      await holdsFocus(control),
+      `after Done the focus is on ${await describeFocus(page)}`
+    ).toBe(true);
 
     // With nothing focused: Done leaves the focus on the page's body, in no text box.
     await blurFocus(page);
@@ -764,7 +739,7 @@ test("Send is held until the answer and Done returns the focus", async ({ browse
     await writeAndSend();
     await done.click();
     await expect(dialog).toHaveCount(0);
-    expect(await focusHolder(page)).toBe("the page's body");
+    expect(await describeFocus(page)).toBe("the page's body");
   } finally {
     await alice.close();
   }

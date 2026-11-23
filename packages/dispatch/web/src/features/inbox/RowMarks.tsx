@@ -98,23 +98,25 @@ export function gateLineWords(approval: ArtifactApproval | null): string {
     : approvalLabel(approval);
 }
 
+/** A gate line's state as its mark's `data-` attribute names it: its document's state, and
+ *  `not_requested` for a draft, as its words say (`gateLineWords`). */
+export function gateLineState(state: ArtifactApproval["state"]): string {
+  return state === "draft" ? "not_requested" : state;
+}
+
 /** The line a row's mark speaks for: a gate's only line, and of more than one the first, in the
  *  gate's order, whose document is not approved at its latest version, else the last. A line
  *  whose step word this build does not know is still a line of the gate, so it is counted. */
-export function markedGateLine(gate: readonly ApprovalGateLine[]): ApprovalGateLine | undefined {
+function markedGateLine(gate: readonly ApprovalGateLine[]): ApprovalGateLine | undefined {
   if (gate.length < 2) return gate[0];
   return gate.find((line) => line.approval?.state !== "approved") ?? gate[gate.length - 1];
 }
 
-/** What a row's mark says: the state of its line's document in the issue page's words, a request
- *  as `Awaiting approval` alone - the pane's line names the documents it covers - and, where the
- *  gate has more than one line, the line's step word before it, as `Verification · Awaiting
- *  approval`. Undefined for a row with no gate. */
-export function approvalMarkText(
-  gate: readonly ApprovalGateLine[] | undefined
-): string | undefined {
-  const line = gate === undefined ? undefined : markedGateLine(gate);
-  if (gate === undefined || line === undefined) return undefined;
+/** What a row's mark says for `line`, the gate's line it speaks for (`markedGateLine`): the state
+ *  of its line's document in the issue page's words, a request as `Awaiting approval` alone - the
+ *  pane's line names the documents it covers - and, where the gate has more than one line, the
+ *  line's step word before it, as `Verification · Awaiting approval`. */
+function approvalMarkText(gate: readonly ApprovalGateLine[], line: ApprovalGateLine): string {
   const approval = line.approval;
   const words =
     approval?.state === "awaiting"
@@ -133,15 +135,14 @@ export function RowApprovalMark({
   gate: readonly ApprovalGateLine[] | undefined;
 }): ReactNode {
   const line = gate === undefined ? undefined : markedGateLine(gate);
-  const text = approvalMarkText(gate);
-  if (line === undefined || text === undefined) return null;
+  if (gate === undefined || line === undefined) return null;
   const state = line.approval?.state ?? "draft";
   return (
     <span
       className={`${approvalPillClassName(state, "compact")} shrink-0 whitespace-nowrap`}
-      data-inbox-approval={state === "draft" ? "not_requested" : state}
+      data-inbox-approval={gateLineState(state)}
     >
-      {text}
+      {approvalMarkText(gate, line)}
     </span>
   );
 }

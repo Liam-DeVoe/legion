@@ -1,4 +1,4 @@
-/** One thread order everywhere (INFRA-450), in the surface the Inbox draws itself over one fixed
+/** One thread order everywhere, in the surface the Inbox draws itself over one fixed
  *  answer: an ask's own thread in the reading pane, with the fold and the reply box the chosen
  *  order places.
  *

@@ -20,7 +20,7 @@ import {
 import { asUser } from "./users";
 
 /**
- * One thread order everywhere (INFRA-450), in the surfaces that sit on the live document: a
+ * One thread order everywhere, in the surfaces that sit on the live document: a
  * document block's thread in the spec, the margin thread beside the passage it is about, with
  * the Conversation card next to it, and the Inbox's reading pane over the comment thread, with
  * the Inbox's card below the pane's width. That thread is anchored to the spec, so the pane draws

@@ -4444,7 +4444,7 @@ test("a new composer's draft that comes to name a #id does not ask a failed spec
   }
 });
 
-// ST1 row 3 (the own-answer rule, R1): a held Send (`heldSend`, the Inbox's reply boxes) is
+// The own-answer rule (R1): a held Send (`heldSend`, the Inbox's reply boxes) is
 // `aria-disabled` while its send is out, so the focus Enter put on it stays there, and nothing is
 // disabled under it. A refusal gives Send back at once, pressable, with its error shown and the
 // draft kept, and the focus is still on Send.
@@ -4481,7 +4481,7 @@ test("a held Send comes back enabled with its error", async () => {
   }
 });
 
-// ST1 row 5: once a held Send's send has landed, the hold waits for the read the host answers
+// Once a held Send's send has landed, the hold waits for the read the host answers
 // (`onSent`'s promise), and ends at the latest at the write deadline from the press
 // (`SEND_DEADLINE_MS`): the field takes typing again, and a new draft can be sent.
 test("the hold ends at the write deadline", async () => {

@@ -23,7 +23,7 @@ import { DismissControl } from "./DismissControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { threadReferenceRoute } from "./list-row";
 import { approvalGateOf } from "./one-read-rows";
-import { gateLineWords, gateStepWord } from "./RowMarks";
+import { gateLineState, gateLineWords, gateStepWord } from "./RowMarks";
 import { SnoozeControl } from "./SnoozeControl";
 import { isUnassigned } from "./sections";
 import { isSnoozed } from "./snooze";
@@ -38,15 +38,16 @@ import { useControlName } from "./useControlName";
  *
  * `area` is the head's own approval area, the document's `ApprovalChip` with its Approve and
  * Request changes, and `areaDocument` the document it is for. The line of that document is that
- * area itself, so the head draws one approval area for the document and never two.
+ * area itself, so the head draws one approval area for the document and never two. A head with
+ * no area of its own, a thread's, passes neither.
  */
 function ApprovalLines({
   area,
   areaDocument,
   gate,
 }: {
-  area: ReactNode;
-  areaDocument: string | undefined;
+  area?: ReactNode;
+  areaDocument?: string;
   gate: readonly ApprovalGateLine[];
 }): ReactNode {
   return (
@@ -72,7 +73,7 @@ function ApprovalLines({
             ) : (
               <span
                 className={approvalPillClassName(state)}
-                data-inbox-approval-state={state === "draft" ? "not_requested" : state}
+                data-inbox-approval-state={gateLineState(state)}
               >
                 {gateLineWords(line.approval)}
               </span>
@@ -262,9 +263,7 @@ export function ThreadPaneHead({
       </Link>
       {reference === undefined ? null : <CopyRefButton route={reference} />}
       <DismissControl shown thread={thread} />
-      {gate === undefined || gate.length === 0 ? null : (
-        <ApprovalLines area={undefined} areaDocument={undefined} gate={gate} />
-      )}
+      {gate === undefined || gate.length === 0 ? null : <ApprovalLines gate={gate} />}
     </header>
   );
 }

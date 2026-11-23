@@ -466,12 +466,13 @@ func projectionOf(written ownWrite) string {
 // where it holds none, or no row at all.
 func projectedDismissal(t *testing.T, database *store.Store, written ownWrite) *time.Time {
 	t.Helper()
-	query := `select max(dismissed_at) from user_threads where login = $1 and thread_id = $2::uuid`
 	if written.agent {
-		query = `select max(dismissed_at) from user_agent_thread_dismissed where login = $1 and message_id = $2::uuid`
+		return agentThreadDismissal(t, database, written.person, written.rootID)
 	}
 	var at *time.Time
-	if err := database.Pool.QueryRow(context.Background(), query, written.person, written.rootID).Scan(&at); err != nil {
+	if err := database.Pool.QueryRow(context.Background(),
+		`select max(dismissed_at) from user_threads where login = $1 and thread_id = $2::uuid`,
+		written.person, written.rootID).Scan(&at); err != nil {
 		t.Fatalf("read %s's %s mark on %s: %v", written.person, projectionOf(written), written.rootID, err)
 	}
 	return at

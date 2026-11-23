@@ -28,8 +28,8 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { OrderPicker } from "../threads/order-picker-fixture";
 import { replyRow, seedUnread, unreadSetAnswer } from "../threads/replies-fixture";
-import { useThreadOrder } from "../threads/thread-order";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
@@ -1149,17 +1149,6 @@ for (const order of ["oldest", "newest"] as const) {
   });
 }
 
-/** The other thread order, picked through the one preference every thread reads, as the Inbox's
- *  display menu picks it. */
-function OrderPicker(): ReactNode {
-  const [order, setOrder] = useThreadOrder();
-  return (
-    <button onClick={() => setOrder(order === "oldest" ? "newest" : "oldest")} type="button">
-      {order === "oldest" ? "Newest first" : "Oldest first"}
-    </button>
-  );
-}
-
 // An order picked while an open ask's card is on screen moves the ask's thread to the other side
 // of its answer box. The thread is moved, not drawn again, so the fold the reader opened stays
 // open.
@@ -1352,7 +1341,7 @@ async function answerWithEnter(
   return { ...rendered, card, send };
 }
 
-// ST1 row 3 (the own-answer rule, R1): in an Inbox the answer's Send is held by `aria-disabled`
+// The own-answer rule (R1): in an Inbox the answer's Send is held by `aria-disabled`
 // while its write is out, not `disabled`, so the focus Enter put on it stays there. A refusal gives
 // it back at once, pressable, with its error shown, and the focus is still on it.
 test("the answer's Send comes back enabled with its error", async () => {
@@ -1377,7 +1366,7 @@ test("the answer's Send comes back enabled with its error", async () => {
   }
 });
 
-// ST1 row 4: a press on the held Send, by Enter or by a click, sends nothing: the one write out is
+// A press on the held Send, by Enter or by a click, sends nothing: the one write out is
 // the first press's.
 test("a press on the held Send sends nothing", async () => {
   const user = userEvent.setup();
@@ -1400,7 +1389,7 @@ test("a press on the held Send sends nothing", async () => {
   }
 });
 
-// ST1 row 4, after the landing: the answer's Send stays held once the answer has landed, until
+// The answer's Send stays held once the answer has landed, until
 // the read of the Inbox its landing started has come back, and a press on it then sends nothing
 // either. The answer lands with no body - a write a reload resumed answers none - so the form
 // stays drawn while the card reads the ask again; the page's read of the Inbox after the landing
@@ -1440,7 +1429,7 @@ test("a press on the held Send sends nothing once its answer has landed", async 
   }
 });
 
-// ST1 row 5: the hold ends at the latest at the write deadline from the press
+// The hold ends at the latest at the write deadline from the press
 // (`SEND_DEADLINE_MS`), whatever became of the write: Send is held no longer.
 test("the answer's hold ends at the write deadline", async () => {
   jest.useFakeTimers();
