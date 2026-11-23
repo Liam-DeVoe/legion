@@ -844,7 +844,7 @@ test("each phase of the implementing agent names a declined bot thread in its ow
     /Name each thread you declined[^.]*in your completion's `summary`; at your retro, name them in the Dispatch message of `skill:\/\/legion-retro` step 5/
   );
   expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message/
+    /Name each one you declined to the owner of your task in your completion's summary, or at your retro in its Dispatch message/
   );
   expect(lacks("legion-retro/SKILL.md", [/\*\*Declined threads:\*\*/])).toEqual([]);
 });
@@ -887,7 +887,7 @@ test("a run still going at retro is named in its message and as a risk", () => {
     /At your retro, answer the bot threads you find[^.]*each run still going[^.]*may open more/
   );
   expect(collapsed(path.join(prompts, "roles", "core", "implementer.md"))).toMatch(
-    /at your retro too where the retro is yours, the threads you find there, naming in its message each run still going/
+    /At a retro that is yours, answer the threads you find there too, naming in its message each run still going/
   );
 });
 
