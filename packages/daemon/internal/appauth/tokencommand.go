@@ -51,6 +51,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -581,7 +582,7 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 	request.Header.Set("Content-Type", "application/json")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
+		return "", &TransientError{Err: fmt.Errorf("read %s: %w", what, redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
@@ -607,8 +608,8 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 // GitHub answers are GitHub's words (verifyTokenApp): each is decided on as it came, the read asks
 // for the slug as it came, and what this prints of them is the slug as ShownLogin prints its bot
 // login, without "[bot]", and the id where it is a number (shownAppID). A failure names the read
-// by that slug: in GitHub's answer (transientAs) and in net/http's error for a read that got no
-// answer (githubrest.Unanswered).
+// by that slug: in GitHub's answer (transientAs) and in the error of a read that got no answer
+// (redact.Unanswered).
 func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, token string) error {
 	shown := strings.TrimSuffix(githubrest.ShownLogin(slug+"[bot]"), "[bot]")
 	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, shown, shown)
@@ -619,7 +620,7 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 	tokenHeaders(request, token)
 	response, err := m.client.Do(request)
 	if err != nil {
-		return &TransientError{Err: fmt.Errorf("read %s: %w", what, githubrest.Unanswered(err, "/apps/"+shown))}
+		return &TransientError{Err: fmt.Errorf("read %s: %w", what, redact.Unanswered(err, request, "/apps/"+shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return m.transientAs(response, refusalBody(response), "/apps/"+shown, fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
@@ -707,7 +708,7 @@ func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrep
 		tokenHeaders(request, lease.Token)
 		response, err := m.client.Do(request)
 		if err != nil {
-			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, err)}
+			return false, false, &TransientError{Err: fmt.Errorf("%s: %w", what, redact.Unanswered(err, request, ""))}
 		}
 		if response.StatusCode == http.StatusUnauthorized {
 			return false, true, m.answered(response, refusalBody(response), fmt.Errorf("%s failed (401)", what))

@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // writePermissions is the permission set a role's write token is asked for, one per App role:
@@ -303,7 +305,7 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	m.appHeaders(request, jwt)
 	response, err := m.client.Do(request)
 	if err != nil {
-		return nil, &TransientError{Err: fmt.Errorf("GitHub App installation permissions read: %w", err)}
+		return nil, &TransientError{Err: fmt.Errorf("GitHub App installation permissions read: %w", redact.Unanswered(err, request, ""))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)
