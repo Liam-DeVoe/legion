@@ -215,8 +215,7 @@ func newRuleRig(t *testing.T, on bool) ruleRig {
 	return ruleRig{handler: handler, database: database, deps: deps}
 }
 
-// createProjects creates each of keys as a project, as alice. Its file, repo_projects_race_test.go,
-// went with main's repository mappings (#4457), and these rule tests still need their projects.
+// createProjects creates each project of keys through the API, as alice.
 func createProjects(t *testing.T, handler http.Handler, keys ...string) {
 	t.Helper()
 	for _, key := range keys {

@@ -244,6 +244,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |
 | `e2e/failed-room.e2e.ts` | a document room that fails and recovers |
 | `e2e/followers.e2e.ts` | follower and subscriber writes change what the server delivers |
+| `e2e/foot-sweep.e2e.ts` | the floats are a write Dispatch refuses and the builds every live process serves, and each page's scrollers reach the foot only with what the server holds: the review corpus, a margin of asks, a transcript the relay replays and a long Inbox document |
 | `e2e/gated-step-approvals.e2e.ts` | gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side |
 | `e2e/github-checks.e2e.ts` | the checks pill is the server's evaluation of fake GitHub runs |
 | `e2e/going-bar.e2e.ts` | every row types into the bar and reads what the index and the recent-items list answer, and one writes in the live document editor |
@@ -278,6 +279,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-k.e2e.ts` | the view orders the plan's blocks and needs the server stored |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
+| `e2e/issue-page-q.e2e.ts` | the server's decisions read sorts the view; a sent Change is re-read |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
 | `e2e/issue-page-v.e2e.ts` | the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |

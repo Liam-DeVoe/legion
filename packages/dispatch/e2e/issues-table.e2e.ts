@@ -17,6 +17,7 @@ import {
   seedAgentStreamConversations,
 } from "./api";
 import { filterPicker } from "./filters";
+import { openWithFloats, routeFloats, seedRefusedMove, updateBanner } from "./foot-floats";
 import { nextFrames } from "./frames";
 import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
 import { APPROVAL_FOOT, inboxAt, seedApprovalPlace } from "./inbox-pane-scroll";
@@ -346,7 +347,7 @@ test("New epic over an issue in progress, confirmed, leaves the epic in progress
 // A refused write leaves Pending changes open at the bottom of the window, as the issues table's
 // Finish flows do. The selection bar's controls must still take a press while it is open: at
 // 1600x1000 the panel lay over "New epic from these" and "Clear selection".
-test("with a refused change pending, New epic from these and Clear selection still take a press", async ({
+test("with a refused change pending, New epic from these and Clear selection still take a press @foot", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -539,7 +540,7 @@ function footButtons(scope: Locator, names: string[]): FootControl[] {
  *  change leaves open, and the update banner. */
 function footFloats(page: Page): { pendingChanges: FootElement; update: FootElement } {
   const pending = pendingWrites(page);
-  const banner = page.getByRole("status", { name: "A new version is available" });
+  const banner = updateBanner(page);
   return {
     pendingChanges: {
       name: "Pending changes",
@@ -554,49 +555,6 @@ function footFloats(page: Page): { pendingChanges: FootElement; update: FootElem
       float: true,
     },
   };
-}
-
-/** Routes `page` so that both floats can show: every `PATCH` of the issue `refusedKey` is
- *  refused, which leaves the change pending, and every live process serves one build the page
- *  does not run (`deploymentChanged`), which shows the update banner. */
-async function routeFloats(page: Page, refusedKey: string): Promise<void> {
-  await page.route(`**/api/v1/issues/${refusedKey}`, async (route) => {
-    if (route.request().method() === "PATCH")
-      await route.fulfill({ status: 403, json: { error: "Move refused" } });
-    else await route.continue();
-  });
-  await page.route("**/api/v1/dashboard/builds", (route) =>
-    route.fulfill({
-      json: { live: ["/assets/index-next.js"], serving: "/assets/index-next.js" },
-    })
-  );
-}
-
-/** Opens `path` on `page`, routed by `routeFloats`, with both floats shown: a change to
- *  `refusedKey` refused on the issues table, which Pending changes keeps across the load, and
- *  the banner, which the page shows from the builds the route answers. */
-async function openWithFloats(page: Page, refusedKey: string, path: string): Promise<void> {
-  const { pendingChanges, update } = footFloats(page);
-  await page.goto("/projects/CORE/issues");
-  await page.getByRole("checkbox", { name: `Select ${refusedKey}`, exact: true }).check();
-  await page
-    .getByRole("toolbar")
-    .getByRole("button", { name: "Take out of epic" })
-    .click({ timeout: 5_000 });
-  await expect(pendingChanges.box).toContainText(refusedKey);
-  await page.goto(path);
-  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-  await expect(update.box).toBeVisible();
-  await expect(pendingChanges.box).toContainText(refusedKey);
-}
-
-/** The project CORE with an epic and an issue in it, whose move out of the epic `routeFloats`
- *  refuses. Answers that issue. */
-async function seedRefusedMove() {
-  await createProject({ key: "CORE", name: "Core" });
-  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
-  await patchIssue(epic.key, { labels: ["epic"] });
-  return createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
 }
 
 /** The box each of `elements` has on the page, with its name and whether it is a float. One that
@@ -736,7 +694,7 @@ async function expectFootClear(
 // broadcast composer. The row after this one reads that composer the same way.
 // SLOW(>=2s): the issues table's seven combinations at up to three sizes each, each desktop one at
 // the end of the table's box, each a settled reading of every control shown.
-test("no two of the selection bar, Pending changes and the update banner meet, and nothing covers the centre of a control of any of them @phone", async ({
+test("no two of the selection bar, Pending changes and the update banner meet, and nothing covers the centre of a control of any of them @phone @foot", async ({
   browser,
 }) => {
   const refused = await seedRefusedMove();
@@ -837,7 +795,7 @@ test("no two of the selection bar, Pending changes and the update banner meet, a
 // takes end room for them.
 // SLOW(>=2s): the composer's three combinations at seven sizes each, each a settled reading of
 // every control shown at the real end of the document's scroll.
-test("no two of the broadcast composer, Pending changes and the update banner meet on the Agents page, its ended session's row scrolls clear of the floats, and nothing covers the centre of a control of any of them @phone", async ({
+test("no two of the broadcast composer, Pending changes and the update banner meet on the Agents page, its ended session's row scrolls clear of the floats, and nothing covers the centre of a control of any of them @phone @foot", async ({
   browser,
 }) => {
   /** A live session for the Agents page to list. Each id is a UUID, which Dispatch's agent
@@ -969,7 +927,7 @@ test("no two of the broadcast composer, Pending changes and the update banner me
 // discarded, and no element is marked any more: the end room goes with the floats.
 // SLOW(>=2s): three pages, each read at three sizes after a change refused on the issues table,
 // one of them behind a transcript at the stream's limit.
-test("the margin column, the live view's transcript and the Inbox reading pane each scroll their last content clear of the floats", async ({
+test("the margin column, the live view's transcript and the Inbox reading pane each scroll their last content clear of the floats @foot", async ({
   browser,
 }) => {
   /** The session that asks the margin's questions. */
@@ -1110,7 +1068,7 @@ test("the margin column, the live view's transcript and the Inbox reading pane e
 // the sm width up. With a selection made and the banner shown (every live process serves a build
 // other than the page's), every control of the bar must still take a press at each width where
 // the bar sits at the foot; on a phone the bar sits under the header instead.
-test("with the update banner shown, every control of the selection bar takes a press @phone", async ({
+test("with the update banner shown, every control of the selection bar takes a press @phone @foot", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1157,7 +1115,7 @@ test("with the update banner shown, every control of the selection bar takes a p
 // the foot (`web/src/hooks/useFootInset.ts`), and Pending changes rides above the banner. Once
 // the table's box is scrolled to its end, its last row must still scroll clear of the floats, as
 // a scroller's last content does there ("so its last content scrolls clear of those floats").
-test("with the bar, the banner and Pending changes shown, the table's last row scrolls clear of the floats", async ({
+test("with the bar, the banner and Pending changes shown, the table's last row scrolls clear of the floats @foot", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1228,7 +1186,7 @@ test("with the bar, the banner and Pending changes shown, the table's last row s
 // shell: at the end of its scroll, the shell's Navigation, sticky at the top, slides up off the
 // screen and leaves an empty band at the foot. So with a refused change pending, an issue page
 // scrolled to its end must keep the Navigation's top on the screen.
-test("with a refused change pending, an issue page scrolled to its end keeps the shell's Navigation on the screen", async ({
+test("with a refused change pending, an issue page scrolled to its end keeps the shell's Navigation on the screen @foot", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });

@@ -129,6 +129,8 @@ export const realStackReasons: Record<string, string> = {
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
   "followers.e2e.ts": "follower and subscriber writes change what the server delivers",
+  "foot-sweep.e2e.ts":
+    "the floats are a write Dispatch refuses and the builds every live process serves, and each page's scrollers reach the foot only with what the server holds: the review corpus, a margin of asks, a transcript the relay replays and a long Inbox document",
   "gated-step-approvals.e2e.ts":
     "gate state is the server's computation over versions; server-computed gate state; the write answers both steps server-side",
   "github-checks.e2e.ts": "the checks pill is the server's evaluation of fake GitHub runs",
@@ -179,6 +181,7 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-switch.e2e.ts":
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
+  "issue-page-q.e2e.ts": "the server's decisions read sorts the view; a sent Change is re-read",
   "issue-page-k.e2e.ts": "the view orders the plan's blocks and needs the server stored",
   "issue-page-v.e2e.ts":
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
