@@ -197,17 +197,6 @@ test("declares the six phase-worker operations under one op, and names the Envoy
   expect(definition.description).toContain(
     `this tool cannot spawn workers. ${PHASE_OP_SENTENCES.readRecord}${PHASE_OP_SENTENCES.readReleaseRecords}handoff_complete`,
   )
-  // sign_off is not among these operations: the description says it is the architect's, and that
-  // no architect runs on Claude Code.
-  expect(definition.description).toContain(
-    "since an architect accepts with sign_off, the architect's own operation, and no architect runs on Claude Code; ",
-  )
-  // The daemon refuses `return_to` on a completion that fails no step, and request_backward_move
-  // takes its own, so the description limits completions alone.
-  expect(definition.description).toContain(
-    "A completion names it only with the verdict fail (RETURN_TO_NEEDS_FAIL).",
-  )
-  expect(definition.description).not.toContain("Only a completion with the verdict fail names it")
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
 

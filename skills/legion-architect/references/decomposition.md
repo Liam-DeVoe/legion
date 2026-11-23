@@ -96,7 +96,8 @@ A decision only a person can make goes to the architect above you, never into yo
 ## Across repositories
 
 Split a change across repositories into children of one repository each, choosing it at creation (`dispatch issue … --repo <owner/name>`).
-Release a child that builds on another repository's change only after that pull request merges, never by `--blocked-by`, which starts it at the blocker's close, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`).
+A child that builds on another repository's change needs the merge, not an issue's close, so it takes no `--blocked-by`.
+Release it only after that pull request merges, and name the merged commit in its task (`gh api repos/<owner>/<repo>/pulls/<n> --jq .merge_commit_sha`).
 A repository that pins the other one by commit (a lock file or dependency pin) pins that merged commit.
 Release it before an issue above it is accepted (`CHILD_UNDER_ACCEPTED_PARENT`).
 If it cannot merge in time, ask a person ("Every turn") rather than release late.

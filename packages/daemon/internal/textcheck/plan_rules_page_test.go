@@ -11,8 +11,7 @@ import (
 // other step of the type implementation, since Legion's retro is done by the implementer
 // (plan/validate.go refuses such a step after the implementer, the implementer itself apart). A
 // page that leaves a rule out tells its reader a refused plan is taken. The page is read with its
-// white space folded, so its line breaks decide nothing. The prompt half is internal/prompts's
-// TestTheOwnerIsToldTheRolesOfItsDeployment, and the tool's is pi-legion's tools.test.ts.
+// white space folded, so its line breaks decide nothing.
 func TestTheConceptsPageStatesEachRuleOfAPlansSteps(t *testing.T) {
 	const path = "docs/site/src/content/docs/legion/concepts.md"
 	page := strings.Join(strings.Fields(shippedText(t, path)), " ")

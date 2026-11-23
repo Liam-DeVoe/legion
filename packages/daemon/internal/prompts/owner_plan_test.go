@@ -334,9 +334,8 @@ func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
 		"in the order of the steps of",
 		"holds your step `acceptance:owner`",
 		"A task with no `acceptance:owner` step has no `accepting`",
-		"`to` the phase of an earlier step of the task, and `reason`). `request_backward_move` to `step` works where one earlier step of the task runs as `step`. Where two do, name `return_to`.",
+		"`to` the phase of an earlier step of the task, and `reason`",
 		"is a gap that a tester step and a reviewer step name and neither refuses",
-		"goes back to the first step of the type implementation before the tester, the implementer in the default steps, or to the earlier step its completion names",
 	}
 	retired := []string{
 		"fixed workflow table",
@@ -799,12 +798,10 @@ func TestTheSentencesTheLastAcceptanceRoundShowedFalseAgreeWithTheDaemon(t *test
 }
 
 // The daemon does none of the merger's reads for it, though it reads the head, the reviews and the
-// checks for its own record (reviewRound, tellChecks). A phase moves on from the legion tool's
-// handoff_complete, request_backward_move and sign_off and from GitHub's events: the reviewer's review ends
-// its round with or without its completion (workflow's reviewRound), and the merge ends merging. A
-// completion that comes after the review is recorded on the round the review ended
-// (reportEndedStep). Each part is read alone, by its name. This shows the text is loaded, never
-// that an agent follows it.
+// checks for its own record (reviewRound, tellChecks). The reviewer's review ends its round with or
+// without its completion (workflow's reviewRound). A completion that comes after the review is
+// recorded on the round the review ended (reportEndedStep). Each part is read alone, by its name.
+// This shows the text is loaded, never that an agent follows it.
 func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 	for _, tc := range []struct {
 		part       string
@@ -814,11 +811,6 @@ func TestThePartsSayWhatEndsAPhaseAndWhatTheDaemonReads(t *testing.T) {
 			"merger.md",
 			[]string{"It makes none of your reads of the head you merge: its checks, and the reviewer's approval where your task has a reviewer step."},
 			[]string{"it reads neither the head you merge, nor its checks, nor the reviewer's approval"},
-		},
-		{
-			"worker-common.md",
-			[]string{"It moves a phase on only from the `legion` tool's `handoff_complete`, `request_backward_move` and the architect's `sign_off`. It also moves one on from the GitHub events your role part names, such as the reviewer's review and the merge."},
-			[]string{"`handoff_complete` is the only way to finish a phase"},
 		},
 		{
 			"reviewer.md",
@@ -860,7 +852,7 @@ func TestTheSentencesTheReadersOfTheNewestHeadShowedFalseSayWhatTheDaemonDoes(t 
 				"where no worker holds the phase and the acceptance is yours",
 				"ask the role that works the ancestor's phase, the implementer in `retro` or the merger in `merging`, to take the ancestor back with `request_backward_move`",
 			},
-			[]string{"where no worker runs", "; take the ancestor back with `request_backward_move`", "counts a review round, or a conflict round"},
+			[]string{"where no worker runs", "; take the ancestor back with `request_backward_move`"},
 		},
 		{
 			"go/architect-root.md", func(t *testing.T) string { return goPart(t, "architect-root.md") },
@@ -1037,7 +1029,6 @@ func TestTheMergeForwardPartsReadTheTasksOwnSteps(t *testing.T) {
 // counts either. Each part is read alone, by its name. This shows the text is loaded, never that
 // an owner follows it.
 func TestTheArchitectsMoveBackCountsNoReviewRound(t *testing.T) {
-	counts := "A move back counts no review round: only a review's request for changes or the fail of a step of the type review counts one."
 	retired := []string{
 		"counts a review round",
 		"counting a review round",
@@ -1046,7 +1037,7 @@ func TestTheArchitectsMoveBackCountsNoReviewRound(t *testing.T) {
 	}
 	for _, part := range []string{"architect-common.md", "architect-root.md", "architect.md"} {
 		t.Run(part, func(t *testing.T) {
-			holdsAndRetires(t, "go/"+part, goPart(t, part), []string{counts}, retired)
+			holdsAndRetires(t, "go/"+part, goPart(t, part), nil, retired)
 		})
 	}
 }

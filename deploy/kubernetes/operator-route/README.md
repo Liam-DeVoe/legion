@@ -60,9 +60,9 @@ pods mount `legion-operator-route` in that namespace reads the same copy.
 ## Changing a role's model
 
 The two files in that directory are the operator's, and `apply.sh` writes the ConfigMap from them.
-To change the model a role uses, edit that role's line under `modelRoles` in `overlay.yml` and run
-the same `apply.sh` command; nothing in this repository changes. Pods started after that read the
-new file.
+To change a role's model, where `legion.yaml` names none for it, edit that role's line under
+`modelRoles` in `overlay.yml` and run the same `apply.sh` command. Nothing in this repository
+changes. Pods started after that read the new file.
 A running pod keeps the files it started with until it restarts, because `pod.yml` mounts both by
 `subPath`, which the kubelet never refreshes.
 A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under

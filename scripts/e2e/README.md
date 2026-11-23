@@ -7899,7 +7899,7 @@ The drivers of one issue on an open pull request (`behind-entry-fence.sh`'s, `co
 ## lib/secret-leaks.ts
 
 Stage 4b's check that no pod carried a value of its Sandbox's Secret in a container's command, args or environment.
-A pod's `-boot` Secret holds the next generation's token after each relaunch, and the pod watch records no Secret value, so a check made from a later read would judge the wrong values or none.
+The pod's provisioning Secret, `<sandbox>-boot`, and each role's Secret, `<sandbox>-<role>-boot`, can change between generations, and the pod watch records no Secret value, so a check made from a later read would judge the wrong values or none.
 The helper watches the run's Secrets from `pod-watch` on and keeps every value each one held in memory only.
 It never prints or writes a value.
 

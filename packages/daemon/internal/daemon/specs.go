@@ -476,12 +476,12 @@ var refusalCooldownVariables = []string{
 //
 // backend is the launch's, as SpawnSpec resolved it (launchBackend). A Claude Code launch gets
 // nothing: that install is `@sjawhar/pi-legion` and `@sjawhar/pi-envoy` from npm
-// (runtime/sandbox's plugins.go), no workflow releases claude-envoy, and a Claude worker's plugin
-// is the image's — so a plugin-contract change for such a role is answered by a new image, not by
-// an install. Such a claim whose recorded contract differs still relaunches: it is the image's
-// plugin that decides, and the image probe is what refuses a wrong one. The daemon-launched
-// controller runs on Oh My Pi (runtime.Backends runs Claude Code for phase workers alone), so its
-// launch is covered here exactly as before.
+// (runtime/sandbox's plugins.go), no npm install reaches the image's own claude-envoy, and a
+// Claude worker's plugin is the image's — so a plugin-contract change for such a role is answered
+// by a new image, not by an install. Such a claim whose recorded contract differs still
+// relaunches: it is the image's plugin that decides, and the image probe is what refuses a wrong
+// one. The daemon-launched controller runs on Oh My Pi (runtime.Backends runs Claude Code for
+// phase workers alone), so its launch is covered here exactly as before.
 func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *runtime.PluginInstall {
 	if runtime.Of(backend) == runtime.BackendClaude {
 		return nil
