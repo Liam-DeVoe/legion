@@ -1186,7 +1186,9 @@ func (s *Service) readDocument(ctx context.Context, artifactID string) (*documen
 
 // heldTree is the tree of the document where this server holds it, once a failed room's recovery
 // is done: the calling transaction's fork's when it has one (joinRead), else the resident room's,
-// as of one moment (liveTree). held is false where neither holds it. It is older than neither the
+// as of one moment (liveTree). held is false where neither holds it. A caller that may not wait
+// for that recovery - a transaction, or a read whose grant holds bytes of the pool, a socket
+// admission's - is refused the failed room instead (awaitRoomRecovery). It is older than neither the
 // stored head, read after joinRead and before the room (readStoredHead), nor the room: a resident
 // room behind that head - another process stored an update its catch-up has not applied yet - is
 // read as the stored document merged with the updates only that room holds (storedWithUpdates),

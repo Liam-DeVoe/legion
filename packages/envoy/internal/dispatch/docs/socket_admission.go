@@ -358,6 +358,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// calibration, where the pool is one slot, so the room budget sees each room's weight before
 	// the next load begins (MemoryBounds.LoadSlots). The decode the read makes inside it covers
 	// this grant and takes nothing more (loadDecodedHistory).
+	//
+	// The read under that slot waits for no failed room's recovery (awaitRoomRecovery, heldGrant):
+	// the recovery's closing compaction folds under bytes of the pool, which at one slot are this
+	// slot's. A room that fails after the admission's wait for recovery above is answered 503,
+	// which the editor's backoff retries, and the retry waits above holding nothing.
 	readSlot := newLoadSlot()
 	if s.srv.GetDoc(room) == nil {
 		if err := readSlot.take(r.Context(), loadSlotBytes); err != nil {

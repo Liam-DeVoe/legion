@@ -301,8 +301,11 @@ const loadSlotsName = "load"
 // answered 503 and gives its grant back, the transaction's own deadline ends it at the latest for
 // the server's two such transactions, and the worker then takes its bytes (above). No other
 // holder waits on the worker: an apply holds no grant by the time its commit reaches that queue, a
-// live write publishes once its transaction has given its grant back (Ledger.publish), and a
-// server write's decode-cap copy gives its grant back before the write commits (structsAfter).
+// live write publishes once its transaction has given its grant back (Ledger.publish), a server
+// write's decode-cap copy gives its grant back before the write commits (structsAfter), and no
+// holder waits for a failed room's recovery, whose eviction waits for the worker's exit and so
+// for that compaction: a transaction refuses the failed room, and so does a read whose grant
+// holds bytes, a socket admission's (awaitRoomRecovery, heldGrant).
 // Before it gives its grant back, the room's observer waits for the replica's lock, and no holder
 // of that lock waits for the pool (renderedReplica.start, holdFreeLoad, above), so that wait ends.
 //

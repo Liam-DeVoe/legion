@@ -3635,6 +3635,17 @@ func (s *Service) failRoomLocked(room string, state *roomState, cause error) {
 // a wait here, so it would never break the cycle. Neither does a read whose context
 // WithoutRecoveryWait marked.
 //
+// Nor does a caller whose context carries a grant holding bytes of the pod's load concurrency
+// (heldGrant): it fails with ErrServiceUnavailable, which its caller retries holding nothing. The
+// eviction ends with its persistence worker's closing compaction, which folds under bytes of the
+// pool (servicePersistenceAdapter.Compact, compactRoom, foldRead), and at the calibration's one
+// slot those can be the very bytes the caller holds: the wait would be hold-and-wait, which no
+// holder of the pool makes (loadSlots). A transaction's grant is refused above with the
+// transaction; the caller met here is a socket's admission whose read holds its whole slot,
+// taken for a room no server held here, and whose room failed after the admission's own wait
+// for recovery (ServeHTTP, readSlot). It answers 503, which the editor's backoff retries, and the
+// retry waits for the recovery at that first wait, holding nothing.
+//
 // A room's own load never calls this: the eviction it would wait for waits for that load
 // (onLoadDocument).
 func (s *Service) awaitRoomRecovery(ctx context.Context, room string) error {
@@ -3658,6 +3669,11 @@ func (s *Service) awaitRoomRecovery(ctx context.Context, room string) error {
 	}
 	if ctx.Value(withoutRecoveryWait{}) != nil {
 		// The caller logs what it went without, which says more than the room alone.
+		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
+	}
+	if heldGrant(ctx) != nil {
+		slog.Warn("dispatch: refuse a read that holds bytes of the load pool on a failed document room; its caller retries holding nothing",
+			"room", room, "error", failure)
 		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
 	}
 	select {
