@@ -55,6 +55,7 @@ func isReleaseRefusal(err error) bool {
 // refuses launches nothing, and a death's relaunch it refuses starts nothing and is charged
 // nothing.
 func TestProjectReleaseHoldsEveryLaunchCheck(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		claim supervise.Claim
@@ -149,6 +150,7 @@ func TestProjectReleaseHoldsEveryLaunchCheck(t *testing.T) {
 // launched again, its process recorded nowhere. Any other refusal of the runtime is charged, so
 // what this reads is the sentinel's.
 func TestProjectReleaseRuntimeRefusalChargesNoLaunchFailure(t *testing.T) {
+	t.Parallel()
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	ctx := context.Background()
 	create := func(role claim.Role) *supervise.Machine {
@@ -190,6 +192,7 @@ func TestProjectReleaseRuntimeRefusalChargesNoLaunchFailure(t *testing.T) {
 // claim, unsent. A release whose record did not commit clears the mark, and the task the machine
 // held is sent then, with no other event reaching the claim.
 func TestProjectReleaseHandsNoTaskWhenATurnEnds(t *testing.T) {
+	t.Parallel()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	release := &projectRelease{}
 	sup.deps.ProjectReleaseHolds = release.held
@@ -236,6 +239,7 @@ func TestProjectReleaseHandsNoTaskWhenATurnEnds(t *testing.T) {
 // the relaunch of the launches the last process left unfinished, the idle and unowned ticks, the
 // wakes and the controller keeper.
 func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
+	t.Parallel()
 	t.Run("the sweep", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		sup := newSupervisor(context.Background(), outboxTreeStore(t, pool), "legion", t.TempDir(), quietLogger())
@@ -324,6 +328,7 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 // every controller notice does. The reconcile of a tree's news (design_changes) runs: it tells a
 // role only by such a news-only start.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
+	t.Parallel()
 	const ownRound = "release:7"
 	type row struct {
 		name    string
@@ -451,6 +456,7 @@ func runDue(t *testing.T, runner *outbox, now time.Time) int {
 // wait in the database while it holds, and reach their claims in the next process, whose mark is
 // clear.
 func TestProjectReleaseHoldsADeliveryANoticeAndABackstopUntilTheNextBoot(t *testing.T) {
+	t.Parallel()
 	t.Run("a delivery", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		records := record.NewStore()

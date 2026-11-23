@@ -115,6 +115,7 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 // cluster's does: clientcmd reads a kubeconfig's user only for a server it reaches over TLS
 // (rest.IsConfigTransportTLS), so a plain-HTTP server would be sent no credential of any kind.
 func TestKubeClientCallsTheExecCommandOfItsUser(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var bearers []string
 	apiServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -199,6 +199,7 @@ func (r *releaseDeliveryRig) endsUndelivered(t *testing.T, when string, attempts
 // set, so when its process dies later and it is relaunching, a new row nobody holds ends
 // undelivered, as it does for any other claim.
 func TestADeliveryHeldThroughAProjectReleaseReachesItsClaimAfterItsStart(t *testing.T) {
+	t.Parallel()
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -309,6 +310,7 @@ func (r *releaseDeliveryRig) ready(t *testing.T, machine *supervise.Machine, hel
 // bound and its margin have passed since the ready. The session takes its role some seconds after
 // the ready, and the row, run again at the window's end, reaches it.
 func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(t *testing.T) {
+	t.Parallel()
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {
 			stored := stoppedByRelease(t, tc.role)
@@ -362,6 +364,7 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForTheRoleAfterTheClaimIsReady(
 // is deliverHeld without that wait: each of those attempts then publishes to the topic nobody
 // holds yet, and the row counts publishes the test wants none of.
 func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	stored := stoppedByRelease(t, claim.RoleImplementer)
 	rig := newReleaseDeliveryRig(t, stored)
@@ -411,6 +414,7 @@ func TestAMergeForwardMessageHeldThroughAProjectReleaseWaitsForTheBootsStart(t *
 // without its read of the park: each delivery, which reads the park of such a claim through
 // awaitsBootStart alone, then waits on its backoff with the start's own sentence.
 func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testing.T) {
+	t.Parallel()
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {
 			stored := stoppedByRelease(t, tc.role)
@@ -447,6 +451,7 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsOutThePacingOfItsStart(t *testi
 // release and through the restart waits while the claim comes up again, and reaches it once its
 // session holds the role.
 func TestADeliveryHeldThroughAProjectReleaseWaitsForItsClaimAcrossARestart(t *testing.T) {
+	t.Parallel()
 	for _, tc := range releaseDeliveries {
 		t.Run(tc.name, func(t *testing.T) {
 			stored := stoppedByRelease(t, tc.role)
@@ -494,6 +499,7 @@ func TestADeliveryHeldThroughAProjectReleaseWaitsForItsClaimAcrossARestart(t *te
 // ready the store holds from longer ago than the first-turn bound. Each delivery for them meets the
 // rule for a role nobody holds and ends undelivered.
 func TestADeliveryForAClaimThatHeldItsRoleSinceTheReleaseEndsAfterARestart(t *testing.T) {
+	t.Parallel()
 	for _, tc := range releaseDeliveries {
 		for _, since := range []struct {
 			name  string
@@ -536,6 +542,7 @@ func TestADeliveryForAClaimThatHeldItsRoleSinceTheReleaseEndsAfterARestart(t *te
 // stopped, which is never that claim's start (workflow.StartsWork): the boot writes the claim's
 // own start beside it.
 func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		role  claim.Role
@@ -604,6 +611,7 @@ func TestABootStartOfAStoppedPhaseOwnerStartsItAfterItsIssueLeftThePhase(t *test
 // its own, and the claim launches, resumed by rule and with no task, as the outbox's phase fence
 // would have started it, while the implementer's start waits for the issue's slot.
 func TestAStartTakenOutByAnotherRolesStartStillStartsTheClaimTheProjectReleaseStopped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	stored := stoppedByRelease(t, claim.RoleTester)
 	rig := newReleaseDeliveryRig(t, stored)
@@ -653,6 +661,7 @@ func TestAStartTakenOutByAnotherRolesStartStillStartsTheClaimTheProjectReleaseSt
 // comes up: the boot read it launching or registered, so it is not in the set, and its row is
 // published once, refused, and finished undelivered.
 func TestADeliveryForAClaimNoReleaseStoppedEndsWhenNobodyHoldsItsRole(t *testing.T) {
+	t.Parallel()
 	for _, tc := range releaseDeliveries {
 		for _, state := range []supervise.ClaimState{supervise.StateLaunching, supervise.StateRegistered} {
 			t.Run(tc.name+" for a claim that is "+string(state), func(t *testing.T) {
@@ -674,6 +683,7 @@ func TestADeliveryForAClaimNoReleaseStoppedEndsWhenNobodyHoldsItsRole(t *testing
 // that has failed, one that has retired, and one an operator or the daemon has suspended since
 // each leave the row to the rule for a role nobody holds, which ends it.
 func TestADeliveryStopsWaitingForAStoppedClaimThatWillNotComeBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range releaseDeliveries {
 		for _, now := range []struct {
 			name  string
@@ -734,6 +744,7 @@ func readHeldRow(t *testing.T, pool *store.Pool, issue string) (heldRow, bool) {
 // the row reads again, where a counted hold would have ended the ladder and told the merger that
 // no read succeeded. The hold is logged once at info and at debug from then on.
 func TestARowTheProjectReleaseHoldsSpendsNoAttempt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

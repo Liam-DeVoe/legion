@@ -12,6 +12,7 @@ import (
 // rather than walking up to the architect above it. A claim whose stop is in flight keeps no role,
 // and neither does a claim another source suspended.
 func TestAClaimTheProjectReleaseStoppedHoldsItsRoleForTheNoticeRouting(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		view supervise.ClaimView

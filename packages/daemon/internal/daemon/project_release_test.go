@@ -31,6 +31,7 @@ import (
 // runtime.ProjectPods — refuses the release, a dry run included, before anything of it acts: the
 // mark is not set, so the daemon goes on starting what it starts.
 func TestProjectReleaseRefusesARuntimeThatRunsNoPod(t *testing.T) {
+	t.Parallel()
 	mark := &projectRelease{}
 	r := &projectReleaser{ctx: context.Background(), project: "legion", mark: mark, defaultBound: time.Minute, now: time.Now, log: quietLogger()}
 	for _, dryRun := range []bool{false, true} {
@@ -62,6 +63,7 @@ func (pausePreCheckSkipped) PauseRefusesProjectRelease(context.Context, string) 
 // and the mark the release set is cleared again. Once the last hold has ended at a role's ready,
 // the release is taken, and deletes the pod.
 func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	st := outboxTreeStore(t, isolatedOutboxPool(t))
@@ -420,6 +422,7 @@ func runRelease(t *testing.T, records *releaseRecord, sup *supervisor, pods *rel
 // shim: the pod's read is a refusal that names both numbers, which asks the pod's roles, as a read
 // of the names or of the record that failed is, with its error; names up to the bound are read.
 func TestProjectReleaseReadCarriesTheIssuesSessionNamesAndWhetherItsPullRequestMerged(t *testing.T) {
+	t.Parallel()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	implementer := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
 	// A ready claim with a process is a running role, which the release reads the pod through.
@@ -505,6 +508,7 @@ func TestProjectReleaseReadCarriesTheIssuesSessionNamesAndWhetherItsPullRequestM
 // than left once the wait for its stop runs out, and the claim's line says how it ended, which no
 // boot starts.
 func TestProjectReleaseDeletesThePodOfAStoppedClaimThatFailedOrRetired(t *testing.T) {
+	t.Parallel()
 	for _, ended := range []supervise.ClaimState{supervise.StateFailed, supervise.StateRetired} {
 		t.Run(string(ended), func(t *testing.T) {
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
@@ -542,6 +546,7 @@ func TestProjectReleaseDeletesThePodOfAStoppedClaimThatFailedOrRetired(t *testin
 // ends. The route that takes an answer reads the same round as the outbox (AskRound), and neither
 // reads the release's round once it finished.
 func TestProjectReleaseAsksNothingOnceItFinished(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -634,6 +639,7 @@ func releaseTheController(t *testing.T, records *releaseRecord, pods *releasePod
 // would leave the controller's claim and pod and the repository caches standing. The list is
 // tried again, and the release goes on to delete the cache and the controller's pod.
 func TestProjectReleaseListsTheProjectAgainAfterAListThatFailed(t *testing.T) {
+	t.Parallel()
 	pods := controllerPods()
 	pods.listFails = 1
 	release := releaseTheController(t, &releaseRecord{}, pods)
@@ -660,6 +666,7 @@ func TestProjectReleaseListsTheProjectAgainAfterAListThatFailed(t *testing.T) {
 // until the next boot, so one stale read of the runtime's store does not stop it: the release goes
 // on to delete the cache and the controller's pod.
 func TestProjectReleaseListsTheProjectAgainAfterAFirstListThatFailed(t *testing.T) {
+	t.Parallel()
 	pods := controllerPods()
 	pods.storeListFails = 1
 	release := releaseTheController(t, &releaseRecord{}, pods)
@@ -684,6 +691,7 @@ func TestProjectReleaseListsTheProjectAgainAfterAFirstListThatFailed(t *testing.
 // end, and one read of the claims that failed does not leave every line's end unwritten: the read
 // is made again, and the controller's line ends project_release, which the next boot starts.
 func TestProjectReleaseReadsTheClaimsAgainAfterAReadThatFailed(t *testing.T) {
+	t.Parallel()
 	records := &releaseRecord{claimsFails: 1}
 	release := releaseTheController(t, records, controllerPods())
 	if line := releaseClaimLine(t, release, claim.ControllerToken("legion")); len(release.Result.Claims) != 1 ||
@@ -700,6 +708,7 @@ func TestProjectReleaseReadsTheClaimsAgainAfterAReadThatFailed(t *testing.T) {
 // when no delivery does, and one arm that failed does not leave them without it: the arm is made
 // again. An idle release that had stopped no claim is armed nothing.
 func TestProjectReleaseArmsAgainTheBackstopOfATakenOverReleaseAfterAnArmThatFailed(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var tries, armed []string
 	arm := func(_ context.Context, issue string) error {
@@ -731,6 +740,7 @@ func TestProjectReleaseArmsAgainTheBackstopOfATakenOverReleaseAfterAnArmThatFail
 // is stored suspended by an operator, and its line ends `operator`, which the next boot does not
 // start.
 func TestProjectReleaseHoldsTheClaimOfAControllerWhosePodItLeaves(t *testing.T) {
+	t.Parallel()
 	pods := controllerPods()
 	pods.releaseErr = errors.New("the volume guard refused the delete")
 	records := &releaseRecord{}
@@ -755,6 +765,7 @@ func TestProjectReleaseHoldsTheClaimOfAControllerWhosePodItLeaves(t *testing.T) 
 // again, and the record is finished with each claim's line whole. A write that landed with its
 // answer lost is not written again once the store refuses the next try as finished.
 func TestProjectReleaseWritesItsFinishAgainAfterAWriteThatFailed(t *testing.T) {
+	t.Parallel()
 	t.Run("a write the store refused", func(t *testing.T) {
 		records := &releaseRecord{finishFails: 1}
 		release := releaseTheController(t, records, controllerPods())
@@ -819,6 +830,7 @@ var releaseFarSideLong = releaseFarSideError + "\n" +
 // the result keeps (keepWhole): leave, takeOthers and fail before their own line, and read at each
 // read the shim refused; writeClaims logs the failed read's error on its own line.
 func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// text runs the release with refused as the far side's error and configure applied to the

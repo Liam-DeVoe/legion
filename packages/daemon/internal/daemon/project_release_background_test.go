@@ -31,6 +31,7 @@ import (
 // The second pod's role is asked nothing, and its pod is deleted at once after its last read,
 // while the first pod is still held.
 func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
 	const check = "E19"
 	answers := idleRigPlan{TakeTurn: true, AnswerRelease: true}
 	rig := newIdleWakeRig(t, map[string]idleRigPlan{"background": answers, "ended": answers}, "background", "ended")
