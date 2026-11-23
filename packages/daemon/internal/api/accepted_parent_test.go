@@ -74,8 +74,9 @@ func TestTheDoorsRefuseAChildUnderARootHeldFromAnAcceptedPhase(t *testing.T) {
 }
 
 // A6. rerun_child is refused while an ancestor of the child has already been accepted: an issue
-// entering the workflow beneath a head on its way to the merge queue would let that head merge
-// without carrying it. The refusal names the ancestor, and is lifted once that ancestor closes.
+// entering the workflow beneath it would let that ancestor close without the issue's work, by its
+// merge or, with no pull request, at the end of its retro. The refusal names the ancestor, and is
+// lifted once that ancestor closes.
 func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 	for _, at := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(at), func(t *testing.T) {
@@ -100,11 +101,13 @@ func TestRerunChildIsRefusedUnderAnAcceptedAncestor(t *testing.T) {
 	}
 }
 
-// The refusal under an accepted ancestor names the ancestor's head as the head the last step of
-// its task passed, which is true of every plan: an issue stands in retro or merging
-// (record.Accepted) only once its task's last step has passed, whatever that step is, while a
-// plan with no reviewer step (`implementer tester`) has no reviewed head at all.
-func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testing.T) {
+// The refusal under an accepted ancestor says that the last step of the ancestor's task has
+// passed, which is true of every plan: an issue stands in retro or merging (record.Accepted) only
+// once its task's last step has passed, whatever that step is. It names no reviewed head, which a
+// plan with no reviewer step (`implementer tester`) does not have, and it says both ways such an
+// ancestor closes without the child's work: its merge, and the end of its retro where it has no
+// pull request.
+func TestTheRefusalUnderAnAcceptedAncestorSaysItsLastStepPassed(t *testing.T) {
 	h, _, _ := statusHarness(t)
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
@@ -114,8 +117,9 @@ func TestTheRefusalUnderAnAcceptedAncestorNamesTheHeadItsLastStepPassed(t *testi
 
 	message := refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil),
 		http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT")
-	want := statusChild + " is beneath " + statusRoot + ", whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath " +
-		statusRoot + " now would let it merge a head that does not carry that work; run it again once " + statusRoot + " has closed, or take " + statusRoot + " back with a backward move first"
+	want := statusChild + " is beneath " + statusRoot + ", whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath " +
+		statusRoot + " now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; run it again once " +
+		statusRoot + " has closed, or take " + statusRoot + " back with a backward move first"
 	if message != want {
 		t.Fatalf("the refusal = %q, want %q", message, want)
 	}

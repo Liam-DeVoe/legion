@@ -1174,8 +1174,8 @@ const rootArchitect208 = claim.Token("legion-legion-legion-208-architect")
 
 // A root architect ends its own tree before its first phase starts: a human decided no change at
 // the design gate, or the issue is moot. The route takes the reason; nothing else ends an admitted
-// root from the architect's side, since sign_off needs the production check and a backward move
-// needs a phase worker.
+// root from the architect's side, since sign_off takes only an issue in accepting
+// (SIGNOFF_OUTSIDE_ACCEPTING) and a backward move takes an issue back from a step it has reached.
 func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")

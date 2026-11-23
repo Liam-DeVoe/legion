@@ -176,9 +176,10 @@ func (s *server) phaseWorkerGrant(w http.ResponseWriter, r *http.Request, id str
 	return grant, true
 }
 
-// isPhaseWorker says whether role works a phase of an issue: every role but the architect, Legion's
-// five workers and each role the deployment defines, which works the issue's step. It reads the
-// role, never the settings.
+// isPhaseWorker says whether role works a phase of an issue: every role a claim can be on but the
+// architect, which are Legion's five workers, the role acceptance of the fresh agent of a step
+// `acceptance` with no key, and each role the deployment or the issue's plan defines, which works
+// the issue's step. It reads the role, never the settings.
 func isPhaseWorker(role claim.Role) bool {
 	return claim.IsRole(role) && role != claim.RoleArchitect
 }
@@ -246,13 +247,14 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 
 // childUnderAcceptedParent is what release_children and rerun_child answer for an issue whose
 // ancestor the daemon has already accepted, naming the ancestor and what undoes the refusal.
-// Both routes say one sentence, because they refuse for one reason: a parent's head proves its
-// children's merged work, so nothing enters the workflow beneath a head already accepted. The
-// head is the one the last step of the ancestor's task passed, which is what record.Accepted
-// means for every plan (a plan with no reviewer step has no reviewed head). operation is what the
-// caller would do again once the ancestor has closed.
+// Both routes say one sentence, because they refuse for one reason: a parent is accepted after
+// its children, so nothing enters the workflow beneath an ancestor already accepted, one in retro
+// or merging (record.Accepted) once the last step of its task, whatever that step is, has passed.
+// Such an ancestor closes next without the new work: by its merge, whose head does not carry it,
+// or at the end of its retro where it has no pull request. operation is what the caller would do
+// again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%s is beneath %s, whose head the last step of its task passed and the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, or take %s back with a backward move first",
+	return fmt.Sprintf("%s is beneath %s, whose task's last step has passed and which the daemon has already accepted, and work entering the workflow beneath %s now would let it close without that work: by merging a head that does not carry it, or at the end of its retro where it has no pull request; %s once %s has closed, or take %s back with a backward move first",
 		child, ancestor, ancestor, operation, ancestor, ancestor)
 }
 
@@ -273,8 +275,9 @@ func (s *server) architectForIssue(w http.ResponseWriter, r *http.Request, grant
 // architectOfRecord authorizes an architect's grant for issue, and answers the daemon's record of
 // issue, nil where it holds none, which each caller answers in its own way. A recorded issue is
 // the grant's only where its architect is an architect of the issue's tree now (ownedIssue,
-// record.ArchitectOfTree), the rule every architect operation holds it to; any other is refused
-// 403 ISSUE_OUTSIDE_TREE.
+// record.ArchitectOfTree), the rule each architect operation that calls this holds it to; any
+// other is refused 403 ISSUE_OUTSIDE_TREE. complete_step does not call it: it takes a report from
+// the issue's own architect alone (NOT_THE_OWNER).
 func (s *server) architectOfRecord(w http.ResponseWriter, r *http.Request, grantID, issue string) (credential.Grant, *record.Issue, bool) {
 	grant, ok := s.architectGrant(w, r, grantID)
 	if !ok {
@@ -1003,12 +1006,12 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// No child enters the workflow beneath an ancestor the daemon has already accepted: that
-	// ancestor's own head is approved and on its way to the merge queue, and work released under
-	// it now would let it merge a head that does not carry that work (dispatch://INFRA-980,
+	// ancestor closes next without work released under it now, by a merge of a head that does not
+	// carry that work or at the end of its retro where it has no pull request (dispatch://INFRA-980,
 	// "Children first"). The whole wave is refused rather than part of it, as every other
 	// refusal here is, so the architect retries one call. The chain is read from the records of
 	// the architect's tree, starting at the Dispatch parent of a child the records do not hold
-	// yet, and walks past a parent already done to whichever issue above it still merges. The
+	// yet, and walks past a parent already done to whichever issue above it is not done. The
 	// tree is read once for the whole wave, as every other read of this request is cached for
 	// its life: one wave's children share their ancestors, and a transaction and a read of every
 	// record of the tree per child bought nothing.
@@ -1662,9 +1665,10 @@ func (s *server) parkChild(w http.ResponseWriter, r *http.Request) {
 //
 // It is refused while an ancestor of the child has already been accepted
 // (CHILD_UNDER_ACCEPTED_PARENT): work entering the workflow beneath such an ancestor would let
-// that ancestor merge a head that does not carry it, which is the order children-first keeps.
-// The ancestor is named, and the chain is walked past a parent already done, so a grandchild
-// under a done parent is refused by whichever issue above it is still merging.
+// that ancestor close without it, by a merge of a head that does not carry it or at the end of its
+// retro where it has no pull request, which is the order children-first keeps. The ancestor is
+// named, and the chain is walked past a parent already done, so a grandchild under a done parent
+// is refused by whichever issue above it stands in retro or merging.
 //
 // The tree is read once (treeMembers) and both judgements are made over those records, as
 // release_children judges a whole wave over one read of them: the root whose linger stops a
