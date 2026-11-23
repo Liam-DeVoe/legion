@@ -938,6 +938,45 @@ test("the controller restarts a tree only for a root's architect", () => {
   ).toEqual([]);
 });
 
+// A task with no pull request, and the owner's own review step, as the code has them: a plain
+// `dispatch results` read stands no pass for an issue with no pull request (Dispatch's
+// results_comparison.go), a `ci_check` there reads `no_head` (results_ci.go), the `legion` tool
+// sends the review record's head as the commit (pi-shared's findHandoffReport), and an
+// `owner-step` goes to the issue's own architect alone.
+test("the skills say what Dispatch and the tool do with no pull request and at the owner's review step", () => {
+  expect([
+    ...lacks("legion-worker/references/results.md", [
+      /An issue with no pull request has no such head, so a plain `dispatch results --issue <issue>` shows no pass standing there\./,
+      /Read it with `--at <head>`, which compares every check with that one commit\./,
+    ]),
+    ...lacks("legion-worker/references/ci-checks.md", [
+      /On an issue with no pull request each such check reads `no_head`[^.]*\. No role waits for it or fails a round for it\./,
+    ]),
+    ...lacks("legion-retro/SKILL.md", [
+      /With no pull request, read `dispatch results --issue <issue> --at <that head>`\./,
+      /A check that reads `no_head`, on an issue with no pull request, goes to the architect as a finding too\./,
+      /Where the retro is yours, complete with `complete_step` at `step: 0` instead/,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [
+      /Then read the handoff each `Step <j> \(<role>\) reported:` line of your task names/,
+      /Such a copy is only for reading and running: commit nothing in it and push nothing from it\./,
+    ]),
+    ...lacks("legion-architect/references/plan.md", [
+      /A `ci_check` that reads `absent` or `no_head` moves nothing back either/,
+    ]),
+    ...lacks("legion-architect/references/acceptance.md", [
+      /At a `reviewer:owner` step, give that review on GitHub yourself instead\./,
+    ]),
+    ...lacks("legion-architect/references/own-steps.md", [
+      /The tool sends that record's `head` as the commit you read, so you pass no commit\./,
+      /A merger that enters `merging` while that approval is owed waits for it\./,
+    ]),
+    ...lacks("legion-architect/references/wake-routing.md", [
+      /An `owner-step` goes to the issue's own architect alone, never to one above it\./,
+    ]),
+  ]).toEqual([]);
+});
+
 // A duty moved out of a skill body into a reference must still ship in that reference: these are
 // the duties the role skills route to their references by name.
 test("each duty a role skill routes to a reference stands in that reference", () => {

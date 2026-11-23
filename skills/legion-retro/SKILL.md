@@ -35,6 +35,8 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request where there is one, and the implementer's handoff where it has an implementer step.
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step, and the review at the version your task's `Handoff:` line names (`--phase review --version <n>`) where it has a reviewer step.
    A pass must stand at the head the last step passed for every `before_merge` check, and, with a pull request, the body's `Checks` block carries each.
+   With no pull request, read `dispatch results --issue <issue> --at <that head>`.
+   A read without `--at` compares such a check with nothing, so no pass stands in it.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`.
@@ -43,6 +45,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
      Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on;
      when CI settles, the daemon tells the architect and any worker of the phase the issue then stands in.
      Send a name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
+     A check that reads `no_head`, on an issue with no pull request, goes to the architect as a finding too.
      Neither that run nor that finding moves the issue back.
 
    - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
@@ -91,6 +94,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
+   Where the retro is yours, complete with `complete_step` at `step: 0` instead, with the same fields.
    In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
    send both `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and `plan_reason`, one sentence of why from step 1's evidence, or neither where your `legion` tool's `handoff_complete` takes neither field.
    The daemon refuses a completion without them (`PLAN_RATING_REQUIRED`), with one alone, a rating off that scale or a reason blank or over 2,000 characters (`PLAN_RATING_INPUT`), and with both on any other completion (`PLAN_RATING_UNEXPECTED`).
