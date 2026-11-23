@@ -164,7 +164,9 @@ func TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *tes
 // a holder that did not confirm the prompt in time can take it on the next attempt, a holder that
 // does not advertise the delivery mode can be replaced by another session on the role, and a
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
-// Only a role with no live holder ends the row.
+// Only a role with no live holder ends the row. Each answer holds the holder's words in a box,
+// which makes it no value errors.Is can compare, so the row's error is held to the publisher's own
+// error, which wraps it.
 func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", firedHook, time.Now())
@@ -183,7 +185,7 @@ func TestAHookPromptRetriesEveryFailureButNoHolder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			publisher.err = fmt.Errorf("publish to the implementer's topic: %w", tc.err)
 			err := runner.execute(ctx, row)
-			if err == nil || !errors.Is(err, tc.err) {
+			if err == nil || !errors.Is(err, publisher.err) {
 				t.Fatalf("the hook prompt answered %v = %v, want the answer as a failure, retried", tc.err, err)
 			}
 			t.Logf("%s: %v", tc.name, err)
