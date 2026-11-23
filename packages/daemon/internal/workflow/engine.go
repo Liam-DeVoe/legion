@@ -115,10 +115,10 @@ type Config struct {
 	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
 	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
 	// issue on to its task's next step (accepting, in the default steps); and, by the gate
-	// classify.MergeStateReadOwed, a head move of an issue in one of record.MergeForwardPhases
-	// (implementing, testing, reviewing, accepting, retro or merging) and a base push of an issue
-	// in testing, reviewing, accepting, retro or merging, each of which can turn the head
-	// conflicting with its base (dispatch://INFRA-4374 R0). The daemon
+	// classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
+	// (classify.MergeForwardStands: implementing, or a phase after it on the task's line) and a
+	// base push of an issue in a phase after implementing on that line, each of which can turn the
+	// head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
 	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
 	// is the API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
@@ -2524,7 +2524,10 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 // (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
 // retro, which starts once none of them is open beneath it (releaseHeldParents), and keeps the last step's
 // handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
-// and the hold.
+// and the hold. The hold is the move into the retro for the merge forward too
+// (mergeForwardOnEntry): an ask made in implementing that the last step's pass leaves standing is
+// asked again here, as the move into the retro would ask it, and the retro's later start from the
+// hold asks nothing more, since an ask is made once for each head.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)
@@ -2536,7 +2539,10 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, to, handoff, reason)); err != nil {
 		return err
 	}
-	return e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath))
+	if err := e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath)); err != nil {
+		return err
+	}
+	return e.mergeForwardOnEntry(ctx, tx, issue, w, from)
 }
 
 // queueMovedNews queues the reconcile of issue's tree's news of its approved design

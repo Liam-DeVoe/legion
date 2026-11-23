@@ -46,11 +46,12 @@ import (
 // on a phase entry alike.
 //
 // The roles are addressed as every role message of the daemon is (addressRoles), each once, and
-// a pull request that is not open, an issue in no phase of record.MergeForwardPhases and a tree
-// that lingers (record.TreeLingers, where every role is suspended) are asked nothing.
-func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, pr *record.PullRequest, why record.ConflictWhy) error {
+// a pull request that is not open, an issue where no merge forward stands on line, the phases its
+// task walks (classify.MergeForwardStands: implementing or a phase after it), and a tree that
+// lingers (record.TreeLingers, where every role is suspended) are asked nothing.
+func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue, line []phase.Phase, pr *record.PullRequest, why record.ConflictWhy) error {
 	at := record.StandsAt(issue)
-	if pr.State != record.PullRequestOpen || !record.StandsIn(issue, record.MergeForwardPhases...) {
+	if pr.State != record.PullRequestOpen || !classify.MergeForwardStands(issue, line) {
 		return nil
 	}
 	asker := record.MergeForwardAsker(at)
@@ -124,11 +125,12 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 //     asked. On a task where a step follows the review or the acceptance, a move into that step
 //     asks nothing either: the conflict was decided by R0's reasons where it was confirmed, and
 //     the step goes on at the head as a tester or a reviewer after the implementer does.
-//   - At such a head, a move out of implementing into a phase after it in phase.Order (so a move
-//     into planning asks nothing, wherever the task places the planner) asks again
-//     what was asked in implementing, for the reason it was asked for (record.MergeForward.Why):
-//     an ask made there covers implementing alone, so an implementer that completes at that head
-//     without the merge leaves the next phase to ask, with its hold and its notice.
+//   - At such a head, a move out of implementing into a phase after it on the task's line
+//     (Walk.MovesBack: a planning after the implementer too, a planning before it never) asks
+//     again what was asked in implementing, for the reason it was asked for
+//     (record.MergeForward.Why): an ask made there covers implementing alone, so an implementer
+//     that completes at that head without the merge leaves the next phase to ask, with its hold
+//     and its notice. A parent held before its retro is that next phase (holdBeforeRetro).
 //
 // mergeForward asks once for each head, so a move into merging at a head the merger was already
 // asked of asks nothing more.
@@ -146,10 +148,10 @@ func (e *Engine) mergeForwardOnEntry(ctx context.Context, tx pgx.Tx, issue recor
 		if asked != nil && asked.Head == pr.HeadSHA && asked.Phase != phase.Implementing && asked.Asked() != claim.RoleMerger {
 			return e.holdMerger(ctx, tx, issue, pr)
 		}
-		return e.mergeForward(ctx, tx, issue, pr, record.ConflictMergeNext)
-	case from == phase.Implementing && !phase.MovesBack(from, issue.Phase) &&
+		return e.mergeForward(ctx, tx, issue, w.Line, pr, record.ConflictMergeNext)
+	case from == phase.Implementing && w.MovesBack(record.StandsAt(issue), phase.Implementing) &&
 		asked != nil && asked.Head == pr.HeadSHA && asked.Phase == phase.Implementing:
-		return e.mergeForward(ctx, tx, issue, pr, asked.Why)
+		return e.mergeForward(ctx, tx, issue, w.Line, pr, asked.Why)
 	}
 	return nil
 }

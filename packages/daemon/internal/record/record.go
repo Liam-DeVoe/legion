@@ -1130,22 +1130,10 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward stands in: implementing, where the work
-// already is, and testing, reviewing, accepting, retro and merging, which the issue keeps while
-// the role asked (MergeForwardAsker) merges (dispatch://INFRA-4374 R1). Where the merge comes
-// next before merging - retro, or accepting where no step of the task follows the acceptance -
-// nothing is asked (classify.ConflictNeedsMerge): the merger merges the base forward once the
-// issue reaches merging (cybermonklabs/legion#4979), and an ask made before stands there until it
-// lands. An issue that stands in none of them - admitted, awaiting_person or planning, or out of
-// the workflow - is asked for no merge forward, wherever its task places the planner. They are
-// also the phases a head move is read for a conflict in (classify.MergeStateReadOwed), since that
-// read is what records the conflict an ask is made for. Both read it through StandsIn, so a hold
-// from one of them counts as standing there.
-var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
-
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
 // in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
-// the implementer in every earlier phase of MergeForwardPhases. The ask's row goes to it
+// the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
+// implementing, or a phase after it on the task's line). The ask's row goes to it
 // (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
