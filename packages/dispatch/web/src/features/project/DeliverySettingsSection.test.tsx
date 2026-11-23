@@ -10,6 +10,13 @@ import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import {
+  evalDetailQuery,
+  evalsAcrossProjectsQuery,
+  evalsViewQuery,
+  itemsViewQuery,
+  projectTimelineViewQuery,
+} from "../../api/queries";
 import type { ProjectDeliverySettings, ProjectDeploySource } from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsSection } from "./DeliverySettingsSection";
@@ -454,6 +461,56 @@ test("the fields are disabled while the save is in flight", async () => {
   }
 });
 
+/** The Evals tab's reads of PROJECT, keyed and marked (`meta`) by the tab's own query options,
+ *  and a page of the cross-project read, each held in `queryClient`'s cache with data and no
+ *  observer, so a test reads which of them a save invalidates. The live views are kept past their
+ *  `gcTime` of 0. */
+function seedEvalsReads(queryClient: QueryClient): {
+  across: readonly unknown[];
+  detail: readonly unknown[];
+  live: readonly (readonly unknown[])[];
+} {
+  const window = { preset: 28 } as const;
+  const views = [
+    evalsViewQuery({
+      compare: null,
+      kind: "delivery",
+      offset: 0,
+      project: PROJECT,
+      repos: [],
+      window,
+    }),
+    itemsViewQuery({
+      compare: null,
+      limit: 200,
+      project: PROJECT,
+      repos: [],
+      slug: "pr-ci",
+      window,
+    }),
+    projectTimelineViewQuery({ project: PROJECT, query: "", window }),
+  ];
+  const across: readonly unknown[] = evalsAcrossProjectsQuery({
+    compare: null,
+    offset: 0,
+    repos: [],
+    window: { from: "2026-10-26T00:00:00Z", to: "2026-11-24T00:00:00Z" },
+  }).queryKey;
+  const detail: readonly unknown[] = evalDetailQuery(PROJECT, "deploy-frequency", 1).queryKey;
+  const cache = queryClient.getQueryCache();
+  const live = views.map((view) => {
+    const key: readonly unknown[] = view.queryKey;
+    cache.build(queryClient, { queryKey: key, meta: view.meta, gcTime: Number.POSITIVE_INFINITY });
+    queryClient.setQueryData(key, {});
+    return key;
+  });
+  for (const key of [across, detail]) {
+    cache.build(queryClient, { queryKey: key });
+    queryClient.setQueryData(key, {});
+  }
+  return { across, detail, live };
+}
+
 test("a save restarts the fields from the stored record and refreshes the evals", async () => {
   const user = userEvent.setup();
   const stored = savedLater({ sources: [githubSource({ id: "source-stored" })] });
@@ -466,9 +523,7 @@ test("a save restarts the fields from the stored record and refreshes the evals"
   try {
     const queryClient = renderSection();
     const reads = seedDeliveryReads(queryClient);
-    const evals = ["evals", PROJECT, "list"];
-    queryClient.getQueryCache().build(queryClient, { queryKey: evals });
-    queryClient.setQueryData(evals, []);
+    const evals = seedEvalsReads(queryClient);
     await user.click(await screen.findByRole("switch", { name: "Delivery" }));
     const invalidate = spyOn(queryClient, "invalidateQueries");
 
@@ -518,18 +573,25 @@ test("a save restarts the fields from the stored record and refreshes the evals"
     expect(field("Deploy frequency (deploys a day)").value).toBe("20");
     expect(field("Change failure rate (a share from 0 to 1)").value).toBe("0.05");
     // The save refreshes the project's settings, the delivery reads that are not live (an open
-    // run's drill-down; a live view learns of the save from Dispatch, as a delta) and the
-    // project's evals, whose targets the save wrote.
+    // run's drill-down; a live view learns of the save from Dispatch, as a delta), the Evals tab's
+    // reads of the project that are not live (an eval's detail; its evals, items and timeline
+    // views learn of it as a delta), and the cross-project read, which lists the evals whose
+    // targets it wrote.
     await waitFor(() =>
       expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
         ["project-delivery-settings", PROJECT],
         ["delivery"],
         ["evals", PROJECT],
+        ["evals", "across"],
       ])
     );
     expect(queryClient.getQueryState(reads.run)?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(reads.live)?.isInvalidated).toBe(false);
-    expect(queryClient.getQueryState(evals)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(evals.detail)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(evals.across)?.isInvalidated).toBe(true);
+    for (const view of evals.live) {
+      expect(queryClient.getQueryState(view)?.isInvalidated).toBe(false);
+    }
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
   } finally {
     cleanup();

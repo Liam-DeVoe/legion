@@ -14,11 +14,11 @@ const KINDS: EvalKind[] = ["delivery", "legion", "ci", "experiment"];
 
 const COMPARE = { from: "2026-09-27T00:00:00.000Z", to: "2026-10-26T00:00:00.000Z" };
 
-/** The live view `params` subscribe: the key's last part. */
+/** The live view `params` subscribe: the key's last part, under the project's evals. */
 function viewOf(params: EvalsViewParams) {
-  const [scope, name, view] = evalsViewQuery(params).queryKey;
+  const [scope, project, name, view] = evalsViewQuery(params).queryKey;
   if (typeof view === "string") throw new Error("the key names no view");
-  expect([scope, name]).toEqual(["evals", "view"]);
+  expect([scope, project, name]).toEqual(["evals", params.project, "view"]);
   return view;
 }
 
@@ -130,7 +130,7 @@ test("a delivery view carries the search and each facet value under the list rea
 // An items view names the eval whose rows it shows apart, and the rest of what the items route
 // takes as its query (packages/contracts DeliveryLiveView), so the hub reads it as the route does.
 test("an items view carries the project, the eval, the window, and the items route's query", () => {
-  const [scope, name, view] = itemsViewQuery({
+  const [scope, project, name, view] = itemsViewQuery({
     compare: COMPARE,
     limit: 5,
     project: "ACME",
@@ -139,7 +139,7 @@ test("an items view carries the project, the eval, the window, and the items rou
     sort: "median",
     window: { preset: 28 },
   }).queryKey;
-  expect([scope, name]).toEqual(["evals", "items"]);
+  expect([scope, project, name]).toEqual(["evals", "ACME", "items"]);
   expect(view).toEqual({
     kind: "items",
     project: "ACME",
@@ -148,7 +148,7 @@ test("an items view carries the project, the eval, the window, and the items rou
     window: { preset: 28 },
   });
 
-  const [, , filtered] = itemsViewQuery({
+  const [, , , filtered] = itemsViewQuery({
     compare: null,
     limit: 200,
     offset: 200,
@@ -174,7 +174,7 @@ test("a project-timeline view is keyed by its window, facets and search, never i
     window: { preset: 28 },
   } as const;
   const key = [...projectTimelineViewQuery(params).queryKey];
-  expect(key).toEqual(["evals", "timeline", params]);
+  expect(key).toEqual(["evals", "ACME", "timeline", params]);
   expect(JSON.stringify(key)).not.toContain("limit");
   expect(PROJECT_TIMELINE_PAGE).toBe(200);
 });
