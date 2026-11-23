@@ -391,7 +391,9 @@ test("the links of its values' readings draw under the sources", () => {
 
   render(createElement(EvalChart, { model: drawn, renderer: architectureKind.renderer }));
   const figure = screen.getByRole("figure", { name: "Where the risk sits" });
-  const links = within(figure).getByRole("list", { name: "Where the risk sits: links of its values" });
+  const links = within(figure).getByRole("list", {
+    name: "Where the risk sits: links of its values",
+  });
   expect(within(links).getByRole("link", { name: /grader's row/ })).toHaveAttribute(
     "href",
     "https://ledger.example.com/grader"

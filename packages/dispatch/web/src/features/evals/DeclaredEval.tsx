@@ -240,10 +240,7 @@ type Block =
  * after one chart in the order their numbers and sections are declared; a section whose `after`
  * names no chart of the eval stands after its own number.
  */
-function blocksOf(
-  specs: readonly DeclaredSpec[],
-  models: readonly (ChartModel | null)[]
-): Block[] {
+function blocksOf(specs: readonly DeclaredSpec[], models: readonly (ChartModel | null)[]): Block[] {
   const charts = specs.map((spec, index) => {
     const model = models[index] ?? null;
     const renderer = kindOf(spec)?.renderer;

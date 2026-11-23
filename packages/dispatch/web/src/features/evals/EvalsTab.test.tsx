@@ -1093,35 +1093,36 @@ const everySourceMissingRows: [string, ProjectDeliverySettings | null][] = [
   ["no deploy source", deliverySettings("ACME", { delivery: false, sources: [] })],
 ];
 
-bunTest.each(
-  everySourceMissingRows
-)("with no daemon and %s, one line names both settings with links, and no section shows", async (_row, settings) => {
-  try {
-    renderTab(null, "?window=28d", settings);
-    const socket = await openSocket();
-    const line = await waitFor(() => {
-      const found = document.querySelector<HTMLElement>("[data-missing-sources]");
-      expect(found?.textContent).toBe(
-        "Nothing to show yet: set this project's Legion daemon or its delivery settings."
+bunTest.each(everySourceMissingRows)(
+  "with no daemon and %s, one line names both settings with links, and no section shows",
+  async (_row, settings) => {
+    try {
+      renderTab(null, "?window=28d", settings);
+      const socket = await openSocket();
+      const line = await waitFor(() => {
+        const found = document.querySelector<HTMLElement>("[data-missing-sources]");
+        expect(found?.textContent).toBe(
+          "Nothing to show yet: set this project's Legion daemon or its delivery settings."
+        );
+        return found as HTMLElement;
+      });
+      expect(document.querySelectorAll("[data-missing-sources]")).toHaveLength(1);
+      expect(within(line).getByRole("link", { name: "Legion daemon" })).toHaveAttribute(
+        "href",
+        "/settings"
       );
-      return found as HTMLElement;
-    });
-    expect(document.querySelectorAll("[data-missing-sources]")).toHaveLength(1);
-    expect(within(line).getByRole("link", { name: "Legion daemon" })).toHaveAttribute(
-      "href",
-      "/settings"
-    );
-    expect(within(line).getByRole("link", { name: "delivery settings" })).toHaveAttribute(
-      "href",
-      "/projects/ACME/settings"
-    );
-    expect(screen.queryByRole("link", { name: "Delivery: not set up" })).toBeNull();
-    expect(sectionsDrawn()).toEqual([]);
-    await waitFor(() => expect(heldKinds(socket)).toEqual([]));
-  } finally {
-    cleanup();
+      expect(within(line).getByRole("link", { name: "delivery settings" })).toHaveAttribute(
+        "href",
+        "/projects/ACME/settings"
+      );
+      expect(screen.queryByRole("link", { name: "Delivery: not set up" })).toBeNull();
+      expect(sectionsDrawn()).toEqual([]);
+      await waitFor(() => expect(heldKinds(socket)).toEqual([]));
+    } finally {
+      cleanup();
+    }
   }
-});
+);
 
 test('a live section with no data reads "no data", not 0', async () => {
   renderTab();
