@@ -271,8 +271,10 @@ const (
 	// daemon is LEGION_NOT_CONFIGURED.
 	viewReadsLegion
 	// viewReadsEvals is one project's eval registry rows: the view names that project, the
-	// changes that touch it are its project's readings, versions and day rows (touchedBy), it
-	// judges no freshness, and a project no row holds is the read's PROJECT_NOT_FOUND.
+	// changes that touch it are its project's readings, versions and day rows (touchedBy), and a
+	// delivery view (deliveryLiveSpec.freshness) is marked too by a write of its project's deploy
+	// sources' bookkeeping (applyFreshness); it judges no freshness, and a project no row holds is
+	// the read's PROJECT_NOT_FOUND.
 	viewReadsEvals
 	// viewReadsEvalItems is the rows behind one eval's numbers: its registry rows and the
 	// delivery, CI, Legion and readings rows they count. The view names the eval's project and
@@ -453,7 +455,9 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 	// preset move only when a day turns, so a page holding it is sent it only then; the compare
 	// range is the one the view's query names, which never moves. The freshness's refresher age is
 	// measured at the moment of the read, so its revision leaves that age out: it goes with the
-	// freshness when the folded rows' own age moves.
+	// freshness when the folded rows' own age moves. A delivery view's delivery_freshness, its
+	// project's deploy sources' freshness, goes whole when it moves: a write of a source's
+	// bookkeeping marks the view (applyFreshness), which the change log does not carry.
 	//
 	// It shows the unowned-p0 eval, whose count the list reads from the project's stored row of
 	// today alone, so a P0 issue's event, which moves no stored row, marks no evals view: the
@@ -464,7 +468,7 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		lists: []string{"items"},
 		whole: map[string][]string{
 			"total": nil, "limit": nil, "offset": nil, "window": nil, "compare": nil,
-			"freshness": {"refresher_age_seconds"},
+			"freshness": {"refresher_age_seconds"}, "delivery_freshness": nil,
 		},
 		reads: viewReadsEvals,
 		parse: parseEvalsLiveView,

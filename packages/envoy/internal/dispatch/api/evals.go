@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -333,15 +334,19 @@ type evalListItem struct {
 
 // evalListResponse is GET /api/v1/projects/{key}/evals and GET /api/v1/evals: one page of evals,
 // by project and then by slug, with the window and the compare range they were folded over and
-// how fresh the folded rows are.
+// how fresh the folded rows are. DeliveryFreshness is the freshness of the project's deploy
+// sources (projectDeliveryFreshness) on the project read of its delivery evals (kind=delivery), and
+// null on every other read: another kind or none, a project with no deploy source, and the read
+// across projects.
 type evalListResponse struct {
-	Items     []evalListItem `json:"items"`
-	Total     int            `json:"total"`
-	Limit     int            `json:"limit"`
-	Offset    int            `json:"offset"`
-	Window    evalRange      `json:"window"`
-	Compare   *evalRange     `json:"compare"`
-	Freshness evalFreshness  `json:"freshness"`
+	Items             []evalListItem                  `json:"items"`
+	Total             int                             `json:"total"`
+	Limit             int                             `json:"limit"`
+	Offset            int                             `json:"offset"`
+	Window            evalRange                       `json:"window"`
+	Compare           *evalRange                      `json:"compare"`
+	Freshness         evalFreshness                   `json:"freshness"`
+	DeliveryFreshness *delivery.DeliveryFreshnessView `json:"delivery_freshness"`
 }
 
 // evalVersionItem is one version of an eval as the detail read answers it: the eval as evalItem
@@ -710,9 +715,10 @@ func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 // readProjectEvalList is the body of GET /api/v1/projects/{key}/evals for query, as of now: the
 // list read of project's evals (readEvalList), after the query is read (parseEvalListQuery), the
 // project found in the answer's snapshot, 404 PROJECT_NOT_FOUND for a project no row holds
-// (loadProject). The live hub's evals view reads its body through this too, so the two answer one
-// query alike, and takes the narrowing the read narrowed by (nil for none), which names the issues
-// and sessions an event can move it by.
+// (loadProject), and, for its delivery evals (kind=delivery), the freshness of its deploy sources
+// (projectDeliveryFreshness). The live hub's evals view reads its body through this too, so the
+// two answer one query alike, and takes the narrowing the read narrowed by (nil for none), which
+// names the issues and sessions an event can move it by.
 func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time) (evalListResponse, *evalNarrowing, error) {
 	request, err := parseEvalListQuery(query, evalListQueryKeys)
 	if err != nil {
@@ -725,7 +731,63 @@ func (s *server) readProjectEvalList(ctx context.Context, query url.Values, proj
 		return []string{project}, nil
 	}
 	answer, err := s.readEvalList(ctx, request, now)
-	return answer, request.narrowing, err
+	if err != nil {
+		return evalListResponse{}, nil, err
+	}
+	if request.kind == evals.KindDelivery {
+		if answer.DeliveryFreshness, err = s.projectDeliveryFreshness(ctx, project); err != nil {
+			return evalListResponse{}, nil, err
+		}
+	}
+	return answer, request.narrowing, nil
+}
+
+// projectDeliveryFreshness is the freshness of project's deploy sources, the delivery_freshness of
+// the list read of its delivery evals (dispatch://INFRA-2918, D2): each github_workflow source of
+// the project whose repository resolves, while delivery is on (delivery.ProjectSettings.Rules), in
+// its position, folded by the one function the delivery timeline's freshness is folded by
+// (delivery.FreshnessOf), with the unfetchable pull requests the project counts by root R27, by the
+// rule its day rows count a pull request by (evals.Attribution.CountsPullRequest). It is nil where
+// the project has no such source: no settings row, delivery off, or no source whose repository
+// resolves. It is read after the list read's snapshot ends: the line says how fresh the sources'
+// intake is, and no figure of the answer is folded from it.
+func (s *server) projectDeliveryFreshness(ctx context.Context, project string) (*delivery.DeliveryFreshnessView, error) {
+	pool := s.deps.Store.Pool
+	settings, err := delivery.GetProjectSettings(ctx, pool, project)
+	if errors.Is(err, delivery.ErrNoSettings) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sources := settings.Rules()
+	if len(sources) == 0 {
+		return nil, nil
+	}
+	unfetchable, err := delivery.ListUnfetchablePullRequests(ctx, pool)
+	if err != nil {
+		return nil, fmt.Errorf("read the unfetchable pull requests: %w", err)
+	}
+	counted := 0
+	if len(unfetchable) > 0 {
+		keys := []string{}
+		for _, pr := range unfetchable {
+			if pr.IssueKey != nil {
+				keys = append(keys, *pr.IssueKey)
+			}
+		}
+		attribution, err := s.registry().ReadAttribution(ctx, keys)
+		if err != nil {
+			return nil, fmt.Errorf("read the projects the unfetchable pull requests count for: %w", err)
+		}
+		for _, pr := range unfetchable {
+			if attribution.CountsPullRequest(pr, project) {
+				counted++
+			}
+		}
+	}
+	freshness := delivery.FreshnessOf(sources, counted)
+	return &freshness, nil
 }
 
 // listEvals answers GET /api/v1/evals: the list read across projects, each item the shape the

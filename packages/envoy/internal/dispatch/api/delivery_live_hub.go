@@ -371,7 +371,12 @@ type deliveryLiveSpec struct {
 	// built from the delivery rows when it is read, so a change of one marks it
 	// (touchedByDeliveryRow). Every other view is not narrowed.
 	narrowed bool
-	key      string
+	// freshness is whether an evals view's answer carries its project's deploy sources'
+	// freshness (delivery_freshness: its query keeps the delivery kind, readProjectEvalList), which
+	// a write of one of those sources' bookkeeping moves, and the change log does not carry: the
+	// write's delivery_freshness notification marks it (applyFreshness). Every other view does not.
+	freshness bool
+	key       string
 }
 
 // deliveryFreshnessHeard is the freshness of the delivery reads' sources as the hub last heard it,

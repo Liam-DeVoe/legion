@@ -579,6 +579,19 @@ func CountUnfetchablePullRequests(ctx context.Context, pool *store.Pool) (int, e
 	return count, err
 }
 
+// ListUnfetchablePullRequests lists every row MarkPullRequestUnfetchable has marked, by repository
+// and number, through delivery_pull_requests_unfetchable: the rows one project's freshness counts
+// those of that project among (api's projectDeliveryFreshness), where CountUnfetchablePullRequests
+// counts them all.
+func ListUnfetchablePullRequests(ctx context.Context, pool *store.Pool) ([]DeliveryPullRequest, error) {
+	return listPullRequests(ctx, pool, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where unfetchable_at is not null
+		order by repo, number
+	`)
+}
+
 // ListPartialPullRequests lists every partial=true row, oldest merge first: the reconcile's cheap
 // way to find rows a completing fetch never finished, using delivery_pull_requests_partial
 // instead of a full table scan. Not scoped to one repository: a population pull request (and so a

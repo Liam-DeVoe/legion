@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 )
 
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
@@ -127,7 +129,8 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 // custom window readWindow takes can still end its days past the year 9999, which the route
 // refuses (evalDaysAnswerable), and a view held with it would read and fail every
 // deliveryLiveRetry for as long as it stood, its subscribers told nothing. A view whose query sets
-// a facet but the repository, or the search, is narrowed (deliveryLiveSpec.narrowed).
+// a facet but the repository, or the search, is narrowed (deliveryLiveSpec.narrowed), and one whose
+// kind is delivery carries its project's deploy sources' freshness (deliveryLiveSpec.freshness).
 func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	project, refusal := readLiveProject(view, "an evals view", "INVALID_QUERY")
 	if refusal != nil {
@@ -141,7 +144,7 @@ func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErro
 	if err != nil {
 		return invalidLiveView("INVALID_QUERY", err.Error())
 	}
-	spec.project, spec.narrowed = project, request.narrowing != nil
+	spec.project, spec.narrowed, spec.freshness = project, request.narrowing != nil, request.kind == evals.KindDelivery
 	spec.key = evalsView + "|" + project + "|" + named + "|" + spec.query.Encode()
 	return nil
 }
