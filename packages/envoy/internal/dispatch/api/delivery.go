@@ -224,11 +224,23 @@ func (s *server) getDeliveryTimeline(w http.ResponseWriter, r *http.Request) {
 }
 
 // deliveryTimelineCompute is GET /api/v1/delivery/timeline's body (deliveryTimelineWithMeasures)
-// for [from, to) from a population read for that window or narrowed to it. It reads nothing; now
-// is only the measures' computed_at.
+// for [from, to) from a population read for that window or narrowed to it: the timeline
+// (deliveryTimelineOf) and the window's measures beside it. It reads nothing; now is only the
+// measures' computed_at.
 func deliveryTimelineCompute(settings delivery.DeliverySettings, pop deliveryPopulation, from, to, now time.Time) deliveryTimelineWithMeasures {
 	derived := pop.derive(settings)
+	return deliveryTimelineWithMeasures{
+		DeliveryTimelineResponse: deliveryTimelineOf(settings, pop, derived, from, to),
+		Measures:                 deliveryMeasuresOver(settings, pop, derived, from, to, now),
+	}
+}
 
+// deliveryTimelineOf is the timeline of [from, to) from a population and what derive computed
+// from it: its merges under the facets and the search, the pull requests waiting at its start
+// under the same, its deploy runs, and the counts and labels beside them. GET
+// /api/v1/delivery/timeline answers it with the measures (deliveryTimelineCompute), and GET
+// /api/v1/projects/{key}/timeline pages it over one project's population (projectTimelineCompute).
+func deliveryTimelineOf(settings delivery.DeliverySettings, pop deliveryPopulation, derived deliveryDerived, from, to time.Time) delivery.DeliveryTimelineResponse {
 	// A run's prs[] is every window pull request it shipped first, whatever the facets: the page
 	// sizes a deploy and lists its drill-down by everything it shipped.
 	prViews := make([]delivery.DeliveryPRView, 0, len(derived.rows))
@@ -274,22 +286,19 @@ func deliveryTimelineCompute(settings delivery.DeliverySettings, pop deliveryPop
 		return cmp.Or(a.HeadAt.Compare(b.HeadAt), cmp.Compare(a.ID, b.ID))
 	})
 
-	return deliveryTimelineWithMeasures{
-		DeliveryTimelineResponse: delivery.DeliveryTimelineResponse{
-			Window:          delivery.DeliveryWindowView{From: from, To: to},
-			PRs:             prViews,
-			Waiting:         waitingViews,
-			Runs:            runViews,
-			FacetCounts:     deliveryFacetCounts(derived.rows, derived.selection),
-			ColorCounts:     deliveryColorCounts(derived.rows),
-			Components:      derived.components,
-			IssueTitles:     derived.issueTitles,
-			Freshness:       derived.freshness,
-			SessionGroups:   pop.groups,
-			SessionTitles:   derived.sessionTitles,
-			SessionPRCounts: derived.sessionPRCounts,
-		},
-		Measures: deliveryMeasuresOver(settings, pop, derived, from, to, now),
+	return delivery.DeliveryTimelineResponse{
+		Window:          delivery.DeliveryWindowView{From: from, To: to},
+		PRs:             prViews,
+		Waiting:         waitingViews,
+		Runs:            runViews,
+		FacetCounts:     deliveryFacetCounts(derived.rows, derived.selection),
+		ColorCounts:     deliveryColorCounts(derived.rows),
+		Components:      derived.components,
+		IssueTitles:     derived.issueTitles,
+		Freshness:       derived.freshness,
+		SessionGroups:   pop.groups,
+		SessionTitles:   derived.sessionTitles,
+		SessionPRCounts: derived.sessionPRCounts,
 	}
 }
 
@@ -328,14 +337,14 @@ type deliveryPopulation struct {
 	applyRuns []delivery.DeliveryRun
 	jobsByRun map[int64][]delivery.DeliveryRunJob
 	// windowRuns is every deploy run on main started in the window, oldest start first, and
-	// windowJobs their production jobs: the measures' deploys. windowShipped is how many
-	// population pull requests each of the window's deploys ships first, whenever they merged
-	// (delivery.Deploys.ShippedBy): the deploys with pull requests. It is counted once, when the
-	// population is read, so a narrowed population keeps the count a deploy has whatever window
-	// holds it.
+	// windowJobs their production jobs: the measures' deploys. windowShipped is the population
+	// pull requests each of the window's deploys ships first, whenever they merged
+	// (delivery.Deploys.ShippedBy): the deploys with pull requests, and the projects each counts
+	// for (projectTimelinePopulation). It is taken once, when the population is read, so a
+	// narrowed population keeps what a deploy ships whatever window holds it.
 	windowRuns    []delivery.DeliveryRun
 	windowJobs    map[int64][]delivery.DeliveryRunJob
-	windowShipped map[int64]int
+	windowShipped map[int64][]*delivery.DeliveryPullRequest
 	unownedP0     []delivery.UnownedIssue
 	// targetEvals is the evals whose targets the measures judge them by (evals.DeliveryTargetSlugs),
 	// as the deploy repository's project holds them (evals.Store.DeployRepoEvals),
@@ -484,11 +493,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	}
 	if withMeasures {
 		pop.windowRuns, pop.windowJobs = deploys.Started.Runs, deploys.Started.Jobs
-		shipped := deploys.ShippedBy(delivery.MergedRows{PullRequests: pop.prs, ApplyRuns: pop.applyRuns, ApplyJobs: pop.jobsByRun}, settings)
-		pop.windowShipped = make(map[int64]int, len(shipped))
-		for runID, prs := range shipped {
-			pop.windowShipped[runID] = len(prs)
-		}
+		pop.windowShipped = deploys.ShippedBy(delivery.MergedRows{PullRequests: pop.prs, ApplyRuns: pop.applyRuns, ApplyJobs: pop.jobsByRun}, settings)
 	}
 	// Warned here, once per run, rather than in the compute, which runs again on every expiry.
 	s.productionApplies(ctx, pop.applyRuns, pop.jobsByRun, settings.Production())

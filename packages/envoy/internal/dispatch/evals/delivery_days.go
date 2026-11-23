@@ -414,8 +414,9 @@ func (d deliveryRead) linked(member string) []dayItem {
 // by its key, and the issue each PR-checks run's pull request names (pulls), by the pull request's
 // row key, for each such pull request the population holds a row of that names an issue the
 // issues table holds (readAttribution). readDeliveryDay attributes one day's rows by it, a span
-// the rows of each day it builds (deliverySpanInput), and the refresher's rewrite of a settings
-// change the rows of each day it builds (rewriteSettings).
+// the rows of each day it builds (deliverySpanInput), the refresher's rewrite of a settings
+// change the rows of each day it builds (rewriteSettings), and the project timeline the rows of
+// its window (Attribution).
 type attribution struct {
 	issues map[string]string
 	pulls  map[string]string
@@ -472,7 +473,7 @@ func (a attribution) pullRequest(pr delivery.DeliveryPullRequest, apply *deliver
 
 // deploy is run, a deploy run on main started on the day, as the builders read it: whether it
 // reached production, the pull requests it ships first (Deploys.ShippedBy's), and the projects it
-// counts for: those its pull requests count for, once each, and none where none counts for one.
+// counts for (shipping).
 func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*delivery.DeliveryPullRequest) dayDeploy {
 	deploy := dayDeploy{
 		run: measures.Run{
@@ -480,10 +481,18 @@ func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*d
 			ReachedProduction: reached, ShippedPRs: len(shipped),
 		},
 		repo: run.Repo, member: RunMember(run.Repo, run.RunID),
+		projects: a.shipping(shipped),
 	}
 	for _, pr := range shipped {
 		deploy.ships = append(deploy.ships, dayItem{member: PullRequestMember(pr.Repo, pr.Number), day: measures.Midnight(*pr.MergedAt)})
 	}
+	return deploy
+}
+
+// shipping is the projects a deploy run that ships shipped first counts for: those its pull
+// requests count for, once each, and none where none counts for one.
+func (a attribution) shipping(shipped []*delivery.DeliveryPullRequest) []counted {
+	var projects []counted
 	// Once in each project its pull requests count for, through an issue where any of that
 	// project's did.
 	for _, pr := range shipped {
@@ -491,14 +500,44 @@ func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*d
 		if counts.project == "" {
 			continue
 		}
-		index := slices.IndexFunc(deploy.projects, func(c counted) bool { return c.project == counts.project })
+		index := slices.IndexFunc(projects, func(c counted) bool { return c.project == counts.project })
 		if index < 0 {
-			deploy.projects = append(deploy.projects, counts)
+			projects = append(projects, counts)
 			continue
 		}
-		deploy.projects[index].via = deploy.projects[index].via && counts.via
+		projects[index].via = projects[index].via && counts.via
 	}
-	return deploy
+	return projects
+}
+
+// Attribution is the rule a day's rows are attributed to their projects by (attribution), for a
+// reader outside this package that keeps one project's delivery rows as the day rows count them:
+// the project timeline (api's project_timeline.go), whose rows are those its project counts. So
+// the rule has this one statement, whoever reads it. ReadAttribution reads it for the issues the
+// reader's rows name.
+type Attribution struct {
+	rule attribution
+}
+
+// ReadAttribution reads the Attribution of rows naming the issues keys: the project of each that
+// an issue holds (readAttribution).
+func (s *Store) ReadAttribution(ctx context.Context, keys []string) (Attribution, error) {
+	rule, err := readAttribution(ctx, s, keys, nil)
+	if err != nil {
+		return Attribution{}, err
+	}
+	return Attribution{rule: rule}, nil
+}
+
+// CountsPullRequest is whether pr counts for project (attribution.of).
+func (a Attribution) CountsPullRequest(pr delivery.DeliveryPullRequest, project string) bool {
+	return project != "" && a.rule.of(pr).project == project
+}
+
+// CountsDeploy is whether a deploy run that ships shipped first (delivery.Deploys.ShippedBy's)
+// counts for project (attribution.shipping).
+func (a Attribution) CountsDeploy(shipped []*delivery.DeliveryPullRequest, project string) bool {
+	return slices.ContainsFunc(a.rule.shipping(shipped), func(c counted) bool { return c.project == project })
 }
 
 // checkRuns is runs, PR-checks runs started on the day, each attributed to the project its pull

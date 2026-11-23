@@ -211,7 +211,7 @@ func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 // push runs are all among those runs, so a reader that builds every day at once (the day-row
 // refresher's rewrite of a settings change, evals' rewriteSettings) gives each day its part, where
 // a read of each day would read every deploy run created from that day on again. No limit bounds
-// it, as one bounds a window's reads (maxPullRequestsPerWindow, maxRunsPerWindow): the whole
+// it, as one bounds a window's reads (MaxPullRequestsPerWindow, MaxRunsPerWindow): the whole
 // history is what such a reader builds, and a limit would cut it short without a word.
 type HistoryRows struct {
 	PullRequests []DeliveryPullRequest
