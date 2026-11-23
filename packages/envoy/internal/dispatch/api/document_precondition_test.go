@@ -593,7 +593,7 @@ func TestATextDeleteThatHoistsANestedListIsTakenUnderAGuardOnItsParagraph(t *tes
 // 177). A marker delete of an item whose nested list holds two items, under a guard on the item's
 // paragraph and one nested item, is refused naming only the other nested item, at its token, with
 // nothing written. A delete of a list's only item, by its text, under a guard on that text's
-// paragraph is taken as on main: the list it empties held nothing but that covered item.
+// paragraph is taken: the list it empties held nothing but that covered item.
 func TestAGuardedRemovalIsRefusedOnlyForWhatTheGuardDoesNotCover(t *testing.T) {
 	t.Run("a wrapper the guard covers part of", func(t *testing.T) {
 		handler, _, _ := preconditionTestHandler(t)
