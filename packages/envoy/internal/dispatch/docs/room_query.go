@@ -379,7 +379,8 @@ func (r *roomQueries) query(ctx context.Context, payload string) {
 }
 
 // send sends answer, to query, with actors and updates, in as many parts as their size takes
-// (roomAnswerPayloads).
+// (roomAnswerPayloads), within roomSyncSendTimeout on the service's clock: the real clock in
+// production, and in a test a fake the test moves, so a send it holds ends only where it moves it.
 func (r *roomQueries) send(ctx context.Context, query roomQuery, answer roomAnswerPart, actors []model.Actor, updates []byte) {
 	answer.ID, answer.Process = query.ID, r.service.processID
 	payloads, err := roomAnswerPayloads(answer, actors, base64.StdEncoding.EncodeToString(updates))
@@ -387,7 +388,7 @@ func (r *roomQueries) send(ctx context.Context, query roomQuery, answer roomAnsw
 		slog.Error("dispatch: encode a document room answer", "room", query.Room, "error", err)
 		return
 	}
-	sending, cancel := context.WithTimeout(ctx, roomSyncSendTimeout)
+	sending, cancel := r.service.clock.WithTimeout(ctx, roomSyncSendTimeout)
 	defer cancel()
 	for _, payload := range payloads {
 		if err := r.service.roomSyncSender.Notify(sending, documentAnswerChannel, payload); err != nil {

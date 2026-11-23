@@ -1207,9 +1207,13 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// `with (force)`, internal/testpg/testdb's Template) have to run in before the binary exits.
 	// The child spends its storetest template migration and database clone before the parked
 	// trial: about 25 s at worst in this package's issue pod under -race and six busy loops on two
-	// CPUs. The deadline leaves the parked trial's wait 90 s from the child's start, over three
-	// times that, so a slow runner cannot turn a reporting child into this row's red.
-	const childDeadline = 120 * time.Second
+	// CPUs. The deadline is main's (092f3262cd), 180 s: there the child reported at the end of the
+	// parked trial's own 30 s guard, which left its setup 150 s before that guard; here the parked
+	// trial's wait gives up at the same 150 s from the child's start, six times that worst setup,
+	// so a slow runner cannot turn a reporting child into this row's red. The child runs until
+	// that wait gives up, so this row takes about 150 s, minutes inside the -timeout of either run
+	// named above.
+	const childDeadline = 180 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
 	// the child's own deadline watches none of what it does after them: storetest.Main's wait for
 	// those drops, the admin Exec that drops the template, the leak report. A child stuck in one

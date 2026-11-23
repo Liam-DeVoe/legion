@@ -66,7 +66,11 @@ const hookWentOn = "the hook's goroutine went on after TakeWriteLock"
 // the moment the wait gives up, so the hook goes on and the test goroutine fails the row by name. A
 // t.Fatal there would end the hook's goroutine rather than the test, and the child would log that
 // TakeWriteLock never returned. The child runs under -timeout 45s, so its wait gives up about 15 s
-// in.
+// in, and its setup (URL, StartHandshakeHold, proxiedClient) has those 15 s, as main's had: main's
+// child ran under the same 45 s, and its first row's take of the lock (takeConnLock) failed that
+// row with testwait.Left's "deadline leaves" text, not the guard's text the parent wants, once the
+// setup had left the binary's deadline connLockSpare (30 s) or less away, 15 s in, though main's
+// own waits of that setup ended only halfway to the deadline, 22.5 s in.
 func TestTakeWriteLockOnAHooksGoroutineFailsByNameAndReturns(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestTakeWriteLockOnAHooksGoroutineChild$", "-test.timeout=45s", "-test.v")
 	child.Env = append(os.Environ(), holdChildEnv+"=1")

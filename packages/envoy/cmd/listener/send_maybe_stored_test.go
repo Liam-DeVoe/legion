@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -113,13 +113,21 @@ func sendThroughDispatch(t *testing.T, mux http.Handler, target string) (int, st
 		w.WriteHeader(recorder.Code)
 		_, _ = w.Write(recorder.Body.Bytes())
 	}))
-	t.Cleanup(listener.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// The stand-in's Close waits for every request it serves to end, the listener's route among
+	// them, so a route that never ends fails the test naming it rather than holding the binary.
+	t.Cleanup(func() {
+		testwait.Returns(t, "the stand-in for the listener's server to close once the send's request ended", listener.Close)
+	})
 	// The client's window runs on a fake no one moves, so the listener's own answer, which may wait
-	// out its route's deadline first, is what ends the call (dispatchenvoy.WithClock).
-	_, err := dispatchenvoy.New(listener.URL, dispatchenvoy.WithClock(clocktest.Held())).Send(ctx, dispatchenvoy.SendInput{
-		TargetSession: target, Message: "may be stored", Payload: json.RawMessage(`{}`), IdempotencyKey: "maybe-stored-" + target,
+	// out its route's deadline first, is what ends the call (dispatchenvoy.WithClock), and a call
+	// that never ends fails the test at the shared wait's give-up, naming it. Its context ends with
+	// the test (t.Context), before the stand-in's Close, so a call that outlived the wait is
+	// cancelled first.
+	var err error
+	testwait.Returns(t, "Dispatch's client's send to "+target+" to end with the listener's answer", func() {
+		_, err = dispatchenvoy.New(listener.URL, dispatchenvoy.WithClock(clocktest.Held())).Send(t.Context(), dispatchenvoy.SendInput{
+			TargetSession: target, Message: "may be stored", Payload: json.RawMessage(`{}`), IdempotencyKey: "maybe-stored-" + target,
+		})
 	})
 	mu.Lock()
 	defer mu.Unlock()

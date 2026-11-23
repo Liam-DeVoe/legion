@@ -984,9 +984,10 @@ func StartConfig(t testing.TB, config string, serverArgs []string, anonymous boo
 // otherwise to refuse it with its own authorization violation, the proof it enforces its nkey
 // users. Either answer also proves it speaks the client protocol. A server can answer a dial
 // before the NATS protocol handshake, and a dial then ends in EOF or a refusal that says nothing
-// about the server's users, so that is retried through the shared wait. The opposite answer fails
-// the test at once: a server that admits the connection enforces no users, and every refusal a
-// test expects of it would pass for the wrong reason; one that refuses it has no no_auth_user.
+// about the server's users, so that is retried through the shared wait; each connect's dial
+// carries the wait's give-up (giveUpDial). The opposite answer fails the test at once: a server
+// that admits the connection enforces no users, and every refusal a test expects of it would pass
+// for the wrong reason; one that refuses it has no no_auth_user.
 func awaitAuth(t testing.TB, uri string, admit bool) {
 	t.Helper()
 	what := fmt.Sprintf("NATS at %s to refuse a client with no credential with its authorization violation", uri)
@@ -994,7 +995,7 @@ func awaitAuth(t testing.TB, uri string, admit bool) {
 		what = fmt.Sprintf("NATS at %s to admit a client with no credential", uri)
 	}
 	testwait.Until(t, what, func() (error, bool) {
-		conn, err := natsgo.Connect(uri, natsgo.NoReconnect())
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), giveUpDial(t))
 		switch {
 		case err == nil:
 			conn.Close()
@@ -1033,6 +1034,47 @@ func ConnectSeed(t testing.TB, uri, seed string, opts ...natsgo.Option) (*natsgo
 	return natsgo.Connect(uri, append(options, opts...)...)
 }
 
+// giveUpDial is the dial of each connect a wait of t makes (Connect, awaitAuth, awaitSeed): a dial
+// with nats.go's default timeout, as nats.go's own dialer makes it (nats.go v1.55.0
+// nats.go:2017-2020), whose connection carries the shared wait's give-up (testwait.GiveUpAt) as its
+// deadline. nats.go runs a wss:// URL's TLS handshake on the dialled connection (createConn,
+// wsInitHandshake and makeTLSConn: nats.go:2549-2550, ws.go:598-603, nats.go:2600-2601) before it
+// sets its connect's own deadline (processConnectInit, nats.go:2944), so with no deadline from the
+// dial a server that accepts and sends nothing would hold the connect, and the wait asking it, past
+// the give-up, to go test's timeout panic; with it the handshake ends at the give-up, and the wait
+// fails naming the connect. A dial begun later than nats.go's default timeout before the give-up,
+// the one more ask a wait makes once the give-up has passed among them, carries that timeout from
+// the dial instead, so that ask is still answered. The deadline bounds the connect alone:
+// processConnectInit sets its own over it before its first read or write of a nats:// URL, and
+// clears both before the connect returns (nats.go:2944-2945), and with NoReconnect, which each such
+// connect sets, no later dial is made. Under -timeout 0, where a wait has no end, the connection
+// carries no deadline.
+func giveUpDial(t testing.TB) natsgo.Option {
+	return natsgo.SetCustomDialer(giveUpDialer{t: t})
+}
+
+// giveUpDialer is giveUpDial's dialer.
+type giveUpDialer struct{ t testing.TB }
+
+func (d giveUpDialer) Dial(network, address string) (net.Conn, error) {
+	conn, err := (&net.Dialer{Timeout: natsgo.DefaultTimeout}).Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	end, bounded := testwait.GiveUpAt(d.t)
+	if !bounded {
+		return conn, nil
+	}
+	if own := time.Now().Add(natsgo.DefaultTimeout); own.After(end) {
+		end = own
+	}
+	if err := conn.SetDeadline(end); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
 // dialAttempt is one dial of Connect's wait, so the failure of a wait that ran out prints the
 // server's answer to its last dial rather than a nil connection.
 type dialAttempt struct {
@@ -1051,14 +1093,15 @@ func (a dialAttempt) String() string {
 // operation before returning it. The relay accepts a connection before the server behind it has
 // finished its protocol handshake, and NATS can complete that handshake while JetStream is still
 // starting; a KV test needs both readiness boundaries. Each dial's own budget is nats.go's
-// default, and a dial that fails is made again by the shared wait. Each account info is bounded
-// by readWait and sent again by the shared wait when it runs out: only the leader of a cluster's
-// meta group answers one, so a member asked while that group has no leader answers nothing
-// (nats-server v2.15.1, jsAccountInfoRequest).
+// default, its connection carries the shared wait's give-up until the connect returns
+// (giveUpDial), and a dial that fails is made again by the shared wait. Each account info is
+// bounded by readWait and sent again by the shared wait when it runs out: only the leader of a
+// cluster's meta group answers one, so a member asked while that group has no leader answers
+// nothing (nats-server v2.15.1, jsAccountInfoRequest).
 func Connect(t testing.TB, uri string) *natsgo.Conn {
 	t.Helper()
 	dial := testwait.Until(t, fmt.Sprintf("a connection to the NATS server at %s", uri), func() (dialAttempt, bool) {
-		conn, err := natsgo.Connect(uri, natsgo.NoReconnect())
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), giveUpDial(t))
 		return dialAttempt{conn: conn, err: err}, err == nil
 	})
 	conn := dial.conn

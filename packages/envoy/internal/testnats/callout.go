@@ -168,11 +168,12 @@ func StartWithCalloutServer(t testing.TB, keys CalloutKeys, static ...StaticUser
 // cannot be probed with a client that has no credential, as awaitAuth probes one, because the
 // server holds such a client for its authorization timeout while it waits for an answer no
 // service gives yet. A server can answer a dial before the NATS protocol handshake, so a refused
-// connect is tried again through the shared wait, whose reading is the last refusal.
+// connect is tried again through the shared wait, whose reading is the last refusal; each
+// connect's dial carries the wait's give-up (giveUpDial).
 func awaitSeed(t testing.TB, uri, seed string) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("NATS at %s to admit the auth service's user", uri), func() (error, bool) {
-		conn, err := ConnectSeed(t, uri, seed)
+		conn, err := ConnectSeed(t, uri, seed, giveUpDial(t))
 		if err != nil {
 			return err, false
 		}

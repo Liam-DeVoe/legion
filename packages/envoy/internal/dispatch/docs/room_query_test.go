@@ -363,9 +363,8 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 		awaitingOnly(t, pair.taskA, silent)
 		// Task B's flush answer cancels its timeout and only then counts itself off its room's
 		// append waiters (askRoomAppends' done), deferred in that order, so once task B counts no
-		// waiter its timeout is gone and the clock holds task A's wait alone, whatever task B's
-		// goroutine was doing when its answer reached task A. A holds or a share arms no timeout
-		// of task B's at all.
+		// waiter its timeout is gone, whatever task B's goroutine was doing when its answer reached
+		// task A. A holds or a share arms no such timeout.
 		testwait.Until(t, kind+": task B to let go of its flush answer's timeout", func() (int, bool) {
 			state := pair.taskB.lockExistingState(pair.artifactID)
 			if state == nil {
@@ -373,6 +372,14 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 			}
 			defer pair.taskB.unlockState(pair.artifactID, state)
 			return state.appendWaiters, state.appendWaiters == 0
+		})
+		// Every answer's send arms roomSyncSendTimeout on task B's clock, this fake, and lets it go
+		// as the send returns (roomQueries.send), which can be after its last notification reached
+		// task A. Task A answers none of its own queries and the silent member answers nothing, so
+		// a goroutine inside a send is task B's; once none is, the clock holds task A's wait alone.
+		testwait.Until(t, kind+": task B's send of its answer to return and let go of its bound", func() (int, bool) {
+			sending := goroutinesIn("docs.(*roomQueries).send(")
+			return sending, sending == 0
 		})
 		armed := awaitQueryArms(t, clock, kind+": task A's wait for the silent member", 1)
 		want := asked.Add(roomQueryWait)

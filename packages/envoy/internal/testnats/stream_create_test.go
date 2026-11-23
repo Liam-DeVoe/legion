@@ -338,14 +338,16 @@ const (
 	// unansweredBucketDeadline is the child's go test -timeout, and accountInfoDelay how late the
 	// child's stand-in for JetStream answers the account information a bucket's create reads first.
 	// One send of the create then takes accountInfoDelay and createSendWait, as nothing answers the
-	// create of the bucket's stream: 18 s of the child's 45. The shared wait gives up 30 s before the
-	// child's deadline, 15 s in, so the child's setup, the server's start (awaitReady) among it, has
-	// 15 s before each of its waits asks only once more. Main's wait for that start ended halfway to
-	// the child's 32 s deadline, 16 s in, and main records a server start past 30 s at a load near
-	// 1,000. The first send begins once the setup ends, no later than 15 s in, and ends 18 s later,
-	// past the give-up, so it is the last: the create fails naming its sends at the setup's end plus
-	// 18 s, about 27 s before go test's timeout panic, and at least 12 s before it.
-	unansweredBucketDeadline = 45 * time.Second
+	// create of the bucket's stream: 18 s of the child's 48. The shared wait gives up 30 s before the
+	// child's deadline, 18 s in, so the child's setup, the server's start (awaitReady) among it, has
+	// 18 s before each of its waits asks only once more: more than main's 16 s, as main's wait for
+	// that start ended halfway to the child's 32 s deadline, and main records a server start past
+	// 30 s at a load near 1,000. The first send begins once the setup ends, later than 0 s in and,
+	// as a wait of the setup asks only once more past the give-up, about 18 s in at the latest, and
+	// ends 18 s after it began, past the give-up, so it is the last: the create fails naming its
+	// sends at the setup's end plus 18 s, about 36 s in at the latest, so about 12 s before go test's
+	// timeout panic at the least, and about 30 s before it when the setup is quick.
+	unansweredBucketDeadline = 48 * time.Second
 	accountInfoDelay         = 8 * time.Second
 )
 
