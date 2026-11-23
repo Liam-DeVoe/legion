@@ -145,7 +145,7 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 // only where the merger's task has a reviewer step: a task with none stands on no review, so the
 // daemon asks no reviewer (workflow's mergeForwardLanded) and the merger goes on at the new head.
 // One composed prompt serves the merger of a task with a reviewer step and of one with none, so
-// each block of it - a paragraph, or an item of a list - that has the reviewer read the merge or
+// each block of it (blocks: a paragraph, or an item of a list) that has the reviewer read the merge or
 // approve the new head names the reviewer step it holds for, and the prompt tells the merger of a
 // task with none to go on at the new head. This shows the text is loaded, never that a merger
 // follows it.
@@ -155,19 +155,8 @@ func TestTheMergerWaitsForTheApprovalOfAMergeOnlyOnATaskWithAReviewerStep(t *tes
 		t.Fatalf("New: %v", err)
 	}
 	composed := composedText(t, composer, claim.RoleMerger, false)
-	var blocks []string
-	for _, paragraph := range strings.Split(composed, "\n\n") {
-		block := ""
-		for _, line := range strings.Split(paragraph, "\n") {
-			if item := strings.TrimLeft(line, " "); block != "" && (strings.HasPrefix(item, "- ") || len(item) > 2 && item[0] >= '1' && item[0] <= '9' && strings.HasPrefix(item[1:], ". ")) {
-				blocks, block = append(blocks, foldWhitespace(block)), ""
-			}
-			block += line + "\n"
-		}
-		blocks = append(blocks, foldWhitespace(block))
-	}
 	approving := 0
-	for _, block := range blocks {
+	for _, block := range blocks(composed) {
 		if !strings.Contains(block, "approve the new head") && !strings.Contains(block, "reviewer's approval of it") &&
 			!strings.Contains(block, "reads the merge's resolution") {
 			continue
