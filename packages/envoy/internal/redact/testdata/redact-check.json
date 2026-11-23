@@ -2260,6 +2260,96 @@
           "packages/daemon/internal/redirects/redirectstest/redirectstest.go"
         ],
         "capture": "controller.redirect/unparsed"
+      },
+      {
+        "row": "listener-edge-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/cmd/listener/edge_redirect_location_test.go"],
+        "capture": "listener.edge-redirect/unparsed"
+      },
+      {
+        "row": "listener-edge-redirect-elsewhere",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/cmd/listener/edge_redirect_location_test.go"],
+        "capture": "listener.edge-redirect/elsewhere"
+      },
+      {
+        "row": "dispatch-agentsecrets-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/dispatch/cipher/redirect_location_test.go"],
+        "capture": "dispatch-agentsecrets.redirect/unparsed"
+      },
+      {
+        "row": "dispatch-agentsecrets-redirect-elsewhere",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/dispatch/cipher/redirect_location_test.go"],
+        "capture": "dispatch-agentsecrets.redirect/elsewhere"
+      },
+      {
+        "row": "wake-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/cipher/wake/redirect_location_test.go"],
+        "capture": "wake.redirect/unparsed"
+      },
+      {
+        "row": "wake-redirect-elsewhere",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/cipher/wake/redirect_location_test.go"],
+        "capture": "wake.redirect/elsewhere"
+      },
+      {
+        "row": "judge-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/cipher/judge/redirect_location_test.go"],
+        "capture": "judge.redirect/unparsed"
+      },
+      {
+        "row": "judge-redirect-elsewhere",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/cipher/judge/redirect_location_test.go"],
+        "capture": "judge.redirect/elsewhere"
+      },
+      {
+        "row": "dispatchread-redirect-unparsed",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/cipher/dispatchread/redirect_location_test.go"],
+        "capture": "dispatchread.redirect/unparsed"
+      },
+      {
+        "row": "dispatchread-redirect-elsewhere",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/cipher/dispatchread/redirect_location_test.go"],
+        "capture": "dispatchread.redirect/elsewhere"
+      },
+      {
+        "row": "brokertoken-mint-redirect",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/ciphertoken/redirect_location_test.go"],
+        "capture": "brokertoken.mint-redirect"
+      },
+      {
+        "row": "brokertoken-introspect-redirect",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/ciphertoken/redirect_location_test.go"],
+        "capture": "brokertoken.introspect-redirect"
+      },
+      {
+        "row": "embed-redirect-azure",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/dispatch/embed/redirect_location_test.go"],
+        "capture": "embed.redirect/azure"
+      },
+      {
+        "row": "embed-redirect-entra",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/dispatch/embed/redirect_location_test.go"],
+        "capture": "embed.redirect/entra"
+      },
+      {
+        "row": "oidc-revoke-redirect",
+        "base": "df9ce51fa06750ecad27613e12fc216103f0f2f7",
+        "files": ["packages/envoy/internal/oidc/redirect_location_test.go"],
+        "capture": "oidc.revoke-redirect"
       }
     ],
     "boundary_fields": {
@@ -8269,6 +8359,141 @@
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestALivenessRedirectIsUnknownAndItsLogNamesNoRunOfTheBearer/followed",
       "production": "controller Prober: follows no redirect (redirects.Refused), so a lookup's 3xx is the listener's refusal, Unknown, and the stand-in a Location names is asked nothing"
+    },
+    {
+      "id": "listener-edge-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadPrintsNoLocationOfARedirect/unparsed",
+      "production": "listener edgeRepositories.read: a broker read whose Location does not parse prints its failure as the broker's address allows (redact.Cause), never net/http's text, which quotes the Location",
+      "function": "(*github.com/sjawhar/envoy/cmd/listener.edgeRepositories).read",
+      "capture": "listener.edge-redirect/unparsed",
+      "mutation": {"file": "packages/envoy/cmd/listener/edge_repositories.go", "preimage": "redact.Cause(err, e.brokerURL)", "replacement": "err"}
+    },
+    {
+      "id": "listener-edge-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./cmd/listener",
+      "test": "TestAnEdgeRepositoryReadPrintsNoLocationOfARedirect/elsewhere",
+      "production": "listener edgeRepositories: its client follows no redirect (redirects.Refused), so a Location on another host is the broker's answer, never net/http's error naming it"
+    },
+    {
+      "id": "dispatch-agentsecrets-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "Dispatch agent-secrets Client.do: a call whose Location does not parse prints its failure as the broker's address allows (redact.Cause)",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/cipher.Client).do",
+      "capture": "dispatch-agentsecrets.redirect/unparsed",
+      "mutation": {"file": "packages/envoy/internal/dispatch/cipher/client.go", "preimage": "redact.Cause(err, c.URL)", "replacement": "err"}
+    },
+    {
+      "id": "dispatch-agentsecrets-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/cipher",
+      "test": "TestABrokerRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "Dispatch agent-secrets client: follows no redirect (redirects.Refused), so a Location on another host is the broker's answer by its status"
+    },
+    {
+      "id": "wake-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeRedirectLogsNoLocationOfIt/unparsed",
+      "production": "wake Envoy.Notify: a notice whose Location does not parse is logged as Envoy's address allows (redact.Cause)",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/wake.Envoy).Notify",
+      "capture": "wake.redirect/unparsed",
+      "mutation": {"file": "packages/envoy/internal/cipher/wake/envoy.go", "preimage": "redact.Cause(err, e.URL)", "replacement": "func() error { _ = redact.Cause; return err }()"}
+    },
+    {
+      "id": "wake-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/wake",
+      "test": "TestANoticeRedirectLogsNoLocationOfIt/elsewhere",
+      "production": "wake Envoy.Notify: a redirect a following client takes to another host that does not answer is logged by its class (redact.Cause), never by the Location"
+    },
+    {
+      "id": "judge-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "judge Dispatch.get: a read whose Location does not parse is named by its class (redact.Class)",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/judge.Dispatch).get",
+      "capture": "judge.redirect/unparsed",
+      "mutation": {"file": "packages/envoy/internal/cipher/judge/dispatch.go", "preimage": "redact.Class(err)", "replacement": "err"}
+    },
+    {
+      "id": "judge-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/judge",
+      "test": "TestAJudgeReadRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "judge Dispatch.get: a redirect followed to another host that does not answer is named by its class (redact.Class)"
+    },
+    {
+      "id": "dispatchread-redirect-unparsed",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadRedirectPrintsNoLocationOfIt/unparsed",
+      "production": "dispatchread Reader.Get: a read whose Location does not parse is ErrNoAnswer named by its class (redact.Class)",
+      "function": "(github.com/sjawhar/envoy/internal/cipher/dispatchread.Reader).Get",
+      "capture": "dispatchread.redirect/unparsed",
+      "mutation": {"file": "packages/envoy/internal/cipher/dispatchread/dispatchread.go", "preimage": "ErrNoAnswer, path, redact.Class(err)", "replacement": "ErrNoAnswer, path, err"}
+    },
+    {
+      "id": "dispatchread-redirect-elsewhere",
+      "requirement": "r3-each-site",
+      "package": "./internal/cipher/dispatchread",
+      "test": "TestADispatchReadRedirectPrintsNoLocationOfIt/elsewhere",
+      "production": "dispatchread Reader.Get: a redirect followed to another host that does not answer is ErrNoAnswer named by its class (redact.Class)"
+    },
+    {
+      "id": "brokertoken-mint-redirect",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestARedirectOfAMintPrintsNoLocationOfIt",
+      "production": "ciphertoken GoogleAccount.generateIDToken: a mint whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the pod's access token a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.GoogleAccount).generateIDToken",
+      "capture": "brokertoken.mint-redirect",
+      "mutation": {"file": "packages/envoy/internal/ciphertoken/googleaccount.go", "preimage": "\"call generateIdToken: %w\", redact.Class(err)", "replacement": "\"call generateIdToken: %w\", err"}
+    },
+    {
+      "id": "brokertoken-introspect-redirect",
+      "requirement": "r3-each-site",
+      "package": "./internal/ciphertoken",
+      "test": "TestARedirectOfAnIntrospectionPrintsNoLocationOfIt",
+      "production": "ciphertoken Verifier.introspect: an introspection whose Location does not parse is ErrBrokerUnreachable printed as the broker's address allows (redact.Cause)",
+      "function": "(*github.com/sjawhar/envoy/internal/ciphertoken.Verifier).introspect",
+      "capture": "brokertoken.introspect-redirect",
+      "mutation": {"file": "packages/envoy/internal/ciphertoken/introspect.go", "preimage": "redact.Cause(err, v.brokerURL)", "replacement": "err"}
+    },
+    {
+      "id": "embed-redirect-azure",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEmbeddingRedirectPrintsNoLocationOfIt/azure",
+      "production": "embed AzureClient.Embed: a call whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the api-key a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.AzureClient).Embed",
+      "capture": "embed.redirect/azure",
+      "mutation": {"file": "packages/envoy/internal/dispatch/embed/azure.go", "preimage": "\"embed: azure embeddings: %w\", redact.Class(err)", "replacement": "\"embed: azure embeddings: %w\", err"}
+    },
+    {
+      "id": "embed-redirect-entra",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/embed",
+      "test": "TestAnEmbeddingRedirectPrintsNoLocationOfIt/entra",
+      "production": "embed EntraTokenSource.exchange: an exchange whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the federated assertion a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange",
+      "capture": "embed.redirect/entra",
+      "mutation": {"file": "packages/envoy/internal/dispatch/embed/azuretoken.go", "preimage": "\"embed: entra token exchange: %w\", redact.Class(err)", "replacement": "\"embed: entra token exchange: %w\", err"}
+    },
+    {
+      "id": "oidc-revoke-redirect",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestCodeFlowRevokePrintsNoLocationOfARedirect",
+      "production": "oidc CodeFlow.Revoke: a revocation whose Location does not parse is named by its class (redact.Class), never net/http's text, which quotes the client secret a stand-in echoed",
+      "function": "(*github.com/sjawhar/envoy/internal/oidc.CodeFlow).Revoke",
+      "capture": "oidc.revoke-redirect",
+      "mutation": {"file": "packages/envoy/internal/oidc/codeflow.go", "preimage": "\"oidc: revoke: %w\", redact.Class(err)", "replacement": "\"oidc: revoke: %w\", err"}
     }
   ],
   "bun": [
@@ -10450,6 +10675,11 @@
       "site": "leakguard Source.read: it follows GitHub's tarball redirect by design, and Cause printed net/http's error through the URL rule alone, which leaves a Location with no scheme and a followed target's host as they came",
       "source": "the class search of round 7's third must-fix",
       "guard": "daemon-redact-unanswered"
+    },
+    {
+      "site": "envoy's credential-carrying clients handed on net/http's error as it came, so a Location that did not parse (net/http quotes it before CheckRedirect is asked), or one a following client asked, put the request's credential into a log line or an error: the listener's broker read, Dispatch's agent-secrets client, the broker's wake notice, judge read and Dispatch read, the generateIdToken mint, Dispatch's introspection, the Azure embeddings call and Entra exchange, and the OIDC revocation",
+      "source": "the class search of round 7's third must-fix over the envoy module",
+      "guard": "listener-edge-redirect-unparsed"
     }
   ]
 }
