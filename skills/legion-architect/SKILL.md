@@ -14,13 +14,13 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 
 - Act on each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
 
-- Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
+- Check each claim against the code as fetched now (your addressing line's default branch, or the head under review), and have every reader you dispatch do the same.
 
 - Before you end a turn that waits on a person, make sure their question is open: a decision block, a `dispatch ask` or `dispatch request-approval`.
   A root's questions go on the root: one on a child starts no wait, and the tree stands still.
   A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
 
-- Message a step's worker with `envoy_publish` to `notifications.role.<token>`, the token your addressing line or `dispatch steps --issue <KEY>` gives its agent; a role's own token reaches the agent named for that role, and a typed one may reach nobody.
+- Message a step's worker with `envoy_publish` to `notifications.role.<token>`, its agent's token from your addressing line or `dispatch steps --issue <KEY>`; a role's token reaches only the agent named for it, and a typed one may reach nobody.
 
 - The deployment instructions override this skill where they conflict.
 
@@ -60,7 +60,7 @@ Where it disagrees with the code or a `--help`, follow those and say so.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41"] })`.
   Legion holds a child whose blockers are not `done`.
   Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
   Never block a child on its own parent, which merges last.
@@ -76,7 +76,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
+- Prove every criterion of your issue in its own pull request, from its task's steps' evidence (`skill://legion-architect/references/acceptance.md`, "Accepting"), never in a child; never downgrade one.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
@@ -88,7 +88,7 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
 Never message the implementer to start retro.
-A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
+A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do in its phase.
 A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
 
 ## 6. Acceptance and the merge
