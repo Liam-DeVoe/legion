@@ -77,7 +77,7 @@ export interface Price extends Rates {
 
 /** Where PRICES come from. */
 export const PRICE_SOURCE =
-  "https://platform.claude.com/docs/en/about-claude/pricing (standard speed, global inference) and https://developers.openai.com/api/docs/pricing (Standard), both read 2026-11-20";
+  "https://platform.claude.com/docs/en/about-claude/pricing (standard speed, global inference), read 2026-11-23, and https://developers.openai.com/api/docs/pricing (Standard), read 2026-11-20";
 
 /** The list prices by model id: Anthropic's Claude models from PRICE_SOURCE's "Model pricing"
  *  table, and OpenAI's models from its "Standard" table. A reply of fast mode or of US-only
@@ -94,6 +94,41 @@ export const PRICES: Readonly<Record<string, Price>> = {
     cacheWriteShort: 10,
     cacheWriteLong: 16,
     cacheRead: 0.2,
+  },
+  "claude-fable-5-1": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 0.25,
+  },
+  "claude-fable-5": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 1,
+  },
+  "claude-mythos-5-2": {
+    input: 8,
+    output: 40,
+    cacheWriteShort: 10,
+    cacheWriteLong: 16,
+    cacheRead: 0.2,
+  },
+  "claude-mythos-5-1": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 0.25,
+  },
+  "claude-mythos-5": {
+    input: 10,
+    output: 50,
+    cacheWriteShort: 12.5,
+    cacheWriteLong: 20,
+    cacheRead: 1,
   },
   "claude-opus-5-5": {
     input: 4,
@@ -130,6 +165,34 @@ export const PRICES: Readonly<Record<string, Price>> = {
     cacheWriteLong: 10,
     cacheRead: 0.5,
   },
+  "claude-opus-4-6-20260205": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-7-20260416": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-5": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
+  "claude-opus-4-5-20251101": {
+    input: 5,
+    output: 25,
+    cacheWriteShort: 6.25,
+    cacheWriteLong: 10,
+    cacheRead: 0.5,
+  },
   "claude-sonnet-5-5": {
     input: 2,
     output: 10,
@@ -145,6 +208,20 @@ export const PRICES: Readonly<Record<string, Price>> = {
     cacheRead: 0.2,
   },
   "claude-sonnet-4-6": {
+    input: 3,
+    output: 15,
+    cacheWriteShort: 3.75,
+    cacheWriteLong: 6,
+    cacheRead: 0.3,
+  },
+  "claude-sonnet-4-5": {
+    input: 3,
+    output: 15,
+    cacheWriteShort: 3.75,
+    cacheWriteLong: 6,
+    cacheRead: 0.3,
+  },
+  "claude-sonnet-4-5-20250929": {
     input: 3,
     output: 15,
     cacheWriteShort: 3.75,
@@ -167,6 +244,20 @@ export const PRICES: Readonly<Record<string, Price>> = {
         cacheRead: 0.05,
       },
     },
+  },
+  "claude-haiku-4-5": {
+    input: 1,
+    output: 5,
+    cacheWriteShort: 1.25,
+    cacheWriteLong: 2,
+    cacheRead: 0.1,
+  },
+  "claude-haiku-4-5-20251001": {
+    input: 1,
+    output: 5,
+    cacheWriteShort: 1.25,
+    cacheWriteLong: 2,
+    cacheRead: 0.1,
   },
   "gpt-6.1-sol": {
     input: 2,
