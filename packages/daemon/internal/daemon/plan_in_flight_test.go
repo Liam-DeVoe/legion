@@ -262,7 +262,7 @@ func newInFlightRig(t *testing.T) *inFlightRig {
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "In flight"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	stands := append(slices.Clone(phase.Order), phase.Admitted)
 	for place, stood := range stands {
 		status := workflow.PhaseStatus(stood)

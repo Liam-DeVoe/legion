@@ -206,9 +206,24 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	if !ok || start.Op != "start" || start.Task == "" || !namesTheRound(start.Role) || start.RoundNamed {
 		return record.NewOutboxRow(issue, payload, at)
 	}
-	standing, err := store.Issue(ctx, tx, issue)
+	named, err := ReviewerTask(ctx, tx, store, issue, start.Task)
 	if err != nil {
 		return record.OutboxRow{}, err
+	}
+	start.Task, start.RoundNamed = named, true
+	return record.NewOutboxRow(issue, start, at)
+}
+
+// ReviewerTask is task as the reviewer of issue is given it now: task followed by the daemon's two
+// sentences of its review round (namingTheReviewRound), read from the phase the issue stands in and
+// the reviewer's phases row as tx holds them. The queue names each reviewer's start it queues
+// through it (queuedRow), and the daemon's start executor names a start of the reviewer queued for
+// news alone through it, which carries no task for the queue to name and is composed only when it
+// runs (the daemon's newsForStart).
+func ReviewerTask(ctx context.Context, tx pgx.Tx, store record.Store, issue, task string) (string, error) {
+	standing, err := store.Issue(ctx, tx, issue)
+	if err != nil {
+		return "", err
 	}
 	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
 	// task names neither a commit nor an entry.
@@ -217,13 +232,11 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	if standing != nil {
 		rows, err := store.Phases(ctx, tx, issue)
 		if err != nil {
-			return record.OutboxRow{}, err
+			return "", err
 		}
-		standsIn, row = standing.Phase, record.PhaseRowOf(rows, start.Role)
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, claim.RoleReviewer)
 	}
-	start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, row)
-	start.RoundNamed = true
-	return record.NewOutboxRow(issue, start, at)
+	return namingTheReviewRound(task, claim.RoleReviewer, standsIn, row), nil
 }
 
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the
@@ -968,6 +981,24 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
 // raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
 //
+// It also takes the baseline of what the issue's holder knows of the approved design: an issue
+// with no holder row (record.DesignTold) is starting its first working phase of its generation —
+// the row goes with the generation (record.Store.ClearGeneration), and the upgrade's seed aside,
+// this is where it is first written — so its row is written at the versions its tree's gate stands
+// approved at now (record.Store.BaselineTold). Its work starts from those versions, so nothing of
+// them is news to it, and a member released after an approval is owed nothing of it. A row
+// already there is left as it stands: a later entry's holder inherits what the issue's earlier
+// holders took, and is owed what was approved since (record.OwedNews).
+//
+// A root architect's entry (EnterArchitect) takes no such baseline. It is no working phase of its
+// root: the root's holder is the worker of its first phase past admitted, which the news holds to
+// that phase's role (record.OwedNews owes a member at admitted nothing), and the architect's own
+// row of the design is taken at the tree's first opening (workflow's putGateTold). The
+// architect's entry comes at the root's admission, before any version is approved, so a holder
+// row written there would hold no version, and the root's first phase worker, whose start would
+// then leave that row as it stands, would be owed as news every version approved before its work
+// began.
+//
 // For an issue with plan rows, a phase worker's raise also writes the step the entry is a run of
 // (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue stands
 // in (placeOnWalk), from 1 for a step and 0 for the retro on the implementer's row and the merge on
@@ -997,12 +1028,15 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, w *Wa
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, "", err
 	}
-	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
-	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
-	// entry is no step of the issue's task.
 	if !worker {
 		return row.Entry, row.EntryTask, nil
 	}
+	if err := e.store.BaselineTold(ctx, tx, issue.Key, record.AudienceHolder, issue.Tree, e.now()); err != nil {
+		return 0, "", err
+	}
+	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
+	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
+	// entry, which answered above, is no step of the issue's task.
 	if step, ok := standingStep(*w, issue); ok {
 		agent, err := stepClaim(issue, issue.Key, role)
 		if err != nil {
@@ -1074,7 +1108,8 @@ const (
 // report is named by its own step and role, ` Step <i> (<role>) reported: <verdict>.`, with its
 // summary after it: <i> is the place of the step the row's entry was raised for (StepPlace).
 //
-// A merger started in merging at the head a merge forward landed on once the issue stood in accepting, retro or merging, while the
+// A merger started in merging at the head a merge forward landed on where the task's reviewer step
+// already ran (mergeForwardLanded), while the
 // review that landing asked of the reviewer stands for that head (mergeForwardReviewOwed), is told
 // to merge that head only once the reviewer's approval of it is on the pull request: the daemon
 // records no decision outside reviewing, so the approval is the merger's to read on GitHub. The
