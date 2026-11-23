@@ -74,6 +74,7 @@ import {
   blockNode,
   DESKTOP,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   nodeRow,
@@ -2876,6 +2877,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expect(tree(page)).toBeVisible();
     await expect(marginShell(page)).toBeHidden();
+    await expectOpeningLanded(page);
 
     await focusThePage(page);
     await page.keyboard.press("t");
@@ -2933,6 +2935,7 @@ test("t v and t o open Details at the history and at the collaborators, and an a
     await expect(people).toHaveAttribute("aria-expanded", "false");
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expect(marginShell(page)).toBeHidden();
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("o");
@@ -3756,6 +3759,7 @@ test("t v from a load with Details shut opens Details with the history's heading
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expect(tree(page)).toBeVisible();
     await expect(marginShell(page)).toBeHidden();
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("t");
     await page.keyboard.press("v");
@@ -3973,6 +3977,7 @@ test("what references the focused row opens from its facts, and each row leads t
       // focus is on no row, so the facts are the issue's.
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expect(tree(page)).toBeVisible();
+      await expectOpeningLanded(page);
       await focusThePage(page);
       await openDetails(page);
       await expect(focusedNodeFacts(page)).toHaveAttribute("data-focused-node", seeded.key);
@@ -4353,19 +4358,19 @@ for (const place of READER_PLACES) {
   READER_PLACE_GROUPS.set(group, [...(READER_PLACE_GROUPS.get(group) ?? []), place]);
 }
 
-// The sweep, one row for each group of `READER_PLACE_GROUPS`, so that the rows run apart and a
-// shard takes each on its own; each seeds an issue of its own whose history runs past every
-// section of Details. At each place of the row's group - opened by `t o` or by `t v`; the focus
-// left in Details' box, on the Collaborators control or the history, or moved to the page outside
-// it; then nothing, Shift, or Tab, which can move the focus and bring the control it reaches into
-// view; then the wheel, which brings the history's top to 45 %, 10 % or 75 % of Details' view,
-// Blocked by wholly above it at each - the reader's pointer comes to rest on each of the
-// history's entries the view holds wholly, from the newest, up to six, at its upper part and at
-// its lower part, a few pixels on from where it arrived (`sweepPlace`). For each rest Blocked by
-// grows above the view, and every row in the view stands where it stood, within a pixel. At the
-// first rest at each place the titles' read lands, which grows the row by 500 px at 1440 px here;
-// that read lands once per load, so each later rest grows the row by 300 px more of its own, as a
-// second read would. Two loads a row, each well under a quarter of a minute here.
+// The sweep, one row for each group of `READER_PLACE_GROUPS`, so that the rows run apart on the
+// leg's workers; each seeds an issue of its own whose history runs past every section of Details.
+// At each place of the row's group - opened by `t o` or by `t v`; the focus left in Details' box,
+// on the Collaborators control or the history, or moved to the page outside it; then nothing,
+// Shift, or Tab, which can move the focus and bring the control it reaches into view; then the
+// wheel, which brings the history's top to 45 %, 10 % or 75 % of Details' view, Blocked by wholly
+// above it at each - the reader's pointer comes to rest on each of the history's entries the view
+// holds wholly, from the newest, up to six, at its upper part and at its lower part, a few pixels
+// on from where it arrived (`sweepPlace`). For each rest Blocked by grows above the view, and
+// every row in the view stands where it stood, within a pixel. At the first rest at each place the
+// titles' read lands, which grows the row by 500 px at 1440 px here; that read lands once per
+// load, so each later rest grows the row by 300 px more of its own, as a second read would. Two
+// loads a row, each well under a quarter of a minute here.
 for (const [group, places] of READER_PLACE_GROUPS) {
   test(`wherever the reader is in Details and wherever their pointer rests on the history, Blocked by growing above the view moves no row in it (${group})`, async ({
     browser,

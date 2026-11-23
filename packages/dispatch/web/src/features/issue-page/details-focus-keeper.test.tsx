@@ -778,7 +778,7 @@ async function pinRelabelledThenRemounted(press: "key" | "none"): Promise<string
   }
 }
 
-test("a Pin the reader's Enter relabelled Unpin, its press answered, is the same control when its entry is drawn anew under a new key", async () => {
+test("a Pin the reader's Enter relabelled Unpin is the same control when its entry is drawn anew under a new key", async () => {
   const restore = chromiumLayout();
   try {
     expect(

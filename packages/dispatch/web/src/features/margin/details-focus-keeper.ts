@@ -56,9 +56,10 @@ export const HISTORY_ENTRY_ATTRIBUTE = "data-history-entry";
 /** What tells a control apart across a redraw, where React draws it anew as another element: the
  *  history entry it stands in, its own `id`, its tag, its role and its name, in one key. The lost
  *  control's identity is read from the lost control itself once it is lost, all but its entry,
- *  which is the one it stood in when it took the focus. So a control renamed since it took the
- *  focus, as a Pin that the reader's press or another session's change relabelled Unpin is, is
- *  still known as the same control when it is drawn anew. */
+ *  which is the one it stood in when it took the focus, since a control removed from inside its
+ *  entry no longer finds it around it. So a control renamed since it took the focus, as a Pin
+ *  that the reader's press or another session's change relabelled Unpin is, is still known as the
+ *  same control when it is drawn anew. */
 type ControlIdentity = string;
 
 /** A stretch of the window from `top` down to `bottom`, in CSS pixels. */
@@ -268,8 +269,8 @@ function busy(control: Element): boolean {
 /** Keeps the focus inside `root` (`useDetailsFocusKeeper`) until the returned function is called. */
 function keepFocusIn(root: HTMLElement): () => void {
   // The control inside the box that holds the focus: the watch of the reader's presses on it,
-  // which names it, and the history entry it stood in when it last took the focus
-  // (`ControlIdentity`), which a removed control no longer finds around it (`entryOf`). Its loss
+  // which names it, and the history entry it stood in when it took the focus (`ControlIdentity`),
+  // which a control removed from inside its entry no longer finds around it (`entryOf`). Its loss
   // while a press stands is the reader's, and the keeper hands the focus on.
   let held: { readonly entry: string | null; readonly press: PressWatch<HTMLElement> } | null =
     null;
@@ -289,9 +290,7 @@ function keepFocusIn(root: HTMLElement): () => void {
     // The focus come back to the control that held it, as the window is focused again or as the
     // keeper gives the control drawn anew the focus (`move`), has not moved to another control,
     // so the reader's press on it still stands.
-    if (held?.press.control === target) {
-      held = { ...held, entry: entryOf(target) };
-    } else {
+    if (held?.press.control !== target) {
       held?.press.stop();
       held = { entry: entryOf(target), press: watchPresses(target) };
     }

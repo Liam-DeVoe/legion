@@ -25,6 +25,7 @@ import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { referencedByControlName } from "./details-names";
+import { emptyDetailsReads } from "./details-reads-fixture";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel } from "./IssueMargin";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
@@ -277,29 +278,19 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
   );
 }
 
-/** The reads open Details makes of the fixture's issue beside the references, each answering the
- *  API's empty shape (`IssueMargin.test.tsx`'s `stubIssueApi`); a read that reached the network
- *  would fail the file (`__tests__/network.ts`). */
+/** The reads open Details makes of the fixture's issue beside the references: the issue's own,
+ *  answered with `details`, the reader's state, which holds the issue unread and unpinned, and
+ *  every other read, answering the API's empty shape (`emptyDetailsReads`). */
 function stubDetailsReads(details: IssueDetails): () => void {
-  const reads = [
-    spyOn(api, "getIssue").mockResolvedValue(details),
-    spyOn(api, "getMyState").mockResolvedValue({
-      "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-    }),
-    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
-    spyOn(api, "listProjects").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
-    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
-    spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
-    spyOn(api, "getIssueEvents").mockResolvedValue([]),
-    spyOn(api, "listSteps").mockResolvedValue({ issue: "CORE-1", tasks: [] }),
-    spyOn(api, "listIssueAsks").mockResolvedValue([]),
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-  ];
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(details);
+  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
+    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
+  });
+  const reads = emptyDetailsReads();
   return () => {
-    for (const spy of reads) spy.mockRestore();
+    getIssue.mockRestore();
+    getMyState.mockRestore();
+    reads.restore();
   };
 }
 
