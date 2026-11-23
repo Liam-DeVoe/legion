@@ -432,6 +432,84 @@ func TestAScopedStatusChangeIsRefusedAnAncestorOfAnotherProject(t *testing.T) {
 	}
 }
 
+// TestAScopedStatusChangeIsRefusedADescendantOfAnotherProject: a child may be an issue of another
+// project, so include_children can move, and unlink_children can unlink, an issue below the
+// caller's own that its credential may not write. A credential scoped to ALPHA is refused the
+// status change of its own ALPHA parent whose include_children would move the BETA child, and
+// the one whose unlink_children would unlink it: 403 PROJECT_SCOPE naming the child, the option
+// and both projects, with changed [] and nothing written - no status or parent moved, no event
+// appended and no comment left on either issue - and each dry run is refused the same way. The
+// same unlink by a person, whose credential names no project, unlinks the child, which is the
+// control.
+func TestAScopedStatusChangeIsRefusedADescendantOfAnotherProject(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{})
+	caller := newBrokerCaller(t)
+	ctx := context.Background()
+	for _, project := range []string{"ALPHA", "BETA"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+		}
+	}
+	named := createdIssue(t, "create ALPHA's parent", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "ALPHA", "title": "Its own project's parent", "force": true,
+	})).Key
+	child := createdIssue(t, "create BETA's child under it", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "BETA", "title": "Another project's child", "parent": named, "force": true,
+	})).Key
+	if moved := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+child+"/status-change", map[string]any{
+		"status": "in_progress", "include_parent": true,
+	}); moved.Code != http.StatusOK {
+		t.Fatalf("move %s and %s into work: status=%d body=%s", child, named, moved.Code, moved.Body.String())
+	}
+	const token = "a-token-scoped-to-alpha"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{"ALPHA"}
+	rig.broker.Says(token, answer)
+	// stored is each issue's status, parent and last_seq, and the events and comments on the two.
+	stored := func() string {
+		t.Helper()
+		var held string
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select string_agg(key || ' ' || status || ' ' || coalesce(parent_key, '-') || ' ' || last_seq, ', ' order by key)
+			       || '; ' || (select count(*) from events where issue_key = any($1))
+			       || '; ' || (select count(*) from comments where issue_key = any($1))
+			from issues where key = any($1)
+		`, []string{named, child}).Scan(&held); err != nil {
+			t.Fatalf("read %s and %s: %v", named, child, err)
+		}
+		return held
+	}
+	before := stored()
+	for _, call := range []struct {
+		option, status string
+	}{
+		{optionIncludeChildren, "backlog"},
+		{optionUnlinkChildren, "done"},
+	} {
+		for _, dryRun := range []bool{false, true} {
+			label := fmt.Sprintf("a scoped status change whose %s writes a child of another project (dry_run %t)", call.option, dryRun)
+			refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", token, map[string]any{
+				"status": call.status, call.option: true, "dry_run": dryRun,
+			}))
+			requireStatusChange(t, label, refused, http.StatusForbidden, wantRefusal(codeProjectScope, fmt.Sprintf(
+				"this request's credential may write project ALPHA; an issue this status change's %s writes, %s, belongs to project BETA",
+				call.option, child)))
+		}
+	}
+	if after := stored(); after != before {
+		t.Fatalf("the refused status changes moved %s to %s, want nothing written", before, after)
+	}
+	unlinked := rig.asPerson(t, http.MethodPost, "/api/v1/issues/"+named+"/status-change", map[string]any{
+		"status": "done", "unlink_children": true,
+	})
+	if unlinked.Code != http.StatusOK {
+		t.Fatalf("a person's status change unlinking a child of another project: status=%d body=%s, want 200", unlinked.Code, unlinked.Body.String())
+	}
+	if parent := decodeBody[model.Issue](t, rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+child, nil)).Parent; parent != nil {
+		t.Errorf("the person's status change left %s under %s, want no parent", child, *parent)
+	}
+}
+
 // statusChangeCaller is one way a request reaches the status-change route: what it presents, and
 // whether optionalActor takes it for a person at a browser.
 type statusChangeCaller struct {
