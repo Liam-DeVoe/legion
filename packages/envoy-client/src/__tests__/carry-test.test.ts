@@ -443,6 +443,44 @@ describe("dispatch carry-test", () => {
     expect(run.last).toStartWith("UNKNOWN: git merge-tree exited 128: ");
   });
 
+  test("a git whose merge-tree refuses --write-tree is UNKNOWN, naming the exit and its first stderr line", async () => {
+    // A git older than 2.38 exits 129 with "unknown option" for merge-tree --write-tree. This git on
+    // PATH answers merge-tree so and runs the real git for every other subcommand.
+    const c = cleanCase(30);
+    const execPath = execFileSync("git", ["--exec-path"], { encoding: "utf8" }).trim();
+    const realGit = existsSync(join(execPath, "git"))
+      ? join(execPath, "git")
+      : (Bun.which("git") as string);
+    const bin = directory("old-git");
+    writeFileSync(
+      join(bin, "git"),
+      [
+        "#!/bin/sh",
+        'if [ "$1" = merge-tree ]; then',
+        "  printf '%s\\n' \"error: unknown option 'write-tree'\" 'usage: git merge-tree [--trivial-merge] <base-tree> <branch1> <branch2>' >&2",
+        "  exit 129",
+        "fi",
+        `exec '${realGit}' "$@"`,
+        "",
+      ].join("\n")
+    );
+    chmodSync(join(bin, "git"), 0o755);
+    const env = callerEnv({ PATH: `${bin}:${process.env.PATH ?? ""}` });
+    // Control: the git on that PATH exits 129 for merge-tree --write-tree.
+    const direct = spawnSync("git", ["merge-tree", "--write-tree", c.src, c.repo.sha("main")], {
+      cwd: c.repo.dir,
+      env,
+    });
+    expect(direct.status).toBe(129);
+    const run = await carry(c.repo.dir, c.src, c.to, "main", env);
+    expect(run.code).toBe(3);
+    expect(run.last).toStartWith(
+      "UNKNOWN: git merge-tree exited 129: error: unknown option 'write-tree'"
+    );
+    expect(run.lines.some((line) => line.startsWith("patch-id at "))).toBe(false);
+    expect(readdirSync(env.TMPDIR as string)).toEqual([]);
+  });
+
   test("git settings in the environment, the clone's config and the home config change no answer", async () => {
     const c = gitlinkCase();
     const range = (head: string): string => `main...${head}`;
