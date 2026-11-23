@@ -5,9 +5,12 @@ body: |-
   names the role as it names any other, and the role's agent runs on Oh My Pi with that prompt and
   model. The prompt stands between two lines that name it as the issue owner's text. A later
   version of the plan that changes the role's type, model or prompt relaunches a live agent of the
-  role on its own session at its next step, with the new definition. `register_plan` refuses a role
-  whose name Legion or the deployment already holds, a model the deployment does not list, and a
-  key whose steps name roles of two models or two harnesses.
+  role on its own session at its next step, with the new definition. A daemon that starts while
+  such an agent runs does not know which definition its process runs, so it relaunches the agent
+  at its next step only where the plan in force was given after the agent last came up, and its
+  line says so. `register_plan` refuses a role whose name Legion or the deployment already holds,
+  a model the deployment does not list, and a key whose steps name roles of two models or two
+  harnesses.
 
   The new top-level `legion.yaml` key `models` lists the models a role of a plan may name; the
   model of each role of `roles` is listed after them. The loader refuses a value of `models` that
