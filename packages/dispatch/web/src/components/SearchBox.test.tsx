@@ -192,3 +192,34 @@ test("a host's test id rides along, so a check that names one keeps it", () => {
     view.unmount();
   }
 });
+
+test("a search box given a hint draws it inside its box and keeps data-control on the input", () => {
+  const view = render(
+    <SearchBox
+      className="w-full"
+      hint="f"
+      label="Search asks"
+      onChange={() => undefined}
+      placeholder="Issue, title, question or author"
+      value=""
+    />
+  );
+  try {
+    const box = screen.getByRole("searchbox", { name: "Search asks" });
+    expect(box).toHaveAttribute("data-control", "search-box");
+    // The key is told to a screen reader as the box's own shortcut, and drawn beside the text.
+    expect(box).toHaveAttribute("aria-keyshortcuts", "f");
+    const wrapper = box.parentElement;
+    if (wrapper === null) throw new Error("the box with a hint is drawn in no wrapper");
+    const hint = wrapper.querySelector("kbd");
+    expect(hint).toHaveTextContent("f");
+    expect(hint?.closest('[aria-hidden="true"]')).not.toBeNull();
+    // The caller's layout is the wrapper's, and the box fills it with room for the hint.
+    expect(wrapper).toHaveClass("w-full");
+    expect(box).toHaveClass("w-full");
+    expect(box).toHaveClass("pr-8");
+    expect(wrapper.querySelectorAll("[data-control]")).toHaveLength(1);
+  } finally {
+    view.unmount();
+  }
+});

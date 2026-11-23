@@ -1,8 +1,8 @@
-/** The shared search, sort and filter controls as the six stubbable pages of INFRA-3135's R2
- *  draw them: one row of controls per page, nothing else between a page's title and its first
- *  row, nothing a reader presses moving that first row, exactly the controls the design gives
- *  each page, one look across two pages of a size family, and the Inbox still a list of rows
- *  with a reading pane beside it.
+/** The shared search, sort and filter controls as the eight stubbable pages of INFRA-4948's R8
+ *  (six of them INFRA-3135's R2) draw them: one row of controls per page, nothing else between a
+ *  page's title and its first row, nothing a reader presses moving that first row, exactly the
+ *  controls the design gives each page, one look across two pages of a size family, and the
+ *  Inbox still a list of rows with a reading pane beside it.
  *
  *  Every row reads what the page draws over one fixed answer - a box's height, a computed
  *  colour, the `data-control` values in the document - so each runs against a recording rather
@@ -35,7 +35,8 @@ import {
 import { assertPageFits } from "./unclipped";
 
 /** One project of six issues, each holding an open ask and a label, with three artifacts on the
- *  first: every surface below has a list with a first row and a narrowing that keeps it. */
+ *  first, and one priority with one issue in flight under it: every surface below has a list
+ *  with a first row and a narrowing that keeps it. */
 const test = stubbed(seedSurfaces);
 
 /** How far below its first reading the top of a list's first row may sit once a narrowing is
@@ -48,13 +49,14 @@ const CHIP_LINE = 52;
  *  not touch, so it is the share the pane has at the commit before it. */
 const PANE_SHARE = 0.6;
 
-// SLOW(>=2s): six pages opened at each of this project's widths, which is twelve page loads.
+// SLOW(>=2s): eight pages opened at each of this project's widths, which is sixteen page loads.
 test("each page draws one row of controls, and nothing else between its title and its first row @phone @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  // Six pages read at every width of the project: measured at 26-33 s a run in an issue pod,
-  // over half the project's 60 s, so it states its own budget as its sibling row below does.
+  // Eight pages read at every width of the project: six were measured at 26-33 s a run in an
+  // issue pod, over half the project's 60 s, so it states its own budget as its sibling row below
+  // does.
   test.setTimeout(120_000);
   const phone = isPhoneProject(testInfo);
   const measured: string[] = [];
@@ -89,14 +91,15 @@ test("each page draws one row of controls, and nothing else between its title an
   });
 });
 
-// SLOW(>=2s): the same six pages, each driven through four acts at each of this project's widths.
+// SLOW(>=2s): the same eight pages, each driven through four acts at each of this project's widths.
 test("no narrowing, panel, display menu or selection moves the first row of a list @phone @pr", async ({
   page,
   scene,
 }, testInfo) => {
-  // Six pages, four acts each, read at every width of the project: measured at 33-47 s a run in
-  // an issue pod, and once over the project's 60 s when three files shared the pod's browser, so
-  // the row states a budget of its own rather than borrowing what a one-page row needs.
+  // Eight pages, four acts each, read at every width of the project: six were measured at 33-47 s
+  // a run in an issue pod, and once over the project's 60 s when three files shared the pod's
+  // browser, so the row states a budget of its own rather than borrowing what a one-page row
+  // needs.
   test.setTimeout(180_000);
   const phone = isPhoneProject(testInfo);
   for (const size of widthsOf(page, testInfo)) {
@@ -166,7 +169,7 @@ test("no narrowing, panel, display menu or selection moves the first row of a li
   }
 });
 
-// SLOW(>=2s): six pages, each opened, narrowed and - where it allows one - selected.
+// SLOW(>=2s): eight pages, each opened, narrowed and - where it allows one - selected.
 test("each page draws every shared control its design gives it, and no other @pr", async ({
   page,
   scene,

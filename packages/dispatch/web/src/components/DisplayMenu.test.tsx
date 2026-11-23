@@ -54,6 +54,50 @@ test("the panel is drawn only while the menu is open, under the trigger's own co
   }
 });
 
+test("in the bar's look the menu is quiet, and given an icon it draws it alone, its label still the name of the trigger and of the panel", () => {
+  const view = render(
+    <DisplayMenu
+      label="Group by"
+      look={{}}
+      onOpenChange={() => undefined}
+      open={false}
+      sections={[SORT]}
+    />
+  );
+  try {
+    const quiet = screen.getByRole("button", { name: "Group by" });
+    expect(quiet).toHaveTextContent("Group by");
+    expect(quiet).toHaveClass("bg-transparent");
+    expect(quiet).not.toHaveClass("border");
+    view.rerender(
+      <DisplayMenu
+        label="Group by"
+        look={{ icon: <svg aria-hidden="true" /> }}
+        onOpenChange={() => undefined}
+        open
+        sections={[SORT]}
+      />
+    );
+    const trigger = screen.getByRole("button", { name: "Group by" });
+    expect(trigger.textContent).toBe("");
+    expect(trigger.querySelector("svg")).not.toBeNull();
+    expect(screen.getByRole("dialog", { name: "Group by" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a menu outside any bar keeps PanelTrigger's own look", () => {
+  const view = render(<Host sections={[SORT]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "View" });
+    expect(trigger).toHaveClass("border");
+    expect(trigger).not.toHaveClass("bg-transparent");
+  } finally {
+    view.unmount();
+  }
+});
+
 test("each section is a group of radios whose checked one is the section's value", async () => {
   const user = userEvent.setup();
   const view = render(<Host sections={[SORT, SHOW]} />);

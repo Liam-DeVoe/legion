@@ -6,20 +6,30 @@
  * it, so they are fixed.
  */
 export const CONTROL = Object.freeze({
+  /** An action of the control bar (`BarAction`): a quiet button, or the page's one main action
+   *  drawn filled. */
+  barAction: "bar-action",
   chip: "chip",
   columnFilter: "column-filter",
   columnsMenu: "columns-menu",
   controlRow: "control-row",
   dataTable: "data-table",
   displayMenu: "display-menu",
+  /** The control bar's **More** (⋯) menu (`MoreMenu`). */
+  moreMenu: "more-menu",
   pager: "pager",
   panelTrigger: "panel-trigger",
   searchBox: "search-box",
+  /** The switch at the start of the control bar (`SegmentedControl`). */
+  segmentedControl: "segmented-control",
   selectionBar: "selection-bar",
   tableShell: "table-shell",
+  /** The trigger of a page's own panel that narrows nothing: the Issues tab's Save view and its
+   *  (i) hint, so the row keeps one `panel-trigger`, the one over the narrowings. */
+  viewPanel: "view-panel",
 } as const);
 
-/** What a `data-control` attribute carries: no page invents a twelfth. */
+/** What a `data-control` attribute carries: no page invents a sixteenth. */
 export type ControlName = (typeof CONTROL)[keyof typeof CONTROL];
 
 /** The control `root` holds under the name `name` writes into its `data-control`, or null. */

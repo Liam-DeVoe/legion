@@ -1,7 +1,8 @@
-/** The eight surfaces of INFRA-3135's R2, as a browser row drives them, and the readings R1,
- *  R2 and R4 are made with. Shared by `table-controls.e2e.ts` and the rows of that family which
- *  run against a recording (`table-controls.stub.e2e.ts`), so the two files name one page, one
- *  first row and one narrowing each, and a page whose controls move is edited here once.
+/** The ten pages of INFRA-4948's R8 (eight of them INFRA-3135's R2), as a browser row drives
+ *  them, and the readings R1, R2, R4 and R8 are made with. Shared by `table-controls.e2e.ts` and
+ *  the rows of that family which run against a recording (`table-controls.stub.e2e.ts`), so the
+ *  two files name one page, one first row and one narrowing each, and a page whose controls move
+ *  is edited here once.
  *
  *  Nothing here asserts; each function hands back what a row reads, and the row says what it
  *  expects of it. The one exception is the waiting each opener does, which is how it knows the
@@ -11,12 +12,19 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import { CONTROL, type ControlName } from "../web/src/components/control-names";
 import { shownAgentRows } from "./agents";
-import { createAsk, createIssue, createIssueArtifact, createProject, patchIssue } from "./api";
+import {
+  createAsk,
+  createIssue,
+  createIssueArtifact,
+  createPriority,
+  createProject,
+  patchIssue,
+} from "./api";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { expandedState, settledState } from "./settled";
 
-/** The eight pages R2 names, spelled as a failure spells them. */
+/** The ten pages R8 names, spelled as a failure spells them. */
 export type SurfaceName =
   | "Inbox"
   | "Inbox drawer"
@@ -25,9 +33,11 @@ export type SurfaceName =
   | "Agents page"
   | "Delivery page"
   | "search bar"
-  | "Artifacts tab";
+  | "Artifacts tab"
+  | "priorities page"
+  | "priority page";
 
-/** The six a recording can answer: the Agents page and the Delivery page are read on the real
+/** The eight a recording can answer: the Agents page and the Delivery page are read on the real
  *  stack alone, because a recording freezes a session's last-seen time and the delivery
  *  window's dates (`packages/dispatch/README.md`, "The stubbed layer"). */
 export const STUBBABLE_SURFACES: readonly SurfaceName[] = [
@@ -37,14 +47,25 @@ export const STUBBABLE_SURFACES: readonly SurfaceName[] = [
   "project Board",
   "search bar",
   "Artifacts tab",
+  "priorities page",
+  "priority page",
 ];
 
 /** The two the real stack reads. */
 export const REAL_STACK_SURFACES: readonly SurfaceName[] = ["Agents page", "Delivery page"];
 
 /**
- * The `data-control` value of every control the Design gives each page, and nothing else: a row
- * reads that each of these is drawn and that no other value of the vocabulary is.
+ * The `data-control` value of every control each page draws, and nothing else: the control bar's
+ * slots the Design's table "The pages" gives the page (R8), and the page's other shared controls
+ * - its table, its pager, its column filters and its selection bar. A row reads that each of these
+ * is drawn and that no other value of the vocabulary is.
+ *
+ * The Inbox's search box stands in its header line, beside the title, and the bar holds the
+ * switch, **Filter**, the chips, **View**, **More** with **Mark all read**, and **New message**
+ * (a `bar-action`, drawn filled). An issue's Artifacts tab draws its actions as `bar-action`s
+ * where its bar is 640 px wide or wider and as items of **More** below. The priorities page
+ * draws the priorities table's bar, with no trigger, and the project List's bar above each issues
+ * table; a priority's own page draws the project List's bar above its issues table.
  *
  * The Delivery page's measures table, which R8 keeps and which draws the shared table markup,
  * is not here and is no exception to it: that table is inside a fold the page opens shut
@@ -56,17 +77,23 @@ export const SURFACE_CONTROLS: Record<SurfaceName, readonly ControlName[]> = {
   Inbox: [
     CONTROL.controlRow,
     CONTROL.searchBox,
+    CONTROL.segmentedControl,
     CONTROL.panelTrigger,
     CONTROL.chip,
     CONTROL.displayMenu,
+    CONTROL.moreMenu,
+    CONTROL.barAction,
     CONTROL.selectionBar,
   ],
   "Inbox drawer": [
     CONTROL.controlRow,
     CONTROL.searchBox,
+    CONTROL.segmentedControl,
     CONTROL.panelTrigger,
     CONTROL.chip,
     CONTROL.displayMenu,
+    CONTROL.moreMenu,
+    CONTROL.barAction,
     CONTROL.selectionBar,
   ],
   "project List": [
@@ -92,7 +119,32 @@ export const SURFACE_CONTROLS: Record<SurfaceName, readonly ControlName[]> = {
     CONTROL.dataTable,
   ],
   "search bar": [CONTROL.controlRow, CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.chip],
-  "Artifacts tab": [CONTROL.controlRow, CONTROL.searchBox],
+  "Artifacts tab": [CONTROL.controlRow, CONTROL.searchBox, CONTROL.barAction, CONTROL.moreMenu],
+  "priorities page": [
+    CONTROL.controlRow,
+    CONTROL.searchBox,
+    CONTROL.chip,
+    CONTROL.columnsMenu,
+    CONTROL.displayMenu,
+    CONTROL.barAction,
+    CONTROL.panelTrigger,
+    CONTROL.columnFilter,
+    CONTROL.pager,
+    CONTROL.selectionBar,
+    CONTROL.dataTable,
+  ],
+  "priority page": [
+    CONTROL.controlRow,
+    CONTROL.searchBox,
+    CONTROL.panelTrigger,
+    CONTROL.chip,
+    CONTROL.displayMenu,
+    CONTROL.columnsMenu,
+    CONTROL.columnFilter,
+    CONTROL.pager,
+    CONTROL.selectionBar,
+    CONTROL.dataTable,
+  ],
 };
 
 /** The three controls R1 refuses between a page's title and its first row, outside the one row. */
@@ -103,10 +155,13 @@ export const STRIP_CONTROLS: readonly ControlName[] = [
 ];
 
 /** What the openers need of the seed: the project both project pages read, the issue whose
- *  Artifacts tab is read, and the query `/delivery` is opened on, where the caller has one. */
+ *  Artifacts tab is read, the priority whose own page is read, and the query `/delivery` is
+ *  opened on, where the caller has one. A scene recorded before the priority was seeded names
+ *  none, and its priority page is opened on nothing. */
 export interface SurfaceScene {
   readonly project: string;
   readonly issue: string;
+  readonly priority?: string;
   readonly deliveryQuery?: string;
 }
 
@@ -121,13 +176,23 @@ export const SURFACE_SESSION = {
  *  body of one seeded artifact, so the bar always has hits to list. */
 export const SURFACE_SEARCH_TERM = "rollout";
 
+/** The priority the seed writes, and a word of its title the priorities page is narrowed by. */
+const SURFACE_PRIORITY = { title: "Keep the books whole", word: "books" } as const;
+
+/** The one issue that advances it, in a project of its own, and a word of its title the priority's
+ *  own page is narrowed by. */
+const SURFACE_PRIORITY_WORK = { title: "Audit the books", word: "audit" } as const;
+
 /**
  * One project of six issues, every one of them holding an open ask and a label, and three
- * artifacts on the first: enough for each of the six stubbable surfaces to have a list with a
- * first row, a narrowing that takes no row off it, and something for the search bar to find.
+ * artifacts on the first: enough for each of the stubbable surfaces to have a list with a first
+ * row, a narrowing that takes no row off it, and something for the search bar to find. Beside it,
+ * one priority and one issue in flight that advances it, in a project of its own, so the
+ * priorities page lists a row and the priority's own page an issue, and no page of CORE - its
+ * List, its Board, the Inbox, the search bar's hits for `rollout` - draws anything more.
  *
- * Every issue holds an ask deliberately: **Needs you** is the one narrowing the project List
- * and the Board both draw a chip for, and a seed where it emptied the list would leave R1's
+ * Every issue of CORE holds an ask deliberately: **Needs you** is the one narrowing the project
+ * List and the Board both draw a chip for, and a seed where it emptied the list would leave R1's
  * reading with no first row to measure to.
  */
 export async function seedSurfaces(): Promise<SurfaceScene> {
@@ -162,7 +227,13 @@ export async function seedSurfaces(): Promise<SurfaceScene> {
       name,
     });
   }
-  return { issue, project: "CORE" };
+  await createProject({ key: "BOOKS", name: "Books" }).catch((cause: unknown) => {
+    if (!String(cause).includes("PROJECT_EXISTS")) throw cause;
+  });
+  const priority = await createPriority({ owner: "alice", title: SURFACE_PRIORITY.title });
+  const work = await createIssue({ project: "BOOKS", title: SURFACE_PRIORITY_WORK.title });
+  await patchIssue(work.key, { advances: [priority.id], status: "in_progress" });
+  return { issue, priority: priority.id, project: "CORE" };
 }
 
 /** One surface, open and drawn, with the acts R1 measures across. */
@@ -637,7 +708,66 @@ async function openArtifactsTab(page: Page, scene: SurfaceScene): Promise<Surfac
   };
 }
 
-/** Opens one of the eight surfaces and hands back what a row reads it through. `phone` is
+/** The priorities page: the priorities table, whose bar is the one read, and the issues tables
+ *  under it, each with the project List's bar. */
+async function openPrioritiesPage(page: Page): Promise<Surface> {
+  const root = page.getByTestId("main-content");
+  await page.goto("/priorities");
+  const head = root.getByRole("heading", { level: 1, name: "Priorities" });
+  await expect(head).toBeVisible();
+  const table = root.getByRole("region", { exact: true, name: "Priorities" });
+  const firstRow = table.locator("[data-priority-row]").first();
+  await expect(firstRow).toBeVisible();
+  return {
+    name: "priorities page",
+    root,
+    row: controlRow(table),
+    firstRow,
+    head,
+    // The table has no trigger: its narrowings are its columns' and its search's. A word of the
+    // seeded priority's title keeps its row.
+    narrow: async () => {
+      await control(controlRow(table), CONTROL.searchBox).fill(SURFACE_PRIORITY.word);
+    },
+    display: async () => {
+      await openDisplay(page, table);
+    },
+  };
+}
+
+/** A priority's own page: its issues table, under the project List's bar. */
+async function openPriorityPage(page: Page, scene: SurfaceScene): Promise<Surface> {
+  if (scene.priority === undefined) throw new Error("the seed named no priority to open");
+  const root = page.getByTestId("main-content");
+  await page.goto(`/priorities/${scene.priority}`);
+  const head = root.getByRole("heading", { level: 1 });
+  await expect(head).toBeVisible();
+  const firstRow = root.locator("[data-issue-row]").first();
+  await expect(firstRow).toBeVisible();
+  return {
+    name: "priority page",
+    root,
+    row: controlRow(root),
+    firstRow,
+    head,
+    // A word of the title of the one issue that advances it, so the table keeps its row.
+    narrow: async () => {
+      await control(controlRow(root), CONTROL.searchBox).fill(SURFACE_PRIORITY_WORK.word);
+    },
+    panel: async () => {
+      await openFilterPanel(page, root);
+    },
+    display: async () => {
+      await openDisplay(page, root);
+    },
+    select: async () => {
+      await firstRow.getByRole("checkbox").first().click();
+      await expect(control(root, CONTROL.selectionBar)).toBeVisible();
+    },
+  };
+}
+
+/** Opens one of the ten surfaces and hands back what a row reads it through. `phone` is
  *  whether the project is a phone one, which decides how the search bar is reached. */
 export async function openSurface(
   page: Page,
@@ -662,5 +792,9 @@ export async function openSurface(
       return openSearchBar(page, options.phone ?? false, options.searchTerm ?? "rollout");
     case "Artifacts tab":
       return openArtifactsTab(page, scene);
+    case "priorities page":
+      return openPrioritiesPage(page);
+    case "priority page":
+      return openPriorityPage(page, scene);
   }
 }

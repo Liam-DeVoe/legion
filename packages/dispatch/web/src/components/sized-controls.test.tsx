@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import type {
   ColumnDef,
   ColumnFiltersState,
@@ -6,10 +6,14 @@ import type {
   PaginationState,
   SortingState,
 } from "@tanstack/react-table";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { type ComponentType, type ReactNode, useState } from "react";
 
+import { BarAction } from "./BarAction";
+import { Chip } from "./Chip";
 import { ColumnFilter, type ColumnFilterProps } from "./ColumnFilter";
+import { ColumnsMenu } from "./ColumnsMenu";
+import { ControlRow } from "./ControlRow";
 import type { ControlSize } from "./control-names";
 import {
   DataTable,
@@ -19,7 +23,12 @@ import {
   type RowNoun,
   useDataTable,
 } from "./DataTable";
+import { DisplayMenu } from "./DisplayMenu";
+import { MoreMenu } from "./MoreMenu";
 import { Pager, type PagerProps } from "./Pager";
+import { PanelTrigger } from "./PanelTrigger";
+import { SearchBox } from "./SearchBox";
+import { SegmentedControl } from "./SegmentedControl";
 import { SelectionBar, type SelectionBarProps } from "./SelectionBar";
 import { type LayoutColumns, useTableLayout } from "./table-layout";
 
@@ -240,4 +249,140 @@ test("R2: the DataTable takes its size from the page - compact and comfortable d
   expect(drawnClasses(<DataTableAt size="compact" />)).not.toEqual(
     drawnClasses(<DataTableAt size="comfortable" />)
   );
+});
+
+// INFRA-4948, R8 (plan T11 step 3): every control the control bar draws takes the page's size,
+// and the bar hands its own size to each, its Clear filters, +N more and More among them.
+
+const ICON = <svg aria-hidden="true" />;
+
+function ColumnsMenuAt({ size }: { size: ControlSize }): ReactNode {
+  const model = useDeploys();
+  return <ColumnsMenu columns={model.table.getAllLeafColumns()} size={size} />;
+}
+
+/** Each control the bar draws, drawn alone at `size`. */
+const BAR_CONTROLS: readonly (readonly [string, (size: ControlSize) => ReactNode])[] = [
+  [
+    "SearchBox",
+    (size) => <SearchBox label="Search" onChange={() => undefined} size={size} value="" />,
+  ],
+  [
+    "PanelTrigger",
+    (size) => (
+      <PanelTrigger label="Filter" onOpenChange={() => undefined} open={false} size={size}>
+        {() => null}
+      </PanelTrigger>
+    ),
+  ],
+  [
+    "DisplayMenu",
+    (size) => (
+      <DisplayMenu
+        label="View"
+        onOpenChange={() => undefined}
+        open={false}
+        sections={[]}
+        size={size}
+      />
+    ),
+  ],
+  ["ColumnsMenu", (size) => <ColumnsMenuAt size={size} />],
+  [
+    "Chip",
+    (size) => (
+      <Chip onClick={() => undefined} size={size}>
+        Needs you
+      </Chip>
+    ),
+  ],
+  [
+    "SegmentedControl",
+    (size) => (
+      <SegmentedControl
+        label="Layout"
+        onChange={() => undefined}
+        parts={[
+          { label: "Table", value: "table" },
+          { label: "Board", value: "board" },
+        ]}
+        size={size}
+        value="table"
+      />
+    ),
+  ],
+  [
+    "BarAction",
+    (size) => <BarAction icon={ICON} label="Upload" onPress={() => undefined} size={size} />,
+  ],
+  [
+    "MoreMenu",
+    (size) => (
+      <MoreMenu
+        actions={[{ icon: ICON, label: "Mark all read", onPress: () => undefined }]}
+        size={size}
+      />
+    ),
+  ],
+];
+
+test.each(
+  BAR_CONTROLS
+)("R8: the %s takes its size from the page - compact and comfortable draw different classes", (_name, draw) => {
+  expect(drawnClasses(draw("compact"))).not.toEqual(drawnClasses(draw("comfortable")));
+});
+
+test("the bar draws Clear filters, +N more and More at the page's size", () => {
+  /** The touch target each draws at `size`: the compact size gives it up from `md`. */
+  const compactly = (element: HTMLElement) => element.classList.contains("md:min-h-8");
+  const read: Record<ControlSize, boolean[]> = { comfortable: [], compact: [] };
+  for (const size of ["compact", "comfortable"] as const) {
+    // Wide, with something to clear and an action kept in More.
+    const wide = render(
+      <ControlRow
+        actions={[{ icon: ICON, label: "Mark all read", more: true, onPress: () => undefined }]}
+        chips={[{ label: "Needs you", remove: () => undefined }]}
+        clear={() => undefined}
+        size={size}
+        trigger={{
+          children: () => null,
+          count: 1,
+          label: "Filters",
+          onOpenChange: () => undefined,
+          open: false,
+        }}
+      />
+    );
+    try {
+      read[size].push(
+        compactly(screen.getByRole("button", { name: "Clear filters" })),
+        compactly(screen.getByRole("button", { name: "More" }))
+      );
+    } finally {
+      wide.unmount();
+    }
+    // Narrow, with chips and no trigger: one `+N more` stands in the line.
+    const boxes = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      const bar = this.getAttribute("data-control") === "control-row";
+      return new DOMRect(0, 0, bar ? 390 : 0, 44);
+    });
+    const narrow = render(
+      <ControlRow
+        chips={[
+          { label: "Owner: alice", remove: () => undefined },
+          { label: "State: live", remove: () => undefined },
+        ]}
+        size={size}
+      />
+    );
+    try {
+      read[size].push(compactly(screen.getByRole("button", { name: "2 more filters" })));
+    } finally {
+      narrow.unmount();
+      boxes.mockRestore();
+    }
+  }
+  expect(read).toEqual({ comfortable: [false, false, false], compact: [true, true, true] });
 });

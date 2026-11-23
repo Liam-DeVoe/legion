@@ -3,6 +3,8 @@ import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 
+import { tableFilterActive } from "../theme/classes";
+import type { BarLook } from "./bar-look";
 import { PanelTrigger } from "./PanelTrigger";
 
 function Host({ count, held = false }: { count?: number; held?: boolean }) {
@@ -173,6 +175,104 @@ test("a trigger given a control of its own carries that name, and the panel stay
       "column-filter"
     );
     expect(document.querySelector('[data-control="panel-trigger"]')).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A menu holding one trigger as its item, as the control bar's More holds Save view. */
+function MenuWithPanelItem() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div aria-label="More" role="menu">
+      <PanelTrigger label="Save view" onOpenChange={setOpen} open={open} role="menuitem">
+        {(close) => (
+          <button onClick={close} type="button">
+            Save
+          </button>
+        )}
+      </PanelTrigger>
+    </div>
+  );
+}
+
+test("a trigger given the menuitem role is an item of its menu that opens its panel and takes the reader back", async () => {
+  const user = userEvent.setup();
+  const view = render(<MenuWithPanelItem />);
+  try {
+    const item = within(screen.getByRole("menu", { name: "More" })).getByRole("menuitem", {
+      name: "Save view",
+    });
+    expect(item).toHaveAttribute("aria-haspopup", "dialog");
+    expect(screen.queryByRole("button", { name: "Save view" })).toBeNull();
+    await user.click(item);
+    const panel = screen.getByRole("dialog", { name: "Save view" });
+    await user.click(within(panel).getByRole("button", { name: "Save" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(item).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** The trigger as the control bar draws it, given `look`, counting `count`. */
+function BarTrigger({ count, look }: { count?: number; look: BarLook }) {
+  return (
+    <PanelTrigger
+      count={count}
+      label="Filter"
+      look={look}
+      onOpenChange={() => undefined}
+      open={false}
+    >
+      {() => <span>Nothing here.</span>}
+    </PanelTrigger>
+  );
+}
+
+test("in the bar's look the trigger is quiet at rest, on a tint with its count while the count is above zero, and its glyph alone with its count as a badge where the bar asks", () => {
+  const view = render(<BarTrigger count={0} look={{}} />);
+  try {
+    const quiet = screen.getByRole("button", { name: "Filter" });
+    // At zero no count is said, and nothing fills or outlines the button.
+    expect(quiet.textContent).toBe("Filter");
+    expect(quiet).toHaveClass("bg-transparent");
+    expect(quiet).not.toHaveClass("border");
+
+    view.rerender(<BarTrigger count={2} look={{}} />);
+    const tinted = screen.getByRole("button", { name: "Filter · 2" });
+    expect(tinted).not.toHaveClass("bg-transparent");
+    for (const name of tableFilterActive.split(" ")) expect(tinted).toHaveClass(name);
+
+    view.rerender(<BarTrigger count={2} look={{ icon: <svg aria-hidden="true" /> }} />);
+    const glyph = screen.getByRole("button", { name: "Filter · 2" });
+    expect(glyph.querySelector("svg")).not.toBeNull();
+    // No words but the badge, which a screen reader hears in the name.
+    expect(glyph.textContent).toBe("2");
+    // The panel keeps the trigger's own words as its name.
+    view.rerender(
+      <PanelTrigger
+        count={2}
+        label="Filter"
+        look={{ icon: <svg aria-hidden="true" /> }}
+        onOpenChange={() => undefined}
+        open
+      >
+        {() => <span>Nothing here.</span>}
+      </PanelTrigger>
+    );
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a trigger outside any bar keeps its own look, its count said at zero as well", () => {
+  const view = render(<Host count={0} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Columns · 0" });
+    expect(trigger).toHaveClass("border");
+    expect(trigger).not.toHaveClass("bg-transparent");
   } finally {
     view.unmount();
   }

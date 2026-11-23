@@ -25,13 +25,24 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
   `components/one-definition.test.ts` refuses a page's own search box, `<table>`, panel, hand-written control mark and value import of the table library, but not a `<select>`.
   In the seven features it names in `ADDRESS_FEATURES`, it also refuses every read or write of the address that goes round `lib/page-address.ts`.
 
-  - `components/ControlRow.tsx`: the one row a page's controls sit in.
+  - `components/ControlRow.tsx`: the one control bar a page's controls sit in, one line that never wraps and never grows.
+    It takes each control in a slot of its own kind, as that control's props and never as an element: `search`, `switch`, `trigger` with `clear`, `chips`, `actions`, `hint`, `columns`, `display` and `main`.
+    It draws each shared control itself, at the page's `size`, and reads its own width: below 640 px the chips leave the line, the actions move into **More**, and **Filter**, the display menu, **More** and the main action show their glyphs alone.
+    Its `children` and its element-typed props stand only until every page has moved onto the slots.
 
-  - `components/SearchBox.tsx`: the search box of a list narrowed by typed words.
+  - `components/SearchBox.tsx`: the search box of a list narrowed by typed words, with the key that focuses it as its `hint`.
 
-  - `components/PanelTrigger.tsx`: the button that opens a menu, a filter panel or a column filter.
+  - `components/SegmentedControl.tsx`: the switch at the start of the bar, two or more parts of one list, one of them chosen (`aria-pressed`).
 
-  - `components/DisplayMenu.tsx`: the display choices at the row's end.
+  - `components/PanelTrigger.tsx`: the button that opens a menu, a filter panel or a column filter; the bar draws it in its quiet look (`BarLook`, `components/bar-look.tsx`).
+
+  - `components/ViewPanel.tsx`: the trigger of a page's own panel that narrows nothing, such as an action's panel or the (i) hint.
+
+  - `components/BarAction.tsx`: an action of the bar, a quiet button, refused with its refusal shown where it carries one, and the page's one main action drawn filled.
+
+  - `components/MoreMenu.tsx`: the bar's **More** (⋯), whose items are the actions it holds, check items among them.
+
+  - `components/DisplayMenu.tsx`: the display choices at the bar's end, under the label the page gives it.
 
   - `components/ColumnFilter.tsx`: the filter on a table column's header.
 

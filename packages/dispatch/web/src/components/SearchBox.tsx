@@ -1,12 +1,13 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { KeyboardEvent, ReactNode, Ref } from "react";
 
-import { focusVisibleRing, inputClasses } from "../theme/classes";
+import { focusVisibleRing, inputClasses, kbdHint } from "../theme/classes";
 import { CONTROL, type ControlSize, controlPadding } from "./control-names";
 
 export interface SearchBoxProps {
   /** The caller's layout alone — a width, or how it shares its row. The fill, the border and the
-   *  radius belong to the box, so one page's search never looks like another's. */
+   *  radius belong to the box, so one page's search never looks like another's. Where the box
+   *  draws a `hint`, it is the layout of the box and its hint together. */
   readonly className?: string;
   /** The rows the typing walks, for the one box that drives a list of its own: the command bar,
    *  whose arrows move a highlight the box names in `aria-activedescendant` while focus stays
@@ -21,6 +22,10 @@ export interface SearchBoxProps {
   };
   /** For a caller keeping a test id that a browser row already names. */
   readonly "data-testid"?: string;
+  /** The key that puts the reader in the box, drawn inside the box at its end - the Inbox's `f`
+   *  - and told to a screen reader as the box's shortcut (`aria-keyshortcuts`). The box keeps
+   *  its `data-control`; the hint is a mark beside the text, drawn over the box's own room. */
+  readonly hint?: string;
   /** The box's accessible name: it carries no visible label of its own. */
   readonly label: string;
   /** Defaults to what the server accepts, so no reader types a query it would refuse. `null`
@@ -51,6 +56,7 @@ export function SearchBox({
   className,
   combobox,
   "data-testid": testId,
+  hint,
   label,
   maxLength = SEARCH_QUERY_MAX,
   onBlur,
@@ -73,10 +79,19 @@ export function SearchBox({
           "aria-expanded": combobox.expanded,
           role: "combobox" as const,
         };
-  return (
+  // With a hint, the box fills a wrapper that takes the caller's layout, and leaves room at its
+  // end for the hint, so no typed word runs under it.
+  const boxClass =
+    hint === undefined
+      ? className === undefined
+        ? own
+        : `${own} ${className}`
+      : `${own} w-full pr-8`;
+  const box = (
     <input
+      aria-keyshortcuts={hint}
       aria-label={label}
-      className={className === undefined ? own : `${own} ${className}`}
+      className={boxClass}
       data-control={CONTROL.searchBox}
       data-testid={testId}
       maxLength={maxLength === null ? undefined : maxLength}
@@ -89,5 +104,18 @@ export function SearchBox({
       value={value}
       {...drives}
     />
+  );
+  if (hint === undefined) return box;
+  return (
+    <span className={`relative block min-w-0${className === undefined ? "" : ` ${className}`}`}>
+      {box}
+      {/* Hidden from a screen reader, which hears the key as the box's `aria-keyshortcuts`. */}
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 rounded px-1.5 text-xs font-medium ${kbdHint}`}
+      >
+        <kbd className="font-sans">{hint}</kbd>
+      </span>
+    </span>
   );
 }

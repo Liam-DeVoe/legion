@@ -7,6 +7,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
+import type { BarLook } from "./bar-look";
 import { CONTROL, type ControlSize } from "./control-names";
 import { PanelTrigger } from "./PanelTrigger";
 
@@ -28,13 +29,24 @@ export interface DisplayMenuSection {
 }
 
 export interface DisplayMenuProps {
-  /** The trigger's text and the panel's name: the Inbox's menu is **View**. */
+  /** The trigger's text and the panel's name: the Inbox's menu is **View**, the Issues tab's
+   *  **Group by**. */
   readonly label: string;
+  /** The control bar's look (`BarLook`), where the bar draws the menu: quiet, and its glyph
+   *  alone below 640 px of the bar's width, its label still its name. A menu outside any bar is
+   *  given none and keeps `PanelTrigger`'s own look. */
+  readonly look?: BarLook;
   readonly onOpenChange: (open: boolean) => void;
   /** The host owns it, so a page keeps one panel open at a time. */
   readonly open: boolean;
+  /** `menuitem` where a menu holds the display menu as one of its items: the control bar's
+   *  **More** below 640 px of the bar's width on the Inbox (`MoreMenu`), which draws it in its
+   *  own item's look (`triggerClassName`). */
+  readonly role?: "menuitem";
   readonly sections: readonly DisplayMenuSection[];
   readonly size?: ControlSize;
+  /** The trigger's look as an item of a menu (`role`). */
+  readonly triggerClassName?: string;
 }
 
 /** One of a section's choices: a radio, so the browser reads the section as one pick and the
@@ -90,19 +102,26 @@ function Choice({
  */
 export function DisplayMenu({
   label,
+  look,
   onOpenChange,
   open,
+  role,
   sections,
   size,
+  triggerClassName,
 }: DisplayMenuProps): ReactNode {
   const id = useId();
   return (
     <PanelTrigger
+      align={role === undefined ? "left" : "right"}
       control={CONTROL.displayMenu}
       label={label}
+      look={look}
       onOpenChange={onOpenChange}
       open={open}
+      role={role}
       size={size}
+      triggerClassName={triggerClassName}
     >
       {() =>
         sections.map((section) => (

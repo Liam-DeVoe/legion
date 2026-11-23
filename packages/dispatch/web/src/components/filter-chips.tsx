@@ -1,8 +1,21 @@
 import type { Column } from "@tanstack/react-table";
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 
+import { focusVisibleRing, linkHoverText, linkText } from "../theme/classes";
 import { Chip } from "./Chip";
 import type { ControlSize } from "./control-names";
+
+/** A link a chip carries beside it, outside its remove control: the Inbox's agent chip carries
+ *  the agent's live conversation. */
+export interface FilterChipLink {
+  /** The link's accessible name, since it draws a glyph: `Open live conversation with Planner`. */
+  readonly label: string;
+  /** Its tooltip, where the page draws one. */
+  readonly title?: string;
+  /** Where it goes: an address of the app. */
+  readonly to: string;
+}
 
 /** One narrowing that is on, as a page's control row draws it. */
 export interface FilterChip {
@@ -11,6 +24,10 @@ export interface FilterChip {
   /** The chip's own text: the facet and its value as the page writes them - `Label: docs`,
    *  `Author alice`, `Needs you`. */
   readonly label: string;
+  /** A link drawn beside the chip's remove control and outside it, so a press on the link goes
+   *  where it says and takes nothing off, and Delete on it takes nothing off either
+   *  (`ControlRow`). */
+  readonly link?: FilterChipLink;
   /** What the chip shows where it says more than its label, which still names it: the List's
    *  `only=` chip adds how many of its issues are listed, `Showing: <title> · 2 of 3 issues`,
    *  and is named for its label alone. The label where unset. */
@@ -18,6 +35,13 @@ export interface FilterChip {
   /** Takes this narrowing off, and no other. */
   readonly remove: () => void;
 }
+
+/** A chip's link at each size: the chip's own touch target, which the compact size gives up only
+ *  from `md`, where a mouse is. */
+const CHIP_LINK: Record<ControlSize, string> = {
+  comfortable: "min-h-11 min-w-11",
+  compact: "min-h-11 min-w-11 md:min-h-8 md:min-w-8",
+};
 
 /**
  * The chips of the narrowings that are on, for a `ControlRow`, on every page that has a row: one
@@ -29,26 +53,47 @@ export interface FilterChip {
  * would read as a narrowing the reader could still switch on. Its text is cut where the row is
  * too narrow, with the whole of it as its `title`, since a search can be 1,000 characters long.
  *
+ * A chip given a link is drawn in a box with the link after it: two controls side by side, the
+ * chip's remove control and the link, neither inside the other. The box is never wider than its
+ * line (`max-w-full`), and the chip's own box gives way inside it (`min-w-0`), so a long chip is
+ * cut short by its own `max-w-full` and the link stays in the line.
+ *
  * Answers undefined for no narrowing, which is what the row's `chips` takes for no chips.
  */
 export function filterChips(
   chips: readonly FilterChip[],
-  size?: ControlSize
+  size: ControlSize = "comfortable"
 ): ReactNode[] | undefined {
   if (chips.length === 0) return undefined;
-  return chips.map(({ key, label, remove, text }) => (
-    <Chip
-      aria-label={`Remove ${label} filter`}
-      key={key ?? label}
-      onClick={remove}
-      removable
-      selected
-      size={size}
-      title={text ?? label}
-    >
-      {text ?? label}
-    </Chip>
-  ));
+  return chips.map(({ key, label, link, remove, text }) => {
+    const chip = (
+      <Chip
+        aria-label={`Remove ${label} filter`}
+        key={key ?? label}
+        onClick={remove}
+        removable
+        selected
+        size={size}
+        title={text ?? label}
+      >
+        {text ?? label}
+      </Chip>
+    );
+    if (link === undefined) return chip;
+    return (
+      <span className="flex max-w-full items-center" key={key ?? label}>
+        <span className="flex min-w-0">{chip}</span>
+        <Link
+          aria-label={link.label}
+          className={`inline-flex shrink-0 items-center justify-center rounded px-1 outline-none focus-visible:ring-2 ${CHIP_LINK[size]} ${focusVisibleRing} ${linkText} ${linkHoverText}`}
+          title={link.title}
+          to={link.to}
+        >
+          <span aria-hidden="true">↗</span>
+        </Link>
+      </span>
+    );
+  });
 }
 
 /** What a table column's filter holds, as its chip names it: the values picked, or the text

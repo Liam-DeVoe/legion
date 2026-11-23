@@ -2,6 +2,7 @@ import { type ReactNode, useRef } from "react";
 
 import { borderDefault, card, surfaceMutedBg, textSecondaryOnCanvas } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
+import { type BarLook, badged, barButton } from "./bar-look";
 import { CONTROL, type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { useFocusPlace } from "./focus-place";
 import { heldPress } from "./held-press";
@@ -27,16 +28,27 @@ export interface PanelTriggerProps {
    *  menu, a columns menu and a column filter are each a button that opens a panel, and each is
    *  found by its own name while there is still one definition of the button and its panel. */
   readonly control?: ControlName;
-  /** Said after the label as `Columns · 2`, the way `MultiSelect`'s trigger counts a selection. */
+  /** Said after the label as `Columns · 2`, the way `MultiSelect`'s trigger counts a selection.
+   *  In the control bar's look (`look`) it is said only while above zero, on a tint. */
   readonly count?: number;
   /** Whether opening moves the focus into the panel, as every press that opens one does. A page
    *  that opens its panel by itself, from a choice it stored, passes false for that open, so the
    *  focus starts where the page starts (the Board). Read as the panel opens. */
   readonly focusOnOpen?: boolean;
   readonly label: ReactNode;
+  /** The control bar's look (`BarLook`), where the bar draws this trigger: no border and no fill
+   *  at rest, on a tint with its count while the count is above zero, and its glyph alone with
+   *  the count as a badge where `look.icon` is given, its label and count then its name. Given,
+   *  it takes the place of `triggerClassName`; a trigger outside any bar is given none. */
+  readonly look?: BarLook;
   readonly onOpenChange: (open: boolean) => void;
   /** The host owns it, so a page keeps one panel open at a time rather than a row of them. */
   readonly open: boolean;
+  /** `menuitem` for a trigger that is an item of a menu: an action of the control bar that opens
+   *  a panel of its own (**Save view**) and stands in the bar's **More** menu (`MoreMenu`). The
+   *  panel it opens hangs off the item and stands over the menu, which stays open under it. A
+   *  plain button where unset. */
+  readonly role?: "menuitem";
   readonly size?: ControlSize;
   /** A panel of controls - a page's filter panel: its multi-selects, flags and boxes - rather
    *  than a list of rows. The controls stand one under another with a gap between, each at its
@@ -73,8 +85,10 @@ export function PanelTrigger({
   count,
   focusOnOpen,
   label,
+  look,
   onOpenChange,
   open,
+  role,
   size = "comfortable",
   stacked = false,
   title,
@@ -98,22 +112,60 @@ export function PanelTrigger({
   // Held, the trigger refuses only an open: a press on it while its panel is open closes it.
   const press = heldPress(ariaDisabled, () => onOpenChange(true));
   const ownTrigger = `rounded-lg border text-sm font-semibold whitespace-nowrap refused:opacity-40 ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
+  // In the bar's look the count is said only while above zero, and a glyph drawn alone leaves
+  // the label and the count to the name.
+  const counted = count !== undefined && count > 0;
+  const glyph = look?.icon;
+  const name =
+    title ??
+    (glyph === undefined || typeof label !== "string"
+      ? undefined
+      : counted
+        ? `${label} · ${count}`
+        : label);
+  let face: ReactNode;
+  if (look === undefined) {
+    face = (
+      <>
+        {label}
+        {count === undefined ? null : ` · ${count}`}
+      </>
+    );
+  } else if (glyph !== undefined) {
+    face = badged(glyph, count);
+  } else {
+    face = (
+      <>
+        {label}
+        {counted ? ` · ${count}` : null}
+      </>
+    );
+  }
+  const className =
+    look === undefined
+      ? (triggerClassName ?? ownTrigger)
+      : barButton(
+          size,
+          look.filled === true ? "filled" : counted ? "tint" : "quiet",
+          glyph !== undefined,
+          look.joined === true ? "rounded-l-lg" : "rounded-lg"
+        );
   return (
     <>
       <button
         aria-disabled={press["aria-disabled"]}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={title}
-        className={triggerClassName ?? ownTrigger}
+        aria-label={name}
+        className={className}
         data-control={control}
         onClick={open ? () => onOpenChange(false) : press.onClick}
         ref={trigger}
-        title={title}
+        role={role}
+        title={name}
         type="button"
       >
-        {label}
-        {count === undefined ? null : ` · ${count}`}
+        {face}
       </button>
       {open ? (
         <AnchoredPanel

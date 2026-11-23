@@ -134,7 +134,12 @@ const PAST_THE_DEADLINE_MS = 2_000;
  *  commit that took the control away. */
 const LANDING_WAIT_MS = 5_000;
 
-const SCENES: Readonly<Record<SurfaceName, Scene>> = {
+/** The eight pages these rows read, INFRA-3135's: R8's two priority pages draw the project List's
+ *  bar, whose hand-offs the List's scene reads, and the priorities table's, which hands the focus
+ *  as that bar does. */
+type LandingSurface = Exclude<SurfaceName, "priorities page" | "priority page">;
+
+const SCENES: Readonly<Record<LandingSurface, Scene>> = {
   Inbox: INBOX_SCENE,
   "Inbox drawer": DRAWER_SCENE,
   "project List": LIST_SCENE,
@@ -144,6 +149,11 @@ const SCENES: Readonly<Record<SurfaceName, Scene>> = {
   "search bar": SEARCH_SCENE,
   "Artifacts tab": ARTIFACTS_SCENE,
 };
+
+/** Whether `surface` is one of the eight these rows read. */
+function landingSurface(surface: SurfaceName): surface is LandingSurface {
+  return surface in SCENES;
+}
 
 /** What names one case: its page, its name in its row, its window and its engine. */
 interface CaseName {
@@ -360,7 +370,7 @@ async function runCase(run: Run, entry: Case, wrong: string[]): Promise<void> {
   }
 }
 
-for (const surface of [...STUBBABLE_SURFACES, ...REAL_STACK_SURFACES]) {
+for (const surface of [...STUBBABLE_SURFACES, ...REAL_STACK_SURFACES].filter(landingSurface)) {
   const scene = SCENES[surface];
   for (const row of scene.rows) {
     for (const size of SIZES) {
