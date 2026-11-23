@@ -96,6 +96,7 @@ import {
   historyLoadOlder,
   historyPanel,
   newestHistoryEntry,
+  olderPageAnswered,
   rowFacts,
   seededHistoryEntry,
   stepRun,
@@ -227,22 +228,14 @@ test("the conversation is the outline and the history is in the panel", async ({
     // page is pressed for only once the first is drawn, and the log's length bounds the presses.
     const events = await allEvents(seeded.key);
     await newestHistoryEntry(page);
-    const older = historyPanel(page).getByRole("button", {
-      exact: true,
-      name: CONTROL_LABELS.load_older,
-    });
+    const older = historyLoadOlder(page);
     // Read once a page's answer has landed and two frames drew it, so Load older is drawn or gone.
     for (let presses = 1; await older.isVisible(); presses += 1) {
       expect(
         presses,
         `${CONTROL_LABELS.load_older} is still offered past the log's last page`
       ).toBeLessThanOrEqual(Math.floor(events.length / 200));
-      const answered = page.waitForResponse((response) => {
-        const url = new URL(response.url());
-        return (
-          url.pathname === `/api/v1/issues/${seeded.key}/events` && url.searchParams.has("before")
-        );
-      });
+      const answered = olderPageAnswered(page, seeded.key);
       await older.click();
       await answered;
       await nextFrames(page);
@@ -1194,25 +1187,7 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
       .toBe(before);
 
     // Pressed until it goes: each press reads the next page, and the last page takes it away.
-    for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
-      expect(
-        presses,
-        `${CONTROL_LABELS.load_older} is still offered past the log's last page`
-      ).toBeLessThan(3);
-      const answered = page.waitForResponse((response) => {
-        const url = new URL(response.url());
-        return (
-          url.pathname === `/api/v1/issues/${issue.key}/events` && url.searchParams.has("before")
-        );
-      });
-      await loadOlder.click();
-      await answered;
-      await nextFrames(page);
-    }
-    await expect(
-      historyLoadOlder(page),
-      `${CONTROL_LABELS.load_older} is still offered once the whole log is read`
-    ).toHaveCount(0);
+    await pressLoadOlderUntilGone(page, issue.key, (older) => older.click());
   } finally {
     await context.close();
   }
@@ -3705,25 +3680,23 @@ async function detailsStandStill(page: Page, after: string): Promise<void> {
     .toBe(0);
 }
 
-/** The reader reading down the history of `key` to its end: Load older focused and pressed by
- *  Enter until the log's last page takes it away, and Details' box standing still after. Each
- *  focus brings Load older into Details' view, at the foot of what the history holds. Answers
- *  how far Details' box is then scrolled. */
-async function readDownByLoadOlder(page: Page, key: string): Promise<number> {
+/** Presses the history's Load older by `press` until the last page of the log of `key` takes it
+ *  away: each press waits for its page's answer and for two frames that draw it, so Load older is
+ *  drawn or gone when it is looked for again. Load older still offered after two presses of this
+ *  call fails as offered past the log's last page. */
+async function pressLoadOlderUntilGone(
+  page: Page,
+  key: string,
+  press: (loadOlder: Locator) => Promise<void>
+): Promise<void> {
   const loadOlder = historyLoadOlder(page);
-  await expect(loadOlder, "the history offers no Load older to read down by").toBeVisible();
   for (let presses = 1; await loadOlder.isVisible(); presses += 1) {
     expect(
       presses,
       `${CONTROL_LABELS.load_older} is still offered past the log's last page`
     ).toBeLessThan(3);
-    await loadOlder.focus();
-    await nextFrames(page);
-    const answered = page.waitForResponse((response) => {
-      const url = new URL(response.url());
-      return url.pathname === `/api/v1/issues/${key}/events` && url.searchParams.has("before");
-    });
-    await page.keyboard.press("Enter");
+    const answered = olderPageAnswered(page, key);
+    await press(loadOlder);
     await answered;
     await nextFrames(page);
   }
@@ -3731,6 +3704,22 @@ async function readDownByLoadOlder(page: Page, key: string): Promise<number> {
     loadOlder,
     `${CONTROL_LABELS.load_older} is still offered once the whole log is read`
   ).toHaveCount(0);
+}
+
+/** The reader reading down the history of `key` to its end: Load older focused and pressed by
+ *  Enter until the log's last page takes it away (`pressLoadOlderUntilGone`), and Details' box
+ *  standing still after. Each focus brings Load older into Details' view, at the foot of what
+ *  the history holds. Answers how far Details' box is then scrolled. */
+async function readDownByLoadOlder(page: Page, key: string): Promise<number> {
+  await expect(
+    historyLoadOlder(page),
+    "the history offers no Load older to read down by"
+  ).toBeVisible();
+  await pressLoadOlderUntilGone(page, key, async (loadOlder) => {
+    await loadOlder.focus();
+    await nextFrames(page);
+    await page.keyboard.press("Enter");
+  });
   await detailsStandStill(page, `the last ${CONTROL_LABELS.load_older}`);
   return historyScrollTop(page);
 }
