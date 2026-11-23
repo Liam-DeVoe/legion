@@ -91,7 +91,8 @@ func TestAPodTakingOverDoesNotForwardARoleMessageTheOldPodDelivered(t *testing.T
 			if err != nil {
 				return err
 			}
-			return forward.Wait()
+			_, err = forward.Wait()
+			return err
 		})
 		return wireTestRoleForwarder(t, cfg)
 	}
