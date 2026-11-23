@@ -94,20 +94,39 @@ func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	return parsed.String()
 }
 
-// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds: the time
-// left until t's deadline less testwait.Margin, rounded down, and 1 where that is under a second
-// (pgx reads 0 as no bound at all).
+// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds
+// (TimeoutUntil of ConnectEnd), and the longest pgx holds where t names no deadline.
 func connectTimeout(t testing.TB) string {
-	unbounded := strconv.FormatInt(math.MaxInt64/int64(time.Second), 10)
+	end, bounded := ConnectEnd(t)
+	if !bounded {
+		return strconv.FormatInt(math.MaxInt64/int64(time.Second), 10)
+	}
+	return strconv.FormatInt(int64(TimeoutUntil(end)/time.Second), 10)
+}
+
+// ConnectEnd is the moment every connect a test of t's binary makes must end by: the binary's
+// deadline (go test's -timeout, the one t.Deadline names for every test of the binary) less
+// testwait.Margin. It is false where t names no deadline (-timeout 0, or a testing.TB with no
+// Deadline method).
+func ConnectEnd(t testing.TB) (time.Time, bool) {
 	named, ok := t.(interface{ Deadline() (time.Time, bool) })
 	if !ok {
-		return unbounded
+		return time.Time{}, false
 	}
 	deadline, bounded := named.Deadline()
 	if !bounded {
-		return unbounded
+		return time.Time{}, false
 	}
-	return strconv.FormatInt(max(1, int64((time.Until(deadline)-testwait.Margin)/time.Second)), 10)
+	return deadline.Add(-testwait.Margin), true
+}
+
+// TimeoutUntil is the connect timeout of a connect that begins now and must end by end: the whole
+// seconds left, rounded down, and a second where less than one is left (pgx reads 0 as no bound
+// at all). A pool that outlives the test that opened it sets it on each new connection as it
+// makes it (pgxpool.Config.BeforeConnect), so a connection made late gets what is left then, not
+// what was left when the pool was opened.
+func TimeoutUntil(end time.Time) time.Duration {
+	return time.Duration(max(1, int64(time.Until(end)/time.Second))) * time.Second
 }
 
 // adminExec runs one statement over a connection of its own to adminURL: neither create database

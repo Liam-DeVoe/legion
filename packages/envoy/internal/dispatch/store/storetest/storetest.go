@@ -38,6 +38,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -90,9 +91,10 @@ func migrateWithThisTree(databaseURL string) error {
 // unset, and opens the admin pool, once. It makes no template: each is made by the first test that
 // asks for it (OpenFrom). Every connect it, clone and Empty make waits until the test binary's
 // deadline less testwait's margin (testdb.WithConnectDeadline), not pgx's two minutes, so a
-// Postgres that a loaded machine slows only slows a test. The admin URL is read before the Once,
-// so a URL that cannot be read fails each test that asks, and never leaves the Once done with no
-// admin pool for a later test to call.
+// Postgres that a loaded machine slows only slows a test; the admin pool's later connections end
+// there too (openAdmin). The admin URL is read before the Once, so a URL that cannot be read
+// fails each test that asks, and never leaves the Once done with no admin pool for a later test
+// to call.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
@@ -103,7 +105,8 @@ func ready(t testing.TB) {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
 	admin := testdb.WithConnectDeadline(t, raw)
-	shared.once.Do(func() { shared.err = openAdmin(admin) })
+	end, bounded := testdb.ConnectEnd(t)
+	shared.once.Do(func() { shared.err = openAdmin(admin, end, bounded) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
 	}
@@ -301,8 +304,12 @@ func dropDatabase(name string) {
 }
 
 // openAdmin opens the admin pool, on the server raw names, that every database and template is
-// created and dropped through.
-func openAdmin(raw string) error {
+// created and dropped through. The pool outlives the test that opens it and makes connections
+// for later tests, so a connection's connect timeout is not raw's, which is what was left of the
+// binary's deadline when that first test began: each new connection takes the seconds left until
+// end as it is made (testdb.TimeoutUntil), so one made late ends on pgx's own error with
+// testwait's margin left, not after go test's alarm. Without bounded (no deadline) raw's stands.
+func openAdmin(raw string, end time.Time, bounded bool) error {
 	server, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
@@ -316,6 +323,12 @@ func openAdmin(raw string) error {
 	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
 	// machine the packages testing against one server at once would exceed its connection limit.
 	config.MaxConns = 4
+	if bounded {
+		config.BeforeConnect = func(_ context.Context, connection *pgx.ConnConfig) error {
+			connection.ConnectTimeout = testdb.TimeoutUntil(end)
+			return nil
+		}
+	}
 	admin, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("open admin pool: %w", err)
