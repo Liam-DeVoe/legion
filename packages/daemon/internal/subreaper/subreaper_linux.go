@@ -8,19 +8,31 @@ import (
 	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
+)
+
+// The retry of a pass that failed: after firstRetry, doubling to lastRetry, until a pass succeeds.
+// A pass's failure may have used up the event that asked for it, the SIGCHLD of the last orphan to
+// exit, and no later event need come, so a failed pass is tried again on a clock of its own rather
+// than left waiting for one. A successful pass waits for events alone, so a held child cannot
+// make the reaper spin.
+const (
+	firstRetry = 100 * time.Millisecond
+	lastRetry  = 5 * time.Second
 )
 
 // Serve makes this process the child subreaper of its descendants (PR_SET_CHILD_SUBREAPER), so a
 // descendant whose parent exits is handed to this process rather than to its PID namespace's
 // init, and reaps every exited child the guard does not hold: one pass at once, then one pass
 // at each SIGCHLD and at each Done, until stop is called. stop ends the reaper and returns once
-// its last pass is over. A pass that fails is logged through logf, and the next event tries again.
+// its last pass is over. A pass that fails is logged through logf and tried again after a
+// backoff (firstRetry to lastRetry), or at the next event if one comes first.
 //
-// The reaper does nothing between events, so it cannot spin: a held child that has exited and
-// whose wait has not read it yet costs the one pass its SIGCHLD makes, which passes it over, and
-// nothing more until the next SIGCHLD or Done.
+// After a successful pass the reaper does nothing until the next event, so it cannot spin: a
+// held child that has exited and whose wait has not read it yet costs the one pass its SIGCHLD
+// makes, which passes it over, and nothing more until the next SIGCHLD or Done.
 //
 // The attribute is the process's, not the caller's thread's, and no child inherits it. A child
 // that is still running when this process exits goes to the next subreaper above it, or to the
@@ -35,10 +47,18 @@ func (g *Guard) Serve(logf func(format string, args ...any)) (stop func(), err e
 	go func() {
 		defer close(finished)
 		defer signal.Stop(exits)
+		var retry time.Duration
 		for {
 			reaped, err := g.pass()
+			var again <-chan time.Time
 			if err != nil {
-				logf("reap this process's exited orphans: %v", err)
+				retry = min(max(2*retry, firstRetry), lastRetry)
+				logf("reap this process's exited orphans: %v; trying again in %s", err, retry)
+				// A timer nothing refers to any more is collected (Go 1.23 on), so one left
+				// behind by an event that came first costs nothing.
+				again = time.After(retry)
+			} else {
+				retry = 0
 			}
 			if g.passed != nil {
 				g.passed(reaped)
@@ -48,6 +68,7 @@ func (g *Guard) Serve(logf func(format string, args ...any)) (stop func(), err e
 				return
 			case <-exits:
 			case <-g.again:
+			case <-again:
 			}
 		}
 	}()
@@ -66,7 +87,7 @@ func (g *Guard) Serve(logf func(format string, args ...any)) (stop func(), err e
 func (g *Guard) pass() ([]int, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	entries, err := os.ReadDir("/proc")
+	entries, err := os.ReadDir(g.proc)
 	if err != nil {
 		return nil, fmt.Errorf("list the processes: %w", err)
 	}
@@ -74,7 +95,7 @@ func (g *Guard) pass() ([]int, error) {
 	var reaped []int
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 || pid == self || g.pids[pid] {
+		if err != nil || pid <= 1 || pid == self || g.pids[pid] > 0 {
 			continue
 		}
 		// No __WCLONE or __WALL: a child that sends no SIGCHLD when it exits, such as the clone

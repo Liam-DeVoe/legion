@@ -149,9 +149,11 @@ func TestARoleStopKeepsItsGraceAndItsSaveWithTheShimInRoleInitsGroup(t *testing.
 	}
 }
 
-// roleGroupReport runs the stage of plan in a user and mount namespace of its own, as
-// roleDrainReport does, and answers every `group <key>=<value>` line it and its role printed, with
-// its whole output for a failure's message. Its deadline is a hang guard alone.
+// roleGroupReport runs the stage of plan in user, mount and PID namespaces of its own, and answers
+// every `group <key>=<value>` line it and its role printed, with its whole output for a failure's
+// message. Its deadline is a hang guard alone. The stage is the init of its PID namespace, so the
+// guard's kill of the stage ends role-init and every process the role started with it: a role that
+// hangs leaves nothing running behind the failed test.
 func roleGroupReport(t *testing.T, plan roleGroupPlan) (map[string]string, string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -169,7 +171,7 @@ func roleGroupReport(t *testing.T, plan roleGroupPlan) (map[string]string, strin
 	stage.WaitDelay = time.Second
 	stage.Env = append(os.Environ(), roleGroupStageEnv+"="+string(encoded))
 	stage.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 		GidMappingsEnableSetgroups: false,

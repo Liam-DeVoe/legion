@@ -26,8 +26,15 @@ import (
 // through Start or Starter and is released with Done once its own wait has read its exit; until
 // then no pass of the reaper reaps it. Its zero value is not ready: use NewGuard.
 type Guard struct {
-	mu   sync.Mutex
-	pids map[int]bool
+	mu sync.Mutex
+	// pids counts, by pid, the children started here that their own waits have not released yet.
+	// A count rather than a mark: once a child's wait has reaped it and before that wait's Done,
+	// the kernel may give the pid to a new child started here, and the earlier Done must not take
+	// the new child's hold away.
+	pids map[int]int
+	// proc is where a pass lists the processes, "/proc" but in a test of this package that makes a
+	// pass fail.
+	proc string
 	// again asks the reaper for a pass: one slot, so a Done while a pass runs, or while another is
 	// already asked for, adds no pass of its own.
 	again chan struct{}
@@ -38,7 +45,7 @@ type Guard struct {
 
 // NewGuard is a guard that holds no child yet.
 func NewGuard() *Guard {
-	return &Guard{pids: map[int]bool{}, again: make(chan struct{}, 1)}
+	return &Guard{pids: map[int]int{}, proc: "/proc", again: make(chan struct{}, 1)}
 }
 
 // Start starts cmd and records its pid, under the lock every pass of the reaper holds, so no pass
@@ -51,17 +58,19 @@ func (g *Guard) Start(cmd *exec.Cmd) (int, error) {
 		return 0, err
 	}
 	pid := cmd.Process.Pid
-	g.pids[pid] = true
+	g.pids[pid]++
 	return pid, nil
 }
 
-// Done forgets pid, whose own wait has read its exit, and asks the reaper for a pass. The pass
-// covers the one gap the record leaves: once that wait has reaped the child, the kernel may give
-// its pid to a new process, an orphan the reaper must take, and a pass made while the pid was
-// still recorded passed that orphan over.
+// Done releases one hold on pid, whose own wait has read its exit, and asks the reaper for a pass.
+// The pass covers the one gap the record leaves: once that wait has reaped the child, the kernel
+// may give its pid to a new process, an orphan the reaper must take, and a pass made while the pid
+// was still held passed that orphan over.
 func (g *Guard) Done(pid int) {
 	g.mu.Lock()
-	delete(g.pids, pid)
+	if g.pids[pid]--; g.pids[pid] <= 0 {
+		delete(g.pids, pid)
+	}
 	g.mu.Unlock()
 	select {
 	case g.again <- struct{}{}:

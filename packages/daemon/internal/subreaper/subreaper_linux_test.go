@@ -47,6 +47,8 @@ func runHelper(helper string) int {
 		err = h.together()
 	case "no-spin":
 		err = h.noSpin()
+	case "retry":
+		err = h.retry()
 	default:
 		err = fmt.Errorf("no helper case %q", helper)
 	}
@@ -185,6 +187,11 @@ func (h *helperRun) noSpin() error {
 	if err := h.serve(); err != nil {
 		return err
 	}
+	// The reaper's first pass, which Serve makes at once, is over before the child starts, so the
+	// second below can hold at most the one pass the child's SIGCHLD makes.
+	if !h.awaitPasses(1) {
+		return fmt.Errorf("the reaper made no first pass in %s", helperBound)
+	}
 	cmd := exec.Command("/bin/sh", "-c", "exit 7")
 	pid, err := h.guard.Start(cmd)
 	if err != nil {
@@ -212,6 +219,50 @@ func (h *helperRun) noSpin() error {
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// retry makes the reaper's passes fail (the guard lists a /proc that does not exist) while an
+// orphan ends, so the pass its SIGCHLD makes fails, then lets passes succeed again with no event
+// to ask for one, and reports whether the orphan was reaped all the same.
+func (h *helperRun) retry() error {
+	h.guard.mu.Lock()
+	h.guard.proc = "/proc/no-such-directory"
+	h.guard.mu.Unlock()
+	if err := h.serve(); err != nil {
+		return err
+	}
+	first, _, waited := h.guarded("/bin/sleep 0.3 </dev/null >/dev/null 2>&1 & echo $!")
+	if waited != nil {
+		return fmt.Errorf("the shell's own wait: %w", waited)
+	}
+	orphan, err := strconv.Atoi(first)
+	if err != nil {
+		return fmt.Errorf("the shell printed %q, not the sleep's pid", first)
+	}
+	if state := awaitZombie(orphan); state != "zombie" {
+		return fmt.Errorf("the orphan is %s, not a zombie, %s after its start", state, helperBound)
+	}
+	// Long enough for the pass the orphan's SIGCHLD made to have failed.
+	time.Sleep(200 * time.Millisecond)
+	h.guard.mu.Lock()
+	h.guard.proc = "/proc"
+	h.guard.mu.Unlock()
+	fmt.Printf("orphan=%s\n", awaitGone(orphan))
+	return nil
+}
+
+// awaitPasses waits, bounded, for the reaper to have made n passes.
+func (h *helperRun) awaitPasses(n int) bool {
+	deadline := time.Now().Add(helperBound)
+	for {
+		if passes, _ := h.counts(0); passes >= n {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -345,5 +396,46 @@ func TestTheReaperDoesNotSpinOnAnExitedGuardedChild(t *testing.T) {
 	}
 	if report["pass-after-done"] != "true" {
 		t.Errorf("no pass followed the guarded child's Done, so the count above may count nothing\n%s", out)
+	}
+}
+
+// A pass that fails is tried again on a clock of its own: the passes fail while an orphan ends, so
+// the pass its SIGCHLD makes fails too, and once passes can succeed again no event comes to ask
+// for one. The orphan must still be reaped, where a reaper that waited for the next event would
+// leave it a zombie for good.
+func TestAFailedPassIsTriedAgainWithNoFurtherEvent(t *testing.T) {
+	report, out := runCase(t, "retry")
+	if report["orphan"] != "reaped" {
+		t.Errorf("the orphan is %q once passes could succeed again, want reaped by a retried pass\n%s", report["orphan"], out)
+	}
+	if !strings.Contains(out, "trying again in") {
+		t.Errorf("no pass failed, so the case shows nothing of the retry\n%s", out)
+	}
+}
+
+// Once a guarded child's own wait has reaped it, and before that wait's Done, the kernel may give
+// its pid to a new child started through the same guard. The earlier Done must leave the new
+// child held, or a pass could take the new child's exit from its own wait. The pid is held twice
+// here as Start holds it, once for each child, and released as Done releases it.
+func TestAnEarlierDoneLeavesALaterChildOfTheSamePidHeld(t *testing.T) {
+	g := NewGuard()
+	const pid = 4242
+	g.mu.Lock()
+	g.pids[pid]++ // the first child, whose wait has reaped it but not yet called Done
+	g.pids[pid]++ // the second child, given the same pid
+	g.mu.Unlock()
+	g.Done(pid)
+	g.mu.Lock()
+	held := g.pids[pid]
+	g.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("after the first child's Done the pid is held %d times, want 1, the second child's", held)
+	}
+	g.Done(pid)
+	g.mu.Lock()
+	_, left := g.pids[pid]
+	g.mu.Unlock()
+	if left {
+		t.Fatal("after both Dones the pid is still recorded")
 	}
 }
