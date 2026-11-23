@@ -80,6 +80,9 @@ const referencesGrowthBound = 6.5
 // budget, every route read answering 503 REFERENCES_TIMEOUT, and 14.2 to 15.0 on the build farm,
 // where every route read answers 200 inside the budget (2026-11-22).
 func TestTheReferencesReadAnswersAnIssueLinkedIntoByTenThousandBlocks(t *testing.T) {
+	// Not parallel: it holds the route's reads to their 2 s budget (referencesClosureBound) and
+	// refs.Closure's read times to a ratio (referencesGrowthBound), wall clock that the load of the
+	// tests beside it can push past.
 	small := seedLinkedIntoIssue(t, 8, 100)
 	large := seedLinkedIntoIssue(t, 40, 500)
 	const reads = 3

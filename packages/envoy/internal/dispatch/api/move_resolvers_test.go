@@ -105,6 +105,7 @@ func closureRefKeys(t *testing.T, handler http.Handler, key string) []string {
 // reference names the ask's node, the block link names the ask, and the closure holds the
 // document the ask's row names, the spec.
 func TestEachResolverFollowsAMove(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents, _ := deps.Docs.(*docs.Service)
 	ctx := context.Background()

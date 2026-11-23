@@ -30,6 +30,7 @@ const raceDeadline = 10 * time.Second
 // 409 ISSUE_CLOSED and the ask reads withdrawn naming the closer. Either way the ask has exactly
 // one ask.resolved event, and an ask block's block reads resolved, as its row does.
 func TestClosingAnIssueAgainstAConcurrentResolveLeavesOneRecord(t *testing.T) {
+	t.Parallel()
 	resolver := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
 	for _, block := range []bool{false, true} {
 		name := "a plain ask"
@@ -123,6 +124,7 @@ func (d *afterCloseSettlementDocs) SettleIssueDocuments(ctx context.Context, iss
 // The close's sweep writes the copy from its source's row instead, so it reads resolved, as the
 // source does, without waiting for that settlement.
 func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -155,6 +157,7 @@ func TestADecisionResolvedJustBeforeTheCloseTakesTheIssueLeavesItsCopyResolved(t
 // another build serves, for that build's pages (docs' rollWindowAskAttributes), so the test
 // registers a process of each of two builds and reads the copy's live tree.
 func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the resolution arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	registerTwoBuilds(t, f.database)
@@ -186,6 +189,7 @@ func TestTheRepairSweepLeavesTheCopyOfAResolvedDecisionResolved(t *testing.T) {
 // state only while another build serves, so the test registers a process of each of two builds and
 // reads the copy's live tree.
 func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	wrapper := &afterCloseSettlementDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -228,6 +232,7 @@ func TestADecisionAnsweredJustBeforeTheCloseTakesTheIssueLeavesItsCopyAnswered(t
 // rollWindowAskAttributes), so the test registers a process of each of two builds and reads the
 // copy's live tree.
 func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
+	t.Parallel()
 	// An hour, so the settlement the answer arms for the copy never fires while the test runs.
 	f := newRepairFixtureSettlingAfter(t, time.Hour)
 	registerTwoBuilds(t, f.database)
@@ -251,6 +256,7 @@ func TestTheRepairSweepLeavesTheCopyOfAnAnsweredDecisionAnswered(t *testing.T) {
 // as the asks member of the text an agent reads shows it from the store, and the close leaves that
 // text as it was.
 func TestClosingAnIssueLeavesTheSettledAnswerInADecisionsCopy(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		// An hour, so the only settlements are the ones this test runs.
@@ -394,6 +400,7 @@ func requireResolvedDecisionAndCopy(t *testing.T, handler http.Handler, database
 // edit's own version holds none of the block's state, the next differs from it only in the
 // block's opener showing it resolved, and the text an agent reads shows the block resolved.
 func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) {
+	t.Parallel()
 	var documents *docs.Service
 	// hold names the document whose next settlement is held at its owner row, until release.
 	var hold atomic.Pointer[string]
@@ -510,6 +517,7 @@ func versionMarkdowns(t *testing.T, database *store.Store, document string) []st
 // written a moment before is indexed as an ask credited to its writer, and the document owes no
 // settlement afterwards, whatever becomes of the close.
 func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
+	t.Parallel()
 	// cancelOn names the document whose next settlement cancels the close's request once it holds
 	// the issue's row.
 	var cancelOn atomic.Pointer[string]
