@@ -132,12 +132,15 @@ credential refreshed`, with the claim, role, App, `expiresAt` and the directorie
 it adopted after a restart is refreshed for the repository its claim's issue works, read from the
 daemon's own state, never one read from the pane's directory. While the architect does a step of
 its own plan (one whose key is `owner`), its pane's directories hold the App of that step's role
-instead. Where that App is not the architect's own, the daemon writes them before it tells the
-architect the step (the log line `tmux runtime: github credential written for a step`, with the
-claim, role, App, `expiresAt` and the directories written); each refresh writes the App the pane
-acts as then; and the end of the step writes the architect's own App back, unless its next step
-of another App has already begun, and a notice to the architect queued after that write waits for
-it. Each of those tokens reaches every
+instead. The daemon tells the architect such a step only once the `hosts.yml` of the directory
+`GH_CONFIG_DIR` names holds that App's token, and waits while it holds another or no pane of the
+architect is watched. Where that App is not the architect's own, it first has the runtime write the pane's
+directories, for the App the runtime judges the pane works as under the lock its writes take (the
+step's, unless the step has ended since), with the log line `tmux runtime: github credential
+written for a step` (the claim, role, App, `expiresAt` and the directories written); each refresh
+writes the App the pane acts as then, judged the same way; and the end of the step writes the
+architect's own App back, unless its next step of another App has already begun, and a notice to
+the architect queued after that write waits for it. Each of those tokens reaches every
 repository its own installation holds, which the account chose when it installed the App, and the
 daemon asks GitHub to narrow none of them to a repository. The bundle's root also holds one file
 of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both
