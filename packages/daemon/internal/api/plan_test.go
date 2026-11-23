@@ -363,9 +363,11 @@ func seedMember(t *testing.T, h *harness, key, tree string) {
 	}
 }
 
-// Who owns a recorded issue is one rule, record.ArchitectOfTree: an architect of the issue's tree
-// now, the root's or a sub-architect's, the rule the workflow holds the giver of a stored plan to
-// at the issue's first step. A sub-architect, the architect of LEGION-211, gives a plan for
+// Who owns a recorded issue for register_plan and stop_task is one rule, record.ArchitectOfTree:
+// an architect of the issue's tree now, the root's or a sub-architect's, the rule the workflow
+// holds the giver of a stored plan to at the issue's first step (the steps of the key owner are
+// narrower, the issue's own architect's alone, record.OwnerClaim). A sub-architect, the architect
+// of LEGION-211, gives a plan for
 // LEGION-209 while LEGION-211 stands in the tree LEGION-208. Once LEGION-211 stands in a tree of
 // its own it is no architect of that tree, whatever tree its claim was registered in:
 // register_plan and stop_task both refuse it, and the root's architect is still taken.

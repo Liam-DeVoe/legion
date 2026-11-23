@@ -71,7 +71,8 @@ const registerPlanRoute = "register_plan"
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is. It moves
-// only with this change's own number, and it is the last number of SupportedContracts.
+// only with this change's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const OwnerPlanContract = 211
 
 // writeRefusal writes a committed refusal: a refused plan with its reasons beside the code
@@ -161,7 +162,8 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
 // generation the plan is given at. A recorded issue is its tree's architects', the root's or a
 // sub-architect's (architectOfRecord, by record.ArchitectOfTree, the rule every architect
-// operation holds it to), and its plan is given at its generation. One the daemon has not
+// operation holds it to first; complete_step then takes the issue's own architect alone,
+// NOT_THE_OWNER), and its plan is given at its generation. One the daemon has not
 // recorded — a child before release_children records it — is the tree's when Dispatch's parent
 // chain reaches the tree (treeChain) and it has not entered the workflow, triage, backlog, icebox
 // or todo, and its plan is given at generation 0, where it waits for the issue's first step. These

@@ -107,8 +107,9 @@ func TestAFreshSessionOfADeploymentRolesClaimRestartsItsStep(t *testing.T) {
 	}
 }
 
-// The roles a claim can be on are Legion's six and each role the deployment defines: the
-// controller's fresh_session and compact say so when they refuse the role controller.
+// The roles a claim can be on are Legion's six, the role acceptance of a fresh agent of a step
+// `acceptance`, and each role the deployment or an issue's plan defines: the controller's
+// fresh_session and compact say so when they refuse the role controller.
 func TestTheRoleListNamesARoleOfTheDeployment(t *testing.T) {
 	const roles = "role must be one of architect, planner, implementer, tester, reviewer, merger, acceptance, or a role of this deployment or of an issue's plan; the project's controller is none of them, "
 	for _, tc := range []struct {

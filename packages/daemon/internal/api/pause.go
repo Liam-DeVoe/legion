@@ -87,8 +87,9 @@ type PauseStopView struct {
 }
 
 // PauseHeldView is one outbox row the open pause holds: its id, its kind, its issue, the claim it
-// is for (absent for a row that names none, such as an architect's notice, which the tree walk
-// routes at run time) and how long it has been due.
+// is for (absent for a row that names none, such as an architect's notice, which is routed at run
+// time: an owner-step to the issue's own architect, every other notice by the tree walk) and how
+// long it has been due.
 type PauseHeldView struct {
 	ID            int64       `json:"id"`
 	Kind          string      `json:"kind"`
