@@ -450,6 +450,18 @@ test("the pair is recorded as a row per half, and the reviewer approves only pas
   );
 });
 
+// A docs-only change needs no simplify pass (roles/core/implementer.md), so the body's `Thermo`
+// line and the pass's own rule say the same.
+test("the body guide runs no simplify pass on a docs-only diff, as the implementer's prompt says", () => {
+  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
+  expect(prBody).toContain(
+    "**Thermo:** `simplify-settled-diff` <once at <head-sha> | not run (docs-only change)>: <0 applied | applied → new head <sha>>;"
+  );
+  expect(prBody).toContain("The pass covers every file the diff touches, and a docs-only diff needs none.");
+  expect(prBody).not.toContain("a docs-only PR included");
+  expect(prBody).not.toContain("a docs-only diff included");
+});
+
 // The pair's own text bounds what it reads and what it reports: a range its task names limits
 // what it must read, and a defect it sees in code the pull request changed before that range is
 // still a finding, while code the pull request leaves unchanged stays out of its findings, because
