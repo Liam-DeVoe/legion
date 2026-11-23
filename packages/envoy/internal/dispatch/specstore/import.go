@@ -71,13 +71,14 @@ type Level struct {
 // are read (specchange.FromVersions). A statement is each requirement block, wherever the level
 // holds it, with the block's own text (specchange.BlockText). A heading of the document's top
 // starts the part the blocks after it stand in: one of level two ends the part before it, and a
-// heading `## Components` starts the part whose tables name each component and interface, one row
-// each, read from the cells the parser gives the row (componentsOf); one of level three
-// `Under <id>` sets the parent of the statements after it, and one of level three of any other
-// title sets none. So a directive, a heading, a table row or a note that a code example shows is
-// none of them. A row of a Components table that reads as no component is never left out: the
-// level is refused (*Refusal, RefusalNodeInvalid) with a problem for each such row, as Import
-// refuses a level whose nodes the approved spec could not hold, and nothing is written.
+// heading `## Components` starts the part whose tables, wherever the part holds them, name each
+// component and interface, one row each, read from the cells the parser gives the row
+// (componentsOf); one of level three `Under <id>` sets the parent of the statements after it, and
+// one of level three of any other title sets none. So a directive, a heading, a table row or a note
+// that a code example shows is none of them. A row of a Components table that reads as no
+// component is never left out: the level is refused (*Refusal, RefusalNodeInvalid) with a problem
+// for each such row, as Import refuses a level whose nodes the approved spec could not hold, and
+// nothing is written.
 func ParseLevel(level, notes string) (Level, error) {
 	doc, err := pmdoc.ParseRendering(level)
 	if err != nil {
@@ -87,8 +88,7 @@ func ParseLevel(level, notes string) (Level, error) {
 	var unreadable []specgraph.Problem
 	parent, components := "", false
 	for _, block := range doc.Children {
-		switch {
-		case block.Type == "heading":
+		if block.Type == "heading" {
 			title := strings.TrimSpace(pmdoc.TextContent(block))
 			switch headingLevel(block) {
 			case 2:
@@ -100,27 +100,27 @@ func ParseLevel(level, notes string) (Level, error) {
 				}
 			}
 			continue
-		case components && block.Type == "table":
-			read, problems, err := componentsOf(block)
-			if err != nil {
-				return Level{}, fmt.Errorf("read the components table of the level: %w", err)
-			}
-			parsed.Components = append(parsed.Components, read...)
-			unreadable = append(unreadable, problems...)
-			continue
 		}
 		var failed error
 		pmdoc.Walk(block, func(node *pmdoc.Node) bool {
-			if node.Type != "requirement" {
-				return true
+			switch {
+			case components && node.Type == "table":
+				read, problems, err := componentsOf(node)
+				if err != nil {
+					failed = fmt.Errorf("read the components table of the level: %w", err)
+					return false
+				}
+				parsed.Components = append(parsed.Components, read...)
+				unreadable = append(unreadable, problems...)
+			case node.Type == "requirement":
+				id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+				text, err := statementText(node)
+				if err != nil {
+					failed = fmt.Errorf("read the requirement %s of the level: %w", id, err)
+					return false
+				}
+				parsed.Statements = append(parsed.Statements, LevelStatement{ID: id, Text: text, Parent: parent})
 			}
-			id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-			text, err := statementText(node)
-			if err != nil {
-				failed = fmt.Errorf("read the requirement %s of the level: %w", id, err)
-				return false
-			}
-			parsed.Statements = append(parsed.Statements, LevelStatement{ID: id, Text: text, Parent: parent})
 			return true
 		})
 		if failed != nil {
