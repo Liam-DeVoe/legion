@@ -33,9 +33,10 @@ import (
 // One keyed path for every write (INFRA-258). A caller names the intent behind a POST or PATCH with
 // an Idempotency-Key header, the same on every retry of that intent (the IETF Idempotency-Key
 // draft; Google AIP-155): the dashboard mints one per press and the agents' client one per command,
-// and both retry a failed fetch, a timeout, a 5xx, a 429 and a 409 KEY_IN_FLIGHT under it, none of
-// which says whether the first attempt ran. keyedWrites, which register wraps around every POST and
-// PATCH route, makes that retry safe with one request_keys row per key (migration 0137):
+// and both retry a failed fetch, a timeout, a 5xx, a 408, a 429 and a 409 KEY_IN_FLIGHT under it
+// (retriesUnderKey in packages/contracts), none of which says whether the first attempt ran.
+// keyedWrites, which register wraps around every POST and PATCH route, makes that retry safe with
+// one request_keys row per key (migration 0137):
 //
 //   - The row is inserted in flight, in a statement of its own, before the handler runs, and on a
 //     context the client's cancellation does not reach. A repeat that finds it answers from it
