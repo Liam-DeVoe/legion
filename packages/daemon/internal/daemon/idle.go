@@ -124,9 +124,9 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	var quiet, holding bool
 	podUID := w.runningPod(issue)
 	// The release's line and the wake of its lane are hooks of the mark's commit, so a mark whose
-	// reply is lost and that the store says committed still says so and still wakes its lane. The
-	// kept pod's record stays after the transaction: it is a write of its own, and so is what
-	// follows a left pod's close (closedLeftPod).
+	// reply is lost and that the store says committed still says so and still wakes its lane, and
+	// so are a left pod's close's (closedLeftPod). The kept pod's record stays after the
+	// transaction: it is a write of its own.
 	var marked bool
 	err := store.Transact(ctx, w.idleStore.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
@@ -144,8 +144,11 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 			}
 			return idleReleaseRows(view, decision, now)
 		})
-		if err != nil || !marked || decision.Close {
+		if err != nil || !marked {
 			return err
+		}
+		if decision.Close {
+			return w.closedLeftPod(ctx, issue, decision, holding)
 		}
 		roles := len(decision.Roles)
 		store.OnCommit(ctx, func() {
@@ -163,9 +166,6 @@ func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 		detail := strings.Join(decision.HoldKinds, ",")
 		w.log.Debug("idle release: the pod is kept", "issue", issue, "hold", decision.Hold.String(), "detail", detail)
 		w.recordKeptPod(ctx, issue, decision.Hold, detail, quiet, holding, now)
-	}
-	if marked && decision.Close {
-		w.closedLeftPod(ctx, issue, decision, holding)
 	}
 }
 
@@ -350,24 +350,33 @@ func (w *workflowRuntime) closeLeftPods(ctx context.Context) {
 }
 
 // closeLeftPod decides one such pod (workflow.LeftPodClose) and, when the rule closes it, writes
-// the close's rows in one transaction with the view they rest on (store.ReleaseIdleIssue). A pod
-// the rule kept that was quiet for the whole idle period is recorded as a hold, as the two
-// release passes record theirs (recordKeptPod).
+// the close's rows in one transaction with the view they rest on (store.ReleaseIdleIssue), and
+// what follows the close in that transaction too (closedLeftPod), as the release passes write
+// theirs. A pod the rule kept that was quiet for the whole idle period is recorded as a hold, as
+// the two release passes record theirs (recordKeptPod).
 func (w *workflowRuntime) closeLeftPod(ctx context.Context, issue string) {
 	now := w.clockNow().UTC()
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	podUID := w.runningPod(issue)
-	closed, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		view.PodUID = podUID
-		decision = workflow.LeftPodClose(view, now, w.idlePeriod)
-		since, found := view.QuietSince()
-		quiet = found && now.Sub(since) >= w.idlePeriod
-		holding = view.Holding
-		if !decision.Close {
-			return store.IdleReleaseMark{}, nil
+	var closed bool
+	err := store.Transact(ctx, w.idleStore.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		closed, err = w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+			view.PodUID = podUID
+			decision = workflow.LeftPodClose(view, now, w.idlePeriod)
+			since, found := view.QuietSince()
+			quiet = found && now.Sub(since) >= w.idlePeriod
+			holding = view.Holding
+			if !decision.Close {
+				return store.IdleReleaseMark{}, nil
+			}
+			return leftPodCloseRows(view, decision, now)
+		})
+		if err != nil || !closed {
+			return err
 		}
-		return leftPodCloseRows(view, decision, now)
+		return w.closedLeftPod(ctx, issue, decision, holding)
 	})
 	if err != nil {
 		w.log.Warn("left pod close: could not decide an issue's pod", "issue", issue, "error", err)
@@ -377,28 +386,35 @@ func (w *workflowRuntime) closeLeftPod(ctx context.Context, issue string) {
 		w.log.Debug("left pod close: the pod is kept", "issue", issue, "hold", decision.Hold.String(),
 			"detail", strings.Join(decision.HoldKinds, ","))
 		w.recordKeptPod(ctx, issue, decision.Hold, strings.Join(decision.HoldKinds, ","), quiet, holding, now)
-		return
 	}
-	w.closedLeftPod(ctx, issue, decision, holding)
 }
 
 // closedLeftPod is what follows the close of a pod whose issue left the workflow, whichever pass
-// wrote it: one line, the end of the pod's hold streak, since whatever kept the pod is over, and
-// the wake of the issue's lane, which runs the close's rows. Where a live role stands, the row the
-// pass wrote is the workspace check alone (leftPodCloseRows), and the line says so: the close
-// follows only where that read finds nothing that origin does not hold.
-func (w *workflowRuntime) closedLeftPod(ctx context.Context, issue string, decision workflow.IdleDecision, holding bool) {
-	if len(decision.Roles) > 0 {
-		w.log.Info("left pod close: reading the workspace of the pod of an issue that left the workflow while its tree runs on, before its close stops a live role",
-			"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
-	} else {
-		w.log.Info("left pod close: closing the pod of an issue that left the workflow while its tree runs on; nothing else stops it",
-			"issue", issue, "idle", w.idlePeriod.String(), "roles", len(decision.Roles))
-	}
+// wrote it, inside the close's own transaction (ctx carries it): the end of the pod's hold streak,
+// since whatever kept the pod is over, and, as hooks of the close's commit, one line and the wake
+// of the issue's lane, which runs the close's rows. So a close whose reply is lost and that the
+// store says committed still says so and still wakes its lane, and a streak that cannot be ended
+// fails the close, which the next pass decides again. Where a live role stands, the row the pass
+// wrote is the workspace check alone (leftPodCloseRows), and the line says so: the close follows
+// only where that read finds nothing that origin does not hold.
+func (w *workflowRuntime) closedLeftPod(ctx context.Context, issue string, decision workflow.IdleDecision, holding bool) error {
 	if holding {
-		endIdleHolds(ctx, w.idleStore, w.projectID, issue, w.log)
+		if err := w.idleStore.EndPodHoldStreaks(ctx, w.projectID, issue); err != nil {
+			return err
+		}
 	}
-	w.wakeOutbox(issue, record.OutboxKindIssueSuspend)
+	roles := len(decision.Roles)
+	store.OnCommit(ctx, func() {
+		if roles > 0 {
+			w.log.Info("left pod close: reading the workspace of the pod of an issue that left the workflow while its tree runs on, before its close stops a live role",
+				"issue", issue, "idle", w.idlePeriod.String(), "roles", roles)
+		} else {
+			w.log.Info("left pod close: closing the pod of an issue that left the workflow while its tree runs on; nothing else stops it",
+				"issue", issue, "idle", w.idlePeriod.String(), "roles", roles)
+		}
+		w.wakeOutbox(issue, record.OutboxKindIssueSuspend)
+	})
+	return nil
 }
 
 // runningPod is the uid of the pod the runtime holds for issue now, read before a pass's

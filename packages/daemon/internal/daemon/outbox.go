@@ -3430,12 +3430,20 @@ func (r *outbox) readIssueWorkspace(ctx context.Context, issue string, role clai
 // disk that role worked on, so the disk is read first, as the idle release reads it. A read that
 // finds work that origin does not hold, or that fails, declines the close (declineFor,
 // store.DeclineLeftPodClose): the pod stays with its roles as they are, the role read through is
-// told once, and the rule holds the pod while the decline stands. A read that finds nothing queues
-// the close's stops and the issue's Sandbox suspension (leftPodStopRows) in one transaction with a
-// view read again (workflow.LeftPodCloseAfterCheck), so a role that started a turn since the pass
-// that queued the check (payload.TurnStart) — one that ended while the read ran too — or that is in
-// one or was given work now, is not stopped; the next pass decides that pod again. A clean read
-// also forgets the decline on record, whose work it found gone.
+// told once, and the rule holds the pod while the decline stands. The decline's hold commits in the
+// decline's own transaction, and its line is that commit's hook, as a release's decline has them
+// (declineRelease). A read that finds nothing queues the close's stops and the issue's Sandbox
+// suspension (leftPodStopRows) in one transaction with a view read again
+// (workflow.LeftPodCloseAfterCheck), so a role that started a turn since the pass that queued the
+// check (payload.TurnStart) — one that ended while the read ran too — or that is in one or was
+// given work now, is not stopped; the next pass decides that pod again. A clean read also forgets
+// the decline on record, whose work it found gone.
+//
+// The close that queues the stops finishes the check's own row in the same transaction
+// (FinishLeasedOutbox, fenced on the row's lease). A close whose commit outcome is unknown so
+// leaves no row to run again: the stops it committed run on the lane, and a retry of the check
+// would read the workspace after they took the role's shim away, and decline a close already
+// done, under a hold that no pass ends, since no pass visits a pod with no Sandbox.
 func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow, payload record.IssueWorkspaceCheck) error {
 	readAt := r.now().UTC()
 	work, failed := r.readIssueWorkspace(ctx, row.Issue, payload.Role)
@@ -3444,26 +3452,42 @@ func (r *outbox) checkLeftPodWorkspace(ctx context.Context, row record.OutboxRow
 		if err != nil {
 			return err
 		}
-		told, err := r.trees.DeclineLeftPodClose(ctx, r.project, row.Issue, decline)
-		if err != nil {
-			return err
-		}
-		r.log.Info("outbox: the close of the pod of an issue that left the workflow is declined, and the pod stays with its workspace",
-			"issue", row.Issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", told)
-		recordIdleHold(ctx, r.supervisor.store, r.project, row.Issue, hold, why, r.now().UTC(), r.log)
-		return nil
+		return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			told, err := r.trees.DeclineLeftPodClose(ctx, r.project, row.Issue, decline)
+			if err != nil {
+				return err
+			}
+			if err := store.RecordPodHoldTx(ctx, tx, store.PodHold{Project: r.project, Issue: row.Issue,
+				Reason: hold.String(), Detail: why, At: r.now().UTC()}); err != nil {
+				return err
+			}
+			store.OnCommit(ctx, func() {
+				r.log.Info("outbox: the close of the pod of an issue that left the workflow is declined, and the pod stays with its workspace",
+					"issue", row.Issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", told)
+			})
+			return nil
+		})
 	}
 	if err := r.trees.ForgetIdleDecline(ctx, r.project, row.Issue); err != nil {
 		return err
 	}
 	now := r.now().UTC()
-	closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, payload.TurnStart))
-	if err != nil {
-		return err
-	}
-	r.log.Info("outbox: the close of the pod of an issue that left the workflow read its workspace and found nothing that no branch or tag on origin holds",
-		"issue", row.Issue, "role", payload.Role, "head", work.Head, "closing", closed)
-	return nil
+	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		closed, err := r.trees.ReleaseIdleIssue(ctx, r.project, row.Issue, leftPodStopsAfterCheck(now, payload.TurnStart))
+		if err != nil {
+			return err
+		}
+		if closed {
+			if err := r.records.FinishLeasedOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
+				return err
+			}
+		}
+		store.OnCommit(ctx, func() {
+			r.log.Info("outbox: the close of the pod of an issue that left the workflow read its workspace and found nothing that no branch or tag on origin holds",
+				"issue", row.Issue, "role", payload.Role, "head", work.Head, "closing", closed)
+		})
+		return nil
+	})
 }
 
 // declineFor is the decline a workspace check records for what its read found (work, failed nil)
@@ -3514,25 +3538,38 @@ func (r *outbox) declineFor(issue string, role claim.Role, readAt time.Time, wor
 // reason with no new mark and no new read while it stands (pods.IdleDecline.Stands). So a pod that
 // keeps its work is asked once, and its role is told once: a read after a turn that finds the same
 // work keeps the decline and tells nobody.
+//
+// The decline's hold (store.RecordPodHoldTx) commits in that same transaction, as a cancel's does
+// (cancelRelease), so it is ordered with every other hold record, and the line is the commit's
+// hook.
 func (r *outbox) declineRelease(ctx context.Context, issue string, payload record.IssueWorkspaceCheck, readAt time.Time, work runtime.WorkspaceWork, failed error) error {
 	decline, hold, why, err := r.declineFor(issue, payload.Role, readAt, work, failed)
 	if err != nil {
 		return err
 	}
-	declined, err := r.trees.DeclineIssueRelease(ctx, r.project, issue, decline, r.releaseResume(issue, payload.Tree), record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
-	if err != nil {
-		return err
-	}
-	if !declined.Declined {
-		r.log.Info("outbox release workspace check finished without acting: the pod's release was over when it declined",
-			"issue", issue, "hold", hold.String(), "reason", why)
+	return store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		declined, err := r.trees.DeclineIssueRelease(ctx, r.project, issue, decline, r.releaseResume(issue, payload.Tree), record.OutOfWorkflow,
+			store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole})
+		if err != nil {
+			return err
+		}
+		if !declined.Declined {
+			store.OnCommit(ctx, func() {
+				r.log.Info("outbox release workspace check finished without acting: the pod's release was over when it declined",
+					"issue", issue, "hold", hold.String(), "reason", why)
+			})
+			return nil
+		}
+		if err := store.RecordPodHoldTx(ctx, tx, store.PodHold{Project: r.project, Issue: issue,
+			Reason: hold.String(), Detail: why, At: r.now().UTC()}); err != nil {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			r.log.Info("outbox: the idle release of an issue's pod is declined, and the pod stays with its workspace; no release is asked again until a role of the issue starts a turn",
+				"issue", issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", declined.Told)
+		})
 		return nil
-	}
-	r.log.Info("outbox: the idle release of an issue's pod is declined, and the pod stays with its workspace; no release is asked again until a role of the issue starts a turn",
-		"issue", issue, "hold", hold.String(), "reason", why, "role", payload.Role, "told", declined.Told)
-	recordIdleHold(ctx, r.supervisor.store, r.project, issue, hold, why, r.now().UTC(), r.log)
-	return nil
+	})
 }
 
 // declineReason is what the hold record and the log line say a read that found work found: the
