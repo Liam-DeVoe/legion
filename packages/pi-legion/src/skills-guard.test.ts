@@ -646,8 +646,8 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
 test("the retro skill names who does the retro and how the owner completes it", () => {
   expect(
     lacks("legion-retro/SKILL.md", [
-      /with no pull request, its end closes the issue/,
-      /last step of the type implementation does it[^.]*the owner does it[^.]*`complete_step`, `step: 0`/,
+      /With no pull request, its end closes the issue/,
+      /last step of the type implementation does it, as that step's role\. Where there is none, or it is the owner's, the owner does it[^.]*`complete_step`, `step: 0`/,
       /Update the PR body\*\*, where the issue has a pull request/,
     ])
   ).toEqual([]);
@@ -730,7 +730,7 @@ test("an implementer and reviewer task has the implementer prove the surface and
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
       /with no tester step the implementation step's agent[^.;]*real surface/,
-      /with neither step, the retro's agent sends it during retro/,
+      /With neither step, the retro's agent sends it during retro/,
     ]),
     ...lacks("legion-worker/references/merge-gate.md", [
       /no tester step[^.;]*the implementer's evidence[^.;]*read/,
@@ -860,7 +860,7 @@ test("retro never waits for a CI run, as the implementer's prompt says", () => {
   ).toContain("Never wait for, watch or poll the pull request's remote CI");
   expect(
     lacks("legion-retro/SKILL.md", [
-      /run that has not concluded[^.]*never wait for, watch or poll it/,
+      /run that has not concluded[^.]*neither a pass nor a fail yet\. Never wait for, watch or poll it/,
     ])
   ).toEqual([]);
 });
@@ -951,7 +951,7 @@ test("the skills say what Dispatch and the tool do with no pull request and at t
       /Read it with `--at <head>`, which compares every check with that one commit\./,
     ]),
     ...lacks("legion-worker/references/ci-checks.md", [
-      /On an issue with no pull request each such check reads `no_head`: no run can prove it, so its words are wrong for that task\./,
+      /On an issue with no pull request each such check reads `no_head`\. No run can prove it, so its words are wrong for that task\./,
       /hold their verdict with a `WAITING` line until the check is rewritten/,
       /No step passes while such a check stands, and the retro holds its completion for it/,
     ]),
