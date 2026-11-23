@@ -1802,10 +1802,10 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 }
 
 // MergeForwardReaches says whether step of a merge forward goes to role (mergeForwardRoles): the
-// one list the workflow addresses the hold and the landed by (workflow's mergeForward and
-// mergeForwardLanded) and a row is validated against (validateOutboxPayload). The hold and the
-// landed also go to a role the deployment defines, the worker of a step that runs as step, which
-// reads the head as the tester and the reviewer do.
+// one list the workflow addresses the hold and the landed by (workflow's mergeForwardWorker, which
+// mergeForward and mergeForwardLanded read) and a row is validated against
+// (validateOutboxPayload). The hold and the landed also go to a role the deployment defines, the
+// worker of a step that runs as step, which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
 		return true
