@@ -1173,32 +1173,40 @@ func TestPodDriftAndReplacePodRefuseALocatorTheRuntimeDidNotMint(t *testing.T) {
 // the one call that deletes an issue's disk and every caller states what makes it still due.
 func stillDue(context.Context) error { return nil }
 
+// slotsDriftOf is why loc's pod has drifted from the slots its issue's plan names (PodSlotsDrift).
+// A plan that cannot be read fails the test.
+func slotsDriftOf(t *testing.T, ctx context.Context, r *Runtime, loc runtime.Locator) []string {
+	t.Helper()
+	drifted, err := r.PodSlotsDrift(ctx, runtime.Known{Claim: loc.Claim, Locator: &loc})
+	if err != nil {
+		t.Fatalf("PodSlotsDrift %s: %v", loc.Claim, err)
+	}
+	return drifted
+}
+
 // A live pod built for a plan whose agents are all roles drifts on its slots once a later version
 // of the plan names an agent no role has, `implementer-2` here, so the update round opens over it and
 // the start of that agent, which waits for a pod with its slot, is not left to wait for ever. A pod
 // that holds a slot the plan no longer names does not drift for it: it runs every agent there is.
 func TestAPodThatLacksASlotOfItsPlanDrifts(t *testing.T) {
 	want := "slots architect, planner, implementer, tester, reviewer, merger, now architect, planner, implementer, tester, reviewer, merger, implementer-2"
-	slotsReasons := func(drifted []string) []string {
-		return slices.DeleteFunc(drifted, func(reason string) bool { return !strings.HasPrefix(reason, "slots ") })
-	}
 	g := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer}))
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
-	if drifted := slotsReasons(driftOf(t, g.ctx, g.r, loc)); len(drifted) > 0 {
-		t.Fatalf("PodDrift of a pod built with every slot of its plan = %q, want no slots reason", drifted)
+	if drifted := slotsDriftOf(t, g.ctx, g.r, loc); len(drifted) > 0 {
+		t.Fatalf("PodSlotsDrift of a pod built with every slot of its plan = %q, want nothing", drifted)
 	}
 	g.store.plan(testTree, map[claim.Agent]claim.Role{
 		"implementer": claim.RoleImplementer, "reviewer": claim.RoleReviewer, "implementer-2": claim.RoleImplementer,
 	})
-	if drifted := slotsReasons(driftOf(t, g.ctx, g.r, loc)); !slices.Equal(drifted, []string{want}) {
-		t.Errorf("PodDrift once the plan names implementer-2 = %q, want %q", drifted, want)
+	if drifted := slotsDriftOf(t, g.ctx, g.r, loc); !slices.Equal(drifted, []string{want}) {
+		t.Errorf("PodSlotsDrift once the plan names implementer-2 = %q, want %q", drifted, want)
 	}
 
 	held := newRig(t, nil, withPlanAgents(map[claim.Agent]claim.Role{"implementer-2": claim.RoleImplementer}))
 	kept := held.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	held.store.plan(testTree, nil)
-	if drifted := slotsReasons(driftOf(t, held.ctx, held.r, kept)); len(drifted) > 0 {
-		t.Errorf("PodDrift of a pod holding a slot its plan no longer names = %q, want no slots reason", drifted)
+	if drifted := slotsDriftOf(t, held.ctx, held.r, kept); len(drifted) > 0 {
+		t.Errorf("PodSlotsDrift of a pod holding a slot its plan no longer names = %q, want nothing", drifted)
 	}
 }
 
@@ -1211,9 +1219,8 @@ func TestAPodBuiltWithTheSlotsOfItsPlanDoesNotDrift(t *testing.T) {
 	g := newRig(t, nil, withPlanAgents(agents))
 	loc := g.spawn(testSpec(t, deploymentImplementer, claim.RoleImplementer, testTree))
 	for sweep := 1; sweep <= 2; sweep++ {
-		drifted := slices.DeleteFunc(driftOf(t, g.ctx, g.r, loc), func(reason string) bool { return !strings.HasPrefix(reason, "slots ") })
-		if len(drifted) > 0 {
-			t.Fatalf("PodDrift at sweep %d of a pod built while its plan names implementer-2, the plan unchanged = %q, want no slots reason", sweep, drifted)
+		if drifted := slotsDriftOf(t, g.ctx, g.r, loc); len(drifted) > 0 {
+			t.Fatalf("PodSlotsDrift at sweep %d of a pod built while its plan names implementer-2, the plan unchanged = %q, want nothing", sweep, drifted)
 		}
 	}
 }

@@ -167,42 +167,48 @@ func (issuePod) claimToken(project, issue string, slot claim.Role) (claim.Token,
 	return claim.AgentToken(project, issue, claim.Agent(slot))
 }
 
-// issueSlots sets the slots of the pod l launches into (l.roles) where that pod is an issue's: the
-// slots of its plan in force (planSlots over Store.PlanAgents), then the slot of l's own claim
-// where they lack it (a claim whose agent the plan in force no longer names, started again), so no
-// launch waits for a launcher its own pod lacks. A slot is never shared: each agent runs in the
-// slot of its own name, so no start ends another agent's process. l.agentRoles holds the role of
-// each plan agent's first step, the App its slot holds until a claim of it runs there
-// (gitHubBundles). The controller's pod keeps its one slot, and reads no plan.
-func (r *Runtime) issueSlots(ctx context.Context, l *launch) error {
+// issueSlots adds to the slots of the pod l launches into (l.roles, the kind's roles) where that
+// pod is an issue's: each agent name of its plan in force that no role has (agentSlots over
+// Store.PlanAgents), then the slot of l's own claim where they lack it (a claim whose agent the
+// plan in force no longer names, started again), so no launch waits for a launcher its own pod
+// lacks. A slot is never shared: each agent runs in the slot of its own name, so no start ends
+// another agent's process. l.agentRoles holds the role of each plan agent's first step, the App
+// its slot holds until a claim of it runs there (gitHubBundles). The controller's pod keeps its
+// one slot, and reads no plan.
+//
+// A plan that cannot be read fails nothing, as the stored claims' failed read fails nothing in
+// gitHubBundles: the pod gets the slots of the kind's roles and of l's own claim, and the launch
+// is not charged to the claim's launch budget for an outage of the store. Such a pod lacks any
+// other agent's slot that the plan names, and its update round adds that slot once the plan reads
+// again (slotsDrift); a start of that agent waits for the round (templateLacks).
+func (r *Runtime) issueSlots(ctx context.Context, l *launch) {
 	if _, issue := l.kind.(issuePod); !issue {
-		return nil
+		return
 	}
 	agents, err := r.store.PlanAgents(ctx, r.project, l.spec.Issue)
 	if err != nil {
-		return err
+		r.log.Warn("sandbox runtime: a launch cannot read the agents of its issue's plan; its pod gets the slots of its roles and of its own claim, and its update round adds any other agent's slot once the plan reads again",
+			"claim", l.spec.Claim, "err", err)
 	}
-	roles := l.kind.roles(r)
-	slots := planSlots(roles, agents)
+	// The kind's roles are the runtime's own slice (issuePod.roles), so the pod's slots are a copy.
+	l.roles = slices.Clone(l.roles)
 	l.agentRoles = map[claim.Role]claim.Role{}
-	for _, slot := range slots[len(roles):] {
+	for _, slot := range agentSlots(l.roles, agents) {
+		l.roles = append(l.roles, slot)
 		l.agentRoles[slot] = agents[claim.Agent(slot)]
 	}
-	if own := slotOf(l.spec.Claim); own != "" && !slices.Contains(slots, own) {
-		slots = append(slots, own)
+	if own := slotOf(l.spec.Claim); own != "" && !slices.Contains(l.roles, own) {
+		l.roles = append(l.roles, own)
 	}
-	l.roles = slots
-	return nil
 }
 
-// planSlots are the slots of an issue pod whose runtime's roles are roles and whose plan in force
-// names agents (Store.PlanAgents): roles, then each agent's name that none of them has, in the order
-// of names. A plan whose agents are all roles has the slots of roles alone, so its pod is the pod of
-// an issue with no plan.
-func planSlots(roles []claim.Role, agents map[claim.Agent]claim.Role) []claim.Role {
-	slots := slices.Clone(roles)
+// agentSlots are the slots an issue pod has beyond its runtime's roles, roles, for a plan in force
+// that names agents (Store.PlanAgents): each agent's name that no role has, in the order of names.
+// A plan whose agents are all roles has none, so its pod is the pod of an issue with no plan.
+func agentSlots(roles []claim.Role, agents map[claim.Agent]claim.Role) []claim.Role {
+	var slots []claim.Role
 	for _, agent := range slices.Sorted(maps.Keys(agents)) {
-		if slot := claim.Role(agent); !slices.Contains(slots, slot) {
+		if slot := claim.Role(agent); !slices.Contains(roles, slot) {
 			slots = append(slots, slot)
 		}
 	}

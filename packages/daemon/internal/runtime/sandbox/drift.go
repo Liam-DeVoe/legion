@@ -356,11 +356,11 @@ func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
 // Sandbox running and a pod built from the configuration the runtime still has — costs one read
 // of the operating mode, one of the issue the Sandbox is labelled with and one of the annotation
 // the stored template records, against the shape the runtime holds for that kind in that issue's
-// sandbox (r.podShapes, storedShapeKey), all strings of the object this call already holds, and
-// one read of the agents of the issue's plan in the store (slotsDrift). The Sandbox itself is
-// decoded only where the two shapes differ or where that plan names an agent no role has, which
-// is the pod a round may be about to be opened over.
-func (r *Runtime) PodDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+// sandbox (r.podShapes, storedShapeKey), all strings of the object this call already holds. It
+// reads nothing of the store: the slots the issue's plan names are a question of the pod, which the
+// sweep asks once for each issue (PodSlotsDrift). The Sandbox itself is decoded only where the two
+// shapes differ, which is the pod a round may be about to be opened over.
+func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
 	}
@@ -408,13 +408,6 @@ func (r *Runtime) PodDrift(ctx context.Context, k runtime.Known) ([]string, erro
 		}
 		drifted = append(r.shapeDrift(s, shape), rolesDrift(s, kind.roles(r))...)
 	}
-	// The slots the plan in force names are read for every pod a round covers, since a version of
-	// the plan changes them with no change of the configuration and so of the shape (slotsDrift).
-	slots, err := r.slotsDrift(ctx, k.Locator.Claim, u)
-	if err != nil {
-		return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, err)
-	}
-	drifted = append(drifted, slots...)
 	// The leak check digest the pod records, read from the same stored template's annotations and,
 	// where the template records none, from the Sandbox's record of the check this daemon pushed
 	// into this very pod (recordedLeakChecker, leakCheckDrift): a pod that records another digest
@@ -575,27 +568,57 @@ func rolesDrift(s *sandbox, roles []claim.Role) []string {
 	return []string{"roles " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(roles)}
 }
 
-// slotsDrift is the one reason a pod built before an agent of its issue's plan drifts by: where the
-// plan in force (Store.PlanAgents of the issue token's claim is on) names an agent whose name no
-// role of the runtime has, and the template of the stored Sandbox u binds no slot of that name
-// (templateRoles), `slots <the template's>, now <the slots a launch of the issue binds now>`
-// (planSlots). So the update round opens over the pod, and a start of that agent, which waits while
-// its pod lacks its slot (templateLacks, and the outbox's wait for its pod), waits for that round
-// alone. A slot the template holds and the plan no longer names is no reason, since the pod still
-// runs every agent there is, and neither is a template no launcher of this layout wrote, which
-// binds none. Where the plan names no agent beside the runtime's roles, as a plan of roles alone
-// does, it decodes nothing.
-func (r *Runtime) slotsDrift(ctx context.Context, token claim.Token, u *unstructured.Unstructured) ([]string, error) {
-	issue, ok := token.IssueKey()
+// PodSlotsDrift satisfies runtime.PlanSlotsDrift: why the pod k's process runs in drifts from the
+// slots its issue's plan in force names (slotsDrift), from one read of that plan's agents
+// (Store.PlanAgents). The daemon's sweep asks it once for each issue's pod, beside PodDrift of each
+// claim in it, so a sweep reads each issue's plan once rather than once for each claim. A read
+// that fails is returned, and the caller decides on the pod's other reasons alone. It answers
+// nothing for a claim with no process, for a pod no round covers, and for a Sandbox the informers
+// no longer hold, which PodDrift answers as gone.
+func (r *Runtime) PodSlotsDrift(ctx context.Context, k runtime.Known) ([]string, error) {
+	if err := k.Validate(); err != nil {
+		return nil, fmt.Errorf("sandbox runtime: pod slots drift: %w", err)
+	}
+	if k.Locator == nil {
+		return nil, nil
+	}
+	if err := r.checkLocator(*k.Locator); err != nil {
+		return nil, err
+	}
+	if !roundCovers(podKindFor(slotOf(k.Locator.Claim))) {
+		return nil, nil
+	}
+	issue, ok := k.Locator.Claim.IssueKey()
 	if !ok {
+		return nil, nil
+	}
+	u, err := r.storedObject(k.Locator.Sandbox.Name)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox runtime: pod slots drift %s: %w", k.Claim, err)
+	}
+	if u == nil {
 		return nil, nil
 	}
 	agents, err := r.store.PlanAgents(ctx, r.project, issue)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sandbox runtime: pod slots drift %s: read the agents of its issue's plan: %w", k.Claim, err)
 	}
-	now := planSlots(r.issueRoles, agents)
-	if len(now) == len(r.issueRoles) {
+	return r.slotsDrift(agents, u)
+}
+
+// slotsDrift is the one reason a pod built before an agent of its issue's plan drifts by: where the
+// plan in force names agents (Store.PlanAgents) one of whose names no role of the runtime has
+// (agentSlots), and the template of the stored Sandbox u binds no slot of that name
+// (templateRoles), `slots <the template's>, now <the slots a launch of the issue binds now>`. So
+// the update round opens over the pod, and a start of that agent, which waits while its pod lacks
+// its slot (templateLacks, and the outbox's wait for its pod), waits for that round alone. A slot
+// the template holds and the plan no longer names is no reason, since the pod still runs every
+// agent there is, and neither is a template no launcher of this layout wrote, which binds none.
+// Where the plan names no agent beside the runtime's roles, as a plan of roles alone does, it
+// decodes nothing.
+func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.Unstructured) ([]string, error) {
+	slots := agentSlots(r.issueRoles, agents)
+	if len(slots) == 0 {
 		return nil, nil
 	}
 	s, err := decodeSandbox(u)
@@ -603,9 +626,10 @@ func (r *Runtime) slotsDrift(ctx context.Context, token claim.Token, u *unstruct
 		return nil, err
 	}
 	held := templateRoles(s)
-	if len(held) == 0 || !slices.ContainsFunc(now[len(r.issueRoles):], func(slot claim.Role) bool { return !slices.Contains(held, slot) }) {
+	if len(held) == 0 || !slices.ContainsFunc(slots, func(slot claim.Role) bool { return !slices.Contains(held, slot) }) {
 		return nil, nil
 	}
+	now := append(slices.Clone(r.issueRoles), slots...)
 	return []string{"slots " + runtime.JoinRoles(held) + ", now " + runtime.JoinRoles(now)}, nil
 }
 
