@@ -52,7 +52,7 @@ func TestTheIdleViewAndTheIssueReadOnePlaceRole(t *testing.T) {
 					steps = append(steps, record.PlanStep{Issue: rootIssue, Generation: issue.Generation, Task: "a", Position: i + 1, Role: role,
 						AgentKey: key, Type: tc.types[i]})
 				}
-				return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps))
+				return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
 			}); err != nil || issue == nil {
 				t.Fatalf("seed the plan %s of %s: %v (issue %v)", tc.steps, rootIssue, err, issue)
 			}

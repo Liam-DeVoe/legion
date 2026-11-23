@@ -305,7 +305,7 @@ func TestTheReleaseOfAPodAtTheOwnersStepArmsTheOwnersBackstop(t *testing.T) {
 					step.Issue, step.Generation, step.Task, step.Position = key, 2, "a", i+1
 					steps = append(steps, step)
 				}
-				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
 					return err
 				}
 				return records.MoveTask(ctx, tx, key, 2, "a", record.TaskPlace{Kind: record.PlaceStep, Position: tc.at}, record.TaskRunning)

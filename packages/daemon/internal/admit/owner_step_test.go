@@ -34,7 +34,7 @@ func standAtOwnersStep(t *testing.T, pool *pgxpool.Pool, key string) {
 		}
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: fixedNow}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := record.NameAgents(nil, []record.PlanStep{
+		steps := record.NameAgents(nil, nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "owner"},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
 		})

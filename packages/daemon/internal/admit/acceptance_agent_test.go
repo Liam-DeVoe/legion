@@ -41,7 +41,7 @@ func runAtAcceptanceStep(t *testing.T, pool *pgxpool.Pool, key string, generatio
 			steps = append(steps, record.PlanStep{Issue: key, Generation: generation, Task: "a", Position: i + 1, Role: role, AgentKey: agent, Type: roles[role].Type})
 		}
 		for _, put := range []error{
-			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)),
+			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)),
 			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning),
 		} {
 			if put != nil {

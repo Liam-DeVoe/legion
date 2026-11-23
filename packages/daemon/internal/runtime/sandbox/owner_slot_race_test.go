@@ -4,107 +4,209 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	k8sruntime "k8s.io/apimachinery/pkg/runtime"
-	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// A launch of the owner into the pod it keeps reads the owner slot's Secret, which holds a lease the
-// daemon has since re-minted, so the launch has a write to make, and mints the bundle of the role it
-// judged, the architect's own; in that mint the owner's step starts, and the outbox writes the slot
-// for the step's App. The launch's write, made on the Secret it read before, is refused as the API
-// server refuses it, since the Secret's resourceVersion moved, and the launch writes again on a
-// fresh read. The slot ends on the step's App, and the launch's start frame waits for the token the
-// slot holds: the launch judges the role on each read of the Secret it writes, so a role judged
-// before the step's write never lands after it. The control is the same launch with no step
-// starting in its mint, which writes the architect's own.
+// heldLaunch starts a launch of the owner, at the generation after its first, into the pod it
+// keeps, and returns once that launch's start has reached the owner's launcher, which holds it
+// unanswered until hold closes (rig.holdStart), with the launch's own error channel. ctx is the
+// launch's own context, which a caller cancels to cut the launch short.
+func heldLaunch(t *testing.T, g *rig, ctx context.Context, hold chan struct{}) <-chan error {
+	t.Helper()
+	g.commandsMu.Lock()
+	g.holdStart = hold
+	g.commandsMu.Unlock()
+	again := rootSpec(t)
+	again.Generation++
+	launched := make(chan error, 1)
+	go func() { _, err := g.r.Spawn(ctx, again); launched <- err }()
+	testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the owner's launch's start to reach its launcher", func() bool {
+		return slices.ContainsFunc(g.sent(rootToken), func(frame shimwire.Frame) bool {
+			start, ok := frame.(shimwire.LauncherStart)
+			return ok && start.Generation == again.Generation
+		})
+	})
+	return launched
+}
+
+// ownerRig is a rig whose ActsAs says the owner acts as the role acting holds, or as itself while it
+// holds none, with the owner launched once and stored, and its slot's Secret holding a lease the
+// daemon has since re-minted, so its next launch has a write to make. held reads the token the
+// owner slot's default hosts.yml holds.
+func ownerRig(t *testing.T, acting *atomic.Value) (g *rig, held func() string) {
+	t.Helper()
+	acting.Store(claim.Role(""))
+	g = newRig(t, nil, withOptions(func(o *Options) {
+		o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
+			if role := acting.Load().(claim.Role); token == rootToken && role != "" {
+				return role, true, nil
+			}
+			return "", false, nil
+		}
+	}))
+	g.spawn(rootSpec(t))
+	storeOwner(g)
+	slot := roleSecretName(SandboxName(rootToken), claim.RoleArchitect)
+	editSecret(g, slot, func(s *corev1.Secret) { s.Data[GitHubHostsKey("sjawhar")] = []byte(ghconfig.Hosts("ghs_stale_lease")) })
+	return g, func() string {
+		t.Helper()
+		token, err := ghconfig.TokenFromHosts(g.secret(slot).Data[GitHubHostsKey("sjawhar")])
+		if err != nil {
+			t.Fatalf("the owner slot's hosts.yml: %v", err)
+		}
+		return token
+	}
+}
+
+// A launch of the owner into the pod it keeps writes the owner slot's Secret for the App it judges
+// then, the architect's own, and its start waits for that token. While the start waits, the
+// owner's step starts and the outbox writes the slot for the step's App (WriteSlotCredential). No
+// write of the slot lands while a launch into it is in flight (markSlotLaunch, refreshUpdate), so
+// the step's write waits, for the launch's own end and for no clock, and the slot keeps the token
+// the start names. Once the start is answered the step's write is made, and it returns only with
+// the step's App in the slot: the moment the outbox tells the owner its step (ownerSlotHolds), so
+// a notice told then finds the step's App. The control is the same launch with no step starting,
+// which leaves the architect's own App in the slot.
 func TestALaunchOvertakenByAStepsWriteLeavesTheSlotOnTheStepsApp(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		starts bool
 	}{
-		{name: "control: no step starts in the launch's mint"},
-		{name: "the owner's step starts in the launch's mint", starts: true},
+		{name: "control: no step starts while the launch's start waits"},
+		{name: "the owner's step starts while the launch's start waits", starts: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var acting atomic.Value
-			acting.Store(claim.Role(""))
-			var g *rig
-			var launching, landing, landed, refused atomic.Bool
-			g = newRig(t, nil, withOptions(func(o *Options) {
-				o.ActsAs = func(_ context.Context, token claim.Token) (claim.Role, bool, error) {
-					if role := acting.Load().(claim.Role); token == rootToken && role != "" {
-						return role, true, nil
-					}
-					return "", false, nil
-				}
-				o.GitHubCredential = func(ctx context.Context, issue string, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-					if tc.starts && launching.Load() && role == claim.RoleArchitect && landing.CompareAndSwap(false, true) {
-						acting.Store(claim.RoleImplementer)
-						if err := g.r.WriteSlotCredential(ctx, rootToken); err != nil {
-							t.Errorf("the step's WriteSlotCredential of the owner's slot = %v", err)
-						}
-						landed.Store(true)
-					}
-					return staticCredential(ctx, issue, role, repo)
-				}
-			}))
-			g.spawn(rootSpec(t))
-			issue := SandboxName(rootToken)
-			slot := roleSecretName(issue, claim.RoleArchitect)
-			g.store.mu.Lock()
-			g.store.claims = append(g.store.claims, supervise.Claim{Token: rootToken, Project: testProject, Tree: testTree, Issue: testTree, Role: claim.RoleArchitect})
-			g.store.mu.Unlock()
-			editSecret(g, slot, func(s *corev1.Secret) { s.Data[GitHubHostsKey("sjawhar")] = []byte(ghconfig.Hosts("ghs_stale_lease")) })
-			// The API server refuses a write of the owner slot's Secret read before the step's
-			// write, as its resourceVersion says: here the launch's first write.
-			g.kube.PrependReactor("update", "secrets", func(a k8stesting.Action) (bool, k8sruntime.Object, error) {
-				secret := a.(k8stesting.UpdateAction).GetObject().(*corev1.Secret)
-				if secret.Name == slot && launching.Load() && landed.Load() && refused.CompareAndSwap(false, true) {
-					return true, nil, apierrors.NewConflict(corev1.Resource("secrets"), slot, errors.New("the object has been modified"))
-				}
-				return false, nil, nil
-			})
-			before := g.pod(issue).UID
-			again := rootSpec(t)
-			again.Generation++
-			launching.Store(true)
-			g.spawn(again)
-			launching.Store(false)
-			if after := g.pod(issue).UID; after != before {
-				t.Fatalf("the owner's launch replaced the pod (%s, then %s), want it kept", before, after)
+			g, held := ownerRig(t, &acting)
+			hold := make(chan struct{})
+			launched := heldLaunch(t, g, g.ctx, hold)
+			own := staticCredentialToken(claim.RoleArchitect)
+			sum := sha256.Sum256([]byte(own))
+			if start := lastStart(t, g, rootToken); start.GitHubCredential == nil || start.GitHubCredential.TokenDigest != hex.EncodeToString(sum[:]) {
+				t.Fatalf("the owner's start waits for %+v, want the digest of %q, its own App's token: the case's premise", start.GitHubCredential, own)
 			}
-			want := staticCredentialToken(claim.RoleArchitect)
+			wrote := make(chan error, 1)
 			if tc.starts {
-				if !landed.Load() || !refused.Load() {
-					t.Fatalf("the step's write landed %t and the launch's write was refused %t: the case's premise, a launch write the step's overtook", landed.Load(), refused.Load())
+				acting.Store(claim.RoleImplementer)
+				go func() { wrote <- g.r.WriteSlotCredential(g.ctx, rootToken) }()
+				select {
+				case err := <-wrote:
+					t.Fatalf("the step's write of the owner's slot returned (%v) while the launch's start still waits: a notice told now finds %q in the slot",
+						err, held())
+				case <-time.After(300 * time.Millisecond):
+				}
+			}
+			if got := held(); got != own {
+				t.Fatalf("while the launch's start waits the owner's slot holds %q, want %q, the token the start names", got, own)
+			}
+			g.commandsMu.Lock()
+			g.holdStart = nil
+			g.commandsMu.Unlock()
+			close(hold)
+			if err := <-launched; err != nil {
+				t.Fatalf("the owner's launch into the kept pod: %v", err)
+			}
+			want := own
+			if tc.starts {
+				select {
+				case err := <-wrote:
+					if err != nil {
+						t.Fatalf("the step's write of the owner's slot once the launch ended = %v", err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the step's write of the owner's slot did not return once the launch's start was answered")
 				}
 				want = staticCredentialToken(claim.RoleImplementer)
 			}
-			token, err := ghconfig.TokenFromHosts(g.secret(slot).Data[GitHubHostsKey("sjawhar")])
-			if err != nil {
-				t.Fatalf("the owner slot's hosts.yml: %v", err)
+			if got := held(); got != want {
+				t.Fatalf("once the step's write returned the owner's slot holds %q, want %q", got, want)
 			}
-			if token != want {
-				t.Fatalf("after the owner's launch its slot holds %q, want %q: the launch's write, judged before the step started, landed after the step's", token, want)
+		})
+	}
+}
+
+// A step's write of the owner's slot that a launch in flight refused waits for that launch's own
+// end, however the launch ends: a start the launcher refuses, and a launch whose context ends
+// while its start waits, each unmark the slot (relaunch's deferred unmark), and the write is then
+// made, with the step's App in the slot, so a pending write never waits for ever.
+func TestAStepsWriteTheFenceHeldIsMadeOnceTheLaunchEndsHoweverItEnds(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		cut  bool
+	}{
+		{name: "the launcher refuses the start"},
+		{name: "the launch's context ends while its start waits", cut: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var acting atomic.Value
+			g, held := ownerRig(t, &acting)
+			hold := make(chan struct{})
+			released := false
+			t.Cleanup(func() {
+				g.commandsMu.Lock()
+				g.holdStart = nil
+				g.commandsMu.Unlock()
+				if !released {
+					close(hold)
+				}
+			})
+			ctx, cut := context.WithCancel(g.ctx)
+			defer cut()
+			launched := heldLaunch(t, g, ctx, hold)
+			acting.Store(claim.RoleImplementer)
+			wrote := make(chan error, 1)
+			go func() { wrote <- g.r.WriteSlotCredential(g.ctx, rootToken) }()
+			select {
+			case err := <-wrote:
+				t.Fatalf("the step's write of the owner's slot returned (%v) while the launch's start still waits", err)
+			case <-time.After(300 * time.Millisecond):
 			}
-			sum := sha256.Sum256([]byte(want))
-			if start := lastStart(t, g, rootToken); start.GitHubCredential == nil || start.GitHubCredential.TokenDigest != hex.EncodeToString(sum[:]) {
-				t.Fatalf("the owner's start frame waits for the credential %+v, want the digest of %q, the token its slot holds", start.GitHubCredential, want)
+			if tc.cut {
+				cut()
+			} else {
+				g.commandsMu.Lock()
+				g.failStart = "the launcher refuses this start"
+				g.holdStart = nil
+				g.commandsMu.Unlock()
+				close(hold)
+				released = true
+			}
+			select {
+			case err := <-launched:
+				if err == nil {
+					t.Fatal("the owner's launch succeeded, want it refused or cut short: the case's premise")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the owner's launch did not end")
+			}
+			select {
+			case err := <-wrote:
+				if err != nil {
+					t.Fatalf("the step's write of the owner's slot once the launch ended = %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the step's write of the owner's slot still waits after the launch ended")
+			}
+			if got, want := held(), staticCredentialToken(claim.RoleImplementer); got != want {
+				t.Fatalf("once the step's write returned the owner's slot holds %q, want %q", got, want)
 			}
 		})
 	}

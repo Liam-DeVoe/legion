@@ -54,7 +54,7 @@ func newOwnerHoldRig(t *testing.T, at phase.Phase, place record.TaskPlace, words
 		if err := r.records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
-		return r.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, steps))
+		return r.records.PutPlan(ctx, tx, version, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
 	}); err != nil {
 		t.Fatalf("seed LEGION-1: %v", err)
 	}

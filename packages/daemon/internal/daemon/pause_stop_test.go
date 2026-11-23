@@ -370,7 +370,7 @@ func seedPauseRigPlan(t *testing.T, r *pauseRig, words string, types []stepplan.
 			role, key, _ := strings.Cut(word, ":")
 			steps = append(steps, record.PlanStep{Issue: pauseIssue, Generation: 1, Task: "a", Position: i + 1, Role: role, AgentKey: key, Type: types[i]})
 		}
-		if err := records.PutPlan(r.ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps)); err != nil {
+		if err := records.PutPlan(r.ctx, tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps)); err != nil {
 			return err
 		}
 		if err := records.MoveTask(r.ctx, tx, pauseIssue, 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: at}, record.TaskRunning); err != nil {
