@@ -80,21 +80,27 @@ func launchSecretNames(cfg config.Config, lookup func(string) (string, bool)) []
 // Sandbox runtime's own refusals (sandbox.CheckPod), over the roles the runtime would run: the
 // issue roles of the deployment (sandbox.IssueRoles over deploymentApps), then the controller;
 // the exchange identity's names are among them only where runtime.kubernetes.agent_secrets names
-// an exchange_audience.
-func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) error {
+// an exchange_audience. A pod it takes can still hold a volume whose name a later release refuses
+// (sandbox.PodVolumeWarnings, over the same roles): it answers those warnings, which readBoot logs
+// and `legion config check` prints.
+func checkOperatorConfig(cfg config.Config, lookup func(string) (string, bool)) ([]string, error) {
 	names := launchSecretNames(cfg, lookup)
 	for _, key := range cfg.ProviderKeys {
 		if slices.Contains(names, key.Env) {
-			return fmt.Errorf("provider_keys names %s, the launch secret every launch carries behind its %s_FILE pointer: a provider key may not name a launch secret", key.Env, key.Env)
+			return nil, fmt.Errorf("provider_keys names %s, the launch secret every launch carries behind its %s_FILE pointer: a provider key may not name a launch secret", key.Env, key.Env)
 		}
 	}
 	if cfg.Runtime.Kubernetes == nil {
-		return nil
+		return nil, nil
 	}
 	roles := append(sandbox.IssueRoles(deploymentApps(cfg.Roles)), claim.RoleController)
 	broker := cfg.Runtime.Kubernetes.AgentSecrets
-	return sandbox.CheckPod(sandbox.Pod(cfg.Runtime.Kubernetes.Pod), roles, providerSecretKeys(cfg.ProviderKeys),
-		workerImageTools, names, providersSecrets(cfg, lookup), cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != "")
+	pod := sandbox.Pod(cfg.Runtime.Kubernetes.Pod)
+	if err := sandbox.CheckPod(pod, roles, providerSecretKeys(cfg.ProviderKeys), workerImageTools, names, providersSecrets(cfg, lookup),
+		cfg.Runtime.Kubernetes.SessionStore, broker != nil && broker.ExchangeAudience != ""); err != nil {
+		return nil, err
+	}
+	return sandbox.PodVolumeWarnings(pod, roles), nil
 }
 
 // environLookup is os.LookupEnv over environ, the daemon's environment or a test's.

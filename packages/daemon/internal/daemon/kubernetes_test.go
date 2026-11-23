@@ -955,7 +955,7 @@ func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *te
 		t.Run(name, func(t *testing.T) {
 			cfg := kubernetesConfig(t, "https://127.0.0.1:1")
 			cfg.Runtime.Kubernetes.AgentSecrets, cfg.Runtime.Kubernetes.Pod = tc.agentSecrets, pod
-			err := checkOperatorConfig(cfg, lookup(nil))
+			_, err := checkOperatorConfig(cfg, lookup(nil))
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("checkOperatorConfig = %v, want the operator's pod accepted as it was before the key existed", err)
@@ -964,6 +964,55 @@ func TestTheDaemonLeavesTheExchangeNamesToTheOperatorWhileTheExchangeIsOff(t *te
 			}
 		})
 	}
+}
+
+// At its boot the daemon refuses an operator's pod volume named as a volume of the slot of a role
+// that exists now, and takes one that only has the form of a slot's volume, such as gh-cache or
+// state-implementer-2: it logs a warning for each such volume that names the volume and the form,
+// and says that a later release refuses the name.
+func TestTheDaemonWarnsOfAnOperatorVolumeOfASlotsFormAndRefusesOneOfARolesSlot(t *testing.T) {
+	boot := func(t *testing.T, names ...string) (string, error) {
+		t.Helper()
+		cfg := kubernetesConfig(t, "https://127.0.0.1:1")
+		cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
+		if err := os.WriteFile(cfg.EnvoyTokenFile, []byte("envoy-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg.NatsNkeySeedFile = testnkeys.SeedFile(t, testnkeys.UserSeed(t))
+		for _, name := range names {
+			cfg.Runtime.Kubernetes.Pod.Volumes = append(cfg.Runtime.Kubernetes.Pod.Volumes,
+				corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+		}
+		var logged syncBuffer
+		_, err := prepare(cfg, slog.New(slog.NewJSONHandler(&logged, nil)), overrides{environ: []string{}})
+		return logged.String(), err
+	}
+	t.Run("a volume of the slot of a role", func(t *testing.T) {
+		want := "runtime.kubernetes.pod.volumes[0].name launcher-implementer is a volume Legion puts in every pod"
+		if _, err := boot(t, "launcher-implementer"); err == nil || err.Error() != want {
+			t.Fatalf("prepare = %v, want %q", err, want)
+		}
+	})
+	t.Run("volumes of the form of a slot's volume", func(t *testing.T) {
+		logged, err := boot(t, "gh-cache", "operator-extra", "state-implementer-2")
+		if err != nil {
+			t.Fatalf("prepare = %v, want the volumes taken with a warning", err)
+		}
+		var warned []string
+		for _, line := range strings.Split(logged, "\n") {
+			var entry map[string]any
+			if json.Unmarshal([]byte(line), &entry) == nil && entry["level"] == "WARN" && strings.HasPrefix(fmt.Sprint(entry["msg"]), "runtime.kubernetes.pod.volumes[") {
+				warned = append(warned, fmt.Sprint(entry["msg"]))
+			}
+		}
+		want := []string{
+			"runtime.kubernetes.pod.volumes[0].name gh-cache has the form gh-<slot> of a volume Legion gives each slot of a pod, and collides with the gh volume of the slot of an agent named cache wherever an issue's plan names one; a later release refuses this name, so rename the volume",
+			"runtime.kubernetes.pod.volumes[2].name state-implementer-2 has the form state-<slot> of a volume Legion gives each slot of a pod, and collides with the state volume of the slot of an agent named implementer-2 wherever an issue's plan names one; a later release refuses this name, so rename the volume",
+		}
+		if !slices.Equal(warned, want) {
+			t.Errorf("the boot warned %q, want %q", warned, want)
+		}
+	})
 }
 
 // runtime.kubernetes.pod and provider_keys reach the runtime's Options, each piece of the pod

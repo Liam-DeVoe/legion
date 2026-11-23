@@ -165,8 +165,8 @@ func TestAPodsLogAndBoundCountItsDeploymentsRoles(t *testing.T) {
 
 // An operator's pod volume may not take the name of a volume Legion gives a role of the
 // deployment, as it may not take one of Legion's own roles': the role's launcher volume in the
-// pod would collide with it. Nor may it take that form for a name no role has: every agent's name
-// of an issue's plan gets a slot of its own (TestAnOperatorVolumeMayNotTakeTheFormOfASlotsVolume).
+// pod would collide with it. Where no role has that name it is taken with a warning, since a plan
+// can name an agent checker (TestAnOperatorVolumeOfASlotsFormIsTakenAndOneOfARolesSlotRefused).
 func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 	pod := Pod{Volumes: []corev1.Volume{{Name: "launcher-checker", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}
 	legion := append(slices.Clone(claim.Roles), claim.RoleController)
@@ -174,8 +174,11 @@ func TestAnOperatorVolumeMayNotTakeADeploymentRolesVolumeName(t *testing.T) {
 	if err := CheckPod(pod, append(slices.Clone(legion), "checker"), nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil || err.Error() != want {
 		t.Errorf("CheckPod with the checker among the roles = %v, want %q", err, want)
 	}
-	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err == nil {
-		t.Errorf("CheckPod with no checker among the roles took launcher-checker, want it refused: a plan can name an agent checker")
+	if err := CheckPod(pod, legion, nil, testOptions().Tools, nil, nil, ompsessions.Store{}, false); err != nil {
+		t.Errorf("CheckPod with no checker among the roles = %v, want it taken", err)
+	}
+	if warnings := PodVolumeWarnings(pod, legion); len(warnings) != 1 || !strings.HasPrefix(warnings[0], "runtime.kubernetes.pod.volumes[0].name launcher-checker has the form launcher-<slot>") {
+		t.Errorf("PodVolumeWarnings with no checker among the roles = %q, want the one warning of launcher-checker", warnings)
 	}
 }
 

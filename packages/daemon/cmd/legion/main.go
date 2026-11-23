@@ -226,7 +226,10 @@ func pluginsLine(cfg config.Config) string {
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
-// since such a key is ignored and never refused.
+// since such a key is ignored and never refused. Then one line per warning boot logs of what the
+// file configures that a later release refuses (daemon.CheckStart): under kubernetes, an operator
+// pod volume whose name has the form of a slot's volume (sandbox.PodVolumeWarnings), which this
+// release takes, so the exit stays 0 there too.
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
@@ -272,8 +275,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		applyLinkedPlugins(&cfg)
 	}
 	paneNatsUser, daemonNatsUser := "", ""
+	var warnings []string
 	if err == nil {
-		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
+		paneNatsUser, daemonNatsUser, warnings, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
 		printRefusal(stderr, "legion config check", err)
@@ -287,7 +291,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		ok += " nats-daemon-nkey-user=" + daemonNatsUser
 	}
 	fmt.Fprintln(stdout, ok)
-	for _, warning := range cfg.Warnings {
+	for _, warning := range append(slices.Clone(cfg.Warnings), warnings...) {
 		fmt.Fprintln(stdout, warning)
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {

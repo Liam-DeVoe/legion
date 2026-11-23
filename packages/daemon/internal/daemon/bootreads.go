@@ -27,6 +27,9 @@ type bootReads struct {
 	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
 	tmux                                  tmuxReads         // runtime: tmux
 	sandbox                               sandboxReads      // runtime: kubernetes
+	// warnings are the lines of what the operator configured that this release takes and a later
+	// release refuses (checkOperatorConfig), which readBoot logs and CheckStart answers.
+	warnings []string
 }
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
@@ -43,10 +46,11 @@ type variantInstructions struct {
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
-// (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
-// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, and the runtime's own reads (readTmux, readSandbox).
+// (checkOperatorConfig, whose warnings it logs on log, each as it reads), the launch secrets
+// (readLaunchSecrets), the daemon's own NATS nkey seed (natsauth.DaemonSeed), the instructions
+// file, every declared variant's instructions file, the file of every hook that reads its words
+// from one (`hooks[].prompt_file`), the Dispatch bearer's file, and the runtime's own reads
+// (readTmux, readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion config check`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
@@ -64,8 +68,11 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	if r.operatorToken, err = config.ReadSecretPointer("operator_token_file", cfg.OperatorTokenFile); err != nil {
 		return bootReads{}, err
 	}
-	if err := checkOperatorConfig(cfg, lookup); err != nil {
+	if r.warnings, err = checkOperatorConfig(cfg, lookup); err != nil {
 		return bootReads{}, err
+	}
+	for _, warning := range r.warnings {
+		log.Warn(warning)
 	}
 	if r.secrets, err = readLaunchSecrets(cfg, lookup); err != nil {
 		return bootReads{}, err
@@ -270,26 +277,27 @@ func overlayRoles(cfg config.Config) []claim.Role {
 // anything (readBoot), over the daemon's environment (lookup, and the process's for the OMP
 // invocation), then of postgres_dsn as the store reads it before it opens a connection
 // (store.PoolConfig, which parses the DSN and opens nothing): nil when boot would get past every
-// such refusal, and the public keys of the pane seed's user and the daemon seed's user, each ""
-// when the daemon has no such seed, never a seed. The store refuses a postgres_dsn pgx cannot
-// parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey file it
-// cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
-// fills what the DSN leaves unset from the process's own PG* environment variables, whatever
+// such refusal, the public keys of the pane seed's user and the daemon seed's user, each ""
+// when the daemon has no such seed, never a seed, and the warnings boot logs of what the operator
+// configured that a later release refuses (checkOperatorConfig). The store refuses a postgres_dsn
+// pgx cannot parse, such as a malformed URL, a bad pool_* key or an sslrootcert, sslcert or sslkey
+// file it cannot read, and one whose default_query_exec_mode the store's text rule cannot run in.
+// pgx fills what the DSN leaves unset from the process's own PG* environment variables, whatever
 // lookup holds, as it does at boot. Each such refusal is store.ConnectError, as store.Open wraps
 // it: the DSN's address and the driver's detail, never the DSN's password. The driver's detail of
 // a DSN pgx cannot parse quotes the DSN with its user name and its query, which
 // `legion config check` and `legion start` both remove when they write the refusal (printRefusal,
 // the URL rule).
-func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
+func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, warnings []string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if _, err := store.PoolConfig(cfg.PostgresDSN); err != nil {
-		return "", "", store.ConnectError(cfg.PostgresDSN, err)
+		return "", "", nil, store.ConnectError(cfg.PostgresDSN, err)
 	}
 	if r.nats.source == natsSeedDaemon {
 		daemonNatsUser = r.nats.user
 	}
-	return r.paneNatsUser, daemonNatsUser, nil
+	return r.paneNatsUser, daemonNatsUser, r.warnings, nil
 }

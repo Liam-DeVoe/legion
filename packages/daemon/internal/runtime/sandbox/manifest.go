@@ -303,16 +303,17 @@ func legionVolumeNames(roles []claim.Role, exchange bool) []string {
 var slotVolumePrefixes = []string{"launcher", "private", stateVolume, ghVolume, agentSecretsKeyVolume}
 
 // slotVolumeForm is the prefix of slotVolumePrefixes whose form name has, `<prefix>-<slot>` for a
-// slot of any name of the agent grammar, and "" where it has none. A slot is a role's or an agent's
-// of an issue's plan, whose name no check at the daemon's boot can know, so an operator's volume of
-// that form is refused whatever the roles (CheckPod).
-func slotVolumeForm(name string) string {
+// slot of any name of the agent grammar, and that slot; "" and "" where it has none. A slot is a
+// role's or an agent's of an issue's plan, whose name no check at the daemon's boot can know, so an
+// operator's volume of that form could take the name of a slot's volume at a pod's build
+// (PodVolumeWarnings).
+func slotVolumeForm(name string) (string, claim.Role) {
 	for _, prefix := range slotVolumePrefixes {
 		if slot, ok := strings.CutPrefix(name, prefix+"-"); ok && (claim.IsRole(claim.Role(slot)) || claim.Role(slot) == claim.RoleController) {
-			return prefix
+			return prefix, claim.Role(slot)
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // legionMountPaths are where Legion mounts a volume in the containers the operator's mounts join,
