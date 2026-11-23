@@ -75,7 +75,8 @@ func TestProxyRootsTrustedOnlyWhenTheStoreHoldsEveryRoot(t *testing.T) {
 // has replaces its client's roots, and with no bundle the command keeps it as it is. So a file it
 // names that lacks a root takes the proxy away from that client, and the bundle is still written.
 // NODE_EXTRA_CA_CERTS is the exception: Node adds its file to the roots it has, so a file without
-// the root takes nothing away. A file that cannot be read cannot show that it holds the root.
+// the root takes nothing away. A file that cannot be read cannot show that it holds the root. Any
+// SSL_CERT_DIR at all gets the bundle (the rows at the end say why).
 func TestProxyRootsTrustedReadsTheTrustVariablesTheCommandHas(t *testing.T) {
 	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
 	store := proxyTestPool(t, root)
@@ -102,14 +103,39 @@ func TestProxyRootsTrustedReadsTheTrustVariablesTheCommandHas(t *testing.T) {
 	if proxyRootsTrusted([]string{"CURL_CA_BUNDLE=" + with, "CURL_CA_BUNDLE=" + without}, root, store) {
 		t.Errorf("CURL_CA_BUNDLE set twice, the last naming a file without the root: proxyRootsTrusted = true, want false")
 	}
+
+	// SSL_CERT_DIR names a certificate directory that Node's system store (NODE_USE_SYSTEM_CA), uv
+	// (UV_SYSTEM_CERTS) and httpx read in place of the system's, and with no bundle the command
+	// keeps it. They do not read it alike: Node v24 takes the whole value as one path (a ':' list
+	// is one directory that is not there) and an empty value as set, and httpx, through OpenSSL's
+	// capath, finds a root only under its subject-hash name. No reading of the directories answers
+	// for all three, so any SSL_CERT_DIR entry, even an empty one, gets the bundle, whose
+	// SSL_CERT_FILE and NODE_EXTRA_CA_CERTS reach each of them.
+	dirWithout := filepath.Dir(without)
+	dirWith := filepath.Dir(writeLoginFile(t, "root.pem", root))
+	for _, row := range []struct {
+		name    string
+		environ []string
+	}{
+		{name: "an empty directory", environ: []string{"SSL_CERT_DIR=" + t.TempDir()}},
+		{name: "a directory without the root", environ: []string{"SSL_CERT_DIR=" + dirWithout}},
+		{name: "a directory that holds the root", environ: []string{"SSL_CERT_DIR=" + dirWith}},
+		{name: "a ':' list whose first directory holds the root", environ: []string{"SSL_CERT_DIR=" + dirWith + string(filepath.ListSeparator) + dirWithout}},
+		{name: "set and empty", environ: []string{"SSL_CERT_DIR="}},
+		{name: "set and empty after a directory", environ: []string{"SSL_CERT_DIR=" + dirWith, "SSL_CERT_DIR="}},
+	} {
+		if proxyRootsTrusted(row.environ, root, store) {
+			t.Errorf("SSL_CERT_DIR, %s (%q): proxyRootsTrusted = true, want false", row.name, row.environ)
+		}
+	}
 }
 
 // TestProxyRootsTrustedReadsTheWgetrcTheCommandHas: wget reads no trust variable, only its
 // wgetrc, and with no bundle the command keeps the WGETRC it has. A ca_directory there replaces
-// the system store, so the last one, the one wget reads, must hold every root; a ca_certificate
-// adds to the store's trust and takes nothing away; and a wgetrc or a directory this process
-// cannot read is one it cannot vouch for. wget ignores case, '_' and '-' in a command's name, and
-// skips a line that opens with '#'.
+// the system store, so the last one, the one wget reads, must hold every root, and an empty one
+// loads no directory and no system store at all; a ca_certificate adds to the store's trust and
+// takes nothing away; and a wgetrc or a directory this process cannot read is one it cannot vouch
+// for. wget ignores case, '_' and '-' in a command's name, and skips a line that opens with '#'.
 func TestProxyRootsTrustedReadsTheWgetrcTheCommandHas(t *testing.T) {
 	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
 	store := proxyTestPool(t, root)
@@ -134,6 +160,9 @@ func TestProxyRootsTrustedReadsTheWgetrcTheCommandHas(t *testing.T) {
 		{name: "two ca_directory lines, the last with the root", wgetrc: "ca_directory = " + dirWithout + "\nca_directory = " + dirWith + "\n", want: true},
 		{name: "a commented-out ca_directory", wgetrc: "# ca_directory = " + dirWithout + "\n", want: true},
 		{name: "a ca_directory that cannot be read", wgetrc: "ca_directory = " + missing + "\n"},
+		{name: "an empty ca_directory, which loads no directory and no system store", wgetrc: "ca_directory =\n"},
+		{name: "an empty ca_directory after one that holds the root", wgetrc: "ca_directory = " + dirWith + "\nca_directory =   \n"},
+		{name: "a ca_directory that holds the root after an empty one", wgetrc: "ca_directory =\nca_directory = " + dirWith + "\n", want: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			wgetrc := writeLoginFile(t, "wgetrc", row.wgetrc)
@@ -144,42 +173,6 @@ func TestProxyRootsTrustedReadsTheWgetrcTheCommandHas(t *testing.T) {
 	}
 	if proxyRootsTrusted([]string{"WGETRC=" + missing}, root, store) {
 		t.Errorf("WGETRC naming a file that cannot be read: proxyRootsTrusted = true, want false")
-	}
-}
-
-// TestProxyRootsTrustedReadsTheCertDirTheCommandHas: SSL_CERT_DIR replaces the system's
-// certificate directory for Node's system store (NODE_USE_SYSTEM_CA), and with no bundle the
-// command keeps the SSL_CERT_DIR it has. Node, OpenSSL and Go read it as a list of directories
-// joined by ':', every file of each, together; so the directories together must hold every root,
-// one of them that cannot be read adds nothing, and an empty value names no directory.
-func TestProxyRootsTrustedReadsTheCertDirTheCommandHas(t *testing.T) {
-	root, other := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test private authority")
-	store := proxyTestPool(t, root)
-	dirWithout := filepath.Dir(writeLoginFile(t, "private.pem", other))
-	dirWith := filepath.Dir(writeLoginFile(t, "root.pem", root))
-	missing := filepath.Join(t.TempDir(), "not-there")
-	for _, row := range []struct {
-		name string
-		dirs []string
-		want bool
-	}{
-		{name: "no SSL_CERT_DIR", want: true},
-		{name: "an empty SSL_CERT_DIR", dirs: []string{""}, want: true},
-		{name: "a directory that holds the root", dirs: []string{dirWith}, want: true},
-		{name: "a directory without the root", dirs: []string{dirWithout}},
-		{name: "two directories, the second holding the root", dirs: []string{dirWithout, dirWith}, want: true},
-		{name: "a directory that cannot be read and one that holds the root", dirs: []string{missing, dirWith}, want: true},
-		{name: "a directory that cannot be read", dirs: []string{missing}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			var environ []string
-			if row.dirs != nil {
-				environ = []string{"SSL_CERT_DIR=" + strings.Join(row.dirs, string(filepath.ListSeparator))}
-			}
-			if got := proxyRootsTrusted(environ, root, store); got != row.want {
-				t.Fatalf("proxyRootsTrusted with %q = %v, want %v", environ, got, row.want)
-			}
-		})
 	}
 }
 
@@ -195,17 +188,19 @@ func useSystemTrustFiles(t *testing.T, paths ...string) {
 
 // TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot runs prepareAirlock and
 // airlockVars against a system bundle of the test's own, with and without the release's roots in
-// it. Where the bundle trusts every root and no trust variable or wgetrc of the command names a
-// file that lacks one, no file is written and none of the trust variables or WGETRC is set, while
-// the proxy still is. Every other row writes the bundle, holding every root, and points each trust
-// variable and WGETRC at it. The store is the first of the system bundles that exists, as git and
-// wget read it: a missing one is passed over, and one that is there but cannot be read is a store
-// that trusts nothing, not a reason to read the next.
+// it. Where the bundle trusts every root, no trust variable or wgetrc of the command names a file
+// or directory that lacks one, and the command has no SSL_CERT_DIR, no file is written and none of
+// the trust variables or WGETRC is set, while the proxy still is. Every other row writes the
+// bundle, holding every root, and points each trust variable and WGETRC at it. The store is the
+// first of the system bundles that exists, as git and wget read it: a missing one is passed over,
+// and one that is there but cannot be read is a store that trusts nothing, not a reason to read
+// the next.
 func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *testing.T) {
 	newRoot, oldRoot, private := proxyTestRoot(t, "test proxy root"), proxyTestRoot(t, "test old authority"), proxyTestRoot(t, "test private authority")
 	withoutRoot := writeLoginFile(t, "private.pem", private)
 	withRoot := writeLoginFile(t, "private-and-root.pem", private+newRoot)
 	wgetrcWithoutRoot := writeLoginFile(t, "wgetrc", "ca_directory = "+filepath.Dir(withoutRoot)+"\n")
+	wgetrcEmptyDir := writeLoginFile(t, "wgetrc", "ca_directory =\n")
 	missing := filepath.Join(t.TempDir(), "not-there.crt")
 	unreadable := t.TempDir() // a directory: there, and not a file any client reads
 	for _, row := range []struct {
@@ -225,6 +220,11 @@ func TestPrepareAirlockLeavesTheTrustAloneWhereTheSystemStoreHoldsTheRoot(t *tes
 		{name: "the command's wgetrc names a ca_directory without the root", store: []string{newRoot}, release: newRoot, environ: []string{"WGETRC=" + wgetrcWithoutRoot}, wantBundle: true},
 		{name: "the first system bundle is missing and the next holds the root", before: []string{missing}, store: []string{newRoot}, release: newRoot},
 		{name: "the first system bundle is there and cannot be read", before: []string{unreadable}, store: []string{newRoot}, release: newRoot, wantBundle: true},
+		{name: "the command's SSL_CERT_DIR names an empty directory", store: []string{newRoot}, release: newRoot, environ: []string{"SSL_CERT_DIR=" + t.TempDir()}, wantBundle: true},
+		{name: "the command's SSL_CERT_DIR names a directory without the root", store: []string{newRoot}, release: newRoot, environ: []string{"SSL_CERT_DIR=" + filepath.Dir(withoutRoot)}, wantBundle: true},
+		{name: "the command's SSL_CERT_DIR is a ':' list", store: []string{newRoot}, release: newRoot, environ: []string{"SSL_CERT_DIR=" + filepath.Dir(withRoot) + string(filepath.ListSeparator) + missing}, wantBundle: true},
+		{name: "the command's SSL_CERT_DIR is set and empty", store: []string{newRoot}, release: newRoot, environ: []string{"SSL_CERT_DIR="}, wantBundle: true},
+		{name: "the command's wgetrc has an empty ca_directory", store: []string{newRoot}, release: newRoot, environ: []string{"WGETRC=" + wgetrcEmptyDir}, wantBundle: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			useSystemTrustFiles(t, append(slices.Clone(row.before), writeLoginFile(t, "ca-certificates.crt", strings.Join(row.store, "")))...)

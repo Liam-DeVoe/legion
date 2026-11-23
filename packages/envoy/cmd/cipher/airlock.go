@@ -134,6 +134,15 @@ func envValue(environ []string, key string) string {
 	return value
 }
 
+// envHas reports whether environ holds an entry for key at all, an empty value among them, which
+// envValue answers as it answers none.
+func envHas(environ []string, key string) bool {
+	return slices.ContainsFunc(environ, func(e string) bool {
+		k, _, ok := strings.Cut(e, "=")
+		return ok && k == key
+	})
+}
+
 // airlockRootParts is where every grant's directory lives, in the two pieces makeAirlockRoot
 // works on: the base directory, and the elements under it this CLI makes. The base is
 // XDG_RUNTIME_DIR when the session has one (a tmpfs the session owns, which goes when the
@@ -488,12 +497,12 @@ func wgetrcFor(environ []string, bundle string) []byte {
 // airlockBundleVars are the variables that each name the trust bundle: one per client family that
 // reads its own. Every one of them takes a file holding a concatenation of PEM certificates. All
 // but NODE_EXTRA_CA_CERTS replace their client's own roots rather than add to them, and each is
-// read the same way: what an inherited one names joins the one bundle (trustBundle), and every one
-// of them names that bundle in the command's environment.
+// read the same way: what an inherited one names joins the one bundle (trustBundle), and, where
+// prepareAirlock writes the bundle, every one of them names it in the command's environment.
 var airlockBundleVars = []string{
-	"SSL_CERT_FILE",                      // OpenSSL, and everything that links it
+	"SSL_CERT_FILE",                      // OpenSSL, and everything that links it; httpx reads it too
 	"CURL_CA_BUNDLE",                     // curl
-	"REQUESTS_CA_BUNDLE",                 // Python requests, and httpx behind it
+	"REQUESTS_CA_BUNDLE",                 // Python requests (httpx reads SSL_CERT_FILE, not this)
 	"NODE_EXTRA_CA_CERTS",                // Node, which adds these to its built-in roots
 	"GIT_SSL_CAINFO",                     // git over HTTPS
 	"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE", // gcloud
@@ -506,8 +515,8 @@ var airlockBundleVars = []string{
 
 // proxyRootsTrusted reports whether the command reaches the proxy with the trust it already has,
 // so that it needs no bundle: system, the machine's system trust store, trusts every root the
-// release carries, and so does each file a trust variable of the command names, the directories
-// its SSL_CERT_DIR names, and the directory its wgetrc names.
+// release carries, and so does each file a trust variable of the command names and the directory
+// its wgetrc names, and the command has no SSL_CERT_DIR.
 //
 // Every root, not one of them: during a change of the proxy's root a release carries two, the
 // old and the new, and a store that trusts one of them is not yet one the proxy can rely on. A
@@ -518,12 +527,16 @@ var airlockBundleVars = []string{
 // root takes the proxy away from that client, as a file this process cannot read may. Either one
 // keeps the bundle, which holds that file's trust as well (trustBundle). Node adds the file
 // NODE_EXTRA_CA_CERTS names to the roots it has, so a file without the root takes nothing away.
-// The command keeps its SSL_CERT_DIR too, which Node's system store (NODE_USE_SYSTEM_CA) reads in
-// place of the system's directory and with no system bundle file beside it (measured with Node
-// v24.22.1), a list of directories joined by ':' that Node, OpenSSL and Go read together; so they
-// must hold every root, though a client that also reads an SSL_CERT_FILE holding the root would
-// not need them to. The bundle carries the root to Node in NODE_EXTRA_CA_CERTS. The command keeps
-// its WGETRC too, and wget reads its trust there alone (wgetrcTrusts).
+//
+// The command keeps its SSL_CERT_DIR too, which Node's system store (NODE_USE_SYSTEM_CA), uv
+// (UV_SYSTEM_CERTS) and httpx read in place of the system's directory, Node with no system bundle
+// file beside it. They do not read it alike, so no reading of the directories answers for all of
+// them: Node v24 takes the whole value as one path (a ':' list is one directory that is not
+// there) and an empty value as set, and httpx, through OpenSSL's capath, finds a root only under
+// its subject-hash name. So any SSL_CERT_DIR entry, even an empty one, gets the bundle: its
+// SSL_CERT_FILE reaches httpx, uv and OpenSSL beside the directory, and its NODE_EXTRA_CA_CERTS
+// reaches Node. The command keeps its WGETRC too, and wget reads its trust there alone
+// (wgetrcTrusts).
 func proxyRootsTrusted(environ []string, caPEM string, system *x509.CertPool) bool {
 	roots := proxyRoots(caPEM)
 	if len(roots) == 0 || !poolTrustsEvery(system, roots) {
@@ -532,7 +545,7 @@ func proxyRootsTrusted(environ []string, caPEM string, system *x509.CertPool) bo
 	if wgetrc := envValue(environ, "WGETRC"); wgetrc != "" && !wgetrcTrusts(wgetrc, roots) {
 		return false
 	}
-	if dirs := envValue(environ, "SSL_CERT_DIR"); dirs != "" && !certDirsTrustEvery(roots, filepath.SplitList(dirs)...) {
+	if envHas(environ, "SSL_CERT_DIR") {
 		return false
 	}
 	// One file is often named by several of these, as the system bundle is, and is read once.
@@ -561,35 +574,34 @@ func proxyRootsTrusted(environ []string, caPEM string, system *x509.CertPool) bo
 // trust variable, only its wgetrc, and its ca_directory replaces the system store: wget built on
 // GnuTLS, as Debian's is, loads each file of that directory in place of the system's trust, and
 // adds a ca_certificate to that trust rather than replacing it (measured with wget 1.25.0). So the
-// last ca_directory, the one wget reads, must hold every root, and a ca_certificate takes nothing
-// away. A wgetrc this process cannot read is one it cannot say that of. wget ignores case, '_'
-// and '-' in a command's name, and skips a line that opens with '#'.
+// last ca_directory, the one wget reads, must hold every root, an empty one loads no trust at all,
+// and a ca_certificate takes nothing away. A wgetrc this process cannot read is one it cannot say
+// that of. wget ignores case, '_' and '-' in a command's name, and skips a line that opens with '#'.
 func wgetrcTrusts(path string, roots []*x509.Certificate) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	directory := ""
+	directory, set := "", false
 	for line := range strings.Lines(string(data)) {
 		name, value, found := strings.Cut(line, "=")
 		if found && wgetrcCommand.Replace(strings.ToLower(strings.TrimSpace(name))) == "cadirectory" {
-			directory = strings.TrimSpace(value)
+			directory, set = strings.TrimSpace(value), true
 		}
 	}
-	return directory == "" || certDirsTrustEvery(roots, directory)
-}
-
-// certDirsTrustEvery reports whether the certificate directories dirs, read together, hold every
-// root: each file of each directory is read, and a directory or a file this process cannot read
-// adds nothing, so a list of none that can be read holds no root.
-func certDirsTrustEvery(roots []*x509.Certificate, dirs ...string) bool {
+	if !set {
+		return true
+	}
+	// An empty value is still a ca_directory: wget keeps it, loads no directory from it, and so
+	// loads no system store either.
+	entries, err := os.ReadDir(directory)
+	if directory == "" || err != nil {
+		return false
+	}
 	pool := x509.NewCertPool()
-	for _, dir := range dirs {
-		entries, _ := os.ReadDir(dir)
-		for _, entry := range entries {
-			if data, err := os.ReadFile(filepath.Join(dir, entry.Name())); err == nil {
-				pool.AppendCertsFromPEM(data)
-			}
+	for _, entry := range entries {
+		if data, err := os.ReadFile(filepath.Join(directory, entry.Name())); err == nil {
+			pool.AppendCertsFromPEM(data)
 		}
 	}
 	return poolTrustsEvery(pool, roots)

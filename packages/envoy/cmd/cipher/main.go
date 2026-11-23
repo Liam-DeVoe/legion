@@ -60,8 +60,9 @@
 // session (buildChildEnv). For a name the broker holds back behind its airlock, that child's
 // environment holds a placeholder in place of the value and the way to spend it: the broker's
 // proxy in HTTPS_PROXY and https_proxy, a NO_PROXY that keeps the secret's own hosts on that
-// proxy, NODE_USE_ENV_PROXY, and a trust bundle naming both the trust the command would have had
-// and the proxy's certificate, in every bundle variable and in a WGETRC (airlock.go).
+// proxy, NODE_USE_ENV_PROXY, and, unless the machine's own trust already reaches the proxy
+// (prepareAirlock), a trust bundle naming both the trust the command would have had and the
+// proxy's certificate, in every bundle variable and in a WGETRC (airlock.go).
 // A machine session enrolls automatically through the helper's own
 // enroll loop, and a Legion pod's enrollment is its daemon's job — this CLI has no direct
 // enrollment path for either; on a devbox only a session key a launcher holds (a box's) enrolls

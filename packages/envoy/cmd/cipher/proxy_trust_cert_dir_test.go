@@ -5,8 +5,9 @@
 // place of /etc/ssl/certs, every file of it, and does not fall back to the system bundle file, so
 // a command whose SSL_CERT_DIR names a directory without the proxy's root does not trust the proxy
 // from Node, though the system bundle holds the root. With the bundle, NODE_EXTRA_CA_CERTS carries
-// the root to Node. So where the command's own SSL_CERT_DIR lacks a root the bundle must still be
-// written, as it is for a trust file that lacks one; a directory that holds every root needs none.
+// the root to Node. So where the command has an SSL_CERT_DIR the bundle must still be written:
+// any SSL_CERT_DIR at all, since the clients that read it disagree on what it holds (airlock.go,
+// proxyRootsTrusted).
 package main
 
 import (
@@ -30,7 +31,10 @@ func TestPrepareAirlockWritesTheBundleWhereTheCommandsCertDirLacksTheRoot(t *tes
 	}{
 		{name: "SSL_CERT_DIR names an empty directory", dir: empty, wantBundle: true},
 		{name: "SSL_CERT_DIR names a directory without the root", dir: without, wantBundle: true},
-		{name: "SSL_CERT_DIR names a directory that holds the root", dir: with},
+		// Changed from the acceptance tester's row (want no bundle): httpx reads this directory
+		// through OpenSSL's capath, which finds a root only under its hash link, and this
+		// directory holds root.pem with none, so any SSL_CERT_DIR now gets the bundle.
+		{name: "SSL_CERT_DIR names a directory that holds the root", dir: with, wantBundle: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			// The machine's system bundle holds the root.

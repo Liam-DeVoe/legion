@@ -1517,9 +1517,10 @@ the system roots where it named none, plus the proxy's own certificate) and a wg
 and sets `NO_PROXY` so the entry's bound hosts reach the proxy while loopback and the private
 ranges stay direct. Where the machine's own system trust bundle, read with no variable
 (`/etc/ssl/certs/ca-certificates.crt` on Debian), already trusts every root the release carries,
-and each trust file or directory the command's own environment names in place of its client's
-roots holds them too, it writes neither file and sets no trust variable: the command keeps the
-trust it has. The command calls the service as it did before. The value reaches no answer
+each trust file the command's own environment names in place of its client's roots holds them
+too, as does the last `ca_directory` of its wgetrc, and the command has no `SSL_CERT_DIR` at all,
+it writes neither file and sets no trust variable: the command keeps the trust it has. The command
+calls the service as it did before. The value reaches no answer
 of the broker's, no file and no variable: the proxy swaps the placeholder for it in the headers
 the entry names, inside the connection it carries to the bound host, and an answer of the proxy's
 own that quotes what a service sent — the `502` for a status line it could not read, a failed
