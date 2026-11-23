@@ -137,9 +137,11 @@ func readTLSCertificate(path string) (*x509.Certificate, error) {
 }
 
 // tlsServedLeafWarning is how long before a served leaf's end the probe warns of it: once the
-// leaf has expired, its served copy's positive control fails and every client is held to the
-// public site in its place (probeVendoredTLSSites), where a run with no verdict passes, so the
-// chains must be vendored again before then (tls-fixtures/vendor.go).
+// leaf has expired, its served copy's positive control marks the copy unasked, whichever control
+// it is (vendoredTLSSitesWith): curl's refuses the chain as expired where the image's curl verifies
+// a chain during the handshake, and the probe's own check finds the leaf outside its validity
+// otherwise. Every client is then held to the public site in its place, where a run with no
+// verdict passes, so the chains must be vendored again before then (tls-fixtures/vendor.go).
 const tlsServedLeafWarning = 30 * 24 * time.Hour
 
 // tlsVendorCommand vendors the public sites' chains again, from the repository's root.

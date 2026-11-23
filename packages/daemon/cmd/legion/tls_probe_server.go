@@ -176,9 +176,12 @@ func listenTLS(hosts map[string]*tlsServedSite) (*tlsListener, error) {
 // vendoredTLSSite is public's own chain, vendored, as the probe's server serves it: with a key of
 // the leaf's type and size that the server makes, since it has none of the site's. Its root is
 // public's CA-published root, in stateDir (writeTLSPublishedRoots), which its positive control
-// holds it to (probeVendoredTLSSites): the positive controls' curl, not Go's x509, because Go
-// 1.27.3 refused these chains against their own roots ("x509: no valid chains built", measured on
-// 2026-11-20), as the image's go client did.
+// holds it to (vendoredTLSSitesWith): the positive controls' curl where the image's curl verifies
+// a chain during the handshake, and the probe's own check otherwise (checkVendoredTLSChain).
+// Neither is Go's x509.Certificate.Verify, because Go 1.27.3 refused these chains against their
+// own roots ("x509: no valid chains built", measured on 2026-11-20), as the image's go client did,
+// so the probe's own check holds the chain to its root with Go's x509 primitives instead: each
+// link's signature, the root's, the leaf's host and each certificate's validity.
 func vendoredTLSSite(stateDir string, public tlsSite) (*tlsServedSite, error) {
 	host := tlsSiteURL(public).Hostname()
 	chain, err := vendoredTLSChain(host)

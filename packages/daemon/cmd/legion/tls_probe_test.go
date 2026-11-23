@@ -828,13 +828,18 @@ func TestTLSProbeCountsARefusalAtAPublicSiteOnlyWhereItNamesTheSitesChain(t *tes
 	}
 }
 
-// tlsVendoredOutputs is what the four clients that verify a chain only after the handshake wrote at
-// the probe's vendored emSign chain, measured on 2026-11-20 in the image of 1c7c825367, no root
-// added: each failed the server's signature, which the probe cannot make, before it read the chain,
-// so the vendored chain shows nothing of their trust and they are held to the public sites. Every
+// tlsVendoredOutputs is what node, CodeGraph's node, wget and git, the four clients whose spec says
+// they verify a chain only after the handshake (tlsClientSpec.chainAfterHandshake), wrote at the
+// probe's vendored emSign chain, measured on 2026-11-20 in the image of 1c7c825367, no root added:
+// each failed the server's signature, which the probe cannot make, before it read the chain, so
+// the vendored chain shows nothing of their trust and they are held to the public sites. Every
 // other command client wrote there what it wrote at the public site but for the address it names
 // (tlsRefusalRows' public column): bun, omp and uv refused it as revoked or distrusted, by the same
-// decision as at the public site, which the fixture chains cannot show.
+// decision as at the public site, which the fixture chains cannot show, and that image's curl 8.14
+// refused it with "unable to get local issuer certificate". A curl that verifies a chain after the
+// handshake, as Ubuntu 26.04's curl 8.18.0 does, fails the server's signature there as these four
+// do, and the probe holds it to the public sites from curl's timing runs (measureTLSCurlTiming),
+// not from this map.
 var tlsVendoredOutputs = map[string]struct{ exit, output string }{
 	"node":           {"1", `node:internal/modules/run_main:107 triggerUncaughtException( ^ [TypeError: fetch failed] { [cause]: [Error: 00935269407F0000:error:030000EA:digital envelope routines:EVP_DigestVerifyFinal:provider signature failure:../deps/openssl/openssl/crypto/evp/m_sigver.c:703:ECDSA digest_verify_final: ] { library: 'digital envelope routines', reason: 'provider signature failure', code: 'ERR_SSL_PROVIDER_SIGNATURE_FAILURE' } } Node.js v24.22.1`},
 	"codegraph-node": {"1", `node:internal/modules/run_main:107 triggerUncaughtException( ^ [TypeError: fetch failed] { [cause]: [Error: 00B3B1F121750000:error:030000EA:digital envelope routines:EVP_DigestVerifyFinal:provider signature failure:../deps/openssl/openssl/crypto/evp/m_sigver.c:703:ECDSA digest_verify_final: ] { code: 'ERR_SSL_PROVIDER_SIGNATURE_FAILURE' } } Node.js v24.22.1`},
@@ -843,8 +848,10 @@ var tlsVendoredOutputs = map[string]struct{ exit, output string }{
 }
 
 // A client the probe holds to the vendored chains refuses them as it refuses the public sites'; the
-// clients it holds to the public sites instead are exactly those whose output at a vendored chain
-// is no refusal at all (tlsClientSpec.chainAfterHandshake).
+// clients it holds to the public sites whatever curl does are exactly those whose output at a
+// vendored chain is no refusal at all (tlsClientSpec.chainAfterHandshake). The probe adds curl to
+// those four only where its timing runs show it verifying a chain after the handshake
+// (tlsAfterHandshakeClients); curl's row here is the refusal of a curl that verifies during it.
 func TestImageTLSClientsAtTheVendoredChains(t *testing.T) {
 	clients := imageTLSClientsOf[tlsCommandClient](t, nil, t.TempDir(), slices.DeleteFunc(workerTLSClientNames(), func(name string) bool { return name == "chromium" })...)
 	if got, want := slices.Sorted(maps.Keys(tlsVendoredOutputs)), slices.Sorted(slices.Values(tlsChainAfterHandshakeClients())); !slices.Equal(got, want) {

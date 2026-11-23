@@ -5,9 +5,13 @@
 // as a TLS client receives it. It was run once, with `go run vendor.go` from this directory, and
 // what it wrote is checked in beside it, each file opening with its source, the time it was
 // fetched, each certificate's end of validity and its SHA-256 fingerprint. Run it again before a
-// vendored leaf's end (the leaves of 2026-11-20 end on 2027-05-03), and commit what it writes: once a
-// leaf has expired, its positive control fails (probeVendoredTLSSites), the probe prints an UNKNOWN
-// line for that chain and holds every client to the public site in its place.
+// vendored leaf's end (the leaves of 2026-11-20 end on 2027-05-03), and commit what it writes: once
+// a leaf has expired, its chain's positive control marks the chain unasked (vendoredTLSSitesWith in
+// tls_probe.go). Where the image's curl verifies a chain during the handshake, that control is
+// curl's, which refuses the chain as expired; otherwise, as where curl verifies a chain after the
+// handshake, it is the probe's own check, which finds the leaf outside its validity. Either way the
+// probe prints an UNKNOWN line for that chain and holds every client to the public site in its
+// place.
 //
 // The probe serves these chains from its own server with a key of its own, since it has none of
 // the sites' (tls_probe_server.go): a client refuses the chain for what it finds in it, as at the

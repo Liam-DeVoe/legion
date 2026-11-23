@@ -43,9 +43,12 @@ const (
 // server's signature. The fixture chains show a store holding no root of the distrusted roots'
 // names; the vendored chains show the refusal the public sites draw, which for node, bun, omp,
 // CodeGraph's node and uv is a list keyed to those chains' own certificates and no fixture can
-// draw (newTLSFixture). The clients that check a chain only after the handshake are held
-// to the public test sites instead, which fail the probe only where a client accepts their chain:
-// any outcome there but a verdict is unknown, and fails nothing (tlsVerdict).
+// draw (newTLSFixture). The clients that check a chain only after the handshake are held to the
+// public test sites instead: node, CodeGraph's node, wget and git, whose spec says so
+// (tlsClientSpec.chainAfterHandshake), and curl where its timing runs at the vendored chains do
+// not show it checking a chain during the handshake (tlsAfterHandshakeClients). Those sites fail
+// the probe only where a client accepts their chain: any outcome there but a verdict is unknown,
+// and fails nothing (tlsVerdict).
 type tlsSite struct {
 	name, url string
 	// root is the root the site's positive control holds its chain to: the fixture root for a
@@ -56,7 +59,8 @@ type tlsSite struct {
 	kind tlsSiteKind
 	// unasked is why no client asks the site: a public site whose positive control did not accept
 	// its chain (probePublicTLSSites), or a vendored chain whose positive control did not get past
-	// it to the server's signature (probeVendoredTLSSites); empty for a site the clients ask.
+	// it to the server's signature, or which the probe's own check found outside its validity
+	// (vendoredTLSSitesWith); empty for a site the clients ask.
 	unasked string
 	// via is the address of the probe's server, for a site it serves; empty for a public site.
 	via string
@@ -80,10 +84,12 @@ const (
 	// tlsControlSite is the control, which every client must accept, given its root (tlsSite.trust).
 	tlsControlSite
 	// tlsVendoredSite is a public site's own chain, served by the probe's server with a key of its
-	// own (tlsServer): a client that accepts it fails the server's signature (tlsSignatureFailure).
+	// own (tlsServer): a client that accepts it fails the server's signature (tlsSignatureFailure),
+	// and so does a client that checks a chain only after the handshake, before it reads the chain,
+	// so only the clients that check a chain during the handshake are held to it (runTLSProbe).
 	tlsVendoredSite
 	// tlsPublicSite is a public test site, which the clients that check a chain after the handshake
-	// are held to, and every client where its vendored chain failed its positive control
+	// are held to (tlsAfterHandshakeClients), and every client where its vendored chain is unasked
 	// (runTLSProbe).
 	tlsPublicSite
 )
@@ -125,13 +131,14 @@ type tlsOutcome struct {
 	// client's whole output, of which detail may keep only the ends.
 	signatureFailed bool
 	// leafExpired marks a refusal whose output says a certificate of the chain has expired
-	// (tlsLeafExpired), the one refusal of a served copy's positive control that marks the copy
-	// unasked (probeVendoredTLSSites). It too is read from the client's whole output: curl names the
-	// expiry inside a message the detail's trim can cut.
+	// (tlsLeafExpired), the one refusal of curl's positive control of a served copy that marks the
+	// copy unasked, where curl checks a chain during the handshake (vendoredTLSSitesWith). It too is
+	// read from the client's whole output: curl names the expiry inside a message the detail's trim
+	// can cut.
 	leafExpired bool
-	// ending is what ended the run of a command client (tlsCommandRun.ending): the served copies'
-	// positive controls mark a copy unasked only where the run exited by itself
-	// (probeVendoredTLSSites).
+	// ending is what ended the run of a command client (tlsCommandRun.ending): curl's positive
+	// control of a served copy marks the copy unasked only where the run exited by itself
+	// (vendoredTLSSitesWith).
 	ending tlsEnding
 }
 
@@ -208,9 +215,13 @@ func tlsPositiveControlsLine(sites []tlsSite) string {
 // run's own limit included, since a positive control gets no second run: curl is small, and the
 // server is on the pod's own loopback. The one exception is a run the probe's deadline ended, which
 // has no verdict and fails nothing; noVerdict names each such run, "<control>: <detail>", apart
-// from err, which names every failure. The vendored chains have positive controls of their own
-// (probeVendoredTLSSites), which mark a chain unasked rather than fail the probe only where its
-// leaf has expired, which is no fault of the image's, and keep this rule for every other run.
+// from err, which names every failure. The vendored chains have positive controls of their own,
+// chosen by when the image's curl checks a chain (vendoredTLSSitesWith). Where it checks one
+// during the handshake, curl's control marks a chain unasked rather than fail the probe only where
+// its leaf has expired, which is no fault of the image's, and keeps this rule for every other run.
+// Otherwise, as where it checks one after the handshake, the probe's own check marks a chain
+// unasked only where a certificate is outside its validity, and every other failure of that check
+// fails the probe.
 func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) (noVerdict []string, err error) {
 	var failures []string
 	control := tlsControlIndex(sites)
@@ -451,13 +462,17 @@ func probeVendoredTLSSites(ctx context.Context, env []string, stateDir string, s
 // tlsLeafExpired reports whether message, a client's whole output with its error, refuses a chain
 // because a certificate in it has expired: OpenSSL's verify text "certificate has expired", which
 // curl names after "SSL certificate problem: " (and after "SSL certificate OpenSSL verify result: "
-// from 8.18). It reads the whole output, never the trimmed detail (trimTLSDetail keeps the first
+// from 8.17). It reads the whole output, never the trimmed detail (trimTLSDetail keeps the first
 // 100 bytes and the last 199 of a longer message): curl 8.14.1's refusal, joined as the probe joins
 // it, is 337 bytes and its expiry text ends at byte 75, so 26 more bytes before it would put the
 // expiry out of the detail. Measured on 2026-11-21 in the image of 8cd60ee5c8: at a leaf that ended
 // in 2020, the controls' curl exited 60 with "curl: (60) SSL certificate problem: certificate has
 // expired", and with a root file that is not there it exited 77 with "curl: (77) error setting
-// certificate file: <path>", which is no expiry and fails the probe.
+// certificate file: <path>", which is no expiry and fails the probe. What it decides is whether
+// curl's positive control of a served copy marks the copy unasked, where curl checks a chain during
+// the handshake (vendoredTLSSitesWith). A curl that checks a chain after the handshake fails the
+// server's signature before it reads the chain, so it names no expiry there, and the probe's own
+// check reads each certificate's validity in its place (checkVendoredTLSChain).
 func tlsLeafExpired(message string) bool {
 	return strings.Contains(strings.ToLower(message), "certificate has expired")
 }
@@ -535,17 +550,18 @@ func tlsUnknownLine(observation tlsObservation) string {
 // which is recorded and fails nothing.
 //
 // reached is the sites an earlier run of the probe reached: the server's sites once the positive
-// controls passed there, and each served copy of a public chain whose own positive control passed.
-// A client's refusal at a site the server serves reaches that site too, and its acceptance at the
-// control reaches the control. A run its own limit ends with neither a refusal nor an answer in its
-// output has no verdict at a reached site, since what the limit cut short is the client: GKE image
-// streaming loads an image's files at their first read, so a large client's first run on a node
-// where the image is new can outlast its limit. At a site the server serves that no run reached,
-// that run is unavailable and fails; a public site is never counted reached, so there it is
-// unknown. A run the probe's deadline ended has no verdict wherever it ran. After every client's
-// first run at every site, each run with no verdict runs once more, in the same order, within two
-// times its client's limit, unless the probe's deadline has passed, and that run decides it: one
-// TLS run gets three times its limit at most.
+// controls passed there, and each served copy of a public chain the clients ask where curl's
+// positive control of it passed or, where the probe checked it in its own code, curl's timing run
+// began a handshake for it (runTLSProbe). A client's refusal at a site the server serves reaches
+// that site too, and its acceptance at the control reaches the control. A run its own limit ends
+// with neither a refusal nor an answer in its output has no verdict at a reached site, since what
+// the limit cut short is the client: GKE image streaming loads an image's files at their first
+// read, so a large client's first run on a node where the image is new can outlast its limit. At a
+// site the server serves that no run reached, that run is unavailable and fails; a public site is
+// never counted reached, so there it is unknown. A run the probe's deadline ended has no verdict
+// wherever it ran. After every client's first run at every site, each run with no verdict runs
+// once more, in the same order, within two times its client's limit, unless the probe's deadline
+// has passed, and that run decides it: one TLS run gets three times its limit at most.
 //
 // observations is every run, the second ones included. err names every failure; noVerdict, each
 // "<client> <site>: <detail>", names the runs that still have no verdict, which fail nothing. Where
@@ -691,22 +707,28 @@ func probeTLSSite(ctx context.Context, client tlsClient, site tlsSite, terms tls
 
 // runTLSProbe is the worker image's TLS probe, `legion probe-image`'s step after the capability
 // check. It starts the probe's server in a state directory of its own and holds it to its fixture
-// chains (the positive controls, which fail the probe) and to its vendored chains (whose controls
-// fail it only for a run that did not end by itself), then holds the image's clients, invocation
-// the image's Oh My Pi, under env:
+// chains (the positive controls, which fail the probe), measures at its vendored chains when the
+// image's curl verifies a chain and holds each vendored chain to the control that allows
+// (vendoredTLSSitesWith), then holds the image's clients, invocation the image's Oh My Pi, under
+// env:
 //
 //   - every client to the fixture chains and the control;
 //   - every client that verifies a chain during the handshake to the vendored chains, which show
 //     its refusal of the public sites' own chains with no network;
-//   - each client that verifies a chain only after the handshake (tlsClientSpec.chainAfterHandshake),
-//     for which no chain the server cannot sign for shows a refusal, to the public sites; and every
-//     client to a public site in place of a vendored chain that failed its positive control.
+//   - each client that verifies a chain only after the handshake, for which no chain the server
+//     cannot sign for shows a refusal, to the public sites: node, CodeGraph's node, wget and git
+//     (tlsClientSpec.chainAfterHandshake), and curl where its timing runs did not show it
+//     verifying a chain during the handshake (tlsAfterHandshakeClients); and every client to a
+//     public site in place of a vendored chain that is unasked.
 //
-// It prints each line to stdout, an UNKNOWN line for each vendored or public site no client is held
-// to and for each client a public site gave no verdict for, a warning for each served chain whose
-// leaf ends within 30 days (tlsServedLeafWarnings), and stops the server and removes the state
-// directory before it returns. It returns the runs with no verdict, the positive controls'
-// included, which fail nothing (probeTLSClients), and an error naming every failure.
+// It prints each line to stdout: the line that says when curl verifies a chain (tlsCurlTimingLine)
+// before the vendored chains' lines, each of which names the control that asked its chain
+// (tlsVendoredSiteLine), an UNKNOWN line for each vendored or public site no client is held to and
+// for each client a public site gave no verdict for, and a warning for each served chain whose leaf
+// ends within 30 days of the probe's clock (tlsServedLeafWarnings). It stops the server and removes
+// the state directory before it returns. It returns the runs with no verdict, the positive
+// controls' and curl's timing runs' included, which fail nothing (probeTLSClients), and an error
+// naming every failure.
 func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io.Writer) (noVerdict []string, err error) {
 	stateDir, removeStateDir, err := newTLSStateDir()
 	if err != nil {
@@ -720,9 +742,11 @@ func runTLSProbe(ctx context.Context, invocation string, env []string, stdout io
 	defer server.Close()
 	served := server.sites()
 	local := slices.DeleteFunc(slices.Clone(served), func(site tlsSite) bool { return site.kind == tlsVendoredSite })
-	// The sites the positive controls reached, where a client's run its own limit ends with no
-	// answer has no verdict (probeTLSClients): the server's own sites once those controls passed,
-	// and each served copy of a public chain whose own control passed.
+	// The sites the positive controls and curl's timing runs reached, where a client's run its own
+	// limit ends with no answer has no verdict (probeTLSClients): the server's own sites once those
+	// controls passed, and each served copy of a public chain the clients ask where curl's control
+	// of it passed or, where the probe checked it in its own code, curl's timing run began a
+	// handshake for it.
 	var reached []tlsSite
 	var controlsNoVerdict tlsNoVerdicts
 	switch err := newTLSPositiveControls(ctx, env, stateDir, local); {
@@ -1211,8 +1235,8 @@ func tlsCertificateError(detail string) bool {
 		// libcurl 8.14; and "server certificate verification failed" in 8.9.1 and older. This
 		// marker reads the first wording alone, and no marker of this list reads the last.
 		"ssl certificate verification failed",
-		// curl before 8.18 says "SSL certificate problem: <reason>"; 8.18 says "SSL certificate
-		// OpenSSL verify result: <reason> (<code>)" for the same refusal (exit 60).
+		// curl before 8.17 says "SSL certificate problem: <reason>"; from 8.17 it says "SSL
+		// certificate OpenSSL verify result: <reason> (<code>)" for the same refusal (exit 60).
 		"ssl certificate problem",
 		"ssl certificate openssl verify result",
 		"x509:",
@@ -1244,9 +1268,11 @@ func tlsCertificateError(detail string) bool {
 // (newTLSFixture), so a store that holds no root of that name refuses the fixture chain
 // for an unknown issuer, as it refuses the public site's, and a store that holds the distrusted
 // root itself finds it as the issuer and fails the fixture's signature: the store trusts the root
-// the probe exists to keep out. At a vendored chain it means the client got past the chain to the
-// server's signature, which the probe's server cannot make for a chain whose key it lacks: the
-// client accepted the chain. Each marker was measured on 2026-11-20 in the image of 1c7c825367,
+// the probe exists to keep out. At a vendored chain it means the client reached the server's
+// signature, which the probe's server cannot make for a chain whose key it lacks: a client that
+// verifies a chain during the handshake got past the chain and accepted it, and one that verifies
+// it only after the handshake has not judged it yet, which is how curl's timing runs tell the two
+// apart (measureTLSCurlTiming). Each marker was measured on 2026-11-20 in the image of 1c7c825367,
 // with the CA-published roots added to the store each client reads:
 //
 //   - at the fixture chains: "certificate signature failure", OpenSSL's verify text, from the AWS
@@ -1356,7 +1382,11 @@ type tlsClientSpec struct {
 	// gnutls_handshake). Measured on 2026-11-20 in the image of 1c7c825367: at the vendored chains,
 	// node gave "provider signature failure" and wget and git "Public key signature verification
 	// has failed", with the CA-published roots in their stores and without. Such a client is held to
-	// the public sites (runTLSProbe).
+	// the public sites (runTLSProbe). curl carries no mark: when it verifies a chain differs between
+	// its builds, during the handshake for Debian 13's curl 8.14.1 and after it for Ubuntu 26.04's
+	// curl 8.18.0, each on OpenSSL, so the probe measures it at each run (measureTLSCurlTiming) and
+	// holds it to the public sites with these where it does not verify during the handshake
+	// (tlsAfterHandshakeClients).
 	chainAfterHandshake bool
 	// command gives one site's arguments and the variables the client sets, each NAME=value, with
 	// the client's state under stateDir (newTLSStateDir); invocation is the image's Oh My Pi. At
@@ -2052,9 +2082,10 @@ var gitSiteAnswer = regexp.MustCompile(`repository '\S+' not found|/info/refs no
 const tlsLibcurlHTTPError = `The requested URL returned error: [1-5][0-9][0-9]\b`
 
 // curlHTTPError reads that status in the output of the curl client and of the positive controls'
-// curl, whose refusal is "SSL certificate problem". The public sites' positive control reads it
-// too: a site that verified against its CA-published root and answered an error status still
-// serves the chain the clients must refuse, so the clients are asked.
+// curl, whose refusal is "SSL certificate problem", or from curl 8.17 "SSL certificate OpenSSL
+// verify result" (tlsCertificateError). The public sites' positive control reads it too: a site
+// that verified against its CA-published root and answered an error status still serves the chain
+// the clients must refuse, so the clients are asked.
 var curlHTTPError = regexp.MustCompile(tlsLibcurlHTTPError)
 
 // python3HTTPError is how urllib names a status the site answered: "urllib.error.HTTPError: HTTP

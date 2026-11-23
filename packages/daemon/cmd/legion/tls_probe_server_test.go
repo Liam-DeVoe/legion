@@ -152,10 +152,14 @@ func TestTLSServerServesEachChainByItsServerName(t *testing.T) {
 // The vendored listener serves each public site's own chain, byte for byte as vendored, under the
 // site's host name, at a port of its own, and fails every handshake at the server's signature,
 // since its key is the server's own: a client that gets past the chain (here by skipping its check,
-// since Go 1.27.3 refuses these chains even against their roots) gets no further, and one that
-// trusts no root refuses the chain itself. Each handshake counts for its site. Each site's root is
-// the CA-published root the probe embeds, which the server writes into its state directory byte for
-// byte, so no image can lack it.
+// since Go 1.27.3's x509.Certificate.Verify refuses these chains even against their roots) gets no
+// further, and one that trusts no root refuses the chain itself. Each handshake counts for its
+// site. Each site's root is the CA-published root the probe embeds, which the server writes into
+// its state directory byte for byte, so no image can lack it. The positive controls' curl holds the
+// chain to that root where the image's curl verifies a chain during the handshake, and the probe's
+// own check, with Go's x509 primitives and not Verify, holds it there otherwise. That check reads
+// the chain the probe embeds (vendoredTLSChain), not the bytes a client receives, so it checks the
+// chain the clients are held to only because the server serves those bytes, which this test holds.
 func TestTLSServerServesTheVendoredChainsItCannotSignFor(t *testing.T) {
 	server, stateDir := startTLSServer(t)
 	sites := server.sites()

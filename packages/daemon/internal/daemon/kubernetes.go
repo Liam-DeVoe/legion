@@ -278,8 +278,9 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // blackhole does, costs at most one run at each of the two, a client's, or the site's positive
 // control's where it hangs from the start, since no client asks a site that gave no verdict
 // (probeTLSClients). While the served copies of the public chains are asked, only node, CodeGraph's
-// node, wget and git ask the public sites, each with a 20 s limit, so such a run stops at 20 s, up
-// to procgroup.StopGrace and procgroup.WaitDelay more for the stop, and the two add at most 44 s,
+// node, wget and git ask the public sites, and curl where the probe's timing runs show it verifies
+// a chain after the handshake, each with a 20 s limit, so such a run stops at 20 s, up to
+// procgroup.StopGrace and procgroup.WaitDelay more for the stop, and the two add at most 44 s,
 // which would end the slowest run above at about 191 s, 49 s inside the budget, short of the 60 s
 // but inside it, so it takes no exit 75. Once a served copy is unasked, as every one is once its
 // leaf has expired (2027-05-03 for the leaves vendored on 2026-11-20; the probe warns of a leaf 30

@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+    `legion probe-image` now measures when the image's curl verifies a TLS chain: it runs curl once
+    at each served copy of the public test sites' chains, with a root that issues neither chain.
+    Where curl verifies a chain only after the handshake (curl on OpenSSL from 8.17.0, as Ubuntu
+    26.04's curl 8.18.0 does), the probe holds curl to the public test sites with `node`, CodeGraph's
+    `node`, `wget` and `git`, and checks each served chain in its own code in place of the curl
+    control, which proves nothing there. The probe prints what it measured, on one of three
+    `probe-image: TLS curl …` lines, and which control ran for each served chain:
+    `probe-image: TLS vendored <name>: chain verified`, or
+    `probe-image: TLS vendored <name>: chain checked in the probe's own code, since curl verifies a chain after the handshake`.
+    A worker image whose curl verifies a chain after the handshake, such as `worker-lean`, no
+    longer fails the probe with `curl accepts the vendored emSign chain`.
+time: 2026-11-23T01:30:25Z
+custom:
+    Issue: INFRA-5350
