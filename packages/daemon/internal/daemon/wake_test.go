@@ -186,13 +186,15 @@ func TestABackstopThatCameDueWhileTheDaemonWasDownFiresAfterItStarts(t *testing.
 	}
 }
 
-// The release of an issue's pod arms the backstop of the worker of the issue's open phase, and at
-// step that worker is the role of the running step, read with the issue, where the step's key is
-// not owner (workflow.OpenRoleOf): the released checker of an issue at step 2 of `implementer
-// checker` gets the backstop, and the released implementer of the step before it gets none. The
-// checker's claim must serve the issue's current run, as a phase worker's must: one serving an
-// earlier run gets none. The issue is read as the release's teardown reads it before it arms
-// (outbox.issue, releaseIssue), so its running role comes from its plan rows.
+// Away from a place the owner does, the release of an issue's pod arms the backstop of the worker
+// of the issue's open phase (workflow.BackstopTarget), and at step that worker is the role of the
+// running step, read with the issue (workflow.OpenRoleOf); at a step or a retro the owner does it
+// arms the owner's, and at the owner's own acceptance none (the next test). Here the released
+// checker of an issue at step 2 of `implementer checker` gets the backstop, and the released
+// implementer of the step before it gets none. The checker's claim must serve the issue's current
+// run, as a phase worker's must: one serving an earlier run gets none. The issue is read as the
+// release's teardown reads it before it arms (outbox.issue, releaseIssue), so its running role
+// comes from its plan rows.
 func TestTheReleaseOfAPodAtStepArmsTheDeploymentRolesBackstop(t *testing.T) {
 	const key, checker = "LEGION-208", claim.Role("checker")
 	for _, c := range []struct {

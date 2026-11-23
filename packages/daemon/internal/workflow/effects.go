@@ -528,15 +528,15 @@ func (e *Engine) tellOwner(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 // starts again at its child's next phase start (dispatch://INFRA-3915 R2). One that failed while
 // its child stands at a place only it ends, which no phase start follows, is started again at its
 // failure, at most OwnerRestarts times in the step's run, and then waits for the operator's retry,
-// which the stranded list names (restartFailedOwner). Until it runs again its child's notices but
-// an owner-step go to the architect above it (record.OwningArchitect); an owner-step goes to that
-// architect alone (record.OwnerClaim) and is dropped while its claim has failed, and the ready of
-// the launch that starts it again tells it the step where that launch's session was not given it
-// (claimReady). The outbox's start
-// retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
-// or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
-// session itself. A tree root's architect is admission's, started with its tree,
-// so a root revives nothing here.
+// which the stranded list names (restartFailedOwner). Until it runs again its child's notices go
+// to the architect above it (record.OwningArchitect), all but an owner-step, which goes to that
+// architect alone (record.OwnerClaim): when its claim has failed, it is told that step again when
+// it runs again, where no owner-step of it is still queued and the session it runs in has not had
+// one (claimReady's owedOwnersStep and toldThisSession). The
+// outbox's start retries a failed claim with fresh budgets (supervise.RequestRetry), in the
+// session it recorded, or a new one once supervise's Machine.forgetSession has dropped it. This
+// start asks for no new session itself. A tree root's architect is admission's, started with its
+// tree, so a root revives nothing here.
 //
 // The claim's state is read in the transaction, and no row carries a mark that asks for the
 // revive: an older daemon's strict decoder refuses an outbox row with a field it does not know
@@ -632,15 +632,14 @@ func childArchitectStart(issue record.Issue) record.SuperviseRequest {
 // The architect's phase starts nobody, except where the issue stands at a step or a retro the
 // owner does (the role the caller reads there, record.Issue.RoleAt, is the architect): there the
 // retry tells the owner its step again, with the retry's task, as a worker is sent its task again,
-// and starts no run (tellOwner), unless an owner-step of the issue is still queued
-// (record.Store.NoticePending): held for the owner's slot, or for the claim the retry relaunches,
-// that notice tells the owner when it publishes, and a second would tell the same session the
-// step twice. The operator's retry of the owner's claim (`legion claims retry`, and the
-// controller's fresh_session) reaches it through restartPhase, after the route relaunched the
-// claim through its machine (api's retryStart), and it gives the owner every restart of the
-// step's run again (record.Store.ResetOwnerRestarts) whether it tells or not: a retry is a
-// person's move, and the daemon starts the owner again after a later failure as it did after the
-// first (restartFailedOwner).
+// and starts no run (tellOwner). It tells nothing while an owner-step of the issue still waits in
+// the outbox (record.Store.NoticePending, the check owedOwnersStep reads): that row names the same
+// run, since a retry starts none, and a second would tell the owner its step twice. The operator's
+// retry of the owner's claim (`legion claims retry`) reaches it through restartPhase, after the
+// route relaunched the claim through its machine (api's retryStart), and it gives the owner every
+// restart of the step's run again (record.Store.ResetOwnerRestarts), whether or not it tells the
+// step: a retry is a person's move, and the daemon starts the owner again after a later failure as
+// it did after the first (restartFailedOwner).
 func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, told func(Standing) string, freshSession bool) error {
 	if role == "" {
 		return nil
@@ -657,11 +656,11 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		if err := e.store.ResetOwnerRestarts(ctx, tx, issue.Key, step.place); err != nil {
 			return err
 		}
-		if pending, err := e.store.NoticePending(ctx, tx, issue.Key, record.OwnerStepNotice); err != nil || pending {
-			return err
-		}
 		at, err := e.standingPart(ctx, tx, issue, w)
 		if err != nil {
+			return err
+		}
+		if pending, err := e.store.NoticePending(ctx, tx, issue.Key, record.OwnerStepNotice); err != nil || pending {
 			return err
 		}
 		return e.tellOwner(ctx, tx, issue, step, told(at))

@@ -548,12 +548,12 @@ func OpenRoleAt(p phase.Phase, stepRole, placeRole claim.Role) claim.Role {
 // (suspendedPhaseOwners), which claim the silence repair prompts (phaseWorkerRecord), which role a
 // CI settlement wakes off the owner's place (wakeOnSettlement, which wakes the owner at its own),
 // and which role a release, a pause's stop of a released claim and a cancel of a release while the
-// project is paused arm a backstop for off the owner's place (BackstopClaim, which the three paths
-// ask, and which arms the owner's backstop where it works its place alone) — an architect gets none
-// there, because nothing of its own is due and a
-// sub-architect woken for nothing would hold a pod open for the backstop period. A held issue
-// stands in held, which no role works, so none of those paths gives its worker anything until a
-// release of the hold gives the phase back.
+// project is paused arm a backstop for off the owner's place (BackstopTarget, which the release
+// and the stop ask through BackstopClaim and the cancel through BackstopTargetAt, and which names
+// the owner's backstop where it works its place alone, and none at its acceptance) — an architect
+// gets none there, because nothing of its own is due and a sub-architect woken for nothing would
+// hold a pod open for the backstop period. A held issue stands in held, which no role works, so
+// none of those paths gives its worker anything until a release of the hold gives the phase back.
 func OpenRoleOf(issue record.Issue) claim.Role {
 	if role := issue.RoleAt(issue.Phase); role != claim.RoleArchitect {
 		return role

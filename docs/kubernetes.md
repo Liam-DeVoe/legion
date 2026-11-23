@@ -7179,9 +7179,9 @@ The wakes are these:
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 
-- the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
+- the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for the claim of the pod that works the issue's place: the worker of the issue's open phase, or, at a place the architect works itself (a step or a retro of its own, and accepting on an issue with no plan rows), the issue's own architect (`BackstopClaim`, `internal/workflow/wake.go`).
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
-  An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
+  An architect gets no backstop at any other place, since every wake of an architect there is a daemon task or notice or a message.
 
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
@@ -7211,7 +7211,7 @@ An operator's `legion claims retry` of a failed claim resumes the role's recorde
 The same retry with `--fresh-session` forgets that session first and starts a new one.
 A start the daemon queues for a phase worker itself does as the first does: a phase start, a backward move, a retry after the architect's `retry_or_escalate`, and that same retry made by a `todo` written on a held root, which releases the hold and starts the held phase's worker.
 At a step or a retro the architect does itself none of these starts a worker: the architect is told the step with an `owner-step` notice instead, and an operator's retry of the architect's claim there relaunches that claim and tells it the step again.
-A start the daemon queues for a child's own architect does as the first does too: the child's first phase start queues one, and each later phase start of the child queues one for an architect that failed, the move into `accepting` among them (`childArchitectStart` and `reviveArchitect`, `internal/workflow`).
+A start the daemon queues for a child's own architect does as the first does too: the child's first phase start queues one, each later phase start of the child queues one for an architect that failed, the move into `accepting` among them, and the failure of that architect while its child stands at a step it does itself, other than an acceptance, or at a retro it does, queues one at once, at most three times in that step's run (`childArchitectStart`, `reviveArchitect` and `restartFailedOwner`, `internal/workflow`).
 Such a release arms no backstop, and it leaves the issue's wake marks and the open backstops of an earlier release as it found them.
 
 What the saved bundle holds is every visible commit the remote does not already hold, on any head, the working copy's own change, and each local bookmark that points at such a commit.

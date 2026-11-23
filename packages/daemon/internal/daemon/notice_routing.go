@@ -205,12 +205,13 @@ func holdsRole(held supervise.ClaimView) bool {
 // claimEnded is whether a claim in state will not hold its role again: this daemon does not
 // supervise it (""), or it failed or retired. A child's own architect that failed does start again,
 // at its child's next phase start (workflow's reviveArchitect), but that launch's ready queues a
-// catch-up of its own, so nothing held for the failed claim waits for it. A suspended claim has
-// not ended: the operator's resume or deliver starts it again (`legion claims resume`), and so
-// does the workflow's next start of its role for a claim the workflow suspended, which for a
-// child's own architect is the child's next first phase start (workflow's StartFirstPhase), or,
-// after its tree's linger, the re-admission's start of a child past admitted (admit's
-// startMidPhaseMembers).
+// catch-up of its own, so a notice whose publish finds the failed claim's role unheld does not
+// wait for it; an owner-step can wait for the claim's slot before its publish (ownerSlotHolds),
+// and either way the claim is told the step again when it runs again. A suspended claim has not
+// ended: the operator's resume or deliver starts it again (`legion claims resume`), and so does
+// the workflow's next start of its role for a claim the workflow suspended, which for a child's
+// own architect is the child's next first phase start (workflow's StartFirstPhase), or, after its
+// tree's linger, the re-admission's start of a child past admitted (admit's startMidPhaseMembers).
 func claimEnded(state supervise.ClaimState) bool {
 	return state == "" || state == supervise.StateFailed || state == supervise.StateRetired
 }

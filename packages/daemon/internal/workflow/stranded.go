@@ -97,7 +97,7 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //     no phase start comes to start it again (reviveArchitect). The daemon starts it again at its
 //     failure, at most OwnerRestarts times in the step's run (restartFailedOwner); once no start of
 //     it is queued (StartFor), the child waits for the operator's retry, which relaunches the claim
-//     and tells it its step again (one more owner-step).
+//     and tells it its step again (one more owner-step, where none is still queued).
 //
 // A retired claim is here for the reason a failed one is, and a queued start is what takes either
 // of them out. The state is not the end of the claim: the outbox's start executor provisions the
@@ -132,9 +132,9 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // comes, and a tree that is not running runs nothing yet. Nor does it name any other child's own
 // architect: while that claim does not hold its role (the daemon's holdsRole), the architect
 // above it takes the child's notices, all but an owner-step, which goes to the child's own
-// architect alone (the daemon's noticeArchitect): it waits while that claim is suspended, and one
-// sent while the claim has failed or retired finishes undelivered, its next launch's catch-up
-// telling it that step again. A later start of the role brings the claim back, as
+// architect alone (the daemon's noticeArchitect): it waits while that claim is suspended, and
+// when the claim has failed or retired, that architect is told the step again when it runs
+// again. A later start of the role brings the claim back, as
 // supervise's table decides for the state it stands in. The workflow queues such a start itself
 // at its child's first phase start and, for a failed one, at each later phase start
 // (StartFirstPhase, reviveArchitect); an acceptance the owner does is followed by one, since an

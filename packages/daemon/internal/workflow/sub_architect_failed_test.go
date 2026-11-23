@@ -18,11 +18,11 @@ import (
 
 // A child's own architect's claim failing holds nothing, even at accepting where its acceptance is
 // its own. While that claim no longer holds its role the child's notices go on up to the architect
-// above it, an owner-step aside, which goes to the child's own architect alone (noticeArchitect)
-// and, sent while that claim has failed, is dropped; the ready of the launch that starts it again
-// tells it the step where that launch's session was not given it (claimReady). The architect
-// above must hear why: the failure is one worker-died on the child, naming the architect, the
-// child's phase and the failure the fact carries, whose reason names the child.
+// above it, an owner-step aside, which goes to the child's own architect alone (noticeArchitect):
+// when that claim has failed, it is told the step again when it runs again, where its session has
+// not had it (claimReady). The architect above must hear why: the failure is one worker-died on
+// the child, naming the architect, the child's phase and the failure the fact carries, whose
+// reason names the child.
 // For a child at a place its own architect does not end alone, as here in testing, the reason says
 // its notices come to the reader until it runs again, and that the daemon starts it again at the
 // child's next phase start; at a step of its own or its retro the daemon starts it again at once,
