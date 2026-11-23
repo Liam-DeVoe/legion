@@ -143,7 +143,10 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 			return step
 		})
 	}()
-	defer func() { stop(); <-done }()
+	defer func() {
+		stop()
+		testwait.Receive(t, "the block-index loop (RunLeasedAfterEachPassOn) to return once its context ended", done)
+	}()
 
 	var got []passTimes
 	for len(got) < passes {
@@ -190,7 +193,10 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 			}
 		})
 	}()
-	defer func() { stop(); <-done }()
+	defer func() {
+		stop()
+		testwait.Receive(t, "the issue-ask-repair loop (RunLeasedOn) to return once its context ended", done)
+	}()
 
 	if armed := ticks.AwaitArmed(t, "the loop's first tick", 1); !armed[0].Equal(started.Add(interval)) {
 		t.Errorf("the loop armed its first tick for %v after start; want one interval, %v, in", armed[0].Sub(started), interval)

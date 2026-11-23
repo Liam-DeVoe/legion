@@ -51,7 +51,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
 				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL, outboxPublishes: true,
 			})
-			served.mentions.wait()
+			testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
 			sender := newMentionSender(served.lifetime, time.Hour, nil, served.sendCommentMention,
 				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)
@@ -145,7 +145,7 @@ func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
 			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
 				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL, outboxPublishes: true,
 			})
-			served.mentions.wait()
+			testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
 			var down atomic.Bool
 			sender := newMentionSender(served.lifetime, time.Hour, nil, served.sendCommentMention,
 				func(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {

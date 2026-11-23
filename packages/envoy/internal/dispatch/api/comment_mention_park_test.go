@@ -101,7 +101,7 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 	t.Cleanup(func() {
 		rig.release()
 		stop()
-		rig.sender.wait()
+		testwait.Returns(t, "the park rig's mention sender's lanes and claim refresh to return once its gate opened and its lifetime ended", rig.sender.wait)
 	})
 	return rig
 }

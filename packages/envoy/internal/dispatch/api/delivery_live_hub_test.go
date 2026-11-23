@@ -255,8 +255,8 @@ func hubOnStore(t *testing.T, handler http.Handler, database *store.Store, deps 
 	}
 	rig.stop = sync.OnceFunc(func() {
 		cancel()
-		rig.hub.wait()
-		rig.relay.wait()
+		testwait.Returns(t, "the hub's generation goroutines (its listener, intake and work) to return once its lifetime ended", rig.hub.wait)
+		testwait.Returns(t, "the relay's generation goroutines (its listener and its run) to return once its lifetime ended", rig.relay.wait)
 	})
 	t.Cleanup(rig.stop)
 	return rig
@@ -2158,7 +2158,8 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 		t.Fatalf("the other task's dependencies: %v", err)
 	}
 	otherTask := http.NewServeMux()
-	t.Cleanup(Register(otherTask, t.Context(), deps).Wait)
+	background := Register(otherTask, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	patchHubIssue(t, otherTask, key, map[string]any{"title": "Ship the widgets"})
 	delta := conn.eventDelta(t, rig.database, "t")
 	if got := liveMapValues(t, delta, "issue_titles"); got[key] != "Ship the widgets" {

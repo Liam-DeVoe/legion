@@ -4775,7 +4775,7 @@ func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *tes
 	case <-time.After(2 * interval):
 	}
 	cancel()
-	<-done
+	testwait.Receive(t, "the self-health monitor to return once its context ended", done)
 }
 
 // TestRunSelfHealthMonitor_ExitsAfterThreeRebuildsThatLeaveAFault is the persistent failure the
@@ -5027,7 +5027,7 @@ func monitorUntilRecovered(t *testing.T, what string, wait, interval time.Durati
 		t.Fatalf("the monitor never recovered %s", what)
 	}
 	cancel()
-	<-done
+	testwait.Receive(t, "the self-health monitor to return once its context ended, after it recovered "+what, done)
 }
 
 // setupTestNATS starts a NATS server dedicated to this test, which ends with it, and a bus client

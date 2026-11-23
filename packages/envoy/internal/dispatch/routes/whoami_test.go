@@ -68,7 +68,9 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("build context: %v", err)
 	}
 	handler, background := New(ctx)
-	t.Cleanup(background.Wait)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the router's background work (api.Background.Wait: detached work, sockets, hub, relay, mention sender) to end once the test's lifetime ended", background.Wait)
+	})
 	return handler
 }
 

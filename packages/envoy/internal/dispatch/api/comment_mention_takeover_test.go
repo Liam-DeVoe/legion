@@ -643,7 +643,7 @@ func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.
 			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 				envoyURL: listener.URL, outboxPublishes: true, clock: clock,
 			})
-			served.mentions.wait()
+			testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
 			sender := newMentionSender(served.lifetime, time.Hour, nil, served.sendCommentMention,
 				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)

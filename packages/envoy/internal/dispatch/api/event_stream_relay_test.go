@@ -58,7 +58,7 @@ func secondProcess(t *testing.T, database *store.Store) (http.Handler, *server) 
 	}
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
-	t.Cleanup(served.waitBackground)
+	t.Cleanup(func() { waitBackgroundOf(t, served) })
 	return mux, served
 }
 
@@ -102,7 +102,7 @@ func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan int64) {
 	}
 	t.Cleanup(func() {
 		stop()
-		relay.wait()
+		testwait.Returns(t, "the counted relay's generation goroutines (its listener and its run) to return once its lifetime ended", relay.wait)
 	})
 	return relay, reads
 }

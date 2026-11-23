@@ -949,7 +949,7 @@ func TestTheSweepSendsAMentionAStoppedProcessLeftAndLeavesALiveClaimAlone(t *tes
 	}
 	settled := waitForCommentDeliveries(t, database, stranded.ID, "the owed attempt sent", allSent)
 	stopNext()
-	restarted.waitBackground()
+	testwait.Returns(t, "the restarted process's background work (its sweep's sends, its mention sender) to end once its lifetime ended", restarted.waitBackground)
 
 	if settled[0].SessionID == nil || *settled[0].SessionID != "s1" {
 		t.Fatalf("the recovered attempt = %#v, want it sent to s1", settled)
@@ -979,7 +979,7 @@ func TestARollingUpdatesSuccessorSendsTheMentionTheOldProcessAcceptedWhileDraini
 	successor := register(http.NewServeMux(), successorLifetime, deps)
 	defer func() {
 		stopSuccessor()
-		successor.waitBackground()
+		testwait.Returns(t, "the successor's background work (its sweep's sends, its mention sender) to end once its lifetime ended", successor.waitBackground)
 	}()
 
 	// SIGTERM: the old process's lifetime ends, and then its HTTP drain answers a comment.
@@ -1175,7 +1175,7 @@ func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
 // waits the replacement out.
 func withMentionClaimRefresh(t *testing.T, served *server, refreshes *clocktest.Fake) {
 	t.Helper()
-	served.mentions.wait()
+	testwait.Returns(t, "the mention sender register built to stop and its claim refresh to return before it is replaced", served.mentions.wait)
 	served.mentions = newMentionSender(served.lifetime, mentionClaimRefresh, refreshes, served.sendCommentMention,
 		served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 }
@@ -1547,7 +1547,7 @@ func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *test
 	stop()
 	sender.cancel()
 	close(finish)
-	sender.wait()
+	testwait.Returns(t, "the mention sender's in-flight send and claim refresh to return once finish closed, and its drain to give back the claim of the send it never started", sender.wait)
 
 	if releaseErr != nil {
 		t.Fatalf("the drain released the claims on a context that was already %v, want a live one", releaseErr)

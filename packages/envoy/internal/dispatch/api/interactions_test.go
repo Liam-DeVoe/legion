@@ -59,7 +59,7 @@ func newInteractionServer(t *testing.T, makeDocs func(*store.Store) docs.API) (h
 	}
 	mux := http.NewServeMux()
 	srv := register(mux, t.Context(), deps)
-	t.Cleanup(srv.waitBackground)
+	t.Cleanup(func() { waitBackgroundOf(t, srv) })
 	return mux, database, deps, srv
 }
 

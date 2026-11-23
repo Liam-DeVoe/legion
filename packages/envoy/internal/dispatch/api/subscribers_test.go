@@ -200,7 +200,8 @@ func newSubscribersHandler(t *testing.T, database *store.Store, envoyURL string)
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	return mux
 }
 

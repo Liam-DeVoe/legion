@@ -413,13 +413,16 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 // server, as a test that failed while the handler waited leaves it - so the test's releases run
 // first (releaseHeld): the test is over, and they would run next anyway.
 func waitBackgroundOf(t testing.TB, served *server) {
+	waitRegisteredBackground(t, served.waitBackground)
+}
+
+// waitRegisteredBackground is waitBackgroundOf for a server a test registered through Register,
+// which answers the server's Background rather than the server: wait is its Background.Wait, the
+// server's waitBackground. Take Register's answer before the cleanup that calls this, so the
+// server is registered when the row starts.
+func waitRegisteredBackground(t testing.TB, wait func()) {
 	releaseHeld(t)
-	waited := make(chan struct{})
-	go func() {
-		served.waitBackground()
-		close(waited)
-	}()
-	testwait.Receive(t, "the server's background work to end", waited)
+	testwait.Returns(t, "the server's background work to end", wait)
 }
 
 // directServer is a server a test calls a handler or a delivery step on directly, without the
@@ -916,7 +919,8 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 
 	if response := dispatchRequest(t, mux, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -2173,7 +2177,8 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	handler := http.NewServeMux()
 	// Every server mounts GET /ws/live, the event feed's socket, which a revoked cookie is refused
 	// too.
-	t.Cleanup(Register(handler, t.Context(), deps).Wait)
+	background := Register(handler, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	generation, err := sessions.EnsureSession(context.Background(), "alice@d.example")
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)

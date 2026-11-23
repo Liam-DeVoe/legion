@@ -361,7 +361,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 				return state, state == "sent"
 			})
 			server.Close()
-			served.detached.wait()
+			testwait.Returns(t, "the server's detached work to end once the mention's attempt settled", served.detached.wait)
 			if sent := len(keysOf(sends)); sent != 1 {
 				t.Fatalf("the mention's attempt settled sent after %d sends, want it sent once though the client gave up", sent)
 			}
@@ -454,7 +454,7 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	testwait.Eventually(t, "the maintenance loop's pass to send the owed attempt", func() bool { return len(keysOf(sends)) > 0 })
 	stop()
 	testwait.Receive(t, "the maintenance loop to stop", done)
-	served.detached.wait()
+	testwait.Returns(t, "the server's detached work, the sweep's sends among it, to end once the maintenance loop stopped", served.detached.wait)
 	if keys := keysOf(sends); !equalStrings(keys, []string{id + ":steer"}) {
 		t.Fatalf("the loop sent %v, want the owed attempt of %s", keys, id)
 	}

@@ -63,7 +63,8 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 		t.Fatalf("new API dependencies of the newer build: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	return mux, service
 }
 

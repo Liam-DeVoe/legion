@@ -111,7 +111,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	parks := countParks(sender, false)
 	t.Cleanup(func() {
 		stop()
-		sender.wait()
+		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 	})
 	enqueue := func(id, issue string) {
 		sender.enqueue(context.Background(), mentionSend{
@@ -257,7 +257,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	parks := countParks(sender, true)
 	t.Cleanup(func() {
 		stop()
-		sender.wait()
+		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 	})
 	enqueue := func(id, issue string) mentionSend {
 		item := mentionSend{
@@ -300,7 +300,7 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 	parks := countParks(sender, true)
 	t.Cleanup(func() {
 		stop()
-		sender.wait()
+		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 	})
 	for _, id := range []string{"a-first", "a-second", "a-third"} {
 		sender.enqueue(context.Background(), mentionSend{

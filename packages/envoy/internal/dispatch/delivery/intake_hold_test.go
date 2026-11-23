@@ -1490,6 +1490,8 @@ func TestATakeOverWhoseCreateFailsLeavesTheFloorToTheNextHolder(t *testing.T) {
 // the test opens and closes itself, so a pass reaches every moment of that window it can and none
 // is left to a pace.
 type previousBuild struct {
+	// t is the test whose wait names the join of the passes (stop).
+	t      *testing.T
 	leases duty.Leases
 	client *bus.Client
 
@@ -1511,7 +1513,7 @@ func previousBuildReconciler(t *testing.T, pool *store.Pool, natsURL string) *pr
 		t.Fatalf("connect the previous build's process: %v", err)
 	}
 	t.Cleanup(client.Close)
-	p := &previousBuild{leases: leases, client: client, passed: make(chan struct{})}
+	p := &previousBuild{t: t, leases: leases, client: client, passed: make(chan struct{})}
 	t.Cleanup(p.stop)
 	return p
 }
@@ -1562,17 +1564,19 @@ func (p *previousBuild) reconcile() {
 	}()
 	p.end = func() {
 		close(quit)
-		<-ended
+		testwait.Receive(p.t, "the previous build's passes to end once quit closed", ended)
 	}
 }
 
-// stop ends the passes reconcile started, once the pass in flight has returned.
+// stop ends the passes reconcile started, once the pass in flight has returned. It clears end
+// before it waits: a stop on the intake's goroutine (the second create, failCreatesWhile) whose
+// wait gave up leaves end called, and the cleanup's stop then finds nothing to end.
 func (p *previousBuild) stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.end != nil {
-		p.end()
+	if end := p.end; end != nil {
 		p.end = nil
+		end()
 	}
 }
 

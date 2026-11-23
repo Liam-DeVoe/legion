@@ -192,7 +192,7 @@ func newCadenceRelay(t *testing.T, deps Deps, database *store.Store, coalesce ti
 	}
 	t.Cleanup(func() {
 		stop()
-		relay.wait()
+		testwait.Returns(t, "the cadence relay's generation goroutines (its listener and its run) to return once its lifetime ended", relay.wait)
 	})
 	return relay, fake, horizon, reads
 }

@@ -99,7 +99,8 @@ func credentialTestHandler(t *testing.T, brokerURL, tokenFile string, grants clo
 		cipher.WithClock(grants)(deps.AgentSecrets)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	return mux
 }
 

@@ -48,7 +48,7 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 	sender.mu.Unlock()
 	t.Cleanup(func() {
 		stop()
-		sender.wait()
+		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 	})
 	for _, id := range []string{"a-first", "a-second", "a-third"} {
 		sender.enqueue(context.Background(), mentionSend{
@@ -122,7 +122,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	sender.mu.Unlock()
 	t.Cleanup(func() {
 		stop()
-		sender.wait()
+		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 	})
 	// a-first's retry parks on release until the row lets it go, and the sender's wait above
 	// returns only once it has. Cleanups run last first, so this one, registered after that wait,
@@ -155,7 +155,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	// A send leaves held (claimedDuring) before its goroutine logs its late WARN (reportLate):
 	// join that goroutine before reading the log.
 	stop()
-	sender.wait()
+	testwait.Returns(t, "the mention sender's lanes, their late WARNs logged, and its claim refresh to return once its lifetime ended", sender.wait)
 	logged := logs.String()
 	t.Logf("WARN lines: %d", strings.Count(logged, marker))
 	for _, id := range []string{"a-first", "a-second"} {
@@ -236,7 +236,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	sender.mu.Unlock()
 	t.Cleanup(func() {
 		stop()
-		sender.wait()
+		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 	})
 	// Runs before the sender's wait: a row that failed while a send was held lets it go.
 	t.Cleanup(func() { close(abort) })
@@ -319,7 +319,7 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 	sender.mu.Unlock()
 	t.Cleanup(func() {
 		stop()
-		sender.wait()
+		testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 	})
 	for _, id := range []string{"a-first", "a-second"} {
 		sender.enqueue(context.Background(), mentionSend{
@@ -393,7 +393,7 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 			sender.mu.Unlock()
 			t.Cleanup(func() {
 				stop()
-				sender.wait()
+				testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 			})
 			item := mentionSend{
 				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
@@ -513,7 +513,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			sender.mu.Unlock()
 			t.Cleanup(func() {
 				stop()
-				sender.wait()
+				testwait.Returns(t, "the mention sender's lanes and claim refresh to return once its lifetime ended", sender.wait)
 			})
 			item := mentionSend{
 				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
@@ -583,7 +583,7 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			// reportLate runs after a send leaves held, on the goroutine that served it: join that
 			// goroutine before reading the log.
 			stop()
-			sender.wait()
+			testwait.Returns(t, "the mention sender's lanes, their late WARNs logged, and its claim refresh to return once its lifetime ended", sender.wait)
 			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 			var lines []string
 			for l := range strings.SplitSeq(logs.String(), "\n") {

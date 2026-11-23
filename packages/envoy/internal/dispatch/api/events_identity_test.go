@@ -68,7 +68,8 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	}
 	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -106,7 +107,8 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	}
 	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -270,7 +272,8 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration, serverClock clo
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
 	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
 	t.Cleanup(rig.server.Close)

@@ -71,7 +71,8 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *cloc
 	// ends one: the heartbeats the rows move through are the server's clock's alone.
 	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
+	background := Register(mux, t.Context(), deps)
+	t.Cleanup(func() { waitRegisteredBackground(t, background.Wait) })
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
 	rig.server = httptest.NewServer(rig.sockets.serve(mux.ServeHTTP))
 	t.Cleanup(rig.server.Close)

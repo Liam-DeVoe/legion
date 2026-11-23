@@ -877,8 +877,8 @@ func TestShutdownClosesEverySocketWithServiceRestart(t *testing.T) {
 			t.Errorf("%s socket closed with %d, want 1012", name, code)
 		}
 	}
-	rig.served.liveSockets.wait()
-	rig.served.deliveryHub.wait()
+	testwait.Returns(t, "every live socket's handler, and the subscriptions it ran, to return once the server stopped", rig.served.liveSockets.wait)
+	testwait.Returns(t, "the delivery hub's generation goroutines to return once the server stopped", rig.served.deliveryHub.wait)
 	if held := hubConnCount(rig.served.deliveryHub); held != 0 {
 		t.Fatalf("the hub holds subscriptions of %d closed sockets", held)
 	}

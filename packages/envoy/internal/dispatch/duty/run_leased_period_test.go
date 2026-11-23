@@ -50,7 +50,10 @@ func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) 
 			ticks.Advance(passTime)
 		})
 	}()
-	defer func() { stop(); <-done }()
+	defer func() {
+		stop()
+		testwait.Receive(t, "the document-compaction loop (RunLeasedOn) to return once its context ended", done)
+	}()
 
 	var got []time.Time
 	for len(got) < passes-1 {
