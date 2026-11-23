@@ -245,7 +245,7 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		// controller-microvm is the controller's pod of root-microvm's project, whose type is
 		// microvm: the pod runs in a microVM and serves the metadata endpoint, on its Sandbox's disk
 		// of runtime.kubernetes.storage_class (TestTheControllerPodRunsInTheProjectsSandbox).
-		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		"controller-microvm": {spec: controllerSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}, controllerAccount: goldenControllerAccount},
 		"root-enrolled": {spec: rootSpec(t), agentSecrets: &AgentSecrets{
 			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
 		}},
@@ -260,18 +260,18 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 	}
 }
 
-// goldenControllerAccount is the controller golden's runtime.kubernetes.pod.controller_service_account.
+// goldenControllerAccount is the controller goldens' runtime.kubernetes.pod.controller_service_account.
 const goldenControllerAccount = "legion-controller"
 
 // manifestCase is one Sandbox the goldens pin: its launch's spec, and what the case sets on the
 // runtime beside goldenOptions — agentSecrets, the enrollment, for root-enrolled and
 // root-exchange-identity alone, sandbox, the sandbox block, for root-microvm, root-microvm-kept and
 // controller-microvm alone, and controllerAccount, the runtime's
-// runtime.kubernetes.pod.controller_service_account, for controller alone. The tests that build
-// every case's manifest on one shared runtime apply each case to it first (apply), so every other
-// case runs unenrolled and in gVisor, and controller-resume keeps the pods' own service_account
-// (none in these settings) where controller's golden pins the account its pod runs as when the key
-// is set.
+// runtime.kubernetes.pod.controller_service_account, for controller and controller-microvm. The
+// tests that build every case's manifest on one shared runtime apply each case to it first
+// (apply), so every other case runs unenrolled and in gVisor, and controller-resume keeps the pods'
+// own service_account (none in these settings) where the two controller goldens pin the account
+// their pods run as when the key is set.
 type manifestCase struct {
 	spec              runtime.SpawnSpec
 	agentSecrets      *AgentSecrets
