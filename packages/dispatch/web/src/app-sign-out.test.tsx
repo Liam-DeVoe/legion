@@ -505,6 +505,7 @@ test("a sign-out forgets the command bar's runs and stops reading their streams"
     id: "r-1",
     issues: [],
     level: "standard",
+    line: null,
     mode: "ask",
     state: "queued",
     stop_reason: null,

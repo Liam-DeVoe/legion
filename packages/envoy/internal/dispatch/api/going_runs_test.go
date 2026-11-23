@@ -188,6 +188,75 @@ func TestGoingRunsWordsFilter(t *testing.T) {
 	}
 }
 
+// The line on top a run was started from is written by the route that starts it and read back
+// with the run: the start's answer, GET /api/v1/going/runs/{id} and History each carry it. A run
+// started with no line (a follow-up typed in the box, the side panel, a Continue) carries null,
+// and a line that is none of ask, do and file starts nothing.
+func TestGoingRunsRecordTheLineOnTopTheyWereStartedFrom(t *testing.T) {
+	rig := newGoingRunsRig(t)
+	lineOf := func(run goingRun) string {
+		if run.Line == nil {
+			return "null"
+		}
+		return *run.Line
+	}
+	// runs is each run started, by id, with the line it was started from ("null" for none).
+	runs := map[string]string{}
+	start := func(t *testing.T, want string, body map[string]any) {
+		t.Helper()
+		response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/going/runs", body, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("POST /api/v1/going/runs %v answered %d %s", body, response.Code, response.Body.String())
+		}
+		started := decodeBody[goingRun](t, response)
+		if got := lineOf(started); got != want {
+			t.Errorf("the start of %q answers the line %s, want %s", body["words"], got, want)
+		}
+		runs[started.ID] = want
+	}
+	start(t, goingLineDo, map[string]any{"words": "close DEMO-12", "line": goingLineDo})
+	start(t, goingLineAsk, map[string]any{"words": "what moved on DEMO-12?", "line": goingLineAsk})
+	start(t, goingLineFile, map[string]any{"words": "the export fails", "kind": agentwire.RunNewIssue, "line": goingLineFile})
+	start(t, "null", map[string]any{"words": "and its comments"})
+	for id, want := range runs {
+		response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/going/runs/"+id, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET the run %s answered %d %s", id, response.Code, response.Body.String())
+		}
+		if got := lineOf(decodeBody[goingRun](t, response)); got != want {
+			t.Errorf("GET the run %s reads the line %s, want %s", id, got, want)
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("decode the run %s: %v", id, err)
+		}
+		if line, named := raw["line"]; !named || (want == "null" && string(line) != "null") {
+			t.Errorf("the run %s answers line as %s (named %v), want it named, null for a run started from no line", id, line, named)
+		}
+	}
+	page := rig.list(t, "alice", "")
+	listed := 0
+	for _, conversation := range page.Rows {
+		for _, run := range conversation.Runs {
+			listed++
+			if got := lineOf(run); got != runs[run.ID] {
+				t.Errorf("History reads the run %s's line as %s, want %s", run.ID, got, runs[run.ID])
+			}
+		}
+	}
+	if listed != len(runs) {
+		t.Errorf("History lists %d runs, want the %d started", listed, len(runs))
+	}
+
+	response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/going/runs", map[string]any{"words": "close DEMO-12", "line": "maybe"}, "alice")
+	if response.Code != http.StatusBadRequest || decodeBody[refusalAnswer](t, response).Code != codeGoingInput {
+		t.Errorf("a run on the line maybe answered %d %s, want 400 %s", response.Code, response.Body.String(), codeGoingInput)
+	}
+	if got := rig.list(t, "alice", ""); got.Total != len(runs) {
+		t.Errorf("after the refused start alice has %d conversations, want %d: it started nothing", got.Total, len(runs))
+	}
+}
+
 // A conversation whose newest run is older than seven days is not read, even before the sweep
 // deletes it; one inside them is.
 func TestGoingRunsOlderThanSevenDaysAreNotReturned(t *testing.T) {

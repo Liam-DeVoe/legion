@@ -69,6 +69,7 @@ test("a row names the plan as its card does and its conversation by its first qu
     id: "run-1",
     issues: [],
     level: "standard",
+    line: null,
     mode: "ask",
     state: "done",
     stop_reason: null,

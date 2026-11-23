@@ -179,8 +179,10 @@ func (g *goingRunReaders) admit(run, login string) (func(), string) {
 // (empty for a run of the words, new_issue for the line File as a new issue, a Fast run that files
 // the words as one new issue at once: going_new_issue.go), the level (Fast, Standard or Deep;
 // Standard where it is empty, and Fast alone for a new-issue run), the mode (the person's setting
-// where it is empty), and the run the new one follows (empty for the first run of a
-// conversation).
+// where it is empty), the run the new one follows (empty for the first run of a conversation),
+// and the line on top the person pressed Enter on: ask, do or file, as the bar read it at the
+// moment of the key, or empty for a run not started from the line (a follow-up typed in the box,
+// the side panel's box, a Continue).
 type goingRunInput struct {
 	Words     string             `json:"words" required:"true"`
 	Context   *goingContextInput `json:"context"`
@@ -188,6 +190,7 @@ type goingRunInput struct {
 	Level     string             `json:"level" enum:"fast,standard,deep"`
 	Mode      string             `json:"mode" enum:"ask,auto_review"`
 	Continues string             `json:"continues"`
+	Line      string             `json:"line" enum:"ask,do,file"`
 }
 
 // createGoingRun is POST /api/v1/going/runs: the caller starts a run. The run's grant is the
@@ -259,7 +262,13 @@ func (s *server) createGoingRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("mode %q is neither ask nor auto_review", mode))
 		return
 	}
-	run := goingNewRun{id: uuid.NewString(), login: grant.login, words: words, chip: chip, kind: input.Kind, level: level, mode: mode}
+	switch input.Line {
+	case "", goingLineAsk, goingLineDo, goingLineFile:
+	default:
+		writeError(w, codeGoingInput, http.StatusBadRequest, fmt.Sprintf("line %q is none of ask, do and file: leave it out for a run not started from the line on top", input.Line))
+		return
+	}
+	run := goingNewRun{id: uuid.NewString(), login: grant.login, words: words, chip: chip, kind: input.Kind, level: level, mode: mode, line: input.Line}
 	run.conversation = run.id
 	var follows string
 	if continues := strings.TrimSpace(input.Continues); continues != "" {

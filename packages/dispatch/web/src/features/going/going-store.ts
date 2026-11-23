@@ -4,6 +4,7 @@ import { api, apiErrorMessage, REQUEST_DEADLINE_MS, type WriteBounds } from "../
 import type {
   GoingContextInput,
   GoingConversation,
+  GoingLine,
   GoingRun,
   GoingUndoLine,
 } from "../../api/types";
@@ -86,6 +87,16 @@ export interface StartingRun {
 export interface QueuedWords {
   readonly run: string;
   readonly words: string;
+}
+
+/** How a run starts besides its words: the run it follows up, its level, and the line on top of
+ *  the bar it is started from, the one on the screen at the moment of the person's Enter, which
+ *  the run records as its `line`; none for a run started anywhere else (the box under a
+ *  conversation, the side panel's box, a Continue, a Retry). */
+export interface RunStart {
+  readonly continues?: string;
+  readonly level?: GoingRun["level"];
+  readonly line?: GoingLine;
 }
 
 /** Everything the store holds. */
@@ -433,15 +444,15 @@ function entryOf(record: GoingRun, startedHere: boolean, since?: number): RunEnt
  * up the open conversation's newest run where that run has ended (`POST /api/v1/going/runs` with
  * `continues`), and starts a conversation of its own otherwise. While the newest run works, the
  * words start no run beside it: they wait for it (`queued`, after any words that wait already),
- * and `useSendQueued` sends them once it no longer works. The run takes `level`, else the level
- * the bar is set to. The words show as the question from the moment of the call (`starting`).
+ * and `useSendQueued` sends them once it no longer works. The run takes `start.level`, else the
+ * level the bar is set to, and records `start.line`, the line on top it was started from. The
+ * words show as the question from the moment of the call (`starting`).
  */
 export async function startRun(
   words: string,
   context: GoingContextInput,
   login: string | undefined,
-  continues?: string,
-  level?: GoingRun["level"]
+  { continues, level, line }: RunStart = {}
 ): Promise<boolean> {
   const newest = newestRun();
   if (continues === undefined && newest !== undefined && shownState(newest) === "working") {
@@ -463,6 +474,7 @@ export async function startRun(
         level: level ?? state.level,
         words,
         ...(follows === undefined ? {} : { continues: follows }),
+        ...(line === undefined ? {} : { line }),
       },
       goingBounds(login)
     );
@@ -549,7 +561,7 @@ export function continueRun(
   if (run === undefined || runNext(shownState(run), "continue").send !== "continue") {
     return Promise.resolve(false);
   }
-  return startRun("Continue", context, login, id, level ?? run.record.level);
+  return startRun("Continue", context, login, { continues: id, level: level ?? run.record.level });
 }
 
 /** Holds what the Undo of `run` answered (`GoingState.undone`). */

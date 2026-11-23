@@ -35,6 +35,7 @@ function run(id: string, words: string, at: number, extra: Partial<GoingRun> = {
     id,
     issues: [],
     level: "standard",
+    line: null,
     mode: "ask",
     state: "done",
     stop_reason: null,

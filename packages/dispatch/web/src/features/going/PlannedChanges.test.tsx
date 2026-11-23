@@ -82,6 +82,7 @@ const created: GoingRun = {
   id: "run-1",
   issues: [],
   level: "standard",
+  line: null,
   mode: "ask",
   state: "queued",
   stop_reason: null,

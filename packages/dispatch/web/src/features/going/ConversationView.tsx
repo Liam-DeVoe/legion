@@ -57,6 +57,10 @@ const STATE_TEXT: Readonly<Record<RunState, string>> = {
 /** How near the foot of the conversation, in pixels, the person's scroll still follows it. */
 const FOOT_SLACK = 24;
 
+/** The line in place of "Done" under a run the person started from the line Do that ended done
+ *  with no plan (`changedNothing`): whatever its answer says, nothing was changed. */
+const NOTHING_CHANGED = "Nothing changed: no plan was proposed.";
+
 /** The states of a plan frame once the plan's rows were sent to run: approved, running, or run. */
 const PLAN_SENT: Readonly<Record<string, true>> = { approved: true, done: true, running: true };
 
@@ -100,6 +104,19 @@ function thinking(run: RunEntry): boolean {
   );
 }
 
+/** Whether `run` was started from the line Do, as its record says, and ended done, as its end
+ *  frame says, with no plan and no question for its person: it changed nothing, whatever its
+ *  answer reads as. A run whose frames have not come yet is not known to have had no plan. */
+function changedNothing(run: RunEntry): boolean {
+  const frames = run.frames;
+  return (
+    run.record.line === "do" &&
+    frames.end?.state === "done" &&
+    frames.plan === undefined &&
+    !frames.waitsForPerson
+  );
+}
+
 /**
  * How long `run` worked, in milliseconds, for the line its steps fold into: the working time its
  * record says, where the record was read once the run no longer worked (History lists it so, and
@@ -131,23 +148,23 @@ function earliest(read: number | undefined, record: GoingRun): number | undefine
 }
 
 /**
- * What stands under an answer (design v2, state 4), small and grey: "Done", or "Waits for your
- * answer" where the answer asks the person a question (R8); and on hover or focus, Copy, which
- * copies the answer's text, and Retry, a new run of the same words.
+ * What stands under an answer (design v2, state 4), small and grey: `status` ("Done", "Waits for
+ * your answer" where the answer asks the person a question (R8), or that nothing changed); and on
+ * hover or focus, Copy, which copies the answer's text, and Retry, a new run of the same words.
  */
 function AnswerFoot({
   answer,
-  asks,
   onRetry,
+  status,
 }: {
   readonly answer: string;
-  readonly asks: boolean;
   readonly onRetry: () => void;
+  readonly status: string;
 }): ReactNode {
   return (
     <div className="group flex flex-wrap items-center gap-1" data-testid="going-run-foot">
       <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-run-state" role="status">
-        {asks ? "Waits for your answer" : "Done"}
+        {status}
       </p>
       <div className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100">
         <CopyButton label="Copy the answer" value={answer} what="answer" />
@@ -273,9 +290,10 @@ interface WholeBlock {
 /** One run of the conversation: the person's words, its steps, the answer with its items as
  *  chips and blocks, its plan - as the card of the newest run (the one `answering` is given for),
  *  folded to one line in an older one - how it ended, with Continue on a bound and Try again on a
- *  failure, and Undo of a run with no plan that changed something. `asks` is whether its answer
- *  asks the person a question and waits for their answer; `onShowAll` opens one of its tables
- *  whole over the bar or the panel. */
+ *  failure, "Nothing changed" in place of "Done" on a run of the line Do that proposed no plan,
+ *  and Undo of a run with no plan that changed something. `asks` is whether its answer asks the
+ *  person a question and waits for their answer; `onShowAll` opens one of its tables whole over
+ *  the bar or the panel. */
 function RunTurn({
   answering,
   asks,
@@ -356,7 +374,11 @@ function RunTurn({
       ))}
       <PlanCard answering={plan} appliedAt={earliest(run.endedAt, run.record)} folded={!newest} />
       {state === "done" && answer !== undefined ? (
-        <AnswerFoot answer={answer} asks={asks} onRetry={() => onRetry(run.record.words)} />
+        <AnswerFoot
+          answer={answer}
+          onRetry={() => onRetry(run.record.words)}
+          status={asks ? "Waits for your answer" : changedNothing(run) ? NOTHING_CHANGED : "Done"}
+        />
       ) : ended !== undefined ? (
         <RunEnd
           actions={newest}
@@ -372,7 +394,7 @@ function RunTurn({
           data-testid="going-run-state"
           role="status"
         >
-          {STATE_TEXT[state]}
+          {state === "done" && changedNothing(run) ? NOTHING_CHANGED : STATE_TEXT[state]}
         </p>
       )}
       {run.frames.plan === undefined && runEnded(state) && (run.record.issues ?? []).length > 0 ? (
@@ -473,7 +495,8 @@ function useFollow(output: number): {
  * timer until its first step or answer comes, its steps live as they arrive (`StepSection`),
  * "Reconnecting…" while its stream is dropped, its answer with each issue it names as a chip, its
  * blocks with their captions, its plan's card - an old turn's folded to one line - and how each
- * ended, with "Done" or "Waits for your answer" and Copy and Retry under an answer, Continue at a
+ * ended, with "Done", "Waits for your answer" or, for a run of the line Do that proposed no plan,
+ * "Nothing changed: no plan was proposed." and Copy and Retry under an answer, Continue at a
  * bound and Try again after a failure; then the question of a run whose start is out, and the
  * words that wait for the newest run. A table's "Show all" opens it whole over the bar or the
  * panel that draws the conversation, and its Back or Esc closes it.

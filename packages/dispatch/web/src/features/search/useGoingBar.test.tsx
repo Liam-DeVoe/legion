@@ -233,7 +233,7 @@ test("with no deciding model the line reads Ask, no dot pulses, and nothing says
   }
 });
 
-test("Enter before Jev answers runs Ask: a run of the words of no kind", async () => {
+test("Enter before Jev answers runs Ask: a run of the words of no kind, which records the line ask", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();
   try {
@@ -241,8 +241,52 @@ test("Enter before Jev answers runs Ask: a run of the words of no kind", async (
     await user.keyboard("{Enter}");
     await waitFor(() => expect(createGoingRun).toHaveBeenCalledTimes(1));
     const [input] = createGoingRun.mock.calls[0] ?? [];
-    expect(input).toMatchObject({ level: "standard", words: "who looks after the astrolabe" });
+    expect(input).toMatchObject({
+      level: "standard",
+      line: "ask",
+      words: "who looks after the astrolabe",
+    });
     expect(input).not.toHaveProperty("kind");
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("Enter on the line Do runs the words recording the line do, the line on the screen at the moment of the key", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await typeAndPause(user, "mark the astrolabe started");
+    decide("do", "dispatch_issue_update");
+    await waitFor(() => expect(lineWords()).toHaveTextContent(/^Do/));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(createGoingRun).toHaveBeenCalledTimes(1));
+    const [input] = createGoingRun.mock.calls[0] ?? [];
+    expect(input).toMatchObject({ line: "do", words: "mark the astrolabe started" });
+    expect(input).not.toHaveProperty("kind");
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("Enter on the second row, Ask, under Do runs the words recording the line ask", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await typeAndPause(user, "mark the astrolabe started");
+    decide("do", "dispatch_issue_update");
+    await waitFor(() => expect(lineWords()).toHaveTextContent(/^Do/));
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveAttribute(
+      "aria-activedescendant",
+      "search-option-line-ask"
+    );
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(createGoingRun).toHaveBeenCalledTimes(1));
+    expect(createGoingRun.mock.calls[0]?.[0]).toMatchObject({
+      line: "ask",
+      words: "mark the astrolabe started",
+    });
   } finally {
     bar.unmount();
   }
@@ -267,6 +311,7 @@ function newIssueRun(id: string): GoingRun {
     id,
     issues: [],
     level: "fast",
+    line: "file",
     mode: "ask",
     state: "queued",
     stop_reason: null,
@@ -315,6 +360,7 @@ test("Enter on File as a new issue files the words: the line reads Filing, then 
     expect(input).toEqual({
       context: { block: "", issue: "", path: "/projects/LEGION/issues", project: "LEGION" },
       kind: "new_issue",
+      line: "file",
       words: FILE_WORDS,
     });
 
@@ -379,6 +425,7 @@ test("a filing that files nothing stays in the bar in words, with Try again, whi
     await waitFor(() => expect(createGoingRun).toHaveBeenCalledTimes(2));
     expect(createGoingRun.mock.calls[1]?.[0]).toMatchObject({
       kind: "new_issue",
+      line: "file",
       words: FILE_WORDS,
     });
   } finally {

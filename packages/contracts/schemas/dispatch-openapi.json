@@ -5132,7 +5132,7 @@
     },
     "/api/v1/going/runs": {
       "post": {
-        "description": "Start a command-bar run {words, context?, kind?, level?, mode?, continues?}: the agent works it in the background, as the caller, until it ends, stops at a bound of its level, or waits for its person to answer a plan. words is required (400 GOING_INPUT when blank) and at most 2000 characters (400 CAP_EXCEEDED); context is the bar's chip {path, project, issue, block}; kind new_issue is the line File as a new issue: a Fast run that files the words as one new issue, its title, project, parent, priority and spec written by the agent from the words and the chip, with the label and the route the deployment names for a new issue, whose create this request approves, so it waits for nobody, and whose end names the issue and offers Undo, or, where nothing was filed, ends failed saying why (400 GOING_INPUT for any other kind, and for a level but fast); level is fast, standard (the default) or deep, which set its budgets of model calls, working time and output tokens; mode is ask or auto_review, the caller's own setting (GET /api/v1/me/going/settings) where it is absent; continues names the run it follows up, which must be the caller's own and listed in History (404 GOING_RUN_NOT_FOUND), the newest run of its conversation (409 GOING_RUN_NOT_LATEST) and ended (409 GOING_RUN_NOT_ENDED), and the new run joins its conversation. The run acts with this request's own credential, which must be a person's own sign-in or personal agent token: a broker-issued token, the deployment's shared token and a service-account token are refused 403 RUN_NEEDS_PERSON_CREDENTIAL, with nothing written. One person may have at most 20 runs queued (429 GOING_RUN_QUEUE_FULL). Answers 201 with the run, queued, as GET /api/v1/going/runs/{id} answers it.",
+        "description": "Start a command-bar run {words, context?, kind?, level?, mode?, continues?, line?}: the agent works it in the background, as the caller, until it ends, stops at a bound of its level, or waits for its person to answer a plan. words is required (400 GOING_INPUT when blank) and at most 2000 characters (400 CAP_EXCEEDED); context is the bar's chip {path, project, issue, block}; kind new_issue is the line File as a new issue: a Fast run that files the words as one new issue, its title, project, parent, priority and spec written by the agent from the words and the chip, with the label and the route the deployment names for a new issue, whose create this request approves, so it waits for nobody, and whose end names the issue and offers Undo, or, where nothing was filed, ends failed saying why (400 GOING_INPUT for any other kind, and for a level but fast); level is fast, standard (the default) or deep, which set its budgets of model calls, working time and output tokens; mode is ask or auto_review, the caller's own setting (GET /api/v1/me/going/settings) where it is absent; continues names the run it follows up, which must be the caller's own and listed in History (404 GOING_RUN_NOT_FOUND), the newest run of its conversation (409 GOING_RUN_NOT_LATEST) and ended (409 GOING_RUN_NOT_ENDED), and the new run joins its conversation; line is the line on top the person pressed Enter on to start the run, ask, do or file (400 GOING_INPUT for any other), which the run records, absent for a run not started from the line. The run acts with this request's own credential, which must be a person's own sign-in or personal agent token: a broker-issued token, the deployment's shared token and a service-account token are refused 403 RUN_NEEDS_PERSON_CREDENTIAL, with nothing written. One person may have at most 20 runs queued (429 GOING_RUN_QUEUE_FULL). Answers 201 with the run, queued, as GET /api/v1/going/runs/{id} answers it.",
         "operationId": "postApiV1GoingRuns",
         "parameters": [
           {
@@ -5182,7 +5182,7 @@
     },
     "/api/v1/going/runs/{id}": {
       "get": {
-        "description": "The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND.",
+        "description": "The caller's own command-bar run: {id, conversation, continues, words, context, level, mode, line (ask, do or file: the line on top the run was started from; null for a run not started from the line), state (queued, working, waiting, done, stopped or failed), stop_reason, issues, used {calls, working_ms, tokens}, created_at, finished_at}. A run of anyone else's, one the record does not hold, one whose conversation History no longer lists and an id that is no uuid are one answer, 404 GOING_RUN_NOT_FOUND.",
         "operationId": "getApiV1GoingRunsById",
         "parameters": [
           {
@@ -22447,6 +22447,18 @@
             ],
             "type": "string"
           },
+          "line": {
+            "enum": [
+              "ask",
+              "do",
+              "file",
+              null
+            ],
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "mode": {
             "enum": [
               "ask",
@@ -22486,6 +22498,7 @@
           "context",
           "level",
           "mode",
+          "line",
           "state",
           "stop_reason",
           "issues",
@@ -22521,6 +22534,14 @@
               "fast",
               "standard",
               "deep"
+            ],
+            "type": "string"
+          },
+          "line": {
+            "enum": [
+              "ask",
+              "do",
+              "file"
             ],
             "type": "string"
           },

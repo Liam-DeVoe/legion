@@ -36,6 +36,7 @@ function record(id: string, conversation: string, words: string): GoingRun {
     id,
     issues: [],
     level: "standard",
+    line: null,
     mode: "ask",
     state: "queued",
     stop_reason: null,
@@ -94,6 +95,34 @@ test("Continue follows a bound-stopped run up at its own level, and Continue in 
     // A run that a bound did not stop offers no Continue.
     runs.send("r-3", "end", ENDED_DONE);
     expect(await continueRun("r-3", CONTEXT, "alice")).toBe(false);
+  } finally {
+    runs.restore();
+  }
+});
+
+// A run started from the line on top records the line pressed; a run started anywhere else - a
+// follow-up typed in the box, a Continue - records none.
+test("a start sends the line on top it was pressed on, and a follow-up or a Continue sends none", async () => {
+  const runs = answerRuns(
+    { ...record("r-1", "c-1", "mark CORE-1 started"), line: "do" },
+    record("r-2", "c-1", "and CORE-2"),
+    record("r-3", "c-1", "Continue")
+  );
+  try {
+    await startRun("mark CORE-1 started", CONTEXT, "alice", { line: "do" });
+    expect(runs.start.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ line: "do", words: "mark CORE-1 started" })
+    );
+    expect(goingState().runs.get("r-1")?.record.line).toBe("do");
+    runs.send("r-1", "end", ENDED_DONE);
+    await startRun("and CORE-2", CONTEXT, "alice");
+    expect(runs.start.mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ continues: "r-1", words: "and CORE-2" })
+    );
+    expect(runs.start.mock.calls[1]?.[0]).not.toHaveProperty("line");
+    runs.send("r-2", "end", { offers: ["continue"], reason: "TIME_BUDGET: …", state: "stopped" });
+    expect(await continueRun("r-2", CONTEXT, "alice")).toBe(true);
+    expect(runs.start.mock.calls[2]?.[0]).not.toHaveProperty("line");
   } finally {
     runs.restore();
   }

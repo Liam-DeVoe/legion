@@ -40,7 +40,7 @@ const goingRunsKept = 7 * 24 * time.Hour
 
 // goingRunColumns is the going_runs select list scanGoingRun reads, in scan order.
 const goingRunColumns = `r.id::text, coalesce(r.conversation_id, r.id)::text, r.continues::text, r.words, r.context,
-	coalesce(r.level, 'standard'), coalesce(r.mode, 'ask'), r.state, r.stop_reason, r.issues, r.budget_used,
+	coalesce(r.level, 'standard'), coalesce(r.mode, 'ask'), r.line, r.state, r.stop_reason, r.issues, r.budget_used,
 	r.created_at, r.finished_at`
 
 // goingContext is the item the bar's context chip names when the person asked: the page's path,
@@ -102,9 +102,10 @@ type goingRunUsed struct {
 
 // goingRun is one run as its person reads it: its id, its conversation (the id of the
 // conversation's first run) and the run it continues (null for a first run), the words and the
-// context chip, its level and mode, its state and why it stopped (null where nothing stopped it),
-// every issue key a landed request of it touched, what it spent, when it started, and when it
-// ended (null while it is queued, works or waits).
+// context chip, its level and mode, the line on top the person pressed Enter on to start it (ask,
+// do or file; null for a run not started from the line), its state and why it stopped (null where
+// nothing stopped it), every issue key a landed request of it touched, what it spent, when it
+// started, and when it ended (null while it is queued, works or waits).
 type goingRun struct {
 	ID           string        `json:"id"`
 	Conversation string        `json:"conversation"`
@@ -113,6 +114,7 @@ type goingRun struct {
 	Context      *goingContext `json:"context"`
 	Level        string        `json:"level" enum:"fast,standard,deep"`
 	Mode         string        `json:"mode" enum:"ask,auto_review"`
+	Line         *string       `json:"line" enum:"ask,do,file"`
 	State        string        `json:"state" enum:"queued,working,waiting,done,stopped,failed"`
 	StopReason   *string       `json:"stop_reason"`
 	Issues       []string      `json:"issues"`
@@ -156,12 +158,13 @@ func goingConversationListed(n int) string {
 
 // goingNewRun is a run as its start writes it: its id, its person's canonical login, the words
 // and the chip, its kind (agentwire.RunNewIssue, or "" for a run of the words), its level and
-// mode, the conversation it belongs to (its own id for a first run) and the run it continues (nil
-// for a first run).
+// mode, the line on top it was started from ("" for none), the conversation it belongs to (its
+// own id for a first run) and the run it continues (nil for a first run).
 type goingNewRun struct {
 	id, login, words  string
 	chip              *goingContext
 	kind, level, mode string
+	line              string
 	conversation      string
 	continues         *string
 }
@@ -174,10 +177,10 @@ func insertGoingRun(ctx context.Context, tx pgx.Tx, run goingNewRun) (goingRun, 
 		return goingRun{}, err
 	}
 	written, err := scanGoingRun(tx.QueryRow(ctx, `
-		insert into going_runs as r (id, author_login, words, context, conversation_id, continues, kind, level, mode, state, shape)
-		values ($1::uuid, $2, $3, $4::jsonb, $5::uuid, $6::uuid, nullif($7, ''), $8, $9, 'queued', $10)
+		insert into going_runs as r (id, author_login, words, context, conversation_id, continues, kind, level, mode, line, state, shape)
+		values ($1::uuid, $2, $3, $4::jsonb, $5::uuid, $6::uuid, nullif($7, ''), $8, $9, nullif($10, ''), 'queued', $11)
 		returning `+goingRunColumns,
-		run.id, run.login, run.words, chip, run.conversation, run.continues, run.kind, run.level, run.mode, goingRunShape))
+		run.id, run.login, run.words, chip, run.conversation, run.continues, run.kind, run.level, run.mode, run.line, goingRunShape))
 	if err != nil {
 		return goingRun{}, fmt.Errorf("record the run: %w", err)
 	}
@@ -284,7 +287,7 @@ func scanGoingRun(row pgx.Row, lead ...any) (goingRun, error) {
 	var run goingRun
 	var chip, used []byte
 	targets := append(lead, &run.ID, &run.Conversation, &run.Continues, &run.Words, &chip, &run.Level, &run.Mode,
-		&run.State, &run.StopReason, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt)
+		&run.Line, &run.State, &run.StopReason, &run.Issues, &used, &run.CreatedAt, &run.FinishedAt)
 	if err := row.Scan(targets...); err != nil {
 		return goingRun{}, err
 	}

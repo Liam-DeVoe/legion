@@ -12,7 +12,7 @@ import {
 import { useNavigate } from "react-router-dom";
 
 import { goingConversationsQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
-import type { Project, SearchResult, SearchResultKind } from "../../api/types";
+import type { GoingLine, Project, SearchResult, SearchResultKind } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -763,10 +763,10 @@ function PaletteDialog({
     words: searchText,
   });
   const project = scope.context.project ?? "";
-  // Enter on a line of Ask or Do: a run of the agent on the words, which the bar stays open to
-  // show as the conversation.
-  const askWords = (words: string) => {
-    if (asking.enter(words)) {
+  // Enter on a line of Ask or Do: a run of the agent on the words, which records the line pressed
+  // and which the bar stays open to show as the conversation.
+  const askWords = (words: string, pressed: GoingLine) => {
+    if (asking.enter(words, pressed)) {
       setQuery("");
       setActive({ hits: "", id: null, left: false });
     }
@@ -785,7 +785,7 @@ function PaletteDialog({
     kind: "line",
     label: "Ask",
     line: "ask",
-    select: () => askWords(searchText),
+    select: () => askWords(searchText, "ask"),
     words: searchText,
   };
   let lineRows: readonly LineRow[] = [];
@@ -824,12 +824,14 @@ function PaletteDialog({
             ? "Do"
             : "Ask",
       line,
-      // Enter acts on the label on the screen at the moment of the key, never on a later one.
+      // Enter acts on the label on the screen at the moment of the key, never on a later one, and
+      // the run records that line.
       select: () => {
-        if (enterLine() === "file") {
+        const pressed = enterLine();
+        if (pressed === "file") {
           fileWords(searchText, project);
         } else {
-          askWords(searchText);
+          askWords(searchText, pressed);
         }
       },
       words: searchText,

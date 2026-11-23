@@ -11,11 +11,11 @@ import { buildIssuePath } from "../refs/routes";
 
 /**
  * Enter on the line "File as a new issue" (spec R9, design v3, state 13): a new-issue run of the
- * person's words (`POST /api/v1/going/runs` with `kind` `new_issue`), which files them at once and
- * waits for nobody. While it runs, the bar's first row reads "Filing in DEMO…"; once its end names
- * the issue it filed, the bar closes and the notice reads "Filed DEMO-46 · Open · Undo" for
- * `FILED_NOTICE_MS`, its Undo the run's own (R6). A run that ends without an issue, or that never
- * starts, stays in the bar as a failure in words, with Try again.
+ * person's words (`POST /api/v1/going/runs` with `kind` `new_issue`, recording the line `file`),
+ * which files them at once and waits for nobody. While it runs, the bar's first row reads "Filing
+ * in DEMO…"; once its end names the issue it filed, the bar closes and the notice reads "Filed
+ * DEMO-46 · Open · Undo" for `FILED_NOTICE_MS`, its Undo the run's own (R6). A run that ends
+ * without an issue, or that never starts, stays in the bar as a failure in words, with Try again.
  *
  * The filing is held outside the bar, so it goes on, and its notice still comes, when the person
  * closes the bar before it ends. The run is a run of History like any other, so History lists it
@@ -112,7 +112,10 @@ export async function fileNewIssue({
   };
   let frames = STARTED_RUN;
   try {
-    const run = await api.createGoingRun({ context, kind: "new_issue", words }, goingBounds(login));
+    const run = await api.createGoingRun(
+      { context, kind: "new_issue", line: "file", words },
+      goingBounds(login)
+    );
     await api.streamGoingRunEvents(
       run.id,
       (name, data) => {

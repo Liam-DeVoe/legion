@@ -1699,6 +1699,7 @@ function runRecord(id: string, words: string): GoingRun {
     id,
     issues: [],
     level: "standard",
+    line: null,
     mode: "ask",
     state: "queued",
     stop_reason: null,

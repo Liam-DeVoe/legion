@@ -21,10 +21,11 @@ import { useOpenPlan } from "./usePlan";
 // plan, which its row's tick shows; the model's prose beside its calls as their header, never as
 // the answer; the run's timer on the newest line; and "Reconnecting…" while its stream is dropped.
 // The answer (state 4): the steps folded above it into "Worked for…", each issue it names as a
-// chip, the line that says results were withheld from the model, and under it "Done" or "Waits
-// for your answer" with Copy and Retry. Around them (states 2 and 3): the question as a bubble,
-// "Thinking…" with its seconds until the first step or answer, from the moment of Enter, and the
-// words sent while the run works, waiting at the foot with × to drop them.
+// chip, the line that says results were withheld from the model, and under it "Done", "Waits for
+// your answer", or, for a run of the line Do that ended done with no plan, "Nothing changed: no
+// plan was proposed.", with Copy and Retry. Around them (states 2 and 3): the question as a
+// bubble, "Thinking…" with its seconds until the first step or answer, from the moment of Enter,
+// and the words sent while the run works, waiting at the foot with × to drop them.
 
 function record(
   state: GoingRun["state"],
@@ -41,6 +42,7 @@ function record(
     id: "r-1",
     issues: [],
     level: "standard",
+    line: null,
     mode: "ask",
     state,
     stop_reason: null,
@@ -871,6 +873,126 @@ test("an answer whose frame says it waits for the person ends with Waits for you
     );
   } finally {
     restore();
+  }
+});
+
+const NOTHING_CHANGED = "Nothing changed: no plan was proposed.";
+
+/** An answer, and the end of a run done with it. */
+const ANSWERED_DONE: readonly (readonly [string, unknown])[] = [
+  ["reply", { labels: [], text: "DEMO-15 is marked as started.", tools: [] }],
+  ["end", { offers: [], reason: "", state: "done" }],
+];
+
+/** What the line under the run's answer says. */
+async function footWords(): Promise<string | null> {
+  const foot = await screen.findByTestId("going-run-foot");
+  return within(foot).getByTestId("going-run-state").textContent;
+}
+
+test("a run of the line Do that ended done with no plan says nothing changed in place of Done, read from its stored record", async () => {
+  const restore = await showRun("done", ANSWERED_DONE, { run: { line: "do" } });
+  try {
+    expect(await footWords()).toBe(NOTHING_CHANGED);
+    expect(screen.getByTestId("going-run-answer")).toHaveTextContent(
+      "DEMO-15 is marked as started."
+    );
+    expect(within(screen.getByTestId("going-run")).queryByText("Done")).toBeNull();
+  } finally {
+    restore();
+  }
+});
+
+test("a run started here from the line Do sends the line, and says nothing changed once its frames end it done with no plan", async () => {
+  let send: ((name: string, data: unknown) => void) | undefined;
+  const start = spyOn(api, "createGoingRun").mockResolvedValue(
+    record("working", 1000, { line: "do", words: "mark DEMO-15 started" })
+  );
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation((_id, onFrame) => {
+    send = onFrame;
+    return new Promise<void>(() => {});
+  });
+  try {
+    renderWithQueries(<Conversation />);
+    await act(() => startRun("mark DEMO-15 started", { path: "/" }, "alice", { line: "do" }));
+    expect(start.mock.calls[0]?.[0]).toMatchObject({ line: "do", words: "mark DEMO-15 started" });
+    act(() => send?.("reply", { labels: [], text: "DEMO-15 is marked as started.", tools: [] }));
+    expect(screen.queryByText(NOTHING_CHANGED)).toBeNull();
+    act(() => send?.("end", { offers: [], reason: "", state: "done" }));
+    expect(await footWords()).toBe(NOTHING_CHANGED);
+  } finally {
+    start.mockRestore();
+    stream.mockRestore();
+  }
+});
+
+test("a run of the line Ask that ended done with no plan ends Done, as before", async () => {
+  const restore = await showRun("done", ANSWERED_DONE, { run: { line: "ask" } });
+  try {
+    expect(await footWords()).toBe("Done");
+  } finally {
+    restore();
+  }
+});
+
+test("a run started from no line that ended done with no plan ends Done", async () => {
+  const restore = await showRun("done", ANSWERED_DONE);
+  try {
+    expect(await footWords()).toBe("Done");
+  } finally {
+    restore();
+  }
+});
+
+test("a run of the line Do whose answer waits for the person ends Waits for your answer, not that nothing changed", async () => {
+  const restore = await showRun(
+    "done",
+    [
+      [
+        "reply",
+        {
+          labels: [],
+          text: "Which changes hand it over: a label or a status",
+          tools: [],
+          waits_for_person: true,
+        },
+      ],
+      ["end", { offers: [], reason: "", state: "done" }],
+    ],
+    { run: { line: "do" } }
+  );
+  try {
+    expect(await footWords()).toBe("Waits for your answer");
+  } finally {
+    restore();
+  }
+});
+
+test("a run of the line Do that proposed a plan ends Done, not that nothing changed", async () => {
+  const read = spyOn(api, "goingPlan").mockImplementation(async () => ({
+    mode: "ask",
+    plan: 1,
+    rows: [],
+    run: "r-1",
+    state: "rejected",
+    summary: "Mark DEMO-15 started.",
+    version: "v1",
+  }));
+  const restore = await showRun(
+    "done",
+    [
+      ["plan", { plan: 1, state: "waiting" }],
+      ["plan", { plan: 1, state: "rejected" }],
+      ...ANSWERED_DONE,
+    ],
+    { run: { line: "do" } }
+  );
+  try {
+    expect(await footWords()).toBe("Done");
+    expect(screen.queryByText(NOTHING_CHANGED)).toBeNull();
+  } finally {
+    restore();
+    read.mockRestore();
   }
 });
 
