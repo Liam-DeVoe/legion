@@ -365,6 +365,17 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     for (const run of frame.items.runs?.upsert ?? []) {
       void queryClient.invalidateQueries({ exact: true, queryKey: ["delivery", "run", run.id] });
     }
+    // So may a project-timeline run row (`projectDeployRunQuery`'s key, by the row's repository).
+    const { view } = sub;
+    if (view.kind !== "project-timeline") return;
+    for (const row of frame.items.items?.upsert ?? []) {
+      if ("kind" in row && (row.kind === "deploy" || row.kind === "failed_run")) {
+        void queryClient.invalidateQueries({
+          exact: true,
+          queryKey: ["project-deploy-run", view.project, row.repo, row.id],
+        });
+      }
+    }
   };
 
   const onAgent = (frame: LiveAgentFrame) => {

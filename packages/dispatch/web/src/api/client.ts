@@ -46,6 +46,7 @@ import type {
   IssueAskThreadRow,
   IssueReferencesAnswer,
   NewIssueSettings,
+  ProjectDeployRun,
   TargetCandidate,
   UserIssueState,
 } from "./types";
@@ -1742,6 +1743,19 @@ export class DispatchApiClient {
   /** One deploy-repository run with every job it ran, for the drill-down's job lists. */
   getDeliveryRun(id: number) {
     return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
+  }
+
+  /** One run of a project's deploy source with every job it ran, and its record: the deploy row
+   *  written for it (`deploy`, null where none was) and every failure that blames that row
+   *  (`failures`), for the drill-down. `repo` is the repository the run is in, which the project
+   *  timeline's deploy and failed_run rows name; a run that counts for no project with this key
+   *  is `404 NOT_FOUND`. */
+  getProjectDeployRun(project: string, id: number, repo: string): Promise<ProjectDeployRun> {
+    return this.read(
+      "/api/v1/projects/{key}/deploy-runs/{id}",
+      { key: project, id: String(id) },
+      { repo }
+    ) as Promise<ProjectDeployRun>;
   }
 
   /** One eval's versions, newest first, `{items, total, limit, offset}` with `doc_text`, the method

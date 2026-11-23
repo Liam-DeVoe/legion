@@ -245,10 +245,15 @@ export type {
   PriorityRow,
   PriorityWork,
   PriorityWorkParked,
+  ProductionEvent,
   ProgressCount,
   Project,
   ProjectDefaultAssignee,
   ProjectDefaultRepository,
+  ProjectDeliverySettings,
+  ProjectDeliverySettingsInput,
+  ProjectDeploySource,
+  ProjectDeploySourceInput,
   ProjectTimelineMergeRow,
   ProjectTimelineResponse,
   ProjectTimelineRow,
@@ -289,7 +294,12 @@ export type {
   WriteSuggestion,
 } from "@legion/contracts";
 
-import type { IssueCollaboratorAgent, IssueCollaboratorLegion } from "@legion/contracts";
+import type {
+  DeliveryRunDetail,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+  ProductionEvent,
+} from "@legion/contracts";
 
 /** A collaborator session the Legion registry knows: its `legion` entry is never null. Both
  *  readers that keep such sessions apart from the rest - the Collaborators tab's Legion sections
@@ -297,4 +307,13 @@ import type { IssueCollaboratorAgent, IssueCollaboratorLegion } from "@legion/co
  *  the narrowed shape is named once here. */
 export type IssueCollaboratorLegionAgent = IssueCollaboratorAgent & {
   readonly legion: IssueCollaboratorLegion;
+};
+
+/** GET /api/v1/projects/{key}/deploy-runs/{id}'s answer (dispatch://INFRA-2918, D14): the run
+ *  with every job it ran, and its record, the deploy row written for it (null where none was)
+ *  and every failure that blames that row, of any project and in any state. The generated
+ *  contract answers the run alone until the server's record rows are regenerated into it. */
+export type ProjectDeployRun = DeliveryRunDetail & {
+  readonly deploy: ProductionEvent | null;
+  readonly failures: readonly ProductionEvent[] | null;
 };

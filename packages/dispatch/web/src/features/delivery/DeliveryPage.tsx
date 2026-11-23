@@ -544,11 +544,14 @@ export function DeliveryPage(): ReactNode {
                     />
                   )}
                 </div>
+                {/* The drill-down reads a run under a project and its repository, which this
+                    old page names neither of, so it opens no run (T26 deletes the page). */}
                 <DrillDown
                   components={data.components ?? {}}
                   onClose={() => setSelection(null)}
+                  project=""
                   prs={data.prs ?? []}
-                  runs={data.runs ?? []}
+                  runs={[]}
                   selection={drillDownSelection}
                   sessionGroups={data.session_groups ?? []}
                   sessionTitles={data.session_titles ?? {}}

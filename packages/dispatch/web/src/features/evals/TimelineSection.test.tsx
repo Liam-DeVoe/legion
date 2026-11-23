@@ -407,7 +407,9 @@ test("the Repository facet sets the target cards' repo, and narrows the timeline
 
 test("the table mode's rows are the loaded rows, one per merge, deploy or failed run, and a run row opens its drill-down", async () => {
   const user = userEvent.setup();
-  const run = spyOn(api, "getDeliveryRun").mockResolvedValue({
+  const run = spyOn(api, "getProjectDeployRun").mockResolvedValue({
+    deploy: null,
+    failures: [],
     id: 41,
     jobs: [],
     url: "https://github.com/acme/deploys/actions/runs/41",
@@ -441,7 +443,8 @@ test("the table mode's rows are the loaded rows, one per merge, deploy or failed
   await user.click(within(table).getByText("Shipped 0 PR(s)"));
   const details = await screen.findByRole("dialog", { name: "Details" });
   expect(within(details).getByText("Deploy: run #41")).toBeInTheDocument();
-  await waitFor(() => expect(run).toHaveBeenCalledWith(41));
+  // The run is read under the tab's project, from the repository its row names.
+  await waitFor(() => expect(run).toHaveBeenCalledWith("ACME", 41, "acme/deploys"));
 });
 
 test("the timeline draws no compare control and no compare overlay", async () => {

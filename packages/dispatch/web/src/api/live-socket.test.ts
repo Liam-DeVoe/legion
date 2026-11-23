@@ -9,6 +9,13 @@ import {
   type FakeLiveSockets,
   installFakeLiveSockets,
 } from "../__tests__/live-socket-harness";
+import {
+  mergeRow,
+  runRow,
+  timelineAnswer,
+  timelineGrowth,
+  timelineSnapshot,
+} from "../__tests__/timeline-fixture";
 import { ApiError, isDeliveryNotConfigured } from "./client";
 import {
   type AgentHandlers,
@@ -676,6 +683,47 @@ test("for each run a delta upserts, an open drill-down's run is read again", asy
       counts: {},
       revs: { items: { runs: { "42": "cccccccccccccccc" } } },
     });
+    await settle();
+    expect(runReads).toBe(2);
+  } finally {
+    stopRun();
+    unsubscribe();
+  }
+});
+
+test("for each run row a project-timeline delta upserts, an open drill-down's run is read again", async () => {
+  const timeline: DeliveryLiveView = {
+    kind: "project-timeline",
+    project: "ACME",
+    window: { preset: 28 },
+    query: "limit=200",
+  };
+  const { unsubscribe } = observe(timeline, ["evals", "timeline", "ACME"]);
+  let runReads = 0;
+  const run = new QueryObserver(queryClient, {
+    queryKey: ["project-deploy-run", "ACME", "acme/deploys", 42],
+    queryFn: async () => {
+      runReads += 1;
+      return { deploy: null, failures: [], id: 42, jobs: [], url: "" };
+    },
+  });
+  const stopRun = run.subscribe(() => {});
+  try {
+    await settle();
+    const socket = sockets.latest();
+    socket.open();
+    const { sub } = socket.subscribed("project-timeline");
+    socket.receive(timelineSnapshot(sub, timelineAnswer([], 0)));
+    await settle();
+    expect(runReads).toBe(1);
+
+    // A delta upserting a merge or another run reads nothing; one upserting run 42 of the
+    // drill-down's repository reads it again.
+    const at = "2026-11-23T10:00:00Z";
+    socket.receive(timelineGrowth(sub, [mergeRow(1, at), runRow(43, at)], 200, "2"));
+    await settle();
+    expect(runReads).toBe(1);
+    socket.receive(timelineGrowth(sub, [runRow(42, at)], 200, "3"));
     await settle();
     expect(runReads).toBe(2);
   } finally {

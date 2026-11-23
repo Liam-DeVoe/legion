@@ -541,6 +541,16 @@ export const deliveryRunQuery = (id: number) =>
     queryFn: () => api.getDeliveryRun(id),
   });
 
+/** One run of a project's deploy source with every job it ran and its record (deploy row and
+ *  failures), read by GET from the repository its timeline row names (dispatch://INFRA-2918,
+ *  D14). A project-timeline delta that changes the run's row invalidates this key, so an open
+ *  drill-down reads it again, as each write of its record does. */
+export const projectDeployRunQuery = (project: string, repo: string, id: number) =>
+  queryOptions({
+    queryKey: ["project-deploy-run", project, repo, id],
+    queryFn: () => api.getProjectDeployRun(project, id, repo),
+  });
+
 /** The Pipeline page, live, by `at` so a pinned day is its own subscription. */
 export const deliveryPipelineQuery = (view: DeliveryLiveView & { kind: "pipeline" }) =>
   queryOptions({

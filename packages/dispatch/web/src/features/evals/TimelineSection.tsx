@@ -555,6 +555,7 @@ function OpenTimeline({
         <DrillDown
           components={data.components ?? {}}
           onClose={() => setSelection(null)}
+          project={project}
           prs={prs}
           runs={runs}
           selection={drillDownSelection}
