@@ -18,23 +18,15 @@ import (
 // version stored the version its keep names, or none stamped it (pmdoc.OtherRenderer), that
 // version's text of the decision (decisionCuts, named by its sectionKey) has the keep's sum,
 // which makes it the text the keep agreed with, that text stood alone there and the decision's
-// text stands alone now, and this build reads that text as the decision's text now, both alone
-// (pmdoc.FragmentReadsAs). Both sides are read by one cut (decisionCuts): the stored version's,
-// and the document's as it stands (current, readDecisions), each cut's decisionCut.alone saying
-// whether every typed block there holds the decision's text whole, lies wholly inside it, or lies
-// outside it; a decision whose heading stands in a list item, a quote or a footnote definition
-// has no cut now. A decision's text read alone loses the container it stands in: a list item, a
-// quote and a footnote definition write a prefix on their lines that the text read alone loses,
-// and a text that holds a typed block's opening or closing line without the other holds a fence
-// it does not read alone as that block's, so two trees can read as one. A typed block writes its
-// lines with no prefix, so a text that lies wholly inside one reads alone as the blocks it holds
-// there. The decision waits for review otherwise: a version the view could not read - the parser
-// refuses its markdown (storedDecisions.refused) - a version that holds no such text - the
-// decision's heading changed since, or a block left the decision after that version - a decision
-// that does not stand alone then or now, kept text that reads otherwise alone, and kept text or
-// text now that holds `[^`, which reads as a footnote reference or as text by the labels the whole
-// document defines (another section among them), leave it waiting, as a version this renderer
-// version stored does.
+// text stands alone now (decisionCut.alone), and this build reads that text as the decision's text
+// now, both alone (pmdoc.FragmentReadsAs). Both sides are read by one cut (decisionCuts): the
+// stored version's, and the document's as it stands (current, readDecisions); a decision whose
+// heading stands in a list item, a quote or a footnote definition has no cut now. The decision
+// waits for review otherwise: a version the view could not read - the parser refuses its markdown
+// (storedDecisions.refused) - a version that holds no such text - the decision's heading changed
+// since, or a block left the decision after that version - a decision that does not stand alone
+// then or now, kept text that reads otherwise alone, and kept text or text now that holds `[^`
+// (pmdoc.FragmentReadsAs) leave it waiting, as a version this renderer version stored does.
 //
 // Of the versions the keeps of decisions that stand alone now name, those another renderer
 // version stored, or none stamped, are read in one query (otherRendererDecisionsAt), and a

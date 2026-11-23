@@ -194,24 +194,27 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 }
 
 // respellSpec is the approved text of the restore tests whose approved version another renderer
-// version stored: restoreSpec's heading and paragraph, then a loose list, whose blank lines
-// between items a renderer change spells otherwise (respellVersion).
+// version stored: restoreSpec's heading and paragraph, then a loose list, which the tests respell
+// as another renderer version's build could have stored it (respellVersion).
 const respellSpec = "# Plan\n\nThe service ships behind a flag.\n\n- first\n\n- second\n\n- third\n"
 
-// respellVersion stores version number of artifactID as a build of another renderer version
-// stores its own spelling of the same tree: the blank lines between the first two items of the
-// version's loose list, "- first" and "- second", taken out, which leaves the list loose and the
-// tree as it was in a spelling no renderer version writes, and the version stamped stamp
-// (renderer_version, nil for none). It fails t unless this build reads that text and renders it
-// again as the version held it (storeRespelled), and returns the text it stored.
+// respellList is text with the blank line between the items "- first" and "- second" of its loose
+// list taken out, which leaves the list loose and its tree as it was, in a spelling no renderer
+// version writes: another spelling of the same tree, as a build of another renderer version could
+// have stored one of its own.
+func respellList(text string) string {
+	return strings.Replace(text, "- first\n\n- second", "- first\n- second", 1)
+}
+
+// respellVersion stores version number of artifactID in another spelling of its tree, one no
+// renderer version writes (respellList), stamped stamp (renderer_version, nil for none), as a
+// build of another renderer version could have stored its own. It fails t unless this build reads
+// that text and renders it again as the version held it, and that text is not the version's own
+// (storeRespelled), and returns the text it stored.
 func respellVersion(t *testing.T, database *store.Store, artifactID string, number int, stamp *int) string {
 	t.Helper()
 	written := versionText(t, database, artifactID, number)
-	first, second := strings.Index(written, "- first\n"), strings.Index(written, "- second\n")
-	if first < 0 || second < first {
-		t.Fatalf("version %d = %q, want a list whose first two items are first and second", number, written)
-	}
-	respelled := written[:first] + "- first\n" + written[second:]
+	respelled := respellList(written)
 	storeRespelled(t, database, artifactID, number, written, respelled, stamp)
 	return respelled
 }

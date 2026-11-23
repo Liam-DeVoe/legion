@@ -138,13 +138,15 @@ type Outline struct {
 	TypedBlocks []OutlineTypedBlock
 }
 
-// OutlineHeading is one heading of an Outline. Start is where its line starts in the markdown,
-// or, for a heading a list, a quote or a footnote definition holds, where the heading starts on
-// that line, past their markers. Within is the index in the Outline's TypedBlocks of the innermost
-// of them that holds it, or -1 where none does. ContainerEnd is where the outermost list, quote or
-// footnote definition that holds it ends, its last line's end before the line feed, or -1 where
-// none does: that container is a block of the document or of the typed block that holds it.
+// OutlineHeading is one heading of an Outline. LineStart is where its line starts in the
+// markdown, and Start where its `#` stands on that line: past the markers of a list, a quote or a
+// footnote definition that holds it, and at the line's start for every other heading the renderer
+// writes. Within is the index in the Outline's TypedBlocks of the innermost of them that holds it,
+// or -1 where none does. ContainerEnd is where the outermost list, quote or footnote definition
+// that holds it ends, its last line's end before the line feed, or -1 where none does: that
+// container is a block of the document or of the typed block that holds it.
 type OutlineHeading struct {
+	LineStart    int
 	Start        int
 	Within       int
 	ContainerEnd int
@@ -442,7 +444,9 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
 			if _, heading := child.(*ast.Heading); heading {
 				if start := sourceStart(child); start >= 0 && opensATXHeading(source[start:]) {
-					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + start, Within: within, ContainerEnd: rest + containerEnd})
+					outline.Headings = append(outline.Headings, OutlineHeading{
+						LineStart: rest + lineStart(source, start), Start: rest + start, Within: within, ContainerEnd: rest + containerEnd,
+					})
 				}
 			} else if first := child.FirstChild(); first != nil && first.Type() == ast.TypeBlock {
 				held(child, within, containerEnd)
@@ -464,7 +468,9 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 			switch block := child.(type) {
 			case *ast.Heading:
 				if opensATXHeading(source[start:]) {
-					outline.Headings = append(outline.Headings, OutlineHeading{Start: rest + lineStart(source, start), Within: within, ContainerEnd: -1})
+					outline.Headings = append(outline.Headings, OutlineHeading{
+						LineStart: rest + lineStart(source, start), Start: rest + start, Within: within, ContainerEnd: -1,
+					})
 				}
 			case *typedDirective:
 				closer := last
@@ -493,20 +499,17 @@ func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline 
 	if strings.IndexByte(markdown, 0) < 0 {
 		return outline
 	}
-	offsets := make([]int, 0, 2*len(outline.Headings)+2*len(outline.TypedBlocks))
-	for _, heading := range outline.Headings {
-		offsets = append(offsets, heading.Start, heading.ContainerEnd)
-	}
-	for _, block := range outline.TypedBlocks {
-		offsets = append(offsets, block.Start, block.End)
-	}
-	offsets = startsInMarkdown(offsets, markdown)
+	replacements := replacementsIn(markdown)
 	for index := range outline.Headings {
-		outline.Headings[index].Start, outline.Headings[index].ContainerEnd = offsets[2*index], offsets[2*index+1]
+		heading := &outline.Headings[index]
+		replacements.inMarkdown(&heading.LineStart)
+		replacements.inMarkdown(&heading.Start)
+		replacements.inMarkdown(&heading.ContainerEnd)
 	}
 	for index := range outline.TypedBlocks {
-		at := 2*len(outline.Headings) + 2*index
-		outline.TypedBlocks[index].Start, outline.TypedBlocks[index].End = offsets[at], offsets[at+1]
+		block := &outline.TypedBlocks[index]
+		replacements.inMarkdown(&block.Start)
+		replacements.inMarkdown(&block.End)
 	}
 	return outline
 }
@@ -536,22 +539,37 @@ func startsInMarkdown(starts []int, markdown string) []int {
 	if strings.IndexByte(markdown, 0) < 0 {
 		return starts
 	}
-	// Where each replacement stands in the source, which is where the U+0000 before it stood plus
-	// the two bytes each earlier replacement added.
-	var replacements []int
+	replacements := replacementsIn(markdown)
+	for index := range starts {
+		replacements.inMarkdown(&starts[index])
+	}
+	return starts
+}
+
+// nulReplacements is where each U+0000 of a markdown stands in the source its parse reads, in
+// order (startsInMarkdown).
+type nulReplacements []int
+
+// replacementsIn is where each U+0000 of markdown stands in the source its parse reads: where the
+// U+0000 stood plus the two bytes each earlier replacement added.
+func replacementsIn(markdown string) nulReplacements {
+	var replacements nulReplacements
 	for index := range len(markdown) {
 		if markdown[index] == 0 {
 			replacements = append(replacements, index+2*len(replacements))
 		}
 	}
-	for index, start := range starts {
-		if start >= 0 {
-			// The replacements before start, which is where the first one at or past it stands.
-			earlier, _ := slices.BinarySearch(replacements, start)
-			starts[index] = start - 2*earlier
-		}
+	return replacements
+}
+
+// inMarkdown maps *offset, an offset into the source parsed, in place to the byte of markdown it
+// stands at (startsInMarkdown). A negative offset, which names no position, stays as it is.
+func (replacements nulReplacements) inMarkdown(offset *int) {
+	if *offset >= 0 {
+		// The replacements before offset, which is where the first one at or past it stands.
+		earlier, _ := slices.BinarySearch(replacements, *offset)
+		*offset -= 2 * earlier
 	}
-	return starts
 }
 
 // sourceStart is startOf, or -1 for a block that records neither the position nor the line startOf

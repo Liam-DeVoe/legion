@@ -75,8 +75,9 @@ func TestParseWithSourceStartsCountsTheCallersBytes(t *testing.T) {
 // RenderingOutline answers offsets into the markdown its caller wrote too, as
 // ParseWithSourceStarts does: a heading's and a typed block's offsets after a U+0000 are not two
 // bytes late for each one before them, so a caller cutting the markdown at them cuts whole lines,
-// each heading still names the typed block that holds it, and where the list holding a heading
-// ends counts each U+0000 in that list as the one byte it is.
+// each heading's line starts where it does and its `#` stands where it does, past the list item's
+// indentation for one the list holds, each heading still names the typed block that holds it, and
+// where the list holding a heading ends counts each U+0000 in that list as the one byte it is.
 func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
 	const callout = ":::callout{#c kind=\"note\" title=\"\"}\n\x00 in the callout.\n\n## B\n:::"
 	const list = "- \x00 item.\n\n  ## D\n\n- Other \x00."
@@ -85,11 +86,12 @@ func TestRenderingOutlineCountsTheCallersBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderingOutline(%q): %v", markdown, err)
 	}
+	at := func(text string) int { return strings.Index(markdown, text) }
 	want := []OutlineHeading{
-		{Start: strings.Index(markdown, "# A"), Within: -1, ContainerEnd: -1},
-		{Start: strings.Index(markdown, "## B"), Within: 0, ContainerEnd: -1},
-		{Start: strings.Index(markdown, "## C"), Within: -1, ContainerEnd: -1},
-		{Start: strings.Index(markdown, "## D"), Within: -1, ContainerEnd: strings.Index(markdown, list) + len(list)},
+		{LineStart: at("# A"), Start: at("# A"), Within: -1, ContainerEnd: -1},
+		{LineStart: at("## B"), Start: at("## B"), Within: 0, ContainerEnd: -1},
+		{LineStart: at("## C"), Start: at("## C"), Within: -1, ContainerEnd: -1},
+		{LineStart: at("  ## D"), Start: at("## D"), Within: -1, ContainerEnd: at(list) + len(list)},
 	}
 	start := strings.Index(markdown, callout)
 	if !slices.Equal(outline.Headings, want) ||

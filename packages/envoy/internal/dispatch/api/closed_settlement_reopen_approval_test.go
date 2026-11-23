@@ -824,8 +824,9 @@ func TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew(t *testing.T) {
 	}
 }
 
-// respellDecisionSpec is reopenDecisionSpec with a loose list after its paragraph, whose blank
-// lines between items a renderer change spells otherwise (respellVersion).
+// respellDecisionSpec is reopenDecisionSpec with a loose list after its paragraph, which
+// respellVersion stores in a spelling of the same tree that no renderer version writes, stamped
+// as another renderer version stored it.
 const respellDecisionSpec = "Context\n\n- first\n\n- second\n\n- third\n\n" +
 	":::ask{#reopen-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
@@ -835,7 +836,8 @@ const respellDecisionSpec = "Context\n\n- first\n\n- second\n\n- third\n\n" +
 // (docs.reopenedApproval, docs.restoresVersionText). As in
 // TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved, the close withdraws the spec's
 // decision and the settlement on the closed issue writes version L showing it resolved, here
-// stored in another renderer version's spelling of its loose list. alice approves L between the
+// stored as another renderer version stored it, in another spelling of its loose list
+// (respellVersion). alice approves L between the
 // reopen and its settlement, and the settlement's version L+1, which shows the decision open in
 // this build's spelling, reads approved by her, carried from her approval of L by the reopen
 // carry.
@@ -882,8 +884,9 @@ func TestAReopenCarriesAnApprovalOfAClosedVersionAnotherRendererVersionStored(t 
 // the request names when another renderer version stored that text: the move compares it as the
 // restore does, as this build renders it (docs.MoveApprovalAsk, docs.restoresVersionText). As in
 // the settlement case of TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson, the
-// spec's request waits on alice at version N, here stored in another renderer version's spelling
-// of its loose list. The close and the settlement on the closed issue write the withdrawn decision
+// spec's request waits on alice at version N, here stored as another renderer version stored it,
+// in another spelling of its loose list (respellVersion). The close and the settlement on the
+// closed issue write the withdrawn decision
 // resolved, the reopen writes it open, and the settlement it leaves owed writes N's tree again in
 // this build's spelling: the request still waits on alice, names and requests that version, and
 // its last move is quiet.

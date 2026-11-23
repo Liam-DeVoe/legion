@@ -470,8 +470,8 @@ func TestAKeptDecisionWaitsForReviewAgainWhenABlockLeavesOrJoinsIt(t *testing.T)
 }
 
 // listDecision is the decision of the renderer change tests: an agent decision whose paragraph
-// links the spec block hold-it and which ends in a loose list, whose blank lines between items a
-// renderer change spells otherwise (respellVersion).
+// links the spec block hold-it and which ends in a loose list, which the tests respell as another
+// renderer version's build could have stored it (respellList).
 const listDecision = "Ship the notices in three steps"
 
 // listSection is the section of the decision headed heading in the decisions.md of issue key:
@@ -481,20 +481,14 @@ func listSection(heading, key string) string {
 	return "## " + heading + "\n\nShapes dispatch://" + key + "/spec#b-hold-it.\n\n- first\n\n- second\n\n- third"
 }
 
-// respellList is text with the first two items of listSection's loose list written with no blank
-// line between them, as a build of another renderer version could have spelled the list.
-func respellList(text string) string {
-	return strings.Replace(text, "- first\n\n- second", "- first\n- second", 1)
-}
-
 // keptAcrossARendererChange is newDecisionsFixture with listDecision written into decisions.md,
-// kept by alice, and then left as a build of another renderer version leaves a decision it kept:
-// the version that wrote the decision stored in that renderer's spelling of the same tree,
-// stamped stamp (respellVersion), and the keep holding the sum of the decision's text in that
-// spelling beside that version. A keep holds no text, so the view reads the kept text from that
-// version. It fails t unless the view reads the decision kept, waiting for no review, with its
-// link not out of date, since this build reads that text as the decision's own: the renderer
-// changed and nobody changed the decision.
+// kept by alice, and then left as a build of another renderer version could leave a decision it
+// kept: the version that wrote the decision stored in another spelling of the same tree, one no
+// renderer version writes, stamped stamp (respellVersion), and the keep holding the sum of the
+// decision's text in that spelling (respellList) beside that version. A keep holds no text, so the
+// view reads the kept text from that version. It fails t unless the view reads the decision kept,
+// waiting for no review, with its link not out of date, since this build reads that text as the
+// decision's own: the renderer changed and nobody changed the decision.
 func keptAcrossARendererChange(t *testing.T, stamp *int) (decisionsFixture, model.Decision) {
 	t.Helper()
 	fixture := newDecisionsFixture(t)
@@ -511,11 +505,7 @@ func keptAcrossARendererChange(t *testing.T, stamp *int) (decisionsFixture, mode
 	keepBlock(t, handler, id, written.BlockID, written.TextSHA256)
 
 	stored := respellVersion(t, database, id, version.Number, stamp)
-	first, second := strings.Index(written.Text, "- first\n"), strings.Index(written.Text, "- second\n")
-	if first < 0 || second < first {
-		t.Fatalf("the decision's text = %q, want a list whose first two items are first and second", written.Text)
-	}
-	kept := written.Text[:first] + "- first\n" + written.Text[second:]
+	kept := respellList(written.Text)
 	if !strings.Contains(stored, kept+"\n") {
 		t.Fatalf("version %d = %q, want it to hold the decision as %q", version.Number, stored, kept)
 	}
@@ -1123,6 +1113,11 @@ type decisionCutShape struct {
 	// decisions is each decision the view reads, written as decisionCutShapes writes it, or nil
 	// where the test names none.
 	decisions []string
+	// emptied is each paragraph, by its text, that an edit of the stored document then replaces
+	// with nothing, which leaves an empty paragraph with its block id in its place, as the browser
+	// editor leaves one where a person presses Enter and types nothing. An upload makes none, since
+	// markdown never parses into an empty paragraph.
+	emptied []string
 }
 
 // decisionCutShapes are documents of decisions whose headings stand in each place the view reads
@@ -1132,9 +1127,12 @@ type decisionCutShape struct {
 // more of the quote or of the definition after it; a heading in a list item in a quote; a heading
 // in a list item inside a callout, and one in a list after a callout whose heading the list's
 // heading ends; and a `## Replaced` in a list item, which makes each document-level `###` after it
-// a replaced decision, before a last decision at the markdown's end. Each names the decisions the
-// view reads in it: each one's heading, then "(replaced)" where it is replaced, and "(no cut)"
-// where a list item, a quote or a footnote definition holds its heading.
+// a replaced decision, before a last decision at the markdown's end. Then decisions whose last
+// block is an empty paragraph, which writes no text: at the document's level before the next
+// decision, last inside the callout that holds the heading, at the document's level right after
+// that callout, and at the markdown's end. Each names the decisions the view reads in it: each
+// one's heading, then "(replaced)" where it is replaced, and "(no cut)" where a list item, a quote
+// or a footnote definition holds its heading.
 var decisionCutShapes = []decisionCutShape{
 	{
 		name:     "typed blocks",
@@ -1187,6 +1185,32 @@ var decisionCutShapes = []decisionCutShape{
 			"## Last\n\nBody at the markdown's end.\n",
 		decisions: []string{"First", "Old choice (replaced)", "Older (replaced)", "Last"},
 	},
+	{
+		name:      "an empty paragraph last in a decision",
+		markdown:  "## Ends empty\n\nText.\n\nEmptied by an edit.\n\n## After\n\nPlain.\n",
+		emptied:   []string{"Emptied by an edit."},
+		decisions: []string{"Ends empty", "After"},
+	},
+	{
+		name: "an empty paragraph last in the callout that holds a decision's heading",
+		markdown: ":::callout{#c1 kind=\"note\" title=\"\"}\n## Ends empty in a callout\n\nText.\n\nEmptied by an edit.\n:::\n\n" +
+			"## After\n\nPlain.\n",
+		emptied:   []string{"Emptied by an edit."},
+		decisions: []string{"Ends empty in a callout", "After"},
+	},
+	{
+		name: "an empty paragraph right after the callout that holds a decision's heading",
+		markdown: ":::callout{#c1 kind=\"note\" title=\"\"}\n## Ends empty after a callout\n\n- f1\n\n- f2\n:::\n\n" +
+			"Emptied by an edit.\n\n## After\n\nPlain.\n",
+		emptied:   []string{"Emptied by an edit."},
+		decisions: []string{"Ends empty after a callout", "After"},
+	},
+	{
+		name:      "an empty paragraph last in a decision at the markdown's end",
+		markdown:  "## Before\n\nPlain.\n\n## Ends empty at the end\n\nText.\n\nEmptied by an edit.\n",
+		emptied:   []string{"Emptied by an edit."},
+		decisions: []string{"Before", "Ends empty at the end"},
+	},
 }
 
 // decisionCutCorpusLeftOut is each document of the parser's corpus that an upload of the decisions
@@ -1213,16 +1237,17 @@ var decisionCutCorpusLeftOut = map[string]string{
 // and the next heading of its level or higher, wherever that next heading stands: a section that
 // a heading inside a typed block ends holds that whole typed block, and one that a heading inside
 // a list item, a quote or a footnote definition ends holds that whole list, quote or footnote
-// definition. Each document of decisionCutShapes and of the parser's corpus (markdownCorpus) is
-// stored as the decisions document in turn, and its stored version is cut. Each decision of the
-// view whose heading stands at the document's level or inside a typed block has a cut of its
-// heading whose text and sum are the view's, standing alone unless the view's text runs past the
-// closing line of the innermost typed block that holds its heading, and no other cut is made. A
-// decision whose heading a list item, a quote or a footnote definition holds has no cut (noCut).
-// Where each heading stands is read from the view's own blocks: the lists, quotes, footnote
-// definitions and typed blocks whose ranges hold the heading's, a list standing for its items,
-// which record no range of their own. The corpus documents an upload refuses are left out
-// (decisionCutCorpusLeftOut), each refused as that list says.
+// definition, and an empty paragraph, which writes no text, ends after the blank line before it.
+// Each document of decisionCutShapes and of the parser's corpus (markdownCorpus) is stored as the
+// decisions document in turn, the paragraphs its shape names emptied by an edit, and its stored
+// version is cut. Each decision of the view whose heading stands at the document's level or inside
+// a typed block has a cut of its heading whose text and sum are the view's, standing alone unless
+// the view's text runs past the closing line of the innermost typed block that holds its heading,
+// and no other cut is made. A decision whose heading a list item, a quote or a footnote definition
+// holds has no cut (noCut). Where each heading stands is read from the view's own blocks: the
+// lists, quotes, footnote definitions and typed blocks whose ranges hold the heading's, a list
+// standing for its items, which record no range of their own. The corpus documents an upload
+// refuses are left out (decisionCutCorpusLeftOut), each refused as that list says.
 func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 	fixture := newDecisionsFixture(t)
 	ctx, id := context.Background(), fixture.decisions.ID
@@ -1247,6 +1272,13 @@ func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 				return
 			}
 			uploadIssueDocument(t, fixture.handler, fixture.issue.Key, "decisions.md", document.markdown)
+			if document.emptied != nil {
+				ops := make([]map[string]any, 0, len(document.emptied))
+				for _, text := range document.emptied {
+					ops = append(ops, map[string]any{"op": "replace", "find": text, "with": ""})
+				}
+				editIssueDocument(t, fixture.handler, fixture.issue.Key, fixture.decisions.Slug, ops)
+			}
 			view := readIssueDecisions(t, fixture.handler, fixture.issue.Key)
 			markdown, blocks, err := fixture.deps.Docs.TextWithBlocks(ctx, id)
 			if err != nil {
@@ -1255,6 +1287,17 @@ func TestAStoredVersionCutsEachDecisionAsTheViewShowsIt(t *testing.T) {
 			stored := versionText(t, fixture.database, id, latestVersion(t, fixture.database, id).Number)
 			if stored != markdown {
 				t.Fatalf("the stored version = %q, and the view reads %q; the test needs the view to read the stored version", stored, markdown)
+			}
+			if document.emptied != nil {
+				empty := 0
+				for _, block := range blocks {
+					if block.Type == "paragraph" && block.From == block.To {
+						empty++
+					}
+				}
+				if empty != len(document.emptied) {
+					t.Fatalf("the edit left %d empty paragraphs in %q, want %d", empty, markdown, len(document.emptied))
+				}
 			}
 			cuts, read := decisionCuts(stored)
 			if !read {
@@ -1623,7 +1666,7 @@ func TestADecisionsViewParsesEachStoredVersionOnce(t *testing.T) {
 		t.Fatalf("the parser reads %q; the test needs markdown it refuses", refused)
 	}
 	storeVersionAs(t, database, id, 1, refused, &another)
-	kept := strings.Replace(steps.Text, "- first\n\n- second", "- first\n- second", 1)
+	kept := respellList(steps.Text)
 	for blockID, sum := range map[string]string{steps.BlockID: decisionTextSum(kept), table.BlockID: decisionTextSum(table.Text + " Unread.")} {
 		if _, err := database.Pool.Exec(ctx, `
 			update decision_keeps set text_sha256 = $3 where artifact_id = $1 and block_id = $2

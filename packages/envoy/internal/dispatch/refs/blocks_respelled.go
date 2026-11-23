@@ -23,11 +23,10 @@ type respellCandidate struct {
 // alone: a top-level block, which no block of blocks encloses, and a block that only typed blocks
 // enclose (pmdoc.IsTypedBlock). A typed block writes the blocks it holds from a line's start with
 // no prefix, so a block that only typed blocks enclose, however many, starts a line and carries no
-// prefix on its later lines. A block inside a list item, a quote or a footnote definition starts
-// after its container's marker, and its later lines carry the container's prefix, which its text
-// read alone loses (pmdoc.FragmentReadsAs), so it takes the version whose sum moved; so does every
-// block such a container encloses, however deep, a typed block inside it included, since the
-// container's prefix stands on that block's lines too.
+// prefix on its later lines. A block inside a list item, a quote or a footnote definition carries
+// its container's marker and prefix, which its text read alone loses (pmdoc.FragmentReadsAs), so it
+// takes the version whose sum moved; so does every block such a container encloses, however deep,
+// a typed block inside it included, since the container's prefix stands on that block's lines too.
 //
 // blocks are the version's rendered blocks in document order, each parent before its children,
 // and candidates are in that order too. A block encloses the blocks that start after it and at or
@@ -52,19 +51,11 @@ func aloneCandidates(blocks []model.ArtifactBlock, candidates []respellCandidate
 	return kept
 }
 
-// respelledBlocks keeps, of candidates, which are blocks of the version that no block encloses or
-// only typed blocks enclose (aloneCandidates), each block that holds the same tree as the text
-// recorded for it at its storedAt (document_block_texts), spelled by another renderer version:
-// that text stood in no container with a prefix there, and reads as its text now, both alone
-// (pmdoc.FragmentReadsAs). A block that stood inside a list item, a quote or a footnote definition
-// at storedAt was recorded after that container's marker, with its prefix on each later line,
-// which its text read alone loses. So a block is kept only when its recorded text occurs in
-// storedAt's stored markdown and every occurrence starts a line (startsLinesOnly): such a nested
-// block starts after its container's prefix or marker (`  `, `> `, `- `, `[^f]: `), and so does a
-// block inside a typed block such a container holds. A block that stood at the top level or
-// inside typed blocks alone starts a line and passes: a typed block writes its blocks with no
-// prefix, so its recorded text reads alone as it stood there. A text that does not occur there,
-// and a version that holds no markdown, keep nothing.
+// respelledBlocks keeps, of candidates (aloneCandidates), each block that holds the same tree as
+// the text recorded for it at its storedAt (document_block_texts), spelled by another renderer
+// version: that text stood where it reads alone there (startsLinesOnly), and reads as its text
+// now, both alone (pmdoc.FragmentReadsAs). A text that does not occur in storedAt's stored
+// markdown, and a version that holds no markdown, keep nothing.
 //
 // It returns the candidates it keeps, and writes nothing: each such block's row takes the new
 // text's sha256 and excerpt and keeps its changed version and time in the write phase
@@ -150,7 +141,13 @@ func respelledBlocks(ctx context.Context, q Queryer, artifactID string, candidat
 
 // startsLinesOnly reports whether body, a block's recorded text, occurs in markdown, the stored
 // markdown of the version it was recorded at, and every occurrence of it starts a line: at
-// markdown's start or right after a line feed. An empty body answers false.
+// markdown's start or right after a line feed. An empty body answers false. It is the rule by
+// which a recorded text stood where it reads alone at its version, as aloneCandidates is for a
+// block's text now: a block that stood inside a list item, a quote or a footnote definition, a
+// typed block such a container holds included, was recorded after that container's marker or
+// prefix (`  `, `> `, `- `, `[^f]: `), which its text read alone loses (pmdoc.FragmentReadsAs),
+// while a block that stood at the top level or inside typed blocks alone starts a line, since a
+// typed block writes its blocks with no prefix.
 func startsLinesOnly(markdown, body string) bool {
 	if body == "" {
 		return false
