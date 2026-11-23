@@ -362,6 +362,34 @@ func (p *StoredPlan) Task() (PlanTask, error) {
 	return p.Tasks[0], nil
 }
 
+// MergingTask is the task of p whose work is the issue's that merges: the one task no task needs
+// (plan.Sinks), whatever the plan's count of tasks, and none (false) where the plan holds no task,
+// or more than one task no task needs, which plan.Supported refuses. It is the one rule every
+// reader of the task that merges reads by: the walk of each task (its retro and merge), the base of
+// a task's pull request (BaseOf) and the read of an issue's merge pull request (MergePullRequest).
+func (p *StoredPlan) MergingTask() (string, bool) {
+	tasks := make([]plan.Task, len(p.Tasks))
+	for i, row := range p.Tasks {
+		tasks[i] = plan.Task{ID: row.Task, Needs: row.Needs}
+	}
+	if sinks := plan.Sinks(tasks); len(sinks) == 1 {
+		return sinks[0], true
+	}
+	return "", false
+}
+
+// TaskOf is the task of p whose id is id, and false where p holds none, or where there is no plan
+// (p nil): the one lookup of a plan's task by its id.
+func (p *StoredPlan) TaskOf(id string) (PlanTask, bool) {
+	if p == nil {
+		return PlanTask{}, false
+	}
+	if at := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == id }); at >= 0 {
+		return p.Tasks[at], true
+	}
+	return PlanTask{}, false
+}
+
 // TasksOfBranch is each task of p whose branch (BranchOf) branch is, for the issue keyed issueKey,
 // in task id order: the one rule by which a pull request on branch, and each fact of it, is a
 // task's (PullRequest.Task, TaskOfBranch). A task whose row holds branch is its only task. The
@@ -409,7 +437,7 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 // BaseOf is the branch the pull request of task of p, the plan of issue, is based on, and whether
 // it is the task's join branch, which the join of its needs makes (join true): the one rule the
 // join's executor, the opener of a task's pull request and the task text read. It is issue's
-// default branch for the task that merges (the one task no task needs, plan.Sinks), for a task that
+// default branch for the task that merges (MergingTask), for a task that
 // needs none and for a task none of whose steps is of the type implementation, whose pull request
 // shows the joined work of its needs, which its steps read. A task with one need is based on that
 // need's branch (BranchOf). A task with several is based on its join branch, its own branch and
@@ -418,36 +446,24 @@ func (p StoredPlan) TaskOfBranch(issueKey, branch string) (string, bool) {
 // (AssignTaskBranch). A task p does not hold, and a need it does not hold, answer the default
 // branch.
 func (p StoredPlan) BaseOf(issue Issue, task string) (base string, join bool) {
-	at := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == task })
-	if at < 0 || len(p.Tasks[at].Needs) == 0 || p.merges(task) || !p.Implements(task) {
+	of, ok := p.TaskOf(task)
+	if merging, merges := p.MergingTask(); !ok || len(of.Needs) == 0 || merges && merging == task || !p.Implements(task) {
 		return issue.DefaultBranch, false
 	}
-	of := p.Tasks[at]
 	if len(of.Needs) > 1 {
 		return of.BranchOf(issue.Key) + claim.JoinBranchSuffix, true
 	}
-	need := slices.IndexFunc(p.Tasks, func(row PlanTask) bool { return row.Task == of.Needs[0] })
-	if need < 0 {
+	need, ok := p.TaskOf(of.Needs[0])
+	if !ok {
 		return issue.DefaultBranch, false
 	}
-	return p.Tasks[need].BranchOf(issue.Key), false
+	return need.BranchOf(issue.Key), false
 }
 
 // Implements says whether a step of task of p is of the type implementation: the step that opens
 // the task's pull request. A task with no such step gets its pull request from Legion.
 func (p StoredPlan) Implements(task string) bool {
 	return slices.ContainsFunc(p.Steps[task], func(step PlanStep) bool { return step.Type == plan.TypeImplementation })
-}
-
-// merges says whether task is the task of p whose work merges: the one task no task needs
-// (plan.Sinks), and none where several are such tasks, which plan.Supported refuses.
-func (p StoredPlan) merges(task string) bool {
-	tasks := make([]plan.Task, 0, len(p.Tasks))
-	for _, row := range p.Tasks {
-		tasks = append(tasks, plan.Task{ID: row.Task, Needs: row.Needs})
-	}
-	sinks := plan.Sinks(tasks)
-	return len(sinks) == 1 && sinks[0] == task
 }
 
 // PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the

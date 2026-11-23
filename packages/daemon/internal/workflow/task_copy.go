@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -31,9 +32,13 @@ func (e *Engine) startTaskCopy(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return false, err
 	}
 	// AssignTaskBranch refused a task the plan does not hold, and holds the generation's task rows
-	// locked, each of which names a version of the plan (its foreign key): the plan holds the task.
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == task })
-	if branch == claim.IssueBranch(issue.Key) && len(stored.Tasks[at].Needs) == 0 {
+	// locked, each of which names a version of the plan (its foreign key): the plan holds the task,
+	// and one that does not is an error.
+	row, ok := stored.TaskOf(task)
+	if !ok {
+		return false, fmt.Errorf("start the copy of task %s of %s: its plan holds no such task", task, issue.Key)
+	}
+	if branch == claim.IssueBranch(issue.Key) && len(row.Needs) == 0 {
 		return false, nil
 	}
 	return true, e.enqueue(ctx, tx, issue.Key, record.TaskBranch{Generation: issue.Generation, Task: task})
@@ -60,11 +65,10 @@ func (e *Engine) taskJoined(ctx context.Context, tx pgx.Tx, fact intake.TaskJoin
 	if err != nil || stored == nil {
 		return intake.Result{}, err
 	}
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == fact.Task })
-	if at < 0 {
+	joined, ok := stored.TaskOf(fact.Task)
+	if !ok {
 		return intake.Result{}, nil
 	}
-	joined := stored.Tasks[at]
 	if joined.State != record.TaskRunning || joined.StepWait != record.StepWaitJoin || joined.BranchOf(issue.Key) != fact.Branch ||
 		!slices.Equal(joined.Needs, fact.Needs) {
 		e.logOnCommit(ctx, "workflow: the end of a join the task's step does not wait for changes nothing", "issue", issue.Key, "task", fact.Task,
@@ -136,11 +140,11 @@ func startBranch(ctx context.Context, tx pgx.Tx, store record.Store, issue recor
 	if !ok {
 		return "", nil
 	}
-	at := slices.IndexFunc(stored.Tasks, func(row record.PlanTask) bool { return row.Task == step.Task })
-	if at < 0 {
+	task, ok := stored.TaskOf(step.Task)
+	if !ok {
 		return "", nil
 	}
-	if branch := stored.Tasks[at].BranchOf(issue.Key); branch != own {
+	if branch := task.BranchOf(issue.Key); branch != own {
 		return branch, nil
 	}
 	return "", nil

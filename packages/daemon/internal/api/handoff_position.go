@@ -3,12 +3,10 @@ package api
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -86,17 +84,13 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	case stored != nil && len(stored.Tasks) > 1:
 		_, agent, _ := completing.Cut()
 		step, ok := issue.StepOfAgent(agent)
-		at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return ok && task.Task == step.Task })
-		if at < 0 {
+		task, onPlan := stored.TaskOf(step.Task)
+		if !ok || !onPlan {
 			position.noStep = true
 			break
 		}
-		task := stored.Tasks[at]
 		standing := *issue
-		standing.Phase, standing.Hold = step.Phase, nil
-		if task.State == record.TaskHeld {
-			standing.Phase, standing.Hold = phase.Held, &record.Hold{From: step.Phase, Reason: task.HoldReason}
-		}
+		standing.Phase, standing.Hold = record.TaskStanding(step.Phase, task.State, task.HoldReason)
 		position.issue, position.task, position.ofTask, position.branch = &standing, task.Task, task.Task, task.BranchOf(key)
 		position.base, _ = stored.BaseOf(*issue, task.Task)
 		counts = task.Counts

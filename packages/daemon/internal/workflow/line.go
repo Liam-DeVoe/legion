@@ -106,21 +106,23 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 
 // walkIn is walk on stored, the plan of issue's run, which the caller read.
 func walkIn(issue record.Issue, stored *record.StoredPlan) (Walk, error) {
+	merging, _ := stored.MergingTask()
 	switch {
 	case issue.ViewTask != "":
-		at := slices.IndexFunc(stored.Tasks, func(task record.PlanTask) bool { return task.Task == issue.ViewTask })
-		if at < 0 {
+		task, ok := stored.TaskOf(issue.ViewTask)
+		if !ok {
 			return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds no task %s", issue.Key, issue.Generation, issue.ViewTask)
 		}
-		return walkOfTask(issue.Key, stored, at, mergingTask(stored)), nil
+		return walkOfTask(issue.Key, stored, task, merging), nil
 	case len(stored.Tasks) > 1:
 		return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds %d tasks, and this read names none of them",
 			issue.Key, issue.Generation, len(stored.Tasks))
 	}
-	if _, err := stored.Task(); err != nil {
+	task, err := stored.Task()
+	if err != nil {
 		return Walk{}, fmt.Errorf("walk %s: %w", issue.Key, err)
 	}
-	return walkOfTask(issue.Key, stored, 0, stored.Tasks[0].Task), nil
+	return walkOfTask(issue.Key, stored, task, merging), nil
 }
 
 // walks is the walk of each task of issue's run, in task id order (record.StoredPlan.Tasks), read
@@ -138,39 +140,21 @@ func walksOf(key string, stored *record.StoredPlan) []Walk {
 	if stored == nil {
 		return []Walk{todaysWalk()}
 	}
-	merging := mergingTask(stored)
+	merging, _ := stored.MergingTask()
 	walks := make([]Walk, len(stored.Tasks))
-	for at := range stored.Tasks {
-		walks[at] = walkOfTask(key, stored, at, merging)
+	for at, task := range stored.Tasks {
+		walks[at] = walkOfTask(key, stored, task, merging)
 	}
 	return walks
 }
 
-// walkOfTask is the walk of stored.Tasks[at], a task of the plan of the issue keyed key, whose
-// task that merges is merging (mergingTask).
-func walkOfTask(key string, stored *record.StoredPlan, at int, merging string) Walk {
-	task := stored.Tasks[at]
+// walkOfTask is the walk of task, a task of stored, the plan of the issue keyed key, whose task
+// that merges is merging (record.StoredPlan.MergingTask), "" for none.
+func walkOfTask(key string, stored *record.StoredPlan, task record.PlanTask, merging string) Walk {
 	steps, merges := stored.Steps[task.Task], task.Task == merging
 	return Walk{Stored: true, Task: task.Task, Branch: task.BranchOf(key), Text: task.BlockText, Steps: steps, Needs: task.Needs,
 		Line: plan.Line(namedSteps(steps), merges), Merges: merges, State: task.State, Place: task.Place, StoppedReason: task.StoppedReason,
 		HoldReason: task.HoldReason, Wait: task.StepWait, WaitSince: task.StepWaitSince, StartReason: task.StartReason, Version: stored.Version}
-}
-
-// mergingTask is the id of the task of stored whose work is the issue's that merges: the plan's
-// one task, or, of a plan of several, the one task no task needs (plan.Sinks), and none where
-// several are such tasks, which plan.Supported refuses.
-func mergingTask(stored *record.StoredPlan) string {
-	if len(stored.Tasks) == 1 {
-		return stored.Tasks[0].Task
-	}
-	tasks := make([]plan.Task, len(stored.Tasks))
-	for i, task := range stored.Tasks {
-		tasks[i] = plan.Task{ID: task.Task, Needs: task.Needs}
-	}
-	if sinks := plan.Sinks(tasks); len(sinks) == 1 {
-		return sinks[0]
-	}
-	return ""
 }
 
 // namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
@@ -294,20 +278,11 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.
 	return phase.Admitted
 }
 
-// taskStanding is where an issue stands for w's task alone: the phase its place derives
-// (issuePhaseOf), and for a held task held from that phase for the hold's reason (Walk.HoldReason),
-// or for a stopped task held from it for its stop (record.HoldTaskStopped). It is the phase and the
-// hold of a copy of the issue read for that task (view), and the one reading of each task that
-// issuePhaseOfTasks ranks.
+// taskStanding is where an issue stands for w's task alone (record.TaskStanding) at the phase its
+// place derives (issuePhaseOf). It is the phase and the hold of a copy of the issue read for that
+// task (view), and the one reading of each task that issuePhaseOfTasks ranks.
 func taskStanding(w Walk) (phase.Phase, *record.Hold) {
-	at := issuePhaseOf(w, w.Place, w.State)
-	switch w.State {
-	case record.TaskHeld:
-		return phase.Held, &record.Hold{From: at, Reason: w.HoldReason}
-	case record.TaskStopped:
-		return phase.Held, &record.Hold{From: at, Reason: record.HoldTaskStopped}
-	}
-	return at, nil
+	return record.TaskStanding(issuePhaseOf(w, w.Place, w.State), w.State, w.HoldReason)
 }
 
 // issuePhaseOfTasks is the one function that derives where an issue whose run has plan rows stands
