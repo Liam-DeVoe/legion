@@ -239,6 +239,13 @@ export interface CreateProofEditorOptions {
    * the host is a document the reader is already reading and writing.
    */
   onBatch?: (building: readonly string[]) => (() => void) | undefined;
+  /**
+   * What the build awaits between two of its batches, called with how many batches it has
+   * placed so far (`./progressive-build.ts`). Without it the build hands the thread back with a
+   * timer between batches (`endOfTask`), as it always has. A test passes its own to hold the
+   * build at a batch of its choosing, and no batch is placed until what it answers settles.
+   */
+  betweenBatches?: (batchesDone: number) => Promise<void>;
 }
 
 /**
@@ -893,6 +900,7 @@ async function theConstruction(
           collabService.mergeOptions({ ySyncOpts: { mapping } as unknown as YSyncOpts });
           collabService.connect();
         },
+        betweenBatches: opts.betweenBatches,
         fragment: opts.ydoc.getXmlFragment('prosemirror'),
         live: () => {
           show(root);

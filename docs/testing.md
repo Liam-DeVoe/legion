@@ -384,6 +384,13 @@ and each command runs there.
   at `/` comes through `app-chunks.ts`. A part the app starts loading lazily is added to
   `app-chunks.ts`: through its loader where its module exports one, by name where it does not.
 
+- `window.__dispatchHoldBuild` is what the editor's build awaits between two of its batches:
+  `web/src/features/doc/ProofDocument.tsx` reads it as the editor is constructed and passes it
+  to `@legion/proof-editor` as `betweenBatches`. The row "two people write in the
+  AHXV6-1-shaped document while its editor is built" (`e2e/large-documents-reader.e2e.ts`) sets
+  it, to hold the build at a batch of its choosing, and nothing else may set it, in a test or in
+  production.
+
 - A harness test drops a database it made with `dropDatabase` from `e2e/psql.ts`, never with
   `drop database … with (force)`, which refuses a login that is not a superuser, as CI's is not,
   while an autovacuum worker is attached (the doc of `dropDatabase` says why).

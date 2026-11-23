@@ -103,6 +103,17 @@ import type { AskBlockHost } from "./typed-block-drawing";
 import { useAskCardsDrawnInTasks } from "./useAskCardsDrawnInTasks";
 import { VersionView } from "./VersionView";
 
+declare global {
+  interface Window {
+    /** What the editor's build awaits between two of its batches in place of its own hand-back
+     *  (`@legion/proof-editor`'s `betweenBatches`), read when the editor is constructed. Nothing
+     *  in production sets it: the end-to-end row "two people write in the AHXV6-1-shaped
+     *  document while its editor is built" (`e2e/large-documents-reader.e2e.ts`) does, to hold
+     *  the build at a batch of its choosing. */
+    __dispatchHoldBuild?: (batchesDone: number) => Promise<void>;
+  }
+}
+
 /** How a decision block opens in a document's markdown: `:::ask{#<id> …}`. A document whose
  *  text holds one holds a card the reader answers, which reads the document's asks. */
 const ASK_BLOCK_OPENER = ":::ask";
@@ -698,6 +709,9 @@ function admitTheDocument(admission: Admission): void {
               theDrawsTurn();
             };
           },
+          // An end-to-end row's hold on the build between two batches, and unset everywhere
+          // else, where the build hands the thread back on its own (`__dispatchHoldBuild`).
+          betweenBatches: window.__dispatchHoldBuild,
           // A pane takes no edits and no comments: a reader who clicks into the text from a
           // list never changes the document they are reading. The admission may narrow this
           // further, and the binding reads both again before it builds anything.

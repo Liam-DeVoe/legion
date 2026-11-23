@@ -224,6 +224,15 @@ export interface ProgressiveBuild {
    * ran, which belongs to nothing and must not be connected.
    */
   adopt(mapping: ProsemirrorMapping): void;
+  /**
+   * What the build awaits between two batches, called with how many batches it has placed so
+   * far, and no batch is placed until what it answers settles. `endOfTask` unless the host
+   * passes its own, which it does only to hold the build at a batch of its choosing: an
+   * end-to-end row that has to put another person's write between two given batches, rather
+   * than wherever the machine's speed leaves it. The task between the last batch and the
+   * adoption is the build's own, and never this.
+   */
+  betweenBatches?: (batchesDone: number) => Promise<void>;
   /** The document's own fragment, the one the binding will adopt. */
   fragment: Y.XmlFragment;
   /**
@@ -261,6 +270,7 @@ export interface ProgressiveBuild {
  */
 export async function buildTheDocumentInBatches({
   adopt,
+  betweenBatches = endOfTask,
   fragment,
   live,
   onBatch,
@@ -515,6 +525,8 @@ export async function buildTheDocumentInBatches({
     /** Whether the reader has the editor: its first batch is in it and its blocks take edits
      *  that reach the Yjs document. */
     let open = false;
+    /** How many batches the loop below has placed, which is what `betweenBatches` is told. */
+    let batchesDone = 0;
     /** One batch: the fragment's next `take` unbuilt blocks into the editor, in this task. */
     const batchOfBlocks = (): void => {
       const began = performance.now();
@@ -560,7 +572,8 @@ export async function buildTheDocumentInBatches({
     do {
       if (view.isDestroyed) return;
       batchOfBlocks();
-      if (built < fragment.length) await endOfTask();
+      batchesDone += 1;
+      if (built < fragment.length) await betweenBatches(batchesDone);
     } while (built < fragment.length);
     // The last batch ends here, and the adoption is a task of its own; the live write path ends
     // in the task the binding starts in, so no edit falls between the two and anything that
