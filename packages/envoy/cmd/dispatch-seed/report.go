@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -153,7 +154,7 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 		{"root messages", `select count(*) || ' of ' || (select count(*) from messages) from messages where in_reply_to is null`},
 		{"events with a session actor", `select count(*) || ' of ' || (select count(*) from events) || ' over ' ||
 			count(distinct actor->>'id') || ' sessions' from events where actor->>'kind' = 'session'`},
-		{"person events with deliveries", `select e.type || '=' || count(*) from events e where ` + deliveredPersonEvent + `
+		{"person events with deliveries", `select e.type || '=' || count(*) from events e where ` + answerswindow.DeliveredPersonEvent + `
 			group by e.type order by e.type`},
 		{"rows with an embedding", `select kind || '=' || count(*) filter (where embedding is not null) || '/' || count(*)
 			from embeddings group by kind order by kind`},
@@ -263,7 +264,7 @@ func (r *seedRun) reportWords(ctx context.Context) error {
 // plan and draw - the largest project, its most linked issue, the rarest word - so a measurement
 // written elsewhere cannot name them by reading the code; it reads them from this report. The
 // agents' answers read's window and its three sessions are read from the database by the rules
-// a measurement chooses them by (readAnswersSubjects).
+// a measurement chooses them by (answerswindow.Read).
 func (r *seedRun) reportSubjects(ctx context.Context) error {
 	plan := r.plan
 	hub := plan.issues[plan.hub]
@@ -286,7 +287,7 @@ func (r *seedRun) reportSubjects(ctx context.Context) error {
 	chain := plan.documents[plan.chainHead]
 	deepest := plan.issues[plan.deepest]
 	sessions := plan.sessions[:min(5, len(plan.sessions))]
-	answers, err := readAnswersSubjects(ctx, r.database.Pool)
+	answers, err := answerswindow.Read(ctx, r.database.Pool)
 	if err != nil {
 		return err
 	}
@@ -308,9 +309,9 @@ func (r *seedRun) reportSubjects(ctx context.Context) error {
 		fmt.Fprintf(r.out, "  answers window start         %s (the newest delivery to a session, less 72 hours)\n",
 			answers.Since.Format(time.RFC3339))
 	}
-	fmt.Fprintf(r.out, "  answers session, old         %s\n", answers.Old.describe())
-	fmt.Fprintf(r.out, "  answers session, most        %s\n", answers.Most.describe())
-	fmt.Fprintf(r.out, "  answers session, fewest      %s\n", answers.Fewest.describe())
+	fmt.Fprintf(r.out, "  answers session, old         %s\n", answers.Old)
+	fmt.Fprintf(r.out, "  answers session, most        %s\n", answers.Most)
+	fmt.Fprintf(r.out, "  answers session, fewest      %s\n", answers.Fewest)
 	fmt.Fprintf(r.out, "  embedding model              %s\n", r.subject.Model)
 	fmt.Fprintf(r.out, "  query vector                 the embedding of %s; read it with:\n", r.subject.QueryVectorRow)
 	fmt.Fprintf(r.out, "                               select embedding from embeddings where kind = '%s' and id = '%s'\n",

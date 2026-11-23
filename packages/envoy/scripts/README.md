@@ -1527,15 +1527,17 @@ measurement.
 
 `internal/dispatch/benchtime` is the runner, and each package that owns statement texts carries
 its own `statement_timing_test.go`, all named `TestStatementTimings`: `internal/dispatch/api`,
-`internal/dispatch/refs` and `internal/dispatch/docs`.
+`internal/dispatch/refs`, `internal/dispatch/docs` and `internal/dispatch/sessionanswers`.
 `Pair` takes a named pair of statement texts with their arguments, runs `EXPLAIN (ANALYZE, BUFFERS)` of each alternately on one connection, reports planning plus execution as the median of runs 2 to 12, prints both plans and fails when the after text's median is not below the before text's.
 `Report` is that same two-sided reading with no bound, for a statement whose gain is real but smaller than the run-to-run spread of the parts it shares a statement with: the gate then sits on the piece whose text differs, as a pair of its own.
-The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding and three words), each read from the database at run time, so a re-seed moves them with it.
+`PairBuffers` reads the shared buffers of each side's top plan node, under the plan made for its values and under the generic plan, prints each count with its plan, and fails when the after text does not read fewer under each plan.
+The runner records the server settings it found and the subjects it bound (the largest project, its most heavily linked issue, the most anchored document, five sessions, an embedding, three words, and the start of the agents' answers window with its three sessions), each read from the database at run time, so a re-seed moves them with it.
+A database seeded before the seed wrote deliveries holds no answers subjects, so every package's `TestStatementTimings` then fails when it binds its subjects: seed the database again with this checkout's `cmd/dispatch-seed`.
 
 ```bash
 cd packages/envoy && DISPATCH_BENCH_DATABASE_URL=<seeded database> \
   go test -run TestStatementTimings -v -count=1 -timeout 90m \
-  ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs
+  ./internal/dispatch/api ./internal/dispatch/refs ./internal/dispatch/docs ./internal/dispatch/sessionanswers
 ```
 
 A statement whose gain needs an index or a table a migration of this release adds has no such pair, because one schema cannot hold both sides of it.

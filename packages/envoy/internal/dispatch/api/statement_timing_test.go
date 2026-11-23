@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -36,15 +40,20 @@ const (
 // Which protocol each statement is under, and why:
 //
 //   - Protocol 1 pairs, whose two sides one schema runs: the issue list unpaged and paged, the
-//     project list, agentLastActivity, the issue's children, and the five statements of
-//     search's document arm - searchQuery, searchQueryMeaning, relatedKeywordQuery,
-//     relatedMeaningQuery and relatedProbeSQL. The listing and the project list add no
-//     migration, agentLastActivity reads events_session_actor_created_at_idx, which migration
-//     0026 built, the children read walks issues_parent_key, and the document arm's older text
-//     reads artifact_versions, a table this release's schema still holds; so on a database at
-//     this release's schema both texts of each are measurable, and the pair is the committed
-//     regression check. The two related statements are gated on the document arm they share
-//     and reported whole beside it, for the reason given where that pair is measured.
+//     project list, agentLastActivity, the issue's children, the five statements of search's
+//     document arm - searchQuery, searchQueryMeaning, relatedKeywordQuery, relatedMeaningQuery
+//     and relatedProbeSQL - and the newest event under each priority
+//     (priorityNewestEventQuery), with a report of the same statement with its walk keyed
+//     (priorityNewestEventKeyedWalkQuery). The listing and the project list add no migration,
+//     agentLastActivity reads events_session_actor_created_at_idx, which migration 0026 built,
+//     the children read walks issues_parent_key, the document arm's older text reads
+//     artifact_versions, a table this release's schema still holds, and the newest event and its
+//     keyed walk read issues_pkey, issues_parent_key and events_issue_key_seq_key, which no
+//     migration of this release adds; so on a database at this release's schema both texts of
+//     each are measurable, and the pair is the committed regression check. The two related
+//     statements are gated on the document arm they share and reported whole beside it, for the
+//     reason given where that pair is measured. The newest event is gated on its top plan
+//     node's shared buffers too, for the reason given where it is measured.
 //
 //   - Protocol 2, one side alone: listIssueAsksQueryAll, listIssueRootMessagesQuery and
 //     listArtifactAsksQueryOpen, whose texts this release does not edit at all - their gain is
@@ -63,7 +72,8 @@ const (
 // holds as an oracle - issue_list_equality_test.go, agent_activity_test.go,
 // issue_children_test.go and document_search_oracle_test.go - read from there rather than
 // copied a second time: two copies of one statement drift apart, and those oracles are what the
-// package's equality tests are held to.
+// package's equality tests are held to. The newest event's before text is main's, which
+// priority_newest_event_test.go holds as its oracle in the same way.
 func TestStatementTimings(t *testing.T) {
 	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
@@ -272,6 +282,194 @@ func TestStatementTimings(t *testing.T) {
 	runner.Pair(t, "relatedProbeSQL",
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
 		benchtime.Statement{SQL: relatedProbeSQL, Args: probeArguments})
+
+	measurePriorityNewestEvent(t, runner)
+}
+
+// priorityNewestEventTiming and priorityKeyedWalkTiming name the newest event's pair and the
+// keyed walk's report. Every other reading of the two carries the one name or the other as a
+// prefix, so one -run pattern of the first selects them all.
+const (
+	priorityNewestEventTiming = "the newest event under each priority"
+	priorityKeyedWalkTiming   = priorityNewestEventTiming + ", with the walk keyed"
+)
+
+// priorityNewestEventKeyedWalkQuery is priorityNewestEventQuery with every read of issues keyed:
+// a candidate that TestStatementTimings measures beside it, on the seed and on production, and
+// that no test yet holds to a plan. The walk steps from each member to its children through
+// issues_parent_key, and each member's own issues row is read through issues_pkey, each written
+// as a lateral probe that `offset 0` keeps the planner from flattening into a join it may hash;
+// the event of last_seq is read by the same probe as in priorityNewestEventQuery
+// (last_seq_event). It is written out whole, with the depth cap (parentDepthCapSQL) and the
+// project filter (priorityProjectFilter) as they stand at this commit, because a run on
+// production takes the text from the measurement's log and checks it by its sha256.
+const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
+		select ($1::text[])[i] as key, ($2::text[])[i] as priority
+		from generate_subscripts($1::text[], 1) as seed(i)
+	), members_spread as (
+		select s.key, s.priority, 0 as depth from members_seed s
+		union all
+		select c.key, m.priority, m.depth + 1
+		from members_spread m
+		cross join lateral (
+			select c.key from issues c where c.parent_key = m.key offset 0
+		) c
+		where m.depth < 32
+	), members as (
+		select distinct key, priority from members_spread
+	)
+	select m.priority, max(last_seq_event.created_at)
+	from members m
+	cross join lateral (
+		select i.key, i.last_seq, i.project_key from issues i where i.key = m.key offset 0
+	) i
+	cross join lateral (
+		select last_seq_event.created_at
+		from events last_seq_event
+		where last_seq_event.issue_key = i.key and last_seq_event.seq = i.last_seq
+		limit 1
+	) last_seq_event
+	where (cardinality($3::text[]) = 0 or i.project_key = any($3::text[]))
+	group by m.priority`
+
+// measurePriorityNewestEvent measures the newest event under each priority over the arguments
+// readPriorities binds for every live priority with no project named: the live priorities
+// (prioritystore.List), their relations as readPriorityRelations reads them, and an empty project
+// list, never nil, which pgx would send as null.
+//
+// The pair is main's text against priorityNewestEventQuery, timed (benchtime.Runner.Pair) and
+// gated on the shared buffers of its top plan node under the plan made for its values and under
+// the generic plan (benchtime.Runner.PairBuffers): the statement's gain is the events it no longer
+// reads, and the top node's buffers are what a plan read on production shows on its top line. The
+// keyed walk is reported against main's text, timed and read the same way with no bound, and it
+// must answer priorityNewestEventQuery's rows. For each of the three texts under each plan the
+// walk's share of the top node's buffers is logged (logNewestEventWalk), and so is each text with
+// its sha256, which a run on production checks the text it runs against.
+//
+// main's text and priorityNewestEventQuery are also each run as a prepared statement seven times
+// on one connection under the session's own plan_cache_mode, each execution explained, with its
+// buffers and which plan it ran logged, and its whole plan from the sixth execution on
+// (benchtime.Runner.ReportCachedPlans). That bounds nothing: it shows whether the probe of each
+// member's event holds once Postgres may run its cached generic plan, which pgx's prepared
+// statements reach from their sixth run.
+func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner) {
+	t.Helper()
+	ctx := context.Background()
+	database := openMeasurementStore(t)
+	nodes, err := prioritystore.List(ctx, database.Pool)
+	if err != nil {
+		t.Fatalf("read the live priorities: %v", err)
+	}
+	ids := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		ids = append(ids, node.ID)
+	}
+	keys, priorities, err := (&server{deps: Deps{Store: database}}).readPriorityRelations(ctx, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) == 0 {
+		t.Fatalf("the database holds %d live priorities and no advances relation of one, so the newest event under each priority reads nothing; is it the database cmd/dispatch-seed filled?",
+			len(nodes))
+	}
+	t.Logf("%s: %d live priorities and %d advances relations, with no project named", priorityNewestEventTiming, len(nodes), len(keys))
+	arguments := []any{keys, priorities, []string{}}
+	texts := []struct{ name, sql string }{
+		{"main's text (mainPriorityNewestEventQuery)", mainPriorityNewestEventQuery},
+		{"priorityNewestEventQuery", priorityNewestEventQuery},
+		{"the keyed-walk text (priorityNewestEventKeyedWalkQuery)", priorityNewestEventKeyedWalkQuery},
+	}
+	for _, text := range texts {
+		t.Logf("%s: %s, sha256 %x:\n%s", priorityNewestEventTiming, text.name, sha256.Sum256([]byte(text.sql)), text.sql)
+	}
+	mains := benchtime.Statement{SQL: mainPriorityNewestEventQuery, Args: arguments}
+	heads := benchtime.Statement{SQL: priorityNewestEventQuery, Args: arguments}
+	keyed := benchtime.Statement{SQL: priorityNewestEventKeyedWalkQuery, Args: arguments}
+
+	runner.Pair(t, priorityNewestEventTiming, mains, heads)
+	runner.Report(t, priorityKeyedWalkTiming, mains, keyed)
+	t.Run(priorityKeyedWalkTiming+", its rows", func(t *testing.T) {
+		want := newestEventTimes(t, database, priorityNewestEventQuery, keys, priorities, []string{})
+		got := newestEventTimes(t, database, priorityNewestEventKeyedWalkQuery, keys, priorities, []string{})
+		t.Logf("priorityNewestEventQuery answers %d priorities, and the keyed-walk text %d", len(want), len(got))
+		if len(want) == 0 {
+			t.Errorf("priorityNewestEventQuery answers no priority over the %d relations, so the comparison holds nothing", len(keys))
+		}
+		if !maps.EqualFunc(got, want, time.Time.Equal) {
+			t.Errorf("the keyed-walk text answers\n%v\nwant priorityNewestEventQuery's\n%v", got, want)
+		}
+	})
+	t.Run(priorityNewestEventTiming+", its top node's buffers", func(t *testing.T) {
+		mainBuffers, headBuffers := runner.PairBuffers(t, priorityNewestEventTiming, mains, heads)
+		_, keyedBuffers := runner.ReportBuffers(t, priorityKeyedWalkTiming, mains, keyed)
+		for index, buffers := range []benchtime.Buffers{mainBuffers, headBuffers, keyedBuffers} {
+			for _, plan := range buffers.Plans() {
+				logNewestEventWalk(t, texts[index].name, plan)
+			}
+		}
+	})
+	t.Run(priorityNewestEventTiming+", its cached plans", func(t *testing.T) {
+		runner.ReportCachedPlans(t, priorityNewestEventTiming, mains, heads)
+	})
+}
+
+// newestEventWalkCTE is the name EXPLAIN gives the plan of the walk over each priority's members,
+// the recursive CTE every newest event text descends through.
+const newestEventWalkCTE = "CTE members_spread"
+
+// bufferNode is one node of a plan explained with BUFFERS in FORMAT JSON, with what the walk's
+// share is read from: the subplan it begins, the relation it reads, its shared buffers, which
+// count every node under it, and the nodes under it.
+type bufferNode struct {
+	SubplanName      string       `json:"Subplan Name"`
+	RelationName     string       `json:"Relation Name"`
+	SharedHitBlocks  int64        `json:"Shared Hit Blocks"`
+	SharedReadBlocks int64        `json:"Shared Read Blocks"`
+	Plans            []bufferNode `json:"Plans"`
+}
+
+// logNewestEventWalk logs the walk's share of plan's top-node buffers: the buffers of the plan of
+// newestEventWalkCTE, which descends from the stated issues to every member, and the buffers of
+// every read of issues outside it, which reads each member's own row - in the keyed walk the
+// probes through issues_pkey, and in main's walk its join to issues. A node's buffers count every
+// node under it, so the CTE's are its own top node's. A plan with no one plan of the CTE fails
+// the test, since its share would then be read off nothing.
+func logNewestEventWalk(t *testing.T, text string, plan benchtime.PlanBuffers) {
+	t.Helper()
+	var top bufferNode
+	if err := json.Unmarshal(plan.Plan, &top); err != nil {
+		t.Fatalf("read the plan of %s under %s: %v", text, plan.Mode, err)
+	}
+	var walks int
+	var walk, members int64
+	var visit func(node bufferNode, inWalk bool)
+	visit = func(node bufferNode, inWalk bool) {
+		switch {
+		case node.SubplanName == newestEventWalkCTE:
+			walks++
+			walk += node.SharedHitBlocks + node.SharedReadBlocks
+			inWalk = true
+		case !inWalk && node.RelationName == "issues":
+			members += node.SharedHitBlocks + node.SharedReadBlocks
+		}
+		for _, child := range node.Plans {
+			visit(child, inWalk)
+		}
+	}
+	visit(top, false)
+	if walks != 1 {
+		t.Errorf("%s under %s holds %d plans of %s, want one:\n%s", text, plan.Mode, walks, newestEventWalkCTE, plan.Explained)
+		return
+	}
+	share := func(buffers int64) string {
+		if plan.Shared() == 0 {
+			return "no share of none"
+		}
+		return strconv.FormatFloat(100*float64(buffers)/float64(plan.Shared()), 'f', 1, 64) + "%"
+	}
+	t.Logf("%s: %s under %s reads %d shared buffers at its top node; the walk over the members (%s) reads %d of them (%s), each member's own issues row %d (%s), and the two together %d (%s)",
+		priorityNewestEventTiming, text, plan.Mode, plan.Shared(), newestEventWalkCTE, walk, share(walk),
+		members, share(members), walk+members, share(walk+members))
 }
 
 // documentLegStatement is the smallest statement that runs one keyword document arm and nothing
@@ -355,7 +553,7 @@ func TestRelatedTermsRefreshTiming(t *testing.T) {
 	t.Parallel()
 	runner := benchtime.Open(t, os.Getenv(benchtime.DatabaseURLEnv))
 	project := runner.Subjects().Project
-	database := openRefreshTimingStore(t)
+	database := openMeasurementStore(t)
 	projects := refreshTimingProjects(t, database)
 
 	before := mainRefreshPass(t, database, projects)
@@ -391,10 +589,11 @@ func TestRelatedTermsRefreshTiming(t *testing.T) {
 	}
 }
 
-// openRefreshTimingStore opens a pool on the measurement database. The refresh takes a pool, not
-// the one connection the statement timings share: a pass runs each project in a transaction of
-// its own.
-func openRefreshTimingStore(t *testing.T) *store.Store {
+// openMeasurementStore opens a pool on the measurement database, for the work the one connection
+// the statement timings share does not serve: the refresh, which runs each project of a pass in a
+// transaction of its own, and the newest event's arguments and rows, which this package's readers
+// read through a store (readPriorityRelations, newestEventTimes).
+func openMeasurementStore(t *testing.T) *store.Store {
 	t.Helper()
 	database, err := store.Open(context.Background(), os.Getenv(benchtime.DatabaseURLEnv))
 	if err != nil {

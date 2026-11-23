@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -570,7 +571,7 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 }
 
 // assertAnswersReadFindsTheDeliveries holds the seed's deliveries to the agents' answers read
-// (sessionanswers.List), over the window's start by its one rule (answersWindowStartQuery).
+// (sessionanswers.List), over the window's start by its one rule (answerswindow.StartQuery).
 // Each of the five types the read lists has a person's event delivered to a session; the read
 // lists at least one item for each of the three sessions the report names, and the three
 // together list every kind of item; and the old session holds at least OldDeliveries of those
@@ -579,7 +580,7 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, run *seedRun) {
 	t.Helper()
 	ctx := context.Background()
-	rows, err := database.Pool.Query(ctx, `select e.type, count(*) from events e where `+deliveredPersonEvent+` group by e.type`)
+	rows, err := database.Pool.Query(ctx, `select e.type, count(*) from events e where `+answerswindow.DeliveredPersonEvent+` group by e.type`)
 	if err != nil {
 		t.Fatalf("count the deliveries by type: %v", err)
 	}
@@ -602,7 +603,7 @@ func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, ru
 		}
 	}
 
-	subjects, err := readAnswersSubjects(ctx, database.Pool)
+	subjects, err := answerswindow.Read(ctx, database.Pool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,7 +621,7 @@ func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, ru
 	kinds := map[string]int{}
 	for _, subject := range []struct {
 		name    string
-		subject answersSubject
+		subject answerswindow.Subject
 	}{{"old", subjects.Old}, {"most", subjects.Most}, {"fewest", subjects.Fewest}} {
 		if subject.subject.Session == "" {
 			t.Errorf("the seed holds no %s session for the answers read", subject.name)
@@ -652,7 +653,7 @@ func assertAnswersReadFindsTheDeliveries(t *testing.T, database *store.Store, ru
 	var before int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from events e
-		where `+deliveredPersonEvent+` and e.created_at < $1 and e.published_destinations @> array[$2::text]
+		where `+answerswindow.DeliveredPersonEvent+` and e.created_at < $1 and e.published_destinations @> array[$2::text]
 	`, subjects.Since, contracts.LegacyAgentSubject(subjects.Old.Session)).Scan(&before); err != nil {
 		t.Fatalf("count the old session's deliveries before the window: %v", err)
 	}

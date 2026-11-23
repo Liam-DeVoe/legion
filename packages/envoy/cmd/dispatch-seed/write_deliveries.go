@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -21,133 +22,11 @@ import (
 )
 
 // deliveryTypes are the five event types the agents' answers read lists (sessionanswers.query,
-// reached_by_destination), the same five as answersTypesSQL, in the order the deliveries of one
-// span take turns (deliveryPools.draw): an answer, a new message, a reply to a message, a comment
-// and a decline (an ask.resolved whose resolution is of kind declined).
+// reached_by_destination), the same five as answerswindow.DeliveredPersonEvent names, in the
+// order the deliveries of one span take turns (deliveryPools.draw): an answer, a new message, a
+// reply to a message, a comment and a decline (an ask.resolved whose resolution is of kind
+// declined).
 var deliveryTypes = []string{"ask.answered", "message.created", "message.answered", "comment.created", "ask.resolved"}
-
-// answersTypesSQL is the five types of deliveryTypes as an SQL list.
-const answersTypesSQL = `('ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved')`
-
-// deliveredPersonEvent is the SQL predicate, on the event aliased e, that holds for a person's
-// event of the five types whose published_destinations name at least one session's topic
-// (contracts.AgentTopicPrefix): a delivery of a person's words to a session, which is what the
-// answers read lists.
-const deliveredPersonEvent = `e.actor->>'kind' = 'user' and e.type in ` + answersTypesSQL + `
-	  and exists (select 1 from unnest(e.published_destinations) reached (topic)
-	              where reached.topic like '` + contracts.AgentTopicPrefix + `%')`
-
-// answersWindow is the window the answers read lists when its request names no start: the 72
-// hours every agent host carries on each model request (api's sessionAnswersWindow).
-const answersWindow = 72 * time.Hour
-
-// answersWindowStartQuery is the one rule for the start of the seed's answers window: the newest
-// created_at of a person's event of the five types whose destinations name a session, less the
-// 72 hours of answersWindow. Nothing else decides the window. The report reads its subjects over
-// it (readAnswersSubjects), the seed's test lists the answers over it, and a measurement of the
-// read binds the start it answers as its since: read from the database, never now() less 72
-// hours, since the seed dates every row in its own year (baseTime, seedSpan), which is in the
-// past of any run. A measurement in another package cannot import this command, so it carries
-// the same text. It answers null on a database that holds no delivery.
-//
-// The writer times the deliveries so that the rule's start falls between them whatever the
-// newest one's exact time (planDeliveries): the deliveries in the window are in the last 72 hours
-// of the seed's span, and every older one is at least a day before the earliest start the rule
-// can then answer.
-const answersWindowStartQuery = `
-	select max(e.created_at) - interval '72 hours'
-	from events e
-	where ` + deliveredPersonEvent
-
-// answersSessionsQuery is, for each session a delivery of a person's words names, how many of
-// those deliveries are inside the window (answersWindowStartQuery) and how many are before it,
-// in the order of the session ids: what readAnswersSubjects chooses the read's three subjects
-// from.
-const answersSessionsQuery = `
-	select substr(reached.topic, length('` + contracts.AgentTopicPrefix + `') + 1),
-	       count(*) filter (where e.created_at >= w.start),
-	       count(*) filter (where e.created_at < w.start)
-	from events e
-	cross join (` + answersWindowStartQuery + `) w (start)
-	cross join lateral unnest(e.published_destinations) reached (topic)
-	where e.actor->>'kind' = 'user' and e.type in ` + answersTypesSQL + `
-	  and reached.topic like '` + contracts.AgentTopicPrefix + `%'
-	group by 1
-	order by 1`
-
-// answersSubject is one session the answers read is measured for, with how many deliveries of
-// a person's words reached it inside the window and how many before it. Session is empty where
-// the seed holds no session for the subject: too few sessions at a very small scale.
-type answersSubject struct {
-	Session      string
-	InWindow     int
-	BeforeWindow int
-}
-
-// describe is the subject as the report prints it.
-func (s answersSubject) describe() string {
-	if s.Session == "" {
-		return "none: the seed holds no session for it at this scale"
-	}
-	return fmt.Sprintf("%s with %d deliveries in the window and %d before it", s.Session, s.InWindow, s.BeforeWindow)
-}
-
-// answersSubjects is the start of the answers window and the three sessions the read is measured
-// for. Old is the session with the most deliveries before the window. Most and Fewest are, of the
-// other sessions, the one with the most deliveries in the window and the one with the fewest
-// there, at least one, Fewest being another session than Most. A tie goes to the lower session
-// id. Since is the zero time on a database that holds no delivery.
-type answersSubjects struct {
-	Since             time.Time
-	Old, Most, Fewest answersSubject
-}
-
-// readAnswersSubjects reads the answers window's start by its one rule (answersWindowStartQuery)
-// and chooses the three subjects over the deliveries each session holds (answersSessionsQuery),
-// as answersSubjects states them.
-func readAnswersSubjects(ctx context.Context, pool *store.Pool) (answersSubjects, error) {
-	var subjects answersSubjects
-	var since *time.Time
-	if err := pool.QueryRow(ctx, answersWindowStartQuery).Scan(&since); err != nil {
-		return answersSubjects{}, fmt.Errorf("read the answers window's start: %w", err)
-	}
-	if since == nil {
-		return subjects, nil
-	}
-	subjects.Since = since.UTC()
-	rows, err := pool.Query(ctx, answersSessionsQuery)
-	if err != nil {
-		return answersSubjects{}, fmt.Errorf("count the deliveries of each session: %w", err)
-	}
-	sessions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (answersSubject, error) {
-		var subject answersSubject
-		return subject, row.Scan(&subject.Session, &subject.InWindow, &subject.BeforeWindow)
-	})
-	if err != nil {
-		return answersSubjects{}, fmt.Errorf("count the deliveries of each session: %w", err)
-	}
-	// The rows come in session id order and each choice takes a later row only on a strictly
-	// better count, so a tie goes to the lower id.
-	for _, session := range sessions {
-		if session.BeforeWindow > subjects.Old.BeforeWindow {
-			subjects.Old = session
-		}
-	}
-	for _, session := range sessions {
-		if session.Session != subjects.Old.Session && session.InWindow > subjects.Most.InWindow {
-			subjects.Most = session
-		}
-	}
-	for _, session := range sessions {
-		if session.Session == subjects.Old.Session || session.Session == subjects.Most.Session || session.InWindow == 0 {
-			continue
-		}
-		if subjects.Fewest.Session == "" || session.InWindow < subjects.Fewest.InWindow {
-			subjects.Fewest = session
-		}
-	}
-	return subjects, nil
-}
 
 // documentTopicPrefix begins the owner topic of every event a document owns, as the outbox
 // builds it (outbox's envelope): notifications.dispatch.document.<project>.<slug>.<type>.
@@ -240,7 +119,7 @@ func (p *seedPlan) deliverableComment(index int) bool {
 //
 // The times: the deliveries in the window are the items of the last 72 hours of the seed's span
 // (seedSpan from baseTime), so the newest delivery is no earlier than the first instant of those
-// 72 hours, and the rule's start (answersWindowStartQuery) is no earlier than 72 hours before that
+// 72 hours, and the rule's start (answerswindow.StartQuery) is no earlier than 72 hours before that
 // instant. The old session's deliveries before the window are the items of the 60 days that end
 // a day before that earliest start. So the rule's start sits between the two sets whatever the
 // newest delivery's exact time. A comment or a message is delivered at its own time, and an
@@ -263,8 +142,8 @@ func (r *seedRun) planDeliveries() []delivery {
 	plan := r.plan
 	random := rand.New(rand.NewPCG(randomSeed+4, randomSeed^0x94d049bb133111eb))
 	end := baseTime.Add(seedSpan)
-	window := deliverySpan{from: end.Add(-answersWindow), to: end}
-	before := deliverySpan{to: window.from.Add(-answersWindow - 24*time.Hour)}
+	window := deliverySpan{from: end.Add(-answerswindow.Length), to: end}
+	before := deliverySpan{to: window.from.Add(-answerswindow.Length - 24*time.Hour)}
 	before.from = before.to.Add(-oldDeliverySpan)
 
 	order := random.Perm(len(plan.sessions))

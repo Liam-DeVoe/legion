@@ -805,7 +805,7 @@ Each delivery is already published, so the outbox has no work to do.
 The seed writes no `comment_deliveries` or `message_deliveries` row.
 At `--scale 1`, about 2,000 deliveries are in the last 72 hours of the seeded year, and they go to 400 sessions.
 One more session, the old one, gets 20 of them, and 10,000 more in the 60 days that end a week before the seeded year ends.
-The answers window has one rule, `answersWindowStartQuery`: the window starts 72 hours before the newest `created_at` of a person's event of the five types whose destinations name a session.
+The answers window has one rule, `answerswindow.StartQuery` in `internal/dispatch/answerswindow`, which the seed's report, the seed's test and the measurements all read: the window starts 72 hours before the newest `created_at` of a person's event of the five types whose destinations name a session.
 The seed dates every row in its own year, so a measurement reads that start from the database and binds it as `since`, and never binds `now()` less 72 hours.
 
 The command prints every table's row count;
