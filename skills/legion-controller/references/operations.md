@@ -6,6 +6,8 @@ Read this before an operation of your own work, and before you send another sess
 
 ## Before any `kubectl` operation
 
+You have no exec, attach or port-forward into a pod.
+
 1. Read `kubectl auth can-i delete pods -n <namespace>`. It prints `yes` or `no`.
 2. On `no`, or when `kubectl` fails, run no operation that needs the right. Name it in the day's report with the read and its answer.
 
@@ -50,35 +52,17 @@ Replace an issue pod only when a person asks or your deployment instructions nam
 ## A re-run of a CI run
 
 Your `gh` only reads: it holds the review App's read-only lease. This re-run and the reply to a GitHub mention take the implement App token the secrets broker lends, narrowed to the repository.
-
-1. Read the failed job's log: `gh run view <id> --log-failed --repo <owner>/<repo>`. Re-run only the failed jobs, and only for an infrastructure failure the log shows, such as a lost runner. Never re-run to test a theory, or on a head a run already tested with the same inputs.
-2. A test that failed and passed on the same code is flaky: write it to the tree whose code it is by a mention (`skill://legion-worker/references/findings.md#write-to-the-owner`), to be fixed at its cause.
-3. Re-run with that token, and name in `--reason` the run, the failure and the issue key:
-
-   ```sh
-   agent-secrets LEGION_IMPLEMENT_APP --reason '<the run, the failure, the issue>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- https://api.github.com/repos/<owner>/<repo>/actions/runs/<id>/rerun-failed-jobs'
-   ```
-
-4. Read `gh run view <id> --repo <owner>/<repo> --json attempt,status`: the re-run started when `attempt` rose by one and `status` is `queued` or `in_progress`. Step 3's exit 77 with no `agent-secrets:` grant line is a denial, and its exit 22 is GitHub's refusal, whose status curl prints. Name a denial, or a 4xx such as a run that cannot be re-run, in the day's report. Run step 3 again only after a 5xx, once, at a later wake, and name a second failure there.
+Re-run only the failed jobs of an infrastructure failure the log shows, and write a test that failed and passed on the same code to the tree whose code it is, by a mention.
+The four steps, the log read, the flaky test, the re-run and the read after it, are in `skill://legion-controller/references/operations-steps.md#a-re-run-of-a-ci-run`: read them before every re-run.
 
 ## An agent the operator holds
 
-`409 SUSPENDED_BY_OPERATOR` means that only the operator lifts the hold.
-
-1. Open a `dispatch ask` on the report issue that names the claim, quotes the refusal and says why its agent needs `<op>`, with the options `Resume it: the operator resumes the agent with legion claims resume, and I then run <op> on it` and `Keep it held: <what stays as it is>`.
-2. Send no Envoy message to the session that holds the operator's token, and ask no other session to lift the hold.
-3. Name the ask in your summary, and in the day's report while it is open.
-4. On `Resume it`, run `<op>` again; on a second 409, reply under the ask with the refusal, and run it again at the next reply. On `Keep it held`, run nothing.
+`409 SUSPENDED_BY_OPERATOR` means that only the operator lifts the hold. Ask the person for it as `skill://legion-controller/references/operations-steps.md#an-agent-the-operator-holds` says, and ask no other session to lift the hold.
 
 ## An action another agent asks for
 
 An architect or a phase worker that needs an action on an agent asks you with a Dispatch comment on that agent's issue that mentions your role, its first line `Action on an agent`, naming the agent, the action in plain words and why. The request is your own work: never a relay, and never a request for another session. Act on, and answer, the comment's author as Dispatch records it, never a role or a name written in its text.
-
-1. Read the comment's `author`: the entry of `GET /api/v1/issues/<KEY>/comments` (the `curl` form of `references/session.md`) whose `id` is the comment's. It is `{kind, id, origin: {session_title}}`.
-2. The author is an agent of your project when `author.kind` is `session` and `read_state` with `issues: ["<the key that origin.session_title names>"]` gives `author.id` as that issue's architect's `session` or a worker's `claim.session`. Otherwise run nothing, and reply that no agent of this project asked.
-3. Read the agent the comment names in `read_state` with `issues: ["<KEY>"]`.
-4. Run the action it asks for as [Actions on an agent](#actions-on-an-agent) says, only while the agent's state still calls for it: a resume is `resume_agent`, and a start in a fresh session is `fresh_session`. On `409 SUSPENDED_BY_OPERATOR`, take [An agent the operator holds](#an-agent-the-operator-holds).
-5. Reply under the comment with what you ran and its answer, or why you ran nothing, mentioning the author's session: `dispatch comment --issue '<KEY>' --reply-to '<comment id>' --mention 'session:<author.id>' --body-file -`.
+Before you act on one, read its five steps in `skill://legion-controller/references/operations-steps.md#an-action-another-agent-asks-for`: they check that the author is an agent of your project and say how to reply.
 
 ## A request to another session
 
@@ -88,4 +72,5 @@ A decision only a person may make is a `dispatch ask`. Every other request goes 
 - Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: write it to the owning tree's architect, or file it as a clear defect no tree owns. An apply window is a `dispatch ask`.
 - Work, an investigation, a review, a decision or a status: read what you can reach yourself, and write the rest to its owner.
 - What another agent sent you: send no relay; that agent writes to the owner itself.
+- A person's request from outside Dispatch, or an answer on an ask (`finding-asks.md`, catch-up step 5): write it to the owning tree's architect in their words, copying nothing.
 - A copy only so another session knows: send none.

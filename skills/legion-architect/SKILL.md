@@ -107,14 +107,12 @@ nothing after it is yours (`skill://legion-architect/references/acceptance.md`, 
 ## Escalation judgment
 
 - Send the controller (its topic is on your addressing line) a child that serves no criterion of the root and a need for admission slots.
-  Two trees changing the same code go to the other tree's architect by a mention on its issue (`skill://legion-worker/references/findings.md#write-to-the-owner`).
+  Two trees changing the same code go to the other tree's architect by a mention on its issue (`skill://legion-worker/references/findings.md`).
 
-- Carry a clear defect another role writes to you (a comment that mentions your role, first line `Clear defect from <role>`) in this tree:
-  in an open pull request, or in a child after the red-team check; reply under its evidence comment with the issue that carries it.
-  It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").
+- Carry a clear defect another role writes to you in this tree: in an open pull request, or in a child after the red-team check (`skill://legion-architect/references/operations.md#a-clear-defect-another-role-writes-to-you`).
 
-- An agent of your tree that needs an action (a stop, a retry, a suspension, a resume, a compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action`).
+- An agent of your tree that needs an action is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-architect/references/operations.md#an-agent-of-your-tree-that-needs-an-action`).
 
-- Your tree's failed CI runs and its pull requests that no merger merges are yours, never a request to another session: `skill://legion-architect/references/operations.md`.
+- Your tree's failed CI runs and its pull requests that no merger merges are yours, never another session's: `skill://legion-architect/references/operations.md`.
 
 - A tool a worker cannot get is a pull request to the worker image (`skill://legion-worker/references/tools.md`).

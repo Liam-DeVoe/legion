@@ -28,19 +28,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 ## Stop rules
 
 - A refused completion is information, not a retry loop.
-  Quote the answer verbatim to the architect.
-
-  - `HANDOFF_STALE_GENERATION` or `HANDOFF_NO_RUN`: push nothing more and end the turn without completing.
-    When the task then arrives with its work and handoff done, call `handoff_complete` again in its turn; never redo the work.
-
-  - `HANDOFF_STALE_ENTRY`: end the turn without completing; the daemon sends the new entry's task by itself.
-    Do what it asks at the head it names, with a handoff of its own.
-
-  - `HANDOFF_HEAD_MERGED_FORWARD`: a merge forward the daemon asked for has landed above the head your completion names, or it names no head; nothing was recorded.
-    Read the merge, then complete again at the new head with a handoff that names it.
-
-  - `HANDOFF_NOT_CURRENT_PHASE`: report it; do not retry that completion.
-    `HANDOFF_ALREADY_RECORDED`: the first answer stands.
+  Quote the answer verbatim to the architect, and do what its code asks in `skill://legion-worker/references/stop-rules.md`.
 
 - Wait in these cases, and end the turn with a `WAITING` line that names what you wait on:
 
@@ -52,7 +40,9 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
 
   - a pushing role whose second push still did not carry the pull request onto its commit.
 
-- Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on. - Another agent that needs an action (a stop, a retry, a suspension, a resume of the agent, a compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md#another-agent-that-needs-an-action`).
+- Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
+
+- Another agent that needs an action (a stop, a retry, a suspension, a resume of the agent, a compaction or a fresh session) is the controller's to act on: ask it with a `dispatch comment` on that agent's issue that mentions its role, never with `envoy_publish` (`skill://legion-worker/references/findings.md#another-agent-that-needs-an-action`).
 
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/results.md`).
 
@@ -97,7 +87,9 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   a set variable outranks the gh directory the daemon refreshes.
 
 - Before you report a resource unreachable, or read a GitHub `404` as no access, try the call through `skill://agent-secrets` and read the profiles in `AWS_CONFIG_FILE`.
-  Request a secret only for your issue's work. - A comment on a pull request in a repository the implement App is installed on and your App is not takes the broker's implement App token, narrowed to that repository (`skill://legion-architect/references/operations.md#the-token-the-secrets-broker-lends`).
+  Request a secret only for your issue's work.
+
+- A comment on a pull request in a repository the implement App is installed on and your App is not takes the broker's implement App token, narrowed to that repository (`skill://legion-architect/references/operations.md#the-token-the-secrets-broker-lends`).
   It is the one write the token is lent to you for.
   A branch that your App cannot create is the implementer's work: send it to the architect as a cross-phase decision.
   Any other write your `gh` cannot make is a finding.

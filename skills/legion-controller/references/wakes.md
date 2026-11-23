@@ -52,10 +52,4 @@ Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot reco
 
 Answer a mention that asks for triage or for what `read_state` or Dispatch holds as a Dispatch comment on the issue the mention is about. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect, never a token built from a partial issue reference. Then reply to the person on GitHub with that comment's link alone. Their words go there because the owner can read them nowhere else; a person's answer on a Dispatch ask is taken as catch-up step 5 of `skill://legion-controller/references/finding-asks.md` says, copying nothing. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
 
-Your `gh` only reads, so post the reply with the implement App token the secrets broker lends, narrowed to the repository: a `curl` POST with the token on standard input, as step 3 of `skill://legion-controller/references/operations.md#a-re-run-of-a-ci-run` sends the re-run. `<n>` is the number of the issue or pull request the mention is on:
-
-```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: reply to a GitHub mention' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments' sh '{"body":"<the link>"}'
-```
-
-That reply is your one GitHub write for a mention. Exit 77 with no `agent-secrets:` grant line is a denial, and exit 22 is GitHub's refusal, whose status curl prints. Name either in your daily report, and do not post the reply again.
+Post that reply with the implement App token the secrets broker lends, narrowed to the repository, as `skill://legion-controller/references/operations-steps.md#a-reply-to-a-github-mention` says: it is your one GitHub write for a mention, and you post it once.

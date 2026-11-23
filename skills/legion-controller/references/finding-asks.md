@@ -12,20 +12,8 @@ Every issue you file carries one line in its spec, which triage reads to tell yo
 ## File a clear defect no tree owns
 
 A role writes a clear defect to you only when it found no tree that owns the code: a comment that mentions your role, on the report issue or on its own issue, first line `Clear defect from <role>`. A clear defect you find yourself goes to its owner as `findings.md` says, and you forward none; when no tree owns it, post its evidence on the report issue with `controller` as the role.
-
-Every reply under the evidence mentions the finder's role, the token after `Clear defect from ` (leave out `--mention` when it is `controller`):
-
-```bash
-dispatch comment --issue '<the evidence's issue>' --reply-to '<comment id>' --mention 'role:<the finder's token>' --body-file -
-```
-
-1. Check it is clear: the fix needs no choice a person must make, in a repository both role GitHub Apps are installed on. Otherwise reply `Not filed: <the choice, or the repository the Apps miss>` and open nothing: the finder opens its ask.
-2. Search first (`skill://dispatch-first`). When an open issue tracks it and a live tree owns that issue (its record's `tree`), file nothing and reply `Not filed: tracked by dispatch://<KEY>; write to role:<that tree's architect's token>`. When no running tree owns that issue, comment the evidence there and reply `Filed dispatch://<KEY>`.
-3. When a live tree's repository and component match (the live trees: `skill://legion-controller/references/admission.md`), file nothing and reply `Not filed: dispatch://<ROOT> owns it; write to role:<its architect's token>`. Build each token as `skill://legion-controller/references/operations.md#a-request-to-another-session` says.
-4. No running tree owns it: file it where the fix belongs, in the project that repository maps to, or in your own project when Dispatch maps it to none:
-   `dispatch issue --project <KEY> --repo <owner/name> --title '<the defect>' --label legion --spec-file -`
-   The spec states the defect, where the fix belongs and the fix, and ends with the `Filed for Legion from` line.
-5. Reply `Filed dispatch://<NEW KEY>`.
+File it only when it is clear, in a repository both role GitHub Apps are installed on, no open issue that a live tree owns tracks it, and no live tree's repository and component match. Otherwise file nothing and reply under its evidence, mentioning the finder: `Not filed:` with the owner the finder writes to itself, or the reason the finder opens its ask.
+The reply's form and the five steps are in `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect-no-tree-owns`: read them before every such defect.
 
 ## Follow it
 

@@ -10,6 +10,15 @@ The operator ran `legion controller start --config controller.yaml` on their own
 
 The daemon runs you in a pod. When the pod dies, it relaunches it and resumes this session with a new start message: run the start procedure each time one arrives.
 
+## What happened before you started
+
+The start procedure (`skill://legion-controller/SKILL.md`, *What happened before you started*). Every launch opens with a start message. Envoy keeps no wake sent while no controller ran, so on it:
+
+1. Read `read_state`. Handle each issue held with `holdReason: escalated`, and each root whose `architect.state` is `failed` and whose `phase` is not `done`, as its wake says. Name each root at `phase: done` whose `status` is `in_progress`, `testing`, `needs_review` or `retro`: Legion no longer runs it. Take them from the summary's `<KEY> done <status>` lines, ten keys an `issues` read, never from `phase: "done"`.
+2. Triage what was handed over meanwhile (`skill://legion-controller/references/triage.md#at-every-start`).
+3. Catch up (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`).
+4. Run the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`).
+
 ## The `legion` tool
 
 - `read_state` with no field: a summary in lines, its first line naming what the others are (the project and its pause, the admission lines, one `<KEY> <phase> <status>` line for every issue the daemon records, and under each issue Legion still runs its slot, hold, gate and claims). With `issue`, `issues`, `phase` or `settings: true`: the full records it names, such as `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`) and `settings`, the resolved `legion.yaml`. The tool's output reaches you cut at about 41 KB, so read records ten keys at a time.

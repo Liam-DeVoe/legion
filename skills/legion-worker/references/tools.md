@@ -25,11 +25,7 @@ Read it before you run a build or tests in your pod, read a shared database, rea
 
 ## Reading a shared database
 
-Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Put no URL on a command line, which any process of the pod can read: this command pipes its parts to psql as a service file. Put no `COMMIT` in `<file>`, so the read stays in one read-only transaction: a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
-
-```sh
-PGSERVICEFILE=<(python3 -c 'from urllib.parse import*;u=urlsplit(input());q=unquote;print(f"[r]\nhost={u.hostname}\nport={u.port or 5432}\ndbname={q(u.path[1:])}\nuser={q(u.username)}\npassword={q(u.password)}",*map("=".join,parse_qsl(u.query)),sep="\n")' <"$SESSION_READER_DSN_FILE" 2>/dev/null) PGSERVICE=r psql -1qX -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>
-```
+Read a database outside your pod through the read-only login whose URL is in the file `SESSION_READER_DSN_FILE` names. Never read it through the session URL the file `OMP_SESSION_SQL_DSN_FILE` names. Put no URL on a command line, which any process of the pod can read: pipe its parts to psql as a service file, with the command in `skill://legion-worker/references/tools-steps.md#reading-a-shared-database`. Put no `COMMIT` in `<file>`, so the read stays in one read-only transaction: a session-wide setting stays on the pooled backend and fails the next client's writes. With no reader URL, report it as a fault of the deployment.
 
 ## What the image carries
 

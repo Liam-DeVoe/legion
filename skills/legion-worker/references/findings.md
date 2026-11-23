@@ -17,33 +17,13 @@ Search first (`skill://dispatch-first`). An open issue that tracks the problem g
 ## Write to the owner
 
 Write to the owner on Dispatch: a comment on the issue that owns the subject, which mentions the owner's role. Dispatch delivers the mention and retries it, so check no liveness first. The controller forwards no message from one agent to another, and it edits no repository, so a defect it finds goes to its owner this way too.
-
-1. Find the owning issue: the issue of an open pull request on a `legion/<KEY>` branch that changes that code, or the open issue `dispatch search` finds for it.
-2. Walk its `child_of` links up to the tree's root: `dispatch read --issue <KEY>` names each parent under `Links:`.
-3. Post the evidence on the owning issue, and mention the root's architect. `<project>` is the Legion project that runs the tree; for your own project it is the word after `legion-` in your role token.
-
-   ```bash
-   dispatch comment --issue '<owning KEY>' --mention 'role:legion-<project>-<root key, lower case>-architect' --body-file - <<'EOF'
-   Clear defect from <your role token>
-   <what went wrong, where and to whom, with the numbers; dispatch://<KEY> it came from; the repository and component; the fix; why you do not make it yourself>
-   EOF
-   ```
-
-When no tree owns the code, post the same comment on that project's report issue (*Where it goes*; a closed one takes a comment too, and with none, your own issue), with `--mention 'role:legion-<project>-controller'`. The controller replies under it and mentions your role. `Filed dispatch://<KEY>` names the issue it filed. On `Not filed: dispatch://<ROOT> owns it; write to role:<token>` or `Not filed: tracked by dispatch://<KEY>; write to role:<token>`, write the same comment on the issue it names, mentioning that role. On `Not filed: dispatch://<KEY> owns it; role:<token> is mentioned here`, the owner has it: write nothing. On any other `Not filed:` reply, open the ask yourself (step 3).
-
-Apart from that reply, file nothing and wait for nothing. A production check's result names your comment, `dispatch://<KEY>/comment/<id>`.
+Mention the root architect of the tree that owns the code, on its issue; when no tree owns it, mention the controller of the project the repository maps to, on that project's report issue.
+The steps, the comment's form and what to do with each reply the controller writes are in `skill://legion-worker/references/findings-steps.md#write-to-the-owner`: read them before you write.
 
 ## Another agent that needs an action
 
-The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: neither you nor your architect can take one. When another agent needs one, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role. `<project>` is the word after `legion-` in your role token. Name the agent by its issue and role, the action in plain words, and why, with what you observed:
-
-```bash
-dispatch comment --issue '<KEY>' --mention 'role:legion-<project>-controller' --body-file - <<'EOF'
-Action on an agent
-<KEY> <role>: <the action: stop, retry, suspend, resume the agent, compact, or start it in a fresh session>, because <what you observed, with the numbers and when>
-EOF
-```
-
+The actions on an agent (stop, retry, suspend, resume the agent, compact, and start it in a fresh session) are the project's controller's alone: neither you nor your architect can take one. When another agent needs one, ask the controller with a `dispatch comment` on that agent's issue, `<KEY>`, that mentions the controller's role.
+The comment's form is in `skill://legion-worker/references/findings-steps.md#another-agent-that-needs-an-action`.
 Send the controller no `envoy_publish` for it: Dispatch delivers the mention and retries it. The controller replies under your comment with what it ran, or why it ran nothing; wait for nothing.
 
 ## Where it goes
