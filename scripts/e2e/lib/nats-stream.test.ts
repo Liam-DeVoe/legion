@@ -137,21 +137,30 @@ const clientsReadMilliseconds = 30_000;
 
 /**
  * The names of the clients connected to this file's server, read from its monitor's /connz once
- * `settled` holds for them or once clientsReadMilliseconds have passed. A client's close is
- * asynchronous, so one closed a moment ago can still be counted: the read polls a real container's
- * own count, which no fake clock advances, until it is what the caller waits for. A client with no
- * name is named by its connection id.
+ * `settled` holds for them or once a window of clientsReadMilliseconds has ended. A client's close
+ * is asynchronous, so one closed a moment ago can still be counted: the read polls a real
+ * container's own count, which no fake clock advances, until it is what the caller waits for. A
+ * client with no name is named by its connection id. Each poll is cut when the window ends; a poll
+ * cut after an earlier poll answered gives that earlier answer, so a client left open is named
+ * rather than lost to "The operation timed out", as packages/envoy-client/test/nats-server.ts's
+ * read does; a first poll that fails throws.
  */
 async function connectedClients(settled: (names: string[]) => boolean): Promise<string[]> {
-  const until = performance.now() + clientsReadMilliseconds;
+  const window = AbortSignal.timeout(clientsReadMilliseconds);
+  let last: string[] | undefined;
   for (;;) {
-    const response = await fetch(`http://${monitor}/connz`, {
-      signal: AbortSignal.timeout(Math.max(1, Math.ceil(until - performance.now()))),
-    });
-    if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
-    const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
-    const open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
-    if (settled(open) || performance.now() >= until) return open;
+    let open: string[];
+    try {
+      const response = await fetch(`http://${monitor}/connz`, { signal: window });
+      if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
+      const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
+      open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
+    } catch (error) {
+      if (last !== undefined && window.aborted) return last;
+      throw error;
+    }
+    if (settled(open) || window.aborted) return open;
+    last = open;
     await Bun.sleep(100);
   }
 }

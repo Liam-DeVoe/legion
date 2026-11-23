@@ -8,11 +8,12 @@ setDefaultTimeout(HANG_GUARD_MS);
 /**
  * A stand-in NATS monitor on 127.0.0.1: its first /connz request is answered with `first` (none
  * when `first` is undefined, so that request is held too), and every later request is held until
- * its client cuts it. `held` resolves at the first request it holds.
+ * its client cuts it. `held` resolves at the first request it holds; `requests` counts them all.
  */
 function standInMonitor(first: string[] | undefined): {
   readonly address: string;
   readonly held: Promise<void>;
+  requests(): number;
   stop(): void;
 } {
   const { promise: held, resolve: holding } = Promise.withResolvers<void>();
@@ -33,7 +34,12 @@ function standInMonitor(first: string[] | undefined): {
       return promise;
     },
   });
-  return { address: `127.0.0.1:${server.port}`, held, stop: () => server.stop(true) };
+  return {
+    address: `127.0.0.1:${server.port}`,
+    held,
+    requests: () => requests,
+    stop: () => server.stop(true),
+  };
 }
 
 describe("connectedClients", () => {
@@ -66,13 +72,17 @@ describe("connectedClients", () => {
     await expect(read).rejects.toThrow();
   });
 
-  test("a read ends at once when the server's clients are the ones left open", async () => {
+  // The read ends on its first answer, since the server's clients are exactly the ones left open.
+  // A read that polled again would have its second poll held; the window is aborted at that hold,
+  // so such a read still returns, and the count of requests the stand-in saw tells the two apart.
+  test("a read ends at its first answer when the server's clients are the ones left open", async () => {
     const monitor = standInMonitor(["leftover-client"]);
     monitors.push(monitor);
     const window = new AbortController();
+    monitor.held.then(() => window.abort());
     expect(await connectedClients(monitor.address, window.signal, ["leftover-client"])).toEqual([
       "leftover-client",
     ]);
-    expect(window.signal.aborted).toBe(false);
+    expect(monitor.requests()).toBe(1);
   });
 });
