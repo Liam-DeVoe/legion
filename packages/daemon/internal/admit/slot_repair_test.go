@@ -418,7 +418,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 				tasked := got
 				role := phase.RoleFor(row.stands)
 				if tasked[0].role != role || !tasked[0].needsSlot {
-					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot as every phase worker's start does",
+					t.Fatalf("the start %s carries a task on after the pass = %+v, want the %s's, held for the issue's own slot: the repair starts the worker of the phase the issue stands in, and its task waits for the slot as the start of every phase that keeps one does",
 						row.key, tasked[0], role)
 				}
 				if want := seededEntryTask(row.key); tasked[0].task != want {

@@ -160,7 +160,8 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// and that merge closes the issue, so there is no further phase for a row to be asked for.
 
 	// An issue whose architect sends the work back from accepting to implementing writes the
-	// change again, so its start waits for a row as any phase worker's start does.
+	// change again, so its start waits for a row as the start of every phase that keeps one does
+	// (record.PhaseKeepsSlot).
 	const sentBack = "LEGION-400"
 	pastReviewRoot(t, pool, sentBack, phase.Accepting, "needs_review", "E")
 
