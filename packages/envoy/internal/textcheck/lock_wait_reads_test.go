@@ -48,12 +48,12 @@ var (
 	lockWaitPredicate = regexp.MustCompile(`(?i)select\s+pid\s+from\s+pg_locks\s+where\s+not\s+granted(?:\s+and\s+locktype\s*=\s*'\w+')?(?:\s*\)|\s*;?\s*$)`)
 )
 
-// No Go file of the three modules reads whether a backend waits on a lock from pg_stat_activity's
-// wait event, or writes out lockwaittest's predicate: each reads it through lockwaittest.Waiting
-// or lockwaittest.WaitingOn. lockwaittest's package comment says why the wait event is the wrong
-// read, and docs/testing.md, "A test reads a lock wait from pg_locks", gives what was measured. A
-// root that holds no go.mod, or in which the walk reads no Go file, fails the check, which would
-// otherwise pass having read nothing, or only part of a module.
+// No Go file of the three modules compares a wait event with a lock (lockWaitEvent) or writes out
+// lockwaittest's predicate (lockWaitPredicate): a test names lockwaittest.Waiting or WaitingOn
+// instead. Other reads of pg_locks, and the forms docs/testing.md lists as unseen, pass. Why the
+// wait event is the wrong read is lockwaittest's package comment; the measured figures are in
+// docs/testing.md, "A test reads a lock wait from pg_locks". A root that holds no go.mod, or in
+// which the walk reads no Go file, fails the check, which would otherwise pass having read nothing.
 func TestEveryTestReadsALockWaitThroughLockwaittest(t *testing.T) {
 	offences, err := lockWaitReads(lockWaitRoots, lockWaitHelper)
 	if err != nil {
