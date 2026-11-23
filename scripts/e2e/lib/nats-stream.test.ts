@@ -131,7 +131,7 @@ function expectWithinBudget(elapsedMilliseconds: number, seconds: number) {
  * near: on the shared development machine on 2026-11-22, at a one-minute load of 1,091 to 1,114,
  * 600 clients of this image's server, each closed as a test closes it, left its /connz 0.3 ms
  * after the close returned at the median and 10.8 ms at the slowest; the read has 30 s, over 2,700
- * times that. packages/envoy-client/src/__tests__/nats-server.ts holds the same bound.
+ * times that. packages/envoy-client/test/nats-server.ts holds the same bound.
  */
 const clientsReadMilliseconds = 30_000;
 

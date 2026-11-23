@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
-import { connectedClients } from "./nats-server";
+import { connectedClients } from "../../test/nats-server";
 
 // Each row waits on facts its stand-in monitor reports, never on a span; the bound is a hang guard.
 setDefaultTimeout(HANG_GUARD_MS);
