@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // idleRigPods runs the processes of every pod the rig's Kubernetes stand-in reports Ready: one
@@ -65,10 +67,12 @@ type idleRigPods struct {
 	dirNext int
 
 	// workspace is the issue workspace every launcher of the rig reads when the daemon asks
-	// (launcher.Config.Workspace): one jj repository holding no work, made once in newIdleRigPods,
-	// so the release of a pod no claim owns reads it clean through the pod's launcher (R6). This
-	// container has no issue pod's layout, and the launcher's own working directory is the test
-	// package's, which is no jj workspace.
+	// (launcher.Config.Workspace): a jj workspace holding no work, of a shared clone, both where
+	// provisioning lays them out (workspace.Location), since the launcher's read runs the
+	// workspace guards, which derive the clone from that layout (workspace.GuardJJ). It is made once
+	// in newIdleRigPods, so the release of a pod no claim owns reads it clean through the pod's
+	// launcher (R6). The launcher's own working directory is the test package's, which is no jj
+	// workspace.
 	workspace string
 }
 
@@ -107,11 +111,21 @@ func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect strin
 	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
 	// that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
-	workspace := filepath.Join(t.TempDir(), "workspace")
-	fixturegit.Isolated(t, t.TempDir()).Run(filepath.Dir(workspace), fixturegit.JJInit(workspace, false)...)
+	located, err := workspace.Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "legion-208")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Dir(located.Clone), filepath.Dir(located.Dir)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jj := fixturegit.Isolated(t, t.TempDir())
+	jj.Run(filepath.Dir(located.Clone), fixturegit.JJInit(located.Clone, false)...)
+	jj.Run(located.Clone, "jj", "workspace", "add", located.Dir, "--name", "legion-208", "-R", located.Clone)
 	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
-		dirRoot: root, workspace: workspace}
+		dirRoot: root, workspace: located.Dir}
 	t.Cleanup(p.stopAll)
 	return p
 }

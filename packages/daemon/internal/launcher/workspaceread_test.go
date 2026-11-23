@@ -1,6 +1,8 @@
 package launcher
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,7 +175,9 @@ func TestTheLauncherReadsTheWorkspaceItRunsIn(t *testing.T) {
 	// signs nothing, and both files are gone.
 	legacy := []string{filepath.Join(clone, ".jj", "repo", "config.toml"), filepath.Join(ws, ".jj", "workspace-config.toml")}
 	for _, id := range []string{filepath.Join(clone, ".jj", "repo", "config-id"), filepath.Join(ws, ".jj", "workspace-config-id")} {
-		if err := os.Remove(id); err != nil {
+		// jj writes a workspace's id file only once something sets that workspace's
+		// configuration, so the workspace's may be absent already, which is the shape a role wants.
+		if err := os.Remove(id); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("delete the id file %s, as a role could: %v", id, err)
 		}
 	}
