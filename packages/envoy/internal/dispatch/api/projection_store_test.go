@@ -83,6 +83,7 @@ var rowsTheRunUpdates = []string{"comment_deliveries"}
 // stored functions that write user_threads or user_agent_thread_dismissed, and each of their
 // writes sits under the marker test that passes only a write an older build made (markerTests).
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sources := readProjectionWriters(t)
 	t.Run("every write of a projected row or a projected column sits on the store writer's call path", func(t *testing.T) {

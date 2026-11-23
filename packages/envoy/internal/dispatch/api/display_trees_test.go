@@ -123,6 +123,7 @@ func sameShape(t *testing.T, tree json.RawMessage) json.RawMessage {
 // a project's architecture, one node's references and the excerpt of each of its backlinks; the
 // search snippet, whose tree is cut and marked rather than read whole, has its own test below.
 func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	const (
 		commentBody  = "Please check **this** before the deploy."
@@ -561,6 +562,7 @@ func displayTreeFields(row reflect.Type, path string, seen map[reflect.Type]bool
 // one document is reviewed, its read answers the tree of the reason, and the payload of its own
 // creation - and of every other event of its issue - carries none.
 func TestAnArtifactPayloadCarriesNoApprovalTreeThoughItsReadDoes(t *testing.T) {
+	t.Parallel()
 	for _, row := range []any{
 		model.Artifact{}, model.ArtifactApproval{},
 		model.GraphNode{}, model.BlockPin{}, model.ArchitectureTreeComponent{},
@@ -612,6 +614,7 @@ func TestAnArtifactPayloadCarriesNoApprovalTreeThoughItsReadDoes(t *testing.T) {
 // no cache between a browser and Dispatch hands a reader with trees an answer written for a reader
 // without them, or a caller that takes no gzip one that was compressed.
 func TestEveryAnswerVariesOnTheTreesHeaderAndTheEncoding(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "VARY", "Vary", "A spec")
 	for _, target := range []string{"/api/v1/issues/" + issue.Key, "/api/v1/issues/" + issue.Key + "/comments", "/api/v1/projects"} {
@@ -626,6 +629,7 @@ func TestEveryAnswerVariesOnTheTreesHeaderAndTheEncoding(t *testing.T) {
 // A search hit's snippet carries the tree of the headline itself, balanced as the cut left it and
 // with the match marked, and carries it only under the header.
 func TestASearchHitCarriesTheTreeOfItsSnippet(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createInteractionIssue(t, handler, "SNIP", "Astrolabe", "The **astrolabe** measures altitude.")
 	const target = "/api/v1/search?q=astrolabe"
@@ -720,6 +724,7 @@ func highlightedText(t *testing.T, tree json.RawMessage) []string {
 // with and without the header. The numbers are logged rather than bounded - a tree's size is the
 // text's - and the check is only that the trees are what grew the answer.
 func TestTheTreesCostOfACommentList(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SIZE", "Comment list size", "A spec")
 	for index := range 20 {
@@ -776,6 +781,7 @@ func builtShapedComments(comments []model.Comment, trees bool) []shapedComment {
 // The parallel reading answers exactly what reading each text where it stands answered: the same
 // trees, each against its own row, in the order the rows came in (buildDisplayTrees).
 func TestTheParallelFillAnswersTheTreeOfEveryRowInOrder(t *testing.T) {
+	t.Parallel()
 	comments := commentsToFill()
 	reads := builtShapedComments(comments, true)
 	if len(reads) != len(comments) {
@@ -794,6 +800,7 @@ func TestTheParallelFillAnswersTheTreeOfEveryRowInOrder(t *testing.T) {
 
 // A list with no trees asked for has no reader at all and carries none.
 func TestAListWithoutTheHeaderCarriesNoTree(t *testing.T) {
+	t.Parallel()
 	for index, read := range builtShapedComments(commentsToFill(), false) {
 		if read.BodyTree != nil {
 			t.Fatalf("row %d carries a tree without the header: %s", index, read.BodyTree)
@@ -805,6 +812,7 @@ func TestAListWithoutTheHeaderCarriesNoTree(t *testing.T) {
 // write only their own text's slot, and one text is built once however many readers want it
 // (displayTreeBuilds). Run under -race, this is the check that the reading is safe.
 func TestReadersOfOneListAtOnceAreAnsweredTheSameTrees(t *testing.T) {
+	t.Parallel()
 	comments := commentsToFill()
 	want := builtShapedComments(comments, true)
 	answers := make([][]shapedComment, 8)
