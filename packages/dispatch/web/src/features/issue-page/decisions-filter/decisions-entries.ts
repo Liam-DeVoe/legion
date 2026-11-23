@@ -8,10 +8,9 @@ import { wordsOf } from "../../refs/tree-fragment";
 import { type DecisionNode, decisionNodes } from "../decision-nodes/decision-nodes";
 import { type ChangeComment, decisionNodeChanges } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
-import { treeRead } from "../spec-filter/tree-read";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueTreeQuery, type TreeAnswer, viewQuery } from "../tree-read/tree-read";
+import { issueTreeQuery, type TreeAnswer, treeRead, viewQuery } from "../tree-read/tree-read";
 import { issueAsksQuery } from "../useIssueTree";
 import {
   askIdOf,

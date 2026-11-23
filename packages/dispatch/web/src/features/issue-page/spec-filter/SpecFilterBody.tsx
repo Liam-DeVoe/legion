@@ -73,7 +73,13 @@ import { specSummary } from "../spec-summary";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
-import { issueTreeQuery, useTreeRead, useTreeReadRunning, viewQuery } from "../tree-read/tree-read";
+import {
+  issueTreeQuery,
+  treeRead,
+  useTreeRead,
+  useTreeReadRunning,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { issueAsksQuery, type NamesFailure, useLastAnswer } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -87,7 +93,6 @@ import {
   type SpecStatement,
   specDecidedBy,
 } from "./spec-decided-by";
-import { treeRead } from "./tree-read";
 
 /** What a key that folds, zooms, cycles or opens a branch does here, where the columns hold
  *  none: every statement is drawn whole (R2: "a filter draws every branch it kept open"). */

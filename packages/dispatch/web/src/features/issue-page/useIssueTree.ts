@@ -20,12 +20,12 @@ import {
 } from "./issue-tree";
 import { usePublishReferenceNames } from "./reference-names";
 import { citedReferences } from "./row-references";
-import { treeRead } from "./spec-filter/tree-read";
 import {
   TREE_VIEWS,
   type TreeAnswer,
   type TreeRead,
   type TreeView,
+  treeRead,
   useTreeRead,
   viewQuery,
 } from "./tree-read/tree-read";

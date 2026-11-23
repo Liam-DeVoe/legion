@@ -21,8 +21,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { treeRead } from "./spec-filter/tree-read";
-import { dropViews, issueTreeQuery } from "./tree-read/tree-read";
+import { dropViews, issueTreeQuery, treeRead } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
