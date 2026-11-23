@@ -9,9 +9,8 @@ import (
 )
 
 // Running names each running task's act and the role whose agent works it, and no task that
-// waits. A running task whose place no role works is an error, as the workflow's walk of such a
-// plan is, so no answer names a running task with no role: a step its steps do not hold, a step
-// whose role runs as no phase, and no act at all.
+// waits. A running task whose place no role works is an error, so no answer names a running task
+// with no role: a step its steps do not hold, a step whose role runs as no phase, and no act at all.
 func TestRunningNamesTheRoleOfEachRunningActAndRefusesAPlaceNoRoleWorks(t *testing.T) {
 	steps := []PlanStep{{Task: "a", Position: 1, Role: "implementer"}, {Task: "a", Position: 2, Role: "reviewer"}}
 	at := func(place TaskPlace, steps []PlanStep) *StoredPlan {

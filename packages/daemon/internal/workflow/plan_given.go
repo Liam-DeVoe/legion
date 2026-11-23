@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -60,12 +61,14 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 // a plan waiting at generation 0), the plan in force at the fact's generation (nil for none), and
 // the tasks the version changes, adds or removes over it (plan.ChangedTasks), but a running task
 // whose text alone it changes (plan.RunningChange), which keeps its steps and where it stands, as a
-// task the version leaves as it was does.
+// task the version leaves as it was does. Those running tasks are textOnly, which the log of the
+// version names.
 type givenVersion struct {
 	issue    *record.Issue
 	recorded bool
 	stored   *record.StoredPlan
 	changed  []string
+	textOnly []string
 }
 
 // versionRefusal judges fact's version, and answers what it read for the write, or the refusal.
@@ -127,7 +130,9 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			}
 			if refusal := plan.RunningChange(held, fact.Plan, id); refusal != nil {
 				running = append(running, *refusal)
+				continue
 			}
+			given.textOnly = append(given.textOnly, id)
 		}
 		if len(running) > 0 {
 			return givenVersion{}, intake.PlanRefused(running), nil
@@ -188,7 +193,7 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 		return writtenVersion{}, err
 	}
 	e.logOnCommit(ctx, "workflow: an owner's plan is taken", "issue", fact.Issue, "generation", fact.Generation, "version", fact.Plan.Version,
-		"document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "changed", given.changed)
+		"document", fact.Plan.ArtifactID, "given_by", fact.GivenBy, "changed", given.changed, "text_only", given.textOnly)
 	return written, nil
 }
 
@@ -239,13 +244,16 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // already, and its owner tells it by message of a decision for the act it works. A start composed
 // after the version reads the text from the plan in force (standingPart), and a task a claim holds
 // takes it where the claim's machine sends that task again (supervise's Deps.TaskText). A running
-// task stands at an act, a step, its retro or its merge, so the role is that act's, never the
-// architect's of admitted.
+// task stands at an act, a step, its retro or its merge: one at no act, which issuePhaseOf would
+// read as admitted and so as the architect's, or at a place no role works, is an error.
 func (e *Engine) retext(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if !w.Stored || w.State != record.TaskRunning {
 		return nil
 	}
-	role := RoleFor(issuePhaseOf(w, w.Place, w.State))
+	if w.Place.Kind == "" {
+		return fmt.Errorf("retext %s: task %s runs at no act", issue.Key, w.Task)
+	}
+	role := phase.RoleFor(issuePhaseOf(w, w.Place, w.State))
 	if role == "" {
 		return fmt.Errorf("retext %s: task %s runs at %+v, which no role works", issue.Key, w.Task, w.Place)
 	}

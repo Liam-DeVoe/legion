@@ -183,9 +183,8 @@ var builtinRoles = plan.BuiltinRoles()
 // Running is each running task of p (TaskRunning) and where it stands (RunningStep), in the order
 // of p's tasks, which is the order of their ids; nil where no task runs. A step runs as the phase
 // of its role (builtinRoles), the retro as retro and the merge as merging. A running task at no
-// act, at a step its steps do not hold, or at a step whose role runs as no phase is an error, as
-// the workflow's walk of such a plan is: no plan this release takes writes one, and no answer names
-// a running task with no role.
+// act, at a step its steps do not hold, or at a step whose role runs as no phase is an error: no
+// plan this release takes writes one, and no answer names a running task with no role.
 func (p *StoredPlan) Running() ([]RunningStep, error) {
 	var running []RunningStep
 	for _, task := range p.Tasks {
