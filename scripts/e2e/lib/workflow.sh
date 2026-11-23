@@ -2,7 +2,11 @@
 # The Go workflow proof's vocabulary, shared by the stage proofs that drive a Dispatch issue through
 # the Go daemon's workflow with real agents: Dispatch, the daemon's state, each phase's worker, the
 # handoffs the daemon accepted, the smoke repository's pull request under the proof human, and the
-# negative controls. A stage proof sources lib/rig.sh first.
+# negative controls. A stage proof sources lib/rig.sh first. No stage proof that sources it gives a
+# plan, so each issue runs the project's default steps (`planner implementer tester reviewer
+# acceptance:owner`), and where a helper below names a phase's worker, the implementer's pull
+# request and its rounds, the reviewer's review on GitHub, the architect's acceptance, the
+# implementer's retro or the merge, it names a step of that plan.
 #
 # Sourced, never run. The caller sets
 #   work           the run's scratch directory, holding the files the lib reads: legion, the Go
@@ -431,10 +435,12 @@ read_app_logins() {
   review_app_login=$(jq -er .review <<<"$github_app_logins") || fail "lib/app-logins.ts printed no review App login: $github_app_logins"
   note "the implement App acts on GitHub as $implement_app_login and the review App as $review_app_login (GET /apps/<slug>)"
 }
-# role_app ROLE prints the bot login of the App ROLE acts as, as REST names it: the implement App's
-# for the implementer and the merger, the review App's for every other role. role_app_slug ROLE
-# prints the bare slug GraphQL names that bot by (`author { login }` drops the `[bot]`). Each fails,
-# saying so, before read_app_logins has run.
+# role_app ROLE prints the bot login of the App ROLE acts as on its own claim, as REST names it: the
+# implement App's for the implementer and the merger, the review App's for every other role. It does
+# not name the App an architect's slot holds while the architect does a step of its own plan, which
+# is that step's role's (the implement App's at `implementer:owner`). role_app_slug ROLE prints the
+# bare slug GraphQL names that bot by (`author { login }` drops the `[bot]`). Each fails, saying so,
+# before read_app_logins has run.
 role_app() {
   local login
   case "$1" in implementer | merger) login=$implement_app_login ;; *) login=$review_app_login ;; esac
