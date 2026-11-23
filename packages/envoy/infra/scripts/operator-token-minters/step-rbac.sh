@@ -34,17 +34,25 @@ else
   # a get limited to the name, and a Secret of type kubernetes.io/service-account-token holds its
   # ServiceAccount's token. Those a guarded pair's ServiceAccount lists (its `secrets`), and every
   # one the namespace's list of that type holds, whichever ServiceAccount it names; a refused list
-  # is UNKNOWN. The list fetches no Secret's data: kubectl asks the API server for the server-side
-  # Table form (Accept: application/json;as=Table;v=v1;g=meta.k8s.io) for its default output alone,
-  # whose rows carry each Secret's name, type, number of data keys and age, and beside them the
-  # Secret's metadata alone: kubectl sends no includeObject, and the API server then puts each
-  # object's PartialObjectMetadata in its row (k8s.io/apiserver's endpoints/handlers/response.go,
-  # asTable). With -o name, -o jsonpath or -o json, kubectl asks for plain JSON and gets the
-  # Secrets whole, data included, and picks the names out itself (kubectl's get.go,
-  # transformRequests), and get --raw sends no Accept header that could ask for a
-  # PartialObjectMetadataList; both read with kubectl 1.36.4 against a server that records each
+  # is UNKNOWN. The list fetches no Secret's data field: kubectl asks the API server for the
+  # server-side Table form (Accept: application/json;as=Table;v=v1;g=meta.k8s.io) for its default
+  # output alone, whose rows carry each Secret's name, type, number of data keys and age, and
+  # beside them the Secret's metadata alone: kubectl sends no includeObject, and the API server
+  # then puts each object's PartialObjectMetadata in its row (k8s.io/apiserver's
+  # endpoints/handlers/response.go, asTable). With -o name, -o jsonpath or -o json, kubectl asks
+  # for plain JSON and gets the Secrets whole, data included, and picks the names out itself
+  # (kubectl's get.go, transformRequests), and get --raw sends no Accept header that could ask for
+  # a PartialObjectMetadataList; both read with kubectl 1.36.4 against a server that records each
   # request's Accept header. So the list is that default output with no headers, and the names
-  # are its first column.
+  # are its first column. The claim has two limits, and in each a token reaches kubectl's memory
+  # alone: the check keeps only the rows' first column, so the token is in neither the work
+  # directory nor the output. (1) Each row carries the Secret's metadata, annotations included, so
+  # a token Secret made by a client-side `kubectl apply` of a manifest that held its token brings
+  # that token in its kubectl.kubernetes.io/last-applied-configuration annotation: the claim is
+  # about the data field, not about every copy of the token. (2) kubectl's Accept header ends with
+  # plain application/json, so a server or proxy that serves no Table answers with the Secrets
+  # whole, data included: the claim holds for kube-apiserver, which serves the Table for core
+  # Secrets always.
   : >"$WORK/token-secrets.tsv"
   jq -r '.items[]? | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
     | .metadata.namespace as $ns | (.secrets // [])[] | [$ns, .name] | @tsv' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}" >>"$WORK/token-secrets.tsv"

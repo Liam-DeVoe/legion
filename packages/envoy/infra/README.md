@@ -4653,9 +4653,14 @@ reads in step 3 with the leaked key's id and follow step 4 as written.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
-shell it runs in and requests no credential. It fetches no Secret's data either: it lists a guarded
-namespace's token Secrets in the API server's Table form, whose rows carry each Secret's name, type,
-number of data keys and age beside its metadata, and keeps the names. It lists each principal that
+shell it runs in and requests no credential. It fetches no Secret's data field either: it lists a
+guarded namespace's token Secrets in the API server's Table form, whose rows carry each Secret's
+name, type, number of data keys and age beside its metadata, and keeps the names. A token can still
+reach kubectl's memory, never the run's files or output, in two cases: a token Secret made by a
+client-side `kubectl apply` of a manifest that held its token carries it in its
+`last-applied-configuration` annotation, part of the metadata; and a server or proxy that serves
+no Table answers kubectl's Accept header, which ends with plain `application/json`, with the
+Secrets whole (kube-apiserver serves the Table for core Secrets). It lists each principal that
 is not a person and can mint the token of a guarded ServiceAccount (the operator's, the secrets
 broker's, and each
 `--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded

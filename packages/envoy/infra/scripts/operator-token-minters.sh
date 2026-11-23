@@ -17,9 +17,11 @@
 #
 # It runs with the gcloud, kubectl and agent-secrets sign-ins of the shell it runs in: an identity
 # already held, never a person's administrator credential. It requests no credential, impersonates
-# no one, and writes nothing but its own work directory and --report. It fetches no Secret's data:
-# it lists a guarded namespace's token Secrets in the API server's Table form, whose rows carry
-# each Secret's name, type, number of data keys and age beside its metadata, and keeps the names.
+# no one, and writes nothing but its own work directory and --report. It fetches no Secret's data
+# field: it lists a guarded namespace's token Secrets in the API server's Table form, whose rows
+# carry each Secret's name, type, number of data keys and age beside its metadata, and keeps the
+# names; step-rbac.sh names the two cases in which a token can still reach kubectl's memory, never
+# the work directory or the output.
 #
 # The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why:
 #
