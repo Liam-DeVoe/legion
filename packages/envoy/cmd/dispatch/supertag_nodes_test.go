@@ -46,11 +46,13 @@ var typeMigrations = []string{
 	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
 }
 
-// backfillVersion is the newest migration of the first releases that carry the graph store and its
-// backfill (`backfill-graph-store`): legion-envoy v34.11.0 to v34.11.3 hold every migration
-// through 20261121060636_search_document_text and none after it, so a deployment may have run the
-// backfill over a store at this version. Every type migration of typeMigrations is numbered below
-// it; one numbered above it runs over graph_nodes and graph_tuples the backfill may have filled.
+// backfillVersion is the newest migration of the releases that carry the graph store and its
+// backfill (`backfill-graph-store`) and not 20261123080000: every legion-envoy release from
+// v34.11.0 up to the one that carries that migration (v34.11.0 to v34.11.4 on 2026-11-23) holds
+// every migration through 20261121060636_search_document_text and none after it, so a deployment
+// may have run the backfill over a store at this version. Every type migration of typeMigrations
+// is numbered below it; one numbered above it runs over graph_nodes and graph_tuples the backfill
+// may have filled.
 const backfillVersion = 20261121060636
 
 // openAtTheBackfill is a store this tree's runner migrated through backfillVersion and no further:

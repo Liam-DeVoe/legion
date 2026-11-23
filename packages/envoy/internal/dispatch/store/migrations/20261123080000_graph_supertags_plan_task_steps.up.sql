@@ -10,22 +10,34 @@
 -- `steps`, so a plan task that names its steps is refused as markdown outside the schema, and the
 -- daemon's register_plan reads no plan that picks its steps.
 --
--- It is the first type migration written after the store's backfill. The releases that create
--- graph_nodes and graph_tuples (20261109013400) are out, legion-envoy v34.11.0 and later, whose
--- newest migration is 20261121060636, so a deployment may have run `backfill-graph-store` on
--- them, which fills graph_nodes and graph_tuples with a node and its tuples for every comment,
--- block and block reference it holds. Above the migration census's table limit the census admits
--- a write of either table only as a bounded write, and so this migration writes nothing else: the
--- node and its tuples as literal rows, with no `on conflict`, and each block type's supertag node
--- by an update of its primary key to a literal. The type migrations before the backfill
--- (20261109051232, 20261113230000 and 20261115130000) read their rows back off graph_nodes with
--- `insert … select`, `where not exists` and `on conflict … do update`, which the census refuses
+-- It is the first type migration written after the store's backfill. Every legion-envoy release
+-- from v34.11.0, the first that creates graph_nodes and graph_tuples (20261109013400), up to the
+-- release that carries this migration holds every migration through 20261121060636 and none
+-- after it: v34.11.0 to v34.11.4 on 2026-11-23. A deployment may have run `backfill-graph-store`
+-- on any of them, which fills graph_nodes and graph_tuples with a node and its tuples for every
+-- comment, block and block reference it holds. Above the migration census's table limit the
+-- census admits a write of either table only as a bounded write, and so this migration writes
+-- nothing else: the node and its tuples as literal rows, with no `on conflict`, and each block
+-- type's supertag node by an update of its primary key to a literal. The type migrations before
+-- the backfill (20261109051232, 20261113230000 and 20261115130000) read their rows back off
+-- graph_nodes with `insert … select`, `where not exists` and `on conflict … do update`, which the
+-- census refuses
 -- there. cmd/dispatch's TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema runs
 -- this file after a backfill, with the census at a one-byte limit, and holds what it leaves to the
 -- file.
 --
 -- It runs once, as the runner applies every file: its inserts are not repeatable, so it joins no
--- second run (typeMigrations in cmd/dispatch/supertag_nodes_test.go).
+-- second run (typeMigrations in cmd/dispatch/supertag_nodes_test.go). A second run all the same
+-- (the file applied by hand) stops at its first insert, on graph_nodes' primary key (kind, id),
+-- and the runner's one transaction takes back everything it wrote.
+--
+-- The way back is the image alone, and the store stays as it is. A build of v34.11.x leaves a
+-- version schema_migrations records and it has no file of as it is (pgmigrate.Reconcile), and
+-- installs a store schema above its own version at its own version (pmdoc.Install's
+-- asOfVersion), so it serves version 4 and keeps serving. It reads a stored plan task that carries
+-- steps as an element it does not know (pmdoc.ErrUnknownElement), which the document routes answer
+-- 409 DOC_NEWER_CONTENT, and no write of it adds steps; the plan's document waits for a build at
+-- version 5. A later return to this release finds the migration recorded and runs nothing.
 --
 -- The change is stated here as rows rather than read from the file, for the reason the seed
 -- copies its text in: a migration states what the database held at one version and must not
