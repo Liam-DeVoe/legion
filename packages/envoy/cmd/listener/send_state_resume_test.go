@@ -24,6 +24,7 @@ import (
 // message it holds pending, so an acknowledged one never comes back. A copy sent twice at once,
 // which needs no ack wait to arrive, is watched for over a short window first.
 func TestASessionThatStopsAndResumesTakesItsMessageExactlyOnce(t *testing.T) {
+	t.Parallel()
 	rig := newRelayRig(t)
 	clock := time.Now()
 	known := openKnownSessionsOn(t, rig.harness.client.Conn, func() time.Time { return clock })

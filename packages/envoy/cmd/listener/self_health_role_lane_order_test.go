@@ -27,6 +27,7 @@ import (
 // the durable's. The lane is still sent again: checked after the durable, which returns early, it
 // would not be.
 func TestTheSelfHealthProbeReportsALostDurableBeforeARefusedRoleLaneAndStillSendsTheLane(t *testing.T) {
+	t.Parallel()
 	rig := newRoleLaneHealthRig(t, "role-lane-health-order")
 	rig.stop()
 	rig.revoke(t)
@@ -53,6 +54,7 @@ func TestTheSelfHealthProbeReportsALostDurableBeforeARefusedRoleLaneAndStillSend
 // rebuild the main bus for a fault of the lane's connection. The same error outside the lane is
 // still one.
 func TestARoleLaneFailureIsNeverOneTheMonitorRebuilds(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	laneClosed := fmt.Errorf("%w: sending it again failed: %w", errRoleLaneInactive, natsgo.ErrConnectionClosed)
 	if isUnrecoverableSelfHealthFailure(laneClosed, client, nil) {
@@ -71,6 +73,7 @@ func TestARoleLaneFailureIsNeverOneTheMonitorRebuilds(t *testing.T) {
 // the listener, and must not log `self-health recovered`, since the lane never came back. The second
 // row runs the same ticks with a rebuild that repairs nothing, which the monitor must stop for.
 func TestARefusedRoleLaneDoesNotTurnFaultsTheRebuildRepairsIntoARestart(t *testing.T) {
+	t.Parallel()
 	client := setupTestNATS(t)
 	for _, row := range []struct {
 		name        string

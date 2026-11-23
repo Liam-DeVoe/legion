@@ -59,6 +59,7 @@ func TestUnplaceableRetryWindowFitsTheBoundsItDependsOn(t *testing.T) {
 // and read again at the expiry, where a new message takes a slot and the orphans are gone. A
 // sequence whose own entry expired is taken afresh, with an expiry counted from the new take.
 func TestAnOrphanedDeferralSlotIsReclaimedAtItsExpiry(t *testing.T) {
+	t.Parallel()
 	start := time.Unix(1_800_000_000, 0)
 	clock := start
 	set := newUnplaceableDeferrals()

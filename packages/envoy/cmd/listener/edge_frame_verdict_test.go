@@ -16,6 +16,7 @@ import (
 )
 
 func TestEdgeFrameVerdict(t *testing.T) {
+	t.Parallel()
 	const session = "ses_v"
 	own := contracts.LegacyAgentSubject(session)
 	ownNew := contracts.AgentSubject("PRIV", session)

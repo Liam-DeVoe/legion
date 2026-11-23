@@ -143,6 +143,7 @@ func (r *brokerRig) call(t *testing.T, handler http.Handler, method, token, path
 // credential existed. R9 is here too: the same routes behind a listener given no broker setting
 // serve that very presentation and read no credential out of it (rig.open).
 func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		bound    = "ses_rig_bound"
@@ -348,6 +349,7 @@ const v1RoutePatterns = 16
 // same, since apiAuth wraps the whole of /v1 once (main.go); TestAPIAuthBrokerToken holds that
 // apiAuth refuses the token before any handler runs.
 func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		reader        = "ses_rig_reader"
@@ -435,6 +437,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 // proof presented to the replica that never saw it. Two handles on one bucket stand in for the
 // two listeners.
 func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	js, err := client.Conn.JetStream()
 	if err != nil {

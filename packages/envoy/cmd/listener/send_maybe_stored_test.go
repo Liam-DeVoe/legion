@@ -28,6 +28,7 @@ import (
 // does not wrap it), as sender_limit_test.go's reconnect row shows; it carries no code and is no
 // ErrStoreUnconfirmed.
 func TestASendWhosePublishWasNeverAcknowledgedIsReadAsMaybeStored(t *testing.T) {
+	t.Parallel()
 	t.Run("the publish went out and was never acknowledged: 503 maybe_stored, ErrStoreUnconfirmed", func(t *testing.T) {
 		rig, server := newSenderLimitRigOnServer(t)
 		const target = "ses_maybe_stored_target"
@@ -129,6 +130,7 @@ func sendThroughDispatch(t *testing.T, mux http.Handler, target string) (int, st
 // the message, so its 503 carries listenerwire.CodeMaybeStored. The controls are a full stream that
 // sent nothing and a keep that stored nothing, which carry no code.
 func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T) {
+	t.Parallel()
 	unacknowledged := fmt.Errorf("%w: %w", bus.ErrUnacknowledged, errors.New("nats: connection closed"))
 	for _, row := range []struct {
 		name  string
