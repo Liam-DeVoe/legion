@@ -167,7 +167,11 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 // Command's own Env, and of the test's environment, as -overlay=; by GOFLAGS of the test's environment
 // in single quotes and in double quotes around a path that holds a space, naming two of which the last
 // counts, and split from the flag before it by each white space but a space that the go command splits
-// GOFLAGS at (a tab, a line end and a carriage return), each in a build of its own; and by
+// GOFLAGS at (a tab, a line end and a carriage return), each in a build of its own; by GOFLAGS of the
+// test's environment in single quotes around a path that holds a double quote, and in double quotes
+// around one that holds a single quote, so a quoted flag ends at the quote that opened it; and with no
+// quotes around a path that holds a single quote, and around one that holds a double quote, so a flag
+// that starts with no quote runs to the next white space, each in a build of its own; and by
 // ENVOY_TEST_GO_OVERLAY beside GOFLAGS, in a build of its own. Each overlay puts a word.go of its own in
 // word.go's place, takes not-go.go, a file that is not Go, out of the build, and puts a file in the
 // place of the directory gone, under which gone/word.go is on disk. Each binary prints its leg's word,
@@ -272,6 +276,14 @@ func TestSourceIsTheFileThatTheBuildReads(t *testing.T) {
 			goflags + " '-overlay=" + overlay("in quotes", false) + "'", Command{Name: "sourceprobe-quoted", Dir: dir}, "in quotes"},
 		{"GOFLAGS of the test's environment naming, in double quotes, an overlay whose path holds a space", "",
 			goflags + ` "-overlay=` + overlay("in double quotes", false) + `"`, Command{Name: "sourceprobe-dquoted", Dir: dir}, "in double quotes"},
+		{"GOFLAGS of the test's environment naming, in single quotes, an overlay whose path holds a double quote", "",
+			goflags + " '-overlay=" + overlay(`a "double" quote`, false) + "'", Command{Name: "sourceprobe-quoted-dq", Dir: dir}, `a "double" quote`},
+		{"GOFLAGS of the test's environment naming, in double quotes, an overlay whose path holds a single quote", "",
+			goflags + ` "-overlay=` + overlay("a 'single' quote", false) + `"`, Command{Name: "sourceprobe-dquoted-sq", Dir: dir}, "a 'single' quote"},
+		{"GOFLAGS of the test's environment naming, with no quotes, an overlay whose path holds a single quote", "",
+			goflags + " -overlay=" + overlay("its'", false), Command{Name: "sourceprobe-apos", Dir: dir}, "its'"},
+		{"GOFLAGS of the test's environment naming, with no quotes, an overlay whose path holds a double quote", "",
+			goflags + " -overlay=" + overlay(`its"`, false), Command{Name: "sourceprobe-dquote-in", Dir: dir}, `its"`},
 		{"GOFLAGS of the test's environment naming two overlays, of which the last counts", "",
 			goflags + " -overlay=" + goflagsOverlay + " -overlay=" + overlay("glast", false), Command{Name: "sourceprobe-glast", Dir: dir}, "glast"},
 		{"GOFLAGS of the test's environment naming an overlay after a tab", "",
