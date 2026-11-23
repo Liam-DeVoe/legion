@@ -12,6 +12,7 @@ import type { ReactNode } from "react";
 import {
   borderDefault,
   borderStrong,
+  borderTransparent,
   chartPlot,
   surfaceMutedBg,
   textMutedOnSurface,
@@ -86,7 +87,7 @@ function Dots({ dots }: { dots: { filled: number; total: number } }): ReactNode 
     <span className="flex flex-wrap gap-0.5" data-text-dots={`${dots.filled}/${dots.total}`}>
       {Array.from({ length: dots.total }, (_unused, at) => (
         <span
-          className={`size-2 rounded-full border ${at < dots.filled ? `border-transparent ${BLUE.swatch}` : borderStrong}`}
+          className={`size-2 rounded-full border ${at < dots.filled ? `${borderTransparent} ${BLUE.swatch}` : borderStrong}`}
           data-filled={at < dots.filled}
           // biome-ignore lint/suspicious/noArrayIndexKey: a dot is its place among the total's units.
           key={at}
