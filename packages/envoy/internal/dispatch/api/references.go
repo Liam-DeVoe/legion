@@ -170,10 +170,14 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		query.Through = &safe
 	}
-	edges, err := s.inReferencesListRead(r.Context(), who, query, readEdges)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	edges := []model.GraphEdge{}
+	if readEdges {
+		read, err := s.inReferencesListRead(r.Context(), who, query)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		edges = read
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges, UnknownKinds: unknownKinds}
@@ -677,11 +681,9 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	return query, ref, unknownKinds, nil
 }
 
-// inReferencesListRead is getReferences's list: query's edges (refs.Edges), when readEdges says
-// the kinds the caller named leave any to read, and none otherwise, with, on an inbound read, the
-// excerpts stored on the document mentions among them (documentMentionExcerpts), all read in a
-// read transaction of its own whose first statement sets jit off (inJITOffRead). A read with no
-// edges to read sends nothing: the stored excerpts replace only an edge's own.
+// inReferencesListRead is getReferences's list: query's edges (refs.Edges), with, on an inbound
+// read, the excerpts stored on the document mentions among them (documentMentionExcerpts), all
+// read in a read transaction of its own whose first statement sets jit off (inJITOffRead).
 //
 // JIT is off because compiling the read's statement over graph_edges (readEdgeRows) costs more
 // than running it: with JIT on, which compiled 451 functions for each call, it took 136.5 ms a
@@ -691,11 +693,8 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 // carries none either. The read has no budget: referencesClosureBound is the closure's alone.
 // TestTheReferencesListReadRunsWithJITOff holds the route's read to it on a session that starts at
 // jit = on.
-func (s *server) inReferencesListRead(ctx context.Context, who model.Actor, query refs.Query, readEdges bool) ([]model.GraphEdge, error) {
+func (s *server) inReferencesListRead(ctx context.Context, who model.Actor, query refs.Query) ([]model.GraphEdge, error) {
 	edges := []model.GraphEdge{}
-	if !readEdges {
-		return edges, nil
-	}
 	err := s.inJITOffRead(ctx, "", func(tx pgx.Tx) error {
 		var err error
 		if edges, err = refs.Edges(ctx, tx, who, query); err != nil {
