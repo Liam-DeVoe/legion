@@ -77,6 +77,9 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindFixJobRead reads from Dispatch the CI job whose failure a fix of a task starts for
+	// (FixJobRead), before the fix's task is sent.
+	OutboxKindFixJobRead OutboxKind = "fix_job_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -96,11 +99,12 @@ const (
 // the messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to
 // the worker of the phase the issue stays in (merge_forward), and an update round's ask, which
 // goes to any role whose process runs in the issue's pod, its architect included (update_ask).
-// It also runs the two reads of
-// GitHub that come before a message: the read before a merge-queue removal's message
-// (merge_queue_read), and the second read of a head a first read found conflicting, whose
-// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them
+// It also runs the three reads that come before a message or a start: the read of GitHub before a
+// merge-queue removal's message (merge_queue_read), the second read of a head a first read found
+// conflicting, whose confirmation is what writes a merge forward's messages (conflict_confirm),
+// and the read from Dispatch of the CI job a fix starts for, whose answer is what starts the fix
+// (fix_job_read), so no start of the issue waits behind it on the lifecycle lane. It is a lane of
+// its own because the board lane's architect notices are ordered among themselves and one of them
 // waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
 // words a hook fired on a move back, told that its pull request left the merge queue, asked to
 // merge the base forward or to hold while that merge runs, or asked to get ready for the
@@ -136,7 +140,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindFixJobRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneDocuments:   {OutboxKindDesignChanges},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -1225,6 +1229,19 @@ type SuperviseRequest struct {
 	// The row carries the worker's task whether or not it is marked, since a start is one row
 	// either way; what the mark decides is when the worker comes back with it.
 	NeedsSlot bool `json:"needsSlot,omitempty"`
+	// Fix is the fix of the issue's task this start's task is of, 0 for none: a start of the
+	// implementer that runs the task's first implementation step again beside the step the issue
+	// stands in (TaskFix). Its task is the issue's work while that fix runs, whatever phase the
+	// issue stands in (PhaseHolds). It carries no slot mark and Store.EnqueueFixStart alone writes
+	// it, so it stands in no waiting line and no start of the phase takes it out
+	// (pendingPhaseStart). FixFrom is the head the fix's working copy is made at, which only a
+	// fix's start names, and MoveTo the head the task's working copy moves to before the task, ""
+	// for none. The release before decodes strictly, so the way back of
+	// 20261123134547_fix_beside_steps deletes each queued fix start and takes moveTo off each other
+	// start.
+	Fix     int    `json:"fix,omitempty"`
+	FixFrom string `json:"fixFrom,omitempty"`
+	MoveTo  string `json:"moveTo,omitempty"`
 	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
 	// worker's start used to be, before a start became one row that carries its task
 	// (workflow.StartOrOwe); the outbox decodes it now and acts on it nowhere.
@@ -1488,7 +1505,8 @@ func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHolders
 // /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
 // completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
 // uuid every write of one run of the step computes, and the row's issue column is the issue. Each
-// other field is a field of the route's body under the same name.
+// other field is a field of the route's body under the same name, but the commits (StartCommit,
+// EndCommit and FixCheck), which Dispatch takes on a route of their own.
 //
 // Dispatch writes each field once and keeps every field a write leaves out, so the writes of one
 // run merge in any order and a write that runs again changes nothing. Every write carries the
@@ -1514,6 +1532,13 @@ type StepRecord struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
+	// StartCommit and EndCommit are the commits the run of the step started and ended at, and
+	// FixCheck the check a fix's run is of (TaskFix.Check). Each is nil where the write does not
+	// name it. The release before decodes strictly, so the way back of
+	// 20261123134547_fix_beside_steps takes the three off each queued record.
+	StartCommit *string `json:"startCommit,omitempty"`
+	EndCommit   *string `json:"endCommit,omitempty"`
+	FixCheck    *string `json:"fixCheck,omitempty"`
 	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
 	// it is the retro's rating, which Dispatch takes on the record's rating route
 	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
@@ -1828,6 +1853,23 @@ type ConflictConfirm struct {
 }
 
 func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfirm }
+
+// FixJobRead reads from Dispatch the CI job whose failure fix Fix of Task at Generation starts
+// for: the job that failed check Check at Head, its name and the address of its page, which the
+// fix's task names. The fix stands reading (FixReading) until the read's answer, or the error of
+// a read that found none, is applied (intake.FixJobRead), which starts the fix. The row's issue
+// column is the issue. It is a durable row for the reason MergeQueueRead is: the failure's fact is
+// acknowledged once its transaction commits, so a restart between that fact and the read loses
+// nothing.
+type FixJobRead struct {
+	Generation uint64 `json:"generation"`
+	Task       string `json:"task"`
+	Fix        int    `json:"fix"`
+	Check      string `json:"check"`
+	Head       string `json:"head"`
+}
+
+func (FixJobRead) OutboxKind() OutboxKind { return OutboxKindFixJobRead }
 
 // MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
 // (PullRequest.MergeForward): the two the act on a confirmed conflict writes, and the two the
@@ -2242,6 +2284,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindFixJobRead:
+		value := FixJobRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindMergeForward:
 		value := MergeForwardMessage{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2455,6 +2503,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.NeedsSlot && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start held for an admission slot requires a start with a task and a phase")
 		}
+		if value.Fix < 0 {
+			return fmt.Errorf("a supervise %s names fix %d; a fix counts from 1", value.Op, value.Fix)
+		}
+		if value.Fix > 0 && (value.Op != "start" || value.Task == "" || value.Phase == "" || value.NeedsSlot) {
+			return fmt.Errorf("a fix's start is a start with a task and a phase that waits for no slot; this %s of fix %d is not", value.Op, value.Fix)
+		}
+		if value.FixFrom != "" && value.Fix == 0 {
+			return fmt.Errorf("only a fix's start names the head its working copy is made at; this %s names %q", value.Op, value.FixFrom)
+		}
 		if value.Relaunch && (value.Op != "start" || value.Task != "" || value.Phase == "" || value.NeedsSlot) {
 			return fmt.Errorf("the relaunch half of a start carries a phase and no task, and waits for no slot")
 		}
@@ -2586,6 +2643,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.FirstReadAt.IsZero() {
 			return fmt.Errorf("a conflict confirm names when the first read it reads again was made; its read of #%d at %q names no time", value.Number, value.Head)
 		}
+	case FixJobRead:
+		if value.Generation == 0 || value.Task == "" || value.Fix < 1 || value.Check == "" || value.Head == "" {
+			return fmt.Errorf("a fix's job read names the run, the task, the fix, the check and the head; it names generation %d, task %q, fix %d and check %q at %q",
+				value.Generation, value.Task, value.Fix, value.Check, value.Head)
+		}
 	case MergeForwardMessage:
 		if _, known := mergeForwardRoles[value.Step]; !known {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
@@ -2712,6 +2774,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // not `session-lost` because the kind is published as the notice's one-line message, and that
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
+//
+// `ci-failed` is a check that a CI job runs failing at the head of a task where no fix takes the
+// failure, which the task's owner is told of once for that check at that head
+// (Store.TellOwnerOnce): its reason names the check and the head and, where a fix ran for it, that
+// its one fix ended. No earlier release decodes it, so the way back of migration
+// 20261123134547_fix_beside_steps deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2719,6 +2787,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
+	"ci-failed",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
