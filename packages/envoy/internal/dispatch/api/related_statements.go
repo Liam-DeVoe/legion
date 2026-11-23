@@ -1,6 +1,10 @@
 package api
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+)
 
 // This file holds the related-item check's own SQL: the eight statements it runs
 // (relatedKeywordQuery and relatedKeywordExcludingQuery, relatedMeaningQuery and
@@ -15,8 +19,9 @@ import "fmt"
 
 var (
 	// relatedKeywordLegs is search's keyword legs (searchKeywordLegs) ranked by the chosen
-	// lexemes' weights (relatedCoordinationRank).
-	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank)
+	// lexemes' weights (relatedCoordinationRank), under the check's project rule
+	// (relatedProjectVisible).
+	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank, relatedProjectVisible)
 	// relatedKeywordQuery is the check's stage 1: search's keyword query (searchQueryBody) over the
 	// chosen lexemes, with relatedKeywordLegs and relatedFusedSQL. Parameters: searchQueryBody's
 	// $1-$8, then $9 the lexemes, $10 their idf and $11 the acting credential
@@ -64,6 +69,18 @@ var (
 type relatedStatement struct {
 	plain     string
 	excluding string
+}
+
+// relatedProjectVisible is the project rule the check's keyword legs bind: whether the reader
+// whose viewer is bound at seen sees $2, the check's one project. Every keyword arm holds its rows
+// to that project already (its project column equals $2 unless $2 is empty, searchKeywordLegs),
+// and the check never runs without one (runRelatedCheck answers not made first), so the rule over
+// $2 passes exactly the rows search's own rule over each row's project would pass, and with $2
+// empty it passes no row of a project the reader does not see either. Over the parameter alone it
+// holds no column, so Postgres decides it once per execution (a One-Time Filter) and counts it in
+// no row estimate, where over each row's column a generic plan has to guess its share.
+func relatedProjectVisible(_ string, seen int) string {
+	return access.ProjectClause("$2", searchParam(seen))
 }
 
 // relatedCoordinationRank ranks a keyword arm's item, searchColumn its search vector, by

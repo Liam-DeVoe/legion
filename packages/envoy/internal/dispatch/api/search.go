@@ -115,10 +115,11 @@ const (
 // it is the only value the column ever takes. Every arm carries q's three filters
 // (searchRowFilters) in the arm itself, so a filtered search reads its own matches as deep as
 // any other search reads, rather than a page of unfiltered ones with the rest struck out. Every
-// arm carries the project rule (searchProjectVisible) in the arm itself too, over the project its
-// own row belongs to, so a row of a project the reader does not see is in no arm: not ranked, not
-// counted in matches or the total, and never on the page. That is why the legs are rendered per
-// statement, for seen, the parameter the statement binds the acting credential at.
+// arm carries the project rule (visible) in the arm itself too, so a row of a project the reader
+// does not see is in no arm: not ranked, not counted in matches or the total, and never on the
+// page. Search's rule is searchProjectVisible, over the project the arm's own row belongs to; the
+// related-item check's is relatedProjectVisible, over its one project. That is why the legs are
+// rendered per statement, for seen, the parameter the statement binds the acting credential at.
 //
 // The issue arm is two arms, not one: the issues q.tsq finds, and the issues the query names by
 // key (q.own_keys, searchOwnIssueKeys). A key is indexed with its project ('infra' <-> '-1042'),
@@ -161,7 +162,7 @@ const (
 //
 // The document arm is a named piece of its own (searchDocumentKeywordLeg), so that it can be
 // ranked, read and measured apart from the four arms beside it.
-func searchKeywordLegs(rank func(searchColumn string) string) func(seen int) string {
+func searchKeywordLegs(rank func(searchColumn string) string, visible func(project string, seen int) string) func(seen int) string {
 	return func(seen int) string {
 		return `
   select 'issue' as kind, 'keyword' as list, i.key as issue_key, null::uuid as owner_artifact_id, null::uuid as artifact_id, i.key as id, null::text as block_id,
@@ -171,7 +172,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) func(seen int) str
          false as own, ` + rank("i.search") + ` as r
     from issues i, q
    where i.search @@ q.tsq and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)
-     and ` + searchProjectVisible("i.project_key", seen) +
+     and ` + visible("i.project_key", seen) +
 			searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
   select 'issue', 'keyword', i.key, null::uuid, null::uuid, i.key, null::text,
@@ -180,10 +181,10 @@ func searchKeywordLegs(rank func(searchColumn string) string) func(seen int) str
          true, ` + rank("i.search") + `
     from q, unnest(q.own_keys) as named(key), issues i
    where i.key = named.key and ($2 = '' or i.project_key = $2)
-     and ` + searchProjectVisible("i.project_key", seen) +
+     and ` + visible("i.project_key", seen) +
 			searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
-` + searchDocumentKeywordLeg(rank, seen) + `
+` + searchDocumentKeywordLeg(rank, visible, seen) + `
   union all
   select 'comment' as kind, 'keyword', c.issue_key, c.artifact_id, coalesce(c.artifact_id, (c.anchor->>'artifact_id')::uuid), c.id::text, null::text,
          null::text, null::text[],
@@ -195,7 +196,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) func(seen int) str
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where c.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and ` + searchProjectVisible("coalesce(i.project_key, p.key)", seen) +
+     and ` + visible("coalesce(i.project_key, p.key)", seen) +
 			searchRowFilters("i.status", "c.author", "c.created_at") + `
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
@@ -208,7 +209,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) func(seen int) str
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where k.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)
-     and ` + searchProjectVisible("coalesce(i.project_key, p.key)", seen) +
+     and ` + visible("coalesce(i.project_key, p.key)", seen) +
 			searchRowFilters("i.status", "k.author", "k.created_at") + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
@@ -217,7 +218,7 @@ func searchKeywordLegs(rank func(searchColumn string) string) func(seen int) str
          false, ` + rank("m.search") + `
     from messages m join issues i on i.key = m.issue_key, q
    where m.search @@ q.tsq and ($2 = '' or i.project_key = $2)
-     and ` + searchProjectVisible("i.project_key", seen) +
+     and ` + visible("i.project_key", seen) +
 			searchRowFilters("i.status", "m.author", "m.created_at")
 	}
 }
@@ -256,9 +257,9 @@ func searchRowFilters(status, author, written string) string {
 //
 // The text carries no newline of its own at either end: searchKeywordLegs joins it to its
 // neighbours with the union the arms are separated by, and a caller running the arm by itself
-// wraps it in a select of its own. seen is the parameter that caller binds the acting credential
-// at (searchProjectVisible).
-func searchDocumentKeywordLeg(rank func(searchColumn string) string, seen int) string {
+// wraps it in a select of its own. visible is the project rule searchKeywordLegs takes, and seen
+// the parameter that caller binds the acting credential at.
+func searchDocumentKeywordLeg(rank func(searchColumn string) string, visible func(project string, seen int) string, seen int) string {
 	return `  select 'document' as kind, 'keyword', a.issue_key, case when a.issue_key is null then a.id else null::uuid end, a.id, a.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name,
@@ -269,7 +270,7 @@ func searchDocumentKeywordLeg(rank func(searchColumn string) string, seen int) s
     left join issues i on i.key = a.issue_key
     join projects p on p.key = a.project_key, q
    where a.kind = 'doc' and v.search @@ q.tsq and ($2 = '' or p.key = $2)
-     and ` + searchProjectVisible("p.key", seen) +
+     and ` + visible("p.key", seen) +
 		searchRowFilters("i.status", "a.created_by", "v.created_at")
 }
 
@@ -292,7 +293,7 @@ var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
 	// (searchFusedSQL) can weigh a rank against a cosine similarity. The related-item check's own
 	// rank already passes it (relatedCoordinationRank).
 	return "ts_rank_cd(" + searchColumn + ", q.tsq, 32)"
-})
+}, searchProjectVisible)
 
 // askBlockNodeSQL is the block id of ask k's typed block while that block is a node of the
 // reference graph (a document_blocks row of the document holding it), and null otherwise: an id

@@ -253,8 +253,8 @@ func TestStatementTimings(t *testing.T) {
 	// the gate asks for next. The after side of each report is the excluding shape, the text a
 	// write runs; each report's name is its before text's, which is what a reader lines up
 	// against the Before branch's reading on the older schema.
-	// This release's arm reads the reader's viewer at $5 (searchProjectVisible), one that sees
-	// every project, so it finds the rows main's arm finds.
+	// This release's arm reads the reader's viewer at $5 (relatedProjectVisible, over the
+	// project at $2), one that sees every project, so it finds the rows main's arm finds.
 	documentLegArguments := []any{lexemeQuery, subjects.Project, lexemes, weights}
 	runner.Pair(t, "the document arm relatedKeywordQuery and relatedMeaningQuery share",
 		benchtime.Statement{
@@ -317,7 +317,7 @@ select count(*) from document_arm`
 // relatedMeaningQuery rank their arms by, which makes it the after side of that arm's pair. It
 // is built here rather than beside those two statements because this measurement is its only
 // reader, and a server would otherwise build it at start for nothing.
-var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank, 5)
+var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank, relatedProjectVisible, 5)
 
 // databaseHoldsDocumentSearch answers whether the database under measurement holds
 // document_search (migration 20261101182447), which is what decides how the five document-arm
