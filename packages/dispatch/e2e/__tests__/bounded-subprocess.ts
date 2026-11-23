@@ -103,7 +103,9 @@
  *   among 14 400 tailnet legs and 42.67 s among 1 440 public ones. Three times 67.38 s, rounded
  *   up to the minute, is 240 s. `runLeg` and `publicStandInRun` run every leg of their files
  *   under it, the legs given no input or nothing behind their inputs too, which end in under a
- *   second, and the shapes row runs its script under it as well.
+ *   second; the shapes row runs its script under it as well, and `runLeg` runs
+ *   `e2e/acceptance/outside-agent-grants.sh` under it for the browser gate's row that runs that
+ *   script alone against its stand-in Dispatch.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on

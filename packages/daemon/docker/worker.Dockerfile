@@ -133,13 +133,15 @@ ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-21T18:04:21Z,
-# and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
+# newest, read with
+# `gh api --paginate repos/example-org/deployment/git/matching-refs/tags/leak-check-v` at
+# 2026-11-22T16:38:25Z, and a bump reads that list again. The runtime stage exports it as
+# LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v31
+ARG LEAK_CHECK_TAG=leak-check-v33
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -1642,6 +1644,22 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
+# Each client plugin's build-commit stamp: the commit this image is built from, written beside the
+# bundle of pi-envoy and of claude-envoy, which the plugin names after its NATS connection's name
+# (@legion/envoy-client's clientBuild: a plugin this image packs from its checkout carries that
+# checkout's manifest version, not a release's), and which legacy-subjects-gate.sh reads from the
+# hub's census of connections. Root's and mode 0444, as every plugin file is root's alone (the check
+# below). A revision that is no whole commit id writes none. pi-envoy then names its packed
+# manifest's version, @sjawhar/pi-envoy@<version>, which the gate judges by that release's tag, not
+# by this checkout's commit, so a tag behind the new-form commit shuts it; claude-envoy, which reads
+# a version only from a plugin cache's path, names no build, which the gate reads as unknown.
+USER root
+RUN if printf '%s\n' "$LEGION_REVISION" | grep -Eqx '[0-9a-f]{40}'; then \
+      for dir in /opt/legion/pi-envoy/dist /opt/legion/claude-envoy/dist; do \
+        printf '%s\n' "$LEGION_REVISION" > "$dir/build-commit" && chmod 0444 "$dir/build-commit"; \
+      done; \
+    fi
+USER 1000:1000
 RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/pi-envoy.json \
     --mount=type=bind,source=packages/pi-legion/package.json,target=/tmp/source/pi-legion.json \
     set -eu; \
