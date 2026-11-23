@@ -53,9 +53,9 @@ import (
 //
 // The merge's own commit goes on standing at the base branch after the branch is gone, because
 // Dispatch recorded it as on that branch when it recorded the merge
-// (delivery.UpsertPullRequestHead) and a yes is kept for good. In a repository that merges by
-// squash that commit never lands on the default branch at all, so without that record a result
-// at the merge commit would stand at no basis for ever once the base branch was deleted.
+// (delivery.Attributor.UpsertPullRequestHead) and a yes is kept for good. In a repository that
+// merges by squash that commit never lands on the default branch at all, so without that record a
+// result at the merge commit would stand at no basis for ever once the base branch was deleted.
 //
 // A `default_branch` check is compared with the default branch of the check's issue's resolved
 // repository alone, whatever branch the pull request merged into. That is the whole of the

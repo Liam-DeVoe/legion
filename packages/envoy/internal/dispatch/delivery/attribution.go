@@ -512,6 +512,7 @@ type Attributor struct {
 	headsQuery      string
 	mergedForQuery  string
 	mergedInQuery   string
+	upsertQuery     string
 }
 
 // NewAttributor is the Attributor of renames.
@@ -524,6 +525,7 @@ func NewAttributor(renames refs.Renames) *Attributor {
 		headsQuery:      headsAttributedQuery(renames),
 		mergedForQuery:  baseBranchMergedForQuery(renames),
 		mergedInQuery:   baseBranchMergedInQuery(renames),
+		upsertQuery:     upsertHeadQuery(renames),
 	}
 }
 

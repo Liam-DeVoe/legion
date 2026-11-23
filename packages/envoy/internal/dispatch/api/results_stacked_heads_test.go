@@ -100,7 +100,7 @@ type stackedWorld struct {
 	// that number on the other issue.
 	link func(number int)
 	// pullRequest records the other issue's open pull request number, at head, through the writer
-	// a `pull_request` event of it reaches (delivery.UpsertPullRequestHead).
+	// a `pull_request` event of it reaches (delivery.Attributor.UpsertPullRequestHead).
 	pullRequest func(number int, head string)
 	// offered reports whether the reconcile's head pass would read the pull request number again
 	// now (delivery.ListStalePullRequestHeads, the batch a pass reads).
@@ -172,7 +172,7 @@ func newStackedWorld(t *testing.T, project string, pulls ...stackedPull) stacked
 		pullRequest: func(number int, head string) {
 			t.Helper()
 			key := other
-			if err := delivery.UpsertPullRequestHead(ctx, database.Pool, nil, delivery.PullRequestHead{
+			if err := served.deps.Attributor.UpsertPullRequestHead(ctx, database.Pool, nil, delivery.PullRequestHead{
 				Repo: "acme/widgets", Number: number, HeadSHA: head, HeadRef: "legion/" + other, BaseRef: "main",
 				State: "open", IssueKey: &key, AttributionSource: "branch", AttributionComplete: true,
 				Title: "Other work", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),

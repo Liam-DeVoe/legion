@@ -145,7 +145,7 @@ func storeMerge(t *testing.T, database *store.Store, repo string, number int, sh
 	t.Helper()
 	eventAt := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
 	read := time.Now().Add(-time.Minute)
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+	if err := delivery.NewAttributor(refs.Renames{}).UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
 		Repo: repo, Number: number, HeadSHA: sha, HeadRef: "work/deploy-job", BaseRef: "main",
 		State: "merged", IssueKey: issue, AttributionSource: source, AttributionComplete: true,
 		Title: "Move the deploy job", URL: "https://github.com/" + repo + "/pull/" + strconv.Itoa(number),

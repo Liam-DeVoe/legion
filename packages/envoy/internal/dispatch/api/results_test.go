@@ -181,12 +181,13 @@ func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number in
 // recordMerge records one issue's merged pull request as production records a merge, through
 // the writer that seeds the one fact the merge itself proves: the base branch held the merge
 // commit, written as a branch_commits yes that is kept for good
-// (delivery.UpsertPullRequestHead). The head is headCommit and the merge commit
+// (delivery.Attributor.UpsertPullRequestHead, with no rename pairs, as the test server's own). The
+// head is headCommit and the merge commit
 // baseMergeCommit, which is what every caller here means by them.
 func recordMerge(t *testing.T, database *store.Store, repo string, number int, issueKey, baseRef string) {
 	t.Helper()
 	attributed := issueKey
-	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
+	if err := delivery.NewAttributor(refs.Renames{}).UpsertPullRequestHead(context.Background(), database.Pool, nil, delivery.PullRequestHead{
 		Repo: repo, Number: number, HeadSHA: headCommit, HeadRef: "legion/work",
 		BaseRef: baseRef, State: "merged", IssueKey: &attributed, AttributionSource: "title",
 		AttributionComplete: true, Title: "A change",
@@ -1863,7 +1864,7 @@ func TestAfterMergeResultOfAnIssueMergedIntoTheTrunkSpendsOneCompareReadACommit(
 // request's own merge commit stands at the base branch although nothing can be read about
 // that branch any more and the default branch holds only a squash of the work: Dispatch
 // recorded that commit as on its base branch when it recorded the merge, and a yes is kept
-// for good (delivery.UpsertPullRequestHead).
+// for good (delivery.Attributor.UpsertPullRequestHead).
 func TestAfterMergeResultWithTheBaseBranchDeleted(t *testing.T) {
 	handler, database := resultsGitHubWithDeletedBranch(t, map[string]bool{"acme/widgets": true}, nil,
 		"main", "integration/x", func(base, head string) string {

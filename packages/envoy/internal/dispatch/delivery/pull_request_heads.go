@@ -223,11 +223,11 @@ func markHeadNotStored(err error) error {
 //
 // Every error this function answers is ErrHeadNotStored: nothing of the row, the seed and the
 // events was written, and the caller may write all three again.
-func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
+func (a *Attributor) UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead) error {
 	seedsBranch := head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != ""
 	records := broker != nil && head.AttributionComplete
 	if !seedsBranch && !records {
-		_, err := upsertHeadRow(ctx, pool, head)
+		_, err := a.upsertHeadRow(ctx, pool, head)
 		return err
 	}
 	tx, err := pool.Begin(ctx)
@@ -251,7 +251,7 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, broker *events
 			return err
 		}
 	}
-	applied, err := upsertHeadRow(ctx, tx, head)
+	applied, err := a.upsertHeadRow(ctx, tx, head)
 	if err != nil {
 		return err
 	}
@@ -408,10 +408,26 @@ const headWriteRollback = 2 * time.Second
 // credited by a citation of that pull request's number (citingRowsRejudged), so the reconcile's
 // merged arm judges each of them once more, as a raised AttributionRuleVersion has it judge every
 // merged row: a citation of a number Dispatch did not yet hold as a pull request read as a GitHub
-// issue, and this write is what makes it no citation of one (citedPullRequest).
-func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
+// issue, and this write is what makes it no citation of one (citedPullRequest). The statement is
+// the Attributor's (upsertHeadQuery), built once from its rename pairs.
+func (a *Attributor) upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	inputs := storedInputsOf(head)
-	tag, err := db.Exec(ctx, citingRowsRejudged+`
+	tag, err := db.Exec(ctx, a.upsertQuery,
+		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
+		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
+		head.AttributionComplete, AttributionRuleVersion,
+		inputs.titleKeys, inputs.citedIssues, inputs.branchKeys, inputs.commitKeys, inputs.headInRepo,
+	)
+	if err != nil {
+		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// upsertHeadQuery is upsertHeadRow's statement: citingRowsRejudged over renames, then the insert.
+// NewAttributor builds it once from its rename pairs.
+func upsertHeadQuery(renames refs.Renames) string {
+	return citingRowsRejudged(renames) + `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at, attribution_rule,
@@ -446,32 +462,26 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 				then pull_request_heads.attribution_rule else excluded.attribution_rule end
 		where excluded.event_at is null
 		   or pull_request_heads.event_at is null
-		   or excluded.event_at >= pull_request_heads.event_at
-	`,
-		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
-		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
-		head.AttributionComplete, AttributionRuleVersion,
-		inputs.titleKeys, inputs.citedIssues, inputs.branchKeys, inputs.commitKeys, inputs.headInRepo,
-	)
-	if err != nil {
-		return false, fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
-	}
-	return tag.RowsAffected() > 0, nil
+		   or excluded.event_at >= pull_request_heads.event_at`
 }
 
 // citingRowsRejudged is the WITH clause upsertHeadRow's insert starts with. Where no row of the
 // pull request ($1, $2) exists yet (every sub-statement reads the snapshot from before the
 // insert), it sets attribution_rule to 0 on each row credited by source github_issue_link whose
-// stored cited issues name that pull request's number in its repository. Both names are compared
-// as they are stored, without case: each is the canonical name, since every writer keys a row by
-// it (Attributor.canonical) and stores a citation under it (citedIssues), and the boot's pass
-// rewrites a row stored before (store.RewriteRenamedRepositories). Two first writes of one pull
-// request that cross both mark the rows, and a second judging of them changes nothing. A row
-// credited by another source is left alone: a citation is source 2, so it decided only where it
-// credited the row. The number is bound as an integer (the insert's column) and compared as text.
-// A delivery_pull_requests row needs no such mark: AttributePullRequests walks every stored row
-// in turn and judges it from the database.
-const citingRowsRejudged = `with first_record as (
+// stored cited issues name that pull request's number in its repository. The two repositories
+// are compared under their canonical names by renames, without case (refs.CanonicalRepoSQL), as
+// attributionHeld and citedPullRequest compare them: a writer of this build keys the row by the
+// canonical name (Attributor.canonical) and stores each citation under it (citedIssues), but a
+// row the build before it wrote during a roll can cite a repository by the name it was renamed
+// away from until the boot's pass rewrites it (store.RewriteRenamedRepositories), and that
+// citation names this pull request too. Two first writes of one pull request that cross both mark
+// the rows, and a second judging of them changes nothing. A row credited by another source is
+// left alone: a citation is source 2, so it decided only where it credited the row. The number is
+// bound as an integer (the insert's column) and compared as text. A delivery_pull_requests row
+// needs no such mark: AttributePullRequests walks every stored row in turn and judges it from the
+// database.
+func citingRowsRejudged(renames refs.Renames) string {
+	return `with first_record as (
 		select not exists (select 1 from pull_request_heads known where known.repo = $1 and known.number = $2) as first
 	), rejudged as (
 		update pull_request_heads citing set attribution_rule = 0
@@ -479,9 +489,11 @@ const citingRowsRejudged = `with first_record as (
 		where first_record.first
 			and citing.attribution_source = '` + string(sourceGitHubIssueLink) + `'
 			and exists (select 1 from unnest(citing.attribution_cited_issues) cited(url)
-				where lower(split_part(cited.url, '/', 4) || '/' || split_part(cited.url, '/', 5)) = lower($1)
+				where lower(` + refs.CanonicalRepoSQL(renames, `split_part(cited.url, '/', 4) || '/' || split_part(cited.url, '/', 5)`) + `) =
+					lower(` + refs.CanonicalRepoSQL(renames, "$1::text") + `)
 					and split_part(cited.url, '/', 7) = ($2::integer)::text)
 	)`
+}
 
 // storedInputs is the five values upsertHeadRow binds for the stored inputs of a row, each nil
 // (null) where the write has none to store: an incomplete write, which stores none, and a writer
@@ -531,10 +543,10 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // The write comes before the delete, so a failure between them leaves two rows rather than
 // none: the next pass is handed the old row's key again and re-keys it again, while losing the
 // row would leave the pull request unknown until another event arrived.
-func upsertHeadUnderCanonicalName(
+func (a *Attributor) upsertHeadUnderCanonicalName(
 	ctx context.Context, pool *store.Pool, broker *events.Broker, head PullRequestHead, storedUnder string,
 ) error {
-	if err := UpsertPullRequestHead(ctx, pool, broker, head); err != nil {
+	if err := a.UpsertPullRequestHead(ctx, pool, broker, head); err != nil {
 		return err
 	}
 	if strings.EqualFold(storedUnder, head.Repo) {
@@ -1178,7 +1190,7 @@ func (a *Attributor) RefreshPullRequestHead(
 	if err != nil {
 		return err
 	}
-	return upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
+	return a.upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, payload, attributed, &now), repoFull)
 }
 
 // RepositoryUnreadable reports whether err is the App saying it cannot read a repository: it is
@@ -1263,7 +1275,7 @@ func (a *Attributor) ReadThroughCommitPulls(
 		if attributed.complete {
 			checkedAt = &now
 		}
-		if err := upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, pull, attributed, checkedAt), repoFull); err != nil {
+		if err := a.upsertHeadUnderCanonicalName(ctx, pool, broker, headRow(canonical, pull, attributed, checkedAt), repoFull); err != nil {
 			return written, atHead, err
 		}
 		written++
@@ -1336,7 +1348,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		now := time.Now()
 		checkedAt = &now
 	}
-	return attributed.messages, upsertHeadUnderCanonicalName(ctx, in.pool, in.events, attributed.stored(PullRequestHead{
+	return attributed.messages, in.attributor.upsertHeadUnderCanonicalName(ctx, in.pool, in.events, attributed.stored(PullRequestHead{
 		Repo: repoFull, Number: number, HeadSHA: payload["head_sha"], HeadRef: payload["head_ref"],
 		BaseRef: payload["base_ref"], State: PullRequestHeadState(payload["action"], payload["merged"] == "true"),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
