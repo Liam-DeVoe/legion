@@ -1536,10 +1536,12 @@ A session on such a box trades the person's sign-in, asking for
 placeholder (`agent-secrets-placeholder-approve-…`) of a grant of that person and session that
 lasts 15 minutes, with the proxy's URL, its authority and the one host under `proxy`. Nobody
 approves the grant: the sign-in is its authority, and revoking the sign-in ends it. Only a person's
-sign-in is granted the placeholder. On each allowed request the proxy mints a token of the scope
-`approve` and the project scope person for the grant, bound to its pod's key, and never releases
-it; the broker logs each such token's SHA-256 and the thumbprint of the key it is bound to
-(`broker: minted a grant's token`), never the token. Dispatch holds that token to its approve
+sign-in is granted the placeholder. The proxy mints one token for the grant on each broker pod, of
+the scope `approve` and the project scope person and bound to that pod's key, at the grant's first
+allowed request on the pod, and puts it into every later allowed request while the grant lives; it
+never releases the token. The broker logs each such token's SHA-256 and the thumbprint of the key
+it is bound to (`broker: minted a grant's token`), one line per grant per pod, never the token.
+Dispatch holds that token to its approve
 routes, and to the answer of an approval request among the asks, and answers every other route
 `403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a personal token among them.
 The block's `allow` list narrows what reaches Dispatch by method and path prefix alone (`POST

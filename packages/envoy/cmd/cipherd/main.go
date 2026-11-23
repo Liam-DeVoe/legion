@@ -249,8 +249,9 @@ func main() {
 	// binds that host; each destination needs a dpop block to bind its host.
 	fatal(config.ProxyMintedRules(proxyRules, cfg.ProxyPrivateUpstreams))
 	// The approve capability, from the dpop block named oauth.ApproveName: a person's sign-in is
-	// traded for its placeholder, and the proxy mints its token for each allowed request. A file
-	// with no such block serves none.
+	// traded for its placeholder, and the proxy mints one token per grant per pod, at the grant's
+	// first allowed request there, and reuses it while the grant lives. A file with no such block
+	// serves none.
 	approve, approveServed := approveCapabilityOf(profiles, proxyRules, cfg.ProxyPrivateUpstreams)
 	logApproveCapability(approve, approveServed)
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
