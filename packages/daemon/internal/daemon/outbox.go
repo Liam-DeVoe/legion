@@ -2529,7 +2529,16 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
 			return nil
 		}
-		if payload.Phase != "" && payload.Phase != issue.Phase {
+		// A start of a phase is the issue's work while the issue stands in that phase, and the start
+		// of a fix's task (record.SuperviseRequest.Fix) while that fix runs, whatever phase the issue
+		// stands in: it runs beside the step of the phase. record.PhaseHolds is the one rule of both,
+		// and the machine's own fence of a delivery asks it too.
+		if payload.Phase != "" && !record.PhaseHolds(&issue, payload.Phase, payload.Generation, payload.Fix) {
+			if payload.Fix > 0 {
+				r.log.Info("outbox start serves a fix that no longer runs; finished without acting", "row", row.ID, "issue", issue.Key,
+					"fix", payload.Fix, "runningFix", issue.RunningFix, "phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
+				return nil
+			}
 			r.log.Info("outbox start serves a phase the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
 			return nil
@@ -2701,8 +2710,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// request delivered below, so the two never read different starts.
 		//
 		// The row's phase, already held to the issue's above, travels with the delivery: it is
-		// what says the task is still the work to do once the delivery has outlived its id. The
-		// row's entry travels with it too, the number the start's own transaction raised on the
+		// what says the task is still the work to do once the delivery has outlived its id. A
+		// fix's task carries its fix the same way, held above to the fix that runs, with the head
+		// its working copy is made at and the head the task's working copy moves to (startTask).
+		// The row's entry travels with it too, the number the start's own transaction raised on the
 		// role's phases row (record.PhaseRow.Entry): it is what the completion this task's turn
 		// reports is held to (api/handoff.go), and what says a later row carrying the same
 		// entry queues no second task of it (supervise.Claim.GivenEntry). A start that hands
@@ -2745,10 +2756,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if err != nil {
 				return err
 			}
-			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
-				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
-				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+			task = startTask(token, row, payload, news, kept)
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -3090,6 +3098,21 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // workflow between its first phase start and that start's run ever has such a row.
 func childArchitectFirstStart(issue record.Issue, payload record.SuperviseRequest) bool {
 	return payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == "" && !payload.News
+}
+
+// startTask is the task start row row gives the claim token (supervise.RequestDeliver): the text
+// the start composed (news.task) and the news it carries, the row's phase, run, entry and check
+// look, the row's own delivery id, and what the row says of the work: the decisions it names
+// (kept, encoded), whether it resends its entry, names the review round or carries news alone, and
+// the fix it is of with the head the fix's working copy is made at and the head the task's working
+// copy moves to (record.SuperviseRequest.Fix, FixFrom, MoveTo). The supervise executor's comment
+// above its one call says why each travels.
+func startTask(token claim.Token, row record.OutboxRow, payload record.SuperviseRequest, news startNews, kept []byte) *supervise.RequestDeliver {
+	return &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
+		Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
+		CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
+		ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News,
+		Fix: payload.Fix, FixFrom: payload.FixFrom, MoveTo: payload.MoveTo}
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
