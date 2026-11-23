@@ -135,8 +135,8 @@ jobs:
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       # The script harnesses of the module, each a bash script of fakes that mostly waits on its
       # fakes' answers, polls and deadlines rather than computing. As one step after another they
-      # were about 1,000 s of this job's 1,336 s median (n=222 pull-request runs, 2026-11-22) while
-      # three of the runner's four cores idled. Each step below keeps its name and hands its harness
+      # were 944 s of this job's 1,292 s median (n=724 green pull-request jobs, 2026-11-22) while the
+      # runner's other cores idled. Each step below keeps its name and hands its harness
       # to .github/scripts/harness-pool.sh, which queues it and returns; the harnesses then run
       # beside each other, no more at once than the runner has cores, and beside the Go steps after
       # them, and "Wait for the script harnesses and judge them", the job's last step but the ci-ok

@@ -1640,12 +1640,12 @@ own gate, so a change can reach none of them; the wait passes `--allow-none` for
 
 .github/scripts/harness-pool.sh runs a job's script harnesses beside each other. A job's steps
 run one after another, and a shell harness of fakes mostly waits - on a fake's answer, a poll, a
-deadline - so as steps they kept three of a 4-vCPU runner's cores idle: about 1,000 s of
-envoy-go-checks' 1,336 s median (n=222 pull-request runs, 2026-11-22) and 678 s of the test
-job's 742 s median on the runs that ran its harnesses (n=123) were harness steps in series.
-All 19 of envoy-go-checks' harnesses had been run at once, each with a TMPDIR of its own, and
-passed but the one that fails alone off a runner (dev-stack.test.sh, whose fakes use `$$` as a
-port), before the pool was written.
+deadline - so as steps they kept the runner's other cores idle: on green pull-request jobs of
+2026-11-22, envoy-go-checks' harness steps were 944 s of its 1,292 s median (n=724) and the test
+job's 366 s of its 638 s (n=416). Each harness makes its own temporary directory (mktemp); the
+pool gives it none. Before the pool was written, envoy-go-checks' 19 harnesses of the time were
+run at once on a dev box, each with its own TMPDIR, and all passed but dev-stack.test.sh, which
+fails alone there too (its fakes use `$$` as a port, and that box's process ids pass 65535).
 
 Each harness step keeps its name, its `if:` and its working directory, and runs
 `harness-pool.sh start <name> <command>`, which queues the command and returns: the step's
@@ -1660,13 +1660,12 @@ them" waits for the last of them and is their verdict: it prints each one's log 
 its own headed by its exit status, wall seconds, CPU seconds and seconds waiting for a slot,
 fails with an `::error` naming each that failed, and writes the same table to the job summary.
 It runs after a failed step too (`!cancelled()`), so a harness queued before the failure is
-still judged. A cancel or the job's timeout during the wait signals it (the step `exec`s it, and
-the runner signals a running step only when its condition no longer holds, which `always()` would
-always), and it then names each harness still running with its log so far; a job cancelled before
-the wait began runs "Name the script harnesses a cancelled job left" (`wait --now`) instead. A
-recorder killed before its harness ended is a failure, and the pool ends that harness's session
-before its slot goes to another. A recorder killed
-before its harness ended is a failure, and the wait ends the harness's session. `start
+still judged. A cancel or the job's timeout during the wait signals it: the step `exec`s it, and
+the runner signals a running step only when its condition no longer holds, which with
+`always()` it would always hold. The wait then names each harness still running with its log so
+far; a job cancelled before the wait began runs "Name the script harnesses a cancelled job left"
+(`wait --now`) instead. A recorder killed before its harness ended is a failure, and the pool
+ends that harness's session before its slot goes to another. `start
 --minutes <n>` bounds one harness as a step's timeout-minutes did and hands it
 HARNESS_POOL_DEADLINE_MS. The runner ends a step's leftover processes only at the job's end, so
 a harness outlives the step that queued it and the job's timeout-minutes still bounds it.

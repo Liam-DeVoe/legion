@@ -368,8 +368,8 @@ jobs:
 
       # The script harnesses from here on, each a bash script of fakes that mostly waits on its
       # fakes' answers, polls and deadlines rather than computing: as one step after another they
-      # were 678 s of this job's 742 s median on the runs that ran them (n=123 pull-request runs,
-      # 2026-11-22) while three of the runner's four cores idled. Each step keeps its name and its
+      # were 366 s of this job's 638 s median (n=416 green pull-request jobs, 2026-11-22) while the
+      # runner's other cores idled. Each step keeps its name and its
       # gate and hands its harness to .github/scripts/harness-pool.sh, which queues it and
       # returns; the harnesses run beside each other, no more at once than the runner has cores,
       # and beside the Bun steps after them, and "Wait for the script harnesses and judge them",

@@ -175,15 +175,17 @@ export HARNESS_POOL_SLOTS=2
 echo "case: a harness starts with SIGINT and SIGQUIT at their defaults, as a step's shell does"
 fresh signals
 # The step's shell queues it with `&` and no job control, which starts a command with both
-# ignored; a bash harness could then not trap the INT it sends what it tests. The harness reads
-# its own ignored set and traps an INT it sends itself.
+# ignored; a bash harness could then not trap the INT it sends what it tests. Each harness traps
+# the one signal and sends it to itself: the trap runs only if the signal reached it at its
+# default. (This reads the behaviour, not /proc/self/status's SigIgn line, which gVisor leaves out.)
 # shellcheck disable=SC2016 # the harness, not this shell, expands these
-"$pool" start ignores bash -c 'echo "ignored=$(awk "/^SigIgn:/ { print \$2 }" /proc/self/status)"; trap "echo trapped INT; exit 0" INT; kill -INT $$; sleep 5; echo no trap ran; exit 1'
+"$pool" start int bash -c 'trap "echo trapped INT; exit 0" INT; kill -INT $$; sleep 5; echo no INT trap ran; exit 1'
+# shellcheck disable=SC2016
+"$pool" start quit bash -c 'trap "echo trapped QUIT; exit 0" QUIT; kill -QUIT $$; sleep 5; echo no QUIT trap ran; exit 1'
 run_wait
 check "the harness's INT trap ran" "$(contains "$out" '^trapped INT$')"
-ignored=$(sed -n 's/^ignored=//p' <<< "$out")
-check "and neither INT nor QUIT (signals 2 and 3, mask 0x6) is in its ignored set" "$(is "$([[ $ignored =~ ^[0-9a-f]+$ ]] && (( (16#$ignored & 0x6) == 0 )) && echo default || echo "ignored '$ignored'")" default)"
-check "it passes" "$(is "$status" 0)"
+check "and the other's QUIT trap" "$(contains "$out" '^trapped QUIT$')"
+check "both pass" "$(is "$status" 0)"
 
 echo "case: a harness's output reaches the step only through the wait"
 fresh output

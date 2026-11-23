@@ -100,9 +100,11 @@ alive() {
 # process of its harness's session is still there. It claims the entry as lost (`.lost`), ends
 # its session, and once the session is empty marks the entry gone, after which it forks no more
 # for it. The harness publishes its session itself and then looks for the claim before it runs
-# (see run), so whichever of the two comes first, no harness runs on past a claim: a harness on a
-# core no slot counts would let one more run than the slots. Every caller kills, not the first
-# alone, so a caller that dies after the claim leaves the kill to the next.
+# (see run), so whichever of the two comes first, nothing the harness started in that session
+# runs on past a claim: a harness on a core no slot counts would let one more run than the slots.
+# A process the harness moved into a session of its own (setsid, as vm.test.sh's stand-ins do) is
+# beyond this, as it is beyond a step's own end; the job's end still reaches it. Every caller
+# kills, not the first alone, so a caller that dies after the claim leaves the kill to the next.
 lost_running() {
   [[ -e $1.exit || -e $1.gone ]] && return 1
   mkdir "$1.lost" 2> /dev/null || true
@@ -190,8 +192,9 @@ start() {
   # harness's kills of its process group reach neither this step's shell nor another harness;
   # --wait keeps setsid's own pid, the one recorded below, alive until the recorder ends, whether
   # or not setsid had to fork. Every descriptor goes to a file: a background process holding the
-  # step's output open would keep the step from ending.
-  setsid --wait "${BASH_SOURCE[0]}" run "$base" "$minutes" "$@" > /dev/null 2>&1 < /dev/null {lock}>&- &
+  # step's output open would keep the step from ending. The recorder's own output, its errors,
+  # goes to the entry's recorder log, which the wait prints when it holds anything.
+  setsid --wait "${BASH_SOURCE[0]}" run "$base" "$minutes" "$@" > "$base.recorder.log" 2>&1 < /dev/null {lock}>&- &
   # The pid and its start time before the name: an entry is counted from its name, and read for
   # its pid. A recorder already gone has no start time, and its entry is judged by its status.
   proc_start "$!" || pstart=gone
@@ -342,6 +345,10 @@ wait_all() {
     read -r wall cpu waited 2> /dev/null < "$base.seconds" || { wall='?'; cpu='?'; waited='?'; }
     echo "::group::$name: exit $status, $wall s, $cpu s of CPU, after $waited s waiting for a slot"
     cat "$base.log" 2> /dev/null || echo "harness-pool: $name left no log"
+    if [[ -s $base.recorder.log ]]; then
+      echo "harness-pool: what the recorder of $name printed:"
+      cat "$base.recorder.log"
+    fi
     echo "::endgroup::"
     result=pass
     if [[ $status != 0 ]]; then
