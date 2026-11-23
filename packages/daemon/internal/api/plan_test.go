@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -253,29 +254,49 @@ func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
 	}
 }
 
-// register_plan checks the plan on the request's own context, before the fact lock: once the
-// request has ended, the check stops, the route answers 503 and records nothing. Here the request
-// ends as Dispatch answers the read of the plan, a cycle of two tasks. The fault is a check that
-// runs on after its request has gone; the control is the route calling Validate on the daemon's
-// own context (s.stopping), under which the plan is refused 409 PLAN_REFUSED.
+// register_plan reads and checks the plan on the request's own context, before the fact lock:
+// once the request has ended, the read of the needs (plan.FromBlocks) or the check (plan.Validate)
+// stops, the route answers 503 and records nothing. Here the request ends as Dispatch answers
+// the read of the plan: a cycle of two tasks, which the check's first read of the context stops,
+// and a task whose block writes 2,048 needs, which the read of the needs stops at its read of the
+// context after 1,024 words. The fault is a read or a check that runs on after its request has
+// gone; the control is the route calling both on the daemon's own context (s.stopping), under
+// which each plan is refused 409 PLAN_REFUSED, and the route answering the read's stop as a block
+// it cannot read, under which the second is refused 409 PLAN_REFUSED naming the context's end.
 func TestRegisterPlanStopsItsCheckWhenTheRequestEnds(t *testing.T) {
-	h, facts, statuses := planHarness(t)
-	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
-	statuses.givePlan(planDoc, 1, needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
-		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
-	ctx, end := context.WithCancel(t.Context())
-	statuses.onPlanRead = end
-	body, err := json.Marshal(map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": planDoc, "version": 1})
-	if err != nil {
-		t.Fatalf("encode the request body: %v", err)
+	words := make([]string, 2_048)
+	for i := range words {
+		words[i] = fmt.Sprintf("x%04d", i)
 	}
-	answer := httptest.NewRecorder()
-	h.handler.ServeHTTP(answer, httptest.NewRequestWithContext(ctx, http.MethodPost, "/legion/v1/plans/register", strings.NewReader(string(body))))
-	if answer.Code != http.StatusServiceUnavailable || !strings.Contains(answer.Body.String(), "because its request ended; nothing was recorded") {
-		t.Fatalf("register_plan whose request ended = %d %s, want 503 saying its request ended", answer.Code, answer.Body)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("a registration whose request ended recorded %#v, want nothing", got)
+	for _, tc := range []struct {
+		name   string
+		blocks []dispatch.DocumentBlock
+	}{
+		{"during the check, on a cycle of two tasks", []dispatch.DocumentBlock{
+			needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
+			needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a")}},
+		{"during the read of the needs, on a block of 2,048 needs", []dispatch.DocumentBlock{
+			needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " "))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 1, tc.blocks...)
+			ctx, end := context.WithCancel(t.Context())
+			statuses.onPlanRead = end
+			body, err := json.Marshal(map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208", "artifactId": planDoc, "version": 1})
+			if err != nil {
+				t.Fatalf("encode the request body: %v", err)
+			}
+			answer := httptest.NewRecorder()
+			h.handler.ServeHTTP(answer, httptest.NewRequestWithContext(ctx, http.MethodPost, "/legion/v1/plans/register", strings.NewReader(string(body))))
+			if answer.Code != http.StatusServiceUnavailable || !strings.Contains(answer.Body.String(), "because its request ended; nothing was recorded") {
+				t.Fatalf("register_plan whose request ended = %d %s, want 503 saying its request ended", answer.Code, answer.Body)
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("a registration whose request ended recorded %#v, want nothing", got)
+			}
+		})
 	}
 }
 

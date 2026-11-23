@@ -153,8 +153,7 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	// so it runs on the request's context and stops when the request ends, recording nothing.
 	invalid, err := plan.Validate(r.Context(), given, plan.Deployment{Roles: plan.BuiltinRoles()})
 	if err != nil {
-		s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", req.Issue, "artifact", artifactID, "version", req.Version)
-		s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
+		s.planCheckStopped(w, r, err, req.Issue, artifactID, req.Version)
 		return
 	}
 	refusals := append(plan.Supported(given), invalid...)
@@ -243,11 +242,20 @@ func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
 	s.applyFact(w, r, requestFactID("tasks/stop"), intake.TaskStopped{Issue: req.Issue, Task: req.Task, By: grant.Claim, Generation: recorded.Generation}, EmptyResponse{})
 }
 
+// planCheckStopped answers a register_plan whose request ended while the plan was read
+// (plan.FromBlocks) or checked (plan.Validate), each before the fact lock and on the request's
+// context: nothing was recorded.
+func (s *server) planCheckStopped(w http.ResponseWriter, r *http.Request, err error, issue, artifactID string, version int) {
+	s.logRequestFailure(r, err, "api: the check of a plan stopped", "issue", issue, "artifact", artifactID, "version", version)
+	s.refuse(w, r, http.StatusServiceUnavailable, "register_plan stopped before it finished checking the plan, because its request ended; nothing was recorded")
+}
+
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
-// read as a plan (plan.FromBlocks). A block the plan's grammar cannot read is a refused plan
-// whose one reason names the block; a Dispatch that gives no blocks cannot show Legion a plan at
-// all. Every refusal records nothing.
+// read as a plan on the request's context (plan.FromBlocks). A block the plan's grammar cannot
+// read is a refused plan whose one reason names the block; a Dispatch that gives no blocks cannot
+// show Legion a plan at all; a request that ends during the read is answered as one that ends
+// during the check (planCheckStopped). Every refusal records nothing.
 func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID string, version int, issue string) (plan.Plan, bool) {
 	document, err := s.dispatch.PlanDocument(r.Context(), artifactID, version)
 	switch {
@@ -267,7 +275,11 @@ func (s *server) planAt(w http.ResponseWriter, r *http.Request, artifactID strin
 	for i, block := range document.Blocks {
 		blocks[i] = plan.Block{ID: block.ID, Type: block.Type, Attributes: block.Attributes, Text: block.Text}
 	}
-	given, err := plan.FromBlocks(artifactID, version, blocks)
+	given, err := plan.FromBlocks(r.Context(), artifactID, version, blocks)
+	if ended := r.Context().Err(); ended != nil && errors.Is(err, ended) {
+		s.planCheckStopped(w, r, err, issue, artifactID, version)
+		return plan.Plan{}, false
+	}
 	if err != nil {
 		s.writeRefusal(w, r, intake.PlanRefused([]plan.Refusal{{Reason: err.Error() + "."}}))
 		return plan.Plan{}, false

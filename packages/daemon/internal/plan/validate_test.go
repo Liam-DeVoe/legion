@@ -66,7 +66,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 // control: a plan of one block with no `steps` is taken.
 func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
-	empty, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
+	empty, err := FromBlocks(t.Context(), "plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(no task block): %v", err)
 	}
@@ -80,7 +80,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	if r := Supported(empty); len(r) != 0 {
 		t.Fatalf("Supported(no task) = %+v, want none: the cause is Validate's alone", r)
 	}
-	taken, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
+	taken, err := FromBlocks(t.Context(), "plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(one block): %v", err)
 	}

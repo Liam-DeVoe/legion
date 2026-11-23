@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -223,6 +224,39 @@ func TestARequestThatEndsDuringTheCheckOfCyclesStopsIt(t *testing.T) {
 			t.Fatalf("Validate with a context ending at its read 2 = %d refusals and error %v after %d reads, want none and %v at that read", len(refusals), err, ctx.reads, context.Canceled)
 		}
 	})
+}
+
+// register_plan reads each need before the fact lock, where only the request's own end can stop
+// the read, so FromBlocks reads a task's `needs` at one step for each word and reads its context
+// at every contextSteps-th step: its work is one step for each word, and once the request has
+// ended it stops within contextSteps words. A block of 50,000 words that name no task, each
+// written twice, is read in 100,000 steps, at which it reads its context 100,000/contextSteps
+// times and keeps each word once; a context that ends at its second read stops the read at that
+// read, with the context's error. The fault is a read of the needs that never reads its context;
+// the control is resolveNeeds without its read of ended, under which FromBlocks reads the context
+// no time and answers the plan under the ended one.
+func TestFromBlocksReadsItsContextOnceForEveryContextStepsWords(t *testing.T) {
+	const distinct = 50_000
+	words := make([]string, 0, 2*distinct)
+	for range 2 {
+		for i := range distinct {
+			words = append(words, fmt.Sprintf("x%05d", i))
+		}
+	}
+	blocks := []Block{taskNeeding("a", words...)}
+
+	live := &endsAt{Context: t.Context(), end: math.MaxInt}
+	p, err := FromBlocks(live, "plan-md", 1, blocks)
+	if err != nil || len(p.Tasks[0].Unresolved) != distinct || live.reads != len(words)/contextSteps {
+		t.Fatalf("FromBlocks(%d words) = %d words left and error %v after %d reads of its context, want %d words, no error and %d reads",
+			len(words), len(p.Tasks[0].Unresolved), err, live.reads, distinct, len(words)/contextSteps)
+	}
+
+	ended := &endsAt{Context: t.Context(), end: 2}
+	if p, err := FromBlocks(ended, "plan-md", 1, blocks); !errors.Is(err, context.Canceled) || p.Tasks != nil || ended.reads != 2 {
+		t.Fatalf("FromBlocks(%d words) under a context ending at its read 2 = %d tasks and error %v after %d reads, want none and %v at that read",
+			len(words), len(p.Tasks), err, ended.reads, context.Canceled)
+	}
 }
 
 // The work of an issue merges as one change, at the end of the one task that no task needs, so

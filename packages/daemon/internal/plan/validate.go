@@ -65,9 +65,23 @@ func Validate(ctx context.Context, p Plan, d Deployment) ([]Refusal, error) {
 	return refusals, nil
 }
 
-// contextSteps is how many steps of the check of cycles pass between two reads of its context.
-// Each step is one task or one need, so a check whose request has ended stops within that many.
+// contextSteps is how many steps of a pass over a plan's tasks and needs pass between two reads
+// of its context: register_plan reads each need (FromBlocks) and checks the cycles (Validate)
+// before the fact lock, where only the request's own end can stop them. Each step is one task or
+// one need, so a pass whose request has ended stops within that many.
 const contextSteps = 1024
+
+// endedEvery is the read of ctx such a pass makes at each of its steps: ctx's error at every
+// contextSteps-th step, and nil at every other.
+func endedEvery(ctx context.Context) func() error {
+	steps := 0
+	return func() error {
+		if steps++; steps%contextSteps != 0 {
+			return nil
+		}
+		return ctx.Err()
+	}
+}
 
 // cycles is one cycle of needs for each set of tasks that need each other: each strongly
 // connected component of the tasks' needs that holds a cycle, which is one of more than one task
@@ -85,13 +99,7 @@ func cycles(ctx context.Context, tasks []Task) ([][]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	steps := 0
-	ended := func() error {
-		if steps++; steps%contextSteps != 0 {
-			return nil
-		}
-		return ctx.Err()
-	}
+	ended := endedEvery(ctx)
 	at := make(map[string]int, len(tasks))
 	for i, task := range tasks {
 		at[task.ID] = i
