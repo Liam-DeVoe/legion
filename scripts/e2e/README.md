@@ -1773,9 +1773,11 @@ Each item below names an input and its default, then what it means.
   `<namespace>/<name>` of a ServiceAccount of the proof's own that the production broker's `BROKER_SERVICE_LOGINS` lets log in as `legion-daemon` and that no pod runs as, never the production daemon's:
   each account holds one launcher credential, which every login moves to its own key, so a run logging in as a running daemon's account would take that daemon's credential, and the two would trade it for the whole run.
   The script refuses an account any pod in its namespace runs as, naming the pods.
-  It mints an hour-long token for the account with the operator context (`kubectl create token … --audience agent-secrets --duration 1h`;
+  It mints an hour-long token for the account with the operator context (`kubectl create token … --audience <audience> --duration 1h`;
   the broker refuses a longer one) into an owner-only file it never prints, and mints it again every half hour while the run lasts;
   the harness logs in with that token, reading the file afresh at each login, as a daemon off the cluster does; no person approves it.
+  The audience is the one the namespace's daemons enroll their pods for, read through the operator context from each ConfigMap's `legion.yaml` ([`lib/broker-audience.ts`](#libbroker-audiencets)), and the harness enrolls the run's pods for the same one:
+  so the run proves enrollment against the broker the deployment enrolls with.
   With this or any other `LEGION_E2E_AGENT_SECRETS_*` input unset, the harness starts no login and every `secrets-*` check reports `SKIPPED-BLOCKED`;
   a refused login blocks them with the broker's answer, never fails the stage
 
@@ -1948,7 +1950,7 @@ Each item below names a check, then what it does and what it requires.
 - `secrets-two-roles-enrolled`
 
   the root and worker share one actual pod UID but each hello enrolls under its own role-generation slot;
-  each role has a private 0600 `key.pem` and enrollment id and the two ids differ, while one projected `agent-secrets` audience token remains shared by the pod
+  each role has a private 0600 `key.pem` and enrollment id and the two ids differ, while one projected token for the broker's audience remains shared by the pod
 
 - `secrets-automatic-grant`
 
@@ -6438,6 +6440,21 @@ pod_service_account=$(bash scripts/e2e/lib/pod-service-account.sh)
 
 A ServiceAccount's name is a DNS-1123 subdomain, so the helper exits 1 when the variable is unset or holds anything else: lowercase letters, digits, `-` and `.` alone, beginning and ending with a letter or a digit, at most 253 characters.
 Its refusal names the variable on stderr and never prints the value.
+
+## lib/broker-audience.ts
+
+Prints the broker audience Stage 4a mints its login token for, the one the namespace's own daemons enroll their pods for.
+It reads `kubectl get configmaps -o json` on stdin, and each ConfigMap with a `legion.yaml` key is a daemon's configuration.
+A daemon whose `runtime.kubernetes.agent_secrets` names no `audience` uses the daemon's default, which the script passes as the argument after reading it from `legion config reference --json`;
+with no `agent_secrets` block in any daemon, the run takes that default too.
+
+```sh
+agent_secrets_audience=$(op get configmaps -o json | bun scripts/e2e/lib/broker-audience.ts "$agent_secrets_default")
+```
+
+It exits 1 when a `legion.yaml` does not parse, naming its ConfigMap, or when the daemons use different audiences, naming each audience with its ConfigMaps: no one audience is then the deployment's.
+It exits 2 when the default is not one word.
+The harness reads the namespace's ConfigMaps for the pods it enrolls by the same rule (`deploymentBrokerAudience`, `packages/daemon/internal/runtime/sandbox/live_secrets_pure_test.go`).
 
 ## lib/install-model-gateway.sh
 
