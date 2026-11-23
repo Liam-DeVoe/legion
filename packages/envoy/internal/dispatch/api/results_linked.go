@@ -120,7 +120,7 @@ func (s *server) refuseUnknownCommit(ctx context.Context, q refs.Queryer, issueK
 	}
 	// heads is nil where the read failed, so no head matches: the commit is asked of repo, and
 	// headsErr refuses the record wherever GitHub does not say that repo holds it.
-	heads, headsErr := s.deps.Attributor.HeadsAttributedTo(ctx, s.deps.Store.Pool, issueKey)
+	heads, headsErr := s.deps.Attributor.HeadsAttributedTo(ctx, q, issueKey)
 	if at := slices.IndexFunc(heads, func(head delivery.AttributedHead) bool { return head.HeadSHA == sha }); at >= 0 {
 		return headRepositoryOther(heads[at], *repo), nil
 	}

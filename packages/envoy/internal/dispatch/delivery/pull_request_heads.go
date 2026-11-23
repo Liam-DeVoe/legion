@@ -639,9 +639,12 @@ func headsAttributedQuery(renames refs.Renames) string {
 // planner returned first. A reader taking the first head takes the one Dispatch learned last.
 //
 // The read uses pull_request_heads_issue_head's leading column, as BaseBranchMergedFor's does:
-// the rows one issue's key holds are the handful of pull requests attributed to that issue.
-func (a *Attributor) HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
-	rows, err := pool.Query(ctx, a.headsQuery, issueKey)
+// the rows one issue's key holds are the handful of pull requests attributed to that issue. It
+// reads through q, a pool or a transaction, and writes nothing, as LinkedPullRequests does: a
+// write route that reaches it (the results record's refuseUnknownCommit) reads it through its own
+// Queryer, which the keyed-write guard reads as no write.
+func (a *Attributor) HeadsAttributedTo(ctx context.Context, q refs.Queryer, issueKey string) ([]AttributedHead, error) {
+	rows, err := q.Query(ctx, a.headsQuery, issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 	}
