@@ -40,9 +40,8 @@ implement App and a planner's, tester's or reviewer's the review App.
   jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'author.email()'
   ```
 
-- Before a push, `jj metaedit -r @ --update-author` is the whole repair. After a push: the identity
-  check in `skill://legion-worker/references/default-branch-check.md`, the rewrite guard
-  (`descendants(<commit>) ~ ::@` must be empty, so nothing of another tree is built on it),
+- Before a push, `jj metaedit -r @ --update-author` is the whole repair. After a push: the rewrite
+  guard (`descendants(<commit>) ~ ::@` must be empty, so nothing of another tree is built on it),
   `jj metaedit -r <commit> --update-author`, then one `jj bookmark set … --allow-backwards` and a
   single push.
 
