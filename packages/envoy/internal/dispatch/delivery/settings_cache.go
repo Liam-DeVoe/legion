@@ -39,8 +39,8 @@ const settingsRetryInterval = 30 * time.Second
 // the cache reads the default repositories of the projects whose sources read them, and reads the
 // settings again only when one moved (defaultsMoved); with no such project it reads nothing.
 //
-// While the listener is down, a change waits for its reconnect; the release before this one, which
-// still polls every 30 s, may run beside it during a roll and read the change sooner.
+// While the listener is down, a change waits for its reconnect, as it does in the release before
+// this one, whose cache of the one delivery_settings row is woken on the same channel.
 type SettingsCache struct {
 	pool         *store.Pool
 	settingsWake <-chan struct{}
