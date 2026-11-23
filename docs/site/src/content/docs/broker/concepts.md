@@ -1540,9 +1540,13 @@ sign-in is granted the placeholder. On each allowed request the proxy mints a to
 `approve` and the project scope person for the grant, bound to its pod's key, and never releases
 it; the broker logs each such token's SHA-256 and the thumbprint of the key it is bound to
 (`broker: minted a grant's token`), never the token. Dispatch holds that token to its approve
-routes and answers every other route `403 APPROVE_ONLY_TOKEN`, the mint and the change of a
-personal token among them; the block's `allow` list names those routes as well, so a request for
-any other route is refused at the proxy first. `dispatch review` sends a person's review this way.
+routes, and to the answer of an approval request among the asks, and answers every other route
+`403 APPROVE_ONLY_TOKEN` before it runs, the mint and the change of a personal token among them.
+The block's `allow` list narrows what reaches Dispatch by method and path prefix alone (`POST
+/api/v1/artifacts/`, `POST /api/v1/asks/` and the like), so a request under one of those prefixes
+that is no approve route, a document's comment or an ask's decline among them, reaches Dispatch,
+and Dispatch refuses it; a request under no prefix, an issue's comment or any `GET`, is refused at
+the proxy. `dispatch review` sends a person's review this way.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
 puts the placeholder in `NAME`, points `HTTPS_PROXY` at the broker's proxy port with that grant's

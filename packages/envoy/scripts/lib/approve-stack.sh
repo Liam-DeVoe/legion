@@ -12,7 +12,9 @@
 #
 # The allow list is the approve routes as path prefixes: the reviews and the keep of a document's
 # block, the decisions on a credential request, the revocations, the revoke of a personal token and
-# the answer of an ask, and never an issue's comments or the mint or change of a personal token.
+# the answers of asks, and never an issue's comments or the mint or change of a personal token. A
+# prefix takes every route under it, so a document's comments and an ask's decline reach Dispatch
+# too, whose approve-only check refuses them (and every ask's answer but an approval request's).
 # With --approve-allow-all the list is every method on /api/, the stack a check turns the allow
 # list off in, so a request reaches Dispatch's own approve-only check.
 #
