@@ -1,6 +1,7 @@
 package testexec
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -35,6 +36,11 @@ import (
 // check reads, and node_modules, vendor, testdata and dot directories are not Go source of the
 // module.
 //
+// Unguarded fails, naming root, when root holds no go.mod, as the parent of a module's directory
+// or one of its subdirectories does, and when it read no test file under root: a root that holds
+// none, or whose every directory that holds one is another module. A check of such a root would
+// name no write and pass while it read nothing, or read only part of its module.
+//
 // The check reads each file's syntax alone, with no types, so it cannot see:
 //
 //   - a Chmod in another function than the open, or of the same path spelled another way, as a
@@ -44,7 +50,10 @@ import (
 //   - a test-support package whose name does not begin or end with "test": it is read as any other
 //     package is, its test files when they call Parallel and no other file.
 func Unguarded(root string) ([]string, error) {
-	dirs := map[string][]string{}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return nil, fmt.Errorf("read no module at %s: it holds no go.mod, so it is not the root of the module whose writes the check reads: %w", root, err)
+	}
+	dirs, tests := map[string][]string{}, 0
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -64,11 +73,17 @@ func Unguarded(root string) ([]string, error) {
 		}
 		if strings.HasSuffix(path, ".go") {
 			dirs[filepath.Dir(path)] = append(dirs[filepath.Dir(path)], path)
+			if strings.HasSuffix(path, "_test.go") {
+				tests++
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+	if tests == 0 {
+		return nil, fmt.Errorf("read no Go test file under %s: it holds none, or each directory below it that holds one has a go.mod of its own and is another module, so no write a test makes was read", root)
 	}
 	var offences []string
 	for _, paths := range dirs {

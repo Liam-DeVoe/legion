@@ -87,6 +87,7 @@ func TestUnguardedNamesEveryExecutableWriteATestMayRunBesideAFork(t *testing.T) 
 		}
 	}
 	const parallel = "func TestParallel(t *testing.T) { t.Parallel() }\n"
+	write("go.mod", "module example.com/checked\n")
 	write("beside/beside.go", "package beside\n")
 	write("beside/a_test.go", `package beside
 
@@ -207,5 +208,49 @@ func dotted(t *testing.T) { _ = WriteFile("u", nil, 0o755) }
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Unguarded named\n\t%s\nwant\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+}
+
+// Unguarded refuses, naming the root and what it could not read, a root that is no module's: the
+// parent of a module's directory, or a directory inside one, holds no go.mod. It refuses a module
+// root under which it read no test file, because the module holds none or because each one is in
+// another module below it. A check of such a root would name no write and pass while it read
+// nothing. A module root with one test file and no write is named nothing and no error.
+func TestUnguardedRefusesARootUnderWhichItReadsNoTestFile(t *testing.T) {
+	t.Parallel()
+	write := func(root, path, body string) {
+		t.Helper()
+		path = filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const test = "package beside\n\nimport \"testing\"\n\nfunc TestParallel(t *testing.T) { t.Parallel() }\n"
+	parent := t.TempDir()
+	write(parent, "module/go.mod", "module example.com/checked\n")
+	write(parent, "module/beside/beside_test.go", test)
+	noTests := t.TempDir()
+	write(noTests, "go.mod", "module example.com/no-tests\n")
+	write(noTests, "beside/beside.go", "package beside\n")
+	nested := t.TempDir()
+	write(nested, "go.mod", "module example.com/outer\n")
+	write(nested, "inner/go.mod", "module example.com/inner\n")
+	write(nested, "inner/beside_test.go", test)
+	for _, row := range []struct{ what, root, want string }{
+		{"the parent of a module's directory", parent, "holds no go.mod"},
+		{"a directory inside a module", filepath.Join(parent, "module", "beside"), "holds no go.mod"},
+		{"a module with no test file", noTests, "read no Go test file under " + noTests},
+		{"a module whose one test file is in another module below it", nested, "read no Go test file under " + nested},
+	} {
+		got, err := Unguarded(row.root)
+		if err == nil || !strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), row.root) {
+			t.Errorf("Unguarded on %s (%s) = %v, %v; want no names and an error naming the root and saying %q", row.what, row.root, got, err, row.want)
+		}
+	}
+	if got, err := Unguarded(filepath.Join(parent, "module")); err != nil || len(got) != 0 {
+		t.Errorf("Unguarded on a module root with one test file and no write = %v, %v; want nothing and no error", got, err)
 	}
 }
