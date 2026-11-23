@@ -87,20 +87,26 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingState is the state golden with two more issues: LEGION-213, a member of the waiting
+// narrowingState is the state golden with three more issues: LEGION-213, a member of the waiting
 // line that is a started issue that gave its slot back to wait on another issue
-// (waitingOnIssueContract), and LEGION-230, an issue held because its owner stopped its task
-// (OwnerPlanContract's `task-stopped`), with its row of `admission.held` under `task_stopped`.
-// The golden itself stands none of the three values, so without them the strips of the waiting
-// line's `kind`, of `holdReason` and of the held words would find nothing to take and write no
-// line, and the rows below could not say that every strip writes its own.
+// (waitingOnIssueContract), LEGION-230, an issue held because its owner stopped its task
+// (OwnerPlanContract's `task-stopped`), with its row of `admission.held` under `task_stopped`, and
+// LEGION-231, an issue whose task runs a fix beside its review (FixBesideReviewContract's `fix`).
+// The golden itself stands none of the four values, so without them the strips of the waiting
+// line's `kind`, of `holdReason` and of the held words, and the band of the fix, would find
+// nothing to take and write no line, and the rows below could not say that every strip and every
+// band writes its own.
 func narrowingState(t *testing.T) State {
 	t.Helper()
 	state := populatedState(t)
-	issues := make(map[string]Issue, len(state.Issues)+2)
+	issues := make(map[string]Issue, len(state.Issues)+3)
 	maps.Copy(issues, state.Issues)
 	issues["LEGION-213"] = waitingOnIssueMember()
 	issues[taskStoppedIssue] = heldFor(taskStoppedIssue, phase.Testing, record.HoldTaskStopped)
+	issues["LEGION-231"] = Issue{Key: "LEGION-231", Generation: 1, Phase: phase.Reviewing, Status: "needs_review",
+		Tree: "LEGION-231", Repo: "acme/widgets", DefaultBranch: "main", Workers: map[claim.Role]PhaseView{},
+		Fix: &FixView{Task: "a", Step: 1, Check: "unit", Head: "c0de0000000000000000000000000000000000ff",
+			Dir: "/var/lib/legion/workspaces/acme/widgets/LEGION-231-fix", Entry: 2, GivenEntry: 2}}
 	state.Issues = issues
 	state.Admission.Held = append(slices.Clone(state.Admission.Held),
 		HeldIssue{Issue: taskStoppedIssue, Reason: record.HeldTaskStopped})

@@ -1265,7 +1265,8 @@ test.skipIf(withoutJj)(
     const childEnv = isolatedHome(root);
     const workspace = path.join(root, "workspace");
     const fixDir = path.join(root, "workspace-fix");
-    for (const dir of [workspace, fixDir]) await jj(root, childEnv, "git", "init", "--colocate", dir);
+    for (const dir of [workspace, fixDir])
+      await jj(root, childEnv, "git", "init", "--colocate", dir);
     await writeFile(path.join(fixDir, "fix.txt"), "fixed\n");
     await jj(fixDir, childEnv, "commit", "-m", "fix: the failed check");
     const inWorkspace = (
