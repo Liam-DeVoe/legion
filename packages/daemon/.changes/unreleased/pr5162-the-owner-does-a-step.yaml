@@ -20,4 +20,4 @@ body: |-
   no key gets a fresh agent of the role `acceptance`, and `sign_off` of an acceptance another agent
   works is refused `SIGNOFF_NOT_THE_OWNERS`. The default steps end with `acceptance:owner`. A task
   with no pull request is done when its retro ends, and the retro runs as the role of its agent.
-  An issue with no plan rows walks today's steps as before. Daemon API contract 238.
+  An issue with no plan rows walks today's steps as before. Daemon API contract 227.

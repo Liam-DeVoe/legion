@@ -167,7 +167,7 @@ var Answers = []Answer{
 	// `note` and which 46 is the floor for here.
 	{ID: AnswerHandoffComplete, Routes: []string{"POST /legion/v1/handoff/complete"}, Since: ServingFloor},
 	// Older than the floor: the empty object the ten fact routes answer. `tasks/stop` is
-	// version.go's 211 and `steps/complete` its 238, and the answer they share is older than
+	// version.go's 211 and `steps/complete` its 227, and the answer they share is older than
 	// either, as the no-content answer is older than two of its routes.
 	{ID: AnswerEmptyObject, Routes: []string{
 		"POST /legion/v1/issues/status",

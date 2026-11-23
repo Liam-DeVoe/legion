@@ -1848,7 +1848,7 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 	golden(t, "task-stop.json", EmptyResponse{})
 }
 
-// The owner's report of a step of its own (contract 238) has a fixture named for its route, as the
+// The owner's report of a step of its own (contract 227) has a fixture named for its route, as the
 // routes above have: the empty object of a fact route, which `@legion/contracts` parses.
 func TestCompleteStepRouteGolden(t *testing.T) {
 	golden(t, "step-complete.json", CompleteStepResponse{})
