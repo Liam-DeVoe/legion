@@ -443,9 +443,9 @@ Each item below names a script, then what it proves.
 
 - `step-records-read.sh`
 
-  the read, after the merge, of the step records of one issue a deployed Legion ran to done: `dispatch steps --issue <ISSUE>` run once in the operator's own shell with the operator's own credential, judged.
-  It passes only when each step from 1 to the highest step a record names, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
-  a read that lists no record, or that fails, is `UNKNOWN` and never a pass.
+  the read, after the merge, of the step records of one issue a deployed Legion ran to done, judged by its plan: `dispatch steps --issue <ISSUE>` and `dispatch plans --project <PROJECT>`, each run once in the operator's own shell with the operator's own credential.
+  It passes only when each step of the issue's plan, from 1 to its last, has a record in the role the plan names, the retro and the merge each have a record, every record has ended, every record of kind `step` or `retro` names an agent and every record of kind `step` a model;
+  a read that lists no record, or that fails, or a plan read that gives no plan of the issue, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
 - `plan-ratings.sh`
@@ -5418,19 +5418,21 @@ and no agent runs: each claim is launched by the package's fake runtime, which p
 scripts/e2e/step-records-read.sh <ISSUE>     # → "PASS: <ISSUE>: <n> records; …", exit 0
 ```
 
-The check after the merge: once the release that records each step reaches a deployment, one real issue runs to done there, and this script reads that issue's step records.
-It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then one verdict.
+The check after the merge: once the release that records each step reaches a deployment, one real issue runs to done there, and this script reads that issue's step records and judges them by its plan.
+It runs `dispatch steps --issue <ISSUE>` once and prints what the command printed, then `dispatch plans --project <PROJECT>` once (`<PROJECT>` is the key's part before its number) and prints the line of `<ISSUE>` alone, then one verdict.
+The steps it wants come from the plan of the issue's newest run, as Dispatch holds it, not from the records, so a record lost for the last step fails as one lost for any other.
+A record of a step counts whatever task it names: a run whose task was stopped and replaced keeps records of its own.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
 It sets none of those, reads no credential of its own, writes nothing and starts nothing.
 It reads an issue that is done, so every step of it has ended.
 
 | exit | printed | when |
 | :--- | :--- | :--- |
-| 0 | `PASS: <ISSUE>: <n> records; …` | the read lists a record of each of steps 1 to 5, of the retro and of the merge; every record has ended; every record of kind `step` or `retro` names an agent; every record of kind `step` names the model that answered; a merge record with no agent passes with the line `the merge has no agent: no merger ran it: <line>`, since GitHub merged the pull request before a merger started and the record says so |
-| 1 | one `FAIL: …` line per fault | the read lists records and one does not hold: a place with no record (`no record of the merge`), a record that never ended, a step or retro with no agent, a step with no model; each line names the record as the command printed it |
-| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), the command failed (its exit and what it printed), no `dispatch` is on PATH, or the answer is no read of the issue (no header, a line that is no run, a header whose count differs from the lines below it); a usage error is exit 2 too, with the usage on stderr |
+| 0 | `PASS: <ISSUE>: <n> records; steps 1 to <m> of its plan (<steps>), …` | the read lists a record of each step of the plan, 1 to its last, in the role the plan names for it (the step's role, before any `:key`), and of the retro and of the merge; every record has ended; every record of kind `step` or `retro` names an agent; every record of kind `step` names the model that answered; a merge record with no agent passes with the line `the merge has no agent: no merger ran it: <line>`, since GitHub merged the pull request before a merger started and the record says so |
+| 1 | one `FAIL: …` line per fault | the read lists records and one does not hold: a place with no record (`no record of step 5 (acceptance:owner)`, `no record of the merge`), a step whose records name another role than the plan's (`…: its records name tester`), a record that never ended, a step or retro with no agent, a step with no model; each line names the record as the command printed it |
+| 2 | `UNKNOWN: <reason>` | nothing to judge: the read lists no record of the issue (`dispatch steps lists no record of <ISSUE>`), a command failed (its exit and what it printed), no `dispatch` is on PATH, an answer is no read of the issue or of its project (no header, a line that is no run, a header whose count differs from the lines below it), or the plan read gives no plan to judge by: it lists no line of the issue, which is then not done, Dispatch holds no plan of it, or the plan has more than one task, of which `dispatch plans` names the first's steps alone; a usage error is exit 2 too, with the usage on stderr |
 
-`scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer: a whole answer passes, the merge record missing fails, an empty read is `UNKNOWN`, and each fault above has its row.
+`scripts/e2e/lib/step-records-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints a recorded answer of each command, the plan's as `dispatch plans` itself renders it: a whole answer passes, the merge record missing fails, the record of the plan's last step lost fails, an empty read is `UNKNOWN`, and each fault above has its row.
 
 ## plan-ratings.sh
 
