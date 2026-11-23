@@ -502,7 +502,7 @@ func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tx, err := st.Pool().Begin(ctx)
+			tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 			must(t, err)
 			defer func() { _ = tx.Rollback(ctx) }()
 			if err := tc.act(tx); err == nil {
@@ -539,7 +539,7 @@ func TestATaskThatLeftTheWorkflowIsNeverStartedAgain(t *testing.T) {
 	}
 	try := func(t *testing.T, act func(tx pgx.Tx) error) error {
 		t.Helper()
-		tx, err := st.Pool().Begin(ctx)
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		must(t, err)
 		defer func() { _ = tx.Rollback(ctx) }()
 		return act(tx)
@@ -729,7 +729,7 @@ func TestReturnCountsLiveOnTheTaskOrOnTheImplementersRow(t *testing.T) {
 			t.Fatalf("the implementer's row of %s = %#v, want the counts on it and every other column kept: %#v", noPlan, got, want)
 		}
 	})
-	tx, err := st.Pool().Begin(ctx)
+	tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := records.ReturnCounts(ctx, tx, planIssue, 1, "z"); err == nil {
