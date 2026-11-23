@@ -1,5 +1,5 @@
-import { expect, spyOn, test } from "bun:test";
-import { Plugin, TextSelection } from "@milkdown/kit/prose/state";
+import { expect, test } from "bun:test";
+import { TextSelection } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type {
   CreateProofEditorOptions,
@@ -34,22 +34,26 @@ function linkOf(view: EditorView, text: string): Element {
 }
 
 /** Dispatches a mouse event of `type` on `target`, as the browser does: ProseMirror's own
- *  listener hands it to the editor's handlers. Only for a press the editor prevents, or one that
- *  is no click: happy-dom follows an unprevented click on a link by navigating its window. */
-function dispatch(target: Element, type: string, init: MouseEventInit = {}): MouseEvent {
+ *  listeners hand it to the editor's handlers. A browser's mouse event also carries `x` and `y`,
+ *  the same numbers as `clientX` and `clientY`, which prosemirror-view's `updateAllowDefault`
+ *  reads the place of its press from; happy-dom's carries neither, so they are added. Only for a
+ *  press, a move, a release or a middle click: happy-dom follows an unprevented click on a link
+ *  by navigating its window, so a click goes through `click`. */
+function dispatch(target: EventTarget, type: string, init: MouseEventInit = {}): MouseEvent {
   const event = new window.MouseEvent(type, {
     bubbles: true,
     button: 0,
     cancelable: true,
     ...init,
   });
+  Object.defineProperties(event, { x: { value: event.clientX }, y: { value: event.clientY } });
   target.dispatchEvent(event);
   return event;
 }
 
 /** Offers a mouse event of `type`, aimed at `target`, to the editor's DOM event handlers as
  *  ProseMirror's own listener does, with no default action to follow, and answers whether one
- *  handled it: for a click the editor leaves to the browser. */
+ *  handled it: for an event the editor leaves to the browser or to the host. */
 function offer(
   view: EditorView,
   target: Element,
@@ -102,7 +106,136 @@ function altEnter(view: EditorView): { readonly event: KeyboardEvent; readonly h
   }
 }
 
-test("a plain click opens a link in every access mode, and Ctrl, Cmd and a middle click open it in a new tab", async () => {
+/** Where the pointer is, as `clientX` and `clientY`, in CSS pixels from the window's corner:
+ *  happy-dom lays nothing out, so a row names the place itself. */
+type Place = readonly [number, number];
+
+/** Lays the page out for a press on `target`, as far as ProseMirror reads it. happy-dom finds no
+ *  document position at any point (`posAtCoords` answers null), and prosemirror-view's
+ *  `handlers.mousedown` starts no press of its own where it finds none. The view answers instead
+ *  with the position at the start of `target`'s content and the node holding it, as a browser
+ *  answers for a press on the element's first words. */
+function layOutPressOn(view: EditorView, target: Element): void {
+  const pos = view.posAtDOM(target, 0);
+  const $pos = view.state.doc.resolve(pos);
+  view.posAtCoords = () => ({ inside: $pos.depth > 0 ? $pos.before() : -1, pos });
+}
+
+/** A press of the primary button on `target` at `place`, with `keys` held, as a browser sends it:
+ *  the editor's own handlers hear it, then ProseMirror's, which starts its press there
+ *  (`layOutPressOn`) unless the press was prevented or taken first. Answers the press. */
+function press(
+  view: EditorView,
+  target: Element,
+  [clientX, clientY]: Place,
+  keys: MouseEventInit = {}
+): MouseEvent {
+  layOutPressOn(view, target);
+  return dispatch(target, "mousedown", { ...keys, clientX, clientY, detail: 1 });
+}
+
+/** The pointer moved to `place` with the primary button held, heard on the page, where
+ *  ProseMirror hears the pointer of its press (the view's root), on `over` when named, else on the
+ *  page itself. */
+function moveTo(view: EditorView, [clientX, clientY]: Place, over?: Element): void {
+  dispatch(over ?? view.dom.ownerDocument, "mousemove", { buttons: 1, clientX, clientY });
+}
+
+/** The release of the primary button on `target` at `place`, with `keys` held. Answers the
+ *  release, whose default ProseMirror prevents when `handleClick` took it as a click. */
+function release(
+  target: Element,
+  [clientX, clientY]: Place,
+  keys: MouseEventInit = {}
+): MouseEvent {
+  return dispatch(target, "mouseup", { ...keys, clientX, clientY, detail: 1 });
+}
+
+/** Sends `target` a click, `init` naming its place, its keys and its `detail` - 1 for a pointer's,
+ *  0 for one no pointer makes (Enter on a focused link, assistive technology, a script) - and
+ *  answers whether the editor prevented its default, so the browser would follow no `href`. The
+ *  page's last listener reads that, then prevents the default itself: happy-dom follows an
+ *  unprevented click on a link by navigating its window. */
+function click(target: Element, init: MouseEventInit): boolean {
+  const page = target.ownerDocument;
+  let prevented = false;
+  const read = (event: Event) => {
+    prevented = event.defaultPrevented;
+    event.preventDefault();
+  };
+  page.addEventListener("click", read);
+  try {
+    dispatch(target, "click", init);
+  } finally {
+    page.removeEventListener("click", read);
+  }
+  return prevented;
+}
+
+/** A click no pointer makes - Enter on a focused link, assistive technology, a script - on
+ *  `target`, with `keys` held: `detail` 0, at the window's corner. Answers whether the editor
+ *  prevented its default. */
+function keyboardClick(target: Element, keys: MouseEventInit = {}): boolean {
+  return click(target, { ...keys, clientX: 0, clientY: 0, detail: 0 });
+}
+
+/** The nearest element holding both `pressed` and `released`, which a browser sends the click of
+ *  a press on the one and a release on the other to. */
+function commonAncestor(pressed: Element, released: Element): Element {
+  for (let node: Element | null = pressed; node !== null; node = node.parentElement) {
+    if (node.contains(released)) return node;
+  }
+  throw new Error("no element holds both the press and the release");
+}
+
+/** One pointer click: where the press goes down, the places the pointer moves through with the
+ *  button held, the element the release lands on (the press's own unless named), and the keys
+ *  held throughout. */
+interface PointerClick {
+  readonly at: Place;
+  readonly through?: readonly Place[];
+  readonly releaseOn?: Element;
+  readonly keys?: MouseEventInit;
+}
+
+/** A pointer click on `target` as a browser sends it: the press (`press`), each move, the release
+ *  where the pointer last was, then the click, with `detail` 1, sent to the nearest element
+ *  holding both the press and the release (`commonAncestor`). Answers whether the editor prevented
+ *  the click's default. ProseMirror reads a press within 10 px and 500 ms of its last one as a
+ *  double click, which starts no press of its own (prosemirror-view's `handlers.mousedown`,
+ *  `isNear`), so the plain presses of a row go down 20 px or more apart. */
+function pointerClick(
+  view: EditorView,
+  target: Element,
+  { at, through = [], releaseOn = target, keys = {} }: PointerClick
+): boolean {
+  press(view, target, at, keys);
+  for (const place of through) moveTo(view, place);
+  const [clientX, clientY] = through.at(-1) ?? at;
+  release(releaseOn, [clientX, clientY], keys);
+  return click(commonAncestor(target, releaseOn), { ...keys, clientX, clientY, detail: 1 });
+}
+
+/** A middle click on `target` as a browser sends it - the press, the release, then `auxclick` -
+ *  answering whether each one's default was prevented. */
+function middleClick(target: Element): {
+  readonly auxclick: boolean;
+  readonly press: boolean;
+  readonly release: boolean;
+} {
+  const point = { button: 1, clientX: 0, clientY: 0, detail: 1 };
+  return {
+    press: dispatch(target, "mousedown", point).defaultPrevented,
+    release: dispatch(target, "mouseup", point).defaultPrevented,
+    auxclick: dispatch(target, "auxclick", point).defaultPrevented,
+  };
+}
+
+// dispatch://INFRA-2160, R1: a plain pointer click on a link opens it once, through ProseMirror's
+// own press and `handleClick`, in every access mode; Ctrl and Cmd open it once in a new tab
+// through the click, whose press the editor takes; a middle click opens it once in a new tab
+// through `auxclick`. Every click on the link is prevented, so the browser follows no `href`.
+test("a plain pointer click opens a link once in every access mode, and Ctrl, Cmd and a middle click open it once in a new tab", async () => {
   for (const access of ["edit", "comment", "read"] as const satisfies ProofEditorAccess[]) {
     const { openLink, opened } = recordedOpener();
     await withMarksEditor(
@@ -110,23 +243,20 @@ test("a plain click opens a link in every access mode, and Ctrl, Cmd and a middl
       ({ view }) => {
         const away = linkOf(view, "the plan");
         const issue = linkOf(view, "the other issue");
-        const page = window.location.href;
 
-        expect({ access, prevented: dispatch(away, "click").defaultPrevented }).toEqual({
-          access,
-          prevented: true,
-        });
-        dispatch(issue, "click");
-        dispatch(issue, "click", { ctrlKey: true });
-        dispatch(away, "click", { metaKey: true });
-        expect(dispatch(issue, "auxclick", { button: 1 }).defaultPrevented).toBe(true);
-        // A Shift or Alt click, and a right button's, are the browser's own.
-        expect(offer(view, away, "click", { shiftKey: true }).handled).toBe(false);
-        expect(offer(view, away, "click", { altKey: true }).handled).toBe(false);
-        expect(offer(view, away, "auxclick", { button: 2 }).handled).toBe(false);
+        const prevented = [
+          pointerClick(view, away, { at: [20, 10] }),
+          pointerClick(view, issue, { at: [60, 10] }),
+          pointerClick(view, issue, { at: [100, 10], keys: { ctrlKey: true } }),
+          pointerClick(view, away, { at: [140, 10], keys: { metaKey: true } }),
+        ];
+        const middle = middleClick(issue);
+        // A right button's click is the browser's own.
+        const right = offer(view, away, "auxclick", { button: 2 }).handled;
 
-        expect({ access, opened }).toEqual({
+        expect({ access, middle, opened, prevented, right }).toEqual({
           access,
+          middle: { auxclick: true, press: true, release: true },
           opened: [
             ["https://example.com/a", false],
             ["dispatch://CORE-2", false],
@@ -134,9 +264,9 @@ test("a plain click opens a link in every access mode, and Ctrl, Cmd and a middl
             ["https://example.com/a", true],
             ["dispatch://CORE-2", true],
           ],
+          prevented: [true, true, true, true],
+          right: false,
         });
-        // The host opened each one; the browser followed none.
-        expect(window.location.href).toBe(page);
       },
       { access, openLink }
     );
@@ -172,6 +302,9 @@ test("a middle button's press and release on a link are prevented, so the browse
   );
 });
 
+// dispatch://INFRA-2160, R1: the margin's `handleClick` runs before the link's and stands down on
+// `opensLinkOn`, so a pointer click on a link inside commented text opens the link and names no
+// comment, and a click on the commented words beside it still names the comment.
 test("a click on a link inside commented text opens the link and names no comment", async () => {
   const { openLink, opened } = recordedOpener();
   const clickedMarks: string[] = [];
@@ -187,46 +320,24 @@ test("a click on a link inside commented text opens the link and names no commen
         (span) => span.closest("a") === null && span.querySelector("a") === null
       );
       if (besideLink === undefined) throw new Error("no commented text outside a link");
-      // The release ProseMirror reads as a click, which the margin hears through `handleClick`.
-      const release = (target: Element) => {
-        const event = new window.MouseEvent("mouseup", { bubbles: true, button: 0 });
-        Object.defineProperty(event, "target", { value: target });
-        view.someProp("handleClick", (handleClick) => handleClick(view, 8, event));
-      };
 
-      release(away);
-      expect(clickedMarks).toEqual([]);
-      expect(dispatch(away, "click").defaultPrevented).toBe(true);
-      expect(opened).toEqual([["https://example.com/a", false]]);
+      const onLink = pointerClick(view, away, { at: [20, 10] });
+      const marksOnLink = [...clickedMarks];
+      // The comment stays reachable from the commented words beside the link, whose click is no
+      // link's and is left to the browser.
+      const beside = pointerClick(view, besideLink, { at: [80, 10] });
 
-      // The comment stays reachable from the commented words beside the link.
-      release(besideLink);
-      expect(clickedMarks).toEqual(["comment-1"]);
+      expect({ beside, clickedMarks, marksOnLink, onLink, opened }).toEqual({
+        beside: false,
+        clickedMarks: ["comment-1"],
+        marksOnLink: [],
+        onLink: true,
+        opened: [["https://example.com/a", false]],
+      });
     },
     { onMarkClick: (markId) => void clickedMarks.push(markId), openLink }
   );
 });
-
-/** Where the pointer is for a press, a move, a release or a click, in CSS pixels from the
- *  window's corner: happy-dom lays nothing out, so a row names the place itself. */
-function pointer(clientX: number, clientY = 10): MouseEventInit {
-  return { clientX, clientY };
-}
-
-/** The pointer at `clientX`, `clientY` with the primary button held, as a drag moves it. */
-function held(clientX: number, clientY = 10): MouseEventInit {
-  return { ...pointer(clientX, clientY), buttons: 1 };
-}
-
-/** A plain click on `link` as a browser sends it, the pointer at `point` from the press to the
- *  release: the press and the release, which ProseMirror hears too, then the click, offered to
- *  the editor alone (`offer`), so that one the editor leaves to the browser follows nothing.
- *  Answers whether the editor took the click. */
-function plainClick(view: EditorView, link: Element, point: MouseEventInit): boolean {
-  dispatch(link, "mousedown", point);
-  dispatch(link, "mouseup", point);
-  return offer(view, link, "click", point).handled;
-}
 
 /** `node`, which a row expects to be a text node of the paragraph. */
 function textOf(node: Node | null): Node {
@@ -247,33 +358,30 @@ function selectText(view: EditorView, from: Node, start: number, to: Node, end: 
   return selection;
 }
 
-/** Puts the editable editor in a state with `make`, then makes one plain click on "the other
- *  issue" (`plainClick`), and answers whether the editor took that click and every target the
- *  host was handed to open, `make`'s own included. */
-async function plainClickAfter(
+/** Puts the editable editor in a state with `make`, then makes one plain pointer click on "the
+ *  other issue" at 60 px (`pointerClick`), and answers whether the editor prevented that click and
+ *  every target the host was handed to open, `make`'s own included. */
+async function pointerClickAfter(
   make: (view: EditorView, issue: Element) => void
-): Promise<{ readonly handled: boolean; readonly opened: Array<[string, boolean]> }> {
+): Promise<{ readonly opened: Array<[string, boolean]>; readonly prevented: boolean }> {
   const { openLink, opened } = recordedOpener();
-  let handled = false;
+  let prevented = false;
   await withMarksEditor(
     LINKS,
     ({ view }) => {
       const issue = linkOf(view, "the other issue");
       make(view, issue);
-      handled = plainClick(view, issue, pointer(60));
+      prevented = pointerClick(view, issue, { at: [60, 10] });
     },
     { openLink }
   );
-  return { handled, opened };
+  return { opened, prevented };
 }
 
-// dispatch://INFRA-2160, R1: a plain click opens a link, each time. A click is a primary press
-// and its release on one link with the pointer moved no more than 4 px between them, whatever the
-// page held before the press; a drag is a move between them. With a sentence holding a link
-// selected, the editor read the selection as a drag's end, so one plain click on the link opened
-// nothing and only cleared the selection, and a second click opened it.
-test("a plain click on a link opens it when a selection holds the link", async () => {
-  const clicked = await plainClickAfter((view, issue) => {
+// dispatch://INFRA-2160, R1: a plain pointer click opens a link once, whatever the page held
+// selected before the press: ProseMirror reads the press and its release, not the selection.
+test("a plain pointer click on a link opens it once when a selection holds the link", async () => {
+  const clicked = await pointerClickAfter((view, issue) => {
     // "and the other issue today", as the reader selects a sentence to comment on it.
     const selection = selectText(
       view,
@@ -285,138 +393,146 @@ test("a plain click on a link opens it when a selection holds the link", async (
     expect(selection.toString()).toBe("and the other issue today");
   });
 
-  expect(clicked).toEqual({ handled: true, opened: [["dispatch://CORE-2", false]] });
+  expect(clicked).toEqual({ opened: [["dispatch://CORE-2", false]], prevented: true });
 });
 
-test("a plain click on a link opens it when a selection elsewhere in the document stands", async () => {
-  const clicked = await plainClickAfter((view, issue) => {
+test("a plain pointer click on a link opens it once when a selection elsewhere in the document stands", async () => {
+  const clicked = await pointerClickAfter((view, issue) => {
     // "today", after the link.
     const after = textOf(issue.nextSibling);
     const selection = selectText(view, after, 1, after, 6);
     expect(selection.toString()).toBe("today");
   });
 
-  expect(clicked).toEqual({ handled: true, opened: [["dispatch://CORE-2", false]] });
+  expect(clicked).toEqual({ opened: [["dispatch://CORE-2", false]], prevented: true });
 });
 
-test("a plain click on a link opens it when the caret is inside the link", async () => {
-  const clicked = await plainClickAfter((view, issue) => {
+test("a plain pointer click on a link opens it once when the caret is inside the link", async () => {
+  const clicked = await pointerClickAfter((view, issue) => {
     const selection = view.dom.ownerDocument.getSelection();
     if (selection === null) throw new Error("the page has no selection");
     selection.collapse(textOf(issue.firstChild), 4);
     expect(selection.isCollapsed).toBe(true);
   });
 
-  expect(clicked).toEqual({ handled: true, opened: [["dispatch://CORE-2", false]] });
+  expect(clicked).toEqual({ opened: [["dispatch://CORE-2", false]], prevented: true });
 });
 
-for (const [key, modifier] of [
+for (const [key, keys] of [
   ["Ctrl", { ctrlKey: true }],
   ["Cmd", { metaKey: true }],
 ] as const) {
-  test(`a plain click on a link opens it after a ${key} click on the link`, async () => {
-    const clicked = await plainClickAfter((view, issue) => {
-      // The modified click as a browser sends it, where the plain click lands after it.
-      const point = { ...pointer(60), ...modifier };
-      dispatch(issue, "mousedown", point);
-      dispatch(issue, "mouseup", point);
-      offer(view, issue, "click", point);
+  test(`a plain pointer click on a link opens it once after a ${key} click on the link`, async () => {
+    const clicked = await pointerClickAfter((view, issue) => {
+      pointerClick(view, issue, { at: [20, 10], keys });
     });
 
     expect(clicked).toEqual({
-      handled: true,
       opened: [
         ["dispatch://CORE-2", true],
         ["dispatch://CORE-2", false],
       ],
+      prevented: true,
     });
   });
 }
 
-test("a plain click on a link opens it after a middle click on the link", async () => {
-  const clicked = await plainClickAfter((view, issue) => {
-    const point = { ...pointer(60), button: 1 };
-    dispatch(issue, "mousedown", point);
-    dispatch(issue, "mouseup", point);
-    offer(view, issue, "auxclick", point);
+test("a plain pointer click on a link opens it once after a middle click on the link", async () => {
+  const clicked = await pointerClickAfter((_view, issue) => {
+    middleClick(issue);
   });
 
   expect(clicked).toEqual({
-    handled: true,
     opened: [
       ["dispatch://CORE-2", true],
       ["dispatch://CORE-2", false],
     ],
+    prevented: true,
   });
 });
 
-// dispatch://INFRA-2160, R1: a drag on a link selects its words and opens nothing. What the rule
-// reads is the press on the link and how far the pointer moved from it before the click: more
-// than 4 px along either axis at any moment between the press and the release, as ProseMirror
-// reads a drag.
-test("a drag that starts on a link and ends on it opens nothing, and a click whose pointer moved 4 px opens it", async () => {
+// dispatch://INFRA-2160, R1: ProseMirror tells a click from a drag (prosemirror-view's
+// `updateAllowDefault`): a press and its release with the pointer never more than 4 px from the
+// press along either axis is a click, which it hands to `handleClick`.
+test("a press, a move of 4 px or less and the release on a link open it once", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
     LINKS,
     ({ view }) => {
       const issue = linkOf(view, "the other issue");
-      const words = textOf(issue.firstChild);
 
-      // The drag over "other": the press, the pointer 5 px on, one past the threshold, the
-      // words it went over selected, and the release and the click there.
-      dispatch(issue, "mousedown", pointer(60));
-      dispatch(issue, "mousemove", held(65));
-      selectText(view, words, 4, words, 9);
-      dispatch(issue, "mouseup", pointer(65));
-      const dragged = offer(view, issue, "click", pointer(65)).handled;
-      // A click no press came before, as a script or assistive technology makes, opens the link:
-      // the drag's click forgot its press.
-      const unpressed = offer(view, issue, "click", pointer(0, 0)).handled;
-
-      // A drag along the link and back: the release is 1 px from the press, and the pointer went
-      // 20 px away between them. The page's selection is back at the press.
-      view.dom.ownerDocument.getSelection()?.collapse(words, 4);
-      dispatch(issue, "mousedown", pointer(60));
-      dispatch(issue, "mousemove", held(80));
-      dispatch(issue, "mousemove", held(61));
-      dispatch(issue, "mouseup", pointer(61));
-      const returned = offer(view, issue, "click", pointer(61)).handled;
-
-      // A press the browser turns into a drag of its own, for which Chromium sends neither a
-      // release nor a click: once the pointer moves with no button held, the press is over, and a
-      // click no press came before opens the link.
-      dispatch(issue, "mousedown", pointer(60));
-      dispatch(issue, "mousemove", held(70));
-      dispatch(issue, "mousemove", pointer(60));
-      const afterNativeDrag = offer(view, issue, "click", pointer(0, 0)).handled;
-
+      const moved = pointerClick(view, issue, { at: [60, 10], through: [[63, 10]] });
       // A hand that trembles 4 px along each axis between the press and the release still clicks.
-      dispatch(issue, "mousedown", pointer(60, 10));
-      dispatch(issue, "mousemove", held(64, 14));
-      dispatch(issue, "mouseup", pointer(64, 14));
-      const trembled = offer(view, issue, "click", pointer(64, 14)).handled;
+      const trembled = pointerClick(view, issue, { at: [100, 10], through: [[104, 14]] });
 
-      expect({ afterNativeDrag, dragged, opened, returned, trembled, unpressed }).toEqual({
-        afterNativeDrag: true,
-        dragged: false,
+      expect({ opened, prevented: { moved, trembled } }).toEqual({
         opened: [
           ["dispatch://CORE-2", false],
           ["dispatch://CORE-2", false],
-          ["dispatch://CORE-2", false],
         ],
-        returned: false,
-        trembled: true,
-        unpressed: true,
+        prevented: { moved: true, trembled: true },
       });
     },
     { openLink }
   );
 });
 
-// dispatch://INFRA-2160, R1: the editor hears the pointer of a press on a link where ProseMirror
-// hears its own press's, on the page the editor is in, until the release: a drag that leaves the
-// editor and comes back to the press is a drag, as ProseMirror reads it.
-test("a drag that leaves the editor and comes back to the press opens nothing, and the same press and release with no move between them opens the link", async () => {
+// dispatch://INFRA-2160, R1: a drag on a link selects its words and opens nothing. The pointer
+// more than 4 px from the press along either axis at any moment before the release makes a drag,
+// whose release ProseMirror hands to no `handleClick`; the click after it is prevented, so the
+// browser follows no `href` either.
+test("a drag of more than 4 px that starts and ends on a link opens nothing, and nor does one that starts off the link", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+      const away = linkOf(view, "the plan");
+      const words = textOf(issue.firstChild);
+      const paragraph = view.dom.querySelector("p");
+      if (paragraph === null || away.parentElement !== paragraph) {
+        throw new Error("the link is not drawn straight inside its paragraph");
+      }
+
+      // The drag over "other": the press, the pointer 5 px on, one past the threshold, the words
+      // it went over selected, and the release and the click there.
+      press(view, issue, [60, 10]);
+      moveTo(view, [65, 10]);
+      selectText(view, words, 4, words, 9);
+      release(issue, [65, 10]);
+      const dragged = click(issue, { clientX: 65, clientY: 10, detail: 1 });
+
+      // A drag along the link and back: the release is 1 px from the press, and the pointer went
+      // 20 px away between them.
+      view.dom.ownerDocument.getSelection()?.collapse(words, 4);
+      const returned = pointerClick(view, issue, {
+        at: [100, 10],
+        through: [
+          [120, 10],
+          [101, 10],
+        ],
+      });
+
+      // A drag from "Read" onto "the plan": the browser sends the click to the paragraph, which
+      // holds both the press and the release, and is no link.
+      const fromBefore = pointerClick(view, paragraph, {
+        at: [140, 10],
+        releaseOn: away,
+        through: [[170, 10]],
+      });
+
+      expect({ opened, prevented: { dragged, fromBefore, returned } }).toEqual({
+        opened: [],
+        prevented: { dragged: true, fromBefore: false, returned: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: ProseMirror hears the pointer of its press on the page the editor is
+// in, until the release: a drag that leaves the editor and comes back to the press is a drag.
+test("a drag that leaves the editor and comes back to the press opens nothing, and the same press and release with no move between them opens the link once", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
     LINKS,
@@ -427,193 +543,120 @@ test("a drag that leaves the editor and comes back to the press opens nothing, a
 
       // The press, the pointer out of the editor 200 px away, back over the link at the press,
       // and the release and the click there.
-      dispatch(issue, "mousedown", pointer(60));
-      dispatch(page, "mousemove", held(260));
-      dispatch(issue, "mousemove", held(60));
-      dispatch(issue, "mouseup", pointer(60));
-      const left = offer(view, issue, "click", pointer(60)).handled;
+      press(view, issue, [60, 10]);
+      moveTo(view, [260, 10], page);
+      moveTo(view, [60, 10], issue);
+      release(issue, [60, 10]);
+      const left = click(issue, { clientX: 60, clientY: 10, detail: 1 });
 
       // The same press and release, the pointer staying where it went down.
-      const stayed = plainClick(view, issue, pointer(60));
+      const stayed = pointerClick(view, issue, { at: [100, 10] });
 
-      // A drag released outside the editor: the release ends the press, since no click on the
-      // link can follow it, and a click no press came before opens the link.
-      dispatch(issue, "mousedown", pointer(60));
-      dispatch(page, "mousemove", held(260));
-      dispatch(page, "mouseup", pointer(260));
-      const releasedOutside = offer(view, issue, "click", pointer(0, 0)).handled;
+      // A drag released outside the editor: ProseMirror's press ends there with no click, and the
+      // browser sends the click to the page's body, which holds the press and the release.
+      const releasedOutside = pointerClick(view, issue, {
+        at: [140, 10],
+        releaseOn: page,
+        through: [[340, 10]],
+      });
 
-      expect({ left, opened, releasedOutside, stayed }).toEqual({
-        left: false,
+      expect({ opened, prevented: { left, releasedOutside, stayed } }).toEqual({
+        opened: [["dispatch://CORE-2", false]],
+        prevented: { left: true, releasedOutside: false, stayed: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+/** Reconfigures the editor's plugins, as the collab cursor's install
+ *  (`installCollabCursorsWhenReady`) and Dispatch's hold on a block's edits (`holdEditsToBlock`)
+ *  do while a press can be under way: ProseMirror destroys every plugin view and makes them anew,
+ *  and its own press goes on, until the view's destroy (prosemirror-view's `destroyInput`). */
+function reconfigure(view: EditorView): void {
+  view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins] }));
+}
+
+// dispatch://INFRA-2160, R1: ProseMirror's press outlives a reconfigure of the editor's plugins,
+// so a click across one opens the link once and a drag across one opens nothing.
+test("a press held across a reconfigure of the editor's plugins opens the link once on a click, and nothing on a drag", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    async ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      // The press, the plugins reconfigured, and the release and the click in place.
+      press(view, issue, [60, 10]);
+      reconfigure(view);
+      await Promise.resolve();
+      release(issue, [60, 10]);
+      const clicked = click(issue, { clientX: 60, clientY: 10, detail: 1 });
+
+      // The same with the pointer 5 px on before the release.
+      press(view, issue, [100, 10]);
+      reconfigure(view);
+      await Promise.resolve();
+      moveTo(view, [105, 10]);
+      release(issue, [105, 10]);
+      const dragged = click(issue, { clientX: 105, clientY: 10, detail: 1 });
+
+      expect({ connected: issue.isConnected, opened, prevented: { clicked, dragged } }).toEqual({
+        // The reconfigures drew the link anew neither time.
+        connected: true,
+        opened: [["dispatch://CORE-2", false]],
+        prevented: { clicked: true, dragged: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a click no pointer makes (`detail` 0) opens the link it lands on,
+// whatever press came before it, a press no click ended included: Chromium sends no click for a
+// press held across a reconfigure of the editor's plugins, and no browser sends one once the
+// pressed element is gone or the browser has turned the press into a drag of its own.
+test("Enter's click on a link opens it once after a drag on the link that no click ended, and once in a new tab with Ctrl", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      // A press, a drag of 10 px and the release on the link, and no click.
+      press(view, issue, [60, 10]);
+      moveTo(view, [70, 10]);
+      release(issue, [70, 10]);
+      const afterDrag = keyboardClick(issue);
+
+      // A press the browser turns into a drag of its own, with neither a release nor a click: the
+      // pointer moves on with no button held, which ends ProseMirror's press too.
+      press(view, issue, [100, 10]);
+      moveTo(view, [110, 10]);
+      dispatch(view.dom.ownerDocument, "mousemove", { clientX: 100, clientY: 10 });
+      const afterNativeDrag = keyboardClick(issue);
+
+      const newTab = keyboardClick(issue, { ctrlKey: true });
+
+      expect({ opened, prevented: { afterDrag, afterNativeDrag, newTab } }).toEqual({
         opened: [
           ["dispatch://CORE-2", false],
           ["dispatch://CORE-2", false],
+          ["dispatch://CORE-2", true],
         ],
-        releasedOutside: true,
-        stayed: true,
+        prevented: { afterDrag: true, afterNativeDrag: true, newTab: true },
       });
-    },
-    { openLink }
-  );
-});
-
-/** Reconfigures the editor with one more plugin, as the collab cursor's install
- *  (`installCollabCursorsWhenReady`) and Dispatch's hold on a block's edits (`holdEditsToBlock`)
- *  do while a press can be under way: ProseMirror destroys every plugin view and makes them anew,
- *  and its own press goes on. */
-function reconfigure(view: EditorView): void {
-  view.updateState(
-    view.state.reconfigure({ plugins: [...view.state.plugins, new Plugin({ view: () => ({}) })] })
-  );
-}
-
-// dispatch://INFRA-2160, R1: the editor's note of a press on a link lasts as long as ProseMirror's
-// own press, through a reconfigure of the editor's plugins while the button is held: a drag
-// across the reconfigure is a drag, and a click across it a click.
-test("a drag on a link across a reconfigure of the editor's plugins opens nothing, and a click across one opens the link", async () => {
-  const { openLink, opened } = recordedOpener();
-  await withMarksEditor(
-    LINKS,
-    ({ view }) => {
-      const issue = linkOf(view, "the other issue");
-
-      // The press, the plugins reconfigured, the pointer 5 px on, and the release and the click
-      // there.
-      dispatch(issue, "mousedown", pointer(60));
-      reconfigure(view);
-      dispatch(issue, "mousemove", held(65));
-      dispatch(issue, "mouseup", pointer(65));
-      const dragged = offer(view, issue, "click", pointer(65)).handled;
-
-      // The same press and release, the pointer staying where it went down.
-      dispatch(issue, "mousedown", pointer(60));
-      reconfigure(view);
-      dispatch(issue, "mouseup", pointer(60));
-      const clicked = offer(view, issue, "click", pointer(60)).handled;
-
-      expect({ clicked, connected: issue.isConnected, dragged, opened }).toEqual({
-        clicked: true,
-        // The reconfigures drew the link anew neither time.
-        connected: true,
-        dragged: false,
-        opened: [["dispatch://CORE-2", false]],
-      });
-    },
-    { openLink }
-  );
-});
-
-// dispatch://INFRA-2160, R1: a press on a link stops hearing the page once the view is destroyed
-// during it, as ProseMirror's own press does.
-test("a view destroyed during a press on a link hears the page's pointer no more", async () => {
-  await withMarksEditor(
-    LINKS,
-    async ({ handle, view }) => {
-      const issue = linkOf(view, "the other issue");
-      const page = view.dom.ownerDocument;
-      const adds = spyOn(page, "addEventListener");
-      const removes = spyOn(page, "removeEventListener");
-      try {
-        dispatch(issue, "mousedown", pointer(60));
-        // What the press listens to on the page: the editor's note. happy-dom lays nothing out,
-        // so ProseMirror finds the press at no position and makes no press of its own.
-        const heard = adds.mock.calls.filter(
-          ([type]) => type === "mousemove" || type === "mouseup"
-        );
-        void handle.destroy();
-        await Promise.resolve();
-
-        let thrown: unknown;
-        try {
-          dispatch(page.body, "mousemove", held(260));
-          dispatch(page.body, "mouseup", pointer(260));
-        } catch (error) {
-          thrown = error;
-        }
-        const left = heard.filter(
-          ([type, listener]) =>
-            !removes.mock.calls.some(([gone, removed]) => gone === type && removed === listener)
-        );
-
-        expect({
-          destroyed: view.isDestroyed,
-          heard: heard.map(([type]) => type).sort(),
-          left,
-          thrown,
-        }).toEqual({
-          destroyed: true,
-          heard: ["mousemove", "mouseup"],
-          left: [],
-          thrown: undefined,
-        });
-      } finally {
-        adds.mockRestore();
-        removes.mockRestore();
-      }
-    },
-    { openLink: recordedOpener().openLink }
-  );
-});
-
-// dispatch://INFRA-2160, R1: a drag from the words before a link onto it selects them and opens
-// nothing. Its press is on the paragraph, not on the link, so no press on the link is noted; its
-// release is on the link, and the browser sends the click to the nearest element holding both,
-// the paragraph, which is no link.
-test("a drag that ends on a link opens nothing, and a Ctrl or a plain click on the link after it opens it", async () => {
-  const { openLink, opened } = recordedOpener();
-  await withMarksEditor(
-    LINKS,
-    ({ view }) => {
-      const away = linkOf(view, "the plan");
-      const paragraph = view.dom.querySelector("p");
-      if (paragraph === null || away.parentElement !== paragraph) {
-        throw new Error("the link is not drawn straight inside its paragraph");
-      }
-
-      // The press on "Read", the pointer across onto "the", the words between selected, and the
-      // release on the link.
-      dispatch(paragraph, "mousedown", pointer(2));
-      dispatch(paragraph, "mousemove", { ...pointer(30), buttons: 1 });
-      const selection = selectText(
-        view,
-        textOf(away.previousSibling),
-        0,
-        textOf(away.firstChild),
-        3
-      );
-      dispatch(away, "mouseup", pointer(30));
-      const dragged = offer(view, paragraph, "click", pointer(30)).handled;
-
-      // A Ctrl click on the link opens it in a new tab, and a plain click in place, the selection
-      // the drag made standing through both: the editor takes the Ctrl click's press, and the
-      // plain click's moves no further than its press.
-      const ctrl = { ...pointer(30), ctrlKey: true };
-      dispatch(away, "mousedown", ctrl);
-      dispatch(away, "mouseup", ctrl);
-      const newTab = offer(view, away, "click", ctrl).handled;
-      const plain = plainClick(view, away, pointer(30));
-
-      expect({ dragged, newTab, plain, selected: selection.toString() }).toEqual({
-        dragged: false,
-        newTab: true,
-        plain: true,
-        selected: "Read the",
-      });
-      expect(opened).toEqual([
-        ["https://example.com/a", true],
-        ["https://example.com/a", false],
-      ]);
     },
     { openLink }
   );
 });
 
 // dispatch://INFRA-2160, R1: ProseMirror reads a primary press with Ctrl (Cmd on a Mac) as
-// selecting the node it lands in, here the paragraph around the link, which took the place of
-// the reader's caret or selection when the Ctrl+click opened the link in a new tab. The editor
-// takes that press, so the click opens the link and changes nothing in the document's selection.
-test("a Ctrl or Cmd click on a link leaves the selection as it was, and a plain click after it opens the link", async () => {
-  for (const modifier of [{ ctrlKey: true }, { metaKey: true }] satisfies MouseEventInit[]) {
+// selecting the node it lands in, here the paragraph around the link, in place of the reader's
+// caret or selection. The editor takes that press, so ProseMirror never sees it, and the click
+// opens the link once in a new tab and changes nothing in the document's selection.
+test("a Ctrl or Cmd click on a link opens it once in a new tab and leaves the selection as it was, and a plain click after it opens it once", async () => {
+  for (const keys of [{ ctrlKey: true }, { metaKey: true }] satisfies MouseEventInit[]) {
     const { openLink, opened } = recordedOpener();
     await withMarksEditor(
       LINKS,
@@ -623,43 +666,37 @@ test("a Ctrl or Cmd click on a link leaves the selection as it was, and a plain 
           collapsed: view.dom.ownerDocument.getSelection()?.isCollapsed,
           editor: view.state.selection.toJSON(),
         });
-        // happy-dom lays nothing out, so ProseMirror finds a press inside no node, where a Ctrl
-        // press selects nothing; a browser finds this one in the link's words, in the paragraph
-        // that opens at 0.
-        view.posAtCoords = () => ({ inside: 0, pos: 25 });
         view.focus();
         caretAt(view, 3);
         const before = selection();
 
-        // The modified click as a browser sends it: the press, the release, then the click.
-        const press = dispatch(issue, "mousedown", modifier);
-        dispatch(issue, "mouseup", modifier);
-        dispatch(issue, "click", modifier);
+        // The modified click as a browser sends it, its press in the link's words, inside the
+        // paragraph that opens at 0 (`layOutPressOn`), where ProseMirror would select that
+        // paragraph.
+        const modifiedPress = press(view, issue, [60, 10], keys);
+        release(issue, [60, 10], keys);
+        const modified = click(issue, { ...keys, clientX: 60, clientY: 10, detail: 1 });
         const afterModified = selection();
-        // The plain click after it, whose press and release ProseMirror hears as before.
-        dispatch(issue, "mousedown");
-        dispatch(issue, "mouseup");
-        const plainOpens = offer(view, issue, "click").handled;
-        // With Shift or Alt held too the click is the browser's own, and its press ProseMirror's.
+        // The plain click after it, whose press ProseMirror hears as before.
+        const plain = pointerClick(view, issue, { at: [100, 10] });
+        // With Shift or Alt held too the press is ProseMirror's.
         const shiftOrAltTaken = [{ shiftKey: true }, { altKey: true }].map(
-          (keys) => offer(view, issue, "mousedown", { ...modifier, ...keys }).handled
+          (more) => offer(view, issue, "mousedown", { ...keys, ...more }).handled
         );
 
         expect({
-          modifier,
+          keys,
           opened,
-          plainOpens,
-          prevented: press.defaultPrevented,
+          prevented: { modified, modifiedPress: modifiedPress.defaultPrevented, plain },
           selection: afterModified,
           shiftOrAltTaken,
         }).toEqual({
-          modifier,
+          keys,
           opened: [
             ["dispatch://CORE-2", true],
             ["dispatch://CORE-2", false],
           ],
-          plainOpens: true,
-          prevented: true,
+          prevented: { modified: true, modifiedPress: true, plain: true },
           selection: before,
           shiftOrAltTaken: [false, false],
         });
@@ -667,6 +704,55 @@ test("a Ctrl or Cmd click on a link leaves the selection as it was, and a plain 
       { openLink }
     );
   }
+});
+
+// dispatch://INFRA-2160, R1: a Shift or an Alt click on a link opens nothing, and its default is
+// prevented, so the browser opens no window and downloads nothing either.
+test("a Shift or an Alt click on a link opens nothing and is prevented", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    LINKS,
+    ({ view }) => {
+      const issue = linkOf(view, "the other issue");
+
+      const prevented = {
+        alt: pointerClick(view, issue, { at: [60, 10], keys: { altKey: true } }),
+        altKeyboard: keyboardClick(issue, { altKey: true }),
+        shift: pointerClick(view, issue, { at: [20, 10], keys: { shiftKey: true } }),
+        shiftKeyboard: keyboardClick(issue, { shiftKey: true }),
+      };
+
+      expect({ opened, prevented }).toEqual({
+        opened: [],
+        prevented: { alt: true, altKeyboard: true, shift: true, shiftKeyboard: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+// dispatch://INFRA-2160, R1: a link whose target the sanitizer emptied, a scheme it refuses, is
+// the editor's all the same: its click is prevented and opens nothing.
+test("a link whose target the sanitizer emptied opens nothing, and its click is prevented", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    "Run [this script](javascript:void) now.",
+    ({ view }) => {
+      const link = linkOf(view, "this script");
+      expect(link.getAttribute("href")).toBe("");
+
+      const prevented = {
+        keyboard: keyboardClick(link),
+        pointer: pointerClick(view, link, { at: [20, 10] }),
+      };
+
+      expect({ opened, prevented }).toEqual({
+        opened: [],
+        prevented: { keyboard: true, pointer: true },
+      });
+    },
+    { openLink }
+  );
 });
 
 test("an anchor inside a host island is the host's, and one a node view draws as its own is the editor's", async () => {
@@ -687,11 +773,16 @@ test("an anchor inside a host island is the host's, and one a node view draws as
         '<a href="/issues/CORE-1/artifacts/notes-md" data-dispatch-href="dispatch://CORE-1/artifact/notes-md">CORE-1 notes-md</a>';
       paragraph.append(island, leaf);
       try {
-        expect(offer(view, linkOf(view, "a thread link"), "click").handled).toBe(false);
+        expect(offer(view, linkOf(view, "a thread link"), "click", { detail: 1 }).handled).toBe(
+          false
+        );
         expect(offer(view, linkOf(view, "a thread link"), "auxclick", { button: 1 }).handled).toBe(
           false
         );
-        expect(offer(view, linkOf(view, "CORE-1 notes-md"), "click").handled).toBe(true);
+        // A pointer's click on the leaf's link, whose press never reaches ProseMirror.
+        expect(offer(view, linkOf(view, "CORE-1 notes-md"), "click", { detail: 1 }).handled).toBe(
+          true
+        );
         expect(opened).toEqual([["dispatch://CORE-1/artifact/notes-md", false]]);
       } finally {
         island.remove();
@@ -709,7 +800,8 @@ const PLAN_TASK =
 
 /** A typed block drawn as Dispatch's `typed-block-drawing.ts` draws one: a header the reader
  *  cannot edit, holding the block's first `serves` pointer as a link in a name/value pair, above
- *  the block's content. */
+ *  the block's content. Like Dispatch's node view of it (`typedBlockView`), the drawing has no
+ *  `stopEvent`, so a press on the pointer reaches ProseMirror. */
 const drawTypedBlock: NonNullable<CreateProofEditorOptions["renderBlock"]> = (node) => {
   const [reference] = node.attrs.serves as string[];
   return [
@@ -738,9 +830,11 @@ const drawTypedBlock: NonNullable<CreateProofEditorOptions["renderBlock"]> = (no
 };
 
 // dispatch://INFRA-2160, R1: a plan's or a Verification document's `serves` and `needs` pointers
-// sit two elements below a header that is `contenteditable="false"`, and a click on one opens it
-// through the host as any link of the document does, with no new load of the host's page.
-test("a pointer in a typed block's header opens its reference, and Ctrl and a middle click open it in a new tab", async () => {
+// sit two elements below a header that is `contenteditable="false"`, in a block with no
+// `stopEvent`, so a press on one reaches ProseMirror, which opens a pointer click on it through
+// `handleClick` as it does a link mark's; Enter's click, Ctrl and a middle click open it as they
+// open any link.
+test("a pointer in a typed block's header opens its reference once on a pointer click and once on Enter's, and Ctrl and a middle click open it once in a new tab", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
     PLAN_TASK,
@@ -750,18 +844,31 @@ test("a pointer in a typed block's header opens its reference, and Ctrl and a mi
       );
       if (pointer === null) throw new Error("the plan's task drew no pointer in its header");
 
-      expect(offer(view, pointer, "click").handled).toBe(true);
-      expect(dispatch(pointer, "click").defaultPrevented).toBe(true);
-      dispatch(pointer, "click", { ctrlKey: true });
-      expect(dispatch(pointer, "mousedown", { button: 1 }).defaultPrevented).toBe(true);
-      expect(dispatch(pointer, "mouseup", { button: 1 }).defaultPrevented).toBe(true);
-      expect(dispatch(pointer, "auxclick", { button: 1 }).defaultPrevented).toBe(true);
-      expect(opened).toEqual([
-        ["dispatch://CORE-1/spec#b-r1", false],
-        ["dispatch://CORE-1/spec#b-r1", false],
-        ["dispatch://CORE-1/spec#b-r1", true],
-        ["dispatch://CORE-1/spec#b-r1", true],
-      ]);
+      // A pointer's click: ProseMirror reads its press and release as a click, and `handleClick`
+      // takes the release, whose default ProseMirror then prevents.
+      press(view, pointer, [20, 10]);
+      const released = release(pointer, [20, 10]).defaultPrevented;
+      const clicked = click(pointer, { clientX: 20, clientY: 10, detail: 1 });
+      const entered = keyboardClick(pointer);
+      const ctrlPress = press(view, pointer, [60, 10], { ctrlKey: true }).defaultPrevented;
+      release(pointer, [60, 10], { ctrlKey: true });
+      const ctrl = click(pointer, { clientX: 60, clientY: 10, ctrlKey: true, detail: 1 });
+      const middle = middleClick(pointer);
+
+      expect({
+        middle,
+        opened,
+        prevented: { clicked, ctrl, ctrlPress, entered, released },
+      }).toEqual({
+        middle: { auxclick: true, press: true, release: true },
+        opened: [
+          ["dispatch://CORE-1/spec#b-r1", false],
+          ["dispatch://CORE-1/spec#b-r1", false],
+          ["dispatch://CORE-1/spec#b-r1", true],
+          ["dispatch://CORE-1/spec#b-r1", true],
+        ],
+        prevented: { clicked: true, ctrl: true, ctrlPress: true, entered: true, released: true },
+      });
 
       // The same header drawn inside a host island - a typed block of a comment a host draws
       // into a thread's slot - is the host's.
@@ -773,7 +880,9 @@ test("a pointer in a typed block's header opens its reference, and Ctrl and a mi
         '<span><header contenteditable="false" data-proof-block-summary=""><dl><dd><a href="/issues/CORE-1/spec#b-r1" data-dispatch-href="dispatch://CORE-1/spec#b-r1">in a thread</a></dd></dl></header></span>';
       content.append(island);
       try {
-        expect(offer(view, linkOf(view, "in a thread"), "click").handled).toBe(false);
+        expect(offer(view, linkOf(view, "in a thread"), "click", { detail: 1 }).handled).toBe(
+          false
+        );
         expect(opened).toHaveLength(4);
       } finally {
         island.remove();
@@ -783,7 +892,12 @@ test("a pointer in a typed block's header opens its reference, and Ctrl and a mi
   );
 });
 
-test("a click on a drawn title opens its reference, and Ctrl and a middle click open it in a new tab", async () => {
+// dispatch://INFRA-2160, R1: a title prevents its own press, and its widget stops every event, so
+// its press never reaches ProseMirror and the click opens it, on a pointer's click and on Enter's
+// alike. A drag across the title is a click by the platform's rule (its press and its release land
+// on the title, so the browser sends a click), and opens it too: measured in Chromium and Firefox
+// in builds Job infra-2160-title-drag-t5nlk at b1ede4f7.
+test("a drawn title opens its reference once on a pointer click, once on a drag across it and once on Enter's click, and Ctrl and a middle click open it once in a new tab", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
     "See CORE-1 here.",
@@ -804,17 +918,95 @@ test("a click on a drawn title opens its reference, and Ctrl and a middle click 
       const title = view.dom.querySelector("a.dispatch-reference");
       if (title === null) throw new Error("no title drawn");
 
-      expect(dispatch(title, "click").defaultPrevented).toBe(true);
-      dispatch(title, "click", { ctrlKey: true });
-      expect(dispatch(title, "mousedown", { button: 1 }).defaultPrevented).toBe(true);
-      expect(dispatch(title, "mouseup", { button: 1 }).defaultPrevented).toBe(true);
-      expect(dispatch(title, "auxclick", { button: 1 }).defaultPrevented).toBe(true);
+      const titlePress = press(view, title, [20, 10]).defaultPrevented;
+      release(title, [20, 10]);
+      const clicked = click(title, { clientX: 20, clientY: 10, detail: 1 });
+      const entered = keyboardClick(title);
+      const ctrl = pointerClick(view, title, { at: [60, 10], keys: { ctrlKey: true } });
+      const dragged = pointerClick(view, title, { at: [100, 10], through: [[130, 10]] });
+      const middle = middleClick(title);
 
-      expect(opened).toEqual([
-        ["dispatch://CORE-1", false],
-        ["dispatch://CORE-1", true],
-        ["dispatch://CORE-1", true],
-      ]);
+      expect({
+        middle,
+        opened,
+        prevented: { clicked, ctrl, dragged, entered, titlePress },
+      }).toEqual({
+        middle: { auxclick: true, press: true, release: true },
+        opened: [
+          ["dispatch://CORE-1", false],
+          ["dispatch://CORE-1", false],
+          ["dispatch://CORE-1", true],
+          ["dispatch://CORE-1", false],
+          ["dispatch://CORE-1", true],
+        ],
+        prevented: { clicked: true, ctrl: true, dragged: true, entered: true, titlePress: true },
+      });
+    },
+    { openLink }
+  );
+});
+
+/** Draws the document's pictures as Dispatch's `picture-view.ts` draws one the browser cannot
+ *  draw: a leaf's root (which ProseMirror makes `contenteditable="false"`) holding a link to the
+ *  picture's artifact, whose middle press is prevented, and a `stopEvent` that keeps every event
+ *  on the link but a `dragstart` from the editor's own handlers. Dispatch's link also puts the
+ *  caret after the picture on a primary press, which decides nothing here. */
+function drawPictureFallback(view: EditorView): void {
+  view.setProps({
+    nodeViews: {
+      ...view.props.nodeViews,
+      image: () => {
+        const document = view.dom.ownerDocument;
+        const dom = document.createElement("span");
+        const link = document.createElement("a");
+        link.setAttribute("href", "/issues/CORE-1/artifacts/shot-png");
+        link.setAttribute("data-dispatch-href", "dispatch://CORE-1/artifact/shot-png");
+        link.textContent = "CORE-1 shot-png";
+        link.addEventListener("mousedown", (event) => {
+          if (event.button === 1) event.preventDefault();
+        });
+        dom.append(link);
+        return {
+          dom,
+          stopEvent: (event: Event) =>
+            event.type !== "dragstart" &&
+            event.target instanceof window.Node &&
+            link.contains(event.target as Node),
+        };
+      },
+    },
+  });
+}
+
+// dispatch://INFRA-2160, R1: the picture fallback's node view stops every press on its link, so
+// the press never reaches ProseMirror and the click opens it, on a pointer's click and on
+// Enter's alike.
+test("the picture fallback's link opens once on a pointer click and once on Enter's, and Ctrl and a middle click open it once in a new tab", async () => {
+  const { openLink, opened } = recordedOpener();
+  await withMarksEditor(
+    "See ![shot](dispatch://CORE-1/artifact/shot-png) here.",
+    ({ view }) => {
+      drawPictureFallback(view);
+      const link = linkOf(view, "CORE-1 shot-png");
+      expect(link.parentElement?.getAttribute("contenteditable")).toBe("false");
+
+      const prevented = {
+        clicked: pointerClick(view, link, { at: [20, 10] }),
+        ctrl: pointerClick(view, link, { at: [60, 10], keys: { ctrlKey: true } }),
+        entered: keyboardClick(link),
+      };
+      const middle = middleClick(link);
+
+      expect({ middle, opened, prevented }).toEqual({
+        middle: { auxclick: true, press: true, release: true },
+        opened: [
+          ["dispatch://CORE-1/artifact/shot-png", false],
+          ["dispatch://CORE-1/artifact/shot-png", true],
+          ["dispatch://CORE-1/artifact/shot-png", false],
+          ["dispatch://CORE-1/artifact/shot-png", true],
+        ],
+        prevented: { clicked: true, ctrl: true, entered: true },
+      });
     },
     { openLink }
   );
@@ -961,15 +1153,27 @@ test("Alt+Enter straight after an arrow key reads the caret where the page holds
   );
 });
 
-test("a view the reader cannot edit leaves Alt+Enter alone, and opens links on a click all the same", async () => {
+// dispatch://INFRA-2160, R1: ProseMirror starts its press in a view the reader cannot edit too
+// (prosemirror-view's `initInput` holds back only its `editHandlers` there, and `mousedown` is
+// not one), so a plain pointer click there opens a link once through `handleClick`.
+test("a view the reader cannot edit leaves Alt+Enter alone, and opens a link once on a plain pointer click all the same", async () => {
   const { openLink, opened } = recordedOpener();
   await withMarksEditor(
     LINKS,
     ({ view }) => {
+      expect(view.editable).toBe(false);
       caretAt(view, 8);
       expect(altEnter(view).handled).toBe(false);
-      expect(dispatch(linkOf(view, "the plan"), "click").defaultPrevented).toBe(true);
-      expect(opened).toEqual([["https://example.com/a", false]]);
+
+      const away = linkOf(view, "the plan");
+      press(view, away, [20, 10]);
+      const released = release(away, [20, 10]).defaultPrevented;
+      const clicked = click(away, { clientX: 20, clientY: 10, detail: 1 });
+
+      expect({ opened, prevented: { clicked, released } }).toEqual({
+        opened: [["https://example.com/a", false]],
+        prevented: { clicked: true, released: true },
+      });
     },
     { access: "read", openLink }
   );
