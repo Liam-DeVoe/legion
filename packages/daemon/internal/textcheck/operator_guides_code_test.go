@@ -129,11 +129,11 @@ func TestTheOperatorGuidesSayWhatTheCodeDoes(t *testing.T) {
 				path: usingLegion,
 				want: []string{
 					"A root whose tree still runs stays here after its merge too, in the phase `merging`, until its close.",
-					"A root whose tree still runs waits in the status `retro`, its phase `merging`, until the rest of its tree is done or parked.",
+					"A root whose tree still runs waits in the status `retro`, its phase `merging`, until the rest of its tree leaves the workflow.",
 				},
 				gone: []string{
 					"through the wait between its merge and its close",
-					"waits in `retro` until the last of it is done or parked",
+					"A root whose tree is still running waits in `retro` until the last of it is done",
 				},
 			}},
 		},
