@@ -51,7 +51,8 @@ func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
 
 // ownersText is the owners part of a step's standing (Standing), the text of its task's block as
 // a task places it, last: ownersOpening, which says the owner of the issue wrote it (Legion's own
-// text for the task default, record.PlanSourceDefault, which the sentence names too), then the
+// text for the task default where its owner gave none, record.PlanSourceDefault, which the sentence
+// names too), then the
 // text between two fence lines, and a line end after the closing one. A fence is a line of
 // backticks one longer than the longest run of backticks the text holds, and three at the least,
 // so no line of the text closes it and stands after it as a line of the daemon's. The line end
@@ -78,9 +79,20 @@ func fenceLength(text string) int {
 }
 
 // ownersOpening is the sentence the owners part of a standing opens with (ownersText), the
-// daemon's own words before the opening fence line.
+// daemon's own words before the opening fence line. Legion writes the text of the task default
+// only where its owner gave none: an owner can give that task a text of its own, a decision for an
+// agent among it, in a later version of the plan.
 const ownersOpening = " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
+	defaultTask + " where its owner gave none), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
+
+// ownersOpeningBefore is the opening a release before ownersOpening wrote, which the start tasks
+// it stored still hold: a phases row's entry task, and a task a claim holds.
+const ownersOpeningBefore = " " + taskTextLabel + ": the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task " +
 	defaultTask + "), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
+
+// ownersOpenings is every opening ownersPart reads an owners part by, the one ownersText writes
+// first.
+var ownersOpenings = []string{ownersOpening, ownersOpeningBefore}
 
 // WithTaskText is task, a start's task as a store keeps it, with the owners part it ends with
 // holding text, the text of the task's block as the plan in force gives it now, in place of the
@@ -115,11 +127,11 @@ func HoldsTaskText(task string) bool {
 // follow it (namingTheReviewRound, reviewround.Split). The owners part is the last of what a task
 // composes (task, resumeText), so it is read from the end: the closing fence is the last line of
 // the task before those sentences, a line of three backticks or more and nothing else, and the
-// opening is the last ownersOpening followed by that same fence line before it. The text between
-// must be one ownersText fences with that fence (fenceLength), so it holds no run of backticks as
-// long as the fence and no line of it is that fence. A task that does not end so holds no owners
-// part: the task of an issue with no plan rows, of the merge, of an architect, and every task an
-// operator wrote.
+// opening is the last of ownersOpenings followed by that same fence line before it, so a task
+// stored by a release before still parses. The text between must be one ownersText fences with
+// that fence (fenceLength), so it holds no run of backticks as long as the fence and no line of it
+// is that fence. A task that does not end so holds no owners part: the task of an issue with no
+// plan rows, of the merge, of an architect, and every task an operator wrote.
 func ownersPart(task string) (before, text, round string, ok bool) {
 	body, round, _ := reviewround.Split(task)
 	closed, ok := strings.CutSuffix(body, "\n")
@@ -131,8 +143,12 @@ func ownersPart(task string) (before, text, round string, ok bool) {
 	if len(fence) < 3 || strings.Trim(fence, "`") != "" {
 		return "", "", "", false
 	}
-	opening := ownersOpening + fence + "\n"
-	at := strings.LastIndex(closed[:end], opening)
+	at, opening := -1, ""
+	for _, candidate := range ownersOpenings {
+		if found := strings.LastIndex(closed[:end], candidate+fence+"\n"); found > at {
+			at, opening = found, candidate+fence+"\n"
+		}
+	}
 	if at < 0 {
 		return "", "", "", false
 	}

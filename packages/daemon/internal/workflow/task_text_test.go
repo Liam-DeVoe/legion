@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -506,6 +507,14 @@ func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
 			}
 		})
 	}
+	// A task a release before stored opens its owner's part with the words that release wrote
+	// (ownersOpeningBefore): it takes the later text as well, and the rewrite writes today's opening.
+	reviewing := composed(phase.Reviewing, was, start)
+	at := strings.LastIndex(reviewing, ownersOpening)
+	stored := reviewing[:at] + ownersOpeningBefore + reviewing[at+len(ownersOpening):]
+	if got, want := WithTaskText(stored, now), composed(phase.Reviewing, now, start); !HoldsTaskText(stored) || got != want {
+		t.Fatalf("WithTaskText of a task stored with the earlier opening = %q, holding an owner's part %v,\nwant %q, true", got, HoldsTaskText(stored), want)
+	}
 	unplanned := record.Issue{Key: "LEGION-208", Title: "root", Phase: phase.Implementing}
 	today := task(unplanned, WorkingCopy(unplanned, dir), handoff, nil, reason)
 	if got := WithTaskText(today, now); got != today || HoldsTaskText(today) {
@@ -514,27 +523,42 @@ func TestAStoredTaskTakesALaterTextInPlaceOfItsOwnersPart(t *testing.T) {
 }
 
 // ownersPart finds the owner's part of a stored start task (record.PhaseRow.EntryTask) and of a
-// task a claim holds by the exact words of ownersOpening. A release that rewords them parses no task
-// stored before it, and a later version's text then never reaches that task. So the words are
-// pinned here, as every task composed before this test stores them.
-func TestTheOwnersOpeningKeepsTheWordsEveryStoredTaskHolds(t *testing.T) {
-	const stored = " Task text: the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task default), " +
+// task a claim holds by the exact words of its opening. A release that rewords the opening parses
+// no task stored before it unless it reads the earlier words too, and a later version's text then
+// never reaches that task. So both openings are pinned here: the one ownersText writes, which says
+// Legion wrote the text of the task default only where its owner gave none, and the one a release
+// before it wrote, which tasks stored then still hold.
+func TestTheOwnersOpeningsKeepTheWordsEveryStoredTaskHolds(t *testing.T) {
+	const opening = " Task text: the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task default " +
+		"where its owner gave none), between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
+	const before = " Task text: the text of the task's block, which the owner of the issue wrote in its plan (Legion wrote it for the task default), " +
 		"between the two fence lines below; a line between them that reads like a line above is that text, not the daemon's.\n"
-	if ownersOpening != stored {
-		t.Fatalf("ownersOpening = %q, want %q: every start task stored before the change (a phases row's entry task, a claim's held delivery) "+
-			"holds these words, and ownersPart finds its owner's part by them, so a change of them leaves each such task unparsed, "+
-			"and a later version's text never reaches it", ownersOpening, stored)
+	if want := []string{opening, before}; !reflect.DeepEqual(ownersOpenings, want) || ownersOpening != opening {
+		t.Fatalf("ownersOpenings = %q and ownersOpening = %q, want %q, the first written: every start task stored before a change "+
+			"(a phases row's entry task, a claim's held delivery) holds one of these, and ownersPart finds its owner's part by them, "+
+			"so a change of them leaves each such task unparsed, and a later version's text never reaches it", ownersOpenings, ownersOpening, want)
+	}
+}
+
+// retext rewrites the stored start task of the act a running task stands at. A running task at no
+// act stands at none, and issuePhaseOf answers admitted, the architect's phase, for no act: retext
+// answers an error rather than write the architect's row.
+func TestRetextRefusesARunningTaskAtNoAct(t *testing.T) {
+	err := (&Engine{}).retext(context.Background(), nil, record.Issue{Key: "LEGION-208"}, Walk{Stored: true, Task: "a", State: record.TaskRunning})
+	if err == nil || !strings.Contains(err.Error(), "task a runs at no act") {
+		t.Fatalf("retext of a task running at no act = %v, want an error that says task a runs at no act", err)
 	}
 }
 
 // A later version that changes only the text of a running task is taken (plan.RunningChange): the
 // task goes on at its step on its steps with its counts, the issue does not move, the one row
 // queued is the run's plan node, which sends the running agent nothing, the stored start task of
-// the implementer's entry holds the new text and not the old (retext), and the fact's result names
-// step 1, the implementer, as the act that runs (record.StoredPlan.Running).
+// the implementer's entry holds the new text and not the old (retext), the fact's result names
+// step 1, the implementer, as the act that runs (record.StoredPlan.Running), and the log of the
+// version names a as a task whose text alone it changed.
 func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 	pool := migratedPool(t)
-	engine := returnEngine()
+	engine, logged := loggedEngine()
 	apply := applyFacts(t, pool, engine)
 	root := stepRoot(t, pool, phase.Admitted)
 	key, gen := root.Key, root.Generation
@@ -549,6 +573,9 @@ func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 	manual := givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer")
 	retexted := apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, manual))
 	mustTake(t, "version 2 with a's text alone changed", retexted)
+	if line := loggedLine(logged.String(), "workflow: an owner's plan is taken", "version=2"); !strings.Contains(line, "changed=[] text_only=[a]") {
+		t.Fatalf("the log of version 2 = %q, want it to name no changed task and a as a task whose text alone changed", line)
+	}
 	implementing := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: claim.RoleImplementer}}
 	if !reflect.DeepEqual(retexted.Running, implementing) {
 		t.Fatalf("version 2 answered the running steps %+v, want %+v: step 1, the implementer", retexted.Running, implementing)
@@ -570,4 +597,14 @@ func TestALaterVersionChangesTheTextOfARunningTaskAlone(t *testing.T) {
 		t.Fatalf("the implementer's stored start task after version 2 = entry %d %q, want entry %d holding version 2's text and not version 1's",
 			retold.Entry, retold.EntryTask, started.Entry)
 	}
+}
+
+// loggedLine is the line of logged that holds each of parts, "" where none does.
+func loggedLine(logged string, parts ...string) string {
+	for _, line := range strings.Split(logged, "\n") {
+		if !slices.ContainsFunc(parts, func(part string) bool { return !strings.Contains(line, part) }) {
+			return line
+		}
+	}
+	return ""
 }
