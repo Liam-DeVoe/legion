@@ -87,6 +87,12 @@
  *   s, and under the `short` bound rows of these runs were killed at 60 s in four whole-file runs.
  *   Three times 175.0 s, rounded up to the minute, is 540 s. A run that stops before any probe, at
  *   an input it refuses, stays under `short`.
+ * - `codexRun`, against 55.52 s: the slowest of 29 runs of `e2e/acceptance/outside-agent-codex.sh`
+ *   against the stand-ins of `outside-agent-codex.test.ts`, its rows started one, two, three and
+ *   five at once, on a dev box of 288 CPUs at a 1-minute load of about 1,100 on 2026-11-21. Under
+ *   `short` those runs read 1.94 s to 55.52 s, slowed by the start of the 20 or so Bun processes
+ *   each run starts and by the leg's polls. Three times 55.52 s, rounded up to the minute, is
+ *   180 s. A run that stops before any Codex starts, at an input it refuses, stays under `short`.
  * - `stoppedLeg`, against 28.24 s: the slowest of 35 drivers of the stop rows of
  *   `unit-repeat.test.ts`, each a copy of the repeat tool over a package of one or two files with
  *   its Bun, the stop, the kill or the cancel the row sends, its names runs and its count of what
@@ -100,8 +106,8 @@
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a stop row's driver (`stoppedLeg`) after 90 s, a
- * listing after 6 minutes, the generation after 6.5 minutes, a run of the edge check after 9
- * minutes, and the two-stack build after 30 minutes.
+ * listing after 6 minutes, the generation after 6.5 minutes, a run of the Codex leg after 3
+ * minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -139,6 +145,8 @@ export const bounds = Object.freeze({
   twoStackBuild: 1_800_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
+  /** One run of `e2e/acceptance/outside-agent-codex.sh` against the stand-ins of its tests. */
+  codexRun: 180_000,
   /** One driver of a stop row of `unit-repeat.test.ts`: a copy of the repeat tool, its Bun, the
    *  stop or kill the row sends, and its names runs. */
   stoppedLeg: 90_000,
