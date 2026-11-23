@@ -212,8 +212,8 @@ func (r *outbox) joined(ctx context.Context, row record.OutboxRow, fact intake.T
 // task's join branch, branch is then made at onto's head, unless GitHub has it, and onto is merged
 // into it, with the message `<KEY>: join the work of tasks <needs>`, so a branch GitHub has, with
 // the task's own work on it, takes what its needs did since. It answers the id of each need whose
-// work GitHub refused to merge into onto as a conflict, nil for none, each need of the default
-// branch where its merge was refused, which the task's first step repairs on onto, and whether
+// work GitHub refused to merge into onto as a conflict (for the default branch, each need whose work
+// it holds), nil for none, which the task's first step repairs on onto, and whether
 // GitHub refused the merge of onto into branch as a conflict (unmerged), which only the task's own
 // work on branch makes and which that step repairs on branch: two facts, since the first step
 // repairs each on another branch, and a repair on branch of a need's conflict would show that
@@ -241,9 +241,9 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 		return nil, false, err
 	}
 	for _, start := range starts {
-		message := fmt.Sprintf("%s: join the work of %s", issue.Key, tasksNamed(start.Needs))
+		message := fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", start.Needs))
 		if start.Branch == issue.DefaultBranch {
-			message = fmt.Sprintf("%s: join %s, which holds the work of %s", issue.Key, start.Branch, tasksNamed(start.Needs))
+			message = fmt.Sprintf("%s: join %s, which holds the work of %s", issue.Key, start.Branch, idsNamed("task", start.Needs))
 		}
 		joined, err := ghbranch.Merge(ctx, github, repo, onto, start.Branch, message)
 		if err != nil {
@@ -262,20 +262,20 @@ func (r *outbox) joinBranch(ctx context.Context, issue record.Issue, branch, ont
 	if err := ghbranch.Create(ctx, github, repo, branch, onto); err != nil {
 		return nil, false, err
 	}
-	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of tasks %s", issue.Key, strings.Join(needs, ", ")))
+	joined, err := ghbranch.Merge(ctx, github, repo, branch, onto, fmt.Sprintf("%s: join the work of %s", issue.Key, idsNamed("task", needs)))
 	if err != nil {
 		return nil, false, err
 	}
 	return conflicts, joined == ghbranch.MergeConflict, nil
 }
 
-// tasksNamed is `task <id>` for one of ids and `tasks <ids>` for several, as a join's words name
-// the tasks whose work a branch holds.
-func tasksNamed(ids []string) string {
+// idsNamed is noun and the one id of ids, or noun's plural and each id, as the words of a join name
+// the tasks or needs whose work a branch holds: `task b`, `tasks a, b`.
+func idsNamed(noun string, ids []string) string {
 	if len(ids) == 1 {
-		return "task " + ids[0]
+		return noun + " " + ids[0]
 	}
-	return "tasks " + strings.Join(ids, ", ")
+	return noun + "s " + strings.Join(ids, ", ")
 }
 
 // needBranchMissing is a join that cannot end: GitHub has no branch, branch, that holds the work of
@@ -296,14 +296,10 @@ func (e *needBranchMissing) Error() string {
 // for a need's own branch, and `, which holds the work of <whose> need <id>` for the default branch,
 // with `needs` and each id for several.
 func (e *needBranchMissing) holds(whose string) string {
-	needs := "need " + e.needs[0]
-	if len(e.needs) > 1 {
-		needs = "needs " + strings.Join(e.needs, ", ")
-	}
 	if e.merged {
-		return fmt.Sprintf(", which holds the work of %s %s", whose, needs)
+		return fmt.Sprintf(", which holds the work of %s %s", whose, idsNamed("need", e.needs))
 	}
-	return fmt.Sprintf(" of %s %s", whose, needs)
+	return fmt.Sprintf(" of %s %s", whose, idsNamed("need", e.needs))
 }
 
 func (e *needBranchMissing) Unwrap() error { return e.err }
