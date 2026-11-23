@@ -301,8 +301,7 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 // a session of the role (reach), or once the role answered; one the ask reached no session of by
 // the bound, and that had not answered, is taken off the line then (atBound). The line it logs for
 // a written ask names the roles of hold (backgroundHold.attributes), the reports that asked a pod
-// nothing else asked. Each row carries the text built for its role (supervise.ReleaseTask): the
-// reviewer's text says that it creates no commit and pushes nothing.
+// nothing else asked. Each row carries the text built for its role (supervise.ReleaseTask).
 func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod, hold backgroundHold) (bool, error) {
 	running := runningClaims(r.issueViews(pod.sandbox.Issue))
 	if len(running) == 0 {

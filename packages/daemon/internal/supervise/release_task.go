@@ -16,13 +16,14 @@ import (
 // tells the role to act now. It states the rule the pod is held to: the daemon deletes it before
 // deletesAt only once every asked role answered, no role is in a turn and each role's last report
 // names no subagent and no background job that runs, the report a role's plugin sends at the end
-// of each turn. So, as an update round's ask does (UpdateTask), it gives four steps: push, let
-// each subagent and each background job the role started finish or stop it and push what it made,
-// answer, and end the turn. A role whose work finishes after its answer pushes what that work made
-// before it ends that turn. The text goes to role, and the reviewer creates no commit and pushes
-// nothing (its role part), so, as UpdateTask does, its text says so in step 1 and asks no commit
-// or push of what its work made (createsNoCommit). A role whose tool has no ready_for_update is
-// told to do the first two steps, because the pod goes at deletesAt whatever it does.
+// of each turn. So it gives the steps of an update round's ask (UpdateTask), less its scratch-file
+// step: push, let each subagent and each background job the role started finish or stop it and
+// push what it made, answer, and end the turn. A role whose work finishes after its answer pushes
+// what that work made before it ends that turn. The text goes to role, and the reviewer creates no
+// commit and pushes nothing (its role part), so, as UpdateTask does, its text says so in step 1 and
+// asks no commit or push of what its work made (createsNoCommit). A role whose tool has no
+// ready_for_update is told to do the first two steps, because the pod goes at deletesAt whatever it
+// does.
 //
 // round is the ask's id, the round the role names in its answer: the `legion` tool's
 // ready_for_update takes any round string, and the daemon hands an answer that names the running

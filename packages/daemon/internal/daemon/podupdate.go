@@ -2656,8 +2656,9 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 //
 // The text is the round's own terms, as its claims recorded them: the reasons the round opened
 // with (roundReasons), never the drift this tick read, and the moment the round ends at the
-// latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask). So every
-// role of one round reads one text, and the record an operator reads names the same reasons
+// latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask, which also
+// takes the role, since the reviewer creates no commit). So every role of one round reads the
+// same reasons and the same moment, and the record an operator reads names the same reasons
 // (dispatch://INFRA-2981 R9).
 //
 // It marks nothing. A claim is asked once an ask reached a session, and the outbox's row is what

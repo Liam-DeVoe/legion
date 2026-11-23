@@ -874,7 +874,7 @@ func TestReleaseTaskTellsOnlyARoleThatCommitsToCommitAndPush(t *testing.T) {
 	deletesAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.UTC)
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleReviewer} {
 		text, commits := ReleaseTask(role, "release:7", issue, deletesAt), role != claim.RoleReviewer
-		for _, says := range []string{"1. Push every commit that you want to keep to the branch legion/" + issue + ".", "commit and push what it made"} {
+		for _, says := range []string{"1. Push every commit that you want to keep to the branch legion/" + issue + ".", "legion/" + issue, "commit and push what it made"} {
 			if strings.Contains(text, says) != commits {
 				t.Errorf("the release's ask to the %s holds %q: %t, want %t:\n%s", role, says, !commits, commits, text)
 			}
