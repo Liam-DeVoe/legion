@@ -440,6 +440,20 @@ run_gate LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 -- --clients "$commit"
 check "exits 0, the copy being the dotfiles' own" "$(is "$status" 0)"
 check "the verdict is GATE OPEN" "$(last_line_is "GATE OPEN")"
 
+# The same profile under the same Python, holding a copy of its own: the gate reads a profile by
+# the bytes of its name, so that copy is one outside the dotfiles, UNKNOWN by name. A reader that
+# hands the name back as other text (`caf\udcc3\udca9` in place of its two UTF-8 bytes) finds no
+# profile at that path and opens the gate, as the row above opens it.
+echo "case: --clients, a UTF-8 profile holding its own copy, read by a Python whose locale is ASCII"
+box_case box-utf8-profile-own-copy-ascii-python
+at="${case_root}/home/.omp/profiles/$(printf 'caf\303\251')/plugins/node_modules/@sjawhar/pi-envoy"
+mkdir -p "$at" && printf '{"name": "@sjawhar/pi-envoy", "version": "17.40.0"}\n' >"$at/package.json"
+run_gate LC_ALL=C PYTHONUTF8=0 PYTHONCOERCECLOCALE=0 -- --clients "$commit"
+check "exits 3" "$(is "$status" 3)"
+check "refuses UNKNOWN naming the profile's tree as one outside the dotfiles" \
+  "$(grep -qF "UNKNOWN: dotfiles omp/plugins/package.json: @sjawhar/pi-envoy is installed outside ${case_root}/home/.dotfiles, in ${case_root}/home/.omp/profiles/caf" "$out" && echo true || echo false)"
+check "the verdict is UNKNOWN, never GATE OPEN" "$(last_line_is "UNKNOWN")"
+
 # Something the gate cannot tell is there or not is never read as not there: a directory it may
 # not search or list, and a link along the way whose target is gone, each hide an install that would
 # shut the gate. Each fixture holds one, and each readable control beside it shuts or refuses.
